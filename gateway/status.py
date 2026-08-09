@@ -1391,7 +1391,15 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
         except (KeyError, TypeError, ValueError):
             existing_pid = None
 
-        if existing_pid == os.getpid() and existing.get("start_time") == record.get("start_time"):
+        # Same live PID as this process: always self-reacquire.
+        # ``start_time`` is a PID-reuse guard for *other* PIDs; it cannot
+        # distinguish two processes that share the caller's own PID (impossible
+        # while we are alive). Requiring start_time equality here falsely
+        # rejects reconnects when the on-disk record has ``start_time: null``
+        # (older writers / psutil failure at first write) while the freshly
+        # built record has a real value — the gateway then reports itself as
+        # the foreign squatter of its own token (#81468).
+        if existing_pid == os.getpid():
             _write_json_file(lock_path, record)
             return True, existing
 
@@ -1503,8 +1511,10 @@ def release_scoped_lock(scope: str, identity: str) -> None:
         return
     if existing.get("pid") != os.getpid():
         return
-    if existing.get("start_time") != _get_process_start_time(os.getpid()):
-        return
+    # Same PID as the live process means we own the lock. Do not require
+    # start_time equality: on-disk null vs a live fingerprint (macOS/psutil
+    # timing) would otherwise leave the lock stuck across Discord/Telegram
+    # reconnects (#81468). start_time only guards PID reuse for *other* PIDs.
     try:
         lock_path.unlink(missing_ok=True)
     except OSError:

@@ -372,6 +372,35 @@ def _primary_log_path(log_name: str) -> Optional[Path]:
     return (get_hermes_home() / "logs" / filename) if filename else None
 
 
+# Logs written by a client process rather than by this backend. When the
+# desktop app talks to a remote/docker/SSH backend, `hermes debug share` runs
+# on the *backend* and can never see them — a bare "(file not found)" then
+# reads as "the app logged nothing" and sends triage down a dead end, which is
+# exactly the wrong answer when the client is the thing being debugged.
+_CLIENT_SIDE_LOGS = {
+    "desktop": (
+        "written by Hermes Desktop on the machine running the app, not by this "
+        "backend. If the desktop connects to a remote/docker/SSH backend, collect "
+        "it on that client machine"
+    ),
+}
+
+
+def _missing_log_note(log_name: str) -> str:
+    """Explain a missing log instead of stating a bare absence.
+
+    For a client-side log the absence is expected on a remote backend, so the
+    note names the writer and the path to collect by hand.
+    """
+    reason = _CLIENT_SIDE_LOGS.get(log_name)
+    if reason is None:
+        return "(file not found)"
+
+    primary = _primary_log_path(log_name)
+    where = f" — expected at {primary}" if primary else ""
+    return f"(not on this host: {reason}{where})"
+
+
 def _resolve_log_path(log_name: str) -> Optional[Path]:
     """Find the log file for *log_name*, falling back to the .1 rotation.
 
@@ -432,7 +461,11 @@ def _capture_log_snapshot(
     log_path = _resolve_log_path(log_name)
     if log_path is None:
         primary = _primary_log_path(log_name)
-        tail = "(file empty)" if primary and primary.exists() else "(file not found)"
+        tail = (
+            "(file empty)"
+            if primary and primary.exists()
+            else _missing_log_note(log_name)
+        )
         return LogSnapshot(path=None, tail_text=tail, full_text=None)
 
     try:

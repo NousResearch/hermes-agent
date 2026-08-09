@@ -1,5 +1,6 @@
 import { JsonRpcGatewayClient } from '@hermes/shared'
 
+import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import type {
   ActionResponse,
   ActionStatusResponse,
@@ -46,10 +47,12 @@ import type {
   PairingResponse,
   PairingUser,
   ProfileCreatePayload,
+  ProfileDesktopOverlay,
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
   SessionInfo,
+  SessionMessage,
   SessionMessagesResponse,
   SessionSearchResponse,
   SkillHubPreview,
@@ -185,6 +188,7 @@ export type {
   PairingResponse,
   PairingUser,
   ProfileCreatePayload,
+  ProfileDesktopOverlay,
   ProfileInfo,
   ProfileSetupCommand,
   ProfileSoul,
@@ -349,8 +353,12 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
       socket = null
 
       if (!disposed) {
+        // Full-jitter exponential backoff: same rationale as the gateway
+        // socket reconnect loops — an immediate-retry loop across many
+        // desktop clients floods the gateway with connection attempts
+        // during a restart.
+        window.setTimeout(() => void connect(), reconnectBackoffDelayMs(attempt, { baseDelayMs: 500, capMs: 30_000 }))
         attempt += 1
-        window.setTimeout(() => void connect(), Math.min(30_000, 1_000 * 2 ** attempt))
       }
     }
   }
@@ -361,6 +369,26 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
     disposed = true
     socket?.close()
   }
+}
+
+/**
+ * Trim a page to its window WITHOUT discarding pinned rows.
+ *
+ * The list endpoints deliberately back-fill pinned conversations past their
+ * LIMIT — a pin means "always reachable", so an aged-out pinned chat is
+ * appended after the recency window. A plain `slice(0, limit)` throws exactly
+ * those rows away again, which is why pins silently stopped rendering past
+ * some count: the sidebar could only ever show the pins that happened to fall
+ * inside the most-recent page.
+ */
+function pageWindow(sessions: SessionInfo[], limit: number): SessionInfo[] {
+  if (sessions.length <= limit) {
+    return sessions
+  }
+
+  const recent = sessions.slice(0, limit)
+
+  return [...recent, ...sessions.slice(limit).filter(session => session.pinned)]
 }
 
 export async function listSessions(
@@ -378,7 +406,7 @@ export async function listSessions(
 
   return {
     ...result,
-    sessions: result.sessions.slice(0, limit),
+    sessions: pageWindow(result.sessions, limit),
     offset: 0
   }
 }
@@ -419,7 +447,7 @@ export async function listAllProfileSessions(
 
   return {
     ...result,
-    sessions: result.sessions.slice(0, limit),
+    sessions: pageWindow(result.sessions, limit),
     offset: 0
   }
 }
@@ -438,14 +466,16 @@ export interface SidebarSessionSlice {
 
 /** Which profiles filled their per-profile window in a returned page. The
  *  legacy per-slice endpoint doesn't report this, so derive it from the rows:
- *  a profile at (or over) the cap still has more on disk. */
+ *  a profile at (or over) the cap still has more on disk. Pinned rows are
+ *  discounted — they're back-filled past the LIMIT, so counting them fakes a
+ *  full page and leaves a "Load more" that can never resolve. */
 function profilesTruncatedFrom(sessions: SessionInfo[], cap: number): Record<string, boolean> {
   const counts = new Map<string, number>()
 
   for (const session of sessions) {
     const key = session.profile || 'default'
 
-    counts.set(key, (counts.get(key) ?? 0) + 1)
+    counts.set(key, (counts.get(key) ?? 0) + (session.pinned ? 0 : 1))
   }
 
   return Object.fromEntries([...counts].map(([name, count]) => [name, count >= cap]))
@@ -626,13 +656,80 @@ export function getSession(id: string, profile?: string | null): Promise<Session
 // this GET to the remote backend (which serves its own state.db); for a local
 // profile the primary opens that profile's state.db via ?profile=. Omit for
 // the current/default profile.
-export function getSessionMessages(id: string, profile?: string | null): Promise<SessionMessagesResponse> {
-  const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+export function getSessionMessages(
+  id: string,
+  profile?: string | null,
+  page: { limit?: number; offset?: number; order?: 'latest' | 'oldest' } = {}
+): Promise<SessionMessagesResponse> {
+  const query = new URLSearchParams()
+
+  if (profile) {
+    query.set('profile', profile)
+  }
+
+  if (page.limit !== undefined) {
+    query.set('limit', String(page.limit))
+  }
+
+  if (page.offset !== undefined) {
+    query.set('offset', String(page.offset))
+  }
+
+  if (page.order) {
+    query.set('order', page.order)
+  }
+
+  const suffix = query.size ? `?${query.toString()}` : ''
 
   return window.hermesDesktop.api<SessionMessagesResponse>({
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`
   })
+}
+
+export function getLatestSessionMessages(id: string, profile?: string | null): Promise<SessionMessagesResponse> {
+  return getSessionMessages(id, profile, { limit: 500, order: 'latest' })
+}
+
+export async function getAllSessionMessages(
+  id: string,
+  profile?: string | null,
+  options: { maxJsonChars?: number } = {}
+): Promise<SessionMessagesResponse> {
+  const messages: SessionMessage[] = []
+  const pageSize = 500
+  const maxJsonChars = options.maxJsonChars ?? 32_000_000
+  let jsonChars = 0
+  let offset = 0
+  let resolvedSessionId = id
+
+  while (true) {
+    const page = await getSessionMessages(id, profile, {
+      limit: pageSize,
+      offset,
+      order: 'oldest'
+    })
+
+    resolvedSessionId = page.session_id
+    jsonChars += (JSON.stringify(page.messages) ?? '').length
+
+    if (jsonChars > maxJsonChars) {
+      throw new Error(
+        'Session transcript exceeds the Desktop safe-load limit; use the Web Dashboard export for this session.'
+      )
+    }
+
+    messages.push(...page.messages)
+
+    // Legacy backends ignore pagination and return the full transcript.
+    if (!page.pagination || page.messages.length === 0 || page.messages.length < page.pagination.limit) {
+      break
+    }
+
+    offset += page.messages.length
+  }
+
+  return { session_id: resolvedSessionId, messages }
 }
 
 export function deleteSession(id: string, profile?: string | null): Promise<{ ok: boolean }> {
@@ -1423,6 +1520,36 @@ export function updateProfileSoul(name: string, content: string): Promise<{ ok: 
 export function getProfileSetupCommand(name: string): Promise<ProfileSetupCommand> {
   return window.hermesDesktop.api<ProfileSetupCommand>({
     path: `/api/profiles/${encodeURIComponent(name)}/setup-command`
+  })
+}
+
+/** Export a profile to a shareable .tar.gz on the backend's filesystem.
+ *  `extraFiles` stages extra root-level files (desktop.json — the appearance/
+ *  interface overlay) into the archive alongside the profile's own artifacts. */
+export function exportProfileArchive(
+  name: string,
+  opts: { extraFiles?: Record<string, string>; output?: string } = {}
+): Promise<{ archive: string; ok: boolean }> {
+  return window.hermesDesktop.api<{ archive: string; ok: boolean }>({
+    path: `/api/profiles/${encodeURIComponent(name)}/export`,
+    method: 'POST',
+    body: { extra_files: opts.extraFiles ?? {}, output: opts.output ?? '' },
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+  })
+}
+
+/** Import a profile .tar.gz as a new profile. Returns the bundled desktop
+ *  appearance overlay too (when the archive carried one) so the caller can
+ *  apply theme/layout without another round-trip. */
+export function importProfileArchive(
+  archive: string,
+  name?: string
+): Promise<{ desktop: null | ProfileDesktopOverlay; name: string; ok: boolean; path: string }> {
+  return window.hermesDesktop.api<{ desktop: null | ProfileDesktopOverlay; name: string; ok: boolean; path: string }>({
+    path: '/api/profiles/import',
+    method: 'POST',
+    body: { archive, name: name || null },
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }
 

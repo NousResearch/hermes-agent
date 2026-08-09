@@ -561,7 +561,7 @@ class MemoryStore:
                 self._conn.commit()
                 return
 
-            vectors = [hrr.bytes_to_phases(row["hrr_vector"]) for row in rows]
+            vectors = [hrr.bytes_to_phases(row["hrr_vector"], dim=self.hrr_dim) for row in rows]
             bank_vector = hrr.bundle(*vectors)
             fact_count = len(vectors)
 

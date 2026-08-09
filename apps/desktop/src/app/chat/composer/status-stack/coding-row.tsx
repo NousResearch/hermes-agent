@@ -1,7 +1,6 @@
 import { useStore } from '@nanostores/react'
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect } from 'react'
 
-import { WorktreeDialog } from '@/app/chat/sidebar/projects/worktree-dialog'
 import { StatusRow } from '@/components/chat/status-row'
 import {
   type ActionItemSpec,
@@ -12,13 +11,13 @@ import {
 } from '@/components/ui/actions-menu'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { CopyButton } from '@/components/ui/copy-button'
 import { DiffCount } from '@/components/ui/diff-count'
 import type { HermesGitBranch } from '@/global'
 import { useI18n } from '@/i18n'
 import { displayPath } from '@/lib/display-path'
-import { registerRepoStatusCwd, repoStatusForCwd, repoWorktreesForCwd } from '@/store/coding-status'
+import { openWorktreeDialog, registerRepoStatusCwd, repoStatusForCwd, repoWorktreesForCwd } from '@/store/coding-status'
 import { notifyError } from '@/store/notifications'
-import { $newWorktreeRequest } from '@/store/projects'
 
 // Tiny uppercase section header, matching the composer "+" menu's labels.
 const MENU_SECTION = 'text-[0.625rem] font-semibold uppercase tracking-wider text-(--ui-text-tertiary)'
@@ -63,6 +62,7 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   const { t } = useI18n()
   const s = t.statusStack.coding
   const p = t.sidebar.projects
+  const fileMenu = t.fileMenu
   const resolvedRepoPath = repoPath?.trim() || undefined
   // This surface's OWN worktree, always — never the primary's. The row used to
   // fall back to the global `$repoStatus` for a blank repoPath, which painted
@@ -77,11 +77,6 @@ export const CodingStatusRow = memo(function CodingStatusRow({
   // only refreshed when the MAIN cwd probe happened to cover them).
   useEffect(() => registerRepoStatusCwd(resolvedRepoPath), [resolvedRepoPath])
 
-  // Shared worktree dialog — replaces the old inline dialog. Opened by the
-  // dropdown menu's "branch off" items and the global ⌘⇧B hotkey.
-  const [worktreeOpen, setWorktreeOpen] = useState(false)
-  const [worktreeBase, setWorktreeBase] = useState<string | undefined>(undefined)
-
   const switchToBranch = async (branch: string) => {
     if (!onSwitchBranch) {
       return
@@ -94,33 +89,13 @@ export const CodingStatusRow = memo(function CodingStatusRow({
     }
   }
 
-  // Global ⌘⇧B (workspace.newWorktree): open the shared worktree dialog. The
-  // coding row only renders inside a repo, so the hotkey naturally no-ops
-  // elsewhere. Guarded by a token ref so it fires on the keypress, not on
-  // mount or unrelated re-renders.
-  const worktreeReq = useStore($newWorktreeRequest)
-  const lastWorktreeReqRef = useRef(worktreeReq)
-
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
-  useEffect(() => {
-    if (worktreeReq === lastWorktreeReqRef.current) {
-      return
-    }
-
-    lastWorktreeReqRef.current = worktreeReq
-
-    if (!resolvedRepoPath || !onOpenWorktree) {
-      return
-    }
-
-    setWorktreeBase(undefined)
-    setWorktreeOpen(true)
-  }, [onOpenWorktree, resolvedRepoPath, worktreeReq])
-
-  // Open the worktree dialog from the dropdown menu with a pre-selected base.
+  // useKeybinds now handles the ⌘⇧B hotkey globally, through
+  // openWorktreeDialog. One dialog is mounted in the sidebar, so N mounted
+  // rails can no longer each open their own copy. The menu items below only
+  // publish the intent. They pin the repo of THIS rail, so the kebab of a tile
+  // targets the worktree of that tile.
   const startBranch = (base: string | undefined) => {
-    setWorktreeBase(base)
-    setTimeout(() => setWorktreeOpen(true), 0)
+    void openWorktreeDialog({ base, repoPath: resolvedRepoPath })
   }
 
   if (!status) {
@@ -238,16 +213,33 @@ export const CodingStatusRow = memo(function CodingStatusRow({
               </span>
             </button>
 
-            {/* Worktree path — plain muted text, not a chip. Always in the flex
-                so hover doesn't reflow the row; opacity alone reveals it.
-                `displayPath` collapses home → ~ (shell / VS Code convention). */}
+            {/* Worktree path + copy — plain muted text, not a chip. Always in the
+                flex so hover doesn't reflow the row; opacity alone reveals the
+                pair. The path sizes to its content (the `flex-1` lives on the
+                wrapper) so the glyph sits against the end of the text instead of
+                drifting to the far edge of the row. `displayPath` collapses
+                home → ~; the copy still takes the real absolute path, and it's
+                the shared `CopyButton` so it confirms with the same inline
+                checkmark as every other copy in the app. */}
             {resolvedRepoPath && (
-              <span
-                className="min-w-0 flex-1 truncate font-mono text-[0.62rem] leading-4 text-muted-foreground/50 opacity-0 transition-opacity group-hover/status-row:opacity-100 group-focus-within/status-row:opacity-100"
-                data-slot="coding-status-cwd"
-              >
-                {displayPath(resolvedRepoPath)}
-              </span>
+              <div className="flex min-w-0 flex-1 items-center gap-0.5 opacity-0 transition-opacity group-hover/status-row:opacity-100 group-focus-within/status-row:opacity-100">
+                <span
+                  className="min-w-0 truncate font-mono text-[0.62rem] leading-4 text-muted-foreground/50"
+                  data-slot="coding-status-cwd"
+                >
+                  {displayPath(resolvedRepoPath)}
+                </span>
+                <CopyButton
+                  appearance="icon"
+                  buttonSize="icon-xs"
+                  className="pointer-events-none size-4 shrink-0 text-muted-foreground/50 hover:text-foreground group-hover/status-row:pointer-events-auto group-focus-within/status-row:pointer-events-auto"
+                  iconClassName="size-3"
+                  label={fileMenu.copyPath}
+                  side="top"
+                  stopPropagation
+                  text={resolvedRepoPath}
+                />
+              </div>
             )}
 
             {/* Branch actions kebab — same pattern as the session/worktree rows.
@@ -314,16 +306,6 @@ export const CodingStatusRow = memo(function CodingStatusRow({
           )}
         </StatusRow>
       </ActionsContextMenu>
-
-      {resolvedRepoPath && onOpenWorktree && (
-        <WorktreeDialog
-          initialBase={worktreeBase}
-          onOpenChange={setWorktreeOpen}
-          onStarted={onOpenWorktree}
-          open={worktreeOpen}
-          repoPath={resolvedRepoPath}
-        />
-      )}
     </>
   )
 })

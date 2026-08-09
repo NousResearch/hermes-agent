@@ -11,11 +11,13 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def _clear_jwt_cache():
-    """Reset the module-level JWT cache before each test."""
+    """Reset the module-level JWT + failure caches before each test."""
     import hermes_cli.copilot_auth as mod
     mod._jwt_cache.clear()
+    mod._exchange_failure_cache.clear()
     yield
     mod._jwt_cache.clear()
+    mod._exchange_failure_cache.clear()
 
 
 class TestExchangeCopilotToken:
@@ -187,3 +189,89 @@ class TestJwtDiskStoreBounds:
         store = _json.loads(path.read_text())
         assert set(store) == {"fp1"}
         assert store["fp1"]["api_token"] == "tid=fresh"
+
+
+class TestExchangeFailureFastPath:
+    """Auth rejections must not sleep, and failures must not repeat network hits.
+
+    Regression tests for the /model picker stall: a 403-rejected token made
+    every load_pool("copilot") burn ~4.5s in retry backoff, turning provider
+    discovery (picker open, delegation spawns, dashboard) into a 7s wait.
+    """
+
+    def _http_error(self, code):
+        import urllib.error
+        return urllib.error.HTTPError(
+            url="https://api.github.com/copilot_internal/v2/token",
+            code=code, msg="err", hdrs=None, fp=None,
+        )
+
+    @patch("time.sleep")
+    @patch("urllib.request.urlopen")
+    def test_403_fails_fast_without_retry_or_sleep(self, mock_urlopen, mock_sleep):
+        from hermes_cli.copilot_auth import exchange_copilot_token
+
+        mock_urlopen.side_effect = self._http_error(403)
+        with pytest.raises(ValueError):
+            exchange_copilot_token("gho_rejected")
+        assert mock_urlopen.call_count == 1  # no retries on auth rejection
+        mock_sleep.assert_not_called()
+
+    @patch("time.sleep")
+    @patch("urllib.request.urlopen")
+    def test_negative_cache_skips_network_on_second_call(self, mock_urlopen, mock_sleep):
+        from hermes_cli.copilot_auth import exchange_copilot_token
+
+        mock_urlopen.side_effect = self._http_error(403)
+        with pytest.raises(ValueError):
+            exchange_copilot_token("gho_rejected")
+        with pytest.raises(ValueError, match="recently failed"):
+            exchange_copilot_token("gho_rejected")
+        assert mock_urlopen.call_count == 1  # second call never hit the network
+
+    @patch("time.sleep")
+    @patch("urllib.request.urlopen")
+    def test_transient_failure_still_retries_then_caches(self, mock_urlopen, mock_sleep):
+        import hermes_cli.copilot_auth as mod
+        from hermes_cli.copilot_auth import exchange_copilot_token, _token_fingerprint
+
+        mock_urlopen.side_effect = OSError("network unreachable")
+        with pytest.raises(ValueError):
+            exchange_copilot_token("gho_flaky")
+        assert mock_urlopen.call_count == mod._EXCHANGE_MAX_ATTEMPTS
+        fp = _token_fingerprint("gho_flaky")
+        until = mod._exchange_failure_cache.get(fp, 0)
+        # Transient TTL, not the 30-min permanent one.
+        assert 0 < until - time.time() <= mod._EXCHANGE_FAILURE_TTL_TRANSIENT_SECONDS + 1
+
+    @patch("time.sleep")
+    @patch("urllib.request.urlopen")
+    def test_success_clears_negative_cache(self, mock_urlopen, mock_sleep):
+        import hermes_cli.copilot_auth as mod
+        from hermes_cli.copilot_auth import exchange_copilot_token, _token_fingerprint
+
+        fp = _token_fingerprint("gho_recovering")
+        # Simulate an expired negative-cache entry so the call proceeds.
+        mod._exchange_failure_cache[fp] = time.time() - 1
+
+        resp_data = json.dumps(
+            {"token": "tid=ok;exp=1", "expires_at": time.time() + 1800}
+        ).encode()
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = resp_data
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        api_token, _, _ = exchange_copilot_token("gho_recovering")
+        assert api_token == "tid=ok;exp=1"
+        assert fp not in mod._exchange_failure_cache
+
+    def test_evict_clears_negative_cache(self):
+        import hermes_cli.copilot_auth as mod
+        from hermes_cli.copilot_auth import evict_cached_exchanged_token, _token_fingerprint
+
+        fp = _token_fingerprint("gho_stale")
+        mod._exchange_failure_cache[fp] = time.time() + 999
+        evict_cached_exchanged_token("gho_stale")
+        assert fp not in mod._exchange_failure_cache

@@ -60,7 +60,7 @@
 import { existsSync, rmSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import { Arch } from 'electron-builder'
-import { stageNodePty } from './stage-native-deps.mjs'
+import { stageNodePty, stageGetWindows } from './stage-native-deps.mjs'
 
 export function cleanStaleAppOutDir(appOutDir) {
   if (!appOutDir || typeof appOutDir !== 'string') {
@@ -144,11 +144,16 @@ export default async function beforePack(context) {
         await stageNodePty({ platform, arch: archName })
         console.log(`[before-pack] re-staged node-pty for target ${platform}-${archName}`)
       }
+      // get-windows' native payload is per-platform, not per-arch (the macOS
+      // helper is universal, Windows stages every prebuilt binding dir), so
+      // it re-stages for the universal target too.
+      stageGetWindows({ platform })
+      console.log(`[before-pack] re-staged get-windows for target ${platform}`)
     }
   } catch (err) {
     // This one SHOULD fail the build — a missing/wrong native binary for the
     // target arch means a broken package shipped to users, which is worse
     // than a build that fails loudly here.
-    throw new Error(`[before-pack] failed to stage node-pty for this target: ${err.message}`)
+    throw new Error(`[before-pack] failed to stage native deps for this target: ${err.message}`)
   }
 }

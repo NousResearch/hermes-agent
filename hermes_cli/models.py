@@ -7,19 +7,27 @@ Add, remove, or reorder entries here — both `hermes setup` and
 
 from __future__ import annotations
 
+import copy
 import json
+import logging
 import os
 import re
+import threading
 import urllib.parse
 import urllib.request
 import urllib.error
 import time
 from difflib import get_close_matches
 from pathlib import Path
-from typing import Any, NamedTuple, Optional
+from typing import Any, NamedTuple, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import TypeGuard
 
 from hermes_cli import __version__ as _HERMES_VERSION
 from hermes_cli.urllib_security import open_credentialed_url
+
+logger = logging.getLogger(__name__)
 
 # Identify ourselves so endpoints fronted by Cloudflare's Browser Integrity
 # Check (error 1010) don't reject the default ``Python-urllib/*`` signature.
@@ -67,7 +75,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("deepseek/deepseek-v4-flash",             ""),
     ("deepseek/deepseek-v4-flash-0731",        "dated snapshot of v4-flash"),
     # Qwen
-    ("qwen/qwen3.7-max",                       ""),
+    ("qwen/qwen3.8-max",                       ""),
     # MoonshotAI
     ("moonshotai/kimi-k3",                     "recommended"),
     # MiniMax
@@ -239,7 +247,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "deepseek/deepseek-v4-flash",
         "deepseek/deepseek-v4-flash-0731",
         # Qwen
-        "qwen/qwen3.7-max",
+        "qwen/qwen3.8-max",
         # MoonshotAI
         "moonshotai/kimi-k3",
         # MiniMax
@@ -1304,6 +1312,9 @@ _PROVIDER_ALIASES = {
     "gmicloud": "gmi",
     "fireworks-ai": "fireworks",
     "fw": "fireworks",
+    "actual-computer": "actual",
+    "actualcomputer": "actual",
+    "aci": "actual",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "minimax-portal": "minimax-oauth",
@@ -1691,13 +1702,19 @@ def _format_price_per_mtok(per_token_str: str) -> str:
     Always uses 2 decimal places so that prices align vertically when
     right-justified in a column (the decimal point stays in the same position).
 
+    Sub-cent prices (e.g. deep-discount cache-hit promos) extend precision
+    instead of collapsing to "$0.00": the smallest decimal place that makes
+    the value non-zero is found, then one extra digit is kept and trailing
+    zeros trimmed.
+
     Examples:
-        "0.000003"   → "$3.00"      (per million tokens)
-        "0.00003"    → "$30.00"
-        "0.00000015" → "$0.15"
-        "0.0000001"  → "$0.10"
-        "0.00018"    → "$180.00"
-        "0"          → "free"
+        "0.000003"        → "$3.00"      (per million tokens)
+        "0.00003"         → "$30.00"
+        "0.00000015"      → "$0.15"
+        "0.0000001"       → "$0.10"
+        "0.00018"         → "$180.00"
+        "0.0000000018"    → "$0.0018"    (promo: $0.0018/Mtok)
+        "0"               → "free"
     """
     try:
         val = float(per_token_str)
@@ -1706,7 +1723,15 @@ def _format_price_per_mtok(per_token_str: str) -> str:
     if val == 0:
         return "free"
     per_m = val * 1_000_000
-    return f"${per_m:.2f}"
+    text = f"{per_m:.2f}"
+    if per_m < 0.01:
+        # Non-zero price below one cent per Mtok — widen precision until the
+        # value shows, keep one extra significant digit, trim trailing zeros.
+        prec = 3
+        while prec < 12 and round(per_m, prec) == 0:
+            prec += 1
+        text = f"{per_m:.{min(prec + 1, 12)}f}".rstrip("0").rstrip(".")
+    return f"${text}"
 
 
 def compute_sale_discount(
@@ -3066,6 +3091,69 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
 #     to a live fetch — the picker keeps working.
 
 _PROVIDER_MODELS_CACHE_TTL = 3600  # 1h
+# Stale-while-revalidate window: an expired-but-same-credentials entry is
+# served IMMEDIATELY (picker opens stay instant) while a background daemon
+# thread re-fetches the live catalog and rewrites the disk cache for the
+# next open. Beyond this bound the entry is considered too old to trust and
+# the caller blocks on a live fetch as before. Rationale: the /model picker's
+# provider listing runs 8-9 serial /v1/models round-trips (~2-3s) whenever
+# the 1h TTL lapses mid-session — model catalogs change on release timescales,
+# not hourly, so serving hour-old data while refreshing off-thread is strictly
+# better than stalling every picker surface (CLI, TUI, dashboard, gateway).
+_PROVIDER_MODELS_STALE_SERVE_MAX = 7 * 24 * 3600  # 7d
+
+# Providers with a background SWR refresh currently in flight — dedupes
+# concurrent refreshes so repeated picker opens during one refresh don't
+# stack threads or duplicate network calls.
+_swr_refresh_inflight: set = set()
+_swr_refresh_lock = threading.Lock()
+
+
+def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
+    """Kick a background refresh of *cache_key*'s model-id cache entry.
+
+    Fire-and-forget daemon thread; at most one in flight per cache key.
+    Failures are swallowed — the stale entry stays served until a later
+    refresh succeeds (same degradation the blocking path already had).
+
+    ``refresh_fn`` (no-args, returns the fresh cache-entry dict or ``None``)
+    lets non-slug keys (``custom:<base_url>`` entries from
+    :func:`cached_fetch_api_models`) reuse the same inflight-dedupe and
+    thread scaffolding. When omitted, *cache_key* is treated as a
+    ``PROVIDER_REGISTRY`` slug and refreshed via :func:`provider_model_ids`
+    (the original behavior).
+    """
+    with _swr_refresh_lock:
+        if cache_key in _swr_refresh_inflight:
+            return
+        _swr_refresh_inflight.add(cache_key)
+
+    def _default_refresh():
+        live = provider_model_ids(cache_key, force_refresh=True)
+        if not live:
+            return None
+        return {
+            "fp": _credential_fingerprint(cache_key),
+            "at": time.time(),
+            "models": list(live),
+        }
+
+    def _refresh() -> None:
+        try:
+            entry = (refresh_fn or _default_refresh)()
+            if entry:
+                cache = _load_provider_models_cache()
+                cache[cache_key] = entry
+                _save_provider_models_cache(cache)
+        except Exception:
+            logger.debug("SWR refresh failed for %s", cache_key, exc_info=True)
+        finally:
+            with _swr_refresh_lock:
+                _swr_refresh_inflight.discard(cache_key)
+
+    threading.Thread(
+        target=_refresh, daemon=True, name=f"model-cache-swr-{cache_key}"
+    ).start()
 
 
 def _provider_models_cache_path() -> Path:
@@ -3199,15 +3287,16 @@ def cached_provider_model_ids(
     entry = cache.get(normalized)
     now = time.time()
 
-    if (
-        not force_refresh
-        and isinstance(entry, dict)
-        and entry.get("fp") == fp
-        and isinstance(entry.get("models"), list)
-        and entry["models"]
-        and (now - float(entry.get("at", 0))) < ttl_seconds
-    ):
-        return list(entry["models"])
+    if not force_refresh and _cache_entry_valid(entry, fp):
+        age = now - entry["at"]
+        if age < ttl_seconds:
+            return list(entry["models"])
+        if age < _PROVIDER_MODELS_STALE_SERVE_MAX:
+            # Stale-while-revalidate: serve the expired entry immediately so
+            # interactive picker opens never block on serial /v1/models
+            # round-trips; refresh the cache off-thread for the next open.
+            _spawn_swr_refresh(normalized)
+            return list(entry["models"])
 
     # Cache miss / stale / forced refresh — call the live path.
     live = provider_model_ids(normalized, force_refresh=force_refresh)
@@ -3223,12 +3312,7 @@ def cached_provider_model_ids(
     # Live fetch returned nothing. If we have a stale entry with the
     # SAME fingerprint, prefer it over an empty result — stale data
     # beats no data when the network is flaky.
-    if (
-        isinstance(entry, dict)
-        and entry.get("fp") == fp
-        and isinstance(entry.get("models"), list)
-        and entry["models"]
-    ):
+    if _cache_entry_valid(entry, fp):
         return list(entry["models"])
     return list(live or [])
 
@@ -3390,10 +3474,37 @@ def _copilot_catalog_item_is_text_model(item: dict[str, Any]) -> bool:
     return True
 
 
+# Module-level cache for the GitHub Copilot /models catalog.
+# The picker path can ask for it multiple times in one process via:
+#   list_authenticated_providers -> cached_provider_model_ids -> provider_model_ids -> _fetch_github_models
+# and later get_copilot_model_context()/normalize helpers. Cache the raw filtered
+# catalog for a short TTL so we don't pay repeated TLS handshakes on every picker open.
+# Keyed by the api_key used for the successful fetch so a credential swap
+# mid-process never serves the previous account's catalog. Uses a monotonic
+# clock so wall-clock adjustments can't extend the TTL. Lock-free like the
+# other module caches here — a racing thread at worst duplicates one fetch.
+_github_model_catalog_cache: Optional[list[dict[str, Any]]] = None
+_github_model_catalog_cache_key: Optional[str] = None
+_github_model_catalog_cache_time: float = 0.0
+_GITHUB_MODEL_CATALOG_CACHE_TTL = 300  # 5 minutes
+
+
 def fetch_github_model_catalog(
     api_key: Optional[str] = None, timeout: float = 5.0
 ) -> Optional[list[dict[str, Any]]]:
     """Fetch the live GitHub Copilot model catalog for this account."""
+    global _github_model_catalog_cache, _github_model_catalog_cache_key
+    global _github_model_catalog_cache_time
+
+    if (
+        _github_model_catalog_cache is not None
+        and _github_model_catalog_cache_key == api_key
+        and (time.monotonic() - _github_model_catalog_cache_time) < _GITHUB_MODEL_CATALOG_CACHE_TTL
+    ):
+        # Deep copy: catalog items are dicts, and a shallow copy would let
+        # callers mutate the cached entries in place.
+        return copy.deepcopy(_github_model_catalog_cache)
+
     attempts: list[dict[str, str]] = []
     if api_key:
         attempts.append({
@@ -3419,6 +3530,9 @@ def fetch_github_model_catalog(
                     seen_ids.add(model_id)
                     models.append(item)
                 if models:
+                    _github_model_catalog_cache = copy.deepcopy(models)
+                    _github_model_catalog_cache_key = api_key
+                    _github_model_catalog_cache_time = time.monotonic()
                     return models
         except Exception:
             continue
@@ -4047,6 +4161,7 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
     OpenCode routes different models behind different API surfaces:
 
     - GPT-5 / Codex models on Zen use ``/v1/responses``
+    - GPT models on Go (gpt-5.6-luna) use ``/v1/responses``
     - Claude models on Zen use ``/v1/messages``
     - MiniMax and Qwen models on Go use ``/v1/messages``
     - GLM / Kimi / DeepSeek / MiMo on Go use ``/v1/chat/completions``
@@ -4063,6 +4178,11 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
         return "chat_completions"
 
     if provider == "opencode-go":
+        if normalized.startswith("gpt-"):
+            # GPT models on Go (gpt-5.6-luna) are served via /v1/responses
+            # per the published Go endpoint table, same as GPT on Zen:
+            # https://opencode.ai/docs/go/#endpoints
+            return "codex_responses"
         if normalized.startswith("minimax-"):
             return "anthropic_messages"
         if normalized.startswith("qwen"):
@@ -4532,6 +4652,141 @@ def fetch_api_models(
         api_mode=api_mode,
         request_headers=headers,
     ).get("models")
+
+
+def _custom_endpoint_fingerprint(
+    api_key: Optional[str],
+    api_mode: Optional[str],
+    headers: Optional[dict[str, str]],
+) -> str:
+    """Fingerprint the credentials/wire-shape used to probe a custom endpoint.
+
+    Custom OpenAI-compatible endpoints have no ``PROVIDER_REGISTRY`` slug to
+    key off (unlike ``_credential_fingerprint``), so this hashes exactly the
+    values callers pass to :func:`fetch_api_models`: a rotated ``api_key``, a
+    changed ``api_mode``, or an edited ``extra_headers`` block each bust the
+    cache entry on their own.
+    """
+    import hashlib
+
+    blob = "|".join((
+        api_key or "",
+        api_mode or "",
+        json.dumps(headers or {}, sort_keys=True),
+    )).encode("utf-8", errors="replace")
+    # blake2b for cache-key fingerprinting only, same rationale as
+    # _credential_fingerprint (avoids CodeQL's sha256-over-secrets rule).
+    return hashlib.blake2b(blob, digest_size=8).hexdigest()
+
+
+def _cache_entry_valid(entry: Any, fp: str) -> "TypeGuard[dict[str, Any]]":
+    """True when *entry* is a well-formed cache row for fingerprint *fp*.
+
+    Requires a numeric ``at`` so corrupt disk state (hand-edited JSON with
+    ``"at": "yesterday"`` or ``null``) degrades to a cache miss / live fetch
+    instead of raising out of the wrapper.
+    """
+    return (
+        isinstance(entry, dict)
+        and entry.get("fp") == fp
+        and isinstance(entry.get("models"), list)
+        and bool(entry["models"])
+        and isinstance(entry.get("at"), (int, float))
+        and not isinstance(entry.get("at"), bool)
+    )
+
+
+def cached_fetch_api_models(
+    api_key: Optional[str],
+    base_url: Optional[str],
+    *,
+    timeout: float = 5.0,
+    api_mode: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
+    force_refresh: bool = False,
+    cache_only: bool = False,
+    ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL,
+) -> Optional[list[str]]:
+    """Disk-cached wrapper around :func:`fetch_api_models` for custom endpoints.
+
+    Mirrors :func:`cached_provider_model_ids` — including its
+    stale-while-revalidate tier — but keys ``provider_models_cache.json``
+    off ``custom:<base_url>`` instead of a ``PROVIDER_REGISTRY`` slug, since
+    custom endpoints (named ``custom_providers`` rows, bare
+    ``provider: custom``, and per-endpoint-map entries) have none. Same
+    stale-beats-nothing fallback policy: a live-fetch failure serves the
+    last same-fingerprint result rather than an empty list. Returns whatever
+    :func:`fetch_api_models` would (a list or ``None``); corrupt cache rows
+    degrade to a live fetch instead of raising.
+
+    ``cache_only`` serves a previously-discovered catalog without touching
+    the network at all — no live fetch, no background revalidation — and
+    returns ``None`` when nothing usable is cached. Callers that deliberately
+    skip live probing for latency reasons (GUI picker opens, which must not
+    block on a stopped local endpoint) use this so a warm catalog still
+    reaches the picker instead of collapsing to the config-declared subset.
+    """
+    normalized_url = str(base_url or "").strip().rstrip("/").lower()
+    if not normalized_url:
+        if cache_only:
+            return None
+        # No base_url means nothing to key the cache on — fall through to a
+        # live call so callers keep getting fetch_api_models' own behavior.
+        return fetch_api_models(
+            api_key, base_url, timeout=timeout, api_mode=api_mode, headers=headers
+        )
+
+    cache_key = f"custom:{normalized_url}"
+    fp = _custom_endpoint_fingerprint(api_key, api_mode, headers)
+    cache = _load_provider_models_cache()
+    entry = cache.get(cache_key)
+    now = time.time()
+
+    if cache_only:
+        # Same trust window as the stale-while-revalidate tier below, minus
+        # the revalidation: an entry this side of the bound is good enough to
+        # render, and anything older is treated as a miss so the caller falls
+        # back to its configured list rather than showing a stale catalog.
+        if force_refresh or not _cache_entry_valid(entry, fp):
+            return None
+        if now - entry["at"] >= _PROVIDER_MODELS_STALE_SERVE_MAX:
+            return None
+        return list(entry["models"])
+
+    if not force_refresh and _cache_entry_valid(entry, fp):
+        age = now - entry["at"]
+        if age < ttl_seconds:
+            return list(entry["models"])
+        if age < _PROVIDER_MODELS_STALE_SERVE_MAX:
+            # Stale-while-revalidate: serve the expired entry immediately so
+            # picker opens never block on a live /v1/models round-trip
+            # (#72762's stall class, which a plain TTL would reintroduce an
+            # hour into the session); refresh off-thread for the next open.
+            def _refresh_custom():
+                live = fetch_api_models(
+                    api_key, base_url,
+                    timeout=timeout, api_mode=api_mode, headers=headers,
+                )
+                if not live:
+                    return None
+                return {"fp": fp, "at": time.time(), "models": list(live)}
+
+            _spawn_swr_refresh(cache_key, _refresh_custom)
+            return list(entry["models"])
+
+    live = fetch_api_models(
+        api_key, base_url, timeout=timeout, api_mode=api_mode, headers=headers
+    )
+    if live:
+        cache[cache_key] = {"fp": fp, "at": now, "models": list(live)}
+        _save_provider_models_cache(cache)
+        return list(live)
+
+    # Live fetch returned nothing (offline endpoint, timeout, auth hiccup).
+    # A stale same-fingerprint entry beats an empty result.
+    if _cache_entry_valid(entry, fp):
+        return list(entry["models"])
+    return live
 
 
 # ---------------------------------------------------------------------------

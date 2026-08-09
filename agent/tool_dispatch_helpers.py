@@ -4,9 +4,10 @@ Pure module-level utilities extracted from ``run_agent.py``:
 
 * ``_is_destructive_command`` — terminal-command heuristic used to gate
   parallel batch dispatch.
-* ``_should_parallelize_tool_batch`` / ``_extract_parallel_scope_path`` /
-  ``_paths_overlap`` — the rules engine deciding when a multi-tool batch
-  can run concurrently.
+* ``_should_parallelize_tool_batch`` / ``_extract_parallel_scope_paths`` /
+  ``_extract_parallel_scope_path`` / ``_paths_overlap`` — the rules engine
+  deciding when a multi-tool batch can run concurrently (V4A patch scope
+  uses patch-body file headers, not a decoy ``path=``).
 * ``_is_multimodal_tool_result`` / ``_multimodal_text_summary`` /
   ``_append_subdir_hint_to_multimodal`` — envelope helpers for the
   ``{"_multimodal": True, "content": [...], "text_summary": ...}`` dict
@@ -47,6 +48,7 @@ _PARALLEL_SAFE_TOOLS = frozenset({
     "ha_get_state",
     "ha_list_entities",
     "ha_list_services",
+    "image_generate",
     "read_file",
     "search_files",
     "session_search",
@@ -126,7 +128,7 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
     * ``_NEVER_PARALLEL_TOOLS`` (interactive tools) → barrier.
     * Unparseable / non-dict arguments → barrier.
     * Path-scoped tools (``read_file``/``search_files``/``write_file``/
-      ``patch``) join a parallel run only when their target path does not
+      ``patch``) join a parallel run only when their target path(s) do not
       CONFLICT with a path already reserved in the same run.  Reservations
       carry a reader/writer role: reader↔reader overlap is harmless (two
       reads of the same file commute) and stays parallel; any overlap
@@ -134,7 +136,9 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
       NEW run after the first completes.  ``search_files`` reserves its
       search root (default ``.``) as a reader — a search batched after a
       write into the searched subtree is ordered behind that write instead
-      of racing it.
+      of racing it.  For V4A ``patch(mode="patch")`` the reserved paths are
+      the file headers in the patch body, not a possibly-stale ``path=``
+      argument.
     * Anything not in ``_PARALLEL_SAFE_TOOLS`` and not an opted-in MCP
       tool → barrier.
 
@@ -189,14 +193,17 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
             continue
 
         if tool_name in _PATH_SCOPED_TOOLS:
-            scoped_path = _extract_parallel_scope_path(tool_name, function_args, execution_cwd=execution_cwd)
-            if scoped_path is None:
+            scoped_paths = _extract_parallel_scope_paths(
+                tool_name, function_args, execution_cwd=execution_cwd
+            )
+            if not scoped_paths:
                 _add_sequential(tool_call)
                 continue
             is_writer = tool_name in _PATH_SCOPED_WRITERS
             if any(
                 (is_writer or existing_is_writer)
                 and _paths_overlap(scoped_path, existing)
+                for scoped_path in scoped_paths
                 for existing, existing_is_writer in reserved_paths
             ):
                 # Same-subtree conflict inside this run: close it so this
@@ -204,7 +211,7 @@ def _plan_tool_batch_segments(tool_calls, *, execution_cwd: Optional[Path] = Non
                 # Reader↔reader overlap never conflicts — concurrent reads
                 # of the same subtree commute.
                 _close_parallel()
-            reserved_paths.append((scoped_path, is_writer))
+            reserved_paths.extend((p, is_writer) for p in scoped_paths)
             current.append(tool_call)
             continue
 
@@ -256,39 +263,77 @@ def _canonical_path(raw_path: str, execution_cwd: Optional[Path] = None) -> Path
     return Path(resolved)
 
 
-def _extract_parallel_scope_path(
+def _extract_parallel_scope_paths(
     tool_name: str,
     function_args: dict,
     execution_cwd: Optional[Path] = None,
-) -> Optional[Path]:
-    """Return the canonical file target for path-scoped tools.
+) -> List[Path]:
+    """Return every canonical path this call reserves for overlap checks.
 
     *execution_cwd* should be the working directory that the tool will
     actually use at runtime.  When omitted the process cwd is used,
     which may differ from the tool execution environment on some
     platforms (e.g. WSL, sandboxed sub-processes).
+
+    For ``patch`` in V4A ``mode=patch``, scope comes from patch-body
+    ``*** Update/Add/Delete/Move File:`` headers (not a possibly-decoy
+    ``path=``).  An empty result means the planner cannot determine the
+    scope and must treat the call as a sequential barrier.
     """
     if tool_name not in _PATH_SCOPED_TOOLS:
-        return None
+        return []
 
-    raw_path = function_args.get("path")
-    if not isinstance(raw_path, str) or not raw_path.strip():
-        # ``search_files`` defaults its search root to the cwd when
-        # ``path`` is omitted — reserve that root rather than falling
-        # back to a sequential barrier (returning None here would demote
-        # every bare search to a barrier and destroy read parallelism).
-        if tool_name == "search_files":
-            return _canonical_path(".", execution_cwd)
-        return None
+    raw_paths: List[str] = []
+    if tool_name == "patch" and (function_args.get("mode") or "replace") == "patch":
+        raw_paths.extend(_extract_file_mutation_targets(tool_name, function_args))
+    else:
+        raw_path = function_args.get("path")
+        if isinstance(raw_path, str) and raw_path.strip():
+            raw_paths.append(raw_path)
+        elif tool_name == "search_files":
+            # ``search_files`` defaults its search root to the cwd when
+            # ``path`` is omitted — reserve that root rather than falling
+            # back to a sequential barrier (an empty result here would
+            # demote every bare search to a barrier and destroy read
+            # parallelism).
+            raw_paths.append(".")
 
-    return _canonical_path(raw_path, execution_cwd)
+    scoped: List[Path] = []
+    seen: set[str] = set()
+    for raw in raw_paths:
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        canonical = _canonical_path(raw, execution_cwd)
+        key = str(canonical)
+        if key in seen:
+            continue
+        seen.add(key)
+        scoped.append(canonical)
+    return scoped
+
+
+def _extract_parallel_scope_path(
+    tool_name: str,
+    function_args: dict,
+    execution_cwd: Optional[Path] = None,
+) -> Optional[Path]:
+    """Return the primary canonical file target for path-scoped tools.
+
+    Thin view over ``_extract_parallel_scope_paths`` kept for callers/tests
+    that only need a single representative path.  For multi-file V4A
+    patches this is the first header target.
+    """
+    scoped = _extract_parallel_scope_paths(
+        tool_name, function_args, execution_cwd=execution_cwd
+    )
+    return scoped[0] if scoped else None
 
 
 def _paths_overlap(left: Path, right: Path) -> bool:
     """Return True when two paths may refer to the same subtree.
 
     Both *left* and *right* must already be canonical (as returned by
-    ``_extract_parallel_scope_path`` / ``_canonical_path``) so that
+    ``_extract_parallel_scope_paths`` / ``_canonical_path``) so that
     symlink aliases and case differences are already normalised.
     """
     left_parts = left.parts
@@ -383,8 +428,10 @@ def _extract_file_mutation_targets(tool_name: str, args: Dict[str, Any]) -> List
         if not isinstance(body, str) or not body:
             return []
         paths: List[str] = []
+        # ``\s*`` (not ``\s+``) after ``***`` matches patch_parser / file_tools:
+        # they accept ``***Update File:`` with no space after the asterisks.
         for _m in re.finditer(
-            r'^\*\*\*\s+(?:Update|Add|Delete)\s+File:\s*(.+)$',
+            r'^\*\*\*\s*(?:Update|Add|Delete)\s+File:\s*(.+)$',
             body,
             re.MULTILINE,
         ):
@@ -392,7 +439,7 @@ def _extract_file_mutation_targets(tool_name: str, args: Dict[str, Any]) -> List
             if p:
                 paths.append(p)
         for _m in re.finditer(
-            r'^\*\*\*\s+Move\s+File:\s*(.+?)\s*->\s*(.+)$',
+            r'^\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)$',
             body,
             re.MULTILINE,
         ):
@@ -672,6 +719,7 @@ __all__ = [
     "_should_parallelize_tool_batch",
     "_canonical_path",
     "_extract_parallel_scope_path",
+    "_extract_parallel_scope_paths",
     "_paths_overlap",
     "_is_multimodal_tool_result",
     "_multimodal_text_summary",

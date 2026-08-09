@@ -11,6 +11,7 @@ import type { ReactElement, ReactNode, PointerEvent as ReactPointerEvent } from 
 
 import type { DoubleTapContext } from '@/components/pane-shell/tree/renderer/drag-session'
 import { registerPaneCloser, removeTreePane, treePanesWithPrefix } from '@/components/pane-shell/tree/store'
+import type { PaneStripTool } from '@/components/ui/pane-tab'
 import { registry } from '@/contrib/registry'
 import type { TileDock } from '@/store/session-states'
 
@@ -35,6 +36,11 @@ export interface PaneMirror<T> {
    *  self-subscribing component (e.g. a session's status dot) so the strip needn't
    *  re-sync on status/color change — only `title` drives re-registration. */
   tabLead?: (key: string) => ReactNode
+  /** Glyph buttons the tile contributes to the strip, after the last tab (where
+   *  "+" sits), while it is the ACTIVE pane — e.g. a preview's console /
+   *  DevTools toggles. DATA, not markup: the strip's `PaneStripGlyph` owns the
+   *  styling so every glyph on every strip matches. */
+  stripTools?: (key: string) => readonly PaneStripTool[]
   render: (key: string) => ReactNode
   /** Wrap the tile's TAB (domain context menu — session verbs). */
   tabWrap?: (key: string, tab: ReactElement) => ReactNode
@@ -76,12 +82,16 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
         title,
         data: {
           tabLead: cfg.tabLead ? () => cfg.tabLead!(key) : undefined,
+          stripTools: cfg.stripTools ? () => cfg.stripTools!(key) : undefined,
           dock: {
             before: cfg.before?.(tile),
             pane: cfg.anchor?.(tile) ?? 'workspace',
             pos: cfg.dir?.(tile) ?? 'right'
           },
           minWidth: cfg.minWidth,
+          // Every mirrored tile is a full workspace surface docked beside main —
+          // and closeable, which is what keeps its tab when it lands in a zone of
+          // its own (see lone-header.ts).
           placement: 'main',
           tabDrag: cfg.tabDrag
             ? (event: ReactPointerEvent<HTMLElement>, onTap: () => void, double?: DoubleTapContext) =>

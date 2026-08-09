@@ -239,6 +239,74 @@ def test_quoted_and_brace_paths_are_hardline_blocked(command):
     assert desc
 
 
+# Multi-line QUOTED arguments are data, not command sequences: a newline
+# inside quotes is part of the argument the shell passes to the program.
+# These previously tripped the hardline floor because the flat command-start
+# class treated every raw newline — even inside quotes — as a command
+# boundary, blocking `hermes send` message bodies, multi-line
+# `git commit -m` messages, and heredoc text that merely MENTION
+# shutdown/reboot commands.
+_QUOTED_NEWLINE_DATA_ALLOW = [
+    # hermes send with a multi-line message body (the reported symptom)
+    'hermes send -t telegram -s "spark1" "console output:\nsudo reboot\ndone"',
+    'hermes send -t telegram "line1\nshutdown -h now\nline3"',
+    # git commit -m with a multi-line message
+    "git commit -m 'ops notes:\nreboot the box after the deploy'",
+    'git commit -m "fix startup\nsystemctl reboot was flaky here"',
+    # heredoc bodies quoting dangerous strings as data
+    "python3 - <<'EOF'\nmsg = 'run sudo reboot later'\nprint(msg)\nEOF",
+    "cat > /tmp/notes.txt <<'EOF'\nremember: shutdown -h now\nEOF",
+    # rm hardline floor is anchored to the same class — quoted prose about it
+    # across a line break must stay data too
+    'git commit -m "docs:\nwarn about rm -rf / in the guide"',
+]
+
+# The masking must be strictly scoped to quoted data: real command
+# boundaries around/inside those same shapes still hit the floor.
+_QUOTED_NEWLINE_THREATS_BLOCK = [
+    # unquoted newline is a real command separator
+    "echo hi\nsudo reboot",
+    'echo "a"\nsudo reboot',
+    'git commit -m "safe message"\nshutdown -h now',
+    # command substitution inside double quotes really executes
+    'hermes send -t telegram "$(sudo reboot)"',
+    'echo "`shutdown -h now`"',
+    # multi-line quoted data followed by a REAL chained command
+    'hermes send "line1\nline2" && sudo reboot',
+    # a heredoc whose body is data, but the delivery command itself is hardline
+    "sudo reboot <<'EOF'\nignored\nEOF",
+]
+
+
+@pytest.mark.parametrize("command", _QUOTED_NEWLINE_DATA_ALLOW)
+def test_quoted_newline_data_not_blocked(command):
+    """Newlines inside quoted arguments are data, not command starts."""
+    is_hl, desc = detect_hardline_command(command)
+    assert not is_hl, (
+        f"multi-line quoted data false-positived the hardline floor: "
+        f"{command!r} (got: {desc})"
+    )
+
+
+@pytest.mark.parametrize("command", _QUOTED_NEWLINE_THREATS_BLOCK)
+def test_real_newline_separated_threats_still_blocked(command):
+    """Unquoted newlines / $() / backticks remain real command boundaries."""
+    is_hl, desc = detect_hardline_command(command)
+    assert is_hl, f"real threat leaked through hardline floor: {command!r}"
+    assert desc
+
+
+def test_quoted_newline_data_not_blocked_by_full_guard_chain(clean_session):
+    """End-to-end: the guard chain must not hardline-block a multi-line
+    quoted message (yolo on, so only the unconditional floor can block)."""
+    enable_session_yolo("hardline_test")
+    command = 'hermes send -t telegram "status:\nsudo reboot happened at 3am"'
+    result = check_all_command_guards(command, "local")
+    assert result["approved"], (
+        f"guard chain blocked multi-line quoted data: {result.get('message')}"
+    )
+
+
 # Commands that carry the literal string "rm -rf /" (or a sibling) as DATA in
 # another command's quoted argument — a PR title, a commit message, an echo /
 # printf argument. The shell never executes that text as an rm command, so the

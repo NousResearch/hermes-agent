@@ -1,4 +1,3 @@
-import { useStore } from '@nanostores/react'
 import { memo } from 'react'
 import type * as React from 'react'
 
@@ -16,14 +15,14 @@ import { triggerHaptic } from '@/lib/haptics'
 import { middleClickHandlers } from '@/lib/middle-click'
 import { handoffOriginSource, sessionSourceLabel } from '@/lib/session-source'
 import { coarseElapsed } from '@/lib/time'
+import { useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
-import { $attentionSessionIds } from '@/store/session-states'
+import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
 
 import { SessionStatusDot } from '../session-status-dot'
 
 import { SidebarRowBody, SidebarRowGrab, SidebarRowLabel, SidebarRowLead, SidebarRowShell } from './chrome'
 import { SessionActionsMenu, SessionContextMenu } from './session-actions-menu'
-import { sessionShowsRunningArc } from './session-row-state'
 import { useProfilePrewarm } from './use-profile-prewarm'
 
 interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
@@ -32,7 +31,6 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
   branchStem?: string
   isPinned: boolean
   isSelected: boolean
-  isWorking: boolean
   onArchive: () => void
   onBranch?: () => void
   onDelete: () => void
@@ -61,7 +59,6 @@ function SidebarSessionRowImpl({
   branchStem,
   isPinned,
   isSelected,
-  isWorking,
   onArchive,
   onBranch,
   onDelete,
@@ -87,8 +84,11 @@ function SidebarSessionRowImpl({
   // Telegram thread continued here still reads as Telegram.
   const handoffSource = handoffOriginSource(session.handoff_state, session.handoff_platform)
   const handoffLabel = handoffSource ? (sessionSourceLabel(handoffSource) ?? handoffSource) : null
-  // True when a clarify prompt in this session is waiting on the user.
-  const needsInput = useStore($attentionSessionIds).includes(session.id)
+  // The same resolved state the row's dot paints, so the arc and the dot cannot
+  // contradict each other. A selector, not a plain useStore: the map is rebuilt
+  // whenever any session's status changes, but a row only repaints on its own.
+  const dotState = useStoreSelector($sessionDotStateById, states => states[session.id] ?? 'idle')
+  const liveTurn = hasLiveTurn(dotState)
 
   return (
     <SessionContextMenu
@@ -104,7 +104,7 @@ function SidebarSessionRowImpl({
       <SidebarRowShell
         actions={
           <div className="relative z-2 grid w-[1.375rem] place-items-center" data-row-actions>
-            {!isWorking && (
+            {!liveTurn && (
               <span className="pointer-events-none absolute right-6 top-1/2 min-w-6 -translate-y-1/2 text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) opacity-0 transition-opacity group-hover:opacity-100">
                 {age}
               </span>
@@ -133,13 +133,13 @@ function SidebarSessionRowImpl({
         className={cn(
           'group row-hover relative',
           isSelected && 'bg-(--ui-row-active-background)',
-          isWorking && 'text-foreground',
+          liveTurn && 'text-foreground',
           // Opaque surface while lifted so the dragged row erases what's under
           // it (translucency let the rows below bleed through).
           dragging && 'z-10 cursor-grabbing bg-(--ui-sidebar-surface-background)',
           className
         )}
-        data-working={isWorking ? 'true' : undefined}
+        data-working={liveTurn ? 'true' : undefined}
         onPointerDown={event => {
           // Reorder drags belong to dnd-kit (the grab handle); the ⋯ actions
           // cluster keeps its own gestures. Everything else on the row —
@@ -164,9 +164,7 @@ function SidebarSessionRowImpl({
         style={style}
         {...rest}
       >
-        {sessionShowsRunningArc({ isWorking, needsInput }) && (
-          <span aria-hidden="true" className="arc-border arc-row" />
-        )}
+        {showsRunningArc(dotState) && <span aria-hidden="true" className="arc-border arc-row" />}
         <SidebarRowBody
           className={cn('z-0 group-hover:pr-12', branchStem && 'pl-3.5')}
           // Middle-click = open in a new tab (browser muscle memory).
@@ -211,12 +209,7 @@ function SidebarSessionRowImpl({
           }}
         >
           {reorderable ? (
-            <SidebarRowGrab
-              ariaLabel={handleLabel}
-              dragging={dragging}
-              dragHandleProps={dragHandleProps}
-              leadClassName={needsInput ? 'overflow-visible' : undefined}
-            >
+            <SidebarRowGrab ariaLabel={handleLabel} dragging={dragging} dragHandleProps={dragHandleProps}>
               <SessionStatusDot
                 branchStem={branchStem}
                 className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
@@ -225,7 +218,7 @@ function SidebarSessionRowImpl({
               />
             </SidebarRowGrab>
           ) : (
-            <SidebarRowLead className={needsInput ? 'overflow-visible' : 'overflow-hidden'}>
+            <SidebarRowLead className="overflow-hidden">
               <SessionStatusDot branchStem={branchStem} session={session} storedSessionId={session.id} />
             </SidebarRowLead>
           )}
@@ -257,14 +250,14 @@ function SidebarSessionRowImpl({
 // design (they close over the row's session id), so a default memo never bails.
 // They're pure id-forwarders, though — identical behavior for a given row — so
 // the comparator deliberately ignores them and compares only the DATA that
-// changes what the row paints. A row whose session/selection/working/pin state
-// is unchanged now bails out, even while a sibling session streams.
+// changes what the row paints. A row whose session/selection/pin state is
+// unchanged now bails out, even while a sibling session streams; its own status
+// arrives through a store subscription, which re-renders it past this bail.
 function rowPropsEqual(a: SidebarSessionRowProps, b: SidebarSessionRowProps): boolean {
   return (
     a.session === b.session &&
     a.isPinned === b.isPinned &&
     a.isSelected === b.isSelected &&
-    a.isWorking === b.isWorking &&
     a.branchStem === b.branchStem &&
     a.reorderable === b.reorderable &&
     a.dragging === b.dragging &&

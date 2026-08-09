@@ -139,6 +139,7 @@ _BILLING_ERROR_CODES = frozenset({
     "no_usable_credits",
     "balance_depleted",
     "model_not_supported_on_free_tier",
+    "member_spend_cap_exceeded",
     _XAI_SPENDING_LIMIT_ERROR_CODE,
 })
 
@@ -338,6 +339,32 @@ _MODEL_NOT_FOUND_PATTERNS = [
     # instead of automatically failing over.  See PR #58446.
     "no endpoints found that support tool use",
 ]
+
+
+def _model_id_missing_known_prefix(model: str, provider: str) -> bool:
+    """True when a bare model id is only known to the provider as ``vendor/id``.
+
+    Some providers answer a malformed model id with a naked 404 that names
+    nothing — NVIDIA NIM returns ``404 page not found`` for a bare
+    ``nemotron-3-ultra-550b-a55b``, indistinguishable from a bad endpoint
+    path. Consulting the curated catalogue tells the two apart: if the id
+    carries no ``/`` but the catalogue has exactly one entry ending in
+    ``/<id>``, the prefix was dropped and the failure is deterministic.
+
+    Never guesses — an id absent from the catalogue (a local NIM container,
+    a proxied model) returns False so genuine endpoint problems keep their
+    retryable ``unknown`` classification.
+    """
+    name = (model or "").strip()
+    if not name or "/" in name:
+        return False
+    try:
+        from hermes_cli.model_normalize import suggest_prefixed_model_id
+
+        return bool(suggest_prefixed_model_id((provider or "").strip(), name))
+    except Exception:
+        return False
+
 
 # Malformed-message-array 400s.  Deterministic request-shape rejections that
 # describe the *transcript* being invalid, not a parameter.  The canonical
@@ -1056,6 +1083,18 @@ def _classify_by_status(
                 should_fallback=False,
             )
         if any(p in error_msg for p in _MODEL_NOT_FOUND_PATTERNS):
+            return result_fn(
+                FailoverReason.model_not_found,
+                retryable=False,
+                should_fallback=True,
+            )
+        # A bare id that the provider's catalogue only knows in prefixed form
+        # is a malformed model id, not a routing glitch — NVIDIA NIM answers
+        # one with a naked ``404 page not found`` that names nothing, so the
+        # generic branch below burns three retries and reports what looks
+        # like an outage (#78796). Deterministic: don't retry, and let the
+        # model_not_found surface carry the real cause.
+        if _model_id_missing_known_prefix(model, provider):
             return result_fn(
                 FailoverReason.model_not_found,
                 retryable=False,

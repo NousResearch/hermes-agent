@@ -1,6 +1,8 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { $notifications, clearNotifications } from '@/store/notifications'
 
 vi.mock('@/store/coding-status', () => ({
   registerRepoStatusCwd: () => undefined,
@@ -53,5 +55,39 @@ describe('CodingStatusRow', () => {
     expect(screen.getByText('12').closest('button')?.classList.contains('contents')).toBe(true)
     // The glyph button fills the row's existing 3.5 leading slot exactly.
     expect(container.querySelector('button[class~="size-3.5"]')).not.toBeNull()
+  })
+
+  it('parks the copy glyph against the end of the path, not the end of the row', () => {
+    render(<CodingStatusRow onOpen={() => undefined} repoPath="/Users/someone/www/repo" />)
+
+    const path = screen.getByText('~/www/repo')
+
+    // The path sizes to its content and the glyph is its immediate sibling, so
+    // the pair reads as one unit. `flex-1` belongs to the wrapper (which holds
+    // the row's slack open) — on the label it stretched the text and pushed the
+    // glyph out to the kebab.
+    expect(path.classList.contains('flex-1')).toBe(false)
+    expect(path.parentElement?.classList.contains('flex-1')).toBe(true)
+    expect(path.nextElementSibling?.tagName).toBe('BUTTON')
+  })
+
+  it('copies the absolute cwd inline — checkmark feedback, no toast', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+    clearNotifications()
+
+    render(<CodingStatusRow onOpen={() => undefined} repoPath="/Users/someone/www/repo" />)
+
+    // Painted tildified, copied raw.
+    expect(screen.getByText('~/www/repo')).toBeTruthy()
+
+    const copy = screen.getByRole('button', { name: 'Copy Path' })
+
+    fireEvent.click(copy)
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('/Users/someone/www/repo'))
+    // Confirmation is the button turning into a checkmark, not a notification.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Copied' })).toBeTruthy())
+    expect($notifications.get()).toHaveLength(0)
   })
 })

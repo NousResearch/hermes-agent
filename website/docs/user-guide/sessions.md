@@ -60,7 +60,9 @@ into chat.
 :::tip
 Use `/compress` when a session gets long, `/new` for a fresh thread, and
 `hermes sessions prune` only when you want to delete old ended sessions from
-storage. Compression reduces the active context; it is not a privacy delete.
+storage. If `state.db` has simply grown large, start with the non-destructive
+option first: `hermes sessions optimize` merges FTS5 index segments and
+VACUUMs the database without touching any session data. Compression reduces the active context; it is not a privacy delete.
 Pass a name to `/new` (e.g. `/new payments-refactor`) to set the new session's
 initial title up front — useful for finding it later with `/resume <name>` or
 in the `/sessions` picker.
@@ -136,11 +138,32 @@ hermes -r 20250305_091523_a1b2c3d4
 # Resume by title
 hermes --resume "refactoring auth"
 
+# Resume the most recent session — same lookup as -c
+hermes --resume latest
+
 # Or with the chat subcommand
 hermes chat --resume 20250305_091523_a1b2c3d4
 ```
 
 Session IDs are shown when you exit a CLI session, and can be found with `hermes sessions list`.
+
+:::note
+`latest` is a reserved keyword for `--resume`. A session literally titled "latest" is still reachable by its ID or via `-c latest` (title match).
+:::
+
+### Resume in a Specific Directory
+
+Pass `--in <dir>` to change into a directory before starting or resuming. Combined with `--resume latest` (or `-c`), the most recent session for that directory's workspace is picked — no need to `cd` first or remember session IDs:
+
+```bash
+# Resume the latest session that belongs to ./my-project
+hermes --resume latest --in ./my-project
+
+# Works with the TUI too
+hermes --tui --resume latest --in ./my-project
+```
+
+`--in` also pins the session to that directory: the resumed session's recorded working directory is not restored (as if `--no-restore-cwd` were passed).
 
 ### Resume Restores the Working Directory
 
@@ -714,7 +737,7 @@ Key tables in `state.db`:
 - Gateway sessions auto-reset based on the configured reset policy
 - Before reset, the agent saves memories and skills from the expiring session
 - Opt-in auto-pruning: when `sessions.auto_prune` is `true`, ended sessions inactive for `sessions.retention_days` (default 90) are pruned at CLI/gateway startup
-- After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space (SQLite does not shrink the file on plain DELETE)
+- After a prune that actually removed rows, `state.db` is `VACUUM`ed to reclaim disk space when at least `sessions.min_vacuum_interval_days` (default 30) have elapsed since the last successful `VACUUM` (SQLite does not shrink the file on plain DELETE)
 - Pruning runs at most once per `sessions.min_interval_hours` (default 24); the last-run timestamp is tracked inside `state.db` itself so it's shared across every Hermes process in the same `HERMES_HOME`
 
 Default is **off** — session history is valuable for `session_search` recall, and silently deleting it could surprise users. Enable in `~/.hermes/config.yaml`:
@@ -724,6 +747,7 @@ sessions:
   auto_prune: true          # opt in — default is false
   retention_days: 90        # keep ended sessions active within this window
   vacuum_after_prune: true  # reclaim disk space after a pruning sweep
+  min_vacuum_interval_days: 30 # don't rewrite the DB more often than this
   min_interval_hours: 24    # don't re-run the sweep more often than this
 ```
 

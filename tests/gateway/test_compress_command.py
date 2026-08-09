@@ -1,5 +1,7 @@
 """Tests for gateway /compress user-facing messaging."""
 
+import asyncio
+import threading
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -309,3 +311,208 @@ async def test_compress_command_passes_tool_messages_to_compressor():
     assert any(m.get("tool_calls") for m in passed), "assistant tool_calls stub dropped"
 
 
+
+
+@pytest.mark.asyncio
+async def test_compress_command_multiplexed_runs_under_profile_secret_scope(tmp_path):
+    """Manual /compress must install the source profile's secret scope.
+
+    Multiplexed gateways resolve credentials fail-closed (Workstream A):
+    ``get_secret`` raises ``UnscopedSecretError`` on any read outside a
+    ``set_secret_scope`` block. The agent turn is scoped by ``_run_agent``'s
+    wrapper, but slash-command dispatch is not — manual /compress reached the
+    compressor's provider resolution unscoped and died with
+    ``get_secret('OPENROUTER_BASE_URL') called with no profile secret scope
+    active``. The credential read happens inside the executor hop, so this
+    also pins that the handler uses the contextvar-preserving executor
+    (``_run_in_executor_with_context``), not a bare ``run_in_executor``.
+    """
+    from agent import secret_scope as ss
+
+    history = _make_history()
+    compressed = [
+        history[0],
+        {"role": "assistant", "content": "compressed summary"},
+        history[-1],
+    ]
+    runner = _make_runner(history)
+    runner.config = GatewayConfig(
+        platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="***")},
+        multiplex_profiles=True,
+    )
+    profile_home = tmp_path / "profiles" / "milo"
+    profile_home.mkdir(parents=True)
+    (profile_home / ".env").write_text(
+        "OPENROUTER_BASE_URL=https://scoped.example/v1\n"
+    )
+    runner._resolve_profile_home_for_source = MagicMock(return_value=profile_home)
+
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.context_compressor._last_compress_aborted = False
+    agent_instance.context_compressor._last_summary_fallback_used = False
+    agent_instance.context_compressor._last_summary_dropped_count = 0
+    agent_instance.context_compressor._last_summary_error = None
+    agent_instance.context_compressor._last_aux_model_failure_model = None
+    agent_instance.context_compressor._last_aux_model_failure_error = None
+    agent_instance.session_id = "sess-1"
+    agent_instance._compression_skipped_due_to_lock = False
+
+    seen: dict[str, str | None] = {}
+
+    def _compress(*_args, **_kwargs):
+        # Runs in the executor thread — exactly where the aux client
+        # resolves provider credentials. Fail-closed get_secret raises
+        # here unless the profile scope survived the thread hop.
+        seen["base_url"] = ss.get_secret("OPENROUTER_BASE_URL")
+        return (compressed, "")
+
+    agent_instance._compress_context.side_effect = _compress
+
+    ss.set_multiplex_active(True)
+    try:
+        with (
+            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
+            patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+            patch("run_agent.AIAgent", return_value=agent_instance),
+            patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
+        ):
+            result = await runner._handle_compress_command(_make_event())
+    finally:
+        ss.set_multiplex_active(False)
+        runner._shutdown_executor()
+
+    assert "failed" not in result.lower(), result
+    assert seen["base_url"] == "https://scoped.example/v1"
+    runner._resolve_profile_home_for_source.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_compress_command_single_profile_skips_profile_resolution():
+    """Multiplexing off → the scope wrapper is a transparent pass-through.
+
+    Single-profile gateways must not pay the profile-resolution path (and
+    ``_resolve_profile_home_for_source`` assumes multiplex config exists) —
+    mirrors the gating contract of ``_run_agent``'s wrapper.
+    """
+    history = _make_history()
+    runner = _make_runner(history)
+    runner._resolve_profile_home_for_source = MagicMock()
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.session_id = "sess-1"
+    agent_instance._compress_context.return_value = (list(history), "")
+    agent_instance._compression_skipped_due_to_lock = False
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
+    ):
+        await runner._handle_compress_command(_make_event())
+
+    runner._resolve_profile_home_for_source.assert_not_called()
+    runner._shutdown_executor()
+
+
+@pytest.mark.asyncio
+async def test_compress_command_cleanup_does_not_block_event_loop():
+    """Manual /compress must not run agent teardown on the gateway event loop.
+
+    #53175 offloaded session-expiry, hygiene, and shutdown cleanup, but the
+    manual /compress finally still called ``_cleanup_agent_resources`` inline.
+    A slow ``agent.close()`` there freezes the whole loop and stops the
+    runtime-status heartbeat from advancing — the same wedge class as the
+    original incident.
+
+    Observation must happen from a side thread: if cleanup blocks the event
+    loop, an ``await``-based waiter cannot sample ticks until close returns,
+    which falsely looks healthy after the block ends.
+    """
+    import time
+
+    history = _make_history()
+    compressed = [
+        history[0],
+        {"role": "assistant", "content": "compressed summary"},
+        history[-1],
+    ]
+    runner = _make_runner(history)
+
+    close_started = threading.Event()
+    release_close = threading.Event()
+
+    def slow_close():
+        close_started.set()
+        release_close.wait(timeout=5)
+
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = slow_close
+    agent_instance._cached_system_prompt = ""
+    agent_instance.tools = None
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    agent_instance.context_compressor._last_compress_aborted = False
+    agent_instance.context_compressor._last_summary_fallback_used = False
+    agent_instance.context_compressor._last_summary_dropped_count = 0
+    agent_instance.context_compressor._last_summary_error = None
+    agent_instance.context_compressor._last_aux_model_failure_model = None
+    agent_instance.context_compressor._last_aux_model_failure_error = None
+    agent_instance.session_id = "sess-1"
+    agent_instance._compress_context.return_value = (compressed, "")
+    agent_instance._compression_skipped_due_to_lock = False
+    agent_instance._session_messages = None
+
+    ticks = {"n": 0}
+    stop = threading.Event()
+    observed = {}
+
+    async def _heartbeat():
+        while not stop.is_set():
+            ticks["n"] += 1
+            await asyncio.sleep(0.005)
+
+    def _observer():
+        # threading.Event wait does not need the event loop. Sample ticks
+        # while close() is still held so an on-loop teardown is visible.
+        if not close_started.wait(timeout=5):
+            observed["error"] = "close() never started"
+            release_close.set()
+            return
+        baseline = ticks["n"]
+        time.sleep(0.12)
+        observed["ticks_during_block"] = ticks["n"] - baseline
+        release_close.set()
+
+    hb = asyncio.create_task(_heartbeat())
+    observer = threading.Thread(target=_observer, name="compress-cleanup-observer", daemon=True)
+    observer.start()
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_request_tokens_rough", return_value=100),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    observer.join(timeout=5)
+    stop.set()
+    await hb
+    runner._shutdown_executor()
+
+    assert "Compressed:" in result
+    assert "error" not in observed, observed.get("error")
+    assert observed.get("ticks_during_block", 0) >= 5, (
+        "event loop was blocked during manual /compress cleanup: only "
+        f"{observed.get('ticks_during_block')} ticks while agent.close() was running"
+    )

@@ -278,7 +278,7 @@ class TestShellFileOpsHelpers:
     def test_normalize_read_pagination_clamps_invalid_values(self):
         assert normalize_read_pagination(offset=0, limit=0) == (1, 1)
         assert normalize_read_pagination(offset=-10, limit=-5) == (1, 1)
-        assert normalize_read_pagination(offset="bad", limit="bad") == (1, 500)
+        assert normalize_read_pagination(offset="bad", limit="bad") == (1, 2000)
         assert normalize_read_pagination(offset=2, limit=999999) == (2, 2000)
 
 
@@ -304,6 +304,9 @@ class TestShellFileOpsHelpers:
             commands.append(command)
             if command.startswith("wc -c"):
                 return {"output": "5\n", "returncode": 0}
+            if command.startswith("head -c") and "| base64" in command:
+                import base64 as b64
+                return {"output": b64.b64encode(b"hello").decode(), "returncode": 0}
             if command.startswith("head -c"):
                 return {"output": "hello", "returncode": 0}
             if command.startswith("sed -n"):
@@ -318,8 +321,8 @@ class TestShellFileOpsHelpers:
 
         assert result.error is None
         assert commands[0] == "wc -c < '/c/Users/alice/notes.txt' 2>/dev/null"
-        assert commands[1] == "head -c 1000 '/c/Users/alice/notes.txt' 2>/dev/null"
-        assert commands[2] == "sed -n '1,500p' '/c/Users/alice/notes.txt'"
+        assert commands[1] == "head -c 1000 '/c/Users/alice/notes.txt' 2>/dev/null | base64"
+        assert commands[2] == "sed -n '1,2000p' '/c/Users/alice/notes.txt'"
         assert commands[3] == "wc -l < '/c/Users/alice/notes.txt'"
 
     def test_is_likely_binary_by_extension(self, file_ops):
@@ -615,3 +618,180 @@ class TestAtomicWriteNewFilePermissions:
         assert result.error is None, f"write failed: {result.error}"
         assert dest.read_text() == "#!/bin/sh\necho updated\n"
         assert dest.stat().st_mode & 0o777 == 0o755
+
+
+class TestAtomicWriteThroughSymlink:
+    """_atomic_write must edit a symlink's target, not replace the link.
+
+    Regression: the temp-file + ``mv`` swap replaced the symlink itself with a
+    plain file, orphaning the real target and destroying the link (data-loss).
+    """
+
+    def test_write_follows_symlink_and_preserves_link(self, tmp_path):
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        real = tmp_path / "real.txt"
+        link = tmp_path / "link.txt"
+        real.write_text("original\n")
+        link.symlink_to(real)
+
+        result = ops.write_file(str(link), "newcontent\n")
+
+        assert result.error is None, f"write failed: {result.error}"
+        # The link must survive as a symlink...
+        assert link.is_symlink(), "symlink was replaced by a plain file"
+        # ...and the real target must carry the new content.
+        assert real.read_text() == "newcontent\n"
+        assert os.path.realpath(link) == str(real)
+
+    def test_write_through_broken_symlink_falls_back(self, tmp_path):
+        """A broken link resolves through readlink -f and creates the target."""
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        target = tmp_path / "target.txt"
+        link = tmp_path / "broken.lnk"
+        link.symlink_to(target)  # target does not exist yet
+
+        result = ops.write_file(str(link), "data\n")
+
+        assert result.error is None, f"write failed: {result.error}"
+        assert target.exists()
+        assert target.read_text() == "data\n"
+
+
+class TestReadNonUtf8IsBinary:
+    """Non-UTF-8 content must be flagged binary, not returned as lossy text.
+
+    Regression: the terminal env decodes stdout with errors="replace", turning
+    every non-UTF-8 byte into U+FFFD before _is_likely_binary sees it. U+FFFD is
+    "printable", so the non-printable ratio never caught it, and a
+    read→edit→write round-trip would overwrite the original bytes with mojibake.
+    """
+
+    def test_replacement_char_sample_flagged_binary(self, tmp_path):
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        # A latin-1 file decoded with errors="replace" yields U+FFFD chars.
+        lossy_sample = "caf\ufffd r\ufffdsum\ufffd\n"
+        assert ops._is_likely_binary("notes.txt", lossy_sample) is True
+
+    def test_plain_utf8_text_not_flagged(self, tmp_path):
+        ops = ShellFileOperations(make_real_subprocess_env(str(tmp_path)))
+        # Proper UTF-8 (including non-ASCII) must still read as text.
+        assert ops._is_likely_binary("notes.txt", "café résumé\nsecond\n") is False
+
+# =========================================================================
+# Byte-layer binary detection (#80308 class: CJK/multibyte text flagged
+# binary because the byte-boundary sample manufactured U+FFFD in transit)
+# =========================================================================
+
+class TestByteLayerBinaryDetection:
+    """Regression suite for the misclassification class behind #80308.
+
+    Fragment reports/fixes each caught one member: #80261, #80250, #80188,
+    #80349, #79834, #79534, #79408. The boundary contract: text = valid
+    UTF-8 allowing one incomplete multibyte sequence at the sample's end;
+    NUL or mid-stream invalid UTF-8 = read-only.
+    """
+
+    # --- unit: _is_likely_binary_bytes -----------------------------------
+
+    def test_cjk_text_cut_mid_character_is_text(self, file_ops):
+        # 999 ASCII bytes + a 3-byte CJK char cut after its first byte —
+        # exactly what `head -c 1000` does to a CJK file.
+        sample = (b"a" * 999 + "中".encode("utf-8"))[:1000]
+        assert sample[-1:] != b"a"  # the cut really is mid-character
+        assert file_ops._is_likely_binary_bytes(sample) is False
+
+    def test_pure_cjk_text_cut_mid_character_is_text(self, file_ops):
+        sample = ("汉字" * 400).encode("utf-8")[:1000]
+        assert file_ops._is_likely_binary_bytes(sample) is False
+
+    def test_emoji_cut_at_boundary_is_text(self, file_ops):
+        # 4-byte sequence cut after 2 bytes.
+        sample = (b"x" * 998 + "🎉".encode("utf-8"))[:1000]
+        assert file_ops._is_likely_binary_bytes(sample) is False
+
+    def test_utf8_bom_is_text(self, file_ops):
+        assert file_ops._is_likely_binary_bytes(b"\xef\xbb\xbfhello") is False
+
+    def test_file_containing_real_replacement_char_is_text(self, file_ops):
+        # A log file that legitimately stores U+FFFD is valid UTF-8. The old
+        # text-layer check could not tell it from transport damage.
+        assert file_ops._is_likely_binary_bytes("log: \ufffd bad byte\n".encode("utf-8")) is False
+
+    def test_nul_byte_is_binary(self, file_ops):
+        assert file_ops._is_likely_binary_bytes(b"MZ\x00\x01text") is True
+
+    def test_elf_header_is_binary(self, file_ops):
+        assert file_ops._is_likely_binary_bytes(b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 8) is True
+
+    def test_latin1_text_stays_read_only(self, file_ops):
+        # Mid-stream invalid UTF-8 (0xE9 = latin-1 é). Reading it through the
+        # replace-decoding transport would mojibake a read→edit→write
+        # round-trip, so it must stay flagged (the old check's guarantee).
+        assert file_ops._is_likely_binary_bytes(b"caf\xe9 au lait, plus padding") is True
+
+    def test_empty_sample_is_text(self, file_ops):
+        assert file_ops._is_likely_binary_bytes(b"") is False
+
+    def test_short_ascii_is_text(self, file_ops):
+        assert file_ops._is_likely_binary_bytes(b"hello\n") is False
+
+    def test_truncated_garbage_tail_after_invalid_prefix_is_binary(self, file_ops):
+        # Error near the end but the prefix itself is not clean UTF-8.
+        assert file_ops._is_likely_binary_bytes(b"\xff\xfe" + b"a" * 10 + b"\xe4") is True
+
+    # --- transport: _sample_file_bytes ------------------------------------
+
+    def test_sample_decodes_base64_transport(self, mock_env):
+        import base64 as b64
+        payload = ("汉字" * 400).encode("utf-8")[:1000]
+        mock_env.execute.return_value = {
+            "output": b64.b64encode(payload).decode() + "\n",
+            "returncode": 0,
+        }
+        ops = ShellFileOperations(mock_env)
+        assert ops._sample_file_bytes("/tmp/x.txt") == payload
+
+    def test_sample_falls_back_on_non_base64_output(self, mock_env):
+        mock_env.execute.return_value = {"output": "not base64 at all!!", "returncode": 0}
+        ops = ShellFileOperations(mock_env)
+        assert ops._sample_file_bytes("/tmp/x.txt") is None
+
+    def test_sample_falls_back_on_nonzero_exit(self, mock_env):
+        mock_env.execute.return_value = {"output": "", "returncode": 127}
+        ops = ShellFileOperations(mock_env)
+        assert ops._sample_file_bytes("/tmp/x.txt") is None
+
+    # --- integration: read_file over the mocked terminal ------------------
+
+    def _dispatch(self, cjk_bytes):
+        import base64 as b64
+
+        def side_effect(command, **kwargs):
+            if command.startswith("wc -c"):
+                return {"output": f"{len(cjk_bytes)}\n", "returncode": 0}
+            if command.startswith("head -c") and "| base64" in command:
+                return {"output": b64.b64encode(cjk_bytes[:1000]).decode(), "returncode": 0}
+            if command.startswith("sed -n"):
+                return {"output": cjk_bytes.decode("utf-8", errors="replace"), "returncode": 0}
+            if command.startswith("wc -l"):
+                return {"output": "1\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        return side_effect
+
+    def test_read_file_returns_cjk_content_instead_of_binary_error(self, mock_env):
+        content = ("汉字测试" * 300).encode("utf-8")  # > 1000 bytes, cut mid-char
+        mock_env.execute.side_effect = self._dispatch(content)
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/notes-中文.txt")
+        assert result.is_binary is False
+        assert result.error is None
+        assert "汉字测试" in (result.content or "")
+
+    def test_read_file_still_blocks_nul_binaries(self, mock_env):
+        content = b"\x7fELF\x00\x00binarybinary" + b"\x00" * 100
+        mock_env.execute.side_effect = self._dispatch(content)
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/a.out")
+        assert result.is_binary is True
+

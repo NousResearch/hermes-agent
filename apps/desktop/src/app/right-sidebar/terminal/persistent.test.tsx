@@ -2,7 +2,16 @@ import { act, type ReactNode } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { hiddenPaneProps, PANE_HIDDEN_ATTR } from '@/components/pane-shell/pane-visibility'
+import { $paneStates } from '@/store/panes'
+
+import { $terminalTakeover } from '../store'
+
 import { PersistentTerminal, TerminalSlot } from './persistent'
+
+vi.mock('../store', async () => ({
+  $terminalTakeover: (await import('nanostores')).atom(false)
+}))
 
 vi.mock('./terminals', () => ({
   ensureTerminal: vi.fn()
@@ -123,6 +132,17 @@ function Harness() {
   )
 }
 
+function HiddenPaneHarness({ hidden }: { hidden: boolean }) {
+  return (
+    <>
+      <div {...hiddenPaneProps(hidden)}>
+        <TerminalSlot className="slot" />
+      </div>
+      <PersistentTerminal onAddSelectionToChat={() => undefined} />
+    </>
+  )
+}
+
 describe('PersistentTerminal rect tracking', () => {
   beforeEach(() => {
     ;(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -162,6 +182,7 @@ describe('PersistentTerminal rect tracking', () => {
 
   afterEach(() => {
     cleanup()
+    $terminalTakeover.set(false)
     vi.unstubAllGlobals()
     vi.restoreAllMocks()
     setVisibility(false)
@@ -212,7 +233,8 @@ describe('PersistentTerminal rect tracking', () => {
 
     render(<Harness />)
 
-    expect(mutationObserveCalls.some(call => call.options?.subtree === true)).toBe(true)
+    expect(mutationObserveCalls.length).toBeGreaterThan(0)
+    expect(mutationObserveCalls.every(call => call.options?.subtree === false)).toBe(true)
 
     act(() => {
       raf.runNext()
@@ -242,6 +264,27 @@ describe('PersistentTerminal rect tracking', () => {
     })
 
     expect(raf.pending()).toBe(0)
+  })
+
+  it('remeasures from an explicit pane-layout state change', () => {
+    const raf = installRaf()
+    const before = $paneStates.get()
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect(10, 20, 200, 100))
+
+    render(<Harness />)
+    raf.runNext()
+    expect(raf.pending()).toBe(0)
+
+    act(() => {
+      $paneStates.set({ ...before, __terminal_rect_test__: { open: true } })
+    })
+
+    expect(raf.pending()).toBe(1)
+
+    act(() => {
+      raf.runNext()
+      $paneStates.set(before)
+    })
   })
 
   it('does not schedule rect RAFs while the Electron window is paused, then resumes when visible', () => {
@@ -308,5 +351,63 @@ describe('PersistentTerminal rect tracking', () => {
     act(() => window.dispatchEvent(new Event('focus')))
 
     expect(raf.pending()).toBe(1)
+  })
+
+  it('hides the overlay but keeps its workspace mounted when the terminal tab becomes inactive', () => {
+    const raf = installRaf()
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect(10, 20, 200, 100))
+    $terminalTakeover.set(true)
+
+    render(<HiddenPaneHarness hidden={false} />)
+
+    const overlay = container!.lastElementChild as HTMLElement
+    const workspace = container!.querySelector('[data-testid="terminal-workspace"]')
+
+    expect(overlay.style.visibility).toBe('visible')
+    expect(overlay.style.opacity).toBe('1')
+    expect(overlay.style.pointerEvents).toBe('auto')
+    expect(workspace).not.toBeNull()
+    expect(mutationObserveCalls.some(call => call.options?.attributeFilter?.includes(PANE_HIDDEN_ATTR))).toBe(true)
+
+    // Let the initial changed-rect follow-up settle. The hidden-pane transition
+    // must wake the observer from an otherwise idle state.
+    act(() => {
+      raf.runNext()
+    })
+    expect(raf.pending()).toBe(0)
+
+    act(() => {
+      root!.render(<HiddenPaneHarness hidden />)
+      mutationObserverCallback?.([], {} as MutationObserver)
+    })
+    expect(raf.pending()).toBe(1)
+
+    act(() => {
+      raf.runNext()
+    })
+
+    expect(overlay.style.visibility).toBe('hidden')
+    expect(overlay.style.opacity).toBe('0')
+    expect(overlay.style.pointerEvents).toBe('none')
+    expect(container!.querySelector('[data-testid="terminal-workspace"]')).toBe(workspace)
+
+    act(() => {
+      raf.runNext()
+    })
+    expect(raf.pending()).toBe(0)
+
+    act(() => {
+      root!.render(<HiddenPaneHarness hidden={false} />)
+      mutationObserverCallback?.([], {} as MutationObserver)
+    })
+
+    act(() => {
+      raf.runNext()
+    })
+
+    expect(overlay.style.visibility).toBe('visible')
+    expect(overlay.style.opacity).toBe('1')
+    expect(overlay.style.pointerEvents).toBe('auto')
+    expect(container!.querySelector('[data-testid="terminal-workspace"]')).toBe(workspace)
   })
 })

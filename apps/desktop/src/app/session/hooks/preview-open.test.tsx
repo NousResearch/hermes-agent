@@ -112,6 +112,31 @@ describe('open_preview', () => {
     expect($previewTabs.get()).toHaveLength(0)
   })
 
+  // The turn that calls open_preview is often a TILE's session while focus
+  // sits on main (the user asked, then clicked elsewhere). On-screen is the
+  // bar — gating on focus made an explicit "open reddit" silently vanish.
+  it('honors an open from an open tile session even when main holds focus', async () => {
+    const { $sessionTiles } = await import('@/store/session-states')
+    const tiles = $sessionTiles.get()
+
+    $sessionTiles.set([{ dir: 'right', runtimeId: 'tile-runtime', storedSessionId: 'stored-tile' }])
+    render(<Harness />)
+
+    try {
+      await act(async () => {
+        handleEvent({
+          payload: { url: '/tmp/from-tile.html' },
+          session_id: 'tile-runtime',
+          type: 'preview.open'
+        } as unknown as RpcEvent)
+      })
+
+      await waitFor(() => expect($previewTarget.get()?.path).toBe('/tmp/from-tile.html'))
+    } finally {
+      $sessionTiles.set(tiles)
+    }
+  })
+
   it('opens a second target as its own tab rather than replacing the first', async () => {
     render(<Harness />)
 

@@ -24,13 +24,15 @@ import { $newSessionTabAction, registerPaneCloser } from '@/components/pane-shel
 import { FloatingPet } from '@/components/pet/floating-pet'
 import { RemoteDisplayBanner } from '@/components/remote-display-banner'
 import { emitGatewayEvent } from '@/contrib/events'
-import { getSessionMessages, triggerCronJob } from '@/hermes'
+import { getLatestSessionMessages, triggerCronJob } from '@/hermes'
 import { type ChatMessage, chatMessageText, preserveLocalAssistantErrors, toChatMessages } from '@/lib/chat-messages'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { isMessagingSource } from '@/lib/session-source'
 import { latestSessionTodos } from '@/lib/todos'
+import { activateWakeIndicator } from '@/lib/wake-indicator'
 import { playWakeSound } from '@/lib/wake-sound'
 import { $billingSettingsRequest } from '@/store/billing-block'
+import { $desktopBoot } from '@/store/boot'
 import { requestVoiceConversationStart } from '@/store/composer'
 import { setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
@@ -64,8 +66,8 @@ import {
   setMessages
 } from '@/store/session'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '@/store/todos'
-import { armWakeWord } from '@/store/wake-word'
-import { isSecondaryWindow } from '@/store/windows'
+import { armWakeWord, stopClientCapture } from '@/store/wake-word'
+import { isAuxiliaryWindow, isHudWindow } from '@/store/windows'
 import { useSkinCommand } from '@/themes/use-skin-command'
 
 import { closeWorkspaceTab } from '../chat/close-tab'
@@ -75,6 +77,7 @@ import { CommandPalette } from '../command-palette'
 import { useGatewayBoot } from '../gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from '../gateway/hooks/use-gateway-request'
 import { useKeybinds } from '../hooks/use-keybinds'
+import { useHudHandoff } from '../hud/handoff'
 import { ModelPickerOverlay } from '../model-picker-overlay'
 import { ModelVisibilityOverlay } from '../model-visibility-overlay'
 import { mainChatOccupied, openSession } from '../open-session'
@@ -177,8 +180,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
   const messagingSessions = useStore($messagingSessions)
+  const sessions = useStore($sessions)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const profileScope = useStore($profileScope)
+  const boot = useStore($desktopBoot)
 
   const routedSessionId = routeSessionId(location.pathname)
   const routedSessionIdRef = useRef(routedSessionId)
@@ -326,7 +331,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
       for (let index = 0; index < Math.max(1, attempts); index += 1) {
         try {
-          const latest = await getSessionMessages(storedSessionId, storedProfile)
+          const latest = await getLatestSessionMessages(storedSessionId, storedProfile)
           const messages = toChatMessages(latest.messages)
           updateSessionState(
             runtimeSessionId,
@@ -373,7 +378,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     }
 
     try {
-      const latest = await getSessionMessages(storedSessionId, stored.profile)
+      const latest = await getLatestSessionMessages(storedSessionId, stored.profile)
       const signatureKey = `${stored.profile ?? 'default'}:${storedSessionId}`
       const sig = sessionMessagesSignature(latest.messages)
 
@@ -620,6 +625,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   // session / new session), and it hears gateway truth from this window.
   useQuickEntryBridge({ startFreshSessionDraft, submitText })
 
+  // Leaving HUD mode hands this window the session back (see hud/handoff).
+  useHudHandoff({ navigate, resumeSession })
+
   // Clear a failed turn's red error banner. Errors are renderer-local (never
   // persisted): a bare error placeholder is dropped entirely; a partial-output
   // failure keeps its content and sheds the error. Both the runtime cache AND
@@ -685,9 +693,14 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       if (event.type === 'wake.detected') {
         const payload = event.payload as { profile?: null | string; start_new_session?: boolean } | undefined
 
+        // Free the Mac mic so voice conversation can open getUserMedia.
+        // Server already pauses the detector lease; this stops client PCM feed.
+        stopClientCapture()
+
         // Audible confirmation that the wake registered, before voice capture
         // starts. Gated by the shared sound-mute toggle.
         playWakeSound()
+        activateWakeIndicator()
 
         // Multi-profile routing: a wake phrase enrolled by another profile
         // re-homes the gateway to that profile first (live swap — same path
@@ -771,14 +784,17 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const previewTarget = useStore($previewTarget)
 
   useDesktopIntegrations({
+    activeProfile: normalizeProfileKey(activeGatewayProfile),
     chatOpen,
     hasPreview: Boolean(previewTarget),
     locationPathname: location.pathname,
     navigate,
+    profileReady: boot.phase === 'renderer.ready',
     refreshSessions,
     resumeExhaustedSessionId,
     routedSessionId,
-    runtimeIdByStoredSessionId: runtimeIdByStoredSessionIdRef
+    runtimeIdByStoredSessionId: runtimeIdByStoredSessionIdRef,
+    sessions
   })
 
   // Pin/unpin the selected session (statusbar keybind + chat header) — pinned
@@ -994,18 +1010,23 @@ export function ContribWiring({ children }: { children: ReactNode }) {
           } as CSSProperties
         }
       >
-        <TitlebarControls
-          leftTools={leftTitlebarTools}
-          onOpenSettings={() => navigate(SETTINGS_ROUTE)}
-          tools={rightTitlebarTools}
-        />
+        {/* HUD mode has no titlebar to hang these off — the clusters are
+            `fixed`, so without this they'd float over the chat as orphaned
+            buttons. Exits are the ⌘⇧H toggle and ⌘W. */}
+        {!isHudWindow() && (
+          <TitlebarControls
+            leftTools={leftTitlebarTools}
+            onOpenSettings={() => navigate(SETTINGS_ROUTE)}
+            tools={rightTitlebarTools}
+          />
+        )}
         {children}
       </div>
 
       {/* The full real overlay set (mirrors DesktopController's `overlays`). */}
       <RemoteDisplayBanner />
-      {!isSecondaryWindow() && <DesktopInstallOverlay />}
-      {!isSecondaryWindow() && (
+      {!isAuxiliaryWindow() && <DesktopInstallOverlay />}
+      {!isAuxiliaryWindow() && (
         <DesktopOnboardingOverlay
           enabled={gatewayState === 'open'}
           onCompleted={() => {
@@ -1101,11 +1122,13 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       {/* Toasts above everything. */}
       <NotificationStack />
 
-      {/* Petdex floating mascot — renders nothing unless installed + enabled. */}
-      <FloatingPet />
+      {/* Petdex floating mascot — renders nothing unless installed + enabled.
+          Never in the HUD: that window is the chat bar and nothing else. */}
+      {!isHudWindow() && <FloatingPet />}
 
-      {/* Single persistent xterm host chasing the terminal pane's slot rect. */}
-      <PersistentTerminal onAddSelectionToChat={composer.addTerminalSelectionAttachment} />
+      {/* Single persistent xterm host chasing the terminal pane's slot rect.
+          The HUD has no terminal pane, so it has nothing to chase. */}
+      {!isHudWindow() && <PersistentTerminal onAddSelectionToChat={composer.addTerminalSelectionAttachment} />}
     </ContribWiringContext.Provider>
   )
 }

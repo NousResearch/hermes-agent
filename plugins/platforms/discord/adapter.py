@@ -23,16 +23,38 @@ import subprocess
 import tempfile
 import threading
 import time
+import traceback
 from collections import defaultdict
 from contextlib import suppress
 from typing import Callable, Dict, List, Optional, Any, Tuple
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 from agent.async_utils import (
     consume_detached_task_result as _consume_background_task_result,
 )
+from agent.display import ToolPreview
 
 logger = logging.getLogger(__name__)
+
+_DISCORD_MARKDOWN_LINK_LABEL_RE = re.compile(r"([\\\[\]])")
+_DISCORD_URL_LABEL_SCHEME_RE = re.compile(r"^https?://", re.IGNORECASE)
+
+
+def _format_discord_markdown_link(label: str, url: str) -> str:
+    """Return a Discord Markdown link whose label is not itself a URL.
+
+    Discord gives URL-shaped link labels their own link behavior. A truncated
+    URL label can therefore win over the Markdown destination and remain a
+    broken link. Dropping only the scheme keeps the preview recognizable while
+    leaving one unambiguous click target.
+
+    The destination is wrapped in angle brackets (``<url>``) so Discord does
+    not unfurl an OG-preview embed under every tool progress bubble.
+    """
+    label = _DISCORD_URL_LABEL_SCHEME_RE.sub("", label, count=1)
+    escaped_label = _DISCORD_MARKDOWN_LINK_LABEL_RE.sub(r"\\\1", label)
+    escaped_url = quote(url, safe=":/?#[]@!$&'*+,;=%")
+    return f"[{escaped_label}](<{escaped_url}>)"
 
 
 class _Snowflake:
@@ -97,7 +119,6 @@ _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
     ),
     re.compile(r"^\s*♻️?\s+Gateway\s+(?:restarted successfully|online\b)[\s\S]*$", re.IGNORECASE),
 )
-
 try:
     import discord
     from discord import Message as DiscordMessage, Intents
@@ -121,7 +142,11 @@ except ImportError:
 
 from gateway.config import Platform, PlatformConfig
 
-from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets
+from gateway.platforms.helpers import (
+    MessageDeduplicator,
+    ThreadParticipationTracker,
+    convert_table_to_bullets,
+)
 from utils import atomic_json_write, env_float, env_int
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -405,6 +430,17 @@ def _profile_scoped_config_load() -> bool:
         return bool(is_multiplex_active() and current_secret_scope() is not None)
     except Exception:
         return False
+
+
+def discord_deps_present() -> bool:
+    """PASSIVE probe: is discord.py importable right now?
+
+    Registry ``check_fn`` — called from status displays and config loading,
+    so it must never install anything.  The ACTIVE lazy-installer
+    (``check_discord_requirements``) is registered as ``ensure_deps_fn``
+    and runs from ``create_adapter()`` when this returns False (#79812).
+    """
+    return DISCORD_AVAILABLE
 
 
 def check_discord_requirements() -> bool:
@@ -838,34 +874,37 @@ class VoiceReceiver:
     @staticmethod
     def pcm_to_wav(pcm_data: bytes, output_path: str,
                    src_rate: int = 48000, src_channels: int = 2):
-        """Convert raw PCM to 16kHz mono WAV via ffmpeg."""
-        with tempfile.NamedTemporaryFile(suffix=".pcm", delete=False) as f:
-            f.write(pcm_data)
-            pcm_path = f.name
-        try:
-            from hermes_cli._subprocess_compat import windows_hide_flags
+        """Convert raw PCM to 16kHz mono WAV via ffmpeg.
 
-            subprocess.run(
-                [
-                    resolve_ffmpeg_executable(), "-y", "-loglevel", "error",
-                    "-f", "s16le",
-                    "-ar", str(src_rate),
-                    "-ac", str(src_channels),
-                    "-i", pcm_path,
-                    "-ar", "16000",
-                    "-ac", "1",
-                    output_path,
-                ],
-                check=True,
-                timeout=10,
-                stdin=subprocess.DEVNULL,
-                creationflags=windows_hide_flags(),
-            )
-        finally:
-            try:
-                os.unlink(pcm_path)
-            except OSError:
-                pass
+        The PCM is fed straight to ffmpeg's stdin, which avoids staging it in a
+        temp file on every utterance. The WAV is still written to *output_path*
+        rather than captured from stdout: ffmpeg cannot seek on a pipe, so a
+        piped WAV carries placeholder (0xFFFFFFFF) RIFF/data sizes that make
+        strict readers misreport the length.
+        """
+        from hermes_cli._subprocess_compat import windows_hide_flags
+
+        subprocess.run(
+            [
+                resolve_ffmpeg_executable(), "-y", "-loglevel", "error",
+                "-f", "s16le",
+                "-ar", str(src_rate),
+                "-ac", str(src_channels),
+                "-i", "pipe:0",
+                "-ar", "16000",
+                "-ac", "1",
+                output_path,
+            ],
+            input=pcm_data,
+            check=True,
+            timeout=10,
+            # Capture ffmpeg's -loglevel error output so a failure's
+            # CalledProcessError carries the actual message (parity with
+            # tools/transcription_tools' ffmpeg call sites) instead of
+            # "returned non-zero exit status N" with stderr detached.
+            stderr=subprocess.PIPE,
+            creationflags=windows_hide_flags(),
+        )
 
 
 def _read_dm_role_auth_guild() -> Optional[int]:
@@ -973,6 +1012,13 @@ class DiscordAdapter(BasePlatformAdapter):
     # a hard two-minute ceiling.
     PLAYBACK_TIMEOUT = 120
     PLAYBACK_TIMEOUT_PADDING = 30
+
+    def format_tool_preview(self, preview: ToolPreview) -> str:
+        """Keep a truncated URL preview clickable in Discord markdown."""
+        if not preview.url:
+            return preview.text
+
+        return _format_discord_markdown_link(preview.text, preview.url)
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.DISCORD)
@@ -1739,6 +1785,19 @@ class DiscordAdapter(BasePlatformAdapter):
         # Cancel the liveness probe first so it can't fire a spurious fatal
         # error / reconnect while we're intentionally tearing the adapter down.
         await self._cancel_liveness_task()
+        # Clean up all active voice connections *before* cancelling the bot task.
+        # leave_voice_channel() ends in `await vc.disconnect()`, and discord.py's
+        # VoiceClient.disconnect() sends a voice state update over the main
+        # gateway websocket and then waits for the voice socket to close.  The
+        # bot task is the loop running that gateway connection, so cancelling it
+        # first leaves the handshake with no transport: it can never complete and
+        # blocks until the caller's shutdown timeout fires.
+        for guild_id in list(self._voice_clients.keys()):
+            try:
+                await self.leave_voice_channel(guild_id)
+            except Exception as e:  # pragma: no cover - defensive logging
+                logger.debug("[%s] Error leaving voice channel %s: %s", self.name, guild_id, e)
+
         # Cancel the bot task before closing the client.  If connect() timed out
         # and returned False, the background client.start() task may still be
         # running; calling client.close() alone is not enough to stop it because
@@ -1746,12 +1805,6 @@ class DiscordAdapter(BasePlatformAdapter):
         # WebSocket handshake is in flight.  Explicitly cancelling the task here
         # ensures the zombie client cannot receive or dispatch any further events.
         await self._cancel_bot_task()
-        # Clean up all active voice connections before closing the client
-        for guild_id in list(self._voice_clients.keys()):
-            try:
-                await self.leave_voice_channel(guild_id)
-            except Exception as e:  # pragma: no cover - defensive logging
-                logger.debug("[%s] Error leaving voice channel %s: %s", self.name, guild_id, e)
 
         if self._client:
             try:
@@ -2952,6 +3005,36 @@ class DiscordAdapter(BasePlatformAdapter):
             elif outcome == ProcessingOutcome.FAILURE:
                 await self._add_reaction(message, "❌")
 
+    @staticmethod
+    def _message_reference_from_ids(message_id, channel) -> "discord.MessageReference":
+        """ids-built reply reference — no fetch_message round trip.
+
+        Discord resolves message_reference from the ids alone, and
+        fail_if_not_exists=False keeps sends to deleted targets working
+        exactly as the fetched form did (a dead target degrades to the
+        send-side 10008 retry instead of a fetch failure).
+        """
+        return discord.MessageReference(
+            message_id=int(message_id),
+            channel_id=getattr(channel, "id", None),
+            guild_id=getattr(getattr(channel, "guild", None), "id", None),
+            fail_if_not_exists=False,
+        )
+
+    def _reply_reference_for_send(self, reply_to, channel):
+        """Reply anchor for send paths, honoring reply_to_mode.
+
+        Mirrors telegram's _reply_to_message_id_for_send: raw reply_to in,
+        platform send-time anchor out, ``off`` mode suppressed.
+        """
+        if not reply_to or self._reply_to_mode == "off":
+            return None
+        try:
+            return self._message_reference_from_ids(reply_to, channel)
+        except (ValueError, TypeError) as e:
+            logger.debug("Could not build reply-to reference: %s", e)
+            return None
+
     async def send(
         self,
         chat_id: str,
@@ -2969,6 +3052,29 @@ class DiscordAdapter(BasePlatformAdapter):
         """
         if not self._client:
             return SendResult(success=False, error="Not connected")
+        if not (content or "").strip():
+            logger.warning(
+                "[%s] Dropped empty message to chat=%s (caller bug). Call site:\n%s",
+                self.name,
+                chat_id,
+                "".join(traceback.format_stack(limit=12)[:-1]),
+            )
+            result = SendResult(
+                success=False,
+                error="Refusing to send empty message",
+            )
+            # Mirror the exception path's recovery bookkeeping. Missed-message
+            # backfill decides what to replay from this table, so a dropped
+            # final reply must be recorded as failed — otherwise the reply is
+            # both never sent and never retried.
+            await asyncio.to_thread(
+                self._record_discord_response,
+                reply_to=reply_to,
+                result=result,
+                content=content,
+                final=bool(metadata and metadata.get("notify")),
+            )
+            return result
 
         try:
             # Determine target channel: thread_id in metadata takes precedence.
@@ -3010,17 +3116,8 @@ class DiscordAdapter(BasePlatformAdapter):
             chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
 
             message_ids = []
-            reference = None
-
-            if reply_to and self._reply_to_mode != "off":
-                try:
-                    ref_msg = await channel.fetch_message(int(reply_to))
-                    if hasattr(ref_msg, "to_reference"):
-                        reference = ref_msg.to_reference(fail_if_not_exists=False)
-                    else:
-                        reference = ref_msg
-                except Exception as e:
-                    logger.debug("Could not fetch reply-to message: %s", e)
+            # Build the reference from ids — no fetch_message round trip.
+            reference = self._reply_reference_for_send(reply_to, channel)
 
             for i, chunk in enumerate(chunks):
                 if self._reply_to_mode == "all":
@@ -3261,7 +3358,7 @@ class DiscordAdapter(BasePlatformAdapter):
             channel = self._client.get_channel(int(chat_id))
             if not channel:
                 channel = await self._client.fetch_channel(int(chat_id))
-            msg = await channel.fetch_message(int(message_id))
+            msg = channel.get_partial_message(int(message_id))
             formatted = self.format_message(content)
 
             _preview_key = (str(chat_id), str(message_id))
@@ -3401,6 +3498,12 @@ class DiscordAdapter(BasePlatformAdapter):
                     reference = prev_msg.to_reference(fail_if_not_exists=False)
                 except Exception:
                     reference = None
+            elif getattr(prev_msg, "id", None):
+                # Duck-typed prior message without to_reference (real
+                # discord.py PartialMessage HAS to_reference, so this is
+                # belt-and-suspenders): build the reference from ids so
+                # overflow continuations stay threaded.
+                reference = self._message_reference_from_ids(prev_msg.id, channel)
             try:
                 sent = await channel.send(content=chunk, reference=reference)
             except Exception as send_err:
@@ -3696,16 +3799,8 @@ class DiscordAdapter(BasePlatformAdapter):
 
             filename = os.path.basename(audio_path)
 
-            reference = None
-            if reply_to and self._reply_to_mode != "off":
-                try:
-                    ref_msg = await channel.fetch_message(int(reply_to))
-                    if hasattr(ref_msg, "to_reference"):
-                        reference = ref_msg.to_reference(fail_if_not_exists=False)
-                    else:
-                        reference = ref_msg
-                except Exception as e:
-                    logger.debug("Could not fetch voice reply-to message: %s", e)
+            # ids-only reference — same no-fetch rationale as the text path.
+            reference = self._reply_reference_for_send(reply_to, channel)
 
             with open(audio_path, "rb") as f:
                 file_data = f.read()
@@ -4462,7 +4557,18 @@ class DiscordAdapter(BasePlatformAdapter):
                     transcript=transcript,
                 )
         except Exception as e:
-            logger.warning("Voice input processing failed: %s", e, exc_info=True)
+            # CalledProcessError from pcm_to_wav carries ffmpeg's captured
+            # stderr — surface it, or the log only says "exit status N".
+            _ff_err = getattr(e, "stderr", None)
+            if _ff_err:
+                if isinstance(_ff_err, bytes):
+                    _ff_err = _ff_err.decode("utf-8", "replace")
+                logger.warning(
+                    "Voice input processing failed: %s (ffmpeg: %s)",
+                    e, _ff_err.strip(), exc_info=True,
+                )
+            else:
+                logger.warning("Voice input processing failed: %s", e, exc_info=True)
         finally:
             try:
                 os.unlink(wav_path)
@@ -9467,7 +9573,14 @@ async def _standalone_send(
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
 
-    token = (getattr(pconfig, "token", None) or os.getenv("DISCORD_BOT_TOKEN", "")).strip()
+    token = (getattr(pconfig, "token", None) or "").strip()
+    if not token:
+        # Profile-scoped read: under multiplex the process env may hold a
+        # different profile's bot token, so honor the secret scope's verdict
+        # (scoped miss ⇒ no token; unscoped multiplex ⇒ UnscopedSecretError).
+        from agent.secret_scope import get_secret
+
+        token = (get_secret("DISCORD_BOT_TOKEN", "") or "").strip()
     if not token:
         return {"error": "Discord standalone send: DISCORD_BOT_TOKEN is not set"}
 
@@ -10004,7 +10117,8 @@ def register(ctx) -> None:
         name="discord",
         label="Discord",
         adapter_factory=_build_adapter,
-        check_fn=check_discord_requirements,
+        check_fn=discord_deps_present,
+        ensure_deps_fn=check_discord_requirements,
         is_connected=_is_connected,
         required_env=["DISCORD_BOT_TOKEN"],
         install_hint="Run `hermes setup` to install Discord support.",

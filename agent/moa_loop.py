@@ -12,6 +12,7 @@ import hashlib
 import logging
 import re
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, wait as _futures_wait
 from types import SimpleNamespace
 from typing import Any
@@ -151,6 +152,24 @@ def _redact_trace_accounting(acct: Any) -> Any:
     )
 
 
+# Cold-start caches. A MoA preset switch used to re-resolve the full
+# config + preset + every slot's provider runtime on EACH create() call
+# (once per tool-loop iteration), serially before the parallel fan-out could
+# start — adding 5-30s of "frozen" latency on complex presets
+# (#66793). The preset structure is immutable for the life of a turn, so
+# cache both the resolved preset and each (provider, model) runtime.
+_preset_cache_lock = threading.Lock()
+_preset_cache: dict[tuple, Any] = {}
+
+_runtime_cache_lock = threading.Lock()
+_runtime_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+
+# Runtime entries go stale when providers/credentials change (key rotation,
+# base_url edits). Deliberately short-lived: 300s collapses the per-iteration
+# re-resolution inside a turn while bounding credential staleness between
+# turns — the non-MoA path picks up rotated keys immediately, this path
+# within 5 minutes.
+_RUNTIME_CACHE_TTL_SECONDS = 300.0
 
 # Upper bound on concurrent reference-model calls. References are independent
 # advisory calls (no tools, no inter-dependence), so we fan them out the same
@@ -322,34 +341,33 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
     api_key resolver the CLI, gateway, and delegate_task all use), so the slot
     gets its provider's real API surface — e.g. MiniMax → anthropic_messages,
     GPT-5/o-series → max_completion_tokens, custom endpoints → their base_url.
-
     Returns the kwargs to pass through to ``call_llm`` (provider/model plus the
     resolved base_url/api_key when available). Falls back to the bare
     provider/model on any resolution error so a misconfigured slot still
     attempts the call rather than aborting the whole MoA turn.
+
+    The resolved runtime is cached per (provider, model) with a short TTL
+    (``_RUNTIME_CACHE_TTL_SECONDS``): the resolution does real I/O (catalog
+    query + config read) that used to run serially per create() call before
+    the parallel fan-out could start — the dominant source of MoA cold-start
+    latency (#66793). The TTL bounds credential staleness (key rotation,
+    base_url edits) instead of caching for the process lifetime.
     """
     provider = str(slot.get("provider") or "").strip()
     model = str(slot.get("model") or "").strip()
+    cache_key = (provider, model)
+    now = time.monotonic()
+    with _runtime_cache_lock:
+        entry = _runtime_cache.get(cache_key)
+    if entry is not None:
+        stamped_at, cached = entry
+        if now - stamped_at < _RUNTIME_CACHE_TTL_SECONDS:
+            return cached
     out: dict[str, Any] = {"provider": provider, "model": model}
     try:
         from hermes_cli.runtime_provider import resolve_runtime_provider
 
         rt = resolve_runtime_provider(requested=provider, target_model=model)
-        # Forward the resolved endpoint through to call_llm unconditionally.
-        # call_llm's _resolve_task_provider_model() is the single chokepoint that
-        # decides whether an explicit base_url collapses a call to the generic
-        # ``custom`` route or keeps the provider's real identity: it preserves
-        # identity for any first-class provider (via
-        # _preserve_provider_with_base_url, a provider-catalog capability check),
-        # so provider branches that add auth refresh / request metadata /
-        # request-shape adapters — anthropic OAuth (Bearer + anthropic-beta),
-        # openai-codex Responses wrapping + Cloudflare headers, xai-oauth,
-        # bedrock SigV4 signing, nous Portal tags — still fire. Those branches
-        # re-resolve their own credentials by name and ignore a forwarded
-        # base_url/api_key, so forwarding is safe even for a placeholder key
-        # (bedrock's "aws-sdk"). We used to maintain a name-preservation set here
-        # too; that duplicated the chokepoint and drifted out of sync, so the
-        # single source of truth now lives in call_llm.
         if rt.get("base_url"):
             out["base_url"] = rt["base_url"]
         if rt.get("api_key"):
@@ -362,7 +380,14 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
             if isinstance(extra_body, dict) and extra_body:
                 out["extra_body"] = dict(extra_body)
     except Exception as exc:  # pragma: no cover - defensive
-        logger.debug("MoA slot runtime resolution failed for %s: %s", _slot_label(slot), exc)
+        logger.debug("MoA slot runtime resolution failed for %s: %s",
+                     _slot_label(slot), exc)
+        # Never cache a fallback-shaped result: a transient resolution error
+        # (config mid-write, catalog hiccup) would otherwise pin the bare
+        # provider/model kwargs for a full TTL.
+        return out
+    with _runtime_cache_lock:
+        _runtime_cache[cache_key] = (now, out)
     return out
 
 
@@ -383,6 +408,8 @@ def _merge_slot_extra_body(
 def _maybe_apply_moa_cache_control(
     messages: list[dict[str, Any]],
     runtime: dict[str, Any],
+    *,
+    cache_disabled: bool | None = None,
 ) -> list[dict[str, Any]]:
     """Decorate an advisor or aggregator request with cache_control when its
     route honors it.
@@ -396,17 +423,27 @@ def _maybe_apply_moa_cache_control(
 
     Returns the messages unchanged on any resolution error or when the
     policy says the route doesn't honor markers.
+
+    ``cache_disabled`` (or the live config when omitted) is stamped onto the
+    policy stub so ``prompt_caching.cache_ttl: off`` is not bypassed by the
+    blank-agent pattern (#76085).
     """
     try:
-        from types import SimpleNamespace
-
-        from agent.agent_runtime_helpers import anthropic_prompt_cache_policy
+        from agent.agent_runtime_helpers import (
+            anthropic_prompt_cache_policy,
+            blank_cache_policy_stub,
+        )
         from agent.prompt_caching import apply_anthropic_cache_control
 
+        # Prefer an explicit kwarg, then a snapshot on the runtime dict
+        # (threaded from the live agent), else config via the stub factory.
+        if cache_disabled is None and "_cache_disabled" in runtime:
+            cache_disabled = runtime.get("_cache_disabled")
+
         # The policy function reads agent.* only as fallbacks for kwargs we
-        # don't pass; provide a stub so the slot is judged purely on its own
-        # resolved runtime.
-        stub = SimpleNamespace(provider="", base_url="", api_mode="", model="")
+        # don't pass; blank_cache_policy_stub is the only sanctioned stub
+        # so _cache_disabled cannot be left off again (#76085).
+        stub = blank_cache_policy_stub(cache_disabled)
         should_cache, native_layout = anthropic_prompt_cache_policy(
             stub,
             provider=runtime.get("provider") or "",
@@ -432,6 +469,7 @@ def _run_reference(
     max_tokens: int | None = None,
     reference_timeout: float | None = None,
     context_length_cache: Any = None,
+    cache_disabled: bool | None = None,
 ) -> tuple[str, str, Any]:
     """Call one reference model and return ``(label, text, accounting)``.
 
@@ -493,7 +531,12 @@ def _run_reference(
         # caching is opt-in per request. OpenAI-family advisors are untouched
         # (their caching is automatic; markers are ignored harmlessly, but we
         # only decorate when the policy says the route honors them).
-        messages = _maybe_apply_moa_cache_control(messages, runtime)
+        # Pin the live agent disable onto the runtime so advisor decoration
+        # tracks conversation state, not a fresh config re-read (#76085).
+        cache_runtime = runtime
+        if cache_disabled is not None:
+            cache_runtime = {**runtime, "_cache_disabled": cache_disabled}
+        messages = _maybe_apply_moa_cache_control(messages, cache_runtime)
         # Per-slot max_tokens takes precedence over the preset-level
         # reference_max_tokens passed in by the caller. This lets each
         # reference model have its own output cap independently.
@@ -797,6 +840,9 @@ def _run_references_parallel(
     # instead of re-probing metadata sources per reference (dict get/set is
     # GIL-atomic; a rare duplicate probe on a first-use race is harmless).
     _ctx_len_cache: dict[tuple[str, str], int | None] = {}
+    cache_disabled = (
+        getattr(agent, "_cache_disabled", None) if agent is not None else None
+    )
     try:
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
@@ -815,6 +861,7 @@ def _run_references_parallel(
                     max_tokens=max_tokens,
                     reference_timeout=reference_timeout,
                     context_length_cache=_ctx_len_cache,
+                    cache_disabled=cache_disabled,
                 )
             ] = idx
 
@@ -1262,6 +1309,19 @@ def aggregate_moa_context(
 
     agg_label = _slot_label(aggregator)
     agg_runtime = _slot_runtime(aggregator)
+    # Pin the live agent disable onto synthesis decoration so mid-session
+    # config flips cannot re-enable markers on this path alone (#76085).
+    # Same not-None guard as _run_reference: stamping None would be a no-op
+    # (present-None falls through to the config fallback anyway).
+    agg_cache_runtime = agg_runtime
+    _agg_cache_disabled = (
+        getattr(agent, "_cache_disabled", None) if agent is not None else None
+    )
+    if _agg_cache_disabled is not None:
+        agg_cache_runtime = {
+            **agg_runtime,
+            "_cache_disabled": _agg_cache_disabled,
+        }
     try:
         # Same cache_control decoration as _run_reference's advisor calls
         # (see _maybe_apply_moa_cache_control) — this synthesis call is a
@@ -1274,7 +1334,7 @@ def aggregate_moa_context(
         # breakpoints, even when the resolved aggregator slot is a
         # cache-honoring route (e.g. Claude on OpenRouter/native Anthropic).
         agg_messages = _maybe_apply_moa_cache_control(
-            [{"role": "user", "content": synth_prompt}], agg_runtime
+            [{"role": "user", "content": synth_prompt}], agg_cache_runtime
         )
         response = call_llm(
             task="moa_aggregator",
@@ -1673,6 +1733,16 @@ class MoAChatCompletions:
             # plan_cache_sections_for_destination never mutates its inputs
             # and always returns request-local copies, so the prepared
             # state stays canonical.
+            # Tri-state: only pass a bool when a live agent snapshot exists.
+            # Prepared-aggregator facades built via __new__ have no _agent;
+            # getattr(self._agent, ...) raises and bool(None-agent) would
+            # force False and suppress the planner's config fallback (#76085).
+            _agent = getattr(self, "_agent", None)
+            _cache_disabled = (
+                getattr(_agent, "_cache_disabled", None)
+                if _agent is not None
+                else None
+            )
             agg_messages, tools = plan_cache_sections_for_destination(
                 planning_messages,
                 tools,
@@ -1680,6 +1750,7 @@ class MoAChatCompletions:
                 base_url=agg_runtime.get("base_url") or "",
                 api_mode=agg_runtime.get("api_mode") or "",
                 model=agg_runtime.get("model") or "",
+                cache_disabled=_cache_disabled,
             )
             if guidance:
                 _attach_reference_guidance(agg_messages, str(guidance))
@@ -1784,11 +1855,35 @@ class MoAChatCompletions:
                 raise TypeError("_moa_prepared_request must be a dict")
             return self._call_prepared_aggregator(prepared_request, api_kwargs)
 
-        from hermes_cli.config import load_config
+        from hermes_cli.config import get_config_path, load_config
         from hermes_cli.moa_config import resolve_moa_preset
 
+        # Resolve the preset once per (config st_mtime_ns, preset_name).
+        # resolve_moa_preset re-normalizes + re-validates the whole moa
+        # config block on every call, and create() runs once per tool-loop
+        # iteration — a serial cold-start cost before the parallel fan-out
+        # can begin (#66793). Keyed on the config FILE's mtime_ns (not a
+        # config-object attribute, which load_config()'s dicts don't carry),
+        # so a config edit invalidates on the next call.
+        try:
+            _cfg_stamp = get_config_path().stat().st_mtime_ns
+        except OSError:
+            _cfg_stamp = None
+        # load_config() is itself (mtime_ns, size)-cached upstream, so this
+        # read is cheap; the expensive part this cache skips is
+        # resolve_moa_preset's re-normalization + re-validation.
         _moa_raw = load_config().get("moa") or {}
-        preset = resolve_moa_preset(_moa_raw, self.preset_name)
+        preset_cache_key = (_cfg_stamp, self.preset_name)
+        preset = None
+        if _cfg_stamp is not None:
+            with _preset_cache_lock:
+                preset = _preset_cache.get(preset_cache_key)
+        if preset is None:
+            preset = resolve_moa_preset(_moa_raw, self.preset_name)
+            if _cfg_stamp is not None:
+                with _preset_cache_lock:
+                    _preset_cache.clear()  # one live config stamp at a time
+                    _preset_cache[preset_cache_key] = preset
         # Privacy filter mode: '' (off, default) | 'display' | 'full'. See
         # coerce_privacy_filter / the pattern block at the top of this module.
         # Remembered on self so _call_prepared_aggregator (which may run on a

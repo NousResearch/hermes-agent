@@ -151,6 +151,84 @@ function loadPersistedDraftTexts(): [string, SessionDraft][] {
 
 const draftsBySession = new Map<string, SessionDraft>(loadPersistedDraftTexts())
 
+/**
+ * Re-read the persisted drafts written by ANOTHER window into this one's map.
+ *
+ * Drafts are per-renderer state backed by shared localStorage, and the map
+ * above is read exactly once at module load. Two windows on the same session
+ * (HUD mode ⇄ the app window) therefore diverge the moment either one types:
+ * whichever window mounted first keeps its stale copy forever, so text typed
+ * in the HUD is simply gone when you return to the app.
+ *
+ * Merge, don't clobber — the local map may hold attachments (never persisted)
+ * that the incoming text-only snapshot can't know about.
+ */
+export function reloadPersistedDrafts(): void {
+  const incoming = new Map(loadPersistedDraftTexts())
+
+  for (const [key, draft] of incoming) {
+    const local = draftsBySession.get(key)
+    draftsBySession.set(key, local?.attachments.length ? { ...local, text: draft.text } : draft)
+  }
+
+  // A key that vanished from storage was cleared (sent) in the other window.
+  for (const key of [...draftsBySession.keys()]) {
+    if (!incoming.has(key)) {
+      draftsBySession.delete(key)
+    }
+  }
+}
+
+// localStorage `storage` events fire across Electron BrowserWindows of the
+// same origin, so the other window's write is the sync signal.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', event => {
+    if (event.key === SESSION_DRAFTS_STORAGE_KEY) {
+      reloadPersistedDrafts()
+    }
+  })
+}
+
+/**
+ * Push a composer's live text into the shared stash (`flush`), or repaint it
+ * from the stash (`reload`).
+ *
+ * Both halves of the HUD handoff need this. The stash is the only draft state
+ * two windows share, but a mounted composer only consults it when its session
+ * scope changes — so entering HUD mode has to flush the app window's in-editor
+ * text down to the stash before the HUD boots and reads it, and leaving has to
+ * repaint the app's editor from whatever the HUD left behind (usually empty,
+ * because the HUD sent it).
+ *
+ * Dispatched synchronously, unlike the focus bus: the flush must complete
+ * before the HUD window is created.
+ */
+const DRAFT_SYNC_EVENT = 'hermes:composer-draft-sync'
+
+export type ComposerDraftSyncMode = 'flush' | 'reload'
+
+interface ComposerDraftSyncDetail {
+  mode: ComposerDraftSyncMode
+  target: string
+}
+
+export function requestComposerDraftSync(mode: ComposerDraftSyncMode, target = 'main'): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent<ComposerDraftSyncDetail>(DRAFT_SYNC_EVENT, { detail: { mode, target } }))
+  }
+}
+
+export function onComposerDraftSyncRequest(handler: (detail: ComposerDraftSyncDetail) => void): () => void {
+  if (typeof window === 'undefined') {
+    return () => undefined
+  }
+
+  const listener = (event: Event) => handler((event as CustomEvent<ComposerDraftSyncDetail>).detail)
+  window.addEventListener(DRAFT_SYNC_EVENT, listener)
+
+  return () => window.removeEventListener(DRAFT_SYNC_EVENT, listener)
+}
+
 function persistDraftTexts() {
   try {
     const entries = [...draftsBySession]

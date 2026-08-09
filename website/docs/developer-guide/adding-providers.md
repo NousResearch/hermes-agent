@@ -38,6 +38,10 @@ The important abstraction is `api_mode`.
 - Anthropic uses `anthropic_messages`.
 - A new non-OpenAI protocol usually means adding a new adapter and a new `api_mode` branch.
 
+### Tool-call wire format
+
+Hermes stores conversation history in the OpenAI chat-completions shape internally, so the `chat_completions` transport's `convert_messages` / `convert_tools` (`agent/transports/chat_completions.py`) are near-identity, and every other transport converts *from* that shape into its native protocol. The canonical reference for the shape — `tools` definitions with JSON-schema `parameters`, assistant `tool_calls` entries with stringified `function.arguments`, and `role: "tool"` result messages keyed by `tool_call_id` — is the [OpenAI chat completions API reference](https://platform.openai.com/docs/api-reference/chat/create). When you write a native adapter, that page defines the input side of your conversion; your provider's docs define the output side.
+
 ## Choose the implementation path first
 
 ### Path A — OpenAI-compatible provider

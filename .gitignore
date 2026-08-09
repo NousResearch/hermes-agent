@@ -145,6 +145,9 @@ docs/superpowers/*
 
 # Persistent dev sandbox dir (scripts/dev-sandbox.sh --persistent)
 .hermes-sandbox/
+# Sandbox dirs used by the install/update E2E (tests/install/). The suffix is
+# the route name, so each route gets its own tree and two can run at once.
+.hermes-sandbox-e2e*/
 
 # Interrupted-update breadcrumb + recovery lock written next to the shared venv
 # by `hermes update` / launch-time self-heal. Runtime state, never a code change

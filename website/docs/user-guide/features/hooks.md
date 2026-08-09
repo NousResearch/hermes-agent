@@ -6,15 +6,16 @@ description: "Run custom code at key lifecycle points — log activity, send ale
 
 # Event Hooks
 
-Hermes has three hook systems that run custom code at key lifecycle points:
+Hermes has four hook systems that run custom code at key lifecycle points:
 
 | System | Registered via | Runs in | Use case |
 |--------|---------------|---------|----------|
 | **[Gateway hooks](#gateway-event-hooks)** | `HOOK.yaml` + `handler.py` in `~/.hermes/hooks/` | Gateway only | Logging, alerts, webhooks |
 | **[Plugin hooks](#plugin-hooks)** | `ctx.register_hook()` in a [plugin](/user-guide/features/plugins) | CLI + Gateway | Tool interception, metrics, guardrails |
 | **[Shell hooks](#shell-hooks)** | `hooks:` block in `~/.hermes/config.yaml` pointing at shell scripts | CLI + Gateway | Drop-in scripts for blocking, auto-formatting, context injection |
+| **[Outbound webhooks](#outbound-webhooks)** | `hooks.outbound:` list in `~/.hermes/config.yaml` | CLI + Gateway | Push signed lifecycle events to external HTTP endpoints — CI, dashboards, other agents |
 
-All three systems are non-blocking — errors in any hook are caught and logged, never crashing the agent.
+All four systems are non-blocking — errors in any hook are caught and logged, never crashing the agent.
 
 ## Gateway Event Hooks
 
@@ -1277,6 +1278,11 @@ def my_callback(
 
 **Use cases:** Apply a personality/vocabulary transform (pirate-speak, Spongebob), redact user-specific identifiers from the final text, append a project-specific signature footer, enforce a house style guide without burning tokens on SOUL instructions.
 
+When CLI streaming is enabled, an append-only transform is printed after the
+streamed body. A transform that replaces the response is printed in full after
+the streamed body, labeled as a post-stream transformation, so replacement
+content is never silently lost.
+
 ```python
 import os, re
 
@@ -1328,11 +1334,13 @@ hooks:
     - matcher: "<regex>"         # Optional; used for pre/post_tool_call only
       command: "<shell command>" # Required; runs via shlex.split, shell=False
       timeout: <seconds>         # Optional; default 60, capped at 300
+      fail_closed: <bool>        # Optional; default false. pre_tool_call only.
+                                 # `failClosed` also accepted (Cursor/Claude Code compat)
 
 hooks_auto_accept: false         # See "Consent model" below
 ```
 
-Event names must be one of the [plugin hook events](#plugin-hooks); typos produce a "Did you mean X?" warning and are skipped. Unknown keys inside a single entry are ignored; missing `command` is a skip-with-warning. `timeout > 300` is clamped with a warning.
+Event names must be one of the [plugin hook events](#plugin-hooks); typos produce a "Did you mean X?" warning and are skipped. Unknown keys inside a single entry are ignored; missing `command` is a skip-with-warning. `timeout > 300` is clamped with a warning. `fail_closed: true` on an event other than `pre_tool_call` warns and is ignored (only blocking-capable events can fail closed).
 
 ### JSON wire protocol
 
@@ -1371,6 +1379,50 @@ Each time the event fires, Hermes spawns a subprocess for every matching hook (m
 ```
 
 Malformed JSON, non-zero exit codes, and timeouts log a warning but never abort the agent loop.
+
+### Exit code 2 = block (Claude Code / Cursor compatible)
+
+A `pre_tool_call` hook that exits with code **2** blocks the tool call even when its stdout carries no block JSON. The block message is resolved in priority order:
+
+1. stdout block JSON (`reason` / `message`), when present;
+2. the first 400 characters of stderr;
+3. a generic `"Blocked by shell hook."` default.
+
+So the simplest possible blocking hook is:
+
+```bash
+#!/usr/bin/env bash
+echo "policy violation: rm -rf is not permitted" >&2
+exit 2
+```
+
+For events whose block directive is not honored (everything except `pre_tool_call`), exit 2 is treated like any other non-zero exit: a warning is logged and stdout is still parsed.
+
+### Fail-open vs fail-closed
+
+By default shell hooks **fail open**: a spawn error, timeout, or unparseable stdout logs a warning and the action proceeds. That is the right default for observability hooks — but wrong for security gates. A crashed secret-scanner must not silently allow the tool call it was supposed to vet.
+
+Set `fail_closed: true` (or `failClosed: true`, the Cursor/Claude Code spelling) on a `pre_tool_call` entry to invert that:
+
+```yaml
+hooks:
+  pre_tool_call:
+    - matcher: "terminal|write_file|patch"
+      command: "~/.hermes/agent-hooks/secret-scan.sh"
+      timeout: 10
+      fail_closed: true
+```
+
+With `fail_closed: true`, each of these now **blocks** the tool call with `hook <command> failed closed: <reason>`:
+
+| Failure | Fail-open (default) | `fail_closed: true` |
+|---------|--------------------|--------------------|
+| Command not found / not executable | warn, proceed | **block** |
+| Timeout | warn, proceed | **block** |
+| Non-JSON stdout (e.g. a stack trace) | warn, proceed | **block** |
+| Clean exit, valid no-op JSON (`{}`) | proceed | proceed |
+
+`fail_closed` only applies to blocking-capable events (`pre_tool_call` today); setting it on any other event logs a warning at config-parse time and is ignored. `hermes hooks test` reflects these semantics — the `parsed` line shows exactly the block shape the dispatcher would receive.
 
 ### Worked examples
 
@@ -1507,3 +1559,89 @@ Shell hooks run with **your full user credentials** — same trust boundary as a
 ### Ordering and precedence
 
 Both Python plugin hooks and shell hooks flow through the same `invoke_hook()` dispatcher. Python plugins are registered first (`discover_and_load()`), shell hooks second (`register_from_config()`), so Python `pre_tool_call` block decisions take precedence in tie cases. The first valid block wins — the aggregator returns as soon as any callback produces `{"action": "block", "message": str}` with a non-empty message.
+
+## Outbound Webhooks
+
+Outbound webhooks are the push-side mirror of the [inbound webhook platform](/user-guide/messaging/webhooks): inbound webhooks wake Hermes when the world changes; outbound webhooks tell the world when Hermes does something. Configure a list of HTTP endpoints and the lifecycle events they care about, and Hermes POSTs a signed JSON payload to each endpoint whenever a matching event fires — no polling on the receiving end.
+
+Typical uses:
+
+- Notify a CI system or dashboard when an agent turn finishes (`on_session_end`)
+- Track subagent completions across a fleet (`subagent_stop`)
+- Feed tool activity into external monitoring (`post_tool_call` with a `matcher`)
+- Wake *another* Hermes instance: point the URL at that instance's inbound webhook
+
+### Configuration
+
+Add a `hooks.outbound:` list to `~/.hermes/config.yaml`:
+
+```yaml
+hooks:
+  outbound:
+    - name: ci-notify                       # optional label for logs
+      url: https://ci.example.com/hermes-events
+      events: [on_session_end, subagent_stop]
+      secret_env: HERMES_OUTBOUND_WEBHOOK_SECRET   # env var holding the HMAC secret
+      timeout: 10                           # per-attempt seconds (1–60)
+
+    - name: tool-monitor
+      url: https://metrics.example.com/hooks/hermes
+      events: [post_tool_call]
+      matcher: "terminal|delegate_task"     # regex, tool-scoped events only
+```
+
+Any event from the plugin-hook set is valid (`pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`, `on_session_start`, `on_session_end`, `subagent_start`, `subagent_stop`, ...). Malformed entries warn and are skipped — a broken webhook never crashes the agent. Changes take effect on the next CLI session / gateway restart.
+
+Secrets: prefer `secret_env` (the name of an environment variable, typically set in `~/.hermes/.env`) over an inline `secret:` literal, so the config file stays free of credentials. Entries without a secret are delivered unsigned (flagged as `UNSIGNED` by `hermes hooks list`).
+
+### Wire format
+
+Each firing POSTs a JSON body with the same top-level shape as shell hooks' stdin, plus delivery metadata:
+
+```json
+{
+  "hook_event_name": "on_session_end",
+  "tool_name": null,
+  "tool_input": null,
+  "session_id": "sess_abc123",
+  "cwd": "/home/user/project",
+  "extra": {"completed": true, "interrupted": false, "model": "...", "platform": "cli"},
+  "delivery_id": "3f2c9a...",
+  "timestamp": "2026-07-22T14:00:00Z"
+}
+```
+
+Headers:
+
+| Header | Value |
+|--------|-------|
+| `Content-Type` | `application/json` |
+| `X-Hermes-Event` | The hook event name |
+| `X-Hermes-Delivery` | Unique id per delivery — same value as `delivery_id` in the body |
+| `X-Hermes-Signature-256` | `sha256=<hex>` — HMAC-SHA256 of the raw body, GitHub-style; only present when a secret is configured |
+
+Verify the signature exactly as you would a GitHub webhook:
+
+```python
+import hashlib, hmac
+
+def verify(body: bytes, header: str, secret: str) -> bool:
+    expected = "sha256=" + hmac.new(secret.encode(), body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, header)
+```
+
+Because `delivery_id` and `timestamp` live **inside the signed body**, a verified receiver also gets replay protection for free:
+
+- **Dedupe** on `delivery_id` (or the matching `X-Hermes-Delivery` header) — remember recently seen ids and skip duplicates. Hermes retries failed deliveries once, so the same id can legitimately arrive twice.
+- **Reject stale events** by checking `timestamp` against your clock with a tolerance window (5 minutes is the common default). An attacker replaying a captured request can't forge a fresh timestamp without the secret.
+
+### Delivery semantics
+
+- **Fire-and-forget, off the hot path.** Events are serialized and queued instantly; a single background thread performs the HTTP POSTs. A slow or dead endpoint can never stall a tool call or an agent turn.
+- **Notify-only.** Unlike shell hooks, outbound webhooks cannot block tool calls or inject context — the response body is ignored. They observe, never steer.
+- **Bounded retries.** Connection errors and 5xx responses are retried once with backoff; 4xx responses are not retried (the receiver said the request itself is wrong). Failures are logged and dropped — delivery is best-effort, not guaranteed.
+- **Redirects are never followed.** A 3xx response is treated as a misconfiguration and logged — following a redirected POST would silently drop the signed payload. Point the `url` at the final endpoint.
+- **Bounded queue.** If the queue backs up (dead endpoint, event storm), new events are dropped with a warning rather than consuming unbounded memory.
+- **No consent prompt.** Outbound targets execute no code on your machine — they receive data at a URL you configured. `HERMES_SAFE_MODE=1` still skips registration, same as plugins and shell hooks. Note that payloads include tool inputs and event metadata, so only point targets at endpoints you trust, and prefer `https://`.
+
+`hermes hooks list` shows configured outbound targets alongside shell hooks, including whether each target is signed.

@@ -51,6 +51,7 @@ interface GatewaySettingsState {
   sshPort: number | null
   sshKeyPath: string
   sshRemoteHermesPath: string
+  sshRemoteProfile: string
 }
 
 const SSH_HOST_CUSTOM = '__custom__'
@@ -68,7 +69,8 @@ const EMPTY_STATE: GatewaySettingsState = {
   sshUser: '',
   sshPort: null,
   sshKeyPath: '',
-  sshRemoteHermesPath: ''
+  sshRemoteHermesPath: '',
+  sshRemoteProfile: ''
 }
 
 export function savedCloudConnectionUrl(config: Pick<GatewaySettingsState, 'mode' | 'remoteUrl'>): string {
@@ -413,7 +415,16 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     signingSeq.current += 1
     cloudConnectSeq.current += 1
     setLastTest(null)
-  }, [scope, state.mode, state.sshHost, state.sshUser, state.sshPort, state.sshKeyPath, state.sshRemoteHermesPath])
+  }, [
+    scope,
+    state.mode,
+    state.sshHost,
+    state.sshUser,
+    state.sshPort,
+    state.sshKeyPath,
+    state.sshRemoteHermesPath,
+    state.sshRemoteProfile
+  ])
 
   const oauthConnected = state.remoteOauthConnected
 
@@ -439,7 +450,10 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     sshUser: state.sshUser.trim() || undefined,
     sshPort: state.sshPort,
     sshKeyPath: state.sshKeyPath.trim() || undefined,
-    sshRemoteHermesPath: state.sshRemoteHermesPath.trim()
+    sshRemoteHermesPath: state.sshRemoteHermesPath.trim(),
+    // Preserve an intentional blank so an existing remote-profile mapping can
+    // be cleared instead of being mistaken for an omitted field.
+    sshRemoteProfile: state.sshRemoteProfile.trim()
   })
 
   const save = async (apply: boolean) => {
@@ -1424,6 +1438,20 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
             description={g.sshHermesPathDesc}
             title={g.sshHermesPathTitle}
           />
+          {scope !== null ? (
+            <ListRow
+              action={
+                <Input
+                  className={cn('h-8 font-mono', CONTROL_TEXT)}
+                  onChange={event => setState(current => ({ ...current, sshRemoteProfile: event.target.value }))}
+                  placeholder={scope}
+                  value={state.sshRemoteProfile}
+                />
+              }
+              description={g.sshRemoteProfileDesc}
+              title={g.sshRemoteProfileTitle}
+            />
+          ) : null}
         </div>
       ) : null}
 

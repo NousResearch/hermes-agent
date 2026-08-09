@@ -3,7 +3,14 @@ import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useSta
 
 import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
-import { type ComposerAttachment, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import {
+  type ComposerAttachment,
+  type ComposerDraftSyncMode,
+  onComposerDraftSyncRequest,
+  reloadPersistedDrafts,
+  stashSessionDraft,
+  takeSessionDraft
+} from '@/store/composer'
 import { isBrowsingHistory } from '@/store/composer-input-history'
 
 import {
@@ -390,6 +397,38 @@ export function useComposerDraft({
       }
     }
   }, [activeQueueSessionKey]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // The HUD handoff's two verbs. Entering HUD mode flushes this editor's text
+  // into the shared stash so the HUD's composer boots with it; leaving repaints
+  // from the stash so whatever the HUD typed (or sent, clearing it) is what the
+  // app window shows. The per-session swap effect above can't cover either one:
+  // the session scope doesn't change, so it never re-consults the stash.
+  const syncDraft = (mode: ComposerDraftSyncMode) => {
+    if (mode === 'flush') {
+      window.clearTimeout(draftPersistTimerRef.current)
+      pendingDraftPersistRef.current = null
+      stashAt(draftScopeRef.current, syncDraftFromEditor())
+
+      return
+    }
+
+    reloadPersistedDrafts()
+    const stashed = takeSessionDraft(draftScopeRef.current)
+    loadIntoComposer(stashed.text, stashed.attachments)
+  }
+
+  const syncDraftRef = useRef(syncDraft)
+  syncDraftRef.current = syncDraft
+
+  useEffect(
+    () =>
+      onComposerDraftSyncRequest(({ mode, target: requested }) => {
+        if (requested === target) {
+          syncDraftRef.current(mode)
+        }
+      }),
+    [target]
+  )
 
   // pagehide is load-bearing: React skips effect cleanups on reload, so Cmd+R
   // inside the debounce/rAF window would drop trailing keystrokes without this.

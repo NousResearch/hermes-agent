@@ -334,6 +334,29 @@ class TestSkillView:
         assert by_name["success"] is True
         assert "Step 1" in by_name["content"]
 
+    def test_registered_view_tracks_use_with_task_and_session(self, tmp_path):
+        from tools.skills_tool import _skill_view_with_bump
+
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("tools.skill_usage.bump_view") as bump_view,
+            patch("tools.skill_usage.bump_use") as bump_use,
+        ):
+            _make_skill(tmp_path, "my-skill")
+            raw = _skill_view_with_bump(
+                {"name": "my-skill"},
+                task_id="task-view",
+                session_id="session-view",
+            )
+
+        assert json.loads(raw)["success"] is True
+        bump_view.assert_called_once_with("my-skill")
+        bump_use.assert_called_once_with(
+            "my-skill",
+            task_id="task-view",
+            session_id="session-view",
+        )
+
 
     def test_view_reference_files(self, tmp_path):
         with patch("tools.skills_tool.SKILLS_DIR", tmp_path):

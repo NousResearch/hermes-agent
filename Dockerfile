@@ -41,14 +41,14 @@ RUN apt-get -o Acquire::Retries=3 update && \
     make install
 
 FROM ghcr.io/astral-sh/uv:0.11.6-python3.13-trixie@sha256:b3c543b6c4f23a5f2df22866bd7857e5d304b67a564f4feab6ac22044dde719b AS uv_source
-# Node 22 LTS source stage. Debian trixie's bundled nodejs is pinned to 20.x
-# which reached EOL in April 2026 — we copy node + npm + corepack from the
-# upstream node:22 image instead so we can stay on a supported LTS without
-# waiting for Debian 14 (forky, ~mid-2027).  Bookworm-based slim image used
-# so the produced binary links against glibc 2.36, which runs cleanly on
-# our Debian 13 (trixie, glibc 2.41) runtime.  Bumping to a new Node major
-# is a one-line ARG change; see #4977.
-FROM node:22-bookworm-slim@sha256:7af03b14a13c8cdd38e45058fd957bf00a72bbe17feac43b1c15a689c029c732 AS node_source
+# Node 26 source stage. Debian trixie's bundled nodejs is pinned to 20.x
+# which reached EOL in April 2026 — we copy node + npm from the upstream
+# node:26 image instead (Hermes pins its toolchain to Node 26 everywhere).
+# Bookworm-based slim image used so the produced binary links
+# against glibc 2.36, which runs cleanly on our Debian 13 (trixie, glibc
+# 2.41) runtime.  Bumping to a new Node major is a one-line ARG change; see
+# #4977.
+FROM node:26-bookworm-slim@sha256:9e6f9357d371591e32ab6f2d8a26d63bdd0d17c29eee3f4f3e7e454d9634bf73 AS node_source
 FROM debian:13.4
 
 # Disable Python stdout buffering to ensure logs are printed immediately.
@@ -70,7 +70,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # hermes process, the dashboard, and per-profile gateways.
 RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
-    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev procps git openssh-client docker-cli xz-utils && \
+    ca-certificates curl iputils-ping python3 python-is-python3 ripgrep ffmpeg gcc g++ make cmake python3-dev python3-venv libffi-dev libolm-dev libatomic1 procps git openssh-client docker-cli xz-utils && \
     rm -rf /var/lib/apt/lists/*
 
 # Prefer the fixed SQLite over Debian's vulnerable libsqlite3.so.0. Keep the
@@ -151,17 +151,20 @@ RUN useradd -u 10000 -m -d /opt/data hermes
 
 COPY --chmod=0755 --from=uv_source /usr/local/bin/uv /usr/local/bin/uvx /usr/local/bin/
 
-# Node 22 LTS: copy the node binary plus the bundled npm + corepack JS
-# installs from the upstream image.  npm and npx are recreated as symlinks
-# because they're symlinks in the source image (and need to live on PATH).
+# Node 26: copy the node binary plus the bundled npm JS install from the
+# upstream image.  npm and npx are recreated as symlinks because they're
+# symlinks in the source image (and need to live on PATH).
+#
+# No corepack: Node unbundled it upstream, so node:26 ships only npm in
+# /usr/local/lib/node_modules.  Nothing here needs it — no package.json
+# declares a `packageManager`, and no build step shells out to yarn or pnpm.
+#
 # See node_source stage at the top of the file for the version-bump
 # rationale (#4977).
 COPY --chmod=0755 --from=node_source /usr/local/bin/node /usr/local/bin/
 COPY --from=node_source /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
-COPY --from=node_source /usr/local/lib/node_modules/corepack /usr/local/lib/node_modules/corepack
 RUN ln -sf /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
-    ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
-    ln -sf /usr/local/lib/node_modules/corepack/dist/corepack.js /usr/local/bin/corepack
+    ln -sf /usr/local/lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
 WORKDIR /opt/hermes
 

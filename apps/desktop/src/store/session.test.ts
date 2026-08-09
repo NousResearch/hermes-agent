@@ -11,14 +11,18 @@ import {
   $selectedStoredSessionId,
   $sessions,
   $unreadFinishedSessionIds,
+  _resetLegacyDiscardForTests,
   applyConfiguredDefaultProjectDir,
+  commitWorkspaceCwdForSelectedSession,
   getRememberedRoute,
   getRememberedSessionId,
   mergeSessionPage,
   rememberedSessionProfile,
   resolveComposerSessionKey,
+  sessionBelongsToProfile,
   sessionPinId,
   setCurrentCwd,
+  setCurrentCwdTransient,
   setRememberedRoute,
   setRememberedSessionId,
   setSelectedStoredSessionId,
@@ -77,9 +81,12 @@ describe('computed $attentionSessionIds', () => {
     expect($attentionSessionIds.get()).toEqual([])
   })
 
-  it('ignores sessions without a storedSessionId', () => {
+  // A chat that hasn't been persisted yet has no stored id, and until it gets
+  // one the surfaces key on its runtime id — so publishing under that is what
+  // lets a clarify prompt on the very first turn reach the row.
+  it('falls back to the runtime id for a session with no storedSessionId', () => {
     publishSessionState('rt1', { ...createClientSessionState(null), needsInput: true })
-    expect($attentionSessionIds.get()).toEqual([])
+    expect($attentionSessionIds.get()).toEqual(['rt1'])
   })
 })
 
@@ -369,6 +376,34 @@ describe('workspaceCwdForNewSession', () => {
     $connection.set(null)
     expect(workspaceCwdForNewSession()).toBe('')
   })
+
+  it('remembers only the workspace the user picked, not the one they looked at', () => {
+    // The reported bug (#77496 / #80213): on a remote backend a new chat starts
+    // in the remembered workspace, and every session resume used to write that
+    // key — so opening a project chat silently made it the destination for the
+    // next "New session". Following a conversation must leave the memory alone.
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+    setCurrentCwd('/backend/picked')
+
+    setCurrentCwdTransient('/backend/some-other-project')
+
+    expect($currentCwd.get()).toBe('/backend/some-other-project')
+    expect(workspaceCwdForNewSession()).toBe('/backend/picked')
+  })
+
+  it('settling a resumed session does not move where the next new chat starts', () => {
+    // The reporter's exact sequence: work in a project, open a chat from it,
+    // then ask for a new session. Resume settling publishes the conversation's
+    // cwd through commitWorkspaceCwdForSelectedSession — which must not claim
+    // that folder as the user's chosen workspace.
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+    setCurrentCwd('/backend/picked')
+
+    setSelectedStoredSessionId('sess-in-project')
+    commitWorkspaceCwdForSelectedSession('/backend/last-project')
+
+    expect(workspaceCwdForNewSession()).toBe('/backend/picked')
+  })
 })
 
 function makeState(over: Partial<ClientSessionState> = {}): ClientSessionState {
@@ -501,6 +536,7 @@ describe('unread finished sessions', () => {
 describe('remembered session id (per profile)', () => {
   beforeEach(() => {
     localStorage.clear()
+    _resetLegacyDiscardForTests()
   })
 
   afterEach(() => {
@@ -517,15 +553,26 @@ describe('remembered session id (per profile)', () => {
     expect(getRememberedSessionId('research')).toBeNull()
   })
 
-  it('keeps the default profile on the legacy unsuffixed key for back-compat', () => {
+  it('discards legacy unsuffixed keys on first read (zero-migration, refuse-to-guess)', () => {
     // An existing install remembered its session under the pre-per-profile key.
     localStorage.setItem('hermes.desktop.lastSessionId', 'legacy-session')
 
-    expect(getRememberedSessionId('default')).toBe('legacy-session')
-    // Absent/blank profile normalizes to the default key too.
-    expect(getRememberedSessionId(undefined)).toBe('legacy-session')
-    expect(getRememberedSessionId('')).toBe('legacy-session')
-    expect(getRememberedSessionId(null)).toBe('legacy-session')
+    // Reading from any profile discards the legacy key — ownership is unknowable.
+    expect(getRememberedSessionId('default')).toBeNull()
+    expect(getRememberedSessionId('coder')).toBeNull()
+
+    // The legacy key must be cleared.
+    expect(localStorage.getItem('hermes.desktop.lastSessionId')).toBeNull()
+  })
+
+  it('uses encodeURIComponent so profile names with reserved chars are isolated', () => {
+    setRememberedSessionId('ops-session', 'research/ops')
+
+    expect(getRememberedSessionId('research/ops')).toBe('ops-session')
+    // Verify the storage key uses encoded form.
+    expect(localStorage.getItem('hermes.desktop.lastSessionId.profile.research%2Fops')).toBe('ops-session')
+    // Another profile with a different encoding cannot read it.
+    expect(getRememberedSessionId('research')).toBeNull()
   })
 
   it('clearing one profile leaves the others intact', () => {
@@ -542,6 +589,7 @@ describe('remembered session id (per profile)', () => {
 describe('remembered route (per profile)', () => {
   beforeEach(() => {
     localStorage.clear()
+    _resetLegacyDiscardForTests()
   })
 
   afterEach(() => {
@@ -559,13 +607,22 @@ describe('remembered route (per profile)', () => {
     expect(getRememberedRoute('research')).toBeNull()
   })
 
-  it('keeps the default profile on the legacy unsuffixed key for back-compat', () => {
+  it('discards legacy unsuffixed keys on first read (zero-migration, refuse-to-guess)', () => {
     localStorage.setItem('hermes.desktop.lastRoute', '/skills')
 
-    expect(getRememberedRoute('default')).toBe('/skills')
-    expect(getRememberedRoute(undefined)).toBe('/skills')
-    expect(getRememberedRoute('')).toBe('/skills')
-    expect(getRememberedRoute(null)).toBe('/skills')
+    // Reading from any profile discards the legacy key.
+    expect(getRememberedRoute('default')).toBeNull()
+    expect(getRememberedRoute('coder')).toBeNull()
+
+    expect(localStorage.getItem('hermes.desktop.lastRoute')).toBeNull()
+  })
+
+  it('uses encodeURIComponent so profile names with reserved chars are isolated', () => {
+    setRememberedRoute('/cron', 'research/ops')
+
+    expect(getRememberedRoute('research/ops')).toBe('/cron')
+    expect(localStorage.getItem('hermes.desktop.lastRoute.profile.research%2Fops')).toBe('/cron')
+    expect(getRememberedRoute('research')).toBeNull()
   })
 
   it('clearing one profile leaves the others intact', () => {
@@ -589,6 +646,45 @@ describe('remembered route (per profile)', () => {
     expect(getRememberedRoute('default')).toBeNull()
     expect(getRememberedSessionId('default')).toBeNull()
     expect(getRememberedRoute('ai-engineer')).toBe('/session/stored-1')
+  })
+})
+
+describe('sessionBelongsToProfile', () => {
+  it('validates that a session row matches a stored id and target profile', () => {
+    const sessions = [
+      session({ id: 's1', profile: 'ai-engineer' }),
+      session({ id: 's2', profile: 'default' }),
+      session({ id: 's3', profile: 'ai-engineer' })
+    ]
+
+    expect(sessionBelongsToProfile(sessions, 's1', 'ai-engineer')).toBe(true)
+    expect(sessionBelongsToProfile(sessions, 's3', 'ai-engineer')).toBe(true)
+    expect(sessionBelongsToProfile(sessions, 's2', 'default')).toBe(true)
+    // Wrong profile.
+    expect(sessionBelongsToProfile(sessions, 's1', 'default')).toBe(false)
+    // Missing session.
+    expect(sessionBelongsToProfile(sessions, 's-missing', 'ai-engineer')).toBe(false)
+  })
+
+  it('matches on lineage root so compressed tips validate their owner', () => {
+    const sessions = [session({ id: 'tip-2', _lineage_root_id: 'root-1', profile: 'work' })]
+
+    expect(sessionBelongsToProfile(sessions, 'root-1', 'work')).toBe(true)
+    expect(sessionBelongsToProfile(sessions, 'tip-2', 'work')).toBe(true)
+    // Wrong profile even when lineage matches.
+    expect(sessionBelongsToProfile(sessions, 'root-1', 'personal')).toBe(false)
+  })
+
+  it('normalizes blank/empty profiles to default', () => {
+    const sessions = [session({ id: 's1', profile: '' }), session({ id: 's2', profile: null as unknown as string })]
+
+    expect(sessionBelongsToProfile(sessions, 's1', 'default')).toBe(true)
+    expect(sessionBelongsToProfile(sessions, 's1', '')).toBe(true)
+    expect(sessionBelongsToProfile(sessions, 's2', 'default')).toBe(true)
+  })
+
+  it('returns false for an empty session list', () => {
+    expect(sessionBelongsToProfile([], 'any-id', 'default')).toBe(false)
   })
 })
 

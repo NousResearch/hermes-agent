@@ -28,6 +28,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
 | **Arcee AI** | `ARCEEAI_API_KEY` in `~/.hermes/.env` (provider: `arcee`; aliases: `arcee-ai`, `arceeai`) |
 | **GMI Cloud** | `GMI_API_KEY` in `~/.hermes/.env` (provider: `gmi`; aliases: `gmi-cloud`, `gmicloud`) |
+| **Actual Computer** | `ACTUAL_API_KEY` in `~/.hermes/.env` for the hosted relay, or `ACTUAL_BASE_URL=http://127.0.0.1:8080` for the local daemon — no key needed on loopback (provider: `actual`; aliases: `actual-computer`, `actualcomputer`, `aci`) |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
 | **xAI (Grok) — Responses API** | `XAI_API_KEY` in `~/.hermes/.env` (provider: `xai`) |
@@ -105,6 +106,32 @@ Hermes has **two** model commands that serve different purposes:
 
 If you're trying to switch to a provider you haven't set up yet (e.g. you only have OpenRouter configured and want to use Anthropic), you need `hermes model`, not `/model`. Exit your session first (`Ctrl+C` or `/quit`), run `hermes model`, complete the provider setup, then start a new session.
 
+
+### Subscription plans: what your plan pays for
+
+Several providers let you sign in to Hermes with a **consumer subscription** (Claude Max, ChatGPT, SuperGrok / X Premium+, …) instead of an API key. What that subscription actually pays for — and what it doesn't — differs per provider, and it's the single most common source of billing surprises. The table below is the short version; each provider's own section has the details.
+
+> Cells marked *not currently documented* mean exactly that: Hermes docs do not yet specify the behavior. Don't assume — check your provider's billing dashboard, and treat these as open questions.
+
+| Plan / path | Can Hermes use it? | What gets consumed | What does NOT get consumed | Common surprise |
+|---|---|---|---|---|
+| **Anthropic — Claude Max + OAuth** | ✅ Yes — `hermes model` → Anthropic OAuth. Requires Max **and** purchased extra usage credits | The **extra/overage credits** you've added on top of the Max plan | The **base Max plan allowance** (the usage included in Claude Code by default) | All Hermes usage bills as "extra usage" even while your included Max allowance sits untouched |
+| **Anthropic — Claude Pro** | ❌ No — Pro subscribers cannot use the OAuth path | Nothing (path unavailable) | Your Pro subscription | Pro looks like it should work; it doesn't. Use an `ANTHROPIC_API_KEY` instead (pay-per-token, independent of any Claude subscription) |
+| **OpenAI Codex — ChatGPT plan OAuth** | ✅ Yes — `hermes model` → OpenAI Codex (ChatGPT OAuth device-code login, uses Codex models) | *Not currently documented* | *Not currently documented* | Docs cover auth and token refresh only; plan-quota semantics are not yet documented |
+| **xAI — SuperGrok / X Premium+ OAuth** | ✅ Yes — browser OAuth, no API key needed | Your **subscription quota** (documented explicitly for X Search: OAuth is preferred over an API key and "uses your subscription quota instead of API spend"). Inference quota semantics beyond that: *not currently documented* | `XAI_API_KEY` / pay-per-token API spend, when OAuth credentials are configured and preferred | `HTTP 403` after a successful login — xAI has restricted OAuth API access to specific SuperGrok tiers despite an active in-app subscription |
+| **Google — Gemini consumer plan (Google AI Pro / Ultra)** | ❌ No documented path — the `gemini` provider is API-key only (`GOOGLE_API_KEY` / `GEMINI_API_KEY`); Vertex AI uses GCP billing | Your **API key's quota** (free tier or billing-enabled Google Cloud project) — *consumer-plan consumption not currently documented* | *Not currently documented* | Free-tier keys can be exhausted after a handful of agent turns, because Hermes may make several model calls per user turn |
+
+**Anthropic.** The OAuth path routes as Claude Code against your Anthropic account and **only works on a Claude Max plan with purchased extra usage credits** — the base Max allowance is never consumed by Hermes, only the extra/overage credits on top. Claude Pro subscribers cannot use this path; the supported alternative is an `ANTHROPIC_API_KEY`, billed pay-per-token against that key's organization at standard API pricing. See [Anthropic (Native)](#anthropic-native) below.
+
+**OpenAI Codex.** Hermes authenticates via ChatGPT device-code OAuth, stores credentials in `~/.hermes/auth.json`, and can import existing Codex CLI credentials from `~/.codex/auth.json`. Which ChatGPT plan tiers are eligible, and how Hermes usage counts against your plan's Codex limits, are **not currently documented** — the Codex note under [Nous Portal](#nous-portal) covers authentication and token-refresh behavior only.
+
+**xAI (SuperGrok / X Premium+).** Browser OAuth works with either an active SuperGrok subscription or an X Premium+ subscription on the linked X account, and the same bearer token is reused by direct-to-xAI tools (TTS, image gen, video gen, transcription, X Search). If inference returns `HTTP 403` after a successful login, that's a tier/entitlement restriction on xAI's side, not a stale token — the workaround is switching to an `XAI_API_KEY`. See [xAI (Grok)](#xai-grok--responses-api--prompt-caching) below and the [xAI Grok OAuth guide](../guides/xai-grok-oauth.md).
+
+**Google Gemini.** There is currently no way to sign in to Hermes with a consumer Gemini subscription — the `gemini` provider takes an API key, and [Google Vertex AI](#google-vertex-ai) bills to your GCP project. A billing-enabled Google Cloud project is recommended for agent use; free-tier quotas are too small for long-running agent sessions. See the [Google Gemini guide](/guides/google-gemini).
+
+:::tip One subscription instead of five
+If you'd rather not track per-provider plan semantics at all, [Nous Portal](#nous-portal) covers 300+ models under a single subscription with one OAuth login.
+:::
 
 ### Anthropic (Native)
 
@@ -520,6 +547,35 @@ model:
 ```
 
 The base URL can be overridden with `GMI_BASE_URL` (default: `https://api.gmi-serving.com/v1`).
+
+### Actual Computer
+
+Your own hardware as a private inference cluster via [Actual Computer](https://actual.inc). Two serving modes, both OpenAI-compatible (Hermes uses the Responses API transport):
+
+- **Hosted relay** — `https://api.actual.inc`, end-to-end encrypted, routes to *your* cluster. Authenticate with an `ac_` inference key from [actual.inc/user/keys](https://actual.inc/user/keys).
+- **Local daemon** — on-device at `http://127.0.0.1:8080`, fully offline. No API key needed: Hermes detects the loopback base URL and authenticates with an internal placeholder automatically.
+
+```bash
+# Hosted relay (ACTUAL_API_KEY in ~/.hermes/.env)
+hermes chat --provider actual --model <model-id-from-your-cluster>
+
+# Local daemon (ACTUAL_BASE_URL=http://127.0.0.1:8080 in ~/.hermes/.env, no key)
+hermes chat --provider actual --model <installed-model-name>
+```
+
+Or set it permanently in `config.yaml`:
+```yaml
+model:
+  provider: "actual"
+  default: "<model-id>"
+```
+
+Notes:
+- Model IDs come from your cluster's `GET /v1/models` — discover with `hermes model` or `curl -s https://api.actual.inc/v1/models -H "Authorization: Bearer $ACTUAL_API_KEY"`.
+- Bare hosts are normalized: `ACTUAL_BASE_URL=http://127.0.0.1:8080` becomes `http://127.0.0.1:8080/v1` automatically.
+- Reasoning effort is clamped to Actual's supported range (`none/low/medium/high/max`) — a global `xhigh`/`ultra` setting will not 400 requests.
+- Small local models: Hermes' full default toolset plus the system prompt can exceed a 32k context window, producing an empty-stream error from llama.cpp-family servers. Restrict the toolset (`-t file,web`) or load the model with a larger context. The optional `actual-setup` skill (`hermes skills install official/devops/actual-setup`) covers setup and troubleshooting in detail.
+- Aliases: `actual-computer`, `actualcomputer`, `aci`.
 
 ### StepFun
 
@@ -1119,6 +1175,7 @@ Any service with an OpenAI-compatible API works. Some popular options:
 | [DeepSeek](https://deepseek.com) | `https://api.deepseek.com/v1` | DeepSeek models |
 | [Fireworks AI](https://fireworks.ai) | `https://api.fireworks.ai/inference/v1` | Fast open model hosting |
 | [GMI Cloud](https://www.gmicloud.ai/) | `https://api.gmi-serving.com/v1` | Managed OpenAI-compatible inference |
+| [Actual Computer](https://actual.inc) | `https://api.actual.inc/v1` | Private relay to your own cluster; local daemon at `http://127.0.0.1:8080/v1` |
 | [Cerebras](https://cerebras.ai) | `https://api.cerebras.ai/v1` | Wafer-scale chip inference |
 | [Mistral AI](https://mistral.ai) | `https://api.mistral.ai/v1` | Mistral models |
 | [OpenAI](https://openai.com) | `https://api.openai.com/v1` | Direct OpenAI access |
@@ -1498,7 +1555,7 @@ fallback_model:
 
 When activated, the fallback swaps the model and provider mid-session without losing your conversation. The chain is tried entry-by-entry; activation is one-shot per session.
 
-Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
+Supported providers: `openrouter`, `nous`, `novita`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `qwen-oauth`, `huggingface`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `xai-oauth`, `ollama-cloud`, `bedrock`, `ai-gateway`, `azure-foundry`, `opencode-zen`, `opencode-go`, `kilocode`, `xiaomi`, `arcee`, `gmi`, `actual`, `stepfun`, `lmstudio`, `alibaba`, `alibaba-coding-plan`, `tencent-tokenhub`, `custom`.
 
 :::tip
 Fallback is configured exclusively through `config.yaml` — or interactively via `hermes fallback`. For full details on when it triggers, how the chain advances, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/user-guide/features/fallback-providers).

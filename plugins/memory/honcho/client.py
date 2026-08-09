@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
+from agent.secret_scope import get_secret
 from hermes_constants import get_hermes_home
 from hermes_cli.profiles import _get_default_hermes_home
 from plugins.plugin_utils import SingletonSlot
@@ -469,7 +470,7 @@ class HonchoClientConfig:
     ) -> HonchoClientConfig:
         """Create config from environment variables (fallback)."""
         resolved_host = host or resolve_active_host()
-        api_key = os.environ.get("HONCHO_API_KEY")
+        api_key = get_secret("HONCHO_API_KEY")
         base_url = os.environ.get("HONCHO_BASE_URL", "").strip() or None
         timeout = _resolve_optional_float(os.environ.get("HONCHO_TIMEOUT"))
         return cls(
@@ -525,7 +526,7 @@ class HonchoClientConfig:
         api_key = (
             host_block.get("apiKey")
             or raw.get("apiKey")
-            or os.environ.get("HONCHO_API_KEY")
+            or get_secret("HONCHO_API_KEY")
         )
 
         environment = (
@@ -933,8 +934,9 @@ def _resolve_timeout_from_sources(config: HonchoClientConfig | None) -> float:
 def _apply_fresh_oauth_token(config: HonchoClientConfig) -> None:
     """Refresh a near-expiry OAuth grant and point ``config.api_key`` at it.
 
-    No-op for static API keys or when refresh fails (fail-open: the stale token
-    is left in place and the existing 401 handling degrades gracefully).
+    No-op for static API keys or when refresh fails: the stale token stays in
+    place and the first rejected call triggers the post-401 recovery in
+    session.py (forced rotation, one retry).
     """
     try:
         from plugins.memory.honcho import oauth

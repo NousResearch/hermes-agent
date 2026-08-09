@@ -4,6 +4,7 @@ description: Drive Blender via the catalog blender MCP, with bpy recipes.
 version: 2.1.0
 requires: Blender 3.0+ desktop instance (headless via xvfb-run)
 author: alireza78a + kshitijk4poor + Hermes Agent
+license: MIT
 tags: [blender, 3d, animation, modeling, bpy, mcp]
 platforms: [linux, macos, windows]
 ---

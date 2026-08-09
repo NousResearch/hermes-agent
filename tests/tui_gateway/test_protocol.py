@@ -118,7 +118,54 @@ def test_err_envelope(server):
     }
 
 
-# ── write_json ───────────────────────────────────────────────────────
+@pytest.mark.parametrize("kind", ["legacy", "hard-only", "dynamic-getattr"])
+def test_session_interrupt_uses_explicit_stop_compatibility(server, monkeypatch, kind):
+    calls = []
+
+    class _Legacy:
+        def interrupt(self):
+            calls.append("legacy")
+
+    class _HardOnly:
+        def hard_interrupt(self):
+            calls.append("hard")
+
+    class _Dynamic:
+        def interrupt(self):
+            calls.append("legacy")
+
+        def __getattr__(self, name):
+            if name == "hard_interrupt":
+                return lambda: calls.append("fabricated-hard")
+            raise AttributeError(name)
+
+    agent = {
+        "legacy": _Legacy(),
+        "hard-only": _HardOnly(),
+        "dynamic-getattr": _Dynamic(),
+    }[kind]
+    session = {
+        "agent": agent,
+        "history_lock": threading.Lock(),
+        "running": True,
+        "queued_prompt": "later",
+        "session_key": "session-key",
+        "_run_thread": None,
+    }
+    monkeypatch.setattr(server, "_tts_stream_stop", lambda: None)
+    monkeypatch.setattr(server, "_sess_nowait", lambda _params, _rid: (session, None))
+    monkeypatch.setattr(server, "_sess", lambda _params, _rid: (session, None))
+    monkeypatch.setattr(server, "_session_uses_compute_host", lambda _session: False)
+    monkeypatch.setattr(server, "_clear_pending", lambda _sid: None)
+    response = server._methods["session.interrupt"](
+        "stop", {"session_id": "ui-session"}
+    )
+
+    assert response["result"]["status"] == "interrupted"
+    assert calls == ["hard" if kind == "hard-only" else "legacy"]
+
+
+# ── write_json ────────────────────────────────────────────────
 
 
 def test_write_json(capture):
@@ -302,6 +349,82 @@ def test_session_resume_returns_hydrated_messages(server, monkeypatch):
     ]
 
 
+def test_session_resume_rejects_runaway_transcript_before_history_load(
+    server, monkeypatch
+):
+    class _DB:
+        def get_session(self, sid):
+            return {"id": sid, "message_count": 20_001}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def resolve_resume_session_id(self, sid):
+            return sid
+
+        def reopen_session(self, _sid):
+            raise AssertionError("oversized session must be rejected before reopen")
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    response = server.handle_request(
+        {
+            "id": "r1",
+            "method": "session.resume",
+            "params": {
+                "session_id": "runaway-session",
+                "omit_messages": True,
+            },
+        }
+    )
+
+    assert response["error"]["code"] == 4130
+    assert "safe resume limit is 20000" in response["error"]["message"]
+
+
+def test_session_resume_guard_failure_fails_open(server, monkeypatch):
+    """A transient guard error must not block resume (fail open, log only)."""
+    reopened = []
+
+    class _DB:
+        def get_session(self, sid):
+            return {"id": sid}
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def resolve_resume_session_id(self, sid):
+            return sid
+
+        def assert_resume_safe(self, _sid):
+            raise RuntimeError("database is locked")
+
+        def reopen_session(self, sid):
+            reopened.append(sid)
+            return True
+
+    monkeypatch.setattr(server, "_get_db", lambda: _DB())
+
+    response = server.handle_request(
+        {
+            "id": "r-open",
+            "method": "session.resume",
+            "params": {
+                "session_id": "transient-guard-session",
+                "omit_messages": True,
+            },
+        }
+    )
+
+    # The guard must not block: no 4130, and any downstream failure must not
+    # be the guard's own "resume safety check failed" error. Reopen being
+    # attempted proves execution moved past the guard.
+    err = response.get("error") or {}
+    assert err.get("code") != 4130
+    assert "resume safety check failed" not in str(err.get("message", ""))
+    assert reopened == ["transient-guard-session"]
+
+
 def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):
     """The LRU cap frees the least-recently-active DETACHED sessions when over
     the limit, and never a live-transport / running / mid-build one."""
@@ -309,7 +432,9 @@ def test_enforce_session_cap_evicts_oldest_detached_only(server, monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {"max_live_sessions": 2})
     evicted: list[str] = []
     monkeypatch.setattr(
-        server, "_close_session_by_id", lambda sid, end_reason=None: evicted.append(sid)
+        server,
+        "_close_session_by_id",
+        lambda sid, end_reason=None, predicate=None: evicted.append(sid),
     )
 
     def _ready() -> threading.Event:
@@ -552,13 +677,13 @@ def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda ev, sid, payload=None: emitted.append((ev, payload)))
 
     # Baseline (default) — seeds the signature.
-    (tmp_path / "config.yaml").write_text("display:\n  skin: default\n")
+    (tmp_path / "config.yaml").write_text("display:\n  skin: default\n", encoding="utf-8")
     server._broadcast_skin_if_changed()
     emitted.clear()
 
     # Activate midnight, as `hermes config set display.skin midnight` would.
     time.sleep(0.01)  # ensure the config mtime moves
-    (tmp_path / "config.yaml").write_text("display:\n  skin: midnight\n")
+    (tmp_path / "config.yaml").write_text("display:\n  skin: midnight\n", encoding="utf-8")
     server._broadcast_skin_if_changed()
 
     assert [ev for ev, _ in emitted] == ["skin.changed"]
@@ -614,5 +739,4 @@ def test_unregister_live_transport_stops_delivery(capture):
     assert a.frames == []
     # No live transports left → fell back to stdio.
     assert json.loads(buf.getvalue())["params"]["type"] == "skin.changed"
-
 

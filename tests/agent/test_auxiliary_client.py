@@ -989,6 +989,93 @@ class TestExplicitProviderRouting:
         assert mock_openai.call_args.kwargs["base_url"] == OPENROUTER_BASE_URL
 
 
+class TestOpenRouterPaidLaneGuard:
+    """Issue #75803: auxiliary auto-chain OpenRouter fallback must be
+    configurable and never silently engage a PAID model."""
+
+    def test_free_only_skips_paid_default_model(self, monkeypatch):
+        """free_only=true + default (paid) model → OpenRouter skipped."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("hermes_cli.config.load_config_readonly", return_value={"auxiliary": {"free_only": True}}), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = _try_openrouter()
+        assert client is None
+        assert model is None
+        mock_openai.assert_not_called()
+
+    def test_free_only_allows_free_model(self, monkeypatch):
+        """free_only=true + :free model → OpenRouter used with that model."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("hermes_cli.config.load_config_readonly",
+                   return_value={"auxiliary": {"free_only": True,
+                                              "openrouter_model": "nvidia/nemotron-3-ultra-550b-a55b:free"}}), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_client = MagicMock(name="openrouter_client")
+            mock_openai.return_value = mock_client
+            client, model = _try_openrouter()
+        assert client is mock_client
+        assert model == "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+    def test_configured_model_overrides_hardcoded_default(self, monkeypatch):
+        """auxiliary.openrouter_model replaces _OPENROUTER_MODEL."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("hermes_cli.config.load_config_readonly",
+                   return_value={"auxiliary": {"openrouter_model": "some/vendor-model"}}), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_client = MagicMock(name="openrouter_client")
+            mock_openai.return_value = mock_client
+            client, model = _try_openrouter()
+        assert client is mock_client
+        assert model == "some/vendor-model"
+
+    def test_explicit_caller_model_respects_free_only(self, monkeypatch):
+        """Auxiliary.<task>.model (explicit) is also gated by free_only."""
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("hermes_cli.config.load_config_readonly", return_value={"auxiliary": {"free_only": True}}), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            client, model = _try_openrouter(model="google/gemini-3.6-flash")
+        assert client is None
+        assert model is None
+        mock_openai.assert_not_called()
+
+    def test_paid_lane_warns_once(self, monkeypatch, caplog):
+        """Engaging the default paid model logs a WARNING (once per model)."""
+        import logging
+        from agent.auxiliary_client import _paid_lane_warned
+        _paid_lane_warned.discard(_OPENROUTER_MODEL)
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("hermes_cli.config.load_config_readonly", return_value={"auxiliary": {}}), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            mock_client = MagicMock(name="openrouter_client")
+            mock_openai.return_value = mock_client
+            with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+                client, model = _try_openrouter()
+        assert client is mock_client
+        assert model == _OPENROUTER_MODEL
+        assert any("PAID lane engaged" in r.getMessage() for r in caplog.records)
+        # Second call logs nothing new.
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)), \
+             patch("hermes_cli.config.load_config_readonly", return_value={"auxiliary": {}}), \
+             patch("agent.auxiliary_client.OpenAI") as mock_openai:
+            caplog.clear()
+            with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+                _try_openrouter()
+        assert not any("PAID lane engaged" in r.getMessage() for r in caplog.records)
+        _paid_lane_warned.discard(_OPENROUTER_MODEL)
+
+    def test_is_free_model(self):
+        from agent.auxiliary_client import _is_free_model
+        assert _is_free_model("nvidia/nemotron-3-ultra-550b-a55b:free")
+        assert not _is_free_model("google/gemini-3.6-flash")
+        assert not _is_free_model("")
+        assert not _is_free_model(None)
+
+
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 
@@ -3100,6 +3187,69 @@ class TestCodexAuxiliaryAdapterTimeout:
         assert time.monotonic() - started < 0.14
 
 
+class TestCodexAuxiliaryAdapterCacheScope:
+    """Regression for issue #78941: auxiliary Codex calls (compression,
+    flush_memories, MoA, session_search) must not bucket-share a prompt
+    cache slot across unrelated sessions just because their instructions
+    and tools happen to match.
+    """
+
+    def _create_and_capture(self, *, session_id):
+        import agent.auxiliary_client as aux
+
+        class _FakeCreateStream:
+            def __iter__(self):
+                return iter([
+                    SimpleNamespace(
+                        type="response.output_item.done",
+                        item=SimpleNamespace(
+                            type="message",
+                            content=[SimpleNamespace(type="output_text", text="ok")],
+                        ),
+                    ),
+                    SimpleNamespace(type="response.completed", response=SimpleNamespace(
+                        status="completed", id="r1", usage=None,
+                    )),
+                ])
+
+            def close(self):
+                pass
+
+        class FakeResponses:
+            def __init__(self):
+                self.kwargs = None
+
+            def create(self, **kwargs):
+                self.kwargs = kwargs
+                return _FakeCreateStream()
+
+        fake_client = SimpleNamespace(responses=FakeResponses(), base_url="")
+        adapter = aux._CodexCompletionsAdapter(fake_client, "gpt-5.5")
+        token = aux.set_runtime_main("openai", "gpt-5.5", session_id=session_id)
+        try:
+            adapter.create(
+                messages=[
+                    {"role": "system", "content": "You are a memory summarizer."},
+                    {"role": "user", "content": "Summarize the last turn."},
+                ],
+            )
+        finally:
+            aux.reset_runtime_main(token)
+        return fake_client.responses.kwargs["prompt_cache_key"]
+
+    def test_different_sessions_get_different_cache_keys(self):
+        key_a = self._create_and_capture(session_id="session-A")
+        key_b = self._create_and_capture(session_id="session-B")
+        assert key_a != key_b
+
+    def test_cron_refires_of_the_same_job_share_a_cache_key(self):
+        first = self._create_and_capture(session_id="cron_job42_20260801_090000")
+        second = self._create_and_capture(session_id="cron_job42_20260802_090000")
+        other_job = self._create_and_capture(session_id="cron_job99_20260801_090000")
+        assert first == second
+        assert first != other_job
+
+
 class TestCodexAuxiliaryToolMessageConversion:
     """Regression for issue #5709.
 
@@ -4276,3 +4426,123 @@ class TestAsynchronousFallbackCachePlans:
         wire_tools = client.chat.completions.create.call_args.kwargs["tools"]
         assert "cache_control" in wire_tools[-1]
         assert "cache_control" not in tools[-1]
+
+
+class TestAutoRoutedProviderProfileHooks:
+    def test_cached_auto_route_projects_selected_provider_on_every_request(self):
+        """Auto routing must retain the concrete provider for request hooks."""
+        import agent.auxiliary_client as aux
+        from providers.base import ProviderProfile
+
+        hook_calls = []
+
+        class DynamicProfile(ProviderProfile):
+            def build_api_kwargs_extras(self, *, reasoning_config=None, **context):
+                hook_calls.append(context)
+                return {}, {
+                    "extra_headers": {
+                        "Authorization": f"Bearer token-{len(hook_calls)}",
+                    },
+                }
+
+        profile = DynamicProfile(name="agentgateway")
+        client = MagicMock()
+        client.base_url = "https://gateway.example.com/v1"
+        response = MagicMock()
+        response.choices = [MagicMock(message=MagicMock(content="ok"))]
+
+        def lookup_profile(name):
+            return profile if name == "agentgateway" else None
+
+        aux.shutdown_cached_clients()
+        try:
+            with (
+                patch(
+                    "agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", "gateway/model", None, None, None),
+                ),
+                patch(
+                    "agent.auxiliary_client._resolve_auto_route",
+                    return_value=(client, "gateway/model", "agentgateway"),
+                ) as resolve_auto,
+                patch("providers.get_provider_profile", side_effect=lookup_profile),
+                patch(
+                    "agent.auxiliary_client._relay_sync_completion",
+                    return_value=response,
+                ) as relay,
+            ):
+                for _ in range(2):
+                    result = call_llm(
+                        task="title_generation",
+                        messages=[{"role": "user", "content": "title this"}],
+                    )
+                    assert result is response
+        finally:
+            aux.shutdown_cached_clients()
+
+        resolve_auto.assert_called_once()
+        assert len(hook_calls) == 2
+        assert relay.call_args_list[0].args[1]["extra_headers"] == {
+            "Authorization": "Bearer token-1",
+        }
+        assert relay.call_args_list[1].args[1]["extra_headers"] == {
+            "Authorization": "Bearer token-2",
+        }
+
+
+class TestFastModelTier:
+    """The titling fast tier: rot-proof resolution, scoped to titling only."""
+
+    def test_catalog_match_prefers_rolling_alias_over_pinned_id(self):
+        """A "-latest" alias wins: it is the only id that cannot go stale."""
+        from agent import auxiliary_client as ac
+
+        catalog = {
+            "z-ai/glm-5.2": {},
+            "openai/gpt-5.4-mini": {},
+            "~openai/gpt-mini-latest": {},
+            "stepfun/step-3.7-flash:free": {},
+        }
+        with patch("hermes_cli.models.fetch_models_with_pricing", return_value=catalog):
+            assert ac._fast_model_from_catalog("nous") == "~openai/gpt-mini-latest"
+
+    def test_catalog_match_skips_reasoning_batch_and_embedding_lookalikes(self):
+        """Substring matching must not pick a thinker, a queue, or an encoder."""
+        from agent import auxiliary_client as ac
+
+        catalog = {
+            "openai/o3-mini": {},
+            "openai/gpt-5.4-mini:batch": {},
+            "sentence-transformers/all-minilm-l6-v2": {},
+            "google/gemini-3.6-flash": {},
+        }
+        with patch("hermes_cli.models.fetch_models_with_pricing", return_value=catalog):
+            assert ac._fast_model_from_catalog("nous") == "google/gemini-3.6-flash"
+
+    def test_falls_back_to_curated_default_when_catalog_unavailable(self):
+        """An offline catalog degrades to the provider's pinned default."""
+        from agent import auxiliary_client as ac
+
+        with patch.object(ac, "_fast_model_from_catalog", return_value=""):
+            assert (
+                ac._get_aux_model_for_provider("anthropic", prefer_fast=True)
+                == ac._get_aux_model_for_provider("anthropic")
+            )
+
+    def test_fast_tier_is_opt_in(self):
+        """Without prefer_fast the resolver must not touch the live catalog."""
+        from agent import auxiliary_client as ac
+
+        with patch.object(ac, "_fast_model_from_catalog") as spy:
+            ac._get_aux_model_for_provider("nous")
+        spy.assert_not_called()
+
+    def test_only_titling_is_in_the_fast_tier(self):
+        """Compression/vision/search keep 'auto means my chat model'."""
+        from agent.auxiliary_client import _FAST_MODEL_TASKS
+
+        assert "title_generation" in _FAST_MODEL_TASKS
+        overlap = {"compression", "vision", "web_extract"}.intersection(
+            _FAST_MODEL_TASKS
+        )
+        assert not overlap

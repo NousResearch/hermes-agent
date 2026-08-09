@@ -63,6 +63,13 @@ def _format_iso_timestamp(value) -> str:
     return parsed.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
 
 
+def _format_relative_ts(ts: float) -> str:
+    """Format an epoch timestamp as a short relative age for status output."""
+    from hermes_cli.timefmt import relative_time
+
+    return relative_time(ts)
+
+
 def _configured_model_label(config: dict) -> str:
     """Return the configured default model from config.yaml."""
     model_cfg = config.get("model")
@@ -105,6 +112,23 @@ def _effective_provider_label() -> str:
 from hermes_constants import is_termux as _is_termux
 
 
+def _estop_status_line():
+    """One-line pause banner for `hermes status`, or None when not paused.
+
+    Cheap: a single stat on $HERMES_HOME/ESTOP via agent.estop.
+    """
+    try:
+        from agent.estop import get_state
+    except ImportError:
+        return None
+    state = get_state()
+    if state is None:
+        return None
+    reason = state.get("reason")
+    suffix = f" — reason: {reason}" if reason else ""
+    return f"⏸️  PAUSED (global emergency stop{suffix}; `hermes resume` to lift)"
+
+
 def show_status(args):
     """Show status of all Hermes Agent components."""
     deep = getattr(args, 'deep', False)
@@ -113,6 +137,11 @@ def show_status(args):
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│                 ⚕ Hermes Agent Status                  │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+
+    _paused_line = _estop_status_line()
+    if _paused_line:
+        print()
+        print(color(_paused_line, Colors.YELLOW, Colors.BOLD))
 
     # =========================================================================
     # Environment
@@ -498,7 +527,13 @@ def show_status(args):
     try:
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
-            configured = entry.check_fn()
+            # Per-entry guard: one raising probe must not abort the listing
+            # of every remaining plugin platform (matches the other three
+            # check_fn call sites).
+            try:
+                configured = bool(entry.check_fn())
+            except Exception:
+                configured = False
             status_str = "configured" if configured else "not configured"
             label = entry.label
             print(f"  {label:<12}  {check_mark(configured)} {status_str} (plugin)")
@@ -572,20 +607,29 @@ def show_status(args):
     # Gateway session count: state.db is the source of truth (#9006);
     # fall back to sessions.json for pre-migration installs.
     _session_count = None
+    _gateway_rows = []
     try:
         from hermes_state import SessionDB
         _db = SessionDB()
         try:
             _lister = getattr(_db, "list_gateway_sessions", None)
             if callable(_lister):
-                _session_count = len(_lister(active_only=True))
+                _gateway_rows = _lister(active_only=True) or []
+                _session_count = len(_gateway_rows)
         finally:
             _db.close()
     except Exception:
         _session_count = None
+        _gateway_rows = []
 
     if _session_count is not None and _session_count > 0:
         print(f"  Active:       {_session_count} session(s)")
+        freshest = max(
+            (float(r.get("last_active") or 0) for r in _gateway_rows),
+            default=0.0,
+        )
+        if freshest > 0:
+            print(f"  Last activity:{_format_relative_ts(freshest):>13}")
     else:
         sessions_file = get_hermes_home() / "sessions" / "sessions.json"
         if sessions_file.exists():

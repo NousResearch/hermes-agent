@@ -35,7 +35,7 @@ import { classifyActiveRuntime } from './active-runtime-state'
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
-import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
+import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import {
   canImportHermesCli,
@@ -201,9 +201,16 @@ import {
   sandboxPreflight
 } from './update-relaunch'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
-import { resolveStagedUpdaterBinary, spawnUpdaterProcess } from './updater-process'
+import {
+  resolveStagedUpdaterBinary,
+  spawnUpdaterProcess,
+  stagedUpdaterSupportsPrewrittenMarker
+} from './updater-process'
 import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers } from './venv-blocker-scan'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
+import { createWakeIndicatorWindowController } from './wake-indicator-window'
+import { readWindowBelow } from './window-below'
+import { createWindowRevealController } from './window-reveal'
 import {
   computeWindowOptions,
   debounce,
@@ -573,19 +580,10 @@ function resolveHermesHome() {
 
 const HERMES_HOME = resolveHermesHome()
 
-function hermesManagedNodePathEntries() {
-  // NOTE: keep this ordering in sync with iter_hermes_node_dirs() in
-  // hermes_constants.py — this Node main process cannot import the Python
-  // module, so the platform-ordering rule is mirrored here.
-  const root = path.join(HERMES_HOME, 'node')
-  const bin = path.join(root, 'bin')
-  const entries = IS_WINDOWS ? [root, bin] : [bin, root]
-
-  return entries.filter(directoryExists)
-}
-
 function pathWithHermesManagedNode(...entries) {
-  return [...hermesManagedNodePathEntries(), ...entries, process.env.PATH].filter(Boolean).join(path.delimiter)
+  const managed = hermesManagedNodePathEntries(HERMES_HOME).filter(directoryExists)
+
+  return [...managed, ...entries, process.env.PATH].filter(Boolean).join(path.delimiter)
 }
 
 // ACTIVE_HERMES_ROOT — the canonical mutable Hermes install. Same path
@@ -866,6 +864,7 @@ const MEDIA_MIME_TYPES = {
   '.mp4': 'video/mp4',
   '.ogg': 'audio/ogg',
   '.opus': 'audio/ogg; codecs=opus',
+  '.pdf': 'application/pdf',
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
   '.wav': 'audio/wav',
@@ -874,6 +873,7 @@ const MEDIA_MIME_TYPES = {
 }
 
 const PREVIEW_HTML_EXTENSIONS = new Set(['.html', '.htm'])
+const PREVIEW_PDF_EXTENSIONS = new Set(['.pdf'])
 const PREVIEW_WATCH_DEBOUNCE_MS = 120
 const LOCAL_PREVIEW_HOSTS = new Set(['0.0.0.0', '127.0.0.1', '::1', '[::1]', 'localhost'])
 const TEXT_PREVIEW_MAX_BYTES = 512 * 1024
@@ -3011,8 +3011,20 @@ async function applyUpdates(opts = {}) {
     // the venv. By writing the marker ourselves the renderer's
     // waitForUpdateToFinish() gate sees a live update and parks instead.
     // The updater overwrites this with its own PID later; same format.
-    if (Number.isInteger(child.pid)) {
+    //
+    // SKIPPED for pre-#74782 staged updaters: those have no self-PID
+    // exclusion, so they read this very marker as a foreign live owner and
+    // abort with "Another Hermes update is already running (PID <itself>)" —
+    // an unbreakable loop, because the update that would replace the stale
+    // binary is the one being refused. Losing the anti-respawn hardening is
+    // strictly better than never updating again, and the updater still writes
+    // its own marker moments later.
+    if (Number.isInteger(child.pid) && stagedUpdaterSupportsPrewrittenMarker(updater)) {
       writeUpdateMarker(HERMES_HOME, child.pid)
+    } else if (Number.isInteger(child.pid)) {
+      rememberLog(
+        `[updates] skipping marker pre-write: staged updater predates self-adopt (${updater}); it would refuse its own claim`
+      )
     }
 
     rememberLog(`[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
@@ -3099,9 +3111,15 @@ async function handOffWindowsBootstrapRecovery(reason) {
 
   // Same marker pre-write as applyUpdates — see comment there. The recovery
   // hand-off has the same window where the renderer can respawn a backend
-  // before the updater writes its own marker.
-  if (Number.isInteger(child.pid)) {
+  // before the updater writes its own marker, and the same stale-updater
+  // exclusion: a pre-#74782 binary would refuse its own pre-written claim and
+  // strand the very recovery meant to heal the install.
+  if (Number.isInteger(child.pid) && stagedUpdaterSupportsPrewrittenMarker(updater)) {
     writeUpdateMarker(HERMES_HOME, child.pid)
+  } else if (Number.isInteger(child.pid)) {
+    rememberLog(
+      `[bootstrap] skipping marker pre-write: staged updater predates self-adopt (${updater}); it would refuse its own claim`
+    )
   }
 
   rememberLog(
@@ -4890,7 +4908,8 @@ async function previewFileTarget(rawTarget, baseDir) {
   const metadata = previewFileMetadata(resolved, mimeType)
   const isHtml = PREVIEW_HTML_EXTENSIONS.has(ext)
   const isImage = mimeType.startsWith('image/')
-  const previewKind = isHtml ? 'html' : isImage ? 'image' : metadata.binary ? 'binary' : 'text'
+  const isPdf = PREVIEW_PDF_EXTENSIONS.has(ext) || mimeType === 'application/pdf'
+  const previewKind = isHtml ? 'html' : isImage ? 'image' : isPdf ? 'pdf' : metadata.binary ? 'binary' : 'text'
 
   return {
     binary: metadata.binary,
@@ -5396,6 +5415,12 @@ function buildApplicationMenu() {
       { role: 'cut' },
       { role: 'copy' },
       { role: 'paste' },
+      // ⌘⇧V is only wired up by this item existing: an accelerator with no menu
+      // entry is never translated into an editor command, so the chord was a
+      // no-op in every input in the app. The composer inserts plain text on
+      // every paste anyway, so this is the same result as ⌘V there — it's the
+      // terminal, preview, and other editable surfaces that need the strip.
+      { role: 'pasteAndMatchStyle' },
       { role: 'delete' },
       { role: 'selectAll' }
     ]
@@ -6995,6 +7020,7 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     sshPort: (ssh || savedSsh)?.port || null,
     sshKeyPath: (ssh || savedSsh)?.keyPath || '',
     sshRemoteHermesPath: (ssh || savedSsh)?.remoteHermesPath || '',
+    sshRemoteProfile: (ssh || savedSsh)?.remoteProfile || '',
     // The env override only forces the global/primary connection; a per-profile
     // scope is never overridden by HERMES_DESKTOP_REMOTE_URL.
     envOverride
@@ -7127,7 +7153,8 @@ function buildSshBlock(input: any, existingBlock: any = {}) {
     user: input.sshUser ?? existingBlock.user,
     port: input.sshPort ?? existingBlock.port,
     keyPath: input.sshKeyPath ?? existingBlock.keyPath,
-    remoteHermesPath: input.sshRemoteHermesPath ?? existingBlock.remoteHermesPath
+    remoteHermesPath: input.sshRemoteHermesPath ?? existingBlock.remoteHermesPath,
+    remoteProfile: input.sshRemoteProfile ?? existingBlock.remoteProfile
   })
 
   if (!merged) {
@@ -7416,7 +7443,7 @@ async function bootstrapSshConnectionInner(profile, sshConfig, reuseToken, sourc
     const lifecycle = platform.os === 'Windows' ? connectWindowsRemote : remoteLifecycle.connect
     result = await lifecycle({
       ssh,
-      profile: connectionScopeKey(profile) || '',
+      profile: sshConfig.remoteProfile || connectionScopeKey(profile) || '',
       remoteHermesPath: sshConfig.remoteHermesPath || '',
       ownershipId: sshOwnershipKey(profile),
       reuseToken: reuseToken || '',
@@ -8699,6 +8726,31 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   })
 }
 
+// Every window we open starts with `show: false` so the renderer's first themed
+// paint lands before it appears, and `ready-to-show` is what reveals it.
+// Electron 40 can drop that event entirely (electron/electron#51972) on
+// Linux/Wayland, remote displays and VMs, leaving the window hidden forever even
+// though the renderer finished loading. Keep the themed path as the preferred
+// reveal, then fall back a few seconds after the renderer loads. `show` and
+// `onRevealed` carry the caller's reveal action and post-visible work; whichever
+// path wins runs them exactly once.
+function wireWindowReveal(win, { show, onRevealed }: { show?: () => void; onRevealed?: () => void } = {}) {
+  const controller = createWindowRevealController(
+    {
+      isDestroyed: () => win.isDestroyed(),
+      isVisible: () => win.isVisible(),
+      show: show ?? (() => win.show())
+    },
+    { onRevealed }
+  )
+
+  win.once('ready-to-show', controller.reveal)
+  win.webContents.once('did-finish-load', controller.scheduleFallback)
+  win.on('closed', controller.dispose)
+
+  return controller
+}
+
 // Secondary "session windows" — one extra OS window per chat so a user can
 // work with multiple chats side by side. The registry guarantees one window
 // per sessionId (re-opening focuses the existing window) and self-cleans on
@@ -8752,11 +8804,7 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
   }
 
-  win.once('ready-to-show', () => {
-    if (!win.isDestroyed()) {
-      win.show()
-    }
-  })
+  wireWindowReveal(win)
 
   win.on('enter-full-screen', () => sendWindowStateChanged(true))
   win.on('leave-full-screen', () => sendWindowStateChanged(false))
@@ -8834,11 +8882,7 @@ function createInstanceWindow() {
     win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
   }
 
-  win.once('ready-to-show', () => {
-    if (!win.isDestroyed()) {
-      win.show()
-    }
-  })
+  wireWindowReveal(win)
 
   // Per-window fullscreen chrome: send this window its own titlebar inset so its
   // traffic lights hide/show independently of the primary.
@@ -8856,6 +8900,17 @@ function createInstanceWindow() {
 
   return win
 }
+
+// A macOS-only ambient wake cue. It is deliberately a gateway-less helper
+// window: the active renderer owns voice state and sends only the visual phase.
+const wakeIndicatorController = createWakeIndicatorWindowController({
+  devServer: DEV_SERVER,
+  isMac: IS_MAC,
+  loadWindowUrl,
+  preloadPath: PRELOAD_PATH,
+  rendererIndex: resolveRendererIndex,
+  wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('wakeIndicator'))
+})
 
 // The pet overlay: a single transparent, frameless, always-on-top window that
 // hosts ONLY the floating mascot. Shift-clicking the in-window pet "pops it out"
@@ -8945,11 +9000,7 @@ function spawnPetOverlayWindow(bounds) {
   // owns its window-fit + scale, and inheriting zoom would crop the sprite.
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('petOverlay'))
 
-  win.once('ready-to-show', () => {
-    if (!win.isDestroyed()) {
-      win.showInactive()
-    }
-  })
+  wireWindowReveal(win, { show: () => win.showInactive() })
 
   win.on('closed', () => {
     if (petOverlayWindow === win) {
@@ -8996,6 +9047,288 @@ function closePetOverlay() {
   }
 
   petOverlayWindow = null
+}
+
+// ── HUD mode ────────────────────────────────────────────────────────────────
+//
+// The chrome-free floating chat: a transparent, frameless, always-on-top
+// window showing only the composer and its scrollback, so Hermes can be driven
+// while the user works in another app.
+//
+// Unlike the pet overlay / quick entry, this is a FULL app renderer with its
+// own gateway — the same thing createInstanceWindow() spawns, reshaped. That
+// is deliberate: the HUD renders the real chat surface, so its composer is the
+// app's composer (slash commands, attachments, queue, voice) instead of a
+// lookalike that drifts. Entering HUD mode hides the main window; leaving
+// restores it.
+let hudWindow = null
+
+// Whether the main window was visible when HUD mode was entered, so exiting
+// puts the desktop back as it was rather than raising a window the user had
+// already minimized.
+let hudRestoreMainWindow = false
+
+// The session the HUD is currently on, reported by its renderer whenever the
+// selection changes. Leaving HUD mode is a HANDOFF, not just a window close:
+// the gateway binds a session's event stream to exactly one socket, so the
+// turn the HUD started is streaming to the HUD's socket and the app window
+// hears nothing. The app has to re-resume that session to take the stream
+// back, and it can only do that if it knows which session to ask for — the
+// HUD may have switched sessions, or started a new one the app has never
+// seen. Main is the only party that outlives the HUD's renderer, so it holds
+// the id and hands it over in the close broadcast.
+let hudSessionId = null
+
+// A wide, short bar parked near the bottom of the active display — the shape
+// of a game chat frame, and where one belongs. Defaults only: once the user
+// moves or resizes the HUD, hud-state.json wins (same pattern as the main
+// window's window-state.json).
+const HUD_WIDTH = 620
+const HUD_HEIGHT = 320
+const HUD_BOTTOM_MARGIN = 72
+const HUD_STATE_PATH = path.join(app.getPath('userData'), 'hud-state.json')
+
+function readHudState() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(HUD_STATE_PATH, 'utf8'))
+
+    if (
+      [raw?.x, raw?.y, raw?.width, raw?.height].every(v => Number.isFinite(v)) &&
+      raw.width >= 380 &&
+      raw.height >= 160
+    ) {
+      return raw
+    }
+  } catch {
+    // First run / unreadable — fall through to defaults.
+  }
+
+  return null
+}
+
+function persistHudState() {
+  if (!hudWindow || hudWindow.isDestroyed()) {
+    return
+  }
+
+  try {
+    const { x, y, width, height } = hudWindow.getNormalBounds()
+    fs.mkdirSync(path.dirname(HUD_STATE_PATH), { recursive: true })
+    writeFileAtomic(HUD_STATE_PATH, JSON.stringify({ x, y, width, height }, null, 2))
+  } catch (err) {
+    rememberLog(`[hud-state] persist failed: ${err?.message || err}`)
+  }
+}
+
+const schedulePersistHudState = debounce(persistHudState, 250)
+
+function hudBounds() {
+  // Remembered spot first — validated against the LIVE displays so a HUD
+  // parked on an unplugged monitor comes back on-screen instead of lost.
+  const saved = readHudState()
+
+  if (saved) {
+    const onScreen = screen.getAllDisplays().some(d => {
+      const a = d.workArea
+
+      return (
+        saved.x < a.x + a.width - 40 &&
+        saved.x + saved.width > a.x + 40 &&
+        saved.y < a.y + a.height - 40 &&
+        saved.y + saved.height > a.y + 40
+      )
+    })
+
+    if (onScreen) {
+      return saved
+    }
+  }
+
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const area = display?.workArea
+
+  if (!area) {
+    return { width: HUD_WIDTH, height: HUD_HEIGHT, x: undefined, y: undefined }
+  }
+
+  const width = Math.min(HUD_WIDTH, area.width)
+  const height = Math.min(HUD_HEIGHT, area.height)
+
+  return {
+    width,
+    height,
+    x: Math.round(area.x + (area.width - width) / 2),
+    y: Math.round(Math.max(area.y, area.y + area.height - height - HUD_BOTTOM_MARGIN))
+  }
+}
+
+function hudUrl(sessionId) {
+  const query = '?win=hud'
+  const route = sessionId ? `#/${encodeURIComponent(sessionId)}` : '#/'
+
+  if (DEV_SERVER) {
+    return `${DEV_SERVER.endsWith('/') ? DEV_SERVER.slice(0, -1) : DEV_SERVER}/${query}${route}`
+  }
+
+  return `${pathToFileURL(resolveRendererIndex()).toString()}${query}${route}`
+}
+
+// Tell every window whether the HUD is up, so a toggle in any of them reads
+// the truth even when the HUD is closed from its own side (⌘W / its exit row).
+// Carries the HUD's session so the app window can re-home onto it on the way
+// out (see hudSessionId).
+function broadcastHudState(open) {
+  const payload = { open, sessionId: hudSessionId }
+
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send('hermes:hud:changed', payload)
+    }
+  }
+}
+
+function spawnHudWindow(sessionId) {
+  const win = new BrowserWindow({
+    ...hudBounds(),
+    minWidth: 380,
+    minHeight: 160,
+    frame: false,
+    transparent: true,
+    resizable: true,
+    movable: true,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    // Same rationale as the pet overlay: on Windows/Linux keep the helper out
+    // of the taskbar/alt-tab list; on macOS use an NSPanel so the frameless
+    // window never becomes the app's cmd-tab anchor.
+    skipTaskbar: !IS_MAC,
+    hasShadow: false,
+    alwaysOnTop: true,
+    type: IS_MAC ? 'panel' : undefined,
+    // Clips the vibrancy layer to the HUD's silhouette rather than a hard
+    // rectangle — the frost stops where the window's corners do.
+    roundedCorners: true,
+    // Vibrancy must keep rendering while the window is BLURRED: streaming under
+    // another app is the whole feature, and the default 'followWindow' kills
+    // the frost the moment something else takes focus.
+    visualEffectState: 'active',
+    hiddenInMissionControl: IS_MAC,
+    show: false,
+    backgroundColor: '#00000000',
+    // The full chat webPreferences — this window streams a real transcript, so
+    // it needs everything a chat window needs (preload bridge, autoplay for
+    // voice, the shared throttling contract).
+    webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
+  })
+
+  win.setAlwaysOnTop(true, IS_MAC ? 'floating' : 'screen-saver')
+  win.setHiddenInMissionControl?.(true)
+
+  try {
+    win.setVisibleOnAllWorkspaces(
+      true,
+      IS_MAC ? { visibleOnFullScreen: true, skipTransformProcessType: true } : undefined
+    )
+  } catch {
+    // Not supported everywhere — best effort.
+  }
+
+  // Streaming into a window that is ALWAYS blurred (the user is in another
+  // app) is the entire feature, so it gets the same stream-aware unthrottling
+  // every chat window does.
+  streamThrottle.register(win)
+  wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
+
+  // Remember where the user parks and sizes it (debounced — these fire many
+  // times mid-drag).
+  win.on('moved', schedulePersistHudState)
+  win.on('resized', schedulePersistHudState)
+
+  wireWindowReveal(win, {
+    show: () => {
+      win.show()
+      win.focus()
+    },
+    onRevealed: () => {
+      // Step the app aside: the HUD IS the surface now.
+      if (hudRestoreMainWindow && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.hide()
+      }
+    }
+  })
+
+  win.on('closed', () => {
+    if (hudWindow === win) {
+      hudWindow = null
+    }
+
+    // Closed from its own side (⌘W) — put the app back so the user is never
+    // left with no surface, and correct every window's toggle.
+    restoreMainWindowFromHud()
+    broadcastHudState(false)
+  })
+
+  loadWindowUrl(win, hudUrl(sessionId), 'HUD')
+
+  return win
+}
+
+// Put the app window back the way HUD mode found it.
+function restoreMainWindowFromHud() {
+  if (!hudRestoreMainWindow) {
+    return
+  }
+
+  hudRestoreMainWindow = false
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show()
+  }
+}
+
+function openHudWindow(sessionId) {
+  if (hudWindow && !hudWindow.isDestroyed()) {
+    // Already up, but pointed somewhere else — switch it rather than just
+    // raising it. Asking for HUD mode from another tab means "put THIS
+    // conversation in the HUD", and a plain focus leaves the wrong one there.
+    if (sessionId && sessionId !== hudSessionId) {
+      hudSessionId = sessionId
+      hudWindow.webContents.send('hermes:hud:goto', sessionId)
+      // Keep every window's idea of where the HUD is pointed in step, so the
+      // toggle keeps reading "switch" vs "dismiss" correctly.
+      broadcastHudState(true)
+    }
+
+    focusWindow(hudWindow)
+
+    return hudWindow
+  }
+
+  hudRestoreMainWindow = Boolean(mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible())
+  hudSessionId = sessionId || null
+  hudWindow = spawnHudWindow(sessionId)
+  broadcastHudState(true)
+
+  return hudWindow
+}
+
+function closeHudWindow() {
+  const win = hudWindow
+  hudWindow = null
+
+  if (win && !win.isDestroyed()) {
+    // Null'd first so the 'closed' handler doesn't broadcast a second time.
+    win.removeAllListeners('closed')
+    win.close()
+  }
+
+  restoreMainWindowFromHud()
+  broadcastHudState(false)
+
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    focusWindow(mainWindow)
+  }
 }
 
 // ── Quick Entry ─────────────────────────────────────────────────────────────
@@ -9134,11 +9467,15 @@ function repositionQuickEntryWindow(win) {
 
 function showQuickEntryWindow() {
   if (!quickEntryWindow || quickEntryWindow.isDestroyed()) {
-    quickEntryWindow = spawnQuickEntryWindow()
-    quickEntryWindow.once('ready-to-show', () => {
-      if (!quickEntryWindow?.isDestroyed()) {
-        quickEntryWindow.show()
-        quickEntryWindow.focus()
+    // Reveal the window this call created, not whatever `quickEntryWindow`
+    // points at by the time the event lands.
+    const win = spawnQuickEntryWindow()
+    quickEntryWindow = win
+
+    wireWindowReveal(win, {
+      show: () => {
+        win.show()
+        win.focus()
       }
     })
 
@@ -9236,6 +9573,8 @@ function createWindow() {
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
+  const createdMainWindow = mainWindow
+
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
 
@@ -9259,41 +9598,38 @@ function createWindow() {
     mainWindow.maximize()
   }
 
-  mainWindow.once('ready-to-show', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.show()
-    }
+  const revealController = wireWindowReveal(createdMainWindow, {
+    onRevealed: () => {
+      // Persist geometry as soon as the window is visible so a crash before the
+      // first clean resize/move/close still captures the restored bounds (#56726).
+      schedulePersistWindowState()
 
-    // Persist geometry as soon as the window is visible so a crash before the
-    // first clean resize/move/close still captures the restored bounds (#56726).
-    schedulePersistWindowState()
-
-    // #38216: clear the mid-boot marker only after a window is actually usable.
-    // Keep sticky `fallback` when we launched with --no-sandbox so the next
-    // Start Menu click does not re-enter the GPU FATAL crash loop. The marker
-    // records the app version so the next update re-probes the sandbox.
-    if (IS_WINDOWS) {
-      try {
-        writeSandboxMarker(
-          app.getPath('userData'),
-          markerAfterSuccessfulBoot({
-            fallbackActive: windowsSandboxFallbackSticky,
-            reason: windowsSandboxFallbackReason,
-            appVersion: app.getVersion()
-          })
-        )
-      } catch (error) {
-        rememberLog(`[sandbox] marker update after ready-to-show failed: ${error?.message || error}`)
+      // #38216: clear the mid-boot marker only after a window is actually usable.
+      // Keep sticky `fallback` when we launched with --no-sandbox so the next
+      // Start Menu click does not re-enter the GPU FATAL crash loop. The marker
+      // records the app version so the next update re-probes the sandbox.
+      if (IS_WINDOWS) {
+        try {
+          writeSandboxMarker(
+            app.getPath('userData'),
+            markerAfterSuccessfulBoot({
+              fallbackActive: windowsSandboxFallbackSticky,
+              reason: windowsSandboxFallbackReason,
+              appVersion: app.getVersion()
+            })
+          )
+        } catch (error) {
+          rememberLog(`[sandbox] marker update after main-window reveal failed: ${error?.message || error}`)
+        }
       }
     }
   })
 
-  // Under Playright testing, instantly show the window.
-  // `ready-to-show` doesn't fire in some testing envs.
+  // Under Playwright testing, instantly show the window: `ready-to-show`
+  // doesn't fire in some testing envs, and the suite can't wait out the
+  // production fallback.
   if (process.env.TEST_WORKER_INDEX !== undefined) {
-    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
-      mainWindow.show()
-    }
+    revealController.reveal()
   }
 
   mainWindow.on('will-enter-full-screen', () => sendWindowStateChanged(true))
@@ -9314,9 +9650,9 @@ function createWindow() {
   mainWindow.on('close', () => schedulePersistWindowState.flush())
 
   // the closed wrapper remains truthy, so clear only the window this callback owns.
-  const createdMainWindow = mainWindow
   mainWindow.on('closed', () => {
     closePetOverlay()
+    wakeIndicatorController.close()
 
     if (mainWindow === createdMainWindow) {
       mainWindow = null
@@ -9517,6 +9853,10 @@ ipcMain.handle('hermes:window:openInstance', async () => {
 
   return { ok: true }
 })
+ipcMain.handle('hermes:wake-indicator:get', () => wakeIndicatorController.getState())
+ipcMain.on('hermes:wake-indicator:set', (_event, state) => {
+  wakeIndicatorController.setState(state)
+})
 
 // --- Text size (zoom) -------------------------------------------------------
 // The settings UI drives the same clamped zoom scale as the Ctrl/Cmd
@@ -9660,6 +10000,68 @@ ipcMain.on('hermes:pet-overlay:control', (_event, payload) => {
   }
 
   mainWindow.webContents.send('hermes:pet-overlay:control', payload)
+})
+
+// --- HUD mode (chrome-free floating chat) -----------------------------------
+ipcMain.handle('hermes:hud:open', async (_event, request) => {
+  openHudWindow(typeof request?.sessionId === 'string' ? request.sessionId : null)
+
+  return { ok: true }
+})
+
+// Real frosted glass behind the band — the thing CSS backdrop-filter cannot do,
+// because Chromium composites a transparent window's page against nothing and
+// the desktop is not in its backdrop root. Vibrancy IS the window's content
+// view, so it frosts the whole rectangle; the HUD's layout leaves no dead
+// margins for that reason, and the renderer only turns it on while the band is
+// showing (idle HUD mode must be the bar and nothing else).
+ipcMain.handle('hermes:hud:vibrancy', (_event, on) => {
+  if (hudWindow && !hudWindow.isDestroyed() && IS_MAC) {
+    hudWindow.setVibrancy(on ? 'hud' : null)
+  }
+
+  return { ok: true }
+})
+
+// Let clicks fall through the HUD wherever it isn't really there. An
+// always-on-top window eats every click inside its rectangle, and most of that
+// rectangle is a faded-out band over whatever the user is actually working in.
+// `forward` keeps mousemove flowing so the renderer can re-arm when the cursor
+// reaches the bar.
+ipcMain.on('hermes:hud:ignore-mouse', (_event, ignore) => {
+  if (hudWindow && !hudWindow.isDestroyed()) {
+    hudWindow.setIgnoreMouseEvents(Boolean(ignore), { forward: true })
+  }
+})
+
+ipcMain.on('hermes:hud:move-by', (event, delta) => {
+  if (!hudWindow || hudWindow.isDestroyed() || event.sender !== hudWindow.webContents) {
+    return
+  }
+
+  const dx = Number(delta?.x)
+  const dy = Number(delta?.y)
+
+  if (!Number.isFinite(dx) || !Number.isFinite(dy)) {
+    return
+  }
+
+  const [x, y] = hudWindow.getPosition()
+
+  hudWindow.setPosition(Math.round(x + dx), Math.round(y + dy))
+})
+
+// The HUD renderer reporting which session it is on, so the close broadcast
+// can hand it back to the app window (see hudSessionId).
+ipcMain.on('hermes:hud:session', (event, sessionId) => {
+  if (hudWindow && !hudWindow.isDestroyed() && event.sender === hudWindow.webContents) {
+    hudSessionId = typeof sessionId === 'string' && sessionId ? sessionId : null
+  }
+})
+ipcMain.handle('hermes:hud:close', async () => {
+  closeHudWindow()
+
+  return { ok: true }
 })
 ipcMain.handle('hermes:bootstrap:reset', async () => {
   // Renderer's "Reload and retry" path. Clear the latched failure and
@@ -9970,6 +10372,25 @@ ipcMain.handle('hermes:requestMicrophoneAccess', async () => {
   return systemPreferences.askForMediaAccess('microphone')
 })
 
+// read_window_below tool: which OS window is directly underneath this one.
+// Metadata only (app, title, bounds) — never pixels. On macOS, other apps'
+// window titles are gated behind the Screen Recording permission; pass titles
+// through only when it is ALREADY granted, and never prompt for it here.
+ipcMain.handle('hermes:window:readBelow', async event => {
+  const win = BrowserWindow.fromWebContents(event.sender)
+
+  if (!win || win.isDestroyed()) {
+    return null
+  }
+
+  const titlesAvailable = IS_MAC ? systemPreferences.getMediaAccessStatus?.('screen') === 'granted' : true
+
+  const [x, y] = win.getPosition()
+  const [width, height] = win.getSize()
+
+  return readWindowBelow(process.pid, { x, y, width, height }, titlesAvailable)
+})
+
 // Re-route remote-profile session requests to the owning remote backend. Returns
 // `undefined` when not interceptable (caller takes the normal local path), else
 // the response. Reads tag the profile as ?profile=<name>; mutations carry it in
@@ -10090,9 +10511,16 @@ async function interceptSessionRequestForRemote(request) {
       return undefined
     }
 
+    // Preserve every non-profile query param (limit/offset/order pagination —
+    // stripping them made getAllSessionMessages loop the same default page
+    // against paginating remote backends).
+    const passthroughParams = new URLSearchParams(searchParams)
+    passthroughParams.delete('profile')
+    const passthroughQuery = passthroughParams.toString()
+
     if (profileHasRemoteOverride(profile)) {
       if (method === 'GET') {
-        return fetchJsonForProfile(profile, pathname)
+        return fetchJsonForProfile(profile, passthroughQuery ? `${pathname}?${passthroughQuery}` : pathname)
       }
 
       const body = request.body && typeof request.body === 'object' ? { ...request.body } : request.body
@@ -10106,8 +10534,8 @@ async function interceptSessionRequestForRemote(request) {
 
     if (globalRemoteActive()) {
       // Single global backend: keep ?profile= so it opens the right state.db.
-      const sep = pathname.includes('?') ? '&' : '?'
-      const path = `${pathname}${sep}profile=${encodeURIComponent(profile)}`
+      passthroughParams.set('profile', profile)
+      const path = `${pathname}?${passthroughParams.toString()}`
 
       if (method === 'GET') {
         return fetchJsonForProfile(null, path)
@@ -10295,7 +10723,7 @@ ipcMain.handle('hermes:notify', (_event, payload) => {
   // kind+session can arrive here twice. Collapse it at this single choke point.
   // Return true (not false): a notification for the event IS being shown by the
   // first caller, so the settings "send test" success probe stays honest.
-  if (isDuplicateNotification(`${payload?.kind ?? ''}:${payload?.sessionId ?? ''}`)) {
+  if (isDuplicateNotification(`${payload?.kind ?? ''}:${payload?.sessionId ?? payload?.tag ?? ''}`)) {
     return true
   }
 
@@ -10470,6 +10898,22 @@ ipcMain.handle('hermes:writeClipboard', (_event, text) => {
   clipboard.writeText(String(text || ''))
 
   return true
+})
+
+// Native save-location picker (profile export etc.) — the write itself happens
+// elsewhere (the backend, for profile archives); this only picks the path.
+ipcMain.handle('hermes:selectSavePath', async (_event, options: any = {}) => {
+  const result = await dialog.showSaveDialog(mainWindow, {
+    title: options?.title || 'Save',
+    defaultPath: options?.defaultPath ? String(options.defaultPath) : undefined,
+    filters: Array.isArray(options?.filters) ? options.filters : undefined
+  })
+
+  if (result.canceled || !result.filePath) {
+    return null
+  }
+
+  return result.filePath
 })
 
 // Paired reader for the GUI terminal's paste chord: the renderer's
@@ -11796,6 +12240,17 @@ app.whenReady().then(() => {
   // it without the renderer visiting Settings. A failed registration is logged
   // here and surfaced in Settings via the IPC state (never silent).
   applyQuickEntrySettings(readQuickEntrySettings())
+
+  if (IS_MAC) {
+    const reposition = () => wakeIndicatorController.reposition()
+
+    screen.on('display-added', reposition)
+
+    screen.on('display-metrics-changed', reposition)
+
+    screen.on('display-removed', reposition)
+  }
+
   createWindow()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
@@ -11924,6 +12379,18 @@ app.on('before-quit', event => {
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()
+  wakeIndicatorController.close()
+
+  // Same for the HUD — an always-on-top panel outliving the app would leave a
+  // floating composer with nothing behind it. Close it directly rather than via
+  // closeHudWindow(): that also re-shows the main window, which is wrong on the
+  // way out (and `hudRestoreMainWindow` may still be armed from entering HUD).
+  if (hudWindow && !hudWindow.isDestroyed()) {
+    hudWindow.removeAllListeners('closed')
+    hudWindow.destroy()
+  }
+
+  hudWindow = null
 
   // Same for the Quick Entry composer — and release its global accelerator so a
   // quitting Hermes never keeps another app's chord hostage.

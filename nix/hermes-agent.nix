@@ -10,7 +10,6 @@
   makeWrapper,
   callPackage,
   python312,
-  nodejs_26,
   electron,
   ripgrep,
   git,
@@ -39,7 +38,6 @@
   extraDependencyGroups ? [ ],
 }:
 let
-  nodejs = nodejs_26;
   mkHermesVenv =
     extraDependencyGroups:
     callPackage ./python.nix {
@@ -51,7 +49,7 @@ let
   hermesVenv = (mkHermesVenv extraDependencyGroups).venv;
 
   hermesNpmLib = callPackage ./lib.nix {
-    inherit npm-lockfile-fix nodejs;
+    inherit npm-lockfile-fix;
   };
 
   hermesTui = callPackage ./tui.nix {
@@ -97,7 +95,7 @@ let
   };
 
   runtimeDeps = [
-    nodejs
+    hermesNpmLib.nodejs
     ripgrep
     git
     openssh
@@ -195,7 +193,7 @@ stdenv.mkDerivation (finalAttrs: {
           --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
           --set HERMES_TUI_DIR $out/ui-tui \
           --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
-          --set HERMES_NODE ${lib.getExe nodejs}${
+          --set HERMES_NODE ${lib.getExe hermesNpmLib.nodejs}${
             # Fold the line continuation INTO the optionalString: a bare
             # `\` on the line above an empty expansion would dangle onto a
             # blank line, ending the makeWrapper command early and running

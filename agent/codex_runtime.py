@@ -1027,6 +1027,10 @@ def _consume_codex_event_stream(
     first_delta_fired = False
     active_message_phase: str | None = None
     commentary_text_deltas: List[str] = []
+    # Last reasoning summary_index seen. The Responses stream delimits summary
+    # parts by this index and gives each part no separator of its own, so a
+    # change of index is where the blank line belongs.
+    active_summary_index: Any = None
     terminal_status: str = "completed"
     terminal_usage: Any = None
     terminal_response_id: str = None
@@ -1120,6 +1124,17 @@ def _consume_codex_event_stream(
         if "reasoning" in event_type and "delta" in event_type:
             reasoning_text = _event_field(event, "delta", "")
             if reasoning_text and on_reasoning_delta is not None:
+                # Summary parts stream one after another with no separator of
+                # their own; summary_index is the boundary the wire gives us.
+                summary_index = _event_field(event, "summary_index")
+                if (
+                    summary_index is not None
+                    and active_summary_index is not None
+                    and summary_index != active_summary_index
+                ):
+                    reasoning_text = f"\n\n{reasoning_text}"
+                if summary_index is not None:
+                    active_summary_index = summary_index
                 try:
                     on_reasoning_delta(reasoning_text)
                 except Exception:

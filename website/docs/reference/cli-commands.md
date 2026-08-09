@@ -22,8 +22,9 @@ hermes [global-options] <command> [subcommand/options]
 |--------|-------------|
 | `--version`, `-V` | Show version and exit. |
 | `--profile <name>`, `-p <name>` | Select which Hermes profile to use for this invocation. Overrides the sticky default set by `hermes profile use`. |
-| `--resume <session>`, `-r <session>` | Resume a previous session by ID or title. |
+| `--resume <session>`, `-r <session>` | Resume a previous session by ID or title. The keyword `latest` resumes the most recent session (workspace-scoped, same lookup as `-c`). |
 | `--continue [name]`, `-c [name]` | Resume the most recent session, or the most recent session matching a title. |
+| `--in <dir>` | Change into `<dir>` before starting or resuming. Scopes `--resume latest` / `-c` lookups to that directory's workspace and keeps the session there (skips the recorded-cwd restore). |
 | `--worktree`, `-w` | Start in an isolated git worktree for parallel-agent workflows. |
 | `--yolo` | Bypass dangerous-command approval prompts. |
 | `--pass-session-id` | Include the session ID in the agent's system prompt. |
@@ -1462,6 +1463,11 @@ Subcommands:
 | `archive` | Bulk-archive (soft-hide, no deletion) sessions matching the same filters as `prune`. Requires at least one filter. |
 | `stats` | Show session-store statistics. |
 | `rename <session-id> <title>` | Set or change a session title. |
+| `optimize` | Reclaim disk space: merge FTS5 index segments + VACUUM. Non-destructive — no session data changes. |
+| `optimize-storage` | Migrate the full-text search index to the compact v23 external-content layout; on large databases this reclaims a large fraction of `state.db`. |
+| `repair` | Repair a malformed `state.db` schema (e.g. `table messages_fts already exists`) so hidden sessions reappear; a backup is made first. |
+| `recover` | Offline, non-destructive recovery of a damaged `state.db` into a separate clean database. |
+| `retitle-skills` | Regenerate titles for sessions opened with a `/skill`, using what the user actually typed; lists changes unless `--apply` is passed. |
 
 ## `hermes insights`
 

@@ -450,7 +450,7 @@ def _inline_schema(workflow: dict) -> dict:
 
 def load_schema(schema_path: str | None, workflow: dict) -> dict:
     if schema_path:
-        with open(schema_path) as f:
+        with open(schema_path, encoding="utf-8-sig") as f:
             return json.load(f)
     return _inline_schema(workflow)
 
@@ -606,7 +606,7 @@ def main(argv: list[str] | None = None) -> int:
         emit_json({"error": f"Workflow file not found: {args.workflow}"})
         return 1
     try:
-        with wf_path.open() as f:
+        with wf_path.open(encoding="utf-8-sig") as f:
             workflow_raw = json.load(f)
         workflow = unwrap_workflow(workflow_raw)
     except ValueError as e:

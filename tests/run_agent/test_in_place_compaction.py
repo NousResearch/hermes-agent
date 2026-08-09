@@ -185,13 +185,16 @@ class TestRotationFallbackWhenFlagOff:
 
             # Identity rotated to a fresh id.
             assert agent.session_id != sid
-            # Old session ended via compression; continuation forked + renamed.
+            # Old session ended via compression; continuation forked and
+            # carries the SAME name. Compression is an internal detail — the
+            # conversation didn't change topic, so it must not be renumbered
+            # into "my-research #2" and shown as a separate piece of work.
             assert db.get_session(sid)["end_reason"] == "compression"
             child = db._conn.execute(
                 "SELECT id, title FROM sessions WHERE parent_session_id = ?", (sid,)
             ).fetchall()
             assert len(child) == 1
-            assert child[0]["title"] == "my-research #2"
+            assert child[0]["title"] == "my-research"
             # The compacted child is persisted atomically at the rotation
             # boundary, so a headless process killed before finalization can
             # still resume it without duplicating the two handoff messages.

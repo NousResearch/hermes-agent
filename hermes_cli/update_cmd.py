@@ -712,6 +712,16 @@ def _commit_staged_replacements(staged) -> None:
                 pass
 
 
+def _print_update_completion(message: str) -> None:
+    """Print an update outcome plus, when the dashboard launched this run
+    with an action id, a terminal receipt line the Desktop can match after
+    the dashboard restarts (see #47359 / #58764)."""
+    print(message)
+    action_id = os.environ.get("HERMES_ACTION_ID", "")
+    if len(action_id) == 32 and all(char in "0123456789abcdef" for char in action_id):
+        print(f"=== hermes-update completed {action_id} ===")
+
+
 def _update_via_zip(args):
     """Update Hermes Agent by downloading a ZIP archive.
 
@@ -1059,7 +1069,7 @@ def _update_via_zip(args):
         print("  Code and Python deps are updated, but the dashboard/TUI may")
         print("  be in a mixed state until the Node deps are rebuilt.")
     else:
-        print("✓ Update complete!")
+        _print_update_completion("✓ Update complete!")
     try:
         _print_curator_first_run_notice()
     except Exception as e:
@@ -1248,7 +1258,15 @@ def _restore_stashed_changes(
         if input_fn is not None:
             response = input_fn("Restore local changes now? [Y/n]", "y")
         else:
-            response = input().strip().lower()
+            try:
+                response = input().strip().lower()
+            except (EOFError, UnicodeDecodeError):
+                # Mirror the config-migration prompt's fix: don't let a
+                # terminal-encoding issue or a closed stdin crash the
+                # update mid-restore. Falls through to the existing
+                # skip-restore path below, which already explains how to
+                # restore manually from git stash.
+                response = "n"
         if response not in {"", "y", "yes"}:
             print("Skipped restoring local changes.")
             print("Your changes are still preserved in git stash.")
@@ -1535,7 +1553,7 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             response = (
                 input("Add official repo as 'upstream' remote? [Y/n]: ").strip().lower()
             )
-        except (EOFError, KeyboardInterrupt):
+        except (EOFError, KeyboardInterrupt, UnicodeDecodeError):
             print()
             response = "n"
 
@@ -2089,7 +2107,7 @@ def _update_node_dependencies() -> list[str]:
         print("    deps). Fix npm and re-run `hermes update`.")
         return list(labels)
 
-    extra_args = ["--no-fund", "--no-audit", "--progress=false"]
+    extra_args = ["--no-fund", "--no-audit", "--prefer-offline", "--progress=false"]
 
     from hermes_constants import with_hermes_node_path
 
@@ -2682,12 +2700,9 @@ def _run_pre_update_backup(args) -> Optional[str]:
         size_bytes = 0
 
     # Human-readable size
-    size_str = f"{size_bytes} B"
-    for unit in ("KB", "MB", "GB"):
-        if size_bytes < 1024:
-            break
-        size_bytes /= 1024
-        size_str = f"{size_bytes:.1f} {unit}"
+    from hermes_cli.sizefmt import format_bytes
+
+    size_str = format_bytes(size_bytes)
 
     # Render path using display_hermes_home so the user sees ~/.hermes/...
     try:
@@ -3474,8 +3489,36 @@ def _normalize_managed_eol(git_cmd, repo_root):
             return None
         return {p for p in out.stdout.split("\0") if p}
 
+    def _real_dirty():
+        # Files with a *content* change once CRLF differences are ignored.
+        # NOTE: ``diff --name-only --ignore-cr-at-eol`` still LISTS CR-only
+        # files (the name list is computed from blob/stat differences before
+        # the CR filter is applied), so it cannot be used to isolate real
+        # edits. ``--numstat`` does honor the filter: a CR-only file produces
+        # no numstat record, while a genuinely-edited file does. Parse the
+        # paths out of numstat instead.
+        out = subprocess.run(
+            probe + ["-c", "core.quotepath=false",
+                     "diff", "--numstat", "--ignore-cr-at-eol"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True, encoding="utf-8", errors="replace",
+        )
+        if out.returncode != 0:
+            return None
+        paths = set()
+        for line in out.stdout.splitlines():
+            if not line.strip():
+                continue
+            # Format: "<added>\t<deleted>\t<path>". Rename detection is off in
+            # plain diff, so there is exactly one path field per record.
+            parts = line.split("\t", 2)
+            if len(parts) == 3 and parts[2]:
+                paths.add(parts[2])
+        return paths
+
     def _eol_only():
-        all_dirty, real_dirty = _dirty(), _dirty("--ignore-cr-at-eol")
+        all_dirty, real_dirty = _dirty(), _real_dirty()
         if all_dirty is None or real_dirty is None:
             return None
         return all_dirty - real_dirty
@@ -3888,11 +3931,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 healthy_after, detail_after = _venv_core_imports_healthy()
                 if healthy_after:
                     print("✓ Dependencies repaired!")
+                    _print_update_completion("✓ Update complete!")
                 else:
                     print(f"⚠ Venv still unhealthy after repair: {detail_after}")
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
             else:
-                print("✓ Already up to date!")
+                _print_update_completion("✓ Already up to date!")
             if runtime_repaired is not None and not _m()._is_windows():
                 print()
                 print(
@@ -4509,6 +4553,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     )
                 except EOFError:
                     response = "n"
+                except UnicodeDecodeError:
+                    # input() can raise this when the terminal encoding can't
+                    # decode the byte sequence (e.g. a non-UTF-8 locale, or an
+                    # embedded terminal). Without this, the exception escapes
+                    # here and crashes the update at this prompt.
+                    print(
+                        "  ⚠ Could not read input (encoding issue). Skipping. "
+                        "Run 'hermes config migrate' manually to configure."
+                    )
+                    response = "n"
 
             if response in {"", "y", "yes", "auto"}:
                 print()
@@ -4563,7 +4617,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("  Code and Python deps are updated, but the dashboard/TUI may")
             print("  be in a mixed state until the Node deps are rebuilt.")
         else:
-            print("✓ Update complete!")
+            _print_update_completion("✓ Update complete!")
 
         # Search-index optimization notice (v23). Existing installs keep their
         # working search index untouched on update; the compact v23 layout —
@@ -4835,37 +4889,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _manage_cmd_cache[scope_] = cmd
                 return cmd
 
-            # Drain budget for graceful SIGUSR1 restarts.  The gateway drains
-            # for up to ``agent.restart_drain_timeout`` (default 60s) before
-            # exiting with code 75; we wait slightly longer so the drain
-            # completes before we fall back to a hard restart.  On older
-            # systemd units without SIGUSR1 wiring this wait just times out
-            # and we fall back to ``systemctl restart`` (the old behaviour).
+            # Wait budget for graceful SIGUSR1 restarts.  In-band restart
+            # may defer stop() until active turns finish
+            # (``restart_after_turn_timeout``, #77184) and then spend up to
+            # ``restart_drain_timeout`` inside stop(). Cover both phases so
+            # we don't fall back to a hard kill while the gateway is still
+            # patiently waiting for the requesting turn. On older systemd
+            # units without SIGUSR1 wiring this wait just times out and we
+            # fall back to ``systemctl restart`` (the old behaviour).
             try:
-                from hermes_constants import (
-                    DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT as _DEFAULT_DRAIN,
-                )
-            except Exception:
-                _DEFAULT_DRAIN = 60.0
-            _cfg_drain = None
-            try:
-                from hermes_cli.config import load_config
+                from hermes_cli.gateway import _get_restart_exit_wait_budget
 
-                _cfg_agent = load_config().get("agent") or {}
-                _cfg_drain = _cfg_agent.get("restart_drain_timeout")
+                _drain_budget = max(float(_get_restart_exit_wait_budget()), 45.0)
             except Exception:
-                pass
-            try:
-                _drain_budget = (
-                    float(_cfg_drain)
-                    if _cfg_drain is not None
-                    else float(_DEFAULT_DRAIN)
-                )
-            except (TypeError, ValueError):
-                _drain_budget = float(_DEFAULT_DRAIN)
-            # Add a 15s margin so the drain loop + final exit finish before
-            # we escalate to ``systemctl restart`` / SIGTERM.
-            _drain_budget = max(_drain_budget, 30.0) + 15.0
+                _drain_budget = 45.0
 
             restarted_services = []
             failed_or_stale_units = []

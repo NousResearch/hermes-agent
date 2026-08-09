@@ -262,8 +262,12 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)
     ])
 
-    // A full window back means the profile still has more on disk.
-    const truncated = result.sessions.length >= loaded + SIDEBAR_SESSIONS_PAGE_SIZE
+    // A full window back means the profile still has more on disk — but pinned
+    // rows arrive as a back-fill PAST the limit, so counting them fakes a full
+    // page and the "Load more" never goes away (it re-fetches the same rows
+    // forever). Only unpinned rows count toward the window.
+    const unpinned = result.sessions.filter(s => !s.pinned).length
+    const truncated = unpinned >= loaded + SIDEBAR_SESSIONS_PAGE_SIZE
     setSessionProfilesTruncated(prev => ({ ...prev, [key]: truncated }))
   }, [])
 

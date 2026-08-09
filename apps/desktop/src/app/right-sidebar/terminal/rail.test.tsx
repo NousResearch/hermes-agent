@@ -35,10 +35,7 @@ describe('TerminalRail', () => {
   })
 
   it('⌘-click closes the tab; a plain click selects it', () => {
-    $terminals.set([
-      ...$terminals.get(),
-      { auto: true, cwd: 'C:\\repo', id: 'term-2', kind: 'user', title: 'zsh' }
-    ])
+    $terminals.set([...$terminals.get(), { auto: true, cwd: 'C:\\repo', id: 'term-2', kind: 'user', title: 'zsh' }])
 
     render(<TerminalRail />)
 

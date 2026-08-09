@@ -1,6 +1,7 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
 import json
+import sqlite3
 import pytest
 import time
 from unittest.mock import patch, MagicMock
@@ -10,6 +11,7 @@ from agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     COMPRESSED_SUMMARY_METADATA_KEY,
+    _PRUNE_MIN_CHARS,
     _summarize_tool_result,
     _is_summary_access_or_quota_error,
 )
@@ -61,6 +63,174 @@ class TestSummarizeToolResultWebExtract:
         assert summary == "[web_extract] https://example.com/h (500 chars)"
 
 
+class TestSummarizeToolResultClarify:
+    def test_preserves_resolved_user_response_without_metadata(self):
+        content = json.dumps({
+            "question": "When should I deploy?",
+            "choices_offered": ["Friday", "Monday"],
+            "user_response": "Friday",
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == '[clarify] user responded: "Friday"'
+
+    def test_preserves_multi_select_user_response(self):
+        content = json.dumps({
+            "question": "Which checks should I run?",
+            "choices_offered": ["lint", "tests", "types"],
+            "user_response": ["lint", "tests"],
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == '[clarify] user responded: ["lint", "tests"]'
+
+    def test_long_response_is_bounded_and_prefixed_text_is_not_trusted(self):
+        content = json.dumps({
+            "question": "Describe the deployment constraints",
+            "choices_offered": None,
+            "user_response": "A" * 1_000,
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        # Strictly below the prune floor so a later prune pass can never
+        # re-summarize the preserved answer away (idempotency below).
+        assert len(summary) == _PRUNE_MIN_CHARS - 1
+        assert summary.startswith('[clarify] user responded: "AAA')
+        assert summary.endswith("...[truncated]")
+        assert (
+            _summarize_tool_result("clarify", "{}", summary)
+            == "[clarify] asked user a question"
+        )
+
+    def test_forged_response_prefix_does_not_expose_internal_content(self):
+        forged = "[clarify] user responded: internal error: secret diagnostic"
+
+        summary = _summarize_tool_result("clarify", "{}", forged)
+
+        assert summary == "[clarify] asked user a question"
+        assert "secret diagnostic" not in summary
+
+    def test_prefixed_lone_surrogate_is_rejected_and_sqlite_safe(self):
+        forged = "[clarify] user responded: " + "\ud83d" * 1_000
+
+        summary = _summarize_tool_result("clarify", "{}", forged)
+
+        assert summary == "[clarify] asked user a question"
+        assert summary.encode("utf-8")
+        with sqlite3.connect(":memory:") as connection:
+            connection.execute("CREATE TABLE messages (content TEXT)")
+            connection.execute("INSERT INTO messages VALUES (?)", (summary,))
+            assert connection.execute("SELECT content FROM messages").fetchone()[0] == summary
+
+    def test_unpaired_surrogates_are_safe_through_pruning_and_sqlite(self, compressor):
+        content = json.dumps({"user_response": "Привет 😀" + "\ud83d" * 1_000})
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "clarify-1",
+                        "type": "function",
+                        "function": {"name": "clarify", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "clarify-1", "content": content},
+            {"role": "user", "content": "recent request"},
+            {"role": "assistant", "content": "recent response"},
+        ]
+
+        pruned_messages, pruned_count = compressor._prune_old_tool_results(
+            messages, protect_tail_count=2
+        )
+        summary = pruned_messages[1]["content"]
+
+        assert pruned_count == 1
+        assert len(summary) <= _PRUNE_MIN_CHARS
+        assert summary.encode("utf-8")
+        assert "Привет 😀" in summary
+        assert "\\ud83d" in summary
+        with sqlite3.connect(":memory:") as connection:
+            connection.execute("CREATE TABLE messages (content TEXT)")
+            connection.execute("INSERT INTO messages VALUES (?)", (summary,))
+            assert connection.execute("SELECT content FROM messages").fetchone()[0] == summary
+
+        pruned_again, _ = compressor._prune_old_tool_results(
+            pruned_messages, protect_tail_count=2
+        )
+        assert pruned_again[1]["content"] == summary
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            json.dumps({"error": "Failed to get user input: internal details"}),
+            json.dumps({"question": "Q?", "user_response": ""}),
+            json.dumps({"question": "Q?", "user_response": {"internal": "value"}}),
+            "not json",
+        ],
+    )
+    def test_does_not_expose_unresolved_or_internal_content(self, content):
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == "[clarify] asked user a question"
+
+    @pytest.mark.parametrize(
+        "sentinel",
+        [
+            # cli.py clarify timeout callback
+            "The user did not provide a response within the time limit. "
+            "Use your best judgement to make the choice and proceed.",
+            # gateway/run.py timeout + delivery-failure paths
+            "[user did not respond within 15m]",
+            "[clarify prompt could not be delivered]",
+            # hermes_cli/oneshot.py no-user callback
+            "[oneshot mode: no user available. Pick the best option from "
+            "['a', 'b'] using your own judgment and continue.]",
+        ],
+    )
+    def test_non_response_sentinels_are_not_attributed_to_user(self, sentinel):
+        """Timeout/no-user sentinel prose must not be quoted as a user answer."""
+        content = json.dumps({
+            "question": "Deploy when?",
+            "choices_offered": ["Friday", "Monday"],
+            "user_response": sentinel,
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == "[clarify] asked user a question"
+
+    def test_multi_select_containing_sentinel_stays_generic(self):
+        content = json.dumps({
+            "user_response": ["lint", "[user did not respond within 15m]"],
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == "[clarify] asked user a question"
+
+    def test_live_oneshot_producer_is_recognized_as_sentinel(self):
+        """Producer→recognizer drift guard: run the REAL oneshot no-user
+        callback and assert its output is filtered. If the producer's wording
+        drifts away from _CLARIFY_NON_RESPONSE_PREFIXES, this fails."""
+        from hermes_cli.oneshot import _oneshot_clarify_callback
+
+        sentinels = (
+            _oneshot_clarify_callback("Deploy when?", choices=["a", "b"]),
+            _oneshot_clarify_callback(
+                "Deploy when?", choices=["a", "b"], multi_select=True
+            ),
+            _oneshot_clarify_callback("Deploy when?"),
+        )
+        for sentinel in sentinels:
+            content = json.dumps({"user_response": sentinel})
+
+            summary = _summarize_tool_result("clarify", "{}", content)
+
+            assert summary == "[clarify] asked user a question", sentinel
 
 
 class TestShouldCompress:
@@ -98,14 +268,89 @@ class TestUpdateFromResponse:
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
 
+    def test_pairs_noted_rough_estimate_with_fitting_real_usage(self, compressor):
+        """note_request_rough_estimate() + a fitting response must anchor the
+        defer baseline even when no compression ever ran — this is what gives
+        fresh sessions a (rough, real) pair before their first compaction."""
+        compressor.note_request_rough_estimate(120_000)
+        compressor.update_from_response({"prompt_tokens": 60_000})
+
+        assert compressor.last_real_prompt_tokens == 60_000
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 120_000
+        # Consumed: a later usage-bearing response without a fresh note keeps
+        # the previous pair instead of re-pairing against a stale estimate.
+        assert compressor._pending_request_rough_tokens == 0
+
+    def test_post_compression_pairing_wins_over_noted_estimate(self, compressor):
+        """Right after a compaction the post-compression rough count is the
+        authoritative baseline (#36718); a stale pre-compression note must not
+        displace it."""
+        compressor.note_request_rough_estimate(120_000)
+        compressor.awaiting_real_usage_after_compression = True
+        compressor.last_compression_rough_tokens = 40_000
+        compressor.update_from_response({"prompt_tokens": 30_000})
+
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 40_000
+
+    def test_usage_less_response_preserves_pending_note(self, compressor):
+        """Transports that report usage separately send usage-less responses
+        first; the pending pair must survive until real usage arrives."""
+        compressor.note_request_rough_estimate(120_000)
+        compressor.update_from_response({})
+
+        assert compressor._pending_request_rough_tokens == 120_000
+
+    def test_over_threshold_real_usage_clears_pending_note(self, compressor):
+        compressor.note_request_rough_estimate(120_000)
+        compressor.update_from_response({"prompt_tokens": 90_000})
+
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 0
+        assert compressor._pending_request_rough_tokens == 0
+
 class TestPreflightDeferral:
 
-    def test_does_not_defer_when_rough_growth_is_large(self, compressor):
+    def test_defers_while_projected_real_usage_fits(self, compressor):
+        """Large rough growth alone must not trigger compaction: with real
+        usage at 50K and 10K of rough growth since that reading, projected
+        real usage is 60K — far under the 85K threshold. The old fixed 5%
+        growth tolerance compacted here at ~59% of the real window (CJK /
+        replay-blob overcount churn)."""
         compressor.threshold_tokens = 85_000
         compressor.last_real_prompt_tokens = 50_000
         compressor.last_rough_tokens_when_real_prompt_fit = 90_000
 
+        assert compressor.should_defer_preflight_to_real_usage(100_000) is True
+
+    def test_does_not_defer_when_projected_real_usage_crosses_threshold(self, compressor):
+        """Projection = last real + rough growth. 80K real + 6K growth = 86K
+        >= 85K threshold: compression must run."""
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 80_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
+
+        assert compressor.should_defer_preflight_to_real_usage(96_000) is False
+
+    def test_does_not_defer_without_a_baseline(self, compressor):
+        """No synchronized (rough, real) pair yet — fall back to trusting the
+        rough estimate (conservative: compress)."""
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 50_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 0
+        compressor.last_compression_rough_tokens = 0
+
         assert compressor.should_defer_preflight_to_real_usage(100_000) is False
+
+    def test_defer_does_not_ratchet_baseline(self, compressor):
+        """The baseline is refreshed only by update_from_response() pairing.
+        Deferring must not advance it: without a fresh real reading, a
+        ratcheted baseline would shrink apparent growth and defer on stale
+        data."""
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 50_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
+
+        assert compressor.should_defer_preflight_to_real_usage(100_000) is True
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 90_000
 
 
     def test_defers_immediately_after_compaction_with_stale_real_prompt(self, compressor):
@@ -2150,8 +2395,16 @@ class TestSanitizerStripsOrphanedToolCalls:
         assert asst.get("content") == "(tool call removed)"
 
     def test_sanitizer_strips_orphaned_keeps_valid(self, compressor):
-        """When an assistant has both valid and orphaned tool_calls, only
-        the orphans are stripped.  #51218"""
+        """When a MID-LIST assistant has both valid and orphaned tool_calls,
+        only the orphans are stripped.  #51218
+
+        The shape must sit mid-list: the same shape at the TAIL is
+        indistinguishable from a partial multi-call batch whose remaining
+        results are still in flight, and the sanitizer now presumes in-flight
+        there (#79278) — preserving is safe because the pre-API chokepoint
+        injects stub results for genuinely unanswered calls, while stripping
+        a live call silently loses its late result.
+        """
         msgs = [
             {
                 "role": "assistant",
@@ -2162,6 +2415,8 @@ class TestSanitizerStripsOrphanedToolCalls:
                 ],
             },
             {"role": "tool", "tool_call_id": "tc_valid", "content": "file content"},
+            # Later turn: the chain above is settled history, not in flight.
+            {"role": "assistant", "content": "done"},
         ]
 
         sanitized = compressor._sanitize_tool_pairs(msgs)
@@ -2221,6 +2476,208 @@ class TestSanitizerStripsOrphanedToolCalls:
         asst = next(m for m in sanitized if m.get("role") == "assistant")
         assert not asst.get("tool_calls")
         # No stub tool messages (which would have call_id != id mismatch)
+
+
+class TestSanitizerPreservesInFlightToolChain:
+    """Issue #79278: an in-flight tool call chain must survive compression.
+
+    When compression fires mid-chain — after the model emitted
+    ``assistant(tool_calls)`` but before tool_executor.py appended the matching
+    ``role="tool"`` result — the final message is a *pending* tool call, not an
+    orphan.  Stripping it (or replacing content with ``(tool call removed)``)
+    destroys the chain: when the executor later appends the real result,
+    repair_message_sequence drops it as an unmatched orphan and the completed
+    side effect and final synthesis are lost.  _sanitize_tool_pairs must exempt
+    the trailing in-flight call.
+    """
+
+    def test_trailing_inflight_tool_call_preserved(self, compressor):
+        """A trailing assistant tool_call with no result yet is pending, not
+        orphaned — preserve it verbatim.  #79278"""
+        msgs = [
+            {"role": "user", "content": "summarize"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "summarize", "arguments": "{}"}},
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_2", "function": {"name": "finalize", "arguments": "{}"}},
+                ],
+            },
+            # in-flight: call_2 has been emitted but its tool result is not
+            # yet appended by tool_executor.py
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        # The trailing in-flight call must survive intact.
+        assert sanitized[-1]["role"] == "assistant"
+        assert len(sanitized[-1]["tool_calls"]) == 1
+        assert sanitized[-1]["tool_calls"][0]["id"] == "call_2"
+        assert sanitized[-1]["content"] != "(tool call removed)"
+
+    def test_inflight_result_arrives_after_compress(self, compressor):
+        """After compress() preserves the pending call, appending its tool
+        result leaves a well-formed chain — the side effect's result reaches
+        the model.  #79278"""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_2", "function": {"name": "finalize", "arguments": "{}"}},
+                ],
+            },
+        ]
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+        assert sanitized[-1]["tool_calls"][0]["id"] == "call_2"
+
+        # The executor appends the result after compress() returns.
+        sanitized.append(
+            {"role": "tool", "tool_call_id": "call_2", "content": "side effect done"}
+        )
+
+        # Chain now settled: the assistant call is matched, result survives.
+        surviving = {tc["id"] for m in sanitized if m["role"] == "assistant"
+                     for tc in (m.get("tool_calls") or [])}
+        assert "call_2" in surviving
+        results = [m for m in sanitized if m["role"] == "tool"]
+        assert len(results) == 1 and results[0]["tool_call_id"] == "call_2"
+
+    def test_inflight_preserved_while_true_orphan_still_stripped(self, compressor):
+        """Preserving the trailing in-flight call must not weaken the existing
+        orphan-stripping behavior for genuinely orphaned calls in the discarded
+        region.  #79278"""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_orphan", "function": {"name": "search", "arguments": "{}"}},
+                ],
+            },
+            {"role": "user", "content": "interim"},
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "call_pending", "function": {"name": "write", "arguments": "{}"}},
+                ],
+            },
+            # trailing in-flight call_pending
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        middle = [m for m in sanitized if m["role"] == "assistant" and m.get("tool_calls")]
+        # Only the trailing in-flight call survives.
+        assert len(middle) == 1
+        assert middle[0]["tool_calls"][0]["id"] == "call_pending"
+        # The genuine orphan at the head was still stripped.
+        assert not any(m.get("tool_calls") and m["tool_calls"][0]["id"] == "call_orphan"
+                       for m in sanitized)
+
+    def test_side_effect_final_result_returned_end_to_end(self, compressor):
+        """Issue #79278 end-to-end: an in-flight tool chain that triggers
+        compression must still deliver the completed side effect's result.
+
+        Reproduces the full executor flow:
+          1. the model emits ``assistant(tool_calls=call_2)`` while call_2 is
+             still IN-FLIGHT — tool_executor.py has not yet appended its
+             ``role="tool"`` result;
+          2. context compression fires and ``_sanitize_tool_pairs()`` runs on
+             a history whose tail is that pending call;
+          3. the side effect completes and the executor appends the ``tool``
+             result for call_2;
+          4. the next pre-call pass, ``repair_message_sequence()``, runs and
+             must NOT drop the completed result as an unmatched orphan.
+
+        On the old code, compression stripped the pending call_2 as an
+        "orphan"; when the result then arrived, repair_message_sequence
+        dropped it as unmatched — so the completed side effect's result and
+        the final synthesis built on it were both lost.  The fix preserves the
+        trailing in-flight call, so the chain closes and the result survives.
+        """
+        from agent.agent_runtime_helpers import repair_message_sequence
+
+        history = [
+            {"role": "user", "content": "Do the work and use the tools."},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "run_side_effect", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "call_1",
+             "content": "side effect completed"},
+            # in-flight: call_2 emitted, its result not yet appended
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "call_2", "type": "function",
+                 "function": {"name": "gather_final_result", "arguments": "{}"}}]},
+        ]
+
+        # Step 1: compression fires mid-chain.
+        compressed = compressor._sanitize_tool_pairs([dict(m) for m in history])
+
+        # The in-flight call must survive the compression pass (fix), not be
+        # stripped as an orphan (bug) — otherwise the chain is already broken.
+        assert compressed[-1]["role"] == "assistant"
+        assert [tc["id"] for tc in compressed[-1].get("tool_calls", [])] == ["call_2"]
+        assert compressed[-1].get("content") != "(tool call removed)"
+
+        # Step 2: the side effect completes; the executor appends its result.
+        messages = [dict(m) for m in compressed] + [
+            {"role": "tool", "tool_call_id": "call_2",
+             "content": "final computed result: 42"}
+        ]
+
+        # Step 3: the next pre-call sanitizer runs on the settled chain.
+        repair_message_sequence(None, messages)
+
+        # Step 4: the final result must still be returned — the assistant call
+        # and its completed tool result both survive, still paired.
+        assistant_ids = {
+            tc["id"]
+            for m in messages if m["role"] == "assistant"
+            for tc in (m.get("tool_calls") or [])
+        }
+        assert "call_2" in assistant_ids
+
+        results = [m for m in messages
+                   if m["role"] == "tool" and m.get("tool_call_id") == "call_2"]
+        assert len(results) == 1
+        assert "42" in results[0]["content"]
+
+    def test_partial_batch_inflight_calls_preserved(self, compressor):
+        """Multi-call batch snapshotted BETWEEN result appends: the executor
+        has appended tool(c1) but not yet tool(c2)/tool(c3), so the last
+        message is a tool result while c2/c3 are still pending.  The walk-back
+        must find the assistant behind the trailing results and preserve the
+        whole batch — stripping c2/c3 there loses their late results exactly
+        like the tail-is-assistant shape.  #79278 follow-up."""
+        msgs = [
+            {"role": "user", "content": "run the batch"},
+            {"role": "assistant", "content": "", "tool_calls": [
+                {"id": "c1", "function": {"name": "a", "arguments": "{}"}},
+                {"id": "c2", "function": {"name": "b", "arguments": "{}"}},
+                {"id": "c3", "function": {"name": "c", "arguments": "{}"}},
+            ]},
+            {"role": "tool", "tool_call_id": "c1", "content": "done 1"},
+            # snapshot taken here: c2/c3 results not yet appended
+        ]
+
+        sanitized = compressor._sanitize_tool_pairs(msgs)
+
+        batch = [m for m in sanitized if m.get("role") == "assistant"][-1]
+        assert [tc["id"] for tc in batch["tool_calls"]] == ["c1", "c2", "c3"]
+        # And the already-arrived result survives too.
+        assert any(
+            m.get("role") == "tool" and m.get("tool_call_id") == "c1"
+            for m in sanitized
+        )
 
 
 class TestCooldownReentryAbort:

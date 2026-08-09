@@ -10,10 +10,10 @@ import { useSessionTileDelegate } from './use-session-tile-delegate'
 
 vi.mock('@/hermes', async importActual => ({
   ...(await importActual<typeof HermesModule>()),
-  getSessionMessages: vi.fn(async () => ({ messages: [], session_id: '' }))
+  getLatestSessionMessages: vi.fn(async () => ({ messages: [], session_id: '' }))
 }))
 
-const { getSessionMessages } = await import('@/hermes')
+const { getLatestSessionMessages } = await import('@/hermes')
 
 const row = (over: Partial<SessionInfo>): SessionInfo =>
   ({
@@ -51,7 +51,7 @@ function renderTile(requestGateway: ReturnType<typeof vi.fn>) {
 describe('useSessionTileDelegate resumeTile', () => {
   beforeEach(() => {
     setSessions([])
-    vi.mocked(getSessionMessages).mockClear()
+    vi.mocked(getLatestSessionMessages).mockClear()
   })
 
   afterEach(() => {
@@ -73,11 +73,12 @@ describe('useSessionTileDelegate resumeTile', () => {
     const runtimeId = await sessionTileDelegate()!.resumeTile('stored-x')
 
     expect(runtimeId).toBe('runtime-1')
-    expect(getSessionMessages).toHaveBeenCalledWith('stored-x', 'ai-engineer')
+    expect(getLatestSessionMessages).toHaveBeenCalledWith('stored-x', 'ai-engineer')
     expect(requestGateway).toHaveBeenCalledWith('session.resume', {
       session_id: 'stored-x',
       cols: 96,
-      profile: 'ai-engineer'
+      profile: 'ai-engineer',
+      omit_messages: true
     })
   })
 
@@ -94,7 +95,8 @@ describe('useSessionTileDelegate resumeTile', () => {
     expect(requestGateway).toHaveBeenCalledWith('session.resume', {
       session_id: 'stored-y',
       cols: 96,
-      profile: 'default'
+      profile: 'default',
+      omit_messages: true
     })
   })
 })

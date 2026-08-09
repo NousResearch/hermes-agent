@@ -6,7 +6,8 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.nous_account import NousPortalAccountInfo
+from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
+from hermes_cli.nous_subscription import NousSubscriptionFeatures
 from hermes_cli.tools_config import (
     _DEFAULT_OFF_TOOLSETS,
     _RECENTLY_SHIPPED_TOOLSETS,
@@ -98,6 +99,20 @@ def test_get_platform_tools_homeassistant_toolset_enabled_for_cron_when_hass_tok
 
     cli_enabled = _get_platform_tools({}, "cli")
     assert "homeassistant" in cli_enabled
+
+
+def test_get_platform_tools_homeassistant_uses_active_profile_token(monkeypatch):
+    from agent import secret_scope
+
+    monkeypatch.delenv("HASS_TOKEN", raising=False)
+    secret_scope.set_multiplex_active(True)
+    token = secret_scope.set_secret_scope({"HASS_TOKEN": "profile-token"})
+    try:
+        assert "homeassistant" in _get_platform_tools({}, "cron")
+        assert "homeassistant" in _get_platform_tools({}, "cli")
+    finally:
+        secret_scope.reset_secret_scope(token)
+        secret_scope.set_multiplex_active(False)
 
 
 # ─── #35527: platform-restricted default-off toolsets (discord/discord_admin)
@@ -528,6 +543,74 @@ def _fake_features(*, logged_in: bool, paid: bool = True):
         )
     )
     return SimpleNamespace(nous_auth_present=logged_in, account_info=account)
+
+
+def test_visible_providers_reuses_logged_out_feature_snapshot(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+
+    account = NousPortalAccountInfo(
+        logged_in=False,
+        source="none",
+        fresh=False,
+        paid_service_access=None,
+    )
+    features = NousSubscriptionFeatures(
+        subscribed=False,
+        nous_auth_present=False,
+        provider_is_nous=False,
+        features={},
+        account_info=account,
+    )
+    monkeypatch.setattr(
+        tools_config,
+        "get_nous_subscription_features",
+        lambda *args, **kwargs: pytest.fail("feature snapshot was resolved again"),
+    )
+
+    providers = _visible_providers(
+        TOOL_CATEGORIES["image_gen"], {}, features=features
+    )
+
+    assert any(
+        provider.get("managed_nous_feature") == "image_gen"
+        for provider in providers
+    )
+
+
+def test_visible_providers_reuses_pool_video_feature_snapshot(monkeypatch):
+    import hermes_cli.tools_config as tools_config
+
+    account = NousPortalAccountInfo(
+        logged_in=True,
+        source="jwt",
+        fresh=False,
+        paid_service_access=False,
+        tool_access=NousToolAccessInfo(
+            enabled=True,
+            coverage={"fal-video": False},
+        ),
+    )
+    features = NousSubscriptionFeatures(
+        subscribed=True,
+        nous_auth_present=True,
+        provider_is_nous=False,
+        features={},
+        account_info=account,
+    )
+    monkeypatch.setattr(
+        tools_config,
+        "get_nous_subscription_features",
+        lambda *args, **kwargs: pytest.fail("feature snapshot was resolved again"),
+    )
+
+    providers = _visible_providers(
+        TOOL_CATEGORIES["video_gen"], {}, features=features
+    )
+
+    assert not any(
+        provider.get("managed_nous_feature") == "video_gen"
+        for provider in providers
+    )
 
 
 

@@ -145,6 +145,96 @@ _ENDPOINT_MODEL_CACHE_TTL = 300
 _ENDPOINT_PROBE_TTL_SECONDS = 3600.0
 _endpoint_probe_path_cache: Dict[str, tuple] = {}
 
+# A configured endpoint that is routable-but-dead — e.g. a corp LAN address
+# while off-VPN — blackholes TCP: the SYN draws no SYN-ACK, no RST and no ICMP
+# error, so a probe waits out its full timeout instead of failing fast. Startup
+# runs a whole waterfall of such probes across several functions here, and the
+# stalls stack into a minute-long hang before the banner renders.
+#
+# Once ANY probe has actually observed a connect timeout for an endpoint, the
+# others have nothing to gain by repeating it. Recording that observation and
+# short-circuiting on it performs no network I/O of its own — it adds no probe
+# for callers or tests to mock, and it can only ever fire after a real timeout
+# has already been paid, so it cannot suppress a probe that would have worked.
+_ENDPOINT_BLACKHOLE_TTL_SECONDS = 30.0
+# Values are monotonic timestamps of the last observed connect timeout.
+_endpoint_blackhole_cache: Dict[str, float] = {}
+
+
+def _endpoint_host_key(base_url: str) -> Optional[str]:
+    """Return a ``host:port`` key for ``base_url``, or None if it has no host.
+
+    Keyed on host:port rather than the full URL so every probe path for one
+    server — ``/v1``-suffixed or not, LM Studio root or API root — shares a
+    single entry.
+    """
+    normalized = _normalize_base_url(base_url)
+    if not normalized:
+        return None
+    url = normalized if "://" in normalized else f"http://{normalized}"
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except Exception:
+        return None
+    return f"{host}:{port}" if host else None
+
+
+def _note_endpoint_blackholed(base_url: str) -> None:
+    """Record that a probe to ``base_url`` timed out during TCP connect."""
+    key = _endpoint_host_key(base_url)
+    if key is None:
+        return
+    _endpoint_blackhole_cache[key] = time.monotonic()
+    logger.debug(
+        "Endpoint %s timed out connecting — skipping further probes for %.0fs",
+        key, _ENDPOINT_BLACKHOLE_TTL_SECONDS,
+    )
+
+
+def _endpoint_blackholed(base_url: str) -> bool:
+    """True if a recent probe to ``base_url`` timed out during TCP connect.
+
+    Pure cache lookup; never touches the network. The entry expires after
+    _ENDPOINT_BLACKHOLE_TTL_SECONDS — long enough to collapse one startup's
+    burst of probes, short enough that bringing the VPN up mid-session is
+    picked up without a restart.
+    """
+    if _ENDPOINT_BLACKHOLE_TTL_SECONDS <= 0:
+        return False
+    key = _endpoint_host_key(base_url)
+    if key is None:
+        return False
+    seen = _endpoint_blackhole_cache.get(key)
+    if seen is None:
+        return False
+    if (time.monotonic() - seen) >= _ENDPOINT_BLACKHOLE_TTL_SECONDS:
+        del _endpoint_blackhole_cache[key]
+        return False
+    return True
+
+
+def _is_connect_timeout(exc: BaseException) -> bool:
+    """True for connect-phase timeouts raised by httpx or requests.
+
+    Read timeouts are deliberately excluded: those mean the server accepted
+    the connection, which is the opposite of the blackhole this guards.
+    """
+    try:
+        import httpx
+        if isinstance(exc, httpx.ConnectTimeout):
+            return True
+    except Exception:
+        pass
+    try:
+        from requests.exceptions import ConnectTimeout
+        if isinstance(exc, ConnectTimeout):
+            return True
+    except Exception:
+        pass
+    return False
+
 # ── Disk L2 for local-endpoint probe results ────────────────────────────────
 # The in-process caches above die with the process, so every CLI cold start
 # with a local model re-paid the probe waterfall in AIAgent.__init__:
@@ -382,6 +472,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "llama": 131072,
     # Qwen — specific model families before the catch-all.
     # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
+    "qwen3.8-max": 1_000_000,     # 1M context (OpenRouter & Nous portal, verified 2026-08-03)
     "qwen3.6-plus": 1048576,      # 1M context (DashScope/Alibaba & OpenRouter)
     "qwen3.7-plus": 1048576,      # 1M context (DashScope/Alibaba)
     "qwen3-coder-plus": 1000000,  # 1M context
@@ -836,7 +927,10 @@ def _localhost_to_ipv4(url: str) -> str:
     ``http://localhost...`` (e.g. ``?upstream=http://localhost:11434``)
     passes through untouched.
     """
-    if not url:
+    if not url or not isinstance(url, str):
+        # Non-string values (test doubles, lazily-resolved config objects)
+        # previously flowed through these call sites untouched — keep that
+        # contract; re.sub would raise TypeError.
         return url
     return re.sub(
         r"^(https?://)localhost(?=[:/]|$)",
@@ -873,6 +967,13 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     if cached is not None and (time.monotonic() - cached[1]) < _ENDPOINT_PROBE_TTL_SECONDS:
         return cached[0]
 
+    # The host already blackholed a connect: skip the waterfall below, each leg
+    # of which would otherwise burn its full 2s timeout. Deliberately NOT
+    # written to _endpoint_probe_path_cache — that entry lives for an hour,
+    # which would pin the endpoint to "undetected" long after it comes back.
+    if _endpoint_blackholed(server_url):
+        return None
+
     # Disk L2: a fresh cross-process verdict skips the HTTP waterfall
     # entirely (back-to-back CLI invocations, cron ticks).
     disk_hit = _local_probe_disk_get("server_type", server_url)
@@ -882,6 +983,16 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
 
     headers = _auth_headers(api_key)
 
+    def _probe_failed(exc: Exception) -> None:
+        """Swallow a probe error — or abort the waterfall if we were blackholed.
+
+        Re-raising propagates out of the ``with`` block to the outer handler,
+        so the remaining legs are skipped instead of each stalling in turn.
+        """
+        if _is_connect_timeout(exc):
+            _note_endpoint_blackholed(server_url)
+            raise exc
+
     result: Optional[str] = None
     try:
         with httpx.Client(timeout=2.0, headers=headers) as client:
@@ -890,8 +1001,8 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                 r = client.get(f"{lmstudio_url}/api/v1/models")
                 if r.status_code == 200:
                     result = "lm-studio"
-            except Exception:
-                pass
+            except Exception as exc:
+                _probe_failed(exc)
             if result is None:
                 # Ollama exposes /api/tags and responds with {"models": [...]}
                 # LM Studio returns {"error": "Unexpected endpoint"} with status 200
@@ -905,8 +1016,8 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                                 result = "ollama"
                         except Exception:
                             pass
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _probe_failed(exc)
             if result is None:
                 # llama.cpp exposes /v1/props (older builds used /props without the /v1 prefix)
                 try:
@@ -915,8 +1026,8 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                         r = client.get(f"{server_url}/props")  # fallback for older builds
                     if r.status_code == 200 and "default_generation_settings" in r.text:
                         result = "llamacpp"
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _probe_failed(exc)
             if result is None:
                 # vLLM: /version
                 try:
@@ -925,8 +1036,8 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                         data = r.json()
                         if "version" in data:
                             result = "vllm"
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _probe_failed(exc)
     except Exception:
         pass
 
@@ -1084,7 +1195,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
         return cache
 
     except Exception as e:
-        logger.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
+        logger.warning("Failed to fetch model metadata from OpenRouter: %s", e)
         if _model_metadata_cache:
             return _model_metadata_cache
         disk_cache = _load_model_metadata_disk_cache()
@@ -1119,6 +1230,12 @@ def fetch_endpoint_model_metadata(
         cached_at = _endpoint_model_metadata_cache_time.get(normalized, 0)
         if cached is not None and (time.time() - cached_at) < _ENDPOINT_MODEL_CACHE_TTL:
             return cached
+
+    # Blackholed endpoint: every candidate below would spend its full 5s
+    # connect budget. Returned empty rather than cached, so the endpoint is
+    # retried as soon as the blackhole entry expires.
+    if _endpoint_blackholed(normalized):
+        return {}
 
     candidates = [normalized]
     if normalized.endswith("/v1"):
@@ -1182,11 +1299,36 @@ def fetch_endpoint_model_metadata(
                 return cache
         except Exception as exc:
             last_error = exc
+            if _is_connect_timeout(exc):
+                _note_endpoint_blackholed(normalized)
 
     for candidate in candidates:
-        url = candidate.rstrip("/") + "/models"
+        # A connect timeout on one candidate condemns the host, not the path:
+        # the remaining candidates differ only by URL suffix, so trying them
+        # would repeat the same stall.
+        if _endpoint_blackholed(normalized):
+            break
+        # normalized/candidates stay unrewritten (cache key stability); only
+        # the outbound request target is IPv4-resolved to skip the multi-second
+        # dual-stack IPv6 connect timeout (see _localhost_to_ipv4).
+        request_candidate = _localhost_to_ipv4(candidate)
+        url = request_candidate.rstrip("/") + "/models"
+        response = None
         try:
-            response = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=(5, 10),
+                verify=_resolve_requests_verify(),
+                stream=True,
+            )
+            if response.status_code in (401, 403):
+                logger.debug(
+                    "Model metadata probe received HTTP %s from %s; stopping candidate probing",
+                    response.status_code,
+                    url,
+                )
+                break
             response.raise_for_status()
             payload = response.json()
             cache: Dict[str, Dict[str, Any]] = {}
@@ -1216,7 +1358,7 @@ def fetch_endpoint_model_metadata(
             if is_llamacpp:
                 try:
                     # Try /v1/props first (current llama.cpp); fall back to /props for older builds
-                    base = candidate.rstrip("/").replace("/v1", "")
+                    base = request_candidate.rstrip("/").replace("/v1", "")
                     _verify = _resolve_requests_verify()
                     props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5, verify=_verify)
                     if not props_resp.ok:
@@ -1236,6 +1378,11 @@ def fetch_endpoint_model_metadata(
             return cache
         except Exception as exc:
             last_error = exc
+            if _is_connect_timeout(exc):
+                _note_endpoint_blackholed(normalized)
+        finally:
+            if response is not None:
+                response.close()
 
     if last_error:
         logger.debug("Failed to fetch model metadata from %s/models: %s", normalized, last_error)
@@ -1796,6 +1943,9 @@ def _query_ollama_api_show_uncached(model: str, base_url: str, api_key: str = ""
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
 
+    if _endpoint_blackholed(server_url):
+        return None
+
     headers = _auth_headers(api_key)
 
     try:
@@ -1827,8 +1977,9 @@ def _query_ollama_api_show_uncached(model: str, base_url: str, api_key: str = ""
                                     return ctx
                             except ValueError:
                                 pass
-    except Exception:
-        pass
+    except Exception as exc:
+        if _is_connect_timeout(exc):
+            _note_endpoint_blackholed(server_url)
     return None
 
 
@@ -1916,6 +2067,9 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
         server_url = server_url[:-3]
     lmstudio_url = _localhost_to_ipv4(_lmstudio_server_root(base_url))
 
+    if _endpoint_blackholed(server_url):
+        return None
+
     headers = _auth_headers(api_key)
 
     try:
@@ -1986,13 +2140,39 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
             if resp.status_code == 200:
                 data = resp.json()
                 models_list = data.get("data", [])
+                # Match by id; on single-model servers (e.g. llama.cpp) the
+                # configured name rarely equals the reported id (a GGUF path),
+                # so fall back to the sole model when nothing matches.
+                matched = None
                 for m in models_list:
                     if _model_id_matches(m.get("id", ""), model):
-                        ctx = m.get("max_model_len") or m.get("context_length") or m.get("max_tokens")
-                        if ctx and isinstance(ctx, (int, float)):
-                            return int(ctx)
-    except Exception:
-        pass
+                        matched = m
+                        break
+                if matched is None and len(models_list) == 1:
+                    matched = models_list[0]
+                if matched is not None:
+                    # llama.cpp nests the runtime context under meta.n_ctx; the
+                    # vLLM/OpenAI keys are also checked. Runtime n_ctx is
+                    # preferred over n_ctx_train (the training maximum, which
+                    # can be larger than what the server actually allocates).
+                    for source in (matched, matched.get("meta") or {}):
+                        if not isinstance(source, dict):
+                            continue
+                        for key in (
+                            "n_ctx",
+                            "context_length",
+                            "context_window",
+                            "max_model_len",
+                            "max_context_length",
+                            "max_tokens",
+                            "n_ctx_train",
+                        ):
+                            val = source.get(key)
+                            if isinstance(val, (int, float)) and val:
+                                return int(val)
+    except Exception as exc:
+        if _is_connect_timeout(exc):
+            _note_endpoint_blackholed(server_url)
 
     return None
 

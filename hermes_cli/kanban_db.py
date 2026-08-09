@@ -133,6 +133,30 @@ VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
 # not dispatcher spawn/crash/timeout failures.
 BLOCK_RECURRENCE_LIMIT = 2
 VALID_WORKSPACE_KINDS = {"scratch", "worktree", "dir"}
+
+
+def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
+    """Normalize a per-task reasoning effort into a storable level.
+
+    Accepts any level in ``hermes_constants.VALID_REASONING_EFFORTS`` plus
+    ``"none"`` (thinking disabled), case-insensitively. Empty / None means
+    "inherit the worker profile's own ``agent.reasoning_effort``" and stores
+    NULL. Anything else is rejected rather than silently dropped — a typo'd
+    level must not quietly hand the task back to the profile default.
+    """
+    from hermes_constants import VALID_REASONING_EFFORTS
+
+    value = str(effort or "").strip().lower()
+    if not value:
+        return None
+    if value == "none" or value in VALID_REASONING_EFFORTS:
+        return value
+    allowed = ", ".join(("none", *VALID_REASONING_EFFORTS))
+    raise ValueError(
+        f"reasoning_effort must be one of {allowed}, got {effort!r}"
+    )
+
+
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024
@@ -929,6 +953,12 @@ class Task:
     # model (pre-existing behaviour). Solves the "model from provider A,
     # profile configured for provider B" mismatch class.
     provider_override: Optional[str] = None
+    # Per-task reasoning effort for the worker (one of
+    # ``hermes_constants.VALID_REASONING_EFFORTS``, or ``"none"`` for thinking
+    # off). When set, the dispatcher passes ``--reasoning <level>`` so the
+    # worker runs at that depth regardless of the profile's
+    # ``agent.reasoning_effort``. NULL = the worker profile's own setting.
+    reasoning_effort: Optional[str] = None
     # Per-task override for the consecutive-failure circuit breaker.
     # The value is the failure count at which the breaker trips — e.g.
     # ``max_retries=1`` blocks on the first failure (zero retries),
@@ -1030,6 +1060,11 @@ class Task:
             provider_override=(
                 row["provider_override"]
                 if "provider_override" in keys and row["provider_override"]
+                else None
+            ),
+            reasoning_effort=(
+                row["reasoning_effort"]
+                if "reasoning_effort" in keys and row["reasoning_effort"]
                 else None
             ),
             max_retries=(
@@ -1200,6 +1235,11 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- worker resolves the model against the right backend instead of the
     -- profile's configured provider. NULL = profile provider.
     provider_override    TEXT,
+    -- Per-task reasoning effort for the worker (minimal|low|medium|high|
+    -- xhigh|max|ultra, or 'none' for thinking off). When set, the dispatcher
+    -- passes --reasoning <level> so the worker runs at that depth regardless
+    -- of the profile's agent.reasoning_effort. NULL = profile setting.
+    reasoning_effort     TEXT,
     -- Per-task override for the consecutive-failure circuit breaker.
     -- The value is the failure count at which the breaker trips — e.g.
     -- ``max_retries=1`` blocks on the first failure. NULL (the common
@@ -2388,6 +2428,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             conn, "tasks", "provider_override", "provider_override TEXT"
         )
 
+    if "reasoning_effort" not in cols:
+        # Per-task thinking depth for the worker. NULL = the worker profile's
+        # own agent.reasoning_effort, which is what existing rows were getting.
+        _add_column_if_missing(
+            conn, "tasks", "reasoning_effort", "reasoning_effort TEXT"
+        )
+
     if "goal_mode" not in cols:
         # Ralph-style goal loop toggle for the dispatched worker. 0 (the
         # default) = classic single-shot worker, preserving the behaviour
@@ -2851,6 +2898,7 @@ def create_task(
     max_retries: Optional[int] = None,
     model_override: Optional[str] = None,
     provider_override: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
     goal_mode: bool = False,
     goal_max_turns: Optional[int] = None,
     initial_status: str = "running",
@@ -2887,6 +2935,11 @@ def create_task(
     config — passed to the worker as ``-m <model> [--provider <name>]``.
     ``provider_override`` requires ``model_override``.
 
+    ``reasoning_effort`` pins the worker's thinking depth for this task
+    (``minimal``…``ultra``, or ``none`` to disable thinking), passed as
+    ``--reasoning <level>``. It is independent of ``model_override``: a task
+    can run the profile's own model at a different depth.
+
     ``project_source_task_id`` is an internal cross-profile fallback for a
     worker-created child. When the active profile cannot resolve ``project_id``
     in its own projects.db, a matching canonical project-linked task in this
@@ -2895,6 +2948,7 @@ def create_task(
     """
     model_override = (model_override or "").strip() or None
     provider_override = (provider_override or "").strip() or None
+    reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     if provider_override and not model_override:
         raise ValueError("provider_override requires a model_override")
     assignee = _canonical_assignee(assignee)
@@ -3162,8 +3216,9 @@ def create_task(
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
                         skills, max_retries, model_override, provider_override,
+                        reasoning_effort,
                         goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -3185,6 +3240,7 @@ def create_task(
                         int(max_retries) if max_retries is not None else None,
                         model_override,
                         provider_override,
+                        reasoning_effort,
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
@@ -3423,6 +3479,44 @@ def set_model_override(
         _append_event(
             conn, task_id, "model_override_set",
             {"model": model, "provider": provider},
+        )
+        return True
+
+
+def set_reasoning_effort(
+    conn: sqlite3.Connection,
+    task_id: str,
+    effort: Optional[str],
+) -> bool:
+    """Set (or clear) the per-task reasoning effort.
+
+    ``effort=None`` (or empty) clears the override — the worker falls back to
+    its profile's own ``agent.reasoning_effort``. ``"none"`` is a real value,
+    not a clear: it pins thinking OFF for this task.
+
+    Deliberately independent of :func:`set_model_override`: a task may run the
+    profile's own model at a different depth, and clearing a model override
+    must not silently reset the depth the operator chose. Like the model
+    override, it takes effect on the NEXT dispatch, so it is settable on a
+    running task. Returns True on success.
+    """
+    effort = normalize_reasoning_effort(effort)
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        if not row:
+            return False
+        if row["status"] == "archived":
+            raise RuntimeError(
+                f"cannot set reasoning effort on archived task {task_id}"
+            )
+        conn.execute(
+            "UPDATE tasks SET reasoning_effort = ? WHERE id = ?",
+            (effort, task_id),
+        )
+        _append_event(
+            conn, task_id, "reasoning_effort_set", {"reasoning_effort": effort}
         )
         return True
 
@@ -6700,6 +6794,10 @@ class DispatchResult:
 
     reclaimed: int = 0
     promoted: int = 0
+    reconciled_orphans: list[str] = field(default_factory=list)
+    """Task ids requeued by :func:`reconcile_orphaned_running` this tick —
+    ``running`` cards whose claim bookkeeping was broken (no valid claim,
+    dead/gone worker). See the reconciliation pass for details."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """List of ``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
@@ -7337,6 +7435,96 @@ def detect_stale_running(
         # spawn_failed / timed_out / crashed counters.
 
     return reclaimed
+
+
+def reconcile_orphaned_running(
+    conn: sqlite3.Connection,
+) -> list[str]:
+    """Reconcile ``running`` cards whose claim bookkeeping is broken.
+
+    Tracked-state vs. reality divergence: a task can sit in
+    ``status='running'`` with ``claim_lock IS NULL`` or ``claim_expires IS
+    NULL`` (crash mid-claim, manual SQL, DB restore). None of the other
+    recovery paths ever touch such a card — ``release_stale_claims``
+    requires a non-NULL ``claim_expires``, ``detect_crashed_workers``
+    requires a host-local claim_lock + worker_pid, and
+    ``detect_stale_running`` is disabled by default — so the card shows
+    Running forever (a zombie).
+
+    This pass finds those orphans, requeues them to ``ready`` with an
+    explanatory comment, closes any leaked run, and appends a
+    ``reconciled`` event. If the orphan row still records a live PID on
+    this host, requeueing is deferred to a later tick so we never spawn a
+    duplicate beside a possibly-alive worker.
+
+    Returns the list of reconciled task ids. Safe to call every tick.
+
+    Idea from openai/symphony's tracker reconciliation (Apache-2.0).
+    """
+    now = int(time.time())
+    reconciled: list[str] = []
+    rows = conn.execute(
+        "SELECT id, claim_lock, claim_expires, worker_pid FROM tasks "
+        "WHERE status = 'running' "
+        "  AND (claim_lock IS NULL OR claim_expires IS NULL)"
+    ).fetchall()
+    for row in rows:
+        tid = row["id"]
+        pid = row["worker_pid"]
+        if pid and _pid_alive(pid):
+            # The recorded worker may still be doing real work — never
+            # requeue beside a live process. Retry next tick.
+            _log.debug(
+                "kanban reconcile: task %s has broken claim bookkeeping but "
+                "pid %s is alive on this host — deferring", tid, pid,
+            )
+            continue
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, "
+                "last_heartbeat_at = NULL "
+                "WHERE id = ? AND status = 'running' "
+                "  AND claim_lock IS ? AND claim_expires IS ?",
+                (tid, row["claim_lock"], row["claim_expires"]),
+            )
+            if cur.rowcount != 1:
+                continue
+            payload = {
+                "reason": "orphaned_running",
+                "claim_lock": row["claim_lock"],
+                "claim_expires": (
+                    int(row["claim_expires"])
+                    if row["claim_expires"] is not None else None
+                ),
+                "worker_pid": int(pid) if pid else None,
+                "now": now,
+            }
+            run_id = _end_run(
+                conn, tid,
+                outcome="reclaimed", status="reclaimed",
+                error="orphaned running card (broken claim bookkeeping)",
+                metadata=payload,
+            )
+            # Inline comment INSERT — add_comment opens its own write_txn
+            # and would raise on nesting (see write_txn pitfalls).
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    tid, "dispatcher",
+                    "reconciliation: card was 'running' with no valid claim "
+                    "(dead/gone worker) — requeued to ready",
+                    now,
+                ),
+            )
+            _append_event(conn, tid, "reconciled", payload, run_id=run_id)
+            reconciled.append(tid)
+        _log.info(
+            "kanban reconcile: requeued orphaned running task %s "
+            "(claim_lock=%r, worker_pid=%r)", tid, row["claim_lock"], pid,
+        )
+    return reconciled
 
 
 def _error_fingerprint(error_text: str) -> str:
@@ -8120,6 +8308,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -8154,6 +8343,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            reconcile_orphans=reconcile_orphans,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -8170,6 +8360,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            reconcile_orphans=reconcile_orphans,
         )
         # Still under the dispatch lock: opportunistically truncate the WAL
         # at a coarse interval so it cannot grow unbounded between restarts.
@@ -8190,6 +8381,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -8225,6 +8417,11 @@ def _dispatch_once_locked(
 
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
+    if reconcile_orphans:
+        # Orphaned-card reconciliation: requeue 'running' cards whose claim
+        # bookkeeping is broken (no valid claim, dead/gone worker) that the
+        # TTL/crash/stale paths can never see. See reconcile_orphaned_running.
+        result.reconciled_orphans = reconcile_orphaned_running(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
@@ -9026,6 +9223,11 @@ def _default_spawn(
         # the classic mis-set that stalls a board).
         if task.provider_override:
             cmd.extend(["--provider", task.provider_override])
+    # Per-task thinking depth. Independent of the model override — a task can
+    # run the profile's own model at a different depth — so this is its own
+    # branch, not a nested one.
+    if task.reasoning_effort:
+        cmd.extend(["--reasoning", task.reasoning_effort])
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
@@ -9674,6 +9876,9 @@ def count_notify_subs(
     board: Optional[str] = None,
     notifier_profiles: Optional[Iterable[str]] = None,
     include_unowned: bool = False,
+    platform: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
 ) -> int:
     """Count ``kanban_notify_subs`` rows via a read-only connection.
 
@@ -9687,7 +9892,10 @@ def count_notify_subs(
     DB, or a legacy DB that predates the subscriptions table, counts as
     zero. When ``notifier_profiles`` is supplied, only subscriptions owned
     by those profiles are counted; ``include_unowned`` also includes legacy
-    rows without an owner stamp. Path resolution matches :func:`connect`
+    rows without an owner stamp. Optional platform/chat/thread filters narrow
+    the probe to one notification owner without changing the unfiltered count.
+    Platform matching is case-insensitive, matching notifier routing; chat and
+    thread identifiers are exact. Path resolution matches :func:`connect`
     (explicit ``db_path``, else ``board`` via :func:`kanban_db_path`). Raises
     :class:`sqlite3.Error` when the DB exists but cannot be read
     (locked, corrupt); callers choose their own fallback.
@@ -9701,10 +9909,24 @@ def count_notify_subs(
             owner_where, owner_params = _notify_profile_filter(
                 notifier_profiles, include_unowned=include_unowned,
             )
-            sql = "SELECT COUNT(*) FROM kanban_notify_subs"
+            clauses: list[str] = []
+            params: list[Any] = []
             if owner_where:
-                sql += " WHERE " + owner_where
-            row = conn.execute(sql, owner_params).fetchone()
+                clauses.append(f"({owner_where})")
+                params.extend(owner_params)
+            if platform is not None:
+                clauses.append("LOWER(platform) = LOWER(?)")
+                params.append(platform)
+            if chat_id is not None:
+                clauses.append("chat_id = ?")
+                params.append(chat_id)
+            if thread_id is not None:
+                clauses.append("thread_id = ?")
+                params.append(thread_id)
+            query = "SELECT COUNT(*) FROM kanban_notify_subs"
+            if clauses:
+                query += " WHERE " + " AND ".join(clauses)
+            row = conn.execute(query, params).fetchone()
         except sqlite3.OperationalError as exc:
             if "no such table" in str(exc).lower():
                 return 0

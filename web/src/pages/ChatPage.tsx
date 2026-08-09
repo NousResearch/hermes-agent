@@ -43,6 +43,7 @@ import {
   PTY_RECONNECT_INPUT_MESSAGE,
   PTY_RESUME_RECONNECT_THROTTLE_MS,
   PTY_RESUME_SANITIZE_WINDOW_MS,
+  PTY_TICKET_TIMEOUT_MS,
   type PtyConnectionState,
   shouldBlockPtyInput,
   shouldReconnectPtyOnPageResume,
@@ -63,6 +64,7 @@ import {
   transferMayContainImage,
   uploadChatImage,
 } from "@/lib/chatImagePaste";
+import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
@@ -950,7 +952,22 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         connectingTimerRef.current = null;
       }
     };
-    const scheduleReconnect = (code: number) => {
+    // The pre-socket half of the connect. A ticket request that rejects or
+    // never settles leaves no socket behind, so neither `onclose` nor the
+    // NS-591 CONNECTING timer (armed after `new WebSocket` below) can recover
+    // it. `ticketSuperseded` invalidates a late ticket result so a timed-out
+    // attempt cannot open a socket behind the replacement this schedules.
+    let ticketSuperseded = false;
+    let ticketTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearTicketTimer = () => {
+      if (ticketTimer) {
+        clearTimeout(ticketTimer);
+        ticketTimer = null;
+      }
+    };
+    // `code` is null when the attempt died before any socket existed — the
+    // banner then omits the "(code N)" suffix rather than inventing one.
+    const scheduleReconnect = (code: number | null) => {
       if (reconnectTimerRef.current) {
         return;
       }
@@ -965,6 +982,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         setReconnectNonce((n) => n + 1);
       }, delayMs);
     };
+    // Give up on the ticket phase and hand off to the ordinary backoff.
+    const failTicketAttempt = () => {
+      ticketSuperseded = true;
+      clearTicketTimer();
+      connectInFlightRef.current = false;
+      scheduleReconnect(null);
+    };
     void (async () => {
       if (unmounting) return;
       const params: Record<string, string> = { channel };
@@ -978,7 +1002,27 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // selected profile, so the conversation runs with that profile's model,
       // skills, memory, and sessions (see web_server._resolve_chat_argv).
       if (scopedProfile) params.profile = scopedProfile;
-      const url = await api.buildWsUrl("/api/pty", params);
+
+      ticketTimer = setTimeout(() => {
+        ticketTimer = null;
+        if (unmounting || ticketSuperseded) {
+          return;
+        }
+        failTicketAttempt();
+      }, PTY_TICKET_TIMEOUT_MS);
+
+      let url: string;
+      try {
+        url = await api.buildWsUrl("/api/pty", params);
+      } catch (err) {
+        if (unmounting || ticketSuperseded) return;
+        console.warn(`[chat] PTY ticket request failed: ${err}`);
+        failTicketAttempt();
+        return;
+      }
+      if (unmounting || ticketSuperseded) return;
+      clearTicketTimer();
+
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
@@ -1093,6 +1137,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       console.warn(`[chat] PTY WebSocket closed code=${ev.code}${why}`);
       setLastCloseCode(ev.code);
       if (ev.code === 4401) {
+        if (maybeReloadForLoopbackWsAuthFailure(ev.code)) {
+          return;
+        }
         setPtyState("closed");
         setBanner(
           ev.reason
@@ -1246,6 +1293,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       if (settleRaf2) cancelAnimationFrame(settleRaf2);
       clearReconnectTimer();
       clearConnectingTimer();
+      clearTicketTimer();
+      ticketSuperseded = true;
       connectInFlightRef.current = false;
       // Phase 5.3: ``ws`` is local to the IIFE that opens it (the gated-mode
       // ticket fetch makes the open async). The cleanup runs at the outer

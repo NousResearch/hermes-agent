@@ -263,6 +263,10 @@ export const zhHant = defineLocale({
         credits: {
           label: '額度提醒',
           description: '額度存取被暫停或恢復。'
+        },
+        plugin: {
+          label: '外掛通知',
+          description: 'Hermes 在背景時，桌面外掛傳送了通知。'
         }
       },
       test: '傳送測試通知',
@@ -307,6 +311,12 @@ export const zhHant = defineLocale({
       uiScaleTitle: '介面縮放',
       uiScaleDesc: (percent: number) =>
         `縮放整個應用程式的文字與介面。也可使用 Cmd/Ctrl 加 +、- 或 0 調整。目前：${percent}%`,
+      terminalFontTitle: '終端機字型',
+      terminalFontDesc:
+        '選擇已安裝的字型用於桌面端終端機。Nerd Font 可正確顯示 Powerlevel10k 與 Shell 圖示；留空則使用內建的 JetBrains Mono。',
+      terminalFontPlaceholder: 'MesloLGS NF 或 CSS 字型堆疊',
+      terminalFontPreview: '字形預覽',
+      terminalFontReset: '使用預設字型',
       translucencyTitle: '視窗透明',
       translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
       backdropTitle: '聊天背景',
@@ -758,6 +768,8 @@ export const zhHant = defineLocale({
       sshHermesPathTitle: 'Hermes 路徑（選用）',
       sshHermesPathDesc: '遠端 hermes 執行檔的完整路徑。留空 = 自動偵測。',
       sshHermesPathPlaceholder: '自動偵測',
+      sshRemoteProfileTitle: '遠端設定檔（選用）',
+      sshRemoteProfileDesc: '遠端主機上的設定檔名稱。留空 = 使用 Desktop 設定檔名稱。',
       sshTestConnection: '測試 SSH',
       sshConnect: '連線',
       sshButtonsHint: '「儲存」會在下次啟動時生效，「連線」則立即重新連線。',
@@ -1337,6 +1349,12 @@ export const zhHant = defineLocale({
     search: '搜尋設定檔…',
     loading: '正在載入設定檔…',
     newProfile: '新增設定檔',
+    importProfile: '匯入設定檔…',
+    exportProfile: '匯出設定檔…',
+    imported: '設定檔已匯入',
+    exported: '設定檔已匯出',
+    failedImport: '匯入設定檔失敗',
+    failedExport: '匯出設定檔失敗',
     allProfiles: '全部設定檔',
     showAllProfiles: '顯示全部設定檔',
     switchToProfile: name => `切換至 ${name}`,
@@ -1664,6 +1682,9 @@ export const zhHant = defineLocale({
       baseBranchPlaceholder: '搜尋分支…',
       baseBranchNone: '未找到分支',
       startWorkFailed: '無法建立工作樹',
+      worktreeProjectLabel: '專案',
+      worktreeProjectPlaceholder: '搜尋專案…',
+      worktreeProjectNone: '沒有包含資料夾的專案',
       convertBranch: '轉換分支…',
       convertBranchTitle: '轉換分支',
       convertBranchDesc: '開啟已簽出的分支，或為可用分支建立工作樹。',
@@ -1672,6 +1693,7 @@ export const zhHant = defineLocale({
       branchOpenExisting: '開啟',
       branchSwitchHome: '切回主簽出',
       branchCreateWorktree: '新增工作樹',
+      branchTrackRemote: '追蹤遠端',
       branchesLoading: '正在載入分支…',
       noBranches: '找不到分支',
       removeWorktree: '移除工作樹',
@@ -1751,6 +1773,7 @@ export const zhHant = defineLocale({
       '調整或繼續'
     ],
     startVoice: '開始語音對話',
+    openDirective: '開啟',
     queueMessage: '排隊訊息',
     stop: '停止',
     send: '傳送',
@@ -2305,10 +2328,6 @@ export const zhHant = defineLocale({
 
   preview: {
     tab: '預覽',
-    closeTab: label => `關閉 ${label}`,
-    closeOthers: '關閉其他',
-    closeToRight: '關閉右側',
-    closeAll: '全部關閉',
     closePane: '關閉預覽窗格',
     loading: '正在載入預覽',
     unavailable: '預覽不可用',
@@ -2400,6 +2419,7 @@ export const zhHant = defineLocale({
     hideHeader: '隱藏標題列',
     minimize: '最小化',
     restore: '還原',
+    reload: '重新載入',
     closeOthers: '關閉其他',
     closeToRight: '關閉右側',
     closeAll: '全部關閉',
@@ -2429,7 +2449,8 @@ export const zhHant = defineLocale({
     layoutNamePlaceholder: fallback => `版面名稱（${fallback}）`,
     saveApply: '儲存並套用',
     notExpressible: '此排列互相咬合（風車形）——暫時無法表示為巢狀分割',
-    zoneCount: count => `${count} 個區域`
+    zoneCount: count => `${count} 個區域`,
+    tabCount: count => `${count} 個分頁`
   },
 
   assistant: {

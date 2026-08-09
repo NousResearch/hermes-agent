@@ -66,6 +66,7 @@ mcp_servers:
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
 | `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
 | `elicitation` | mapping | both | Server-initiated user-input requests. `enabled` (default `true`) and `timeout` in seconds (default `300`). Form-mode requests route through the approval surface; URL-mode is declined (see MCP guide) |
+| `trust` | string | both | Trust tier: `full` (default) or `untrusted`. On an `untrusted` server, every write-capable tool call (any tool without a `readOnlyHint: true` annotation) requires user approval through the standard approval surface before it runs. `readOnlyHint` is a server-supplied *hint* — a lying server can at most skip approval for tools it claims are read-only, never gain extra access — so mark any server you don't fully control as `untrusted`. Unrecognized values are treated as `untrusted` (fail-closed) |
 
 ## Environment variable references
 
@@ -81,6 +82,28 @@ mcp_servers:
 ```
 
 Values resolve from the active profile's secret scope (falling back to the process environment), so put the secret in `~/.hermes/.env`. An unset variable keeps its literal placeholder.
+
+### Context variables
+
+Beyond env vars, the Cursor-style context variables are interpolated too (names are case-sensitive):
+
+| Variable | Resolves to |
+|---|---|
+| `${userHome}` | The current user's home directory |
+| `${workspaceFolder}` | The session workspace root (the session's terminal cwd when known, else the process cwd) |
+| `${workspaceFolderBasename}` | The basename of `${workspaceFolder}` |
+| `${pathSeparator}` / `${/}` | The OS path separator (`os.sep`) |
+
+```yaml
+mcp_servers:
+  filesystem:
+    command: "npx"
+    args: ["-y", "@modelcontextprotocol/server-filesystem", "${workspaceFolder}"]
+    env:
+      CACHE_DIR: "${userHome}${/}.cache${/}mcp"
+```
+
+Any other `${...}` reference falls through to the env-var lookup above.
 
 ## `tools` policy keys
 

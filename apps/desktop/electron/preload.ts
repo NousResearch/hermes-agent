@@ -8,6 +8,16 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   openSessionWindow: (sessionId, opts) => ipcRenderer.invoke('hermes:window:openSession', sessionId, opts),
   openWindow: () => ipcRenderer.invoke('hermes:window:openInstance'),
   claimAmbientCue: key => ipcRenderer.invoke('hermes:ambient:claim', key),
+  wakeIndicator: {
+    getState: () => ipcRenderer.invoke('hermes:wake-indicator:get'),
+    setState: state => ipcRenderer.send('hermes:wake-indicator:set', state),
+    onState: callback => {
+      const listener = (_event, state) => callback(state)
+      ipcRenderer.on('hermes:wake-indicator:state', listener)
+
+      return () => ipcRenderer.removeListener('hermes:wake-indicator:state', listener)
+    }
+  },
   petOverlay: {
     // Main renderer → main process: window lifecycle + drag. `request` is
     // `{ bounds, screen }`; resolves with the screen bounds it actually used.
@@ -34,6 +44,31 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
       ipcRenderer.on('hermes:pet-overlay:control', listener)
 
       return () => ipcRenderer.removeListener('hermes:pet-overlay:control', listener)
+    }
+  },
+  // HUD mode: the chrome-free floating chat. A full app renderer (own gateway)
+  // sized as a floating bar, so it mounts the real composer. Main owns the
+  // window; `onChanged` keeps every window's toggle truthful.
+  hud: {
+    open: request => ipcRenderer.invoke('hermes:hud:open', request),
+    close: () => ipcRenderer.invoke('hermes:hud:close'),
+    setIgnoreMouse: ignore => ipcRenderer.send('hermes:hud:ignore-mouse', ignore),
+    moveBy: delta => ipcRenderer.send('hermes:hud:move-by', delta),
+    setVibrancy: on => ipcRenderer.invoke('hermes:hud:vibrancy', on),
+    // The HUD tells main which session it is on; main hands that back to the
+    // app window when the HUD closes, so the app can re-home onto it.
+    setSession: sessionId => ipcRenderer.send('hermes:hud:session', sessionId),
+    onGoto: callback => {
+      const listener = (_event, sessionId) => callback(sessionId)
+      ipcRenderer.on('hermes:hud:goto', listener)
+
+      return () => ipcRenderer.removeListener('hermes:hud:goto', listener)
+    },
+    onChanged: callback => {
+      const listener = (_event, state) => callback(state)
+      ipcRenderer.on('hermes:hud:changed', listener)
+
+      return () => ipcRenderer.removeListener('hermes:hud:changed', listener)
     }
   },
   // Quick Entry: the global-hotkey mini composer window. Main owns the OS
@@ -97,6 +132,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   api: request => ipcRenderer.invoke('hermes:api', request),
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
+  readWindowBelow: () => ipcRenderer.invoke('hermes:window:readBelow'),
   readFileDataUrl: filePath => ipcRenderer.invoke('hermes:readFileDataUrl', filePath),
   readFileDataUrlForAttach: filePath => ipcRenderer.invoke('hermes:readFileDataUrlForAttach', filePath),
   dataUrlReadMax: {
@@ -105,6 +141,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   readFileText: filePath => ipcRenderer.invoke('hermes:readFileText', filePath),
   selectPaths: options => ipcRenderer.invoke('hermes:selectPaths', options),
+  selectSavePath: options => ipcRenderer.invoke('hermes:selectSavePath', options),
   writeClipboard: text => ipcRenderer.invoke('hermes:writeClipboard', text),
   readClipboard: () => ipcRenderer.invoke('hermes:readClipboard'),
   saveImageFromUrl: url => ipcRenderer.invoke('hermes:saveImageFromUrl', url),

@@ -1,14 +1,14 @@
 ---
-title: "Pdf — Create, merge, split, fill, and secure PDF files"
+title: "Pdf — Create, read, merge, fill, and secure PDF files"
 sidebar_label: "Pdf"
-description: "Create, merge, split, fill, and secure PDF files"
+description: "Create, read, merge, fill, and secure PDF files"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Pdf
 
-Create, merge, split, fill, and secure PDF files.
+Create, read, merge, fill, and secure PDF files.
 
 ## Skill metadata
 
@@ -17,11 +17,11 @@ Create, merge, split, fill, and secure PDF files.
 | Source | Bundled (installed by default) |
 | Path | `skills/productivity/pdf` |
 | Version | `1.0.0` |
-| Author | Anthropic (adapted by Nous Research) |
-| License | Proprietary. LICENSE.txt has complete terms |
+| Author | Nous Research |
+| License | MIT |
 | Platforms | linux, macos, windows |
-| Tags | `PDF`, `Documents`, `Forms`, `Office`, `Productivity` |
-| Related skills | [`ocr-and-documents`](/docs/user-guide/skills/bundled/productivity/productivity-ocr-and-documents), [`nano-pdf`](/docs/user-guide/skills/bundled/productivity/productivity-nano-pdf), [`docx`](/docs/user-guide/skills/bundled/productivity/productivity-docx), [`xlsx`](/docs/user-guide/skills/bundled/productivity/productivity-xlsx) |
+| Tags | `pdf`, `documents`, `forms`, `reportlab`, `pypdf`, `pdfplumber` |
+| Related skills | [`docx`](/docs/user-guide/skills/bundled/productivity/productivity-docx), [`xlsx`](/docs/user-guide/skills/bundled/productivity/productivity-xlsx), [`powerpoint`](/docs/user-guide/skills/bundled/productivity/productivity-powerpoint), [`ocr-and-documents`](/docs/user-guide/skills/bundled/productivity/productivity-ocr-and-documents) |
 
 ## Reference: full SKILL.md
 
@@ -31,161 +31,81 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # PDF Skill
 
-Create, combine, split, transform, and secure PDF files — merging, page manipulation, form filling, watermarks, encryption, and text/table extraction. For heavy text extraction from scanned documents prefer the `ocr-and-documents` skill; for natural-language edits to existing PDF text prefer `nano-pdf`.
+Create PDFs from structured specs, extract text/tables/metadata, merge/split/rotate/watermark pages, fill AcroForm form fields, and encrypt/decrypt — using pypdf, reportlab, and pdfplumber. Scanned (image-only) PDFs contain no text layer: OCR is explicitly out of scope here — when a page is image-only, stop and use the `ocr-and-documents` skill instead of pretending to extract text.
 
 ## When to Use
 
-Use this skill whenever the user wants to do anything with PDF files: reading or extracting text/tables, combining or merging multiple PDFs, splitting PDFs apart, rotating pages, adding watermarks, creating new PDFs, filling PDF forms, encrypting/decrypting, extracting images, or OCR on scanned PDFs. If the user mentions a .pdf file or asks to produce one, use this skill.
+- Generate a report, invoice, or multi-page document as PDF.
+- Pull text, tables (JSON/CSV), metadata, or form-field values out of a PDF.
+- Merge, split, rotate, extract page subsets, watermark, bookmark, or compress PDFs.
+- Fill or flatten AcroForm forms; encrypt or decrypt with passwords.
+- NOT for scanned/image-only PDFs (use `ocr-and-documents`) and NOT for pixel-perfect HTML-to-PDF rendering (use a headless browser).
 
 ## Prerequisites
 
+- Python 3.10+ with `pypdf`, `reportlab`, `pdfplumber`:
+  `python3 -m pip install pypdf reportlab pdfplumber`
+- Each helper script checks imports lazily and prints an install hint if a dependency is missing.
+
+## How to Run
+
+All helpers live in `scripts/` and are argparse CLIs — run them with the `terminal` tool; every one supports `--help`. They read/write JSON strictly as UTF-8, print JSON results to stdout, and exit non-zero on failure.
+
 ```bash
-pip install pypdf pdfplumber reportlab
-which pdftotext || sudo apt install -y poppler-utils   # pdftotext, pdftoppm, pdfimages
-which qpdf || sudo apt install -y qpdf                 # CLI merge/split/decrypt
+python3 scripts/pdf_create.py spec.json -o out.pdf         # build PDF from JSON spec
+python3 scripts/pdf_read.py doc.pdf --text                 # per-page text (JSON)
+python3 scripts/pdf_read.py doc.pdf --tables --csv-dir t/  # tables to JSON + CSV files
+python3 scripts/pdf_read.py doc.pdf --meta                 # metadata, page sizes, encrypted/scanned flags
+python3 scripts/pdf_read.py form.pdf --fields              # form fields: name, type, value
+python3 scripts/pdf_merge.py a.pdf b.pdf -o merged.pdf [--bookmarks]
+python3 scripts/pdf_split.py doc.pdf --pages 1-3,7 -o part.pdf [--rotate 90]
+python3 scripts/pdf_fill_form.py form.pdf --fields-json values.json -o filled.pdf [--flatten]
+python3 scripts/pdf_secure.py doc.pdf --encrypt -o enc.pdf --user-password your-password
+python3 scripts/pdf_secure.py enc.pdf --decrypt -o dec.pdf --password your-password
+python3 scripts/pdf_watermark.py doc.pdf --stamp mark.pdf -o stamped.pdf [--under]
 ```
-
-macOS: `brew install poppler qpdf`. OCR extras: `pip install pytesseract pdf2image` + `sudo apt install -y tesseract-ocr`.
-
-> Script paths below are relative to this skill's directory. Form filling has its own workflow — read [forms.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/productivity/pdf/forms.md) and follow it. Advanced library usage (pypdfium2, pdf-lib) and troubleshooting: [reference.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/productivity/pdf/reference.md).
 
 ## Quick Reference
 
-| Task | Best Tool | Command/Code |
-|------|-----------|--------------|
-| Merge PDFs | pypdf | `writer.add_page(page)` per page |
-| Split PDFs | pypdf | One page per file |
-| Extract text | pdfplumber | `page.extract_text()` |
-| Extract tables | pdfplumber | `page.extract_tables()` |
-| Create PDFs | reportlab | Canvas or Platypus |
-| Command-line merge/split | qpdf | `qpdf --empty --pages ...` |
-| OCR scanned PDFs | pytesseract | Convert to images first (or use `ocr-and-documents`) |
-| Fill PDF forms | see [forms.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/productivity/pdf/forms.md) | `scripts/fill_fillable_fields.py` etc. |
-| Edit existing text | `nano-pdf` skill | `nano-pdf edit file.pdf <page> "<instruction>"` |
+| Task | Tool | Command / API |
+|---|---|---|
+| Create doc (headings, tables, images) | reportlab platypus | `pdf_create.py spec.json -o out.pdf` |
+| Per-page text | pdfplumber | `pdf_read.py f.pdf --text` |
+| Tables → JSON/CSV | pdfplumber | `pdf_read.py f.pdf --tables` |
+| Metadata / sizes / encrypted / scanned | pypdf + pdfplumber | `pdf_read.py f.pdf --meta` |
+| Merge (+ outline) | pypdf | `pdf_merge.py a.pdf b.pdf -o m.pdf` |
+| Split / extract / rotate | pypdf | `pdf_split.py f.pdf --pages 2-5 --rotate 90` |
+| List / fill / flatten form | pypdf | `pdf_read.py --fields`, `pdf_fill_form.py` |
+| Encrypt / decrypt (AES-256) | pypdf | `pdf_secure.py --encrypt/--decrypt` |
+| Watermark / stamp | pypdf | `pdf_watermark.py f.pdf --stamp w.pdf` |
+| Compress content streams | pypdf | `pdf_split.py f.pdf --pages 1-N --compress` |
 
-## Common operations
+## Procedure
 
-### Merge / split / rotate (pypdf)
-
-```python
-from pypdf import PdfReader, PdfWriter
-
-# Merge
-writer = PdfWriter()
-for pdf_file in ["doc1.pdf", "doc2.pdf"]:
-    for page in PdfReader(pdf_file).pages:
-        writer.add_page(page)
-with open("merged.pdf", "wb") as f:
-    writer.write(f)
-
-# Split: one file per page
-reader = PdfReader("input.pdf")
-for i, page in enumerate(reader.pages):
-    w = PdfWriter(); w.add_page(page)
-    with open(f"page_{i+1}.pdf", "wb") as f:
-        w.write(f)
-
-# Rotate
-page = reader.pages[0]
-page.rotate(90)  # clockwise
-```
-
-### Extract text and tables (pdfplumber)
-
-```python
-import pdfplumber, pandas as pd
-
-with pdfplumber.open("document.pdf") as pdf:
-    text = "\n".join(page.extract_text() or "" for page in pdf.pages)
-    tables = [pd.DataFrame(t[1:], columns=t[0])
-              for page in pdf.pages
-              for t in page.extract_tables() if t]
-```
-
-### Create PDFs (reportlab)
-
-```python
-from reportlab.lib.pagesizes import letter
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak
-from reportlab.lib.styles import getSampleStyleSheet
-
-doc = SimpleDocTemplate("report.pdf", pagesize=letter)
-styles = getSampleStyleSheet()
-story = [Paragraph("Report Title", styles["Title"]), Spacer(1, 12),
-         Paragraph("Body text...", styles["Normal"]), PageBreak(),
-         Paragraph("Page 2", styles["Heading1"])]
-doc.build(story)
-```
-
-**Subscripts/superscripts:** never use Unicode sub/superscript characters (₀₁₂, ⁰¹²) — the built-in fonts lack the glyphs and render solid black boxes. Use `<sub>`/`<super>` markup inside `Paragraph` objects: `Paragraph("H<sub>2</sub>O", styles['Normal'])`. For canvas-drawn text, adjust font size and position manually.
-
-### Command-line tools
-
-```bash
-pdftotext -layout input.pdf output.txt                     # text, layout preserved
-pdftotext -f 1 -l 5 input.pdf output.txt                   # pages 1-5
-qpdf --empty --pages file1.pdf file2.pdf -- merged.pdf     # merge
-qpdf input.pdf --pages . 1-5 -- pages1-5.pdf               # split range
-qpdf input.pdf output.pdf --rotate=+90:1                   # rotate page 1
-qpdf --password=pw --decrypt encrypted.pdf decrypted.pdf   # remove password
-pdfimages -j input.pdf img                                 # extract images
-```
-
-### Watermark
-
-```python
-from pypdf import PdfReader, PdfWriter
-
-watermark = PdfReader("watermark.pdf").pages[0]
-reader, writer = PdfReader("document.pdf"), PdfWriter()
-for page in reader.pages:
-    page.merge_page(watermark)
-    writer.add_page(page)
-with open("watermarked.pdf", "wb") as f:
-    writer.write(f)
-```
-
-### Password protection
-
-```python
-writer.encrypt("userpassword", "ownerpassword")
-```
-
-### OCR scanned PDFs
-
-```python
-import pytesseract
-from pdf2image import convert_from_path
-
-pages = convert_from_path("scanned.pdf")
-text = "\n\n".join(pytesseract.image_to_string(img) for img in pages)
-```
-
-For batch/structured extraction from scans, the `ocr-and-documents` skill (pymupdf, marker-pdf) is the better path.
-
-## Form filling
-
-Read [forms.md](https://github.com/NousResearch/hermes-agent/blob/main/skills/productivity/pdf/forms.md) first — it distinguishes fillable (AcroForm) PDFs from flat scanned forms and walks through the helper scripts:
-
-- `scripts/check_fillable_fields.py` — does the PDF have AcroForm fields?
-- `scripts/extract_form_field_info.py` / `scripts/extract_form_structure.py` — enumerate fields
-- `scripts/fill_fillable_fields.py` — fill AcroForm fields
-- `scripts/fill_pdf_form_with_annotations.py` — overlay text on flat forms
-- `scripts/check_bounding_boxes.py`, `scripts/create_validation_image.py` — verify placement visually
+1. **Inspect first.** Run `pdf_read.py file.pdf --meta`. Check `encrypted` (if true, decrypt first with `pdf_secure.py --decrypt`) and `likely_scanned_pages`. If pages are image-only, hand off to the `ocr-and-documents` skill — do not report empty text as "no content".
+2. **Create.** Write a JSON spec with `write_file` (elements: `heading`, `paragraph`, `table`, `image`, `pagebreak`; optional `title`/`author` metadata; page numbers are added automatically), then run `pdf_create.py`. Verify visually with `vision_analyze` on a rendered page image if layout matters.
+3. **Extract.** `--text` gives a JSON list of per-page strings; `--tables` gives row arrays per page and can also emit CSV files. Read results with `read_file`; never eyeball a binary PDF directly.
+4. **Manipulate.** `pdf_merge.py` concatenates and can add one bookmark per source file; `pdf_split.py` handles page ranges (1-based, e.g. `1-3,5,9-`), rotation in 90° steps, and `--compress`. Watermark by preparing a single-page stamp PDF (e.g. via `pdf_create.py`) and overlaying it with `pdf_watermark.py`.
+5. **Forms.** List fields (`--fields`) to learn exact names and types, write a UTF-8 JSON of `{"FieldName": "value"}` with `write_file` (checkboxes accept `true`/`false`; radio/choice values must match the field's export options), then `pdf_fill_form.py`. Re-read with `--fields` to confirm values landed.
+6. **Secure.** Encrypt with distinct user/owner passwords and AES-256. To remove a password you know, `--decrypt` writes an unencrypted copy.
+7. **Verify** (see below) before reporting success.
 
 ## Pitfalls
 
-- `page.extract_text()` returns `None` on image-only pages — guard with `or ""` and fall back to OCR.
-- pypdf preserves encryption flags: reading an encrypted PDF requires `PdfReader(path, password=...)` before pages are accessible.
-- reportlab coordinates are bottom-left origin, points (1/72″) — not top-left.
-- When filling flat forms by annotation overlay, always render a validation image and check the placement before delivering.
+- **Scanned PDFs**: empty `extract_text()` plus page images means there is no text layer. Route to `ocr-and-documents`; do not fabricate text.
+- **Flattening limits**: `pdf_fill_form.py --flatten` uses pypdf's flatten support, which converts widget appearances into page content. It is reliable for plain text fields and checkboxes but can drop or misrender exotic widgets (rich text, custom appearance streams, some radio groups). Verify the flattened output visually with `vision_analyze`; for bulletproof flattening use an external renderer (e.g. Ghostscript or `pdftoppm`+reassembly) as a fallback.
+- **NeedAppearances**: after filling, viewers only render values if appearance streams exist. The fill script sets the AcroForm `NeedAppearances` flag so conforming viewers regenerate them; some minimal viewers ignore it — flatten if display fidelity matters.
+- **Non-Latin form values**: values are stored correctly (UTF-16), but the field's default font may lack glyphs, so a viewer can show blanks even though the data round-trips. Verify with `--fields`, not just visually.
+- **Compression expectations**: `--compress` only deflates content streams. Typical savings are 0–20%; it does nothing for PDFs dominated by images or already-compressed streams. It is not a substitute for image downsampling (Ghostscript territory).
+- **Permission flags don't enforce**: owner-password permission bits (no-print, no-copy) are polite requests that viewers may honor; any library (including pypdf) can read and strip them. Only the user password actually gates content via encryption. Never present permission flags as security.
+- **Table extraction is heuristic**: pdfplumber detects tables from ruling lines/word alignment; borderless or merged-cell tables may need `table_settings` tuning or manual cleanup.
+- **Page indexing**: helper CLIs take 1-based pages; pypdf APIs are 0-based. The scripts convert — don't double-convert.
+- Rotation must be a multiple of 90; encrypted inputs must be decrypted before any other operation.
 
 ## Verification
 
-1. Open the output with `PdfReader` and assert the expected page count.
-2. Re-extract text from the output (`pdftotext` or pdfplumber) and confirm the content you added is present.
-3. For anything visual (watermarks, filled forms, created reports): `pdftoppm -jpeg -r 100 output.pdf page` and inspect the images with `vision_analyze`.
-
-## Related skills
-
-`ocr-and-documents` (scanned-document text extraction), `nano-pdf` (NL text edits in place), `docx` (Word), `xlsx` (spreadsheets), `powerpoint` (decks).
+- After create/merge/split: `pdf_read.py out.pdf --meta` — confirm `page_count`, and per-page `rotation` when you rotated.
+- After extraction: check the JSON is non-empty and spot-check a known string or cell.
+- After form fill: `pdf_read.py filled.pdf --fields` and compare values (exact match, including non-ASCII).
+- After encrypt: `--meta` shows `"encrypted": true` and opening without a password fails; after decrypt, text extraction matches the original.
+- For anything visual (watermarks, flattened forms), render and inspect with `vision_analyze`.

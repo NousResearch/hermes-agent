@@ -44,6 +44,7 @@ _delete_cron_job_sync = late("_delete_cron_job_sync")
 _find_cron_job_profile = late("_find_cron_job_profile")
 _fire_cron_job_for_profile = late("_fire_cron_job_for_profile")
 _call_cron_for_profile = late("_call_cron_for_profile")
+_raise_if_cron_registration_error = late("_raise_if_cron_registration_error")
 load_config = late("load_config")
 cfg_get = late("cfg_get")
 
@@ -145,7 +146,7 @@ async def cron_fire_webhook(request: Request):
     auth = request.headers.get("Authorization", "")
     token = auth[7:].strip() if auth.startswith("Bearer ") else ""
 
-    cfg = load_config()
+    cfg = await asyncio.to_thread(load_config)
     claims = get_fire_verifier()(
         token=token,
         expected_audience=cfg_get(cfg, "cron", "chronos", "expected_audience", default=""),
@@ -239,5 +240,6 @@ async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: s
     except HTTPException:
         raise
     except Exception as e:
+        _raise_if_cron_registration_error(e)
         _log.exception("POST /api/cron/blueprints/instantiate failed")
         raise HTTPException(status_code=400, detail=str(e))

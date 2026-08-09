@@ -82,6 +82,91 @@ def test_fire_cron_job_scopes_store_and_runtime_home_together(
         reset_hermes_home_override(outer_token)
 
 
+def test_create_registers_scheduler_inside_target_profile(
+    isolated_profiles,
+    monkeypatch,
+):
+    """Dashboard create must resolve and register under the selected profile."""
+    from cron import jobs as cron_jobs
+    from cron.scheduler_provider import CronScheduler
+    from hermes_cli import web_server
+    from hermes_constants import get_hermes_home
+
+    worker_home = isolated_profiles["worker_alpha"]
+    captured = {}
+
+    class RecordingProvider(CronScheduler):
+        @property
+        def name(self):
+            return "recording"
+
+        def start(self, stop_event, **kw):
+            pass
+
+        def register_job(self, job):
+            captured["job"] = job
+            captured["runtime_home"] = get_hermes_home()
+            captured["jobs_file"] = cron_jobs._current_cron_store().jobs_file
+
+    monkeypatch.setattr(
+        "cron.scheduler_provider.resolve_cron_scheduler",
+        lambda: RecordingProvider(),
+    )
+
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="managed by named profile",
+        schedule="every 1h",
+        name="named-profile-job",
+    )
+
+    assert captured["job"]["id"] == job["id"]
+    assert captured["runtime_home"] == worker_home
+    assert captured["jobs_file"] == worker_home / "cron" / "jobs.json"
+    assert job["profile"] == "worker_alpha"
+
+
+def test_dashboard_create_reports_saved_but_unregistered(
+    isolated_profiles,
+    monkeypatch,
+):
+    """Dashboard callers can distinguish persistence from remote registration."""
+    from cron.scheduler import CronSchedulerRegistrationError
+    from hermes_cli import web_server
+
+    job = {"id": "saved-job", "name": "saved job"}
+    failure = CronSchedulerRegistrationError(
+        job,
+        RuntimeError("private callback URL and token"),
+    )
+
+    def fail_create(*args, **kwargs):
+        raise failure
+
+    monkeypatch.setattr(web_server, "_call_cron_for_profile", fail_create)
+
+    with pytest.raises(HTTPException) as exc_info:
+        web_server._create_cron_job_sync(
+            web_server.CronJobCreate(
+                prompt="managed by named profile",
+                schedule="every 1h",
+                name="named-profile-job",
+            ),
+            profile="worker_alpha",
+        )
+
+    assert exc_info.value.status_code == 424
+    assert exc_info.value.detail == {
+        "error": str(failure),
+        "job_id": "saved-job",
+        "job_saved": True,
+        "scheduler_registered": False,
+        "retry_create": False,
+    }
+    assert "private callback URL and token" not in str(exc_info.value.detail)
+
+
 def test_profile_call_cannot_retarget_ticker_store_mid_write(
     isolated_profiles,
     monkeypatch,
@@ -236,10 +321,6 @@ async def test_dashboard_cron_rejects_missing_context_from(isolated_profiles):
 
     assert update_exc.value.status_code == 400
     assert "missing-job-id" in update_exc.value.detail
-
-
-
-
 
 
 

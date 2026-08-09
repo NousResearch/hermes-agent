@@ -610,6 +610,9 @@ class CreateTaskBody(BaseModel):
     goal_max_turns: Optional[int] = None
     model_override: Optional[str] = None
     provider_override: Optional[str] = None
+    # Per-task thinking depth (none|minimal|…|ultra). None = inherit the
+    # assigned profile's own agent.reasoning_effort.
+    reasoning_effort: Optional[str] = None
     # Explicit project link; when omitted, create_task inherits the board's
     # scoped project (if any) so a project-scoped board anchors every task.
     project_id: Optional[str] = None
@@ -639,6 +642,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             goal_max_turns=payload.goal_max_turns,
             model_override=payload.model_override,
             provider_override=payload.provider_override,
+            reasoning_effort=payload.reasoning_effort,
             project_id=payload.project_id,
             board=board,
         )
@@ -839,6 +843,12 @@ class UpdateTaskBody(BaseModel):
     model_override: Optional[str] = None
     provider_override: Optional[str] = None
     clear_model_override: bool = False
+    # Per-task thinking depth. ``"none"`` is a VALUE (thinking off), not a
+    # clear — use ``clear_reasoning_effort=True`` to fall back to the
+    # profile's own level. Separate from the model clear so dropping a model
+    # override doesn't silently reset the depth the operator chose.
+    reasoning_effort: Optional[str] = None
+    clear_reasoning_effort: bool = False
 
 
 @router.patch("/tasks/{task_id}")
@@ -929,6 +939,19 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     conn, task_id, new_model,
                     provider=payload.provider_override,
                 )
+            except (ValueError, RuntimeError) as e:
+                raise HTTPException(status_code=400, detail=str(e))
+            if not ok:
+                raise HTTPException(status_code=404, detail="task not found")
+
+        # --- reasoning effort ----------------------------------------------
+        if payload.clear_reasoning_effort or payload.reasoning_effort is not None:
+            new_effort = (
+                None if payload.clear_reasoning_effort
+                else payload.reasoning_effort
+            )
+            try:
+                ok = kanban_db.set_reasoning_effort(conn, task_id, new_effort)
             except (ValueError, RuntimeError) as e:
                 raise HTTPException(status_code=400, detail=str(e))
             if not ok:
@@ -1199,6 +1222,9 @@ class BulkTaskBody(BaseModel):
     model_override: Optional[str] = None
     provider_override: Optional[str] = None
     clear_model_override: bool = False
+    # Bulk thinking-depth override — same semantics as UpdateTaskBody.
+    reasoning_effort: Optional[str] = None
+    clear_reasoning_effort: bool = False
 
 
 @router.post("/tasks/bulk")
@@ -1302,6 +1328,17 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                         )
                         if not ok:
                             entry.update(ok=False, error="model override refused")
+                    except (ValueError, RuntimeError) as e:
+                        entry.update(ok=False, error=str(e))
+                if payload.clear_reasoning_effort or payload.reasoning_effort is not None:
+                    new_effort = (
+                        None if payload.clear_reasoning_effort
+                        else payload.reasoning_effort
+                    )
+                    try:
+                        ok = kanban_db.set_reasoning_effort(conn, tid, new_effort)
+                        if not ok:
+                            entry.update(ok=False, error="reasoning override refused")
                     except (ValueError, RuntimeError) as e:
                         entry.update(ok=False, error=str(e))
             except Exception as e:  # defensive — one bad id shouldn't kill the batch

@@ -112,8 +112,8 @@ def test_flush_persist_override_replaces_api_local_multimodal_note(agent):
 
     agent._flush_messages_to_session_db([{"role": "user", "content": api_content}], [])
 
-    db_write = agent._session_db.append_message.call_args.kwargs
-    assert db_write["content"] == "Describe this screenshot\n[screenshot]"
+    batch = agent._session_db.append_messages_batch.call_args.kwargs["messages"]
+    assert batch[0]["content"] == "Describe this screenshot\n[screenshot]"
     assert api_content[0]["text"] == "[MODEL SWITCH NOTE]\n\nDescribe this screenshot"
 
 
@@ -135,6 +135,17 @@ def test_direct_session_db_flushes_share_marker_claim(agent):
                 self.entered.set()
                 assert self.release.wait(timeout=5)
             self.rows.append(kwargs["content"])
+
+        def append_messages_batch(self, session_id, messages, **kwargs):
+            with self._lock:
+                self.calls += 1
+                first = self.calls == 1
+            if first:
+                self.entered.set()
+                assert self.release.wait(timeout=5)
+            for m in messages:
+                self.rows.append(m["content"])
+            return list(range(1, len(messages) + 1))
 
     db = _BarrierDB()
     agent._session_db = db
@@ -416,6 +427,25 @@ class TestStripThinkBlocks:
 
 
 
+
+
+    @pytest.mark.parametrize(
+        ("text", "expected"),
+        [
+            (
+                "before <tool_call>{x}</function_call> after",
+                "before <tool_call>{x}after",
+            ),
+            (
+                "before <function_calls>{x}</tool_calls> after",
+                "before <function_calls>{x}after",
+            ),
+        ],
+    )
+    def test_mismatched_generic_tool_tags_preserve_opener_and_payload(
+        self, agent, text, expected
+    ):
+        assert agent._strip_think_blocks(text) == expected
 
 
 class TestExtractReasoning:
@@ -1550,11 +1580,18 @@ class TestExecuteToolCalls:
         assert post_calls[0]["error_type"] == "keyboard_interrupt"
         assert json.loads(post_calls[0]["result"])["status"] == "cancelled"
 
-    def test_interrupt_skips_remaining(self, agent):
+    def test_interrupt_skips_remaining(self, agent, monkeypatch):
         tc1 = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
         tc2 = _mock_tool_call(name="web_search", arguments="{}", call_id="c2")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc1, tc2])
         messages = []
+        hook_calls = []
+
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
 
         with patch("run_agent._set_interrupt"):
             agent.interrupt()
@@ -1566,13 +1603,22 @@ class TestExecuteToolCalls:
             "cancelled" in messages[0]["content"].lower()
             or "interrupted" in messages[0]["content"].lower()
         )
+        post_calls = [kwargs for name, kwargs in hook_calls if name == "post_tool_call"]
+        assert [call["tool_call_id"] for call in post_calls] == ["c1", "c2"]
+        assert all(call["status"] == "cancelled" for call in post_calls)
 
-    def test_invalid_json_args_are_rejected_without_dispatch(self, agent):
+    def test_invalid_json_args_are_rejected_without_dispatch(self, agent, monkeypatch):
         tc = _mock_tool_call(
             name="web_search", arguments="not valid json", call_id="c1"
         )
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
         messages = []
+        hook_calls = []
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
         with patch("run_agent.handle_function_call", return_value="ok") as mock_hfc:
             agent._execute_tool_calls(mock_msg, messages, "task-1")
             mock_hfc.assert_not_called()
@@ -1581,6 +1627,34 @@ class TestExecuteToolCalls:
         assert messages[0]["tool_call_id"] == "c1"
         assert "valid json object" in messages[0]["content"].lower()
         assert "tool was not executed" in messages[0]["content"].lower()
+        [post_call] = [
+            kwargs for name, kwargs in hook_calls if name == "post_tool_call"
+        ]
+        assert post_call["tool_call_id"] == "c1"
+        assert post_call["status"] == "error"
+        assert post_call["error_type"] == "invalid_tool_arguments"
+
+    def test_concurrent_invalid_json_args_emit_terminal_hook(self, agent, monkeypatch):
+        tc = _mock_tool_call(
+            name="web_search", arguments="not valid json", call_id="c1"
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        hook_calls = []
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+
+        agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+
+        [post_call] = [
+            kwargs for name, kwargs in hook_calls if name == "post_tool_call"
+        ]
+        assert post_call["tool_call_id"] == "c1"
+        assert post_call["status"] == "error"
+        assert post_call["error_type"] == "invalid_tool_arguments"
 
     def test_none_args_rejected_without_dispatch(self, agent):
         """None arguments must not crash the dispatch path. Current contract:
@@ -1854,7 +1928,6 @@ class TestConcurrentToolExecution:
 
 
 
-
     def test_invoke_tool_dispatches_to_handle_function_call(self, agent):
         """_invoke_tool should route regular tools through handle_function_call."""
         with patch("run_agent.handle_function_call", return_value="result") as mock_hfc:
@@ -2006,6 +2079,54 @@ class TestConcurrentToolExecution:
 
 
 
+    @pytest.mark.parametrize("concurrent", [False, True])
+    def test_tool_execution_middleware_replacement_emits_one_terminal_hook(
+        self,
+        agent,
+        monkeypatch,
+        concurrent,
+    ):
+        """A middleware replacement owns the result but not lifecycle closure."""
+        tool_call = _mock_tool_call(
+            name="terminal",
+            arguments='{"command":"must-not-run"}',
+            call_id="terminal-1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
+        messages = []
+        hook_calls = []
+
+        def execution_middleware(**kwargs):
+            return '{"intercepted":true}'
+
+        manager = SimpleNamespace(_middleware={
+            "tool_request": [],
+            "tool_execution": [execution_middleware],
+        })
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        monkeypatch.setattr(
+            "hermes_cli.lifecycle.invoke_hook",
+            lambda hook_name, **kwargs: hook_calls.append((hook_name, kwargs)) or [],
+        )
+        monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda name: True)
+
+        with patch(
+            "run_agent.handle_function_call",
+            side_effect=AssertionError("middleware replacement must not dispatch"),
+        ):
+            if concurrent:
+                agent._execute_tool_calls_concurrent(mock_msg, messages, "task-1")
+            else:
+                agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        post_calls = [
+            payload for name, payload in hook_calls if name == "post_tool_call"
+        ]
+        assert len(post_calls) == 1
+        assert post_calls[0]["tool_name"] == "terminal"
+        assert post_calls[0]["tool_call_id"] == "terminal-1"
+        assert post_calls[0]["status"] == "ok"
+        assert post_calls[0]["result"] == '{"intercepted":true}'
 
     def test_agent_runtime_post_hook_ownership_predicate_covers_agent_tools(self, agent):
         """Sequential and concurrent agent-level paths share post-hook ownership."""
@@ -2162,6 +2283,8 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("memory", {"action": "view", "target": "memory"}),
         ("clarify", {"question": "Continue?"}),
         ("read_terminal", {}),
+        ("read_preview", {}),
+        ("read_window_below", {}),
         ("delegate_task", {"goal": "Check the child path"}),
     )
 
@@ -2199,6 +2322,14 @@ class TestAgentRuntimePostHookOwnershipSync:
         )
         monkeypatch.setattr(
             "tools.read_terminal_tool.read_terminal_tool",
+            lambda **kwargs: '{"ok":true}',
+        )
+        monkeypatch.setattr(
+            "tools.read_preview_tool.read_preview_tool",
+            lambda **kwargs: '{"ok":true}',
+        )
+        monkeypatch.setattr(
+            "tools.read_window_tool.read_window_below_tool",
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: None)
@@ -2328,6 +2459,13 @@ class TestMcpParallelToolBatch:
 
 
 class TestHandleMaxIterations:
+    def test_summary_notice_uses_safe_print(self, agent):
+        agent._print_fn = lambda *_args, **_kwargs: (_ for _ in ()).throw(ValueError("closed"))
+        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
+        agent._cached_system_prompt = "You are helpful."
+
+        assert agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60) == "Summary"
+
     def test_returns_summary(self, agent):
         resp = _mock_response(content="Here is a summary of what I did.")
         agent.client.chat.completions.create.return_value = resp
@@ -3188,6 +3326,93 @@ class TestRunConversation:
         assert "No reply:" in result["final_response"]
 
 
+    def test_empty_response_retry_backoff_interrupted(self, agent, monkeypatch):
+        """If an interrupt is requested during the empty response retry wait, we abort."""
+        self._setup_agent(agent)
+        agent.base_url = "http://127.0.0.1:1234/v1"
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [empty_resp, empty_resp]
+
+        from agent import conversation_loop as _conv_loop
+
+        # Make backoff return 10.0 seconds
+        monkeypatch.setattr(_conv_loop, "jittered_backoff", lambda *a, **k: 10.0)
+
+        # Trigger the interrupt on the first sleep call inside the wait loop
+        original_sleep = time.sleep
+        sleep_called = []
+
+        def _mock_sleep(seconds):
+            sleep_called.append(seconds)
+            if seconds == 0.2:
+                agent._interrupt_requested = True
+            else:
+                original_sleep(seconds)
+
+        monkeypatch.setattr(time, "sleep", _mock_sleep)
+
+        with (
+            patch.object(agent, "_persist_session") as mock_persist,
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("answer me")
+
+        assert result["interrupted"] is True
+        assert "Operation interrupted: retrying empty response from model" in result["final_response"]
+        assert agent._empty_content_retries == 1
+        assert 0.2 in sleep_called
+        assert mock_persist.call_count == 2
+
+    def test_empty_response_retry_backoff_status(self, agent, monkeypatch):
+        """Empty response retry wait updates the agent's status with wait time and sleeps."""
+        self._setup_agent(agent)
+        agent.base_url = "http://127.0.0.1:1234/v1"
+
+        # Two responses: first empty, second succeeds so it doesn't run forever
+        empty_resp = _mock_response(content=None, finish_reason="stop")
+        ok_resp = _mock_response(content="Final ok response.", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [empty_resp, ok_resp]
+
+        from agent import conversation_loop as _conv_loop
+
+        monkeypatch.setattr(_conv_loop, "jittered_backoff", lambda *a, **k: 7.5)
+
+        # Fake clock: the retry loop gates on real time.time() < sleep_end, so
+        # a no-op sleep alone busy-spins 7.5 wall-clock seconds. Advance a fake
+        # clock by each sleep amount instead (established pattern:
+        # test_session_activity_persist.py patches run_agent.time.time).
+        clock = {"t": time.time()}
+        monkeypatch.setattr(_conv_loop.time, "time", lambda: clock["t"])
+
+        sleep_calls = []
+
+        def _fake_sleep(secs):
+            sleep_calls.append(secs)
+            clock["t"] += secs
+
+        monkeypatch.setattr(time, "sleep", _fake_sleep)
+        monkeypatch.setattr(_conv_loop.time, "sleep", _fake_sleep)
+
+        status_messages = []
+        monkeypatch.setattr(agent, "_buffer_status", lambda status: status_messages.append(status))
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("answer me")
+
+        assert result["completed"] is True
+        assert result["final_response"] == "Final ok response."
+
+        # 7.5s wait, slept in 0.2s increments -> 37.5 -> at least 37 calls
+        assert len([c for c in sleep_calls if c == 0.2]) >= 37
+
+        retry_status = [m for m in status_messages if "Empty response from model — retrying (1/3) in 8s" in m]
+        assert len(retry_status) == 1
+
     def test_partial_stream_recovery_uses_streamed_content(self, agent):
         """When streaming fails after partial delivery, recovered partial content becomes final response."""
         self._setup_agent(agent)
@@ -3810,6 +4035,47 @@ class TestRunConversation:
         mock_hfc.assert_called_once()
         assert result["final_response"] == "Done!"
 
+    def test_zero_byte_tool_args_stub_recovers_within_retries(self, agent):
+        """#80498: a stream that dies before a single argument byte arrives
+        (name-only tool call) produces a stub with tool_calls=None and
+        _dropped_tool_names set — the real shape _build_partial_stream_stub
+        returns, distinct from the truncated-JSON stub above (which still
+        carries a tool_calls list). Confirms the zero-byte trigger is wired
+        end-to-end through the retry loop, not just detected at the
+        chat_completion_helpers unit level."""
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+
+        stall = _mock_response(content="", finish_reason="length", tool_calls=None)
+        stall.id = PARTIAL_STREAM_STUB_ID
+        stall._dropped_tool_names = ["write_file"]
+
+        good_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"full content"}',
+            call_id="c2",
+        )
+        good_resp = _mock_response(content="", finish_reason="stop", tool_calls=[good_tc])
+        final_resp = _mock_response(content="Done!", finish_reason="stop")
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success":true}') as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.client.chat.completions.create.side_effect = [
+                stall, good_resp, final_resp,
+            ]
+            result = agent.run_conversation("write the report")
+
+        # The zero-byte stub must trigger a retry, not silently execute
+        # write_file with coerced empty arguments (the #80498 regression).
+        mock_hfc.assert_called_once()
+        assert result["final_response"] == "Done!"
+
 
     def test_truncated_tool_json_after_tool_batch_closes_tool_tail(self, agent):
         """finish_reason=tool_calls + truncated args after a real tool must close tool→user."""
@@ -3973,7 +4239,10 @@ class TestRunConversation:
         ok_resp = _mock_response(content="done", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [exc, ok_resp]
 
-        mock_compress = MagicMock()
+        mock_compress = MagicMock(return_value=(
+            [{"role": "user", "content": "hello"}],
+            "You are helpful.",
+        ))
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -3987,7 +4256,7 @@ class TestRunConversation:
         assert result["completed"] is True
         assert second_call["max_tokens"] <= 936
         assert agent.context_compressor.context_length == 200_000
-        mock_compress.assert_not_called()
+        mock_compress.assert_called_once()
 
     def test_output_cap_retry_with_large_api_only_content(self, agent):
         """When a large system prompt makes api_messages huge while persisted
@@ -4017,7 +4286,10 @@ class TestRunConversation:
         ok_resp = _mock_response(content="done", finish_reason="stop")
         agent.client.chat.completions.create.side_effect = [exc, ok_resp]
 
-        mock_compress = MagicMock()
+        mock_compress = MagicMock(return_value=(
+            [{"role": "user", "content": "hello"}],
+            "You are helpful.",
+        ))
         with (
             patch.object(agent, "_persist_session"),
             patch.object(agent, "_save_trajectory"),
@@ -4033,8 +4305,125 @@ class TestRunConversation:
         # near 199927 — this test fails on it.
         assert second_call["max_tokens"] <= 936
         assert agent.context_compressor.context_length == 200_000
-        mock_compress.assert_not_called()
+        mock_compress.assert_called_once()
 
+    def test_output_cap_retry_triggers_compression_and_recovers(self, agent):
+        """Regression for the output-cap death-loop (#55546 / #61761).
+
+        When the provider reports an output-cap error on a near-full context
+        window, the retry must NOT just shrink max_tokens by a tiny amount and
+        spin forever. It must fire _compress_context() to actually free tokens
+        so the session recovers instead of exhausting compression_attempts.
+
+        This locks in the fix: previously the output-cap path set
+        restart_with_compressed_messages without ever calling the compressor.
+        """
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "openrouter"
+        agent.model = "some/model"
+        agent.max_tokens = 65_536
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        # Context is essentially full -> compressor would want to run.
+        agent.context_compressor.should_compress = MagicMock(return_value=True)
+
+        error_msg = (
+            "max_tokens: 65536 > context_window: 200000 "
+            "- input_tokens: 199000 = available_tokens: 1000"
+        )
+        exc = Exception(error_msg)
+        exc.status_code = 400
+        exc.code = 400
+
+        ok_resp = _mock_response(content="done", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [exc, ok_resp]
+
+        # Compress drops the huge history (15 msgs -> 1), freeing tokens.
+        mock_compress = MagicMock(return_value=(
+            [{"role": "user", "content": "hello"}],
+            "You are helpful.",
+        ))
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", mock_compress),
+        ):
+            result = agent.run_conversation("hello")
+
+        # Compression fired exactly once, on the output-cap retry.
+        mock_compress.assert_called_once()
+        # The compressed messages were re-sent and the call succeeded.
+        assert result["completed"] is True
+        assert result["final_response"] == "done"
+        # The retry honored the reduced max_tokens (available_out - 64).
+        second_call = agent.client.chat.completions.create.call_args_list[1].kwargs
+        assert second_call["max_tokens"] <= 936
+        # LOCK IN THE FIX: the retry must actually SEND the compressed history
+        # (the 1-message payload from _compress_context + its new system
+        # prompt), not the original multi-message window. Without this, the
+        # output-cap retry would call the compressor but re-transmit the same
+        # oversized request forever.
+        second_messages = second_call.get("messages", [])
+        assert second_messages[-1].get("content") == "hello"
+        assert len(second_messages) == 2
+        assert second_messages[0]["role"] == "system"
+        # context_length was NOT mutated by an output-cap error.
+        assert agent.context_compressor.context_length == 200_000
+
+    def test_output_cap_retry_compression_no_progress_terminates_bounded(self, agent):
+        """Regression: when the compressor cannot reduce the request (zero
+        progress AND no images to strip), the output-cap retry must terminate
+        via the max-attempts guard instead of spinning forever.
+
+        The compressor is injected to return the input unchanged (same list
+        object, no lock-defer — just zero progress), and the provider keeps
+        rejecting, so the only correct outcome is a bounded
+        ``compression_exhausted`` failure, not an unbounded loop.
+        """
+        self._setup_agent(agent)
+        agent.api_mode = "chat_completions"
+        agent.provider = "openrouter"
+        agent.model = "some/model"
+        agent.max_tokens = 65_536
+        agent.compression_enabled = True
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.should_compress = MagicMock(return_value=True)
+
+        error_msg = (
+            "max_tokens: 65536 > context_window: 200000 "
+            "- input_tokens: 199000 = available_tokens: 1000"
+        )
+
+        def _rejecting(*args, **kwargs):
+            exc = Exception(error_msg)
+            exc.status_code = 400
+            exc.code = 400
+            raise exc
+
+        # The provider never recovers (side effect raises on every call).
+        agent.client.chat.completions.create.side_effect = _rejecting
+
+        def _no_progress(messages, system_message, **kwargs):
+            # Compressor runs but cannot shrink the request: no-op, same list.
+            return messages, system_message
+
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent.context_compressor, "update_model"),
+            patch.object(agent, "_compress_context", side_effect=_no_progress),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        assert result.get("compression_exhausted") is True
+        # Terminated in a bounded number of API calls (default max attempts=3
+        # => ~4 create calls), NOT an unbounded retry loop.
+        assert agent.client.chat.completions.create.call_count <= 6
 
 
 
@@ -4440,10 +4829,12 @@ class TestCredentialPoolRecovery:
                 status_code,
                 error_context=None,
                 api_key_hint=None,
+                failure_reason=None,
             ):
                 assert status_code == 402
                 assert error_context is None
                 assert api_key_hint == agent.api_key
+                assert failure_reason == "billing"
                 return next_entry
 
         agent._credential_pool = _Pool()
@@ -4470,11 +4861,13 @@ class TestCredentialPoolRecovery:
                 return []
 
             def mark_exhausted_and_rotate(
-                self, *, status_code, error_context=None, api_key_hint=None
+                self, *, status_code, error_context=None, api_key_hint=None,
+                failure_reason=None,
             ):
                 assert status_code == 429
                 assert error_context is None
                 assert api_key_hint == agent.api_key
+                assert failure_reason == "rate_limit"
                 return next_entry
 
         agent._credential_pool = _Pool()
@@ -5485,8 +5878,10 @@ class TestPersistUserMessageOverride:
             "2-3 sentences max. No code blocks or markdown.] Hello there"
         )
         # But the DB write must get the override.
-        first_db_write = agent._session_db.append_message.call_args_list[0].kwargs
-        assert first_db_write["content"] == "Hello there"
+        batch = agent._session_db.append_messages_batch.call_args_list[0].kwargs[
+            "messages"
+        ]
+        assert batch[0]["content"] == "Hello there"
 
 
 class TestReasoningReplayForStrictProviders:
@@ -5804,5 +6199,3 @@ class TestMemoryContextSanitization:
         assert "memory-context" not in result.lower()
         assert "stale observation" not in result
         assert "how is the honcho working" in result
-
-

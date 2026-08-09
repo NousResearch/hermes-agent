@@ -7,6 +7,7 @@ import {
   appendText,
   base64FromDataUrl,
   friendlyRemoteAttachError,
+  type GatewayRequest,
   imageFilenameFromPath,
   inlineErrorMessage,
   isSessionBusyError,
@@ -14,9 +15,11 @@ import {
   isSessionNotFoundError,
   readFileDataUrlForAttach,
   renderRpcResult,
+  SessionRecoveryAborted,
   slashStatusText,
   visibleUserIndexAtOrdinal,
-  visibleUserOrdinal
+  visibleUserOrdinal,
+  withSessionNotFoundResume
 } from './utils'
 
 describe('isSessionIdCandidate', () => {
@@ -51,6 +54,207 @@ describe('session error classifiers', () => {
     expect(isSessionBusyError(new Error('session busy'))).toBe(true)
     expect(isSessionNotFoundError(new Error('other'))).toBe(false)
     expect(isSessionBusyError(new Error('other'))).toBe(false)
+  })
+})
+
+describe('withSessionNotFoundResume', () => {
+  const STORED = 'stored-1'
+  const DEAD = 'rt-dead'
+  const FRESH = 'rt-fresh'
+
+  // Profile resolution is injected, so these tests never reach the REST layer.
+  // Before this was a dependency the helper called resolveStoredSession ->
+  // getSession() and its coverage silently depended on $sessions/$profiles
+  // state left behind by whichever test file ran first.
+  const deps = (overrides: Record<string, unknown> = {}) => ({
+    requestGateway: vi.fn(async (method: string) => {
+      if (method === 'session.resume') {
+        return { session_id: FRESH }
+      }
+
+      throw new Error(`unexpected ${method}`)
+    }) as unknown as GatewayRequest,
+    resolveProfile: vi.fn(async () => undefined),
+    ...overrides
+  })
+
+  it('returns the first-call result without resuming when the RPC succeeds', async () => {
+    const d = deps()
+    const call = vi.fn(async (sid: string) => `ok:${sid}`)
+
+    expect(await withSessionNotFoundResume(DEAD, STORED, call, d)).toEqual({
+      recovered: false,
+      result: `ok:${DEAD}`,
+      sessionId: DEAD
+    })
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(d.requestGateway).not.toHaveBeenCalled()
+  })
+
+  // The whole bug class: every session-scoped RPC recovers identically. Before
+  // consolidation only prompt.submit did, so attach/compress/rewind surfaced a
+  // raw "session not found" after sleep while plain text worked.
+  it.each([
+    ['image.attach_bytes', 'attach an image'],
+    ['file.attach', 'attach a file'],
+    ['session.compress', 'run /compress'],
+    ['prompt.submit', 'submit a rewind'],
+    ['session.interrupt', 'stop a turn']
+  ])('resumes and retries once so %s can %s after a stale drop', async rpc => {
+    const d = deps()
+    let attempts = 0
+
+    const call = vi.fn(async (sid: string) => {
+      attempts += 1
+
+      if (attempts === 1) {
+        throw new Error(`${rpc} failed: session not found`)
+      }
+
+      return `ok:${sid}`
+    })
+
+    expect(await withSessionNotFoundResume(DEAD, STORED, call, d)).toEqual({
+      recovered: true,
+      result: `ok:${FRESH}`,
+      sessionId: FRESH
+    })
+    expect(call.mock.calls.map(c => c[0])).toEqual([DEAD, FRESH])
+  })
+
+  it('resumes on the session-owning profile so recovery cannot fork the conversation', async () => {
+    const d = deps({ resolveProfile: vi.fn(async () => 'work') })
+    let first = true
+
+    await withSessionNotFoundResume(
+      DEAD,
+      STORED,
+      async (sid: string) => {
+        if (first) {
+          first = false
+          throw new Error('session not found')
+        }
+
+        return sid
+      },
+      d
+    )
+
+    expect(d.requestGateway).toHaveBeenCalledWith(
+      'session.resume',
+      expect.objectContaining({ session_id: STORED, source: 'desktop', omit_messages: true, profile: 'work' })
+    )
+  })
+
+  it('publishes the recovered id exactly once', async () => {
+    const onRecovered = vi.fn()
+    const d = deps({ onRecovered })
+    let first = true
+
+    await withSessionNotFoundResume(
+      DEAD,
+      STORED,
+      async (sid: string) => {
+        if (first) {
+          first = false
+          throw new Error('session not found')
+        }
+
+        return sid
+      },
+      d
+    )
+
+    expect(onRecovered).toHaveBeenCalledExactlyOnceWith(FRESH)
+  })
+
+  it('aborts instead of retrying when the user moved on during the resume', async () => {
+    const onRecovered = vi.fn()
+    const d = deps({ driftReason: () => 'selection:a->b', onRecovered })
+
+    const call = vi.fn(async () => {
+      throw new Error('session not found')
+    })
+
+    await expect(withSessionNotFoundResume(DEAD, STORED, call, d)).rejects.toThrow(SessionRecoveryAborted)
+    // Retry suppressed and nothing published: landing it would run against a
+    // session the user is no longer looking at.
+    expect(call).toHaveBeenCalledTimes(1)
+    expect(onRecovered).not.toHaveBeenCalled()
+  })
+
+  it('rethrows the original error when the resume itself 404s (never-persisted draft)', async () => {
+    const d = deps({
+      requestGateway: vi.fn(async () => {
+        throw new Error('resume failed: session not found')
+      }) as unknown as GatewayRequest
+    })
+
+    const call = vi.fn(async () => {
+      throw new Error('prompt.submit failed: original symptom')
+    })
+
+    // The ORIGINAL error, not the secondary resume failure — the double-404
+    // otherwise reported the confusing inner message.
+    await expect(withSessionNotFoundResume(DEAD, STORED, call, d)).rejects.toThrow('original symptom')
+  })
+
+  it('rethrows when no stored session id is available to resume', async () => {
+    const d = deps()
+
+    const call = vi.fn(async () => {
+      throw new Error('session not found')
+    })
+
+    await expect(withSessionNotFoundResume(DEAD, null, call, d)).rejects.toThrow('session not found')
+    expect(d.requestGateway).not.toHaveBeenCalled()
+  })
+
+  it('does not recover a gateway timeout unless the caller opts in', async () => {
+    const d = deps()
+
+    const timeout = vi.fn(async () => {
+      throw new Error('request timed out: session.compress')
+    })
+
+    // /compress is legitimately LLM-slow; retrying its timeout as a dead
+    // session would double a minutes-long call.
+    await expect(withSessionNotFoundResume(DEAD, STORED, timeout, d)).rejects.toThrow('request timed out')
+    expect(d.requestGateway).not.toHaveBeenCalled()
+
+    // prompt.submit opts in: a starved backend loop is indistinguishable from
+    // a dead runtime client-side (#55578).
+    const optIn = deps()
+    let first = true
+
+    expect(
+      await withSessionNotFoundResume(
+        DEAD,
+        STORED,
+        async (sid: string) => {
+          if (first) {
+            first = false
+            throw new Error('request timed out: prompt.submit')
+          }
+
+          return `ok:${sid}`
+        },
+        optIn,
+        { alsoTimeout: true }
+      )
+    ).toMatchObject({ recovered: true, sessionId: FRESH })
+  })
+
+  it('gives up after one retry so a genuinely broken session still surfaces', async () => {
+    const d = deps()
+
+    const call = vi.fn(async () => {
+      throw new Error('session not found')
+    })
+
+    await expect(withSessionNotFoundResume(DEAD, STORED, call, d)).rejects.toThrow('session not found')
+    expect(call).toHaveBeenCalledTimes(2)
+    expect(d.requestGateway).toHaveBeenCalledTimes(1)
   })
 })
 

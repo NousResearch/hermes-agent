@@ -950,8 +950,7 @@ def cmd_sessions(args, sessions_parser=None):
         for row in candidates:
             session_id = row["id"]
             typed = describe_skill_invocation(row["content"]) or ""
-            first_reply = db.get_first_assistant_text(session_id) or ""
-            new_title = generate_title(typed, first_reply)
+            new_title = generate_title(typed)
             if not new_title or new_title == row["title"]:
                 continue
             if not _is_titlelike(new_title):
@@ -1038,6 +1037,26 @@ def cmd_sessions(args, sessions_parser=None):
             f"Database size: {before_mb:.1f} MB -> {after_mb:.1f} MB "
             f"({_size_delta_label(saved)})"
         )
+
+    elif action == "clean-markers":
+        if args.dry_run:
+            print("Dry run — scanning for stale tool-call marker rows (#78148)…")
+        else:
+            print("Scanning for stale tool-call marker rows (#78148)…")
+        report = db.purge_stale_tool_call_markers(
+            dry_run=args.dry_run, backup=not args.no_backup
+        )
+        if report["rows_affected"] == 0:
+            print("✓ No affected rows found — nothing to clean.")
+        elif args.dry_run:
+            print(
+                f"Would clear {report['rows_affected']} row(s): "
+                f"ids {report['row_ids']}"
+            )
+        else:
+            if report["backup_path"]:
+                print(f"  backup: {report['backup_path']}")
+            print(f"✓ Cleared {report['rows_affected']} row(s).")
 
     elif action == "optimize-storage":
         db_path = db.db_path

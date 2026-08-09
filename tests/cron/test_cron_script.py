@@ -200,6 +200,51 @@ class TestRunJobScript:
         assert "encoding" not in captured["kwargs"]
         assert "errors" not in captured["kwargs"]
 
+    def test_emoji_stdout_round_trips_through_script_capture(self, cron_env):
+        """Emoji in script stdout must reach the caller intact (#42384).
+
+        On Windows the fix is the utf-8 + errors='replace' popen kwargs
+        (asserted above); on POSIX the UTF-8 locale default must already
+        carry emoji through. Either way the delivery content is the real
+        text, never an exception.
+        """
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "emoji.py"
+        script.write_text(
+            'import sys\n'
+            'sys.stdout.buffer.write("backup done \\N{PARTY POPPER} 日次".encode("utf-8"))\n',
+            encoding="utf-8",
+        )
+
+        success, output = _run_job_script("emoji.py")
+
+        assert success is True
+        assert "backup done 🎉 日次" == output
+
+    def test_invalid_utf8_stdout_does_not_raise(self, cron_env):
+        """Truncated/invalid UTF-8 in script stdout must never escape as an
+        exception (#47393) — a raised UnicodeDecodeError higher up would
+        silently drop the whole delivery (#42384). The run may fail, but it
+        must fail as a (False, message) result the scheduler can deliver.
+        """
+        from cron.scheduler import _run_job_script
+
+        script = cron_env / "scripts" / "bad_bytes.py"
+        # b'\xe6\x97' is the first two bytes of a three-byte CJK sequence —
+        # a truncated write, exactly the shape reported in #47393.
+        script.write_text(
+            "import sys\n"
+            "sys.stdout.buffer.write(b'partial \\xe6\\x97')\n",
+            encoding="utf-8",
+        )
+
+        success, output = _run_job_script("bad_bytes.py")  # must not raise
+
+        assert isinstance(success, bool)
+        assert isinstance(output, str)
+        assert output  # a message is always produced, never a silent drop
+
 
 class TestBuildJobPromptWithScript:
     """Test that script output is injected into the prompt."""

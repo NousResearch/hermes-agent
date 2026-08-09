@@ -5,6 +5,7 @@ import type { HermesConnection } from '@/global'
 import { HermesGateway } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd } from '@/lib/desktop-fs'
+import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import {
   $desktopBoot,
   applyDesktopBootProgress,
@@ -42,12 +43,16 @@ import type { RpcEvent } from '@/types/hermes'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
 
-// After this many consecutive failed reconnects (≈45s with the 1→15s backoff)
-// raise a recoverable boot error. Otherwise a dropped remote gateway loops the
-// backoff forever behind the fullscreen CONNECTING overlay with no way to reach
-// Settings / sign in / switch to local — the "lost connection breaks the app"
-// dead end. The next successful reconnect clears it.
-const RECONNECT_ESCALATE_AFTER = 6
+// After the reconnect loop has been failing for this long, raise a recoverable
+// boot error. Otherwise a dropped remote gateway loops the backoff forever
+// behind the fullscreen CONNECTING overlay with no way to reach Settings /
+// sign in / switch to local — the "lost connection breaks the app" dead end.
+// The next successful reconnect clears it. Time-based (not attempt-count)
+// because the full-jitter backoff makes attempt counts a meaningless clock:
+// six jittered attempts can elapse in ~9s, while the old deterministic
+// 1→15s ladder took ~45s to reach six failures — this threshold keeps that
+// original ~45s calibration.
+const RECONNECT_ESCALATE_AFTER_MS = 45_000
 
 interface GatewayBootOptions {
   beforeConnectionSwitch: () => void
@@ -114,13 +119,18 @@ export function useGatewayBoot({
     let reconnecting = false
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null
     let reconnectAttempt = 0
+    // Wall-clock start of the current disconnect episode (first failed
+    // reconnect attempt); null while healthy. Drives the time-based
+    // escalation below. Reset on a clean open or a manual/wake reconnect.
+    let reconnectFailingSince: number | null = null
     // Surface "sign in again" once per disconnect episode, not on every backoff
     // tick — a stale OAuth ticket fails every attempt and would otherwise stack
     // identical error toasts (and their haptics). Reset on the next clean open.
     let reauthNotified = false
-    // Raised once the reconnect loop crosses RECONNECT_ESCALATE_AFTER so the
-    // recovery overlay replaces the dead-end CONNECTING screen. Reset on a clean
-    // open or a manual/wake-driven reconnect.
+    // Raised once the reconnect loop has been failing for
+    // RECONNECT_ESCALATE_AFTER_MS so the recovery overlay replaces the
+    // dead-end CONNECTING screen. Reset on a clean open or a manual/
+    // wake-driven reconnect.
     let escalated = false
 
     // Wrap the live getter in a call so TS control-flow analysis doesn't narrow
@@ -173,6 +183,7 @@ export function useGatewayBoot({
         }
 
         reconnectAttempt = 0
+        reconnectFailingSince = null
         // A respawned backend re-mints (recycles) runtime ids, so any tile's
         // bound runtime id is now stale — drop them so each tile re-resumes.
         resetTileRuntimeBindings()
@@ -192,7 +203,11 @@ export function useGatewayBoot({
         reconnecting = false
 
         if (!cancelled && !gatewayOpen() && !$gatewaySwitching.get()) {
-          if (reconnectAttempt >= RECONNECT_ESCALATE_AFTER && !escalated) {
+          if (reconnectFailingSince === null) {
+            reconnectFailingSince = Date.now()
+          }
+
+          if (Date.now() - reconnectFailingSince >= RECONNECT_ESCALATE_AFTER_MS && !escalated) {
             escalated = true
             failDesktopBoot(translateNow('boot.errors.gatewayConnectionLost'))
           }
@@ -207,8 +222,11 @@ export function useGatewayBoot({
         return
       }
 
-      // 1s, 2s, 4s … capped at 15s.
-      const delay = Math.min(15_000, 1_000 * 2 ** Math.min(reconnectAttempt, 4))
+      // Full-jitter exponential backoff (300ms base, 15s cap) so a gateway
+      // restart doesn't get redialed by every desktop client in lockstep —
+      // an immediate-retry reconnect storm can exhaust the gateway's file
+      // descriptors while it's still coming back up.
+      const delay = reconnectBackoffDelayMs(reconnectAttempt)
       reconnectAttempt += 1
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null
@@ -223,6 +241,7 @@ export function useGatewayBoot({
 
       clearReconnectTimer()
       reconnectAttempt = 0
+      reconnectFailingSince = null
       escalated = false
       reconnectSecondaryGateways()
 
@@ -269,6 +288,7 @@ export function useGatewayBoot({
       $gatewaySwitching.set(true)
       clearReconnectTimer()
       reconnectAttempt = 0
+      reconnectFailingSince = null
       escalated = false
       reauthNotified = false
       callbacksRef.current.beforeConnectionSwitch()
@@ -371,6 +391,7 @@ export function useGatewayBoot({
 
       if (st === 'open') {
         reconnectAttempt = 0
+        reconnectFailingSince = null
         reauthNotified = false
         escalated = false
         clearReconnectTimer()
@@ -479,6 +500,20 @@ export function useGatewayBoot({
           progress: 95
         })
         publish(conn)
+
+        // Seed the workspace BEFORE the gateway opens: every session-restore
+        // path is gated on gatewayState === 'open', so nothing can be active yet
+        // and ensureDefaultWorkspaceCwd's live-session guard passes. The
+        // post-connect seed could lose that race on a slow start (#71873). A
+        // resumed session's own cwd still supersedes this once its runtime
+        // arrives. Non-fatal: the remembered cwd is a fine fallback and the
+        // post-connect pass retries the sync.
+        try {
+          await ensureDefaultWorkspaceCwd()
+        } catch (err) {
+          console.warn('Failed to seed default workspace cwd pre-connect', err)
+        }
+
         // Mint a fresh WS URL right before connecting. For OAuth gateways the
         // ticket is single-use with a short TTL, so the ticket baked into
         // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it rather than
@@ -505,7 +540,10 @@ export function useGatewayBoot({
         })
 
         await Promise.all([
-          seedDefaultCwd(),
+          // The pre-connect seed already applied the configured default; this
+          // post-connect pass covers the remote backend default. Non-fatal: a
+          // failed sync must not abort boot (the remembered cwd remains).
+          seedDefaultCwd().catch(err => console.warn('Failed to sync default workspace cwd post-connect', err)),
           callbacksRef.current.refreshHermesConfig(),
           // Session-list population is never boot-fatal. The gateway WS is
           // already open by this point — a failed sidebar fetch (transient

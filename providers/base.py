@@ -72,6 +72,12 @@ class ProviderProfile:
     # (e.g. Xiaomi MiMo, which returns 400 "text is not set").
     supports_vision_tool_messages: bool = True
 
+    # True only when this provider's Chat Completions endpoint explicitly
+    # documents ``prompt_cache_key`` as an accepted request body field.  This
+    # is deliberately opt-in: many OpenAI-compatible endpoints reject unknown
+    # top-level fields rather than ignoring them.
+    supports_prompt_cache_key: bool = False
+
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.
     # Only agentic models that support tool calling should appear here.
@@ -94,6 +100,22 @@ class ProviderProfile:
     # empty = use main model
 
     # ── Hooks (override in subclass for complex providers) ───
+
+    def resolve_aux_model(self, *, vision: bool = False) -> str:
+        """Return a LIVE cheap-model id for auxiliary tasks, or "".
+
+        ``default_aux_model`` is a hardcoded id in source, so it rots: when the
+        provider retires that model every auxiliary call spends a round-trip
+        404ing before the retry net catches it. Providers that publish a
+        machine-readable recommendation should override this and query it, so
+        the cheap tier tracks the upstream catalog instead of a constant a human
+        has to remember to bump.
+
+        Contract: cheap to call (implementations must cache — this runs on
+        client-resolution paths), never raises, and returns "" when it has no
+        answer so the caller falls through to ``default_aux_model``.
+        """
+        return ""
 
     def get_hostname(self) -> str:
         """Return the provider's base hostname for URL-based detection.

@@ -22,11 +22,41 @@ class TestCLIPersonalityNone:
 
 
 
-    def test_neutral_clears_system_prompt(self):
+    def test_set_persists_display_personality_not_system_prompt(self):
         cli = self._make_cli()
-        with patch("cli.save_config_value", return_value=True):
+        saves = []
+
+        def _save(key, value):
+            saves.append((key, value))
+            return True
+
+        with patch("cli.save_config_value", side_effect=_save):
+            cli._handle_personality_command("/personality helpful")
+
+        assert cli.system_prompt == "You are helpful."
+        assert ("display.personality", "helpful") in saves
+        assert not any(k == "agent.system_prompt" for k, _ in saves)
+
+    def test_neutral_restores_manual_system_prompt_without_wiping_config(self):
+        cli = self._make_cli()
+        saves = []
+
+        def _save(key, value):
+            saves.append((key, value))
+            return True
+
+        with (
+            patch("cli.save_config_value", side_effect=_save),
+            patch(
+                "hermes_cli.config.read_raw_config",
+                return_value={"agent": {"system_prompt": "manual forever"}},
+            ),
+        ):
             cli._handle_personality_command("/personality neutral")
-        assert cli.system_prompt == ""
+
+        assert cli.system_prompt == "manual forever"
+        assert ("display.personality", "") in saves
+        assert not any(k == "agent.system_prompt" for k, _ in saves)
 
 
 
@@ -59,7 +89,13 @@ class TestGatewayPersonalityNone:
     @pytest.mark.asyncio
     async def test_default_clears_ephemeral_prompt(self, tmp_path):
         runner = self._make_runner()
-        config_data = {"agent": {"personalities": {"helpful": "You are helpful."}}}
+        config_data = {
+            "agent": {
+                "system_prompt": "manual forever",
+                "personalities": {"helpful": "You are helpful."},
+            },
+            "display": {"personality": "helpful"},
+        }
         config_file = tmp_path / "config.yaml"
         config_file.write_text(yaml.dump(config_data))
 
@@ -67,7 +103,32 @@ class TestGatewayPersonalityNone:
             event = self._make_event("default")
             result = await runner._handle_personality_command(event)
 
-        assert runner._ephemeral_system_prompt == ""
+        saved = yaml.safe_load(config_file.read_text())
+        assert saved["agent"]["system_prompt"] == "manual forever"
+        assert saved.get("display", {}).get("personality", None) == ""
+        assert runner._ephemeral_system_prompt == "manual forever"
+
+    @pytest.mark.asyncio
+    async def test_set_persists_display_personality_not_system_prompt(self, tmp_path):
+        runner = self._make_runner()
+        config_data = {
+            "agent": {
+                "system_prompt": "manual forever",
+                "personalities": {"helpful": "You are helpful."},
+            }
+        }
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(yaml.dump(config_data))
+
+        with patch("gateway.run._hermes_home", tmp_path):
+            event = self._make_event("helpful")
+            result = await runner._handle_personality_command(event)
+
+        saved = yaml.safe_load(config_file.read_text())
+        assert saved["agent"]["system_prompt"] == "manual forever"
+        assert saved["display"]["personality"] == "helpful"
+        assert runner._ephemeral_system_prompt == "You are helpful."
+        assert "helpful" in result.lower()
 
 
     @pytest.mark.asyncio

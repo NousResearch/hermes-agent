@@ -1,14 +1,14 @@
 ---
-title: "Neuroskill Bci"
+title: "Neuroskill Bci — Use live BCI cognitive and mood state from NeuroSkill"
 sidebar_label: "Neuroskill Bci"
-description: "Connect to a running NeuroSkill instance and incorporate the user's real-time cognitive and emotional state (focus, relaxation, mood, cognitive load, drowsin..."
+description: "Use live BCI cognitive and mood state from NeuroSkill"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Neuroskill Bci
 
-Connect to a running NeuroSkill instance and incorporate the user's real-time cognitive and emotional state (focus, relaxation, mood, cognitive load, drowsiness, heart rate, HRV, sleep staging, and 40+ derived EXG scores) into responses. Requires a BCI wearable (Muse 2/S or OpenBCI) and the NeuroSkill desktop app running locally.
+Use live BCI cognitive and mood state from NeuroSkill.
 
 ## Skill metadata
 

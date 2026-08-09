@@ -17,7 +17,6 @@ interface SessionRowCommonProps {
   branchStem?: string
   isPinned: boolean
   isSelected: boolean
-  isWorking: boolean
   onArchive: () => void
   onBranch?: () => void
   onDelete: () => void
@@ -27,7 +26,7 @@ interface SessionRowCommonProps {
   showProfile?: boolean
 }
 
-interface VirtualSessionListProps {
+export interface VirtualSessionListProps {
   activeSessionId: null | string
   className?: string
   rows: SidebarListRow[]
@@ -39,7 +38,6 @@ interface VirtualSessionListProps {
   pinned: boolean
   showProfileTags?: boolean
   sortable: boolean
-  workingSessionIdSet: Set<string>
 }
 
 const ROW_ESTIMATE_PX = 28
@@ -56,8 +54,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   onTogglePin,
   pinned,
   showProfileTags = false,
-  sortable,
-  workingSessionIdSet
+  sortable
 }) => {
   const { t } = useI18n()
   const dividerLabels = t.sidebar.dateDivider
@@ -108,7 +105,6 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       branchStem,
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
-      isWorking: workingSessionIdSet.has(session.id),
       onArchive: () => onArchiveSession(session.id),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
       onDelete: () => onDeleteSession(session.id),

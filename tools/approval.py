@@ -8,6 +8,7 @@ This module is the single source of truth for the dangerous command system:
 - Permanent allowlist persistence (config.yaml)
 """
 
+import contextlib
 import contextvars
 import fnmatch
 import functools
@@ -224,6 +225,22 @@ def _get_session_platform() -> str:
         return os.getenv("HERMES_SESSION_PLATFORM", "") or ""
 
 
+def _is_cron_approval_context() -> bool:
+    """True when the current approval decision is running inside cron.
+
+    Prefer the session ContextVar so one cron job cannot taint unrelated
+    gateway/API/TUI turns in the same process. If the session context layer is
+    not engaged or unavailable, fall back to the legacy process env var for CLI
+    tests and older entrypoints.
+    """
+    try:
+        from gateway.session_context import get_session_env
+
+        return is_truthy_value(get_session_env("HERMES_CRON_SESSION", ""))
+    except Exception:
+        return env_var_enabled("HERMES_CRON_SESSION")
+
+
 def _is_gateway_approval_context() -> bool:
     """True when this call is inside a gateway/API session.
 
@@ -238,7 +255,7 @@ def _is_gateway_approval_context() -> bool:
     fall through to the gateway branch would submit a pending approval
     with no listener and block the job indefinitely.
     """
-    if env_var_enabled("HERMES_CRON_SESSION"):
+    if _is_cron_approval_context():
         return False
     if env_var_enabled("HERMES_GATEWAY_SESSION"):
         return True
@@ -569,19 +586,89 @@ def _user_deny_block_result(pattern: str) -> dict:
     }
 
 
-def _hardline_block_result(description: str) -> dict:
+def _save_blocked_payload(command: str) -> Optional[str]:
+    """Persist a parser-limit-blocked command as a runnable script.
+
+    The parser-limit block fires on payload SIZE/shape, not on the
+    operation — the command itself is usually a legitimate script the
+    model inlined (heredoc, giant one-liner). Materialize it to a file so
+    the recovery is one turn (`bash <file>`) instead of two (re-author via
+    write_file, then run). Saving is strictly safer than the hint-only
+    path: the file goes through the same execution pipeline as any other
+    script (including the referenced-script content guard), and nothing
+    is executed here.
+
+    Returns the saved path, or None on any failure (the hint then falls
+    back to the manual write_file recipe).
+    """
+    try:
+        from hermes_constants import get_hermes_home
+        import time as _time
+        import uuid as _uuid
+        script_dir = get_hermes_home() / "cache" / "blocked-scripts"
+        script_dir.mkdir(parents=True, exist_ok=True)
+        # Opportunistic cleanup: blocked payloads older than 7 days.
+        cutoff = _time.time() - 7 * 86400
+        for old in script_dir.glob("blocked-*.sh"):
+            try:
+                if old.stat().st_mtime < cutoff:
+                    old.unlink()
+            except OSError:
+                pass
+        path = script_dir / f"blocked-{int(_time.time())}-{_uuid.uuid4().hex[:8]}.sh"
+        path.write_text(
+            "#!/bin/bash\n"
+            "# Auto-saved by Hermes: this command exceeded the inline command\n"
+            "# parser limit and was blocked from direct execution. Review it,\n"
+            "# then run it via: bash " + str(path) + "\n"
+            + command
+            + ("\n" if not command.endswith("\n") else ""),
+            encoding="utf-8", errors="replace",
+        )
+        return str(path)
+    except Exception:
+        logger.debug("failed to save blocked payload", exc_info=True)
+        return None
+
+
+def _hardline_block_result(description: str, command: str = "") -> dict:
     """Build the standard block result for a hardline match."""
+    message = (
+        f"BLOCKED (hardline): {description}. "
+        "This command is on the unconditional blocklist and cannot "
+        "be executed via the agent — not even with --yolo, /yolo, "
+        "approvals.mode=off, or cron approve mode. If you genuinely "
+        "need to run it, run it yourself in a terminal outside the "
+        "agent."
+    )
+    # The parser-limit block is almost always a giant inline payload
+    # (heredoc script, base64 blob, one-line python -c program) — not a
+    # genuinely forbidden operation. 198 occurrences in a 250k-call
+    # production window, typically followed by blind rephrase retries.
+    # Auto-save the payload as a runnable script and point at it; fall
+    # back to the manual write_file recipe when saving fails.
+    if description in (_PARSER_LIMIT_DESCRIPTION, _MALFORMED_EXEC_DESCRIPTION):
+        saved = _save_blocked_payload(command) if command else None
+        if saved:
+            message += (
+                " RECOVERY: this block fires on oversized/unparseable inline "
+                "command payloads (heredocs, giant one-liners), not on the "
+                f"operation itself. Your command was saved to {saved} — "
+                f"review it, then run: terminal(command=\"bash {saved}\"). "
+                "Do not retry inline."
+            )
+        else:
+            message += (
+                " RECOVERY: this block fires on oversized/unparseable inline "
+                "command payloads (heredocs, giant one-liners), not on the "
+                "operation itself. Write the script to a file with write_file, "
+                "then run it: terminal(command=\"bash /path/script.sh\") or "
+                "\"python3 /path/script.py\". Do not retry inline."
+            )
     return {
         "approved": False,
         "hardline": True,
-        "message": (
-            f"BLOCKED (hardline): {description}. "
-            "This command is on the unconditional blocklist and cannot "
-            "be executed via the agent — not even with --yolo, /yolo, "
-            "approvals.mode=off, or cron approve mode. If you genuinely "
-            "need to run it, run it yourself in a terminal outside the "
-            "agent."
-        ),
+        "message": message,
     }
 
 
@@ -1813,74 +1900,70 @@ def _deobfuscate_shell_word_for_detection(word: str) -> str:
 
 def _iter_shell_command_starts(command: str):
     starts = [0]
-    quote: str | None = None
-    i = 0
-    while i < len(command):
-        ch = command[i]
-        if quote == "'":
-            if ch == "'":
-                quote = None
-            i += 1
-            continue
-        if quote == '"':
-            if ch == "\\" and i + 1 < len(command):
-                i += 2
-                continue
-            if ch == '"':
-                quote = None
+
+    def scan(start: int, end: int) -> None:
+        quote: str | None = None
+        i = start
+        while i < end:
+            ch = command[i]
+            if quote == "'":
+                if ch == "'":
+                    quote = None
                 i += 1
+                continue
+            if quote == '"':
+                if ch == "\\" and i + 1 < end:
+                    i += 2
+                    continue
+                if ch == '"':
+                    quote = None
+                    i += 1
+                    continue
+                if command.startswith("$(", i):
+                    nested_end = _scan_dollar_paren_end(command, i)
+                    starts.append(i + 2)
+                    scan(i + 2, nested_end - 1 if nested_end is not None else end)
+                    i = nested_end if nested_end is not None else end
+                    continue
+                if ch == "`":
+                    nested_end = _scan_backtick_end(command, i)
+                    starts.append(i + 1)
+                    scan(i + 1, nested_end - 1 if nested_end is not None else end)
+                    i = nested_end if nested_end is not None else end
+                    continue
+                i += 1
+                continue
+            if ch in ("'", '"'):
+                quote = ch
+                i += 1
+                continue
+            if ch == "\\" and i + 1 < end:
+                i += 2
                 continue
             if command.startswith("$(", i):
+                nested_end = _scan_dollar_paren_end(command, i)
                 starts.append(i + 2)
-                i += 2
+                scan(i + 2, nested_end - 1 if nested_end is not None else end)
+                i = nested_end if nested_end is not None else end
                 continue
-            i += 1
-            continue
-        if ch in ("'", '"'):
-            quote = ch
-            i += 1
-            continue
-        if ch == "\\" and i + 1 < len(command):
-            i += 2
-            continue
-        if command.startswith("$(", i):
-            starts.append(i + 2)
-            i += 2
-            continue
-        # Bare subshell `(cmd)` and brace group `{ cmd; }` openers begin a new
-        # command context, just like `;` or `$(`. We only reach this branch
-        # OUTSIDE any quote (the quote arms above `continue` first), so a `(`
-        # or `{` sitting inside a quoted argument — `--title "block (reboot)"`,
-        # `echo "{ reboot; }"` — never registers a command start. That is the
-        # whole reason this lives in the quote-aware tokenizer instead of the
-        # flat `_CMDPOS` regex, which cannot tell quoted text from real syntax.
-        if ch in ("(", "{"):
-            starts.append(i + 1)
-            i += 1
-            continue
-        if ch == ";":
-            starts.append(i + 1)
-            i += 1
-            continue
-        if ch == "&":
-            if i + 1 < len(command) and command[i + 1] == "&":
-                starts.append(i + 2)
-                i += 2
-            else:
+            if ch == "`":
+                nested_end = _scan_backtick_end(command, i)
                 starts.append(i + 1)
-                i += 1
-            continue
-        if ch == "|":
-            if i + 1 < len(command) and command[i + 1] == "|":
-                starts.append(i + 2)
-                i += 2
-            else:
+                scan(i + 1, nested_end - 1 if nested_end is not None else end)
+                i = nested_end if nested_end is not None else end
+                continue
+            if ch in ("(", "{"):
                 starts.append(i + 1)
-                i += 1
-            continue
-        if ch == "\n":
-            starts.append(i + 1)
-        i += 1
+            elif ch in ";\n":
+                starts.append(i + 1)
+            elif ch in "&|":
+                repeated = i + 1 < end and command[i + 1] == ch
+                starts.append(i + 2 if repeated else i + 1)
+                if repeated:
+                    i += 1
+            i += 1
+
+    scan(0, len(command))
 
     seen: set[int] = set()
     for start in starts:
@@ -1916,6 +1999,54 @@ def _mark_command_starts(command: str) -> str:
         previous = offset
     parts.append(command[previous:])
     return "".join(parts)
+
+
+def _mask_quoted_newlines(command: str) -> str:
+    """Replace raw newlines inside single/double quotes with a space.
+
+    Detection-only rewrite. A newline inside a quoted string is DATA to the
+    shell — part of the argument, not a command separator — yet the flat
+    ``_CMDPOS`` start-position class treats every raw ``\\n`` as a command
+    start. That made any multi-line quoted argument (``hermes send`` message
+    bodies, ``git commit -m`` messages, heredoc text) trip the hardline
+    blocklist when a data line began with e.g. ``sudo reboot``.
+
+    Quote tracking mirrors ``_iter_shell_command_starts``: single quotes are
+    literal until the closing quote; inside double quotes a backslash escapes
+    the next character. Real command boundaries are unaffected: unquoted
+    newlines pass through untouched, ``$(``/backtick remain ``_CMDPOS``
+    anchors independent of newlines, and ``_mark_command_starts`` still
+    re-inserts newlines at every genuine quote-aware command start. An
+    unclosed quote absorbs following newlines exactly as the shell would
+    (the quoted word continues across the line break), so masking them
+    cannot hide a runnable command.
+    """
+    if "\n" not in command:
+        return command
+    out: list[str] = []
+    quote: str | None = None
+    i = 0
+    while i < len(command):
+        ch = command[i]
+        if quote:
+            if ch == "\\" and quote == '"' and i + 1 < len(command):
+                out.append(command[i:i + 2])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            out.append(" " if ch == "\n" else ch)
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            quote = ch
+        elif ch == "\\" and i + 1 < len(command):
+            out.append(command[i:i + 2])
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 def _iter_shell_command_word_spans(command: str):
@@ -1961,7 +2092,13 @@ def _iter_shell_command_word_spans(command: str):
 
 
 def _command_detection_variants(command: str):
-    normalized = _normalize_command_for_detection(command)
+    # Mask quoted newlines BEFORE normalization: normalization strips
+    # backslash-escapes (\" -> ") and empty-string pairs (""), which would
+    # corrupt quote tracking — e.g. `echo "a\""` normalizes to `echo "a` (an
+    # unterminated quote), so masking the normalized text could swallow a
+    # REAL unquoted newline separator that follows. The raw command carries
+    # faithful shell quote state.
+    normalized = _normalize_command_for_detection(_mask_quoted_newlines(command))
     # Quote-aware grep parsing hides only structurally identified pattern
     # operands. Malformed/ambiguous input remains byte-for-byte intact.
     grep_safe, _ = _grep_safe_detection_variant(normalized)
@@ -2067,6 +2204,157 @@ _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
+
+
+# =========================================================================
+# Human-wait accounting (per session)
+# =========================================================================
+# Tracks the wall-clock time the agent spends verifiably blocked on a HUMAN
+# prompt (CLI approval prompt, gateway approval round-trip). The concurrent
+# tool batch deadline in agent/tool_executor.py excludes this time so a slow
+# human answer never times a batch out — but ONLY this time. Measuring human
+# waits at the source (rather than residency in the authorization gate, which
+# is arbitrary code) is what keeps a wedged pre_tool_call plugin or a dead
+# approval client from growing the exclusion 1:1 with wall clock and defeating
+# the deadline entirely (#79719).
+#
+# Keyed by session so one gateway session's pending approval cannot extend a
+# different session's batch deadline. State is process-global like the rest
+# of this module's approval state; entries are bounded by _HUMAN_WAIT_MAX_SESSIONS.
+
+
+class _HumanWaitState:
+    __slots__ = ("pending", "window_started", "completed_seconds")
+
+    def __init__(self) -> None:
+        self.pending = 0
+        self.window_started: float | None = None
+        self.completed_seconds = 0.0
+
+
+_human_wait_lock = threading.Lock()
+_human_wait_states: dict[str, _HumanWaitState] = {}
+_HUMAN_WAIT_MAX_SESSIONS = 256
+# Margin added on top of approvals.timeout when clamping a window's
+# contribution (read-side AND close-side) and when bounding the authorization
+# gate's serialization-lock acquire in agent/tool_executor.py. One constant so
+# the clamps can't drift apart.
+HUMAN_WAIT_MARGIN_S = 60.0
+
+
+def human_wait_ceiling() -> float:
+    """Max seconds a single window may contribute: approvals.timeout + margin.
+
+    Every legitimate human wait self-terminates at ``approvals.timeout`` (the
+    CLI prompt join and the gateway poll loop both enforce it), so a window
+    that overstays this ceiling is itself wedged and must not keep extending
+    a batch deadline. Also used by agent/tool_executor.py as the bound on the
+    authorization gate's serialization-lock acquire, so the two bounds cannot
+    drift. Never call while holding ``_human_wait_lock`` — it reads the
+    config cache.
+    """
+    return float(_get_approval_timeout()) + HUMAN_WAIT_MARGIN_S
+
+
+def _clamped_window_seconds(started: float, now: float, ceiling: float) -> float:
+    """Seconds an open window contributes: elapsed, floored at 0, capped.
+
+    Shared by the close-time accrual in :func:`human_wait_window` and the
+    open-window read in :func:`human_wait_seconds` so the two clamps stay
+    identical by construction.
+    """
+    return min(max(0.0, now - started), ceiling)
+
+
+def _human_wait_state(session_key: str) -> _HumanWaitState:
+    """Return (creating if needed) the wait state for *session_key*.
+
+    Caller must hold ``_human_wait_lock``. Evicts idle entries (no pending
+    waiter) insertion-order-first until the table is under the cap so an army
+    of short-lived session keys cannot grow it without bound. Entries with an
+    open window are never evicted (that would corrupt live accounting), so
+    the cap is best-effort under 256+ concurrently-pending sessions.
+    """
+    state = _human_wait_states.get(session_key)
+    if state is None:
+        if len(_human_wait_states) >= _HUMAN_WAIT_MAX_SESSIONS:
+            for key in list(_human_wait_states):
+                if len(_human_wait_states) < _HUMAN_WAIT_MAX_SESSIONS:
+                    break
+                if _human_wait_states[key].pending == 0:
+                    del _human_wait_states[key]
+        state = _HumanWaitState()
+        _human_wait_states[session_key] = state
+    return state
+
+
+@contextlib.contextmanager
+def human_wait_window(session_key: str | None = None):
+    """Mark the enclosed block as time spent blocked on a human prompt.
+
+    Wrap ONLY code that is genuinely parked waiting for a user's answer (the
+    CLI approval prompt, the gateway approval poll loop). The concurrent tool
+    batch deadline excludes this time; wrapping anything else re-creates the
+    #79719 hang where arbitrary wedged code pushes the deadline out forever.
+
+    Overlapping windows for the same session coalesce (pending counter), so
+    two serialized approval prompts don't double-count the same wall clock.
+    """
+    key = session_key if session_key is not None else get_current_session_key()
+    now = time.monotonic()
+    with _human_wait_lock:
+        state = _human_wait_state(key)
+        if state.pending == 0:
+            state.window_started = now
+        state.pending += 1
+    try:
+        yield
+    finally:
+        now = time.monotonic()
+        # Clamp the accrual too: a window that overstayed the ceiling was
+        # wedged — record at most the ceiling instead of retroactively
+        # injecting the whole overstay into the exclusion.
+        ceiling = human_wait_ceiling()
+        with _human_wait_lock:
+            state = _human_wait_states.get(key)
+            if state is not None:
+                state.pending -= 1
+                if state.pending == 0:
+                    if state.window_started is not None:
+                        state.completed_seconds += _clamped_window_seconds(
+                            state.window_started, now, ceiling
+                        )
+                    state.window_started = None
+
+
+def human_wait_seconds(session_key: str | None = None) -> float:
+    """Return total human-wait seconds recorded for the session.
+
+    Completed windows plus the currently open one (if any). Monotonically
+    non-decreasing for the life of the process — except when an idle session's
+    entry is evicted under cap pressure, which can only shrink a consumer's
+    baseline delta to zero (the safe direction: the deadline fires sooner).
+    Deadline consumers snapshot a baseline at batch start and use the delta.
+
+    Each window's contribution is clamped to :func:`human_wait_ceiling`:
+    every legitimate human wait self-terminates at ``approvals.timeout``
+    (both the CLI prompt join and the gateway poll loop enforce it), so a
+    window that overstays that bound is itself wedged and must not keep
+    extending a batch deadline (belt-and-braces for #79719).
+    """
+    key = session_key if session_key is not None else get_current_session_key()
+    now = time.monotonic()
+    # Resolve the clamp outside the lock: it reads the config cache, which
+    # must never nest under _human_wait_lock.
+    ceiling = human_wait_ceiling()
+    with _human_wait_lock:
+        state = _human_wait_states.get(key)
+        if state is None:
+            return 0.0
+        total = state.completed_seconds
+        if state.window_started is not None:
+            total += _clamped_window_seconds(state.window_started, now, ceiling)
+        return total
 
 # =========================================================================
 # Consecutive-denial circuit breaker for smart approvals
@@ -2392,8 +2680,8 @@ def load_permanent_allowlist() -> set:
     patterns added via 'always' in a previous session.
     """
     try:
-        from hermes_cli.config import load_config
-        config = load_config()
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
         patterns = set(config.get("command_allowlist", []) or [])
         if patterns:
             load_permanent(patterns)
@@ -2437,11 +2725,34 @@ def prompt_dangerous_approval(command: str, description: str,
             smart_denied=False) -> str. Legacy callback signatures remain
             supported when ``smart_denied`` is false.
 
-    Returns: 'once', 'session', 'always', or 'deny'
+    Returns: 'once', 'session', 'always', 'deny', or 'timeout'.
+        'timeout' means the prompt expired without a user response — the
+        action must still be blocked (fail-closed), but callers should
+        report it as "no response" rather than an explicit user denial.
     """
     if timeout_seconds is None:
         timeout_seconds = _get_approval_timeout()
 
+    # Everything below is a human prompt: either the registered CLI callback
+    # (prompt_toolkit panel, bounded by the approval deadline) or the input()
+    # fallback (bounded by thread.join(timeout_seconds)). Record it as
+    # human-wait time so the concurrent batch deadline excludes it (#79719).
+    with human_wait_window():
+        return _prompt_dangerous_approval_inner(
+            command,
+            description,
+            timeout_seconds,
+            allow_permanent,
+            approval_callback,
+            smart_denied=smart_denied,
+        )
+
+
+def _prompt_dangerous_approval_inner(command: str, description: str,
+                                     timeout_seconds: int,
+                                     allow_permanent: bool = True,
+                                     approval_callback=None,
+                                     *, smart_denied: bool = False) -> str:
     # Redact secrets before any user-visible rendering. The original
     # `command` is still what executes after approval; only the displayed
     # copy is scrubbed. Reuses the same redaction module used for memory
@@ -2526,7 +2837,10 @@ def prompt_dangerous_approval(command: str, description: str,
 
             if thread.is_alive():
                 print("\n" + t("approval.timeout"))
-                return "deny"
+                # Distinct from an explicit deny: the user never answered.
+                # Callers still block (fail-closed) but tell the agent the
+                # prompt timed out instead of claiming the user refused.
+                return "timeout"
 
             choice = result["choice"]
             if smart_denied:
@@ -2601,10 +2915,14 @@ def _normalize_approval_mode(mode) -> str:
 
 
 def _get_approval_config() -> dict:
-    """Read the approvals config block. Returns a dict with 'mode', 'timeout', etc."""
+    """Read the approvals config block. Returns a dict with 'mode', 'timeout', etc.
+
+    Returns the LIVE config-cache sub-dict (load_config_readonly contract) —
+    callers must not mutate it or any nested structure.
+    """
     try:
-        from hermes_cli.config import load_config
-        config = load_config()
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
         return config.get("approvals", {}) or {}
     except Exception as e:
         logger.warning("Failed to load approval config: %s", e)
@@ -2662,8 +2980,8 @@ def _get_approval_timeout() -> int:
 def _get_cron_approval_mode() -> str:
     """Read the cron approval mode from config. Returns 'deny' or 'approve'."""
     try:
-        from hermes_cli.config import load_config
-        config = load_config()
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly()
         mode = str(cfg_get(config, "approvals", "cron_mode", default="deny")).lower().strip()
         if mode in {"approve", "off", "allow", "yes"}:
             return "approve"
@@ -2899,7 +3217,7 @@ def _run_approval_gate(
 
     if not is_cli and not is_gateway:
         # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
+        if _is_cron_approval_context():
             if _get_cron_approval_mode() == "deny":
                 return {
                     "approved": False,
@@ -3020,8 +3338,42 @@ def _run_approval_gate(
             ),
         }
 
+    _fire_approval_hook(
+        "pre_approval_request",
+        command=display_target,
+        description=description,
+        pattern_key=pattern_key,
+        pattern_keys=[pattern_key],
+        session_key=session_key,
+        surface="cli",
+    )
     choice = prompt_dangerous_approval(display_target, description,
                                        approval_callback=approval_callback)
+    _fire_approval_hook(
+        "post_approval_response",
+        command=display_target,
+        description=description,
+        pattern_key=pattern_key,
+        pattern_keys=[pattern_key],
+        session_key=session_key,
+        surface="cli",
+        choice=choice,
+    )
+
+    if choice == "timeout":
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: Action timed out without user response. The user "
+                f"has NOT consented to this action. Do NOT retry it, do NOT "
+                f"rephrase it, and do NOT attempt the same outcome via a "
+                f"different path. Silence is not consent."
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+            "outcome": "timeout",
+            "user_consent": False,
+        }
 
     if choice == "deny":
         return {
@@ -3033,6 +3385,8 @@ def _run_approval_gate(
             ),
             "pattern_key": pattern_key,
             "description": description,
+            "outcome": "denied",
+            "user_consent": False,
         }
 
     if choice == "session":
@@ -3088,7 +3442,7 @@ def check_dangerous_command(command: str, env_type: str,
     is_hardline, hardline_desc = detect_hardline_command(command)
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
-        return _hardline_block_result(hardline_desc)
+        return _hardline_block_result(hardline_desc, command)
 
     # User-defined deny rules (approvals.deny in config.yaml): like the
     # hardline floor, these fire BEFORE the yolo bypass — a deny rule is the
@@ -3297,6 +3651,16 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     except Exception as exc:
         logger.warning("Gateway approval notify failed: %s", exc)
         _drop_entry()
+        _fire_approval_hook(
+            "post_approval_response",
+            command=command,
+            description=description,
+            pattern_key=primary_key,
+            pattern_keys=list(all_keys),
+            session_key=session_key,
+            surface=surface,
+            choice="notify_failed",
+        )
         return {"resolved": False, "choice": None, "notify_failed": True}
 
     # Block until the user responds or the canonical approval timeout elapses
@@ -3315,32 +3679,37 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     _deadline = _now + max(timeout, 0)
     _activity_state = {"last_touch": _now, "start": _now}
     resolved = False
-    while True:
-        # Respect interrupt signals (e.g. /stop, /new, or an inactivity
-        # timeout from the gateway) so a pending approval doesn't keep the
-        # session wedged on threading.Event.wait() until the 5-minute approval
-        # timeout. The wait runs on the agent's execution thread, which is the
-        # exact thread AIAgent.interrupt() flags — so is_interrupted() here
-        # sees the signal. Resolve as "deny" so the agent loop receives a
-        # normal denial and unwinds cleanly (#8697).
-        if is_interrupted():
-            logger.info(
-                "Approval wait interrupted by user signal — "
-                "returning deny for session %s",
-                session_key,
-            )
-            entry.result = "deny"
-            entry.event.set()
-            resolved = True
-            break
-        _remaining = _deadline - time.monotonic()
-        if _remaining <= 0:
-            break
-        if entry.event.wait(timeout=min(1.0, _remaining)):
-            resolved = True
-            break
-        if touch_activity_if_due is not None:
-            touch_activity_if_due(_activity_state, "waiting for user approval")
+    # The poll loop below is verifiably blocked on a human answer (the user
+    # tapping approve/deny on the gateway surface), bounded by the approval
+    # timeout. Record it as human-wait time so the concurrent batch deadline
+    # excludes it (#79719).
+    with human_wait_window(session_key):
+        while True:
+            # Respect interrupt signals (e.g. /stop, /new, or an inactivity
+            # timeout from the gateway) so a pending approval doesn't keep the
+            # session wedged on threading.Event.wait() until the 5-minute approval
+            # timeout. The wait runs on the agent's execution thread, which is the
+            # exact thread AIAgent.interrupt() flags — so is_interrupted() here
+            # sees the signal. Resolve as "deny" so the agent loop receives a
+            # normal denial and unwinds cleanly (#8697).
+            if is_interrupted():
+                logger.info(
+                    "Approval wait interrupted by user signal — "
+                    "returning deny for session %s",
+                    session_key,
+                )
+                entry.result = "deny"
+                entry.event.set()
+                resolved = True
+                break
+            _remaining = _deadline - time.monotonic()
+            if _remaining <= 0:
+                break
+            if entry.event.wait(timeout=min(1.0, _remaining)):
+                resolved = True
+                break
+            if touch_activity_if_due is not None:
+                touch_activity_if_due(_activity_state, "waiting for user approval")
 
     _drop_entry()
 
@@ -3388,7 +3757,7 @@ def check_all_command_guards(command: str, env_type: str,
     is_hardline, hardline_desc = detect_hardline_command(command)
     if is_hardline:
         logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
-        return _hardline_block_result(hardline_desc)
+        return _hardline_block_result(hardline_desc, command)
 
     # == Sudo stdin guard ==
     # Like the hardline floor above, this is unconditional: there is never a
@@ -3427,7 +3796,7 @@ def check_all_command_guards(command: str, env_type: str,
     # flows, we do not block on approvals and we skip external guard work.
     if not is_cli and not is_gateway and not is_ask:
         # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
+        if _is_cron_approval_context():
             if _get_cron_approval_mode() == "deny":
                 # Run detection to get a description for the block message
                 is_dangerous, _pk, description = detect_dangerous_command(command)
@@ -3470,7 +3839,7 @@ def check_all_command_guards(command: str, env_type: str,
                     # fail-closed synthesis in the main flow below; see #20733).
                     _cron_fail_open = True  # safe default if config is unreadable
                     try:
-                        from hermes_cli.config import load_config as _load_cfg
+                        from hermes_cli.config import load_config_readonly as _load_cfg
                         _sec = (_load_cfg() or {}).get("security", {}) or {}
                         if _sec.get("tirith_enabled", True):
                             _cron_fail_open = _sec.get("tirith_fail_open", True)
@@ -3508,7 +3877,7 @@ def check_all_command_guards(command: str, env_type: str,
         # normal approval flow.  Fixes #20733.
         _tirith_fail_open = True  # safe default if config is unreadable
         try:
-            from hermes_cli.config import load_config as _load_cfg
+            from hermes_cli.config import load_config_readonly as _load_cfg
             _sec = (_load_cfg() or {}).get("security", {}) or {}
             _tirith_enabled = _sec.get("tirith_enabled", True)
             if _tirith_enabled:
@@ -3797,6 +4166,25 @@ def check_all_command_guards(command: str, env_type: str,
         choice=choice,
     )
 
+    if choice == "timeout":
+        breaker_addendum = _denial_breaker_addendum(session_key)
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: Command timed out without user response. The user "
+                "has NOT consented to this action. Do NOT retry this "
+                "command, do NOT rephrase it, and do NOT attempt the same "
+                "outcome via a different command. Stop the current workflow "
+                "and wait for the user to respond before taking any further "
+                "destructive or irreversible action. Silence is not "
+                f"consent.{breaker_addendum}"
+            ),
+            "pattern_key": primary_key,
+            "description": combined_desc,
+            "outcome": "timeout",
+            "user_consent": False,
+        }
+
     if choice == "deny":
         breaker_addendum = _denial_breaker_addendum(session_key)
         return {
@@ -3878,7 +4266,7 @@ def check_execute_code_guard(code: str, env_type: str,
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
     # Cron: no user is present to approve arbitrary code.
-    if env_var_enabled("HERMES_CRON_SESSION"):
+    if _is_cron_approval_context():
         if _get_cron_approval_mode() == "deny":
             return {
                 "approved": False,
@@ -4154,6 +4542,10 @@ def request_elicitation_consent(
 
     if choice in ("once", "session", "always"):
         return "accept"
+    if choice == "timeout":
+        # Prompt expired without a user response — mirror the gateway's
+        # unresolved outcome ("cancel") rather than an explicit decline.
+        return "cancel"
     return "decline"
 
 

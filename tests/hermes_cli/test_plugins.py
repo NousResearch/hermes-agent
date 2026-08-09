@@ -1,6 +1,7 @@
 """Tests for the Hermes plugin system (hermes_cli.plugins)."""
 
 import logging
+import json
 import sys
 import types
 from pathlib import Path
@@ -21,6 +22,7 @@ from hermes_cli.plugins import (
     get_pre_verify_continue_message,
     has_middleware,
     resolve_plugin_command_result,
+    _portable_skill_namespace,
 )
 from hermes_cli.middleware import (
     VALID_MIDDLEWARE,
@@ -31,6 +33,15 @@ from hermes_cli.middleware import (
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
+
+
+def test_portable_skill_namespace_is_ascii_safe():
+    from agent.skill_utils import is_valid_namespace
+
+    namespace = _portable_skill_namespace("café/portable")
+
+    assert namespace.isascii()
+    assert is_valid_namespace(namespace)
 
 
 def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
@@ -91,6 +102,147 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
 
 class TestPluginDiscovery:
     """Tests for plugin discovery from directories and entry points."""
+
+    def test_enabled_portable_plugin_registers_components(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli.agent_plugins import MCP_SCHEMA_V1, PLUGIN_SCHEMA_V1
+        from hermes_cli import plugins as plugins_mod
+
+        home = tmp_path / "home"
+        plugin = home / "plugins" / "portable"
+        skill = plugin / "skills" / "summarize"
+        skill.mkdir(parents=True)
+        (plugin / "plugin.json").write_text(
+            json.dumps({"$schema": PLUGIN_SCHEMA_V1, "name": "portable.test"})
+        )
+        (skill / "SKILL.md").write_text(
+            "---\nname: summarize\ndescription: Summarize reports.\n---\nBody.\n"
+        )
+        (plugin / "mcp.json").write_text(
+            json.dumps(
+                {
+                    "$schema": MCP_SCHEMA_V1,
+                    "mcpServers": {
+                        "worker": {"type": "stdio", "command": "python"}
+                    },
+                }
+            )
+        )
+        native = home / "plugins" / "native"
+        native.mkdir()
+        (native / "plugin.yaml").write_text(
+            yaml.safe_dump({"name": "native", "version": "1.0.0"})
+        )
+        (native / "__init__.py").write_text("def register(ctx):\n    pass\n")
+        home.mkdir(exist_ok=True)
+        (home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["portable.test", "native"]}})
+        )
+        empty_bundled = tmp_path / "bundled"
+        empty_bundled.mkdir()
+        monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: empty_bundled)
+
+        manager = PluginManager()
+        manager.discover_and_load()
+
+        [qualified] = manager.list_plugin_skill_metadata()
+        assert qualified["name"].endswith(":summarize")
+        assert set(manager.get_portable_mcp_servers()) == {
+            qualified["name"].split(":", 1)[0] + "__worker"
+        }
+        assert manager._plugins["portable.test"].enabled is True
+        assert manager._plugins["native"].enabled is True
+        assert manager._plugins["native"].module is not None
+
+    def test_disabled_portable_plugin_registers_nothing(self, tmp_path, monkeypatch):
+        from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
+        from hermes_cli import plugins as plugins_mod
+
+        home = tmp_path / "home"
+        plugin = home / "plugins" / "portable"
+        plugin.mkdir(parents=True)
+        (plugin / "plugin.json").write_text(
+            json.dumps({"$schema": PLUGIN_SCHEMA_V1, "name": "portable.test"})
+        )
+        (home / "config.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "plugins": {
+                        "enabled": ["portable.test"],
+                        "disabled": ["portable.test"],
+                    }
+                }
+            )
+        )
+        empty_bundled = tmp_path / "bundled"
+        empty_bundled.mkdir()
+        monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: empty_bundled)
+
+        manager = PluginManager()
+        manager.discover_and_load()
+
+        assert manager._plugins["portable.test"].enabled is False
+        assert manager.list_plugin_skill_metadata() == []
+        assert manager.get_portable_mcp_servers() == {}
+
+    def test_portable_author_object_is_normalized_to_stable_string(
+        self, tmp_path, monkeypatch
+    ):
+        from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
+        from hermes_cli import plugins as plugins_mod
+
+        home = tmp_path / "home"
+        plugin = home / "plugins" / "portable"
+        plugin.mkdir(parents=True)
+        (plugin / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "$schema": PLUGIN_SCHEMA_V1,
+                    "name": "portable.test",
+                    "author": {
+                        "url": "https://example.test",
+                        "name": "Ada Lovelace",
+                        "email": "ada@example.test",
+                    },
+                }
+            )
+        )
+        bundled = tmp_path / "bundled"
+        bundled.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled))
+
+        manager = PluginManager()
+        manifests = manager._collect_directory_manifests()
+
+        [manifest] = [item for item in manifests if item.portable]
+        assert manifest.author == (
+            "Ada Lovelace, ada@example.test, https://example.test"
+        )
+        assert isinstance(manifest.author, str)
+
+        empty_author = home / "plugins" / "empty-author"
+        empty_author.mkdir()
+        (empty_author / "plugin.json").write_text(
+            json.dumps(
+                {
+                    "$schema": PLUGIN_SCHEMA_V1,
+                    "name": "empty-author",
+                    "author": {},
+                }
+            )
+        )
+        [empty] = [
+            item
+            for item in manager._collect_directory_manifests()
+            if item.name == "empty-author"
+        ]
+        assert empty.author == ""
 
 
     def test_plugin_can_register_and_invoke_middleware(self, tmp_path, monkeypatch):
@@ -383,6 +535,54 @@ class TestPreToolCallBlocking:
 class TestPreToolCallDirective:
     """Tests for the extended (block | approve) directive helper."""
 
+    def test_first_party_observer_receives_pre_tool_call(self, monkeypatch):
+        from hermes_cli import observability
+        from hermes_cli.plugins import get_pre_tool_call_directive
+
+        observed = []
+        monkeypatch.setattr(
+            observability,
+            "observe_lifecycle",
+            lambda hook_name, **kwargs: observed.append((hook_name, kwargs)),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [],
+        )
+
+        assert get_pre_tool_call_directive(
+            "write_file",
+            {"path": "README.md"},
+            task_id="task-1",
+            session_id="session-1",
+            tool_call_id="call-1",
+        ) == (None, None)
+        assert observed == [
+            (
+                "pre_tool_call",
+                {
+                    "tool_name": "write_file",
+                    "args": {"path": "README.md"},
+                    "task_id": "task-1",
+                    "session_id": "session-1",
+                    "tool_call_id": "call-1",
+                    "turn_id": "",
+                    "api_request_id": "",
+                    "middleware_trace": [],
+                },
+            )
+        ]
+
+    def test_approve_directive_returned(self, monkeypatch):
+        from hermes_cli.plugins import get_pre_tool_call_directive
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "approve", "message": "needs human ok"}
+            ],
+        )
+        assert get_pre_tool_call_directive("write_file", {}) == (
+            "approve", "needs human ok")
 
     def test_approve_without_message_is_valid(self, monkeypatch):
         """approve may omit a message (block may not)."""
@@ -398,6 +598,33 @@ class TestResolvePreToolBlock:
     """Tests for the single dispatch-site chokepoint that resolves a
     directive (incl. the approve→gate escalation) to a block message."""
 
+
+    def test_approve_gate_receives_tool_observability_context(self, monkeypatch):
+        from hermes_cli.plugins import resolve_pre_tool_block
+        from tools import approval
+
+        seen = {}
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {"action": "approve", "message": "why"}
+            ],
+        )
+
+        def _approve(*args, **kwargs):
+            seen["turn_id"] = approval._approval_turn_id.get()
+            seen["tool_call_id"] = approval._approval_tool_call_id.get()
+            return {"approved": True, "message": None}
+
+        monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
+
+        assert resolve_pre_tool_block(
+            "write_file",
+            {},
+            turn_id="turn-1",
+            tool_call_id="call-1",
+        ) is None
+        assert seen == {"turn_id": "turn-1", "tool_call_id": "call-1"}
 
     def test_approve_passes_plugin_rule_key_to_gate(self, monkeypatch):
         from hermes_cli.plugins import resolve_pre_tool_block

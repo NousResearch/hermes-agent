@@ -26,6 +26,47 @@ from typing import Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
+# Cap on a tool error body; only trims runaway interpolated exceptions (static msgs are ~115 chars).
+_MAX_TOOL_ERROR_CHARS = 2048
+_TOOL_ERROR_TRUNCATION_MARKER = "… [truncated]"
+# Logs keep more of the body than the model sees, but still a bounded amount.
+_MAX_LOGGED_ERROR_CHARS = 8192
+
+
+def _bound_error_text(text: str) -> str:
+    """Bound an error body destined for model context; logs keep a longer prefix."""
+    if len(text) <= _MAX_TOOL_ERROR_CHARS:
+        return text
+    logger.debug(
+        "tool error body truncated for context (%d chars): %s",
+        len(text),
+        text[:_MAX_LOGGED_ERROR_CHARS],
+    )
+    return text[:_MAX_TOOL_ERROR_CHARS] + _TOOL_ERROR_TRUNCATION_MARKER
+
+
+def _bound_json_error_result(result: str) -> str:
+    """Trim an oversized ``error`` field in a JSON string result.
+
+    Handlers that serialize exceptions directly — ``json.dumps({"error":
+    str(exc), ...})`` instead of ``tool_error()`` — bypass the cap in
+    ``tool_error``. Applied at the dispatch boundary so no registered tool
+    can return an unbounded error body that stacks across retries.
+    """
+    if len(result) <= _MAX_TOOL_ERROR_CHARS or '"error"' not in result:
+        return result
+    try:
+        payload = json.loads(result)
+    except ValueError:
+        return result
+    if not isinstance(payload, dict):
+        return result
+    error = payload.get("error")
+    if not isinstance(error, str) or len(error) <= _MAX_TOOL_ERROR_CHARS:
+        return result
+    payload["error"] = _bound_error_text(error)
+    return json.dumps(payload, ensure_ascii=False)
+
 
 def _is_registry_register_call(node: ast.AST) -> bool:
     """Return True when *node* is a ``registry.register(...)`` call expression."""
@@ -218,10 +259,54 @@ _CHECK_FN_TTL_SECONDS = 30.0
 # as a flake (last-good True is served) rather than a real outage. Kept short
 # so a genuinely-down backend is reflected within a couple of turns.
 _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
-_check_fn_cache: Dict[Callable, tuple[float, bool]] = {}
+_CHECK_FN_CACHE_MAX = 512
+_check_fn_cache: Dict[tuple[Callable, Optional[str]], tuple[float, bool]] = {}
 # Monotonic timestamp of the most recent True result per check_fn.
-_check_fn_last_good: Dict[Callable, float] = {}
+_check_fn_last_good: Dict[tuple[Callable, Optional[str]], float] = {}
 _check_fn_cache_lock = threading.Lock()
+CHECK_FN_CACHE_BYPASS = ""
+
+
+def _prune_check_fn_caches(now: float) -> None:
+    """Expire stale entries and cap profile-dimensional cache growth.
+
+    Caller must hold ``_check_fn_cache_lock``.
+    """
+    for key, (timestamp, _) in list(_check_fn_cache.items()):
+        if now - timestamp >= _CHECK_FN_TTL_SECONDS:
+            _check_fn_cache.pop(key, None)
+    for key, timestamp in list(_check_fn_last_good.items()):
+        if now - timestamp >= _CHECK_FN_FAILURE_GRACE_SECONDS:
+            _check_fn_last_good.pop(key, None)
+    while len(_check_fn_cache) >= _CHECK_FN_CACHE_MAX:
+        _check_fn_cache.pop(next(iter(_check_fn_cache)))
+    while len(_check_fn_last_good) >= _CHECK_FN_CACHE_MAX:
+        _check_fn_last_good.pop(next(iter(_check_fn_last_good)))
+
+
+def check_fn_cache_scope() -> Optional[str]:
+    """Return the active profile key when availability is profile-scoped.
+
+    Single-profile processes intentionally keep the historical process-wide
+    cache. A multiplex gateway installs a Hermes-home override for every
+    profile turn, so the canonical profile key is the stable isolation
+    boundary across repeated turns for that profile.
+    """
+    try:
+        from agent.secret_scope import is_multiplex_active
+
+        if not is_multiplex_active():
+            return None
+        from hermes_constants import get_hermes_home_override
+
+        override = get_hermes_home_override()
+        if not override:
+            return CHECK_FN_CACHE_BYPASS
+        return str(Path(override).expanduser().resolve())
+    except Exception:
+        # Fail closed: bypass both cache layers rather than aliasing requests
+        # whose multiplex profile identity could not be resolved.
+        return CHECK_FN_CACHE_BYPASS
 
 
 def _check_fn_cached(fn: Callable) -> bool:
@@ -234,8 +319,22 @@ def _check_fn_cached(fn: Callable) -> bool:
     contention, probe timeout) from silently stripping tools mid-session.
     """
     now = time.monotonic()
+    scope = check_fn_cache_scope()
+    if scope == CHECK_FN_CACHE_BYPASS:
+        try:
+            return bool(fn())
+        except Exception:
+            logger.warning(
+                "check_fn %s raised while profile cache scope was unresolved; "
+                "dependent tools will be unavailable this turn",
+                getattr(fn, "__qualname__", fn),
+                exc_info=True,
+            )
+            return False
+    cache_key = (fn, scope)
     with _check_fn_cache_lock:
-        cached = _check_fn_cache.get(fn)
+        _prune_check_fn_caches(now)
+        cached = _check_fn_cache.get(cache_key)
         if cached is not None:
             ts, value = cached
             if now - ts < _CHECK_FN_TTL_SECONDS:
@@ -249,12 +348,13 @@ def _check_fn_cached(fn: Callable) -> bool:
         raised = True
 
     with _check_fn_cache_lock:
+        _prune_check_fn_caches(now)
         if value:
-            _check_fn_last_good[fn] = now
-            _check_fn_cache[fn] = (now, True)
+            _check_fn_last_good[cache_key] = now
+            _check_fn_cache[cache_key] = (now, True)
             return True
 
-        last_good = _check_fn_last_good.get(fn)
+        last_good = _check_fn_last_good.get(cache_key)
         if last_good is not None and now - last_good < _CHECK_FN_FAILURE_GRACE_SECONDS:
             # Recent success → treat this failure as a flake. Serve last-good
             # True and do NOT cache the failure, so the next call re-probes
@@ -275,7 +375,7 @@ def _check_fn_cached(fn: Callable) -> bool:
             getattr(fn, "__qualname__", fn),
             "raised" if raised else "returned False",
         )
-        _check_fn_cache[fn] = (now, False)
+        _check_fn_cache[cache_key] = (now, False)
         return False
 
 
@@ -285,6 +385,30 @@ def invalidate_check_fn_cache() -> None:
     with _check_fn_cache_lock:
         _check_fn_cache.clear()
         _check_fn_last_good.clear()
+
+
+def get_cached_check_fn_result(fn: Callable) -> Optional[bool]:
+    """Return the current cached verdict for *fn* if its TTL is still valid.
+
+    Unlike :func:`_check_fn_cached`, this NEVER executes the probe. It is for
+    read-only surfaces (e.g. dashboard status panels) that need the last-known
+    availability without triggering network / auth / SDK work inside a request
+    path. Returns ``None`` when there is no fresh cached verdict.
+    """
+    now = time.monotonic()
+    scope = check_fn_cache_scope()
+    if scope == CHECK_FN_CACHE_BYPASS:
+        # Unresolved profile identity bypasses the cache entirely; there is no
+        # trustworthy cached verdict to report.
+        return None
+    with _check_fn_cache_lock:
+        cached = _check_fn_cache.get((fn, scope))
+        if cached is None:
+            return None
+        ts, value = cached
+        if now - ts < _CHECK_FN_TTL_SECONDS:
+            return value
+        return None
 
 
 class ToolRegistry:
@@ -653,7 +777,7 @@ class ToolRegistry:
         persistence from receiving values they cannot safely slice or size.
         """
         if isinstance(result, str):
-            return result
+            return _bound_json_error_result(result)
         if (
             isinstance(result, dict)
             and result.get("_multimodal") is True
@@ -694,7 +818,10 @@ class ToolRegistry:
                 result = entry.handler(args, **kwargs)
             return self._normalize_handler_result(name, result)
         except Exception as e:
-            logger.exception("Tool %s dispatch error: %s", name, e)
+            # exc_info already renders the exception, so keep the message copy bounded.
+            logger.exception(
+                "Tool %s dispatch error: %s", name, _bound_error_text(str(e))
+            )
             # Route through the sanitizer so framing tokens / CDATA / fences
             # in exception strings don't reach the model as structural noise.
             # See model_tools._sanitize_tool_error for rationale.
@@ -852,7 +979,8 @@ def tool_error(message, **extra) -> str:
     >>> tool_error("bad input", success=False)
     '{"error": "bad input", "success": false}'
     """
-    result = {"error": str(message)}
+    # Bound the context-bound copy so a raw exception can't bloat history across retries.
+    result = {"error": _bound_error_text(str(message))}
     if extra:
         result.update(extra)
     return json.dumps(result, ensure_ascii=False)

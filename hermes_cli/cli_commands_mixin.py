@@ -363,6 +363,80 @@ class CLICommandsMixin:
             print(f"  Unknown subcommand: {subcmd}")
             print("  Usage: /snapshot [list|create [label]|restore <id>|prune [N]]")
 
+    def _handle_export_command(self, command: str):
+        """Handle /export — export a profile to a shareable .tar.gz archive.
+
+        Syntax:
+            /export                       — export the active profile
+            /export <profile>             — export a named profile
+            /export [profile] -o <path>   — choose the output path
+        """
+        from hermes_cli.profiles import export_profile, get_active_profile_name
+
+        parts = command.split()[1:]
+        output = None
+        if "-o" in parts:
+            idx = parts.index("-o")
+            if idx + 1 >= len(parts):
+                print("  Usage: /export [profile] [-o output.tar.gz]")
+                return
+            output = parts[idx + 1]
+            parts = parts[:idx] + parts[idx + 2:]
+
+        name = parts[0] if parts else (get_active_profile_name() or "default")
+        if not output:
+            output = f"{name}.tar.gz"
+
+        try:
+            result = export_profile(name, output)
+            print(f"  ✓ Exported '{name}' to {result}")
+            print("  Share it: the other user runs /import or `hermes profile import <archive>`.")
+        except (ValueError, FileNotFoundError) as e:
+            print(f"  Error: {e}")
+
+    def _handle_import_command(self, command: str):
+        """Handle /import — import a shared profile archive as a new profile.
+
+        Syntax:
+            /import <archive.tar.gz> [--name <name>]
+        """
+        from hermes_cli.profiles import (
+            check_alias_collision, create_wrapper_script, import_profile,
+        )
+
+        parts = command.split()[1:]
+        name = None
+        if "--name" in parts:
+            idx = parts.index("--name")
+            if idx + 1 >= len(parts):
+                print("  Usage: /import <archive.tar.gz> [--name <name>]")
+                return
+            name = parts[idx + 1]
+            parts = parts[:idx] + parts[idx + 2:]
+
+        if not parts:
+            print("  Usage: /import <archive.tar.gz> [--name <name>]")
+            return
+
+        archive = " ".join(parts)  # paths may contain spaces
+
+        try:
+            profile_dir = import_profile(archive, name=name)
+        except (ValueError, FileExistsError, FileNotFoundError) as e:
+            print(f"  Error: {e}")
+            return
+
+        imported = profile_dir.name
+        print(f"  ✓ Imported profile '{imported}' at {profile_dir}")
+        try:
+            if not check_alias_collision(imported):
+                wrapper_path = create_wrapper_script(imported)
+                if wrapper_path:
+                    print(f"  Wrapper created: {wrapper_path}")
+        except Exception:
+            pass
+        print(f"  Use it: hermes -p {imported}")
+
     def _handle_stop_command(self):
         """Handle /stop — kill all running background processes and
         background (async) delegations.
@@ -1036,7 +1110,11 @@ class CLICommandsMixin:
                 pass
 
         title_part = f" \"{session_meta['title']}\"" if session_meta.get("title") else ""
-        msg_count = len([m for m in self._resume_display_history if m.get("role") == "user" and not m.get("display_kind")])
+        from agent.context_compressor import is_user_originated_turn
+
+        # Count only user-originated turns (#80622): legacy compaction
+        # handoffs are durable role=user rows without display_kind.
+        msg_count = len([m for m in self._resume_display_history if is_user_originated_turn(m)])
         if self.conversation_history:
             _cprint(
                 f"  ↻ Resumed session {target_id}{title_part}"
@@ -1054,6 +1132,12 @@ class CLICommandsMixin:
         # relative-path resolution keep operating in the wrong repo. Idempotent
         # and a no-op when the session recorded no cwd. See #38562.
         self._restore_session_cwd(session_meta)
+
+        # Restore the target session's persisted YOLO bypass. Any bypass the
+        # PREVIOUS session had toggled on stops applying automatically because
+        # the approval session key just changed. Same contract as a startup
+        # --resume.
+        self._restore_session_yolo(session_meta)
 
     def _handle_sessions_command(self, cmd_original: str) -> None:
         """Handle /sessions [list|<id_or_title>] — browse or resume previous sessions.
@@ -1165,25 +1249,32 @@ class CLICommandsMixin:
             _cprint(f"  Failed to create branch session: {e}")
             return
 
-        # Copy conversation history to the new session
-        for msg in self.conversation_history:
-            try:
-                self._session_db.append_message(
-                    session_id=new_session_id,
-                    role=msg.get("role", "user"),
-                    content=msg.get("content"),
-                    tool_name=msg.get("tool_name") or msg.get("name"),
-                    tool_calls=msg.get("tool_calls"),
-                    tool_call_id=msg.get("tool_call_id"),
-                    reasoning=msg.get("reasoning"),
-                    # Keep the api_content sidecar so the branch's first turn
-                    # replays the parent's exact wire bytes (warm provider
-                    # prompt cache) instead of a full cold prefill.
-                    api_content=extract_api_content_sidecar(msg),
-                    timestamp=msg.get("timestamp"),
-                )
-            except Exception:
-                pass  # Best-effort copy
+        # Copy conversation history to the new session in bounded-chunk
+        # transactions (see #23254) instead of one txn per row. Best-effort
+        # like the old loop — a failed copy still yields a usable branch.
+        try:
+            self._session_db.append_messages_batch(
+                new_session_id,
+                [
+                    {
+                        "role": msg.get("role", "user"),
+                        "content": msg.get("content"),
+                        "tool_name": msg.get("tool_name") or msg.get("name"),
+                        "tool_calls": msg.get("tool_calls"),
+                        "tool_call_id": msg.get("tool_call_id"),
+                        "reasoning": msg.get("reasoning"),
+                        # Keep the api_content sidecar so the branch's first turn
+                        # replays the parent's exact wire bytes (warm provider
+                        # prompt cache) instead of a full cold prefill.
+                        "api_content": extract_api_content_sidecar(msg),
+                        "timestamp": msg.get("timestamp"),
+                    }
+                    for msg in self.conversation_history
+                ],
+                chunk_rows=500,
+            )
+        except Exception:
+            pass  # Best-effort copy
 
         # Set title on the branch
         try:
@@ -1249,21 +1340,34 @@ class CLICommandsMixin:
             personality_name = parts[1].strip().lower()
             
             if personality_name in {"none", "default", "neutral"}:
-                self.system_prompt = ""
+                # Persist the selection only. Never clear agent.system_prompt —
+                # that field is the user-owned manual overlay.
+                saved = save_config_value("display.personality", "")
+                try:
+                    from hermes_cli.config import cfg_get, read_raw_config, _prompt_text
+
+                    self.system_prompt = _prompt_text(
+                        cfg_get(read_raw_config(), "agent", "system_prompt", default="")
+                    )
+                except Exception:
+                    self.system_prompt = ""
                 self.agent = None  # Force re-init
-                if save_config_value("agent.system_prompt", ""):
+                if saved:
                     print("(^_^)b Personality cleared (saved to config)")
                 else:
                     print("(^_^) Personality cleared (session only)")
                 print("  No personality overlay — using base agent behavior.")
             elif personality_name in self.personalities:
-                self.system_prompt = self._resolve_personality_prompt(self.personalities[personality_name])
+                personality_prompt = self._resolve_personality_prompt(
+                    self.personalities[personality_name]
+                )
+                self.system_prompt = personality_prompt
                 self.agent = None  # Force re-init
-                if save_config_value("agent.system_prompt", self.system_prompt):
+                if save_config_value("display.personality", personality_name):
                     print(f"(^_^)b Personality set to '{personality_name}' (saved to config)")
                 else:
                     print(f"(^_^) Personality set to '{personality_name}' (session only)")
-                print(f"  \"{self.system_prompt[:60]}{'...' if len(self.system_prompt) > 60 else ''}\"")
+                print(f"  \"{personality_prompt[:60]}{'...' if len(personality_prompt) > 60 else ''}\"")
             else:
                 print(f"(._.) Unknown personality: {personality_name}")
                 print(f"  Available: none, {', '.join(self.personalities.keys())}")
@@ -2281,8 +2385,134 @@ class CLICommandsMixin:
             print("   status       Show current browser mode")
             print()
 
+    def _handle_heartbeat_command(self, cmd: str) -> None:
+        """Dispatch /heartbeat: set / status / pause / resume / clear.
+
+        ``/heartbeat every 10m Check the deployment`` sets the session's one
+        recurring instruction; the idle watchdog injects it as a normal user
+        turn whenever due. Session-scoped and in-process — for durable
+        cross-process schedules use `hermes cron`.
+        """
+        from cli import _DIM, _RST, _cprint
+        from hermes_cli.heartbeat import parse_interval, format_interval
+
+        parts = (cmd or "").strip().split(None, 1)
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        lower = arg.lower()
+
+        mgr = self._get_heartbeat_manager()
+        if mgr is None:
+            _cprint(f"  {_DIM}Heartbeats unavailable (no active session).{_RST}")
+            return
+
+        if not arg or lower == "status":
+            _cprint(f"  {mgr.status_line()}")
+            return
+
+        if lower == "pause":
+            state = mgr.pause()
+            if state is None:
+                _cprint(f"  {_DIM}No heartbeat set.{_RST}")
+            else:
+                _cprint(f"  ⏸ Heartbeat paused: {state.prompt}")
+            return
+
+        if lower == "resume":
+            state = mgr.resume()
+            if state is None:
+                _cprint(f"  {_DIM}No heartbeat to resume.{_RST}")
+            else:
+                self._start_heartbeat_watchdog()
+                _cprint(f"  ▶ Heartbeat resumed (every {format_interval(state.interval_seconds)}): {state.prompt}")
+            return
+
+        if lower in {"clear", "stop", "off"}:
+            if mgr.clear():
+                _cprint("  ✓ Heartbeat cleared.")
+            else:
+                _cprint(f"  {_DIM}No heartbeat set.{_RST}")
+            return
+
+        # Set: `/heartbeat every 10m <prompt>` (also accepts `10m <prompt>`).
+        tokens = arg.split(None, 2)
+        interval = None
+        prompt = ""
+        if tokens and tokens[0].lower() == "every" and len(tokens) >= 2:
+            interval = parse_interval(f"every {tokens[1]}")
+            prompt = tokens[2] if len(tokens) > 2 else ""
+        elif tokens:
+            interval = parse_interval(tokens[0])
+            prompt = arg[len(tokens[0]):].strip() if interval and interval > 0 else ""
+
+        if interval is None:
+            _cprint("  Usage: /heartbeat every <interval> <prompt>   (e.g. /heartbeat every 10m Check CI)")
+            _cprint(f"  {_DIM}Also: /heartbeat status | pause | resume | clear{_RST}")
+            return
+        if interval < 0:
+            from hermes_cli.heartbeat import MIN_INTERVAL_SECONDS
+            _cprint(f"  Interval too small — minimum is {MIN_INTERVAL_SECONDS}s.")
+            return
+        if not prompt.strip():
+            _cprint("  Usage: /heartbeat every <interval> <prompt> — the prompt is required.")
+            return
+
+        try:
+            state = mgr.set(prompt, interval)
+        except ValueError as exc:
+            _cprint(f"  Invalid heartbeat: {exc}")
+            return
+        self._start_heartbeat_watchdog()
+        _cprint(f"  ♥ Heartbeat set (every {format_interval(state.interval_seconds)}): {state.prompt}")
+        _cprint(
+            f"  {_DIM}Fires as a normal turn whenever the session is idle and the "
+            f"interval has elapsed. /heartbeat pause | resume | clear to manage; "
+            f"lives only while this Hermes process runs — use `hermes cron` for "
+            f"durable schedules.{_RST}"
+        )
+
+    def _handle_refine_command(self, cmd: str) -> None:
+        """Dispatch /refine — run the memory/skill review fork on demand.
+
+        Same machinery as the automatic post-turn self-improvement loop
+        (``AIAgent._spawn_background_review``), but user-triggered and with
+        optional focus instructions. Writes go to the memory + skill stores
+        in a background fork; the live conversation and prompt cache are
+        never touched.
+        """
+        from cli import _DIM, _RST, _cprint
+
+        parts = (cmd or "").strip().split(None, 1)
+        focus = parts[1].strip() if len(parts) > 1 else ""
+
+        agent = getattr(self, "agent", None)
+        if agent is None:
+            _cprint(f"  {_DIM}Nothing to refine yet — send a message first.{_RST}")
+            return
+
+        snapshot = list(getattr(self, "conversation_history", None) or [])
+        if not snapshot:
+            _cprint(f"  {_DIM}Nothing to refine yet — the conversation is empty.{_RST}")
+            return
+
+        review_skills = "skill_manage" in getattr(agent, "valid_tool_names", set())
+        try:
+            agent._spawn_background_review(
+                messages_snapshot=snapshot,
+                review_memory=True,
+                review_skills=review_skills,
+                focus=focus or None,
+            )
+        except Exception as exc:
+            _cprint(f"  /refine failed to start: {exc}")
+            return
+        tail = f" (focus: {focus})" if focus else ""
+        _cprint(
+            f"  ⚗ Reviewing this conversation in the background{tail} — "
+            f"any memory/skill updates will be reported when done."
+        )
+
     def _handle_goal_command(self, cmd: str) -> None:
-        """Dispatch /goal subcommands: set / draft / show / status / pause / resume / clear."""
+        """Dispatch /goal subcommands: set / draft / show / gate / status / pause / resume / clear."""
         from cli import _DIM, _RST, _cprint
         parts = (cmd or "").strip().split(None, 1)
         arg = parts[1].strip() if len(parts) > 1 else ""
@@ -2377,6 +2607,49 @@ class CLICommandsMixin:
                 _cprint("  ▶ Wait barrier cleared — goal loop resumes.")
             else:
                 _cprint(f"  {_DIM}No wait barrier set.{_RST}")
+            return
+
+        # /goal gate ... — manage deterministic quality gates. A gate is a
+        # shell command that must pass before the judge may declare the goal
+        # done; a failing gate's output becomes the continuation prompt.
+        if lower == "gate" or lower.startswith("gate "):
+            gate_arg = arg[len("gate"):].strip()
+            gate_lower = gate_arg.lower()
+            if not gate_arg or gate_lower == "list":
+                for line in mgr.render_gates().splitlines():
+                    _cprint(f"  {line}")
+                return
+            if gate_lower.startswith("add "):
+                command = gate_arg[len("add"):].strip()
+                try:
+                    gate = mgr.add_gate(command)
+                except (RuntimeError, ValueError) as exc:
+                    _cprint(f"  /goal gate add: {exc}")
+                    return
+                _cprint(
+                    f"  ⚿ Gate added: $ {gate.command} "
+                    f"({gate.max_retries} retries, {gate.timeout_seconds}s timeout). "
+                    f"It must pass before the goal can complete."
+                )
+                return
+            if gate_lower.startswith("remove ") or gate_lower.startswith("rm "):
+                idx_text = gate_arg.split(None, 1)[1].strip()
+                try:
+                    removed = mgr.remove_gate(int(idx_text))
+                except (RuntimeError, ValueError, IndexError) as exc:
+                    _cprint(f"  /goal gate remove: {exc}")
+                    return
+                _cprint(f"  ✓ Gate removed: $ {removed}")
+                return
+            if gate_lower == "clear":
+                try:
+                    prev = mgr.clear_gates()
+                except RuntimeError as exc:
+                    _cprint(f"  /goal gate clear: {exc}")
+                    return
+                _cprint(f"  ✓ Cleared {prev} gate{'s' if prev != 1 else ''}.")
+                return
+            _cprint("  Usage: /goal gate [list | add <command> | remove <N> | clear]")
             return
 
         # Otherwise treat the arg as the goal text. Inline `field: value`

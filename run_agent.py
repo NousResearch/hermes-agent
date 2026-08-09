@@ -115,6 +115,7 @@ from agent.process_bootstrap import (
     _get_proxy_for_base_url,
 )
 from agent.iteration_budget import IterationBudget
+from agent.interrupt_compat import request_hard_interrupt
 
 
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -147,9 +148,11 @@ from tools.browser_tool import cleanup_browser
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import sanitize_context
+from agent.memory_provider import is_trivial_prompt
 from agent.error_classifier import FailoverReason
 from agent.redact import redact_sensitive_text
 from agent.message_content import flatten_message_text
+from agent.session_activity import ActivityProvenance
 from agent.model_metadata import (
     estimate_request_tokens_rough,  # noqa: F401  # re-exported for tests that mock.patch("run_agent.estimate_request_tokens_rough")
     is_local_endpoint,
@@ -466,6 +469,8 @@ class AIAgent:
         reasoning_callback: callable = None,
         clarify_callback: callable = None,
         read_terminal_callback: callable = None,
+        read_preview_callback: callable = None,
+        read_window_below_callback: callable = None,
         step_callback: callable = None,
         stream_delta_callback: callable = None,
         interim_assistant_callback: callable = None,
@@ -492,6 +497,7 @@ class AIAgent:
         skip_context_files: bool = False,
         load_soul_identity: bool = False,
         skip_memory: bool = False,
+        skip_background_review: bool = False,
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
@@ -550,6 +556,8 @@ class AIAgent:
             reasoning_callback=reasoning_callback,
             clarify_callback=clarify_callback,
             read_terminal_callback=read_terminal_callback,
+            read_preview_callback=read_preview_callback,
+            read_window_below_callback=read_window_below_callback,
             step_callback=step_callback,
             stream_delta_callback=stream_delta_callback,
             interim_assistant_callback=interim_assistant_callback,
@@ -576,6 +584,7 @@ class AIAgent:
             skip_context_files=skip_context_files,
             load_soul_identity=load_soul_identity,
             skip_memory=skip_memory,
+            skip_background_review=skip_background_review,
             session_db=session_db,
             parent_session_id=parent_session_id,
             iteration_budget=iteration_budget,
@@ -608,6 +617,9 @@ class AIAgent:
             from hermes_state import SessionDB
 
             self._session_db = SessionDB()
+            # We opened it here, so nothing else holds a reference — this agent
+            # is its only owner and close() must release it.
+            self._owns_session_db = True
             return self._session_db
         except Exception:
             logger.debug("SessionDB unavailable for recall", exc_info=True)
@@ -628,11 +640,24 @@ class AIAgent:
                     _profile_for_session = None
             except Exception:
                 _profile_for_session = None
+            # Carry the live YOLO bypass into the creation-time model_config so
+            # a session whose /yolo was toggled BEFORE the row existed (the row
+            # is created lazily on the first turn) still persists the flag for
+            # `hermes --resume`. set_session_yolo() no-ops on a missing row, so
+            # this is the only chance to record a pre-first-turn toggle.
+            _init_model_config = self._session_init_model_config
+            try:
+                from tools.approval import is_session_yolo_enabled
+                if is_session_yolo_enabled(self.session_id):
+                    _init_model_config = dict(_init_model_config or {})
+                    _init_model_config["yolo_mode"] = True
+            except Exception:
+                pass
             self._session_db.create_session(
                 session_id=self.session_id,
                 source=source,
                 model=self.model,
-                model_config=self._session_init_model_config,
+                model_config=_init_model_config,
                 system_prompt=self._cached_system_prompt,
                 user_id=None,
                 parent_session_id=self._parent_session_id,
@@ -997,6 +1022,12 @@ class AIAgent:
             from agent.conversation_compression import (
                 CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
             )
+            # cooldown + anti-thrash (ineffective) are both "compression blocked".
+            if _warn_kind in ("cooldown", "ineffective"):
+                self._touch_activity(
+                    f"compression blocked ({reason})",
+                    provenance=ActivityProvenance.AGENT_COMPRESSION_COOLDOWN,
+                )
             self._emit_warning(
                 CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
                     tokens=preflight_tokens,
@@ -1772,6 +1803,7 @@ class AIAgent:
         messages_snapshot: List[Dict],
         review_memory: bool = False,
         review_skills: bool = False,
+        focus: Optional[str] = None,
     ) -> None:
         """Spawn the background memory/skill review thread.
 
@@ -1780,6 +1812,10 @@ class AIAgent:
         returns the thread target.  ``threading.Thread`` is constructed
         here so existing tests that patch ``run_agent.threading.Thread``
         keep working.
+
+        ``focus`` is optional user-supplied steering (from ``/refine``)
+        appended to the review prompt — e.g. "save the deploy workflow as a
+        skill". The automatic post-turn triggers never set it.
         """
         from agent.background_review import spawn_background_review_thread
         from tools.thread_context import propagate_context_to_thread
@@ -1788,6 +1824,7 @@ class AIAgent:
             messages_snapshot,
             review_memory=review_memory,
             review_skills=review_skills,
+            focus=focus,
         )
         # Carry the active profile into the review thread so MEMORY.md / skill
         # review writes land in the right profile (#54937).
@@ -2074,6 +2111,10 @@ class AIAgent:
                 ):
                     _scan_start += 1
 
+            # Collect this flush's new rows and write them in ONE transaction
+            # at the end of the scan (see append_messages_batch).
+            _batch_rows: List[Dict[str, Any]] = []
+            _batch_msgs: List[Dict] = []
             for _msg_idx in range(_scan_start, len(messages)):
                 msg = messages[_msg_idx]
                 if not isinstance(msg, dict):
@@ -2192,33 +2233,64 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
-                self._session_db.append_message(
-                    session_id=self.session_id,
-                    role=role,
-                    content=content,
-                    tool_name=msg.get("tool_name"),
-                    tool_calls=tool_calls_data,
-                    tool_call_id=msg.get("tool_call_id"),
-                    finish_reason=msg.get("finish_reason"),
-                    reasoning=msg.get("reasoning") if role == "assistant" else None,
-                    reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
-                    reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
-                    codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
-                    codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
-                    timestamp=_row_timestamp,
-                    api_content=_row_api_content,
-                    display_kind=(
+                _batch_rows.append({
+                    "role": role,
+                    "content": content,
+                    "tool_name": msg.get("tool_name"),
+                    "tool_calls": tool_calls_data,
+                    "tool_call_id": msg.get("tool_call_id"),
+                    "finish_reason": msg.get("finish_reason"),
+                    # Reasoning/codex fields are role-gated (assistant-only)
+                    # inside _insert_message_rows — pass through untouched.
+                    "reasoning": msg.get("reasoning"),
+                    "reasoning_content": msg.get("reasoning_content"),
+                    "reasoning_details": msg.get("reasoning_details"),
+                    "codex_reasoning_items": msg.get("codex_reasoning_items"),
+                    "codex_message_items": msg.get("codex_message_items"),
+                    "timestamp": _row_timestamp,
+                    "api_content": _row_api_content,
+                    # Standalone reference handoffs are always hidden, even
+                    # when the summarized transcript contained a user turn —
+                    # otherwise they occupy the active user slot in
+                    # retry/undo/session dispatch (#80622). Merge-into-tail
+                    # carriers keep prior visibility rules so preserved tail
+                    # content stays readable.
+                    "display_kind": (
                         "hidden"
-                        if msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
-                        and not msg.get("_compressed_summary_has_user_turn")
+                        if (
+                            msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                            and (
+                                ContextCompressor.classify_summary_content(
+                                    msg.get("content")
+                                )
+                                == "standalone"
+                                or not msg.get(
+                                    "_compressed_summary_has_user_turn"
+                                )
+                            )
+                        )
                         else msg.get("display_kind")
                     ),
-                    display_metadata=msg.get("display_metadata"),
+                    "display_metadata": msg.get("display_metadata"),
+                })
+                _batch_msgs.append(msg)
+            # One transaction for the whole turn's new rows (typically 3-8
+            # messages): one BEGIN IMMEDIATE / commit — and, off WAL, one
+            # fsync — instead of one per row. All-or-nothing pairs exactly
+            # with the marker stamping below: on failure NO rows landed and
+            # NO markers were stamped, so the next flush re-scans and
+            # re-writes the whole tail (same recovery contract as before,
+            # minus the partial-prefix case that could double-pay counters).
+            if _batch_rows:
+                self._session_db.append_messages_batch(
+                    session_id=self.session_id,
+                    messages=_batch_rows,
                     compression_lock_holder=getattr(
                         self, "_active_compression_lock_holder", None
                     ),
                 )
-                msg[_DB_PERSISTED_MARKER] = True
+                for _written in _batch_msgs:
+                    _written[_DB_PERSISTED_MARKER] = True
             # The intrinsic markers are now the sole source of truth. Reset the
             # one-shot seed so no id() outlives this flush to alias a message
             # allocated next turn at a recycled address.
@@ -2232,6 +2304,13 @@ class AIAgent:
             # Force a full re-scan on the next flush: an exception mid-loop
             # leaves messages with mixed dispositions.
             self._db_flush_scan_prefix = None
+            # This is the one place the underlying SQLite error is visible
+            # before it is swallowed into a bare ``False`` — classify it here
+            # so the turn-end explanation can distinguish lock contention
+            # ("storage was busy, send it again") from disk-full/read-only.
+            from hermes_state import classify_persistence_error
+
+            self._last_persistence_error_cause = classify_persistence_error(e)
             logger.warning("Session DB append_message failed: %s", e)
             return False
 
@@ -2450,10 +2529,37 @@ class AIAgent:
         """Extract a human-readable one-liner from an API error.
 
         Handles Cloudflare HTML error pages (502, 503, etc.) by pulling the
-        <title> tag instead of dumping raw HTML.  Falls back to a truncated
-        str(error) for everything else.
+        <title> tag instead of dumping raw HTML. Network/DNS failures are
+        translated into an offline hint, including when an SDK wraps the
+        original OS error. Falls back to a truncated str(error) otherwise.
         """
         raw = str(error)
+
+        # Linux, macOS, and Windows use different low-level messages when DNS
+        # cannot resolve the provider while the device is offline. SDKs often
+        # wrap that OSError in a generic "Connection error", so inspect the
+        # exception chain before showing the top-level message to the user.
+        network_resolution_markers = (
+            "temporary failure in name resolution",
+            "name or service not known",
+            "nodename nor servname provided, or not known",
+            "getaddrinfo failed",
+            "no address associated with hostname",
+            "network is unreachable",
+        )
+        current: Optional[BaseException] = error
+        seen: set[int] = set()
+        while current is not None and id(current) not in seen:
+            seen.add(id(current))
+            if any(
+                marker in str(current).lower()
+                for marker in network_resolution_markers
+            ):
+                return (
+                    "Hermes can't reach the model provider. You may be offline. "
+                    "Check your internet connection and try again."
+                )
+            current = current.__cause__ or current.__context__
 
         if (
             isinstance(error, ValueError)
@@ -2976,7 +3082,7 @@ class AIAgent:
                 logging.warning(f"Failed to save session log: {e}")
 
 
-    def interrupt(self, message: str = None) -> None:
+    def interrupt(self, message: Optional[str] = None, *, hard_cancel: bool = False) -> None:
         """
         Request the agent to interrupt its current tool-calling loop.
         
@@ -2989,6 +3095,9 @@ class AIAgent:
         Args:
             message: Optional new message that triggered the interrupt.
                      If provided, the agent will include this in its response context.
+            hard_cancel: Mark this as an explicit stop rather than a redirect or
+                         incoming-message interrupt. Compression may honor this
+                         atomic signal even while ordinary interrupts are masked.
         
         Example (CLI):
             # In a separate input thread:
@@ -3002,15 +3111,41 @@ class AIAgent:
         """
         # A hard stop and redirect share one lock so /stop cannot race with an
         # accepted correction and accidentally turn itself into a retry.
+        def _admit_hard_cancel() -> None:
+            event = getattr(self, "_hard_interrupt_requested", None)
+            if event is None:
+                return
+            fence = vars(self).get("_active_compression_commit_fence")
+            cancel_before_commit = getattr(
+                type(fence), "cancel_before_commit", None
+            )
+            if callable(cancel_before_commit):
+                try:
+                    # This sets the Event while holding the same lock used by
+                    # begin_commit(). If commit already won, it waits for that
+                    # tracked mutation to finish before publishing the stop.
+                    cancel_before_commit(fence, event)
+                    return
+                except Exception:
+                    logger.debug(
+                        "Compression hard-cancel fence admission failed",
+                        exc_info=True,
+                    )
+            event.set()
+
         _redirect_lock = getattr(self, "_pending_redirect_lock", None)
         if _redirect_lock is not None:
             with _redirect_lock:
                 self._interrupt_requested = True
                 self._interrupt_message = message
+                if hard_cancel:
+                    _admit_hard_cancel()
                 self._pending_redirect = None
         else:
             self._interrupt_requested = True
             self._interrupt_message = message
+            if hard_cancel:
+                _admit_hard_cancel()
             self._pending_redirect = None
 
         # Codex app-server owns its model/tool loop and watches a private
@@ -3073,11 +3208,25 @@ class AIAgent:
             children_copy = list(self._active_children)
         for child in children_copy:
             try:
-                child.interrupt(message)
+                if hard_cancel:
+                    request_hard_interrupt(child, message)
+                else:
+                    child.interrupt(message)
             except Exception as e:
                 logger.debug("Failed to propagate interrupt to child agent: %s", e)
         if not self.quiet_mode:
             print("\n⚡ Interrupt requested" + (f": '{message[:40]}...'" if message and len(message) > 40 else f": '{message}'" if message else ""))
+
+    def hard_interrupt(self, message: Optional[str] = None) -> None:
+        """Request an explicit stop while preserving ``interrupt()`` ABI.
+
+        Frontends can feature-detect this method and fall back to the legacy
+        ``interrupt()`` signature for synthetic or third-party agents.
+        """
+        # Deliberately bypass dynamic dispatch: subclasses written against the
+        # legacy interrupt(message=None) ABI may override interrupt without the
+        # newer keyword-only hard_cancel argument.
+        AIAgent.interrupt(self, message, hard_cancel=True)
 
     def clear_interrupt(self, *, preserve_redirect: bool = False) -> bool:
         """Clear the interrupt request and per-thread tool signal.
@@ -3093,6 +3242,7 @@ class AIAgent:
                     return False
                 self._interrupt_requested = False
                 self._interrupt_message = None
+                getattr(self, "_hard_interrupt_requested", threading.Event()).clear()
                 if not preserve_redirect:
                     self._pending_redirect = None
         else:
@@ -3100,6 +3250,7 @@ class AIAgent:
                 return False
             self._interrupt_requested = False
             self._interrupt_message = None
+            getattr(self, "_hard_interrupt_requested", threading.Event()).clear()
             if not preserve_redirect:
                 self._pending_redirect = None
         self._interrupt_thread_signal_pending = False
@@ -3464,7 +3615,9 @@ class AIAgent:
         return True  # safe default: explainer on
 
     @staticmethod
-    def _format_turn_completion_explanation(turn_exit_reason: str) -> str:
+    def _format_turn_completion_explanation(
+        turn_exit_reason: str, persistence_cause: Optional[str] = None
+    ) -> str:
         """Render a user-facing explanation for an abnormal turn ending.
 
         Maps the internal ``turn_exit_reason`` to a short, actionable
@@ -3472,6 +3625,13 @@ class AIAgent:
         content after retries, a partial/truncated stream, a still-pending
         tool result, or an iteration/budget limit) is never silent from
         the UI's perspective — the symptom users report in #34452.
+
+        ``persistence_cause`` refines the ``session_persistence_failed``
+        wording (see ``classify_persistence_error``): lock contention gets
+        "storage was busy, send it again" instead of the disk-space advice,
+        which was a misdiagnosis for that failure mode. It is optional and
+        ignored for every other reason, so one-argument callers keep the
+        exact behavior they had before.
 
         Returns an empty string for reasons that are NOT abnormal (e.g.
         a normal ``text_response(...)`` exit), so callers can concatenate
@@ -3553,12 +3713,30 @@ class AIAgent:
                 "let it summarize."
             )
         if reason == "session_persistence_failed":
+            cause = persistence_cause or "unknown"
+            if cause == "locked":
+                return (
+                    prefix
+                    + "the turn was stopped because session storage was busy "
+                    "(another Hermes process was writing to the state "
+                    "database). Your message should already be saved — "
+                    "please send it again in a moment."
+                )
+            if cause == "disk":
+                return (
+                    prefix
+                    + "the turn was stopped because session storage could not "
+                    "be written (the transcript would have been lost on "
+                    "restart). This is often a full disk — free some space "
+                    "(or fix state.db permissions), then send your message "
+                    "again."
+                )
             return (
                 prefix
                 + "the turn was stopped because session storage could not be "
                 "written (the transcript would have been lost on restart). "
-                "This is often a full disk — free some space (or fix state.db "
-                "permissions), then send your message again."
+                "Check the state database health (`hermes doctor`), then "
+                "send your message again."
             )
         # Unknown/diagnostic-only reasons (e.g. "unknown", guardrail_halt
         # which already surfaces its own message) — don't second-guess.
@@ -3569,7 +3747,13 @@ class AIAgent:
         from agent.agent_runtime_helpers import apply_pending_steer_to_tool_results
         return apply_pending_steer_to_tool_results(self, messages, num_tool_msgs)
 
-    def _touch_activity(self, desc: str) -> None:
+    def _touch_activity(
+        self,
+        desc: str,
+        *,
+        provenance: Optional[ActivityProvenance] = None,
+        force_persist: bool = False,
+    ) -> None:
         """Update the last-activity timestamp and description (thread-safe).
 
         Also bridges to the kanban board's heartbeat fields when this
@@ -3577,9 +3761,27 @@ class AIAgent:
         so the dispatcher watchdog doesn't reclaim an actively-running
         worker as stale (#31752). Bridge is rate-limited (60s) and
         best-effort — it never raises into the agent loop.
+
+        Separately, rate-limits a durable SessionDB activity projection
+        (``last_activity_at`` + bounded description/provenance) so
+        CLI/Gateway consumers share one observation source (#72016 / #72039).
+
+        ``provenance`` defaults to ``unknown`` (the ordinary agent activity
+        clock). Named values are for special writers (e.g. compression);
+        ordinary call sites should leave the default.
+
+        ``force_persist`` bypasses the 60s SessionDB rate limit so a
+        terminal stamp (e.g. compression completed) is not dropped.
         """
+        from agent.session_activity import (
+            bound_activity_description,
+            normalize_activity_provenance,
+            reset_session_activity_persist_window,
+        )
+
         self._last_activity_ts = time.time()
-        self._last_activity_desc = desc
+        self._last_activity_desc = bound_activity_description(desc)
+        self._last_activity_provenance = normalize_activity_provenance(provenance)
         if os.environ.get("HERMES_KANBAN_TASK"):
             try:
                 from tools.kanban_tools import (
@@ -3596,6 +3798,79 @@ class AIAgent:
                 # covers import-time failures (kanban_tools unavailable,
                 # etc.) on niche deployment surfaces.
                 pass
+        if force_persist:
+            reset_session_activity_persist_window(self)
+        self._persist_session_activity_if_due()
+
+    def _persist_session_activity_if_due(self) -> None:
+        """Best-effort durable activity heartbeat for SessionDB consumers.
+
+        Cadence is pinned by SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS
+        (>=30s per session, config-independent — see agent/session_activity.py).
+        The write rides the standard SessionDB ``_execute_write`` patience
+        path via ``touch_session_activity``. Fail-open: a failed heartbeat
+        write must NEVER raise into the agent loop (swallow + debug-log).
+        """
+        session_id = getattr(self, "session_id", None)
+        session_db = getattr(self, "_session_db", None)
+        if not session_id or session_db is None:
+            return
+        touch = getattr(session_db, "touch_session_activity", None)
+        if not callable(touch):
+            return
+        from agent.session_activity import (
+            SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS,
+            normalize_activity_provenance,
+        )
+
+        now_mono = time.monotonic()
+        last_mono = getattr(self, "_session_activity_last_persist_mono", 0.0)
+        if (now_mono - last_mono) < SESSION_ACTIVITY_HEARTBEAT_MIN_INTERVAL_SECONDS:
+            return
+        self._session_activity_last_persist_mono = now_mono
+        try:
+            touch(
+                session_id,
+                getattr(self, "_last_activity_ts", None),
+                description=getattr(self, "_last_activity_desc", None),
+                provenance=normalize_activity_provenance(
+                    getattr(self, "_last_activity_provenance", None)
+                ),
+            )
+        except Exception:
+            # Never let durable heartbeat I/O break the agent loop. The
+            # heartbeat is an observation-only projection; the next due
+            # window retries naturally.
+            logger.debug(
+                "session activity heartbeat write failed (ignored)",
+                exc_info=True,
+            )
+
+    def _reset_activity_labels_after_turn(self) -> None:
+        """Drop mid-turn activity labels once the turn is no longer running.
+
+        Keeps ``_last_activity_ts`` so idle/watchdog clocks stay continuous
+        across interrupt-recursive turns (#15654) and between turns. Clears
+        description + provenance so idle cached agents / SessionDB listings
+        do not keep advertising the last mid-turn stamp (e.g. compression
+        or tool execution) after the turn ended (#72039).
+        """
+        from agent.session_activity import ActivityProvenance
+
+        self._last_activity_desc = ""
+        self._last_activity_provenance = ActivityProvenance.UNKNOWN
+        session_id = getattr(self, "session_id", None)
+        session_db = getattr(self, "_session_db", None)
+        if not session_id or session_db is None:
+            return
+        clear = getattr(session_db, "clear_session_activity_labels", None)
+        if not callable(clear):
+            return
+        try:
+            clear(session_id)
+        except Exception:
+            # Never let durable cleanup I/O break turn teardown.
+            pass
 
     def _capture_rate_limits(self, http_response: Any) -> None:
         """Parse x-ratelimit-* headers from an HTTP response and cache the state.
@@ -3810,20 +4085,32 @@ class AIAgent:
     def get_activity_summary(self) -> dict:
         """Return a snapshot of the agent's current activity for diagnostics.
 
-        Called by the gateway timeout handler to report what the agent was doing
-        when it was killed, and by the periodic "still working" notifications.
+        Exposes the shared activity observation contract
+        (``last_activity_at`` / ``last_activity_description`` /
+        ``last_activity_provenance``) plus short aliases
+        (``last_activity_ts`` / ``last_activity_desc`` / …) for existing
+        gateway and delegate readers.
         """
-        elapsed = time.time() - self._last_activity_ts
-        return {
-            "last_activity_ts": self._last_activity_ts,
-            "last_activity_desc": self._last_activity_desc,
-            "seconds_since_activity": round(elapsed, 1),
+        from agent.session_activity import (
+            ActivityProvenance,
+            build_activity_snapshot,
+        )
+
+        provenance = getattr(self, "_last_activity_provenance", None)
+        if provenance is None:
+            provenance = ActivityProvenance.UNKNOWN
+        return build_activity_snapshot(
+            last_activity_at=getattr(self, "_last_activity_ts", None),
+            last_activity_description=getattr(self, "_last_activity_desc", None) or "",
+            last_activity_provenance=provenance,
+            extra={
             "current_tool": self._current_tool,
             "api_call_count": self._api_call_count,
             "max_iterations": self.max_iterations,
             "budget_used": self.iteration_budget.used,
             "budget_max": self.iteration_budget.max_total,
-        }
+            },
+        )
 
     def shutdown_memory_provider(self, messages: list = None) -> None:
         """Shut down the memory provider and context engine — call at actual session boundaries.
@@ -3931,10 +4218,15 @@ class AIAgent:
                 response_text,
                 **sync_kwargs,
             )
-            self._memory_manager.queue_prefetch_all(
-                user_text,
-                session_id=self.session_id or "",
-            )
+            # Sibling of the build_turn_context() prefetch gate: warming the
+            # next turn's recall with a trivial prompt ("hi", "thanks") keys
+            # provider searches on zero-signal text — skip it. The sync above
+            # still runs so the turn itself is persisted.
+            if not is_trivial_prompt(user_text):
+                self._memory_manager.queue_prefetch_all(
+                    user_text,
+                    session_id=self.session_id or "",
+                )
         except Exception:
             pass
 
@@ -4074,6 +4366,21 @@ class AIAgent:
         except Exception:
             pass
 
+        # 6c. Close the Codex app-server session. The runtime already drops
+        # it on turn crash / retirement (agent/codex_runtime.py), but hard
+        # teardown had no owner — a /new, /reset, or session expiry left the
+        # app-server child process running until interpreter exit. Clear the
+        # attribute BEFORE close() so a concurrent reader can't grab a
+        # half-closed session, and so a raising close() can't strand a stale
+        # reference behind.
+        try:
+            codex_session = getattr(self, "_codex_session", None)
+            if codex_session is not None:
+                self._codex_session = None
+                codex_session.close()
+        except Exception:
+            pass
+
         # 7. Free conversation history.  Mirrors _release_evicted_agent_soft's
         # soft-eviction clear — close() is the hard teardown for true session
         # boundaries (/new, /reset, session expiry), so the message list won't
@@ -4085,6 +4392,15 @@ class AIAgent:
         except Exception:
             pass
 
+        # The references above are now gone; on Linux/glibc, return their free
+        # heap pages immediately instead of retaining the process RSS high-water
+        # mark until exit.  This helper is a safe no-op on other allocators.
+        try:
+            from hermes_cli.mem_trim import trim_memory
+            trim_memory(force=True, reason="agent close")
+        except Exception:
+            pass
+
         # 8. Finalize the owned SQLite session row unless this agent is only a
         # temporary helper that deliberately handed session ownership forward
         # (manual compression helpers that rotate to a continuation session_id,
@@ -4092,12 +4408,30 @@ class AIAgent:
         # must leave it open). end_session() is first-reason-wins and no-ops on
         # an already-ended row, so this never clobbers a 'compression' /
         # 'cron_complete' / 'cli_close' reason set by an earlier terminal path.
+        session_db = getattr(self, "_session_db", None)
         try:
             if getattr(self, "_end_session_on_close", True):
-                session_db = getattr(self, "_session_db", None)
                 session_id = getattr(self, "session_id", None)
                 if session_db and session_id:
                     session_db.end_session(session_id, "agent_close")
+        except Exception:
+            pass
+
+        # 9. Close the SQLite handle itself, but ONLY when this agent owns it.
+        # end_session() above finalizes the session ROW; it does not release the
+        # connection. For the shared launch handle that is correct — it outlives
+        # every agent — so _owns_session_db defaults False and this is a no-op.
+        # A DEDICATED handle (the gateway's per-profile state.db opens, and the
+        # lazy self-open in _get_session_db_for_recall) has no other owner: left
+        # unclosed it keeps its db/-wal/-shm fds and its background token-writer
+        # thread, and once that writer has started the instance pins ITSELF via
+        # atexit.register(_drain_token_queue_at_exit) — which only close()
+        # unregisters — so it survives for the life of the process.
+        # Cleared first so the documented idempotency of close() holds.
+        try:
+            if getattr(self, "_owns_session_db", False) and session_db is not None:
+                self._owns_session_db = False
+                session_db.close()
         except Exception:
             pass
 
@@ -5075,10 +5409,12 @@ class AIAgent:
             if self.provider == "openai-codex":
                 from hermes_cli.auth import resolve_codex_runtime_credentials
 
+                old_key = str(self.api_key or "").strip()
                 creds = resolve_codex_runtime_credentials(force_refresh=force)
             else:
                 from hermes_cli.auth import resolve_xai_oauth_runtime_credentials
 
+                old_key = str(self.api_key or "").strip()
                 creds = resolve_xai_oauth_runtime_credentials(force_refresh=force)
         except Exception as exc:
             logger.debug("%s credential refresh failed: %s", self.provider, exc)
@@ -5089,6 +5425,19 @@ class AIAgent:
         if not isinstance(api_key, str) or not api_key.strip():
             return False
         if not isinstance(base_url, str) or not base_url.strip():
+            return False
+
+        # Defect 2 fix: return False when no NEW token was actually minted.
+        # resolve_codex_runtime_credentials returns the same stale token
+        # when the underlying refresh fails (failure is debug-only).
+        # Comparing the access token (api_key) before/after detects this.
+        new_key = api_key.strip()
+        if old_key and new_key == old_key:
+            logger.debug(
+                "%s credential refresh returned the same token; "
+                "refresh likely failed silently",
+                self.provider,
+            )
             return False
 
         self.api_key = api_key.strip()
@@ -5149,6 +5498,168 @@ class AIAgent:
         if not self._replace_primary_openai_client(reason="nous_credential_refresh"):
             return False
 
+        return True
+
+    def _try_refresh_env_client_credentials(self) -> bool:
+        """Adopt ~/.hermes/.env credential/base-url edits at the turn boundary.
+
+        A Settings save (desktop ``PUT /api/env``, ``hermes setup``) updates
+        ``.env`` and the *saving* process's os.environ, but a live session
+        worker keeps the base_url/api_key captured at agent init until it
+        restarts — so an open chat silently keeps calling the old endpoint
+        (#67821). Called at the start of each conversation turn, this
+        re-resolves the provider's env-sourced credentials (load_env() is
+        mtime-memoized, so an unchanged file costs one stat()) and rebuilds
+        the client when the user edited them.
+
+        Reacts only to env *edits* (resolved values changed since the last
+        look), never to mere divergence from the agent's current values —
+        credential-pool rotation and failover legitimately move the session
+        off the env credential, and stomping those back every turn would
+        flap. A config.yaml ``model.base_url`` (or a pool entry with a
+        custom endpoint) also wins: edits are only adopted while the
+        session's current base_url is still the registry default or the
+        previously-seen env value.
+
+        Covers api-key registry providers and named custom providers with a
+        ``key_env`` (#67935) — the latter resolve to ``provider="custom"``
+        with no registry entry, so they are matched through the runtime
+        provider's config lookup instead.
+        """
+        if self.api_mode != "chat_completions":
+            return False
+        if getattr(self, "_fallback_activated", False):
+            return False
+        try:
+            from agent.credential_pool import get_env_prefer_dotenv
+            from hermes_cli.auth import PROVIDER_REGISTRY
+        except ImportError:
+            return False
+
+        pconfig = PROVIDER_REGISTRY.get(self.provider)
+        if (
+            pconfig
+            and getattr(pconfig, "auth_type", "") == "api_key"
+            and getattr(pconfig, "api_key_env_vars", ())
+        ):
+            api_key = ""
+            for env_var in pconfig.api_key_env_vars:
+                api_key = get_env_prefer_dotenv(env_var).strip()
+                if api_key:
+                    break
+            if not api_key:
+                return False
+
+            env_url = ""
+            if pconfig.base_url_env_var:
+                env_url = get_env_prefer_dotenv(pconfig.base_url_env_var).strip().rstrip("/")
+            default_base = (pconfig.inference_base_url or "").strip().rstrip("/")
+            base_url = env_url or default_base
+            if self.provider == "kimi-coding":
+                from hermes_cli.auth import _resolve_kimi_base_url
+
+                base_url = _resolve_kimi_base_url(
+                    api_key, pconfig.inference_base_url, env_url
+                ).rstrip("/")
+            elif self.provider == "zai":
+                from hermes_cli.auth import _resolve_zai_base_url
+
+                base_url = _resolve_zai_base_url(
+                    api_key, pconfig.inference_base_url, env_url
+                ).rstrip("/")
+        elif self.provider == "custom":
+            # Named custom provider (#67935): identity lives in config
+            # (``providers.<name>`` / ``custom_providers``), the credential in
+            # the env var it names via ``key_env``. Re-resolve through the
+            # same config lookup the runtime resolver uses; entries without
+            # ``key_env`` (inline ``api_key``, pool-backed) have no
+            # env-sourced credential to watch.
+            try:
+                from hermes_cli.runtime_provider import _get_named_custom_provider
+            except ImportError:
+                return False
+            custom_provider = _get_named_custom_provider(
+                getattr(self, "requested_provider", "") or ""
+            )
+            if not custom_provider:
+                return False
+            key_env = str(custom_provider.get("key_env") or "").strip()
+            if not key_env:
+                return False
+            api_key = get_env_prefer_dotenv(key_env).strip()
+            if not api_key:
+                return False
+            # Custom providers pin their endpoint in config, not env — the
+            # config base_url is both the resolved and the "default" base, so
+            # only key edits are ever adopted here.
+            default_base = str(custom_provider.get("base_url") or "").strip().rstrip("/")
+            base_url = default_base
+        else:
+            return False
+
+        if not base_url:
+            return False
+
+        resolved = (base_url, api_key)
+        prev = getattr(self, "_env_creds_seen", None)
+        current_base = (self.base_url or "").strip().rstrip("/")
+
+        if prev is None:
+            # First look — no baseline to diff against. Adopt only the
+            # boot-default case (worker spawned before the user saved an
+            # override); anything else is unattributable on turn one.
+            adopt = current_base == default_base and not (
+                base_url == current_base and api_key == self.api_key
+            )
+        else:
+            # Env unchanged → no-op; any drift from self.* is rotation/
+            # failover or config precedence — leave it alone. An edit is
+            # only adopted while the session still runs on the registry
+            # default or the previously-seen env value.
+            adopt = (
+                resolved != prev
+                and current_base in {default_base, prev[0]}
+                and not (base_url == current_base and api_key == self.api_key)
+            )
+
+        if not adopt:
+            self._env_creds_seen = resolved
+            return False
+
+        from hermes_cli.route_identity import normalize_route_base_url
+
+        route_changed = normalize_route_base_url(self.base_url) != normalize_route_base_url(
+            base_url
+        )
+        prior_api_key = self.api_key
+        prior_base_url = self.base_url
+        prior_client_kwargs = dict(self._client_kwargs)
+
+        self.api_key = api_key
+        self.base_url = base_url
+        self._client_kwargs["api_key"] = self.api_key
+        self._client_kwargs["base_url"] = self.base_url
+        # A base-url change moves the route: TLS material and default
+        # headers derived from the old endpoint must be recomputed, exactly
+        # as on credential-pool rotation.
+        self._reapply_route_client_config(route_changed=route_changed)
+
+        if not self._replace_primary_openai_client(reason="env_credential_refresh"):
+            # Leave the baseline un-advanced so the unchanged edit is
+            # retried next turn, and roll the agent back so its state keeps
+            # matching the still-live old client.
+            self.api_key = prior_api_key
+            self.base_url = prior_base_url
+            self._client_kwargs.clear()
+            self._client_kwargs.update(prior_client_kwargs)
+            return False
+
+        self._env_creds_seen = resolved
+        logger.info(
+            "Applied updated .env credentials for %s: endpoint %s",
+            self.provider,
+            self.base_url,
+        )
         return True
 
     def _try_refresh_vertex_client_credentials(self) -> bool:
@@ -5504,6 +6015,19 @@ class AIAgent:
         self.base_url = runtime_base.rstrip("/") if isinstance(runtime_base, str) else runtime_base
         self._client_kwargs["api_key"] = self.api_key
         self._client_kwargs["base_url"] = self.base_url
+        self._reapply_route_client_config(route_changed=route_changed)
+        self._replace_primary_openai_client(reason="credential_rotation")
+
+    def _reapply_route_client_config(self, *, route_changed: bool) -> None:
+        """Recompute route-derived client kwargs for the current ``self.base_url``.
+
+        TLS material (``ssl_verify``/``ssl_ca_cert``) and default headers are
+        derived from the endpoint, not the credential — any client rebuild
+        that may have moved ``base_url`` must recompute them or the new
+        endpoint inherits configuration computed for the old one. Shared by
+        credential-pool rotation and the per-turn env refresh so the two
+        paths cannot drift.
+        """
         self._client_kwargs.pop("ssl_verify", None)
         self._client_kwargs.pop("ssl_ca_cert", None)
         try:
@@ -5527,7 +6051,6 @@ class AIAgent:
             self.base_url,
             apply_user_headers=not route_changed,
         )
-        self._replace_primary_openai_client(reason="credential_rotation")
 
     def _recover_with_credential_pool(
         self,
@@ -6907,7 +7430,12 @@ class AIAgent:
         auto-compress abort.  Auto-compress callers use the default
         ``force=False``.
         """
-        from agent.conversation_compression import compress_context
+        from agent.conversation_compression import (
+            CompressionCommitFence,
+            compress_context,
+            resolve_context_compression_timeouts,
+            run_compress_context_with_progress_timeout,
+        )
         from agent.portal_tags import (
             get_conversation_context,
             reset_conversation_context,
@@ -6932,15 +7460,195 @@ class AIAgent:
             root = self._conversation_root_id()
             if root:
                 token = set_conversation_context(root)
-        try:
-            return compress_context(
-                self, messages, system_message,
-                approx_tokens=approx_tokens, task_id=task_id, focus_topic=focus_topic,
-                force=force,
-                defer_context_engine_notification=defer_context_engine_notification,
-                commit_fence=commit_fence,
+        # Every AIAgent compression has a fence, including ordinary in-turn and
+        # manual paths. hard_interrupt() uses this exact instance to serialize
+        # cancel admission against begin_commit().
+        active_fence = commit_fence or CompressionCommitFence()
+        # A single agent can receive overlapping automatic/manual entrypoints.
+        # Serialize fence publication so a waiter cannot replace the fence of
+        # the attempt currently generating/committing a summary.
+        fence_registration_lock = vars(self).setdefault(
+            "_compression_commit_fence_lock", threading.RLock()
+        )
+        with fence_registration_lock:
+            missing_fence = object()
+            previous_fence = vars(self).get(
+                "_active_compression_commit_fence", missing_fence
             )
+            self._active_compression_commit_fence = active_fence
+        try:
+            def _run(fence=None, target_messages=None):
+                return compress_context(
+                    self,
+                    target_messages if target_messages is not None else messages,
+                    system_message,
+                    approx_tokens=approx_tokens, task_id=task_id,
+                    focus_topic=focus_topic,
+                    force=force,
+                    defer_context_engine_notification=(
+                        defer_context_engine_notification
+                    ),
+                    commit_fence=fence,
+                )
+
+            # Callers that already own a progress-aware wait (gateway session
+            # hygiene) pass commit_fence and must not be double-wrapped.
+            if commit_fence is not None:
+                return _run(active_fence)
+
+            idle_timeout, total_ceiling = resolve_context_compression_timeouts()
+            if idle_timeout <= 0:
+                return _run(active_fence)
+
+            def _snapshot_worker(fence=None):
+                # #76354 review F3: the pooled worker must NEVER share the
+                # caller's live transcript. Plugin/legacy context engines are
+                # allowed to mutate their input list in place; after a host
+                # timeout the worker stays alive, so a shared list would let
+                # a late engine rewrite the live conversation (roles,
+                # ordering, persisted content) behind the caller's back.
+                # Deep-snapshot here, on the worker thread, so the caller's
+                # list object is never touched by pooled code. Results are
+                # published to caller-visible state only via the returned
+                # value of an ADMITTED commit (the host discards results on
+                # timeout/cancel); durable SessionDB mutation is already
+                # gated behind the commit fence inside compress_context.
+                snapshot = copy.deepcopy(messages)
+                result_msgs, result_prompt = _run(
+                    fence, target_messages=snapshot
+                )
+                if result_msgs is snapshot:
+                    # No-op/abort path returned the snapshot unchanged: hand
+                    # back the caller's ORIGINAL list so identity-based
+                    # semantics (len/identity no-op detection, flush dedup
+                    # by id()) keep working.
+                    return messages, result_prompt
+                return result_msgs, result_prompt
+
+            # Resolve the fallback prompt lazily on timeout only. Eager
+            # rebuild here would raise before compress_context runs whenever
+            # _cached_system_prompt is unset and _build_system_prompt fails
+            # (lock-refresher / noop-exception tests rely on that path).
+            def _fallback_prompt():
+                cached = getattr(self, "_cached_system_prompt", None)
+                if cached:
+                    return cached
+                try:
+                    return self._build_system_prompt(system_message)
+                except Exception:
+                    logger.debug(
+                        "compress_context timeout fallback prompt rebuild "
+                        "failed; using raw system_message",
+                        exc_info=True,
+                    )
+                    return system_message or ""
+
+            def _on_timeout(idle, waited, since_progress):
+                logger.warning(
+                    "Context compression made no progress for %.1fs "
+                    "(total wait %.1fs, ceiling %.1fs); continuing without "
+                    "compression",
+                    since_progress,
+                    waited,
+                    total_ceiling,
+                )
+                touch = getattr(self, "_touch_activity", None)
+                if callable(touch):
+                    try:
+                        touch(
+                            "context compression timed out",
+                            provenance=ActivityProvenance.AGENT_COMPRESSION_TIMEOUT,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "compress_context timeout activity touch failed",
+                            exc_info=True,
+                        )
+                # Same timeout cooldown ladder as summary-LLM timeouts
+                # (#62452): avoid re-burning the full idle budget every turn.
+                compressor = getattr(self, "context_compressor", None)
+                if compressor is not None:
+                    record = getattr(compressor, "record_timeout_failure", None)
+                    if callable(record):
+                        try:
+                            record(
+                                "host compress_context timeout "
+                                "(no summary progress)"
+                            )
+                        except Exception:
+                            logger.debug(
+                                "failed to record compress_context timeout "
+                                "cooldown",
+                                exc_info=True,
+                            )
+                emit = getattr(self, "_emit_warning", None)
+                if callable(emit):
+                    emit(
+                        "⚠ Context compression timed out "
+                        f"after {idle:.1f}s with no output from the summary "
+                        "model. No messages were dropped — continuing without "
+                        "compression. Run /compress to retry, /new for a clean "
+                        "session, or check auxiliary.compression."
+                    )
+
+            def _on_commit_overrun(waited, ceiling):
+                # Commit-phase ceiling breach: the SessionDB mutation is in
+                # flight and must complete (abandoning it mid-commit would
+                # diverge live messages from durable session state), so this
+                # only surfaces the overrun — it never cancels the commit.
+                emit = getattr(self, "_emit_warning", None)
+                if callable(emit):
+                    emit(
+                        "⚠ Context compression commit is taking unusually "
+                        f"long ({waited:.0f}s, ceiling {ceiling:.0f}s). "
+                        "Waiting for it to finish safely — if this persists, "
+                        "check SessionDB health (disk / lock contention)."
+                    )
+
+            result = run_compress_context_with_progress_timeout(
+                worker=_snapshot_worker,
+                messages=messages,
+                system_prompt_fallback=_fallback_prompt,
+                idle_timeout_seconds=idle_timeout,
+                total_ceiling_seconds=total_ceiling,
+                on_timeout=_on_timeout,
+                on_commit_overrun=_on_commit_overrun,
+                fence=active_fence,
+                telemetry_agent=self,
+            )
+            # compress_context ran on a daemon pool worker thread; the session
+            # id rotation updated hermes_logging._session_context (a
+            # threading.local) on the WORKER thread, not this one. Propagate
+            # the current session_id back so subsequent log lines on this
+            # thread carry the rotated id (#34089).
+            try:
+                from hermes_logging import set_session_context
+                set_session_context(self.session_id)
+            except Exception:
+                pass
+            # #76354 review F5: the worker thread also rebound the session
+            # ContextVar inside its own (copied) context, which the caller
+            # never sees — and get_session_env() prefers an already-bound
+            # ContextVar over os.environ. Rebind in the CALLER's context so
+            # post-compression tools/subprocesses on this thread resolve
+            # HERMES_SESSION_ID to the child id after an out-of-place
+            # rotation (idempotent when no rotation happened).
+            try:
+                from gateway.session_context import set_current_session_id
+                if self.session_id:
+                    set_current_session_id(self.session_id)
+            except Exception:
+                logger.debug(
+                    "post-compression session ContextVar rebind failed",
+                    exc_info=True,
+                )
+            return result
         finally:
+            with fence_registration_lock:
+                if previous_fence is missing_fence:
+                    vars(self).pop("_active_compression_commit_fence", None)
+                else:
+                    self._active_compression_commit_fence = previous_fence
             # Restore whatever the caller had, so a compaction never leaks its
             # tag into the surrounding scope.
             if token is not None:
@@ -7215,11 +7923,14 @@ class AIAgent:
                 turn_id=relay_turn_id,
                 task_id=effective_task_id,
             )
-            start_task_run(
-                **task_context,
-                parent_session_id=getattr(self, "_parent_session_id", None) or "",
-            )
-            task_started = True
+            # Keep existing tests and external relay-runtime shims that return
+            # a minimal turn object compatible with the new opt-out flag.
+            if getattr(relay_turn, "relay_enabled", True):
+                start_task_run(
+                    **task_context,
+                    parent_session_id=getattr(self, "_parent_session_id", None) or "",
+                )
+                task_started = True
             # Publish the conversation id for ambient Nous Portal tagging. Every
             # LLM call made inside this turn — main loop, compression, vision,
             # web_extract, session_search, MoA slots, background-review forks
@@ -7265,8 +7976,9 @@ class AIAgent:
                 relay_turn,
                 outcome=relay_outcome,
             )
-            task_finished = True
-            finish_task_run(**task_context, result=result)
+            if task_started:
+                task_finished = True
+                finish_task_run(**task_context, result=result)
             return result
         except BaseException as exc:
             if isinstance(exc, (KeyboardInterrupt, InterruptedError)) or (
@@ -7298,6 +8010,12 @@ class AIAgent:
                             relay_lease
                         )
                 finally:
+                    # Always clear mid-turn labels when the turn exits — including
+                    # interrupted early returns that skip finalize_turn. Keep ts.
+                    try:
+                        self._reset_activity_labels_after_turn()
+                    except Exception:
+                        pass
                     if getattr(self, "_relay_pending_turn_id", None) == relay_turn_id:
                         self._relay_pending_turn_id = None
                     if acct_token is not None:

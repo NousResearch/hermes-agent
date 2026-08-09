@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, urlparse, urlunparse
 from agent.context_compressor import ContextCompressor
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import StreamingContextScrubber
+from agent.session_activity import ActivityProvenance
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
     fetch_model_metadata,
@@ -208,7 +209,18 @@ def _context_route_mismatch(
 
     if active_route:
         configured_routes = _provider_default_routes(configured_provider)
-        return not configured_routes or active_route not in configured_routes
+        if configured_routes:
+            return active_route not in configured_routes
+        # Named/custom providers have no catalog default routes. An empty
+        # configured URL with a matching provider identity is still the same
+        # route — agent_init fills base_url from custom_providers before this
+        # check, but gateway display/hygiene paths historically compared the
+        # raw empty model.base_url and falsely dropped model.context_length,
+        # falling through to family defaults (e.g. qwen → 131072) on Discord
+        # session-reset banners while /status still showed the config pin.
+        if active_provider and configured_provider == active_provider:
+            return False
+        return True
     return bool(
         configured_provider
         and active_provider
@@ -480,6 +492,8 @@ def init_agent(
     reasoning_callback: callable = None,
     clarify_callback: callable = None,
     read_terminal_callback: callable = None,
+    read_preview_callback: callable = None,
+    read_window_below_callback: callable = None,
     step_callback: callable = None,
     stream_delta_callback: callable = None,
     interim_assistant_callback: callable = None,
@@ -506,6 +520,7 @@ def init_agent(
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
+    skip_background_review: bool = False,
     session_db=None,
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
@@ -597,6 +612,13 @@ def init_agent(
     agent.memory_notifications = "on"  # Memory update notifications: "off", "on", "verbose"
     agent.skip_context_files = skip_context_files
     agent.load_soul_identity = load_soul_identity
+    # Background review (memory/skill) opt-out switch. When True, skips the
+    # _spawn_background_review fork at end-of-turn -- avoids ~30K tokens /
+    # event of extra LLM cost on cron-style sessions where review forks
+    # provide no value (no human in the loop, no skill-creation pressure).
+    # skip_memory=True already disables the memory-review trigger; this
+    # flag is the explicit single-switch off for both review paths.
+    agent.skip_background_review = bool(skip_background_review)
     agent.pass_session_id = pass_session_id
     agent.log_prefix_chars = log_prefix_chars
     agent.log_prefix = f"{log_prefix} " if log_prefix else ""
@@ -745,6 +767,8 @@ def init_agent(
     agent.reasoning_callback = reasoning_callback
     agent.clarify_callback = clarify_callback
     agent.read_terminal_callback = read_terminal_callback
+    agent.read_preview_callback = read_preview_callback
+    agent.read_window_below_callback = read_window_below_callback
     agent.step_callback = step_callback
     agent.stream_delta_callback = stream_delta_callback
     agent.interim_assistant_callback = interim_assistant_callback
@@ -765,6 +789,9 @@ def init_agent(
     # Interrupt mechanism for breaking out of tool loops
     agent._interrupt_requested = False
     agent._interrupt_message = None  # Optional message that triggered interrupt
+    # Explicit hard cancellation is separate from redirect/message state. A
+    # thread-safe Event makes the cause atomic for auxiliary stream pollers.
+    agent._hard_interrupt_requested = threading.Event()
     agent._execution_thread_id: int | None = None  # Set at run_conversation() start
     agent._interrupt_thread_signal_pending = False
     agent._client_lock = threading.RLock()
@@ -851,15 +878,13 @@ def init_agent(
     try:
         from hermes_cli.config import load_config_readonly as _load_pc_cfg
 
+        from agent.agent_runtime_helpers import cache_ttl_means_disabled
+
         _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
         _ttl = _pc_cfg.get("cache_ttl", "5m")
         if _ttl in {"5m", "1h"}:
             agent._cache_ttl = _ttl
-        elif (
-            _ttl is False
-            or _ttl is None
-            or str(_ttl).lower() in ("off", "false", "disabled", "no", "none")
-        ):
+        elif cache_ttl_means_disabled(_ttl):
             agent._use_prompt_caching = False
             agent._use_native_cache_layout = False
             agent._cache_ttl = None
@@ -882,6 +907,11 @@ def init_agent(
     # notifications to show progress.
     agent._last_activity_ts: float = time.time()
     agent._last_activity_desc: str = "initializing"
+    # Default / unmigrated paths and _touch_activity stamp unknown; named
+    # provenances are stamped by compression writers (heartbeat / timeout / cooldown).
+    agent._last_activity_provenance = ActivityProvenance.UNKNOWN
+    # Rate-limit durable SessionDB activity stamps from _touch_activity (#72016).
+    agent._session_activity_last_persist_mono: float = 0.0
     agent._current_tool: str | None = None
     agent._api_call_count: int = 0
     # Opt-out flag for the between-turns MCP tool refresh (build_turn_context).
@@ -1546,6 +1576,15 @@ def init_agent(
     
     # SQLite session store (optional -- provided by CLI or gateway)
     agent._session_db = session_db
+    # Whether close() must also close that handle. Default False: a
+    # caller-supplied session_db is almost always the SHARED launch handle,
+    # which outlives every agent and must never be closed here. Callers that
+    # hand over a DEDICATED handle (the gateway's per-profile state.db opens)
+    # set this True at the point ownership transfers, so teardown releases the
+    # sqlite fds and the token-writer thread instead of leaking them for the
+    # life of the process. Also set True on the lazy self-open in
+    # _get_session_db_for_recall, where nothing else holds a reference.
+    agent._owns_session_db = False
     agent._parent_session_id = parent_session_id
     # A close flush and the worker's turn-start flush can overlap. The durable
     # marker is attached to each in-memory message dict, so its test-and-append
@@ -1573,6 +1612,17 @@ def init_agent(
         "reasoning_config": reasoning_config,
         "max_tokens": max_tokens,
     }
+    # Persist a process-scoped --yolo launch into the session row so a later
+    # `hermes --resume <id>` can restore the bypass (CLI resume paths read
+    # model_config.yolo_mode back via SessionDB.session_yolo_enabled).
+    # Session-scoped /yolo toggles persist separately through
+    # SessionDB.set_session_yolo at toggle time.
+    try:
+        from tools.approval import _YOLO_MODE_FROZEN
+        if _YOLO_MODE_FROZEN:
+            agent._session_init_model_config["yolo_mode"] = True
+    except Exception:
+        pass
     
     # In-memory todo list for task planning (one per agent/session)
     from tools.todo_tool import TodoStore
@@ -2030,6 +2080,27 @@ def init_agent(
             codex_app_server_auto_compaction,
         )
         codex_app_server_auto_compaction = "native"
+    # Native OpenAI Responses server-side compaction (opt-in). Only ever
+    # engages for gpt-5.6-family models on api.openai.com or the ChatGPT
+    # Codex backend — the per-request gate lives in agent/native_compaction.py.
+    codex_responses_native_compaction = bool(
+        _compression_cfg.get("codex_responses_native", False)
+    )
+    _native_threshold_raw = _compression_cfg.get(
+        "codex_responses_compact_threshold", 200_000
+    )
+    try:
+        if isinstance(_native_threshold_raw, bool):
+            raise ValueError
+        codex_responses_compact_threshold = int(_native_threshold_raw)
+        if codex_responses_compact_threshold <= 0:
+            raise ValueError
+    except (TypeError, ValueError):
+        _ra().logger.warning(
+            "Invalid compression.codex_responses_compact_threshold=%r; using 200000.",
+            _native_threshold_raw,
+        )
+        codex_responses_compact_threshold = 200_000
     # Opt-in idle compaction: compact a session up front when it resumes after
     # this many seconds of inactivity (0 = disabled). Time-based, so it
     # complements the size-based threshold above. Consumed by build_turn_context().
@@ -2486,6 +2557,8 @@ def init_agent(
             compression_micro_compact_defrag_tokens
         )
     agent.codex_app_server_auto_compaction = codex_app_server_auto_compaction
+    agent.codex_responses_native_compaction = codex_responses_native_compaction
+    agent.codex_responses_compact_threshold = codex_responses_compact_threshold
     agent.max_compression_attempts = compression_max_attempts
     agent.compression_idle_compact_after_seconds = (
         compression_idle_compact_after_seconds

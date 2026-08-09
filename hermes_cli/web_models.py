@@ -578,6 +578,22 @@ class ProfileRename(BaseModel):
     new_name: str
 
 
+class ProfileExport(BaseModel):
+    # Optional extra root-level files to stage into the archive, filename →
+    # text content (e.g. desktop.json — the desktop appearance overlay).
+    extra_files: Dict[str, str] = {}
+    # Where to write the archive. Empty → a staging path under HERMES_HOME.
+    output: str = ""
+
+
+class ProfileImport(BaseModel):
+    # Path to a profile .tar.gz on the backend's filesystem (the desktop's
+    # local/pooled backends share the machine with the picker dialog).
+    archive: str
+    # Override the profile name inferred from the archive root.
+    name: Optional[str] = None
+
+
 class ProfileSoulUpdate(BaseModel):
     content: str
 

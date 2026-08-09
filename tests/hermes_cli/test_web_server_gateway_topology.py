@@ -44,6 +44,48 @@ class TestProfilePlatformPorts:
         }
         assert _profile_platform_ports(tmp_path, runtime) == {"msgraph_webhook": 8646}
 
+    def test_zalo_polling_mode_does_not_report_listener_port(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  zalo:\n"
+            "    extra:\n"
+            "      connection_mode: polling\n",
+            encoding="utf-8",
+        )
+        runtime = {"platforms": {"zalo": {"state": "connected"}}}
+
+        assert _profile_platform_ports(tmp_path, runtime) == {}
+
+    def test_zalo_webhook_mode_reports_listener_port(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  zalo:\n"
+            "    extra:\n"
+            "      connection_mode: webhook\n"
+            "      webhook_port: 9123\n",
+            encoding="utf-8",
+        )
+        runtime = {"platforms": {"zalo": {"state": "connected"}}}
+
+        assert _profile_platform_ports(tmp_path, runtime) == {"zalo": 9123}
+
+    def test_zalo_env_mode_takes_precedence_in_topology(self, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n"
+            "  zalo:\n"
+            "    extra:\n"
+            "      connection_mode: polling\n"
+            "      webhook_port: 9123\n",
+            encoding="utf-8",
+        )
+        (tmp_path / ".env").write_text(
+            "ZALO_CONNECTION_MODE=webhook\n",
+            encoding="utf-8",
+        )
+        runtime = {"platforms": {"zalo": {"state": "connected"}}}
+
+        assert _profile_platform_ports(tmp_path, runtime) == {"zalo": 9123}
+
 
 # ---------------------------------------------------------------------------
 # _collect_profile_gateway_topology

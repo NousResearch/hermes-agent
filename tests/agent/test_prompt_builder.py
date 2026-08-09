@@ -3,6 +3,7 @@
 import builtins
 import importlib
 import logging
+import os
 import sys
 
 import pytest
@@ -448,6 +449,71 @@ class TestBuildContextFilesPrompt:
         result = build_context_files_prompt(cwd=str(tmp_path))
         assert "Ruff for linting" in result
         assert "Project Context" in result
+
+    # --- AGENTS.md directory chain (port of grok-cli instructions.ts) ---
+
+    def test_agents_md_chain_merges_root_to_cwd(self, tmp_path):
+        # git-root AGENTS.md + intermediate + cwd are all merged, root first
+        # and cwd last so deeper guidance takes precedence.
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "AGENTS.md").write_text("Root: use Ruff.")
+        pkg = tmp_path / "packages"
+        pkg.mkdir()
+        (pkg / "AGENTS.md").write_text("Packages: pnpm workspace.")
+        app = pkg / "webapp"
+        app.mkdir()
+        (app / "AGENTS.md").write_text("Webapp: React 19 only.")
+        result = build_context_files_prompt(cwd=str(app), skip_soul=True)
+        assert "Root: use Ruff." in result
+        assert "Packages: pnpm workspace." in result
+        assert "Webapp: React 19 only." in result
+        # order: root before intermediate before cwd
+        assert result.index("Root: use Ruff.") < result.index("Packages: pnpm")
+        assert result.index("Packages: pnpm") < result.index("Webapp: React 19")
+        # provenance headers point at each source file relative to cwd
+        assert f"## {os.path.join('..', '..', 'AGENTS.md')}" in result
+        assert f"## {os.path.join('..', 'AGENTS.md')}" in result
+        assert "## AGENTS.md" in result
+
+    def test_agents_md_chain_skips_gaps(self, tmp_path):
+        # Intermediate dirs without AGENTS.md contribute nothing.
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "AGENTS.md").write_text("Root rules.")
+        deep = tmp_path / "a" / "b" / "c"
+        deep.mkdir(parents=True)
+        result = build_context_files_prompt(cwd=str(deep), skip_soul=True)
+        assert "Root rules." in result
+        assert result.count("## ") == 1
+
+    def test_agents_md_chain_dedupes_identical_content(self, tmp_path):
+        (tmp_path / ".git").mkdir()
+        (tmp_path / "AGENTS.md").write_text("Same rules everywhere.")
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("Same rules everywhere.")
+        result = build_context_files_prompt(cwd=str(sub), skip_soul=True)
+        assert result.count("Same rules everywhere.") == 1
+
+    def test_agents_md_single_file_output_unchanged(self, tmp_path):
+        # Zero-regression guarantee: with one AGENTS.md at cwd (git repo or
+        # not), the section is byte-identical to historical single-file form.
+        from agent.prompt_builder import _load_agents_md
+
+        (tmp_path / ".git").mkdir()
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        (sub / "AGENTS.md").write_text("Only file.")
+        assert _load_agents_md(sub) == "## AGENTS.md\n\nOnly file."
+
+    def test_agents_md_no_git_root_stays_cwd_only(self, tmp_path):
+        # Without a git root, parents are never consulted (no picking up an
+        # AGENTS.md planted in /tmp or $HOME).
+        (tmp_path / "AGENTS.md").write_text("Planted in parent.")
+        sub = tmp_path / "sub"
+        sub.mkdir()
+        from agent.prompt_builder import _load_agents_md
+
+        assert _load_agents_md(sub) == ""
 
     def test_skips_agents_md_in_install_tree_on_fallback(self, monkeypatch, tmp_path):
         # A backend that FALLS BACK into the install tree (cwd=None → getcwd,

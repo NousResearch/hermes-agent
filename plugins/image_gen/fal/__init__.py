@@ -87,7 +87,7 @@ class FalImageGenProvider(ImageGenProvider):
         return {
             "name": "FAL.ai",
             "badge": "paid",
-            "tag": "Pick from flux-2-klein, flux-2-pro, gpt-image, nano-banana, etc. — text-to-image & image editing",
+            "tag": "Pick from flux-2-klein, flux-2-pro, gpt-image, nano-banana-2, nano-banana-pro, etc. — text-to-image & image editing",
             "env_vars": [
                 {
                     "key": "FAL_KEY",
@@ -143,6 +143,7 @@ class FalImageGenProvider(ImageGenProvider):
                 "num_images",
                 "output_format",
                 "seed",
+                "upscale",
             )
             if key in kwargs and kwargs[key] is not None
         }

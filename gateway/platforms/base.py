@@ -3014,6 +3014,11 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_message: Optional[str] = None
         self._fatal_error_retryable = True
         self._fatal_error_handler: Optional[Callable[["BasePlatformAdapter"], Awaitable[None] | None]] = None
+        # Strong references to shielded fatal-error handler tasks that outlive
+        # their carrier task (asyncio only keeps weak refs). Without this set,
+        # the event loop can GC the detached handler before it finishes — the
+        # exact "handler killed mid-flight" class we are fixing (#81335).
+        self._detached_fatal_tasks: set = set()
         # Cross-HERMES_HOME token takeover is armed by GatewayRunner only for
         # an adapter's initial connect during an explicit ``gateway run
         # --replace`` startup.  Ordinary starts and every reconnect fail safe
@@ -3471,6 +3476,16 @@ class BasePlatformAdapter(ABC):
             # reconnection, leaving a zombie gateway with no platforms and no
             # pending retries (#81335).
             task = asyncio.ensure_future(result)
+            # Keep a strong reference so the event loop's weak-ref task
+            # table doesn't GC the handler before it finishes (asyncio docs:
+            # "Save a reference to tasks ... to avoid a task disappearing
+            # mid-execution"). Matches the gateway-level pattern in
+            # GatewayRunner._handle_adapter_fatal_error.
+            _tasks = getattr(self, "_detached_fatal_tasks", None)
+            if _tasks is None:
+                _tasks = self._detached_fatal_tasks = set()
+            _tasks.add(task)
+            task.add_done_callback(_tasks.discard)
             try:
                 await asyncio.shield(task)
             except asyncio.CancelledError:

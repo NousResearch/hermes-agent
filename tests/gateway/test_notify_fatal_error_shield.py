@@ -27,6 +27,7 @@ class _FakeAdapter:
     def __init__(self):
         self._fatal_error_handler = None
         self.handler_completed = False
+        self._detached_fatal_tasks = set()
 
 
 @pytest.mark.asyncio

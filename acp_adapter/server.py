@@ -900,7 +900,14 @@ class HermesACPAgent(acp.Agent):
 
             def choice_provider(model_id: str) -> str:
                 parts = model_id.split(":")
-                return ":".join(parts[:2]) if parts[:1] == ["custom"] and len(parts) > 1 else parts[0]
+                if parts[:1] == ["custom"] and len(parts) > 1:
+                    candidate = f"custom:{parts[1].lower()}"
+                    from hermes_cli.models import _configured_custom_provider_ids
+
+                    if candidate in _configured_custom_provider_ids():
+                        return candidate
+                    return "custom"
+                return parts[0]
 
             if named_empty_authoritative:
                 available_models = [

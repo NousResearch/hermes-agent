@@ -246,7 +246,16 @@ class TestModelStateIncludesNamedProviders:
         from hermes_cli.models import parse_model_input
 
         choice_id = "custom:bedrock-mantle:openai.gpt-5.5"
-        provider, model = parse_model_input(choice_id, "bedrock")
+        cfg = {
+            "providers": {
+                "bedrock-mantle": {
+                    "name": "AWS Bedrock Mantle",
+                    "base_url": "https://bedrock.example/v1",
+                }
+            }
+        }
+        with patch("hermes_cli.config.load_config", return_value=cfg):
+            provider, model = parse_model_input(choice_id, "bedrock")
         assert provider == "custom:bedrock-mantle"
         assert model == "openai.gpt-5.5"
 

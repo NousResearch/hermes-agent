@@ -3771,7 +3771,9 @@ def list_authenticated_providers(
                         api_mode=grp.get("api_mode"),
                     )
                     if live_models is not None and (
-                        live_models or not bool(grp.get("has_explicit_models"))
+                        live_models
+                        or not bool(grp.get("has_explicit_models"))
+                        or isinstance(live_models, _NativePickerModelList)
                     ):
                         if isinstance(live_models, _NativePickerModelList):
                             native_catalog_empty = not live_models

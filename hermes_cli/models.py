@@ -2546,7 +2546,10 @@ def parse_model_input(raw: str, current_provider: str) -> tuple[str, str]:
                 custom_name = model_part[:second_colon].strip()
                 actual_model = model_part[second_colon + 1:].strip()
                 if custom_name and actual_model:
-                    return (f"custom:{custom_name}", actual_model)
+                    custom_id = f"custom:{custom_name.lower()}"
+                    if custom_id in _configured_custom_provider_ids():
+                        return (custom_id, actual_model)
+                    return ("custom", model_part)
             return (normalize_provider(provider_part), model_part)
     return (current_provider, stripped)
 

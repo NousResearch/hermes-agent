@@ -985,6 +985,13 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "API service tier (OpenAI/Anthropic)",
         "options": ["", "auto", "default", "flex"],
     },
+    "gateway.multiplex_profiles": {
+        "type": "boolean",
+        "description": (
+            "Serve all profiles from the default gateway and run each "
+            "profile's scheduled jobs. Requires a gateway restart."
+        ),
+    },
     "delegation.reasoning_effort": {
         "type": "select",
         "description": "Reasoning effort for delegated subagents",

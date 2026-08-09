@@ -39,6 +39,11 @@ class CronScheduler(ABC):
     def name(self) -> str:
         """Short identifier, e.g. 'builtin', 'chronos'."""
 
+    @property
+    def supports_multiplex_profiles(self) -> bool:
+        """Whether this provider schedules every served profile's job store."""
+        return False
+
     def is_available(self) -> bool:
         """Whether this provider can run in the current environment.
 
@@ -160,6 +165,20 @@ def resolve_cron_scheduler() -> "CronScheduler":
         if not provider.is_available():
             logger.warning("cron.provider '%s' not available; using built-in ticker", name)
             return InProcessCronScheduler()
+        try:
+            from gateway.config import load_gateway_config
+
+            multiplex_profiles = load_gateway_config().multiplex_profiles
+        except Exception as exc:
+            logger.debug("Could not determine gateway multiplex mode: %s", exc)
+            multiplex_profiles = False
+        if multiplex_profiles and not provider.supports_multiplex_profiles:
+            logger.warning(
+                "cron.provider '%s' does not support multiplex profiles; "
+                "using built-in ticker so every profile's jobs are scheduled",
+                name,
+            )
+            return InProcessCronScheduler()
         logger.info("Using cron scheduler provider: %s", provider.name)
         return provider
     except Exception as e:
@@ -182,6 +201,10 @@ class InProcessCronScheduler(CronScheduler):
     @property
     def name(self) -> str:
         return "builtin"
+
+    @property
+    def supports_multiplex_profiles(self) -> bool:
+        return True
 
     def start(
         self,

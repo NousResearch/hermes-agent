@@ -214,6 +214,43 @@ def test_resolve_defaults_to_builtin(monkeypatch):
     assert prov.name == "builtin"
 
 
+def test_resolve_falls_back_when_provider_cannot_schedule_multiplex_profiles(monkeypatch):
+    """A single-profile provider must not silently strand secondary jobs."""
+    import hermes_cli.config as cfg
+    import gateway.config as gateway_cfg
+    import plugins.cron_providers as plugins
+    from cron import scheduler_provider as sp
+
+    class SingleProfileProvider(sp.CronScheduler):
+        @property
+        def name(self):
+            return "single-profile"
+
+        def start(self, stop_event, **kwargs):
+            return None
+
+    monkeypatch.setattr(
+        cfg,
+        "load_config",
+        lambda: {"cron": {"provider": "single-profile"}},
+    )
+    monkeypatch.setattr(
+        plugins,
+        "load_cron_scheduler",
+        lambda name: SingleProfileProvider(),
+    )
+    monkeypatch.setattr(
+        gateway_cfg,
+        "load_gateway_config",
+        lambda: type("Config", (), {"multiplex_profiles": True})(),
+    )
+
+    provider = sp.resolve_cron_scheduler()
+
+    assert isinstance(provider, sp.InProcessCronScheduler)
+    assert provider.supports_multiplex_profiles is True
+
+
 # ── Phase 4B: additive hooks (on_jobs_changed / fire_due / reconcile) ────────
 
 
@@ -412,5 +449,4 @@ def test_multiplex_ticker_ticks_each_profile_once(tmp_path, monkeypatch):
     # With 2 profiles and multiple iterations, we should have seen at least 2 calls.
     assert len(tick_count) >= len(profile_homes), \
         f"Expected >= {len(profile_homes)} tick calls, got {len(tick_count)}"
-
 

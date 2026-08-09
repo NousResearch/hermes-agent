@@ -1938,6 +1938,20 @@ class TestBuildSchemaFromConfig:
         assert "python3.13" in runtime_entry["options"]
         assert len(runtime_entry["options"]) >= 3
 
+    def test_gateway_multiplex_profiles_is_exposed_as_opt_in_boolean(self):
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        assert DEFAULT_CONFIG["gateway"]["multiplex_profiles"] is False
+        assert CONFIG_SCHEMA["gateway.multiplex_profiles"] == {
+            "type": "boolean",
+            "description": (
+                "Serve all profiles from the default gateway and run each "
+                "profile's scheduled jobs. Requires a gateway restart."
+            ),
+            "category": "gateway",
+        }
+
 
 
     def test_timezone_field_is_searchable_select(self):

@@ -3453,6 +3453,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         cwd: str = None,
         profile_name: str = None,
         git_repo_root: str = None,
+        origin_json: str = None,
+        display_name: str = None,
     ) -> None:
         """Insert a session row, enriching NULL metadata on conflict.
 
@@ -3495,9 +3497,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
                    model, model_config, system_prompt, system_prompt_hash,
-                   parent_session_id, cwd, profile_name, git_repo_root, started_at
+                   parent_session_id, cwd, profile_name, git_repo_root,
+                   origin_json, display_name, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = COALESCE(sessions.model_config, excluded.model_config),
@@ -3518,7 +3521,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                        parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
                        cwd = COALESCE(sessions.cwd, excluded.cwd),
                        profile_name = COALESCE(sessions.profile_name, excluded.profile_name),
-                       git_repo_root = COALESCE(sessions.git_repo_root, excluded.git_repo_root)""",
+                       git_repo_root = COALESCE(sessions.git_repo_root, excluded.git_repo_root),
+                       origin_json = COALESCE(sessions.origin_json, excluded.origin_json),
+                       display_name = COALESCE(sessions.display_name, excluded.display_name)""",
                 (
                     session_id,
                     source,
@@ -3534,6 +3539,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     cwd,
                     profile_name,
                     git_repo_root,
+                    origin_json,
+                    display_name,
                     time.time(),
                 ),
             )
@@ -3635,6 +3642,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         on one routing peer when an explicit gateway resume moves its tip to a
         different lane. Normal per-turn metadata refreshes update only the
         supplied row.
+
+        Self-healing (#82616): when the target row does not exist yet — the
+        gateway's ``create_session`` write failed and was deferred, or a
+        crash landed between routing publication and row creation — this
+        recorder INSERTs the row with the full identity instead of silently
+        no-opping. Every per-turn peer refresh is therefore a repair
+        opportunity: a gateway session row can no longer be first-created by
+        an identity-less lazy writer (``update_token_counts`` /
+        ``record_auxiliary_usage``) and stay unroutable forever.
         """
         if not session_id or not session_key:
             return
@@ -3690,6 +3706,43 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                    {target_clause}""",
                 query_params,
             )
+            # Self-heal (#82616): the UPDATE is a silent no-op when the row
+            # is missing (create_session failed earlier, or a crash landed
+            # between routing publication and row creation). Insert it with
+            # the full identity so the session is durably routable — never
+            # leave first-creation to an identity-less lazy writer.
+            if not include_compression_ancestors:
+                cur = conn.execute(
+                    "SELECT 1 FROM sessions WHERE id = ? LIMIT 1", (session_id,)
+                )
+                if cur.fetchone() is None:
+                    conn.execute(
+                        """INSERT INTO sessions (
+                               id, source, user_id, session_key, chat_id,
+                               chat_type, thread_id, display_name, origin_json,
+                               started_at
+                           )
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                           ON CONFLICT(id) DO UPDATE SET
+                               session_key = COALESCE(sessions.session_key, excluded.session_key),
+                               chat_id = COALESCE(sessions.chat_id, excluded.chat_id),
+                               chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
+                               thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
+                               display_name = COALESCE(sessions.display_name, excluded.display_name),
+                               origin_json = COALESCE(sessions.origin_json, excluded.origin_json)""",
+                        (
+                            session_id,
+                            source,
+                            user_id,
+                            session_key,
+                            chat_id,
+                            chat_type,
+                            thread_id,
+                            display_name,
+                            origin_json,
+                            time.time(),
+                        ),
+                    )
 
         self._execute_write(_do)
 
@@ -3898,6 +3951,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         (dashboard viewer disconnect before #60609) are treated as recoverable;
         explicit conversation boundaries such as /new, /resume switches, and
         compression splits are not.
+
+        Ordering and emptiness (#82616): candidates are ranked by actual
+        conversation recency (``last_activity_at``, falling back to
+        ``started_at``) — ``started_at`` alone resurrected days-old zombie
+        rows over the live conversation. Rows with messages are preferred,
+        but an empty keyed row is still returned rather than ``None``:
+        returning ``None`` mints a brand-new session id, which is a worse
+        outcome than resuming an empty-but-correctly-keyed row (and "empty"
+        may just mean the transcript lives under a compression child).
         """
         if not session_key:
             return None
@@ -3906,16 +3968,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 """
                 SELECT s.*,
                        COALESCE(sp.prompt, s.system_prompt)
-                           AS _system_prompt_resolved
+                           AS _system_prompt_resolved,
+                       (COALESCE(s.message_count, 0) > 0 OR EXISTS (
+                           SELECT 1 FROM messages WHERE messages.session_id = s.id LIMIT 1
+                       )) AS _has_messages
                 FROM sessions s
                 LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash
                 WHERE s.session_key = ?
                   AND s.source = ?
                   AND (s.ended_at IS NULL OR s.end_reason IN ('agent_close', 'ws_orphan_reap'))
-                  AND (COALESCE(s.message_count, 0) > 0 OR EXISTS (
-                      SELECT 1 FROM messages WHERE messages.session_id = s.id LIMIT 1
-                  ))
-                ORDER BY s.started_at DESC
+                ORDER BY _has_messages DESC,
+                         COALESCE(s.last_activity_at, s.started_at) DESC
                 LIMIT 1
                 """,
                 (session_key, source),
@@ -3932,7 +3995,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 """
                 SELECT s.*,
                        COALESCE(sp.prompt, s.system_prompt)
-                           AS _system_prompt_resolved
+                           AS _system_prompt_resolved,
+                       (COALESCE(s.message_count, 0) > 0 OR EXISTS (
+                           SELECT 1 FROM messages WHERE messages.session_id = s.id LIMIT 1
+                       )) AS _has_messages
                 FROM sessions s
                 LEFT JOIN system_prompts sp ON sp.hash = s.system_prompt_hash
                 WHERE s.source = ?
@@ -3944,7 +4010,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                   AND (COALESCE(s.message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = s.id LIMIT 1
                   ))
-                ORDER BY s.started_at DESC
+                ORDER BY COALESCE(s.last_activity_at, s.started_at) DESC
                 LIMIT 1
                 """,
                 (source, user_id, chat_id, chat_type, thread_id),

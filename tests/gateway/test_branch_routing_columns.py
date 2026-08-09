@@ -137,6 +137,19 @@ class TestBranchRoutingColumns:
         assert row["session_key"] is not None, (
             "branched session lost session_key — primary lookup path fails"
         )
+        # origin_json completes the identity (#82633 reset-path pattern):
+        # consumers reading routing/presentation data from state.db
+        # (mcp_serve, mirror, channel directory) need the full origin on
+        # the branch row without waiting for any backfill.
+        assert row["origin_json"], (
+            "branched session lost origin_json — state.db consumers see an "
+            "identity-less branch row until a peer refresh backfills it"
+        )
+        import json as _json
+
+        origin = _json.loads(row["origin_json"])
+        assert origin.get("chat_id") == "170829464"
+        assert origin.get("thread_id") == "544520"
 
         _ = real_switch_session  # silence unused
 

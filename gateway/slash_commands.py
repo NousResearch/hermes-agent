@@ -4774,6 +4774,20 @@ class GatewaySlashCommandsMixin:
 
         parent_session_id = current_entry.session_id
 
+        # Serialize the parent's full origin (same shape as the reset path's
+        # db_create_kwargs in gateway/session.py, #82633) so the branch row
+        # carries complete identity from birth. Prefer the live entry's origin
+        # (it may hold richer metadata than the triggering event's source).
+        _branch_origin = current_entry.origin or source
+        _branch_origin_json = None
+        if _branch_origin is not None:
+            try:
+                import json as _json
+
+                _branch_origin_json = _json.dumps(_branch_origin.to_dict())
+            except Exception:
+                _branch_origin_json = None
+
         # Create the new session with parent link.
         # Persist a stable ``_branched_from`` marker in model_config so
         # list_sessions_rich() keeps the branch visible in /resume and
@@ -4798,12 +4812,19 @@ class GatewaySlashCommandsMixin:
                 # IDOR guard too (which requires the row's chat_id/thread_id to
                 # match the caller's). user_id is critical for the fallback lookup
                 # path (hermes_state.py:1994-2009) that searches by the complete
-                # peer tuple when session_key doesn't match.
+                # peer tuple when session_key doesn't match. origin_json and
+                # display_name complete the identity (same shape as the reset
+                # path's db_create_kwargs in gateway/session.py, #82633) so
+                # consumers that read routing/presentation data from state.db
+                # (mcp_serve, mirror, channel directory) see the branch row
+                # fully formed with zero backfill gap.
                 user_id=source.user_id,
                 session_key=session_key,
                 chat_id=source.chat_id,
                 chat_type=source.chat_type,
                 thread_id=source.thread_id,
+                origin_json=_branch_origin_json,
+                display_name=current_entry.display_name,
             )
         except Exception as e:
             logger.error("Failed to create branch session: %s", e)

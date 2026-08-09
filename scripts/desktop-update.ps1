@@ -50,6 +50,12 @@ param(
 )
 
 $ErrorActionPreference = "Continue"
+# Render UTF-8 glyphs (checkmarks, arrows) correctly in our own console echo
+# too; the legacy conhost default OEM codepage shows them as mojibake.
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+} catch {}
 $HermesHome = Split-Path -Parent $InstallRoot
 $MarkerPath = Join-Path $HermesHome ".hermes-update-in-progress"
 $LogDir = Join-Path $HermesHome "logs"
@@ -148,10 +154,38 @@ function Remove-MarkerIfOwned {
 function Start-DesktopRelaunch {
     if ($RelaunchExe -and (Test-Path -LiteralPath $RelaunchExe)) {
         Write-HandoffLog "relaunching desktop: $RelaunchExe"
+        # DO NOT spawn Hermes.exe as our child: Electron/Chromium calls
+        # AttachConsole(ATTACH_PARENT_PROCESS) at boot, so a Desktop launched
+        # directly from this console PowerShell latches onto OUR console --
+        # the console window then outlives the script (it can't close while
+        # an attached process lives), and closing it kills the freshly
+        # relaunched GUI with it. Create the process via WMI instead: the
+        # parent becomes WmiPrvSE.exe and there is no console to inherit or
+        # attach -- same detachment explorer.exe gives a normal launch.
+        $spawned = $false
         try {
-            Start-Process -FilePath $RelaunchExe -WorkingDirectory (Split-Path -Parent $RelaunchExe) | Out-Null
+            $workDir = Split-Path -Parent $RelaunchExe
+            $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+                CommandLine      = ('"{0}"' -f $RelaunchExe)
+                CurrentDirectory = $workDir
+            } -ErrorAction Stop
+            if ($r -and $r.ReturnValue -eq 0) {
+                Write-HandoffLog "desktop relaunched detached (pid $($r.ProcessId))"
+                $spawned = $true
+            } else {
+                Write-HandoffLog "WARNING: WMI relaunch returned $($r.ReturnValue); falling back"
+            }
         } catch {
-            Write-HandoffLog "WARNING: desktop relaunch failed: $($_.Exception.Message)"
+            Write-HandoffLog "WARNING: WMI relaunch failed: $($_.Exception.Message); falling back"
+        }
+        if (-not $spawned) {
+            try {
+                # Fallback keeps the old behavior (console tie-in and all) --
+                # a tethered Desktop beats no Desktop.
+                Start-Process -FilePath $RelaunchExe -WorkingDirectory (Split-Path -Parent $RelaunchExe) | Out-Null
+            } catch {
+                Write-HandoffLog "WARNING: desktop relaunch failed: $($_.Exception.Message)"
+            }
         }
     }
 }
@@ -173,6 +207,15 @@ function Invoke-StreamedHermes([string]$Exe, [string[]]$HermesArgs, [string]$Tag
     $psi.UseShellExecute = $false
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
+    # hermes update prints UTF-8 (checkmarks, arrows, box glyphs). PS 5.1
+    # defaults these readers to the OEM codepage, which mangles every
+    # multi-byte glyph into mojibake in the console AND the progress box.
+    $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
+    $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
+    # And ask the child to actually EMIT UTF-8: Python decides its stdio
+    # encoding from the console codepage when attached to one.
+    $psi.EnvironmentVariables["PYTHONIOENCODING"] = "utf-8"
+    $psi.EnvironmentVariables["PYTHONUTF8"] = "1"
     $psi.CreateNoWindow = $true
     $proc = [System.Diagnostics.Process]::Start($psi)
     $outWriter = [System.IO.File]::CreateText($outFile)

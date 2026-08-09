@@ -9140,6 +9140,7 @@ function startHudCursorFeed(win: BrowserWindow) {
       win.getBounds(),
       win.webContents.getZoomFactor()
     )
+
     // Off-window is a real answer (it is what hands the mouse back), so it is
     // sent — once. Only an unchanged answer is dropped, to keep an idle cursor
     // from waking the renderer 16 times a second.

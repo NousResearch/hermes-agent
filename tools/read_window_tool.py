@@ -50,6 +50,9 @@ READ_WINDOW_BELOW_SCHEMA = {
         "withholds window titles (e.g. macOS without the Screen Recording "
         "permission — never prompted for, noted in `note`). Other Hermes "
         "windows are skipped: the nearest non-Hermes window is reported. "
+        "Returns {error, platform} instead where the OS cannot enumerate "
+        "windows at all (e.g. a Wayland session); `error` says what would fix "
+        "it, so relay it rather than retrying. "
         "Metadata only; this never captures pixels or content of other windows."
     ),
     "parameters": {

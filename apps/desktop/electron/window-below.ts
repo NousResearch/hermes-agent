@@ -4,7 +4,8 @@
 // `window.read.request` from the gateway, asks main over IPC, and answers
 // with this module's serialized result. Enumeration uses `get-windows`
 // (front-to-back z-order on macOS/Windows/Linux-X11); the picking logic is a
-// pure function so the OS-specific part stays a thin provider.
+// pure function so the OS-specific part stays a thin provider. Where that
+// provider can't run at all, the answer is why — see `enumerationFailureNote`.
 //
 // Privacy contract (matches the tool schema): metadata only — app, title,
 // bounds. Never pixels. On macOS, window titles require the Screen Recording
@@ -29,6 +30,45 @@ export interface WindowBelowResult {
     id: number
     title: string
   } | null
+}
+
+export interface WindowBelowUnavailable {
+  error: string
+  platform: string
+}
+
+/**
+ * Why enumeration just failed, in terms the user can act on.
+ *
+ * The generic "could not determine the window underneath" this replaces is a
+ * dead end on Linux, where the two ways it fails have opposite fixes and
+ * neither is guessable: a Wayland session withholds window identity from
+ * applications outright, and an X11 session needs `xprop`/`xwininfo` present
+ * because that is what the enumerator shells out to.
+ *
+ * A session with both `WAYLAND_DISPLAY` and `DISPLAY` is Wayland running
+ * XWayland, where `xprop` can still answer — so it is treated as X11 and gets
+ * the tooling advice rather than being told to change session type.
+ */
+export function enumerationFailureNote(platform: string, env: NodeJS.ProcessEnv): string {
+  if (platform !== 'linux') {
+    return 'Could not enumerate windows on this system.'
+  }
+
+  const wayland = env.XDG_SESSION_TYPE === 'wayland' || (Boolean(env.WAYLAND_DISPLAY) && !env.DISPLAY)
+
+  if (wayland) {
+    return (
+      'Could not enumerate windows: this is a Wayland session, and Wayland does ' +
+      'not let an application see other applications\u2019 windows. Log in to an ' +
+      'X11/Xorg session, or run Hermes under XWayland with DISPLAY set.'
+    )
+  }
+
+  return (
+    'Could not enumerate windows: this needs the xprop and xwininfo commands ' +
+    '(the x11-utils package on Debian/Ubuntu, xorg-x11-utils on Fedora).'
+  )
 }
 
 const overlaps = (a: EnumeratedWindow['bounds'], b: EnumeratedWindow['bounds']): boolean =>
@@ -81,15 +121,21 @@ const loadGetWindows = (): Promise<GetWindowsModule> => {
  * Enumerate windows and serialize the one underneath `selfBounds`.
  *
  * `titlesAvailable` is the macOS Screen Recording grant (pass true on other
- * platforms, where titles are free). Returns null only when enumeration
- * itself is unavailable (Wayland, missing xprop, addon load failure) — the
- * caller turns that into an empty tool answer.
+ * platforms, where titles are free). When enumeration itself is unavailable
+ * (Wayland, missing xprop, addon load failure) this answers with the reason
+ * rather than nothing, so the agent can tell the user what to fix instead of
+ * reporting a blank failure.
  */
 export async function readWindowBelow(
   selfPid: number,
   selfBounds: EnumeratedWindow['bounds'],
   titlesAvailable: boolean
-): Promise<WindowBelowResult | null> {
+): Promise<WindowBelowResult | WindowBelowUnavailable> {
+  const unavailable = (): WindowBelowUnavailable => ({
+    error: enumerationFailureNote(process.platform, process.env),
+    platform: process.platform
+  })
+
   let raw
 
   try {
@@ -100,11 +146,11 @@ export async function readWindowBelow(
         : undefined
     )
   } catch {
-    return null
+    return unavailable()
   }
 
   if (!Array.isArray(raw)) {
-    return null
+    return unavailable()
   }
 
   // get-windows documents openWindows() as front-to-back, and macOS/Windows

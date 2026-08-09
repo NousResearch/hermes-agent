@@ -23,9 +23,9 @@ import { stableRecord } from '@/lib/stable-array'
 
 import { $backgroundRunningSessionIds } from './composer-status'
 import { $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
-import { $attentionSessionIds, $stalledSessionIds, $workingSessionIds } from './session-states'
+import { $attentionSessionIds, $draftSessionIds, $stalledSessionIds, $workingSessionIds } from './session-states'
 
-export type SessionDotState = 'background' | 'idle' | 'needs-input' | 'stalled' | 'unread' | 'working'
+export type SessionDotState = 'background' | 'draft' | 'idle' | 'needs-input' | 'stalled' | 'unread' | 'working'
 
 /** The sidebar row's arc. A quiet turn is still authoritatively running, so
  *  `stalled` keeps it; a blocking prompt drops it, because the amber dot is the
@@ -46,9 +46,10 @@ export const $sessionDotStateById = computed(
     $stalledSessionIds,
     $backgroundRunningSessionIds,
     $unreadFinishedSessionIds,
+    $draftSessionIds,
     $sessions
   ],
-  (attention, working, stalled, background, unread, sessions) => {
+  (attention, working, stalled, background, unread, draft, sessions) => {
     const next: Record<string, SessionDotState> = {}
 
     const claim = (ids: readonly string[], state: SessionDotState) => {
@@ -62,6 +63,10 @@ export const $sessionDotStateById = computed(
     // Weakest claim first — each pass overwrites the one above it, so the order
     // below IS the priority order. A blocking prompt outranks everything: it is
     // the only state that needs the user.
+    //
+    // Draft is weakest of all: it says only "no turn has happened here yet", so
+    // the first thing that does happen speaks over it.
+    claim(draft, 'draft')
     claim(unread, 'unread')
     claim(background, 'background')
     claim(working, 'working')

@@ -66,6 +66,15 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     role: 'status',
     title: r => r.finishedUnread
   },
+  // Hollow grey, the faintest ink the app has — nothing has ever run here. It
+  // shares the outline with `background` because both mean "open, not
+  // producing", and sits a shade dimmer because a draft is the one state that
+  // has yet to do anything at all.
+  draft: {
+    ariaLabel: r => r.draftSession,
+    className: `${DOT_BASE} border border-(--ui-text-quaternary)`,
+    title: r => r.draftSession
+  },
   // Settled: the project color, or nothing at all. An uncolored session used to
   // get a grey dot, which put a mark of the same weight as a status next to
   // every resting row and made "no color" look like a state of its own.
@@ -78,8 +87,11 @@ export interface SessionStatusDotProps {
   /** The STORED session id — the key every live-state atom (working /
    *  attention / stalled / unread / background) is keyed by, on BOTH surfaces:
    *  the sidebar row's `session.id` and a pane tile's `storedSessionId` are the
-   *  same stored id (`$workingSessionIds` et al. map `storedSessionId`). */
-  storedSessionId: string
+   *  same stored id (`$workingSessionIds` et al. map `storedSessionId`).
+   *
+   *  Null on a new chat that has yet to reach the backend — no id to key by,
+   *  and no turn behind it, which is the draft state by definition. */
+  storedSessionId: null | string
   /** The session row for color resolution — recents OR the project tree. Both
    *  call sites already hold it; passing it lets the idle dot inherit the
    *  project color even for a session older than the paginated recents page
@@ -112,7 +124,9 @@ export function SessionStatusDot({ storedSessionId, session, branchStem, classNa
 
   // Selector, not a plain useStore: the map is rebuilt whenever any session's
   // status changes, but a given dot only repaints when ITS OWN state flips.
-  const dotState = useStoreSelector($sessionDotStateById, states => states[storedSessionId] ?? 'idle')
+  const dotState = useStoreSelector($sessionDotStateById, states =>
+    storedSessionId ? (states[storedSessionId] ?? 'idle') : 'draft'
+  )
   const variant = DOT_VARIANTS[dotState]
 
   return (

@@ -1726,6 +1726,7 @@ export const zhHant = defineLocale({
       waitingForAnswer: '等待您的回答',
       finishedUnread: '已完成 — 未讀',
       backgroundRunning: '背景任務執行中',
+      draftSession: '草稿 — 尚未傳送',
       handoffOrigin: platform => `從 ${platform} 轉接`,
       ownedByProfile: profile => `設定檔：${profile}`,
       renamed: '已重新命名',

@@ -259,6 +259,8 @@ piper = [
 modal = ["modal==1.3.4"]
 daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
+# Kubernetes session-pod terminal backend; baked into the cluster image.
+kubernetes = ["kubernetes==36.0.3"]
 google-meet = ["playwright==1.62.0", "websockets==15.0.1"]
 messaging = [
   "python-telegram-bot[webhooks]==22.8",

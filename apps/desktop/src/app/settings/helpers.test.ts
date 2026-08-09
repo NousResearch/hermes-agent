@@ -148,6 +148,11 @@ describe('settings helpers', () => {
   describe('enumOptionsFor — backend selector dropdowns', () => {
     const config: HermesConfigRecord = {}
 
+    it('renders a dropdown for the terminal execution backend', () => {
+      const opts = enumOptionsFor('terminal.backend', 'local', config)
+      expect(opts).toEqual(['local', 'docker', 'singularity', 'modal', 'daytona', 'ssh', 'kubernetes'])
+    })
+
     it('narrows OpenAI TTS voice suggestions to what the selected model supports', () => {
       // gpt-4o-mini-tts (and unset/unknown models): full 13-voice set.
       const full = enumOptionsFor('tts.openai.voice', 'alloy', { tts: { openai: { model: 'gpt-4o-mini-tts' } } })

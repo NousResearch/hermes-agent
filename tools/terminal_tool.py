@@ -1277,6 +1277,76 @@ def clear_task_env_overrides(task_id: str):
     """
     _task_env_overrides.pop(task_id, None)
     clear_session_cwd(task_id)
+    with _container_alias_lock:
+        _container_aliases.pop(task_id, None)
+
+
+# Subagent → parent container aliasing.  delegate_task children get their own
+# task_id (file-state tracking, TUI events) but must share the PARENT
+# session's container — one bash, one /workspace, one set of installed
+# packages.  With per-session container isolation active (docker +
+# container_persistent: false), the collapse-to-"default" shortcut no longer
+# provides that sharing, so the spawn site registers an explicit alias.
+_container_aliases: Dict[str, str] = {}
+_container_alias_lock = threading.Lock()
+
+
+def register_container_alias(child_task_id: str, parent_task_id: Optional[str]) -> None:
+    """Make *child_task_id* resolve to *parent_task_id*'s container.
+
+    Called by ``delegate_task`` at child spawn so subagents share the parent
+    session's sandbox under per-session container isolation. A missing/empty
+    parent id aliases the child to ``"default"`` (top-level CLI parent).
+    """
+    if not child_task_id:
+        return
+    with _container_alias_lock:
+        _container_aliases[child_task_id] = str(parent_task_id or "default")
+
+
+def _resolve_container_alias(task_id: str) -> str:
+    """Follow the child→parent alias chain (cycle-safe) for *task_id*."""
+    seen = set()
+    key = task_id
+    with _container_alias_lock:
+        while key in _container_aliases and key not in seen:
+            seen.add(key)
+            key = _container_aliases[key]
+    return key
+
+
+def _docker_session_isolation_enabled() -> bool:
+    """True when docker sessions get their OWN containers (issue: stale
+    workspace mounts leaking between desktop sessions).
+
+    Gated on ``terminal.backend: docker`` + ``container_persistent: false``:
+    a non-persistent sandbox is a statement that state must not survive the
+    session, so sharing one container across sessions contradicts it. With
+    ``container_persistent: true`` the documented ONE-long-lived-container
+    contract is unchanged.
+    """
+    _ensure_terminal_env_bridged()
+    if os.getenv("TERMINAL_ENV", "local") != "docker":
+        return False
+    return os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() not in {"true", "1", "yes"}
+
+
+_ISOLATION_OVERRIDE_KEYS = frozenset({
+    "docker_image", "modal_image", "singularity_image",
+    "daytona_image", "env_type",
+})
+
+
+def _has_isolation_overrides(task_id: Optional[str]) -> bool:
+    """True when *task_id* registered backend-image/env_type overrides.
+
+    The single owner of the "is this an RL/benchmark-style isolated rollout"
+    predicate — shared by container-key resolution and container creation so
+    the two can't drift.
+    """
+    if not task_id or task_id not in _task_env_overrides:
+        return False
+    return bool(set(_task_env_overrides[task_id].keys()) & _ISOLATION_OVERRIDE_KEYS)
 
 
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
@@ -1302,15 +1372,18 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     tracking) are *not* isolation signals — they should not cause each
     session to spin up its own container.  Only overrides containing
     backend-specific image keys or ``env_type`` trigger isolation.
+
+    Per-session container isolation (docker + ``container_persistent:
+    false``): each session's task_id is its own container key, so a fresh
+    chat gets a fresh sandbox with only ITS mounts — a previous session's
+    workspace can no longer appear in a new session's container.
+    ``delegate_task`` children keep sharing the parent's container via the
+    alias registry (``register_container_alias``).
     """
-    _ISOLATION_KEYS = frozenset({
-        "docker_image", "modal_image", "singularity_image",
-        "daytona_image", "env_type",
-    })
-    if task_id and task_id in _task_env_overrides:
-        overrides = _task_env_overrides[task_id]
-        if set(overrides.keys()) & _ISOLATION_KEYS:
-            return task_id
+    if task_id and _has_isolation_overrides(task_id):
+        return task_id
+    if task_id and _docker_session_isolation_enabled():
+        return _resolve_container_alias(task_id)
     return "default"
 
 
@@ -1332,6 +1405,50 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
         or _task_env_overrides.get(_resolve_container_task_id(raw))
         or {}
     )
+
+
+def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Optional[str]:
+    """Host directory to bind-mount at ``/workspace`` for *task_id*'s container.
+
+    The single owner of the cwd-mount policy, shared by every environment
+    creation site (terminal tool, file tools, execute_code, lazy bring-up):
+
+    * Shared-container mode (the default): the process-global
+      ``TERMINAL_CWD``-derived ``config["host_cwd"]`` — unchanged legacy
+      behavior, ONE container whose mount tracks the configured workspace.
+    * Per-session isolation mode (docker + ``container_persistent: false``):
+      only the SESSION's own registered workspace may mount.  The process
+      env var is a launch artifact — the TUI/desktop workspace picker writes
+      ``os.environ["TERMINAL_CWD"]`` and it outlives the session that set it,
+      so deriving a fresh session's mount from it leaks the previous
+      session's directory into a chat that never attached one.  Overrides
+      tagged ``cwd_source: "process"`` (gateway fallback to the global env
+      var) are likewise refused as mount sources; only a workspace the user
+      actually attached to THIS session (``cwd_source: "session"`` or an
+      untagged override from ACP/RL surfaces) mounts.
+    """
+    if config.get("env_type") != "docker":
+        return None
+    if not config.get("docker_mount_cwd_to_workspace"):
+        return None
+    if not _docker_session_isolation_enabled():
+        return config.get("host_cwd")
+    if _resolve_container_task_id(task_id) == "default":
+        # Top-level CLI parent — single-session process, legacy behavior.
+        return config.get("host_cwd")
+    overrides = resolve_task_overrides(task_id)
+    if overrides.get("cwd_source") == "process":
+        return None
+    candidate = overrides.get("cwd")
+    if not isinstance(candidate, str) or not candidate.strip():
+        return None
+    candidate = os.path.abspath(os.path.expanduser(candidate))
+    if not os.path.isdir(candidate):
+        return None
+    if candidate.startswith(("/workspace", "/root")):
+        # Already an in-container path, not a host workspace.
+        return None
+    return candidate
 
 
 # Configuration from environment variables
@@ -1638,7 +1755,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                         ssh_config: dict = None, container_config: dict = None,
                         local_config: dict = None,
                         task_id: str = "default",
-                        host_cwd: str = None):
+                        host_cwd: Optional[str] = None):
     """
     Create an execution environment for sandboxed command execution.
     
@@ -1678,7 +1795,18 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         # subagents, RL benchmarks) don't run the reaper N times.
         # Disable via ``terminal.docker_orphan_reaper: false`` (issue #20561).
         _maybe_reap_docker_orphans(cc)
-        return _DockerEnvironment(
+        # Per-session container isolation: a session-keyed container must not
+        # outlive its session, so cross-process reuse/persist is disabled for
+        # it — cleanup_vm()/the idle reaper stop+rm it instead of leaving a
+        # running container behind for every chat ever opened. The shared
+        # "default" container and RL/benchmark override sandboxes keep their
+        # existing lifecycle.
+        session_scoped = (
+            _docker_session_isolation_enabled()
+            and task_id != "default"
+            and not _has_isolation_overrides(task_id)
+        )
+        docker_env_obj = _DockerEnvironment(
             image=image, cwd=cwd, timeout=timeout,
             cpu=cpu, memory=memory, disk=disk,
             persistent_filesystem=persistent, task_id=task_id,
@@ -1690,9 +1818,22 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             run_as_host_user=cc.get("docker_run_as_host_user", False),
             network=docker_network,
             extra_args=docker_extra_args,
-            persist_across_processes=cc.get("docker_persist_across_processes", True),
+            persist_across_processes=(
+                False if session_scoped
+                else cc.get("docker_persist_across_processes", True)
+            ),
             shm_size=cc.get("docker_shm_size", "1g"),
         )
+        # Marker read by is_persistent_env(): a session-scoped container
+        # survives BETWEEN turns (skip per-turn teardown) but is removed at
+        # session close / idle timeout. Guarded setattr: test doubles for
+        # _DockerEnvironment may not accept attributes.
+        if session_scoped:
+            try:
+                docker_env_obj._session_scoped = True
+            except AttributeError:
+                pass
+        return docker_env_obj
     
     elif env_type == "singularity":
         return _SingularityEnvironment(
@@ -1973,7 +2114,7 @@ def ensure_task_env(task_id: Optional[str] = None):
                 ),
                 local_config=None,
                 task_id=effective_task_id,
-                host_cwd=config.get("host_cwd"),
+                host_cwd=_resolve_task_host_cwd(config, task_id),
             )
         except Exception as exc:  # noqa: BLE001 — best-effort bring-up
             logger.warning(
@@ -2002,10 +2143,17 @@ def is_persistent_env(task_id: str) -> bool:
     down at end-of-turn to prevent leakage. The idle reaper
     (``_cleanup_inactive_envs``) handles persistent envs once they exceed
     ``terminal.lifetime_seconds``.
+
+    Session-scoped docker containers (per-session isolation mode) also count
+    as persistent HERE: their lifetime is the SESSION, not the turn — they
+    are removed by ``AIAgent.close()`` → ``cleanup_vm`` at session teardown
+    and by the idle reaper, not per-turn.
     """
     env = get_active_env(task_id)
     if env is None:
         return False
+    if getattr(env, "_session_scoped", False):
+        return True
     return bool(getattr(env, "_persistent", False))
 
 
@@ -2337,6 +2485,7 @@ def _resolve_command_cwd(
     workdir: Optional[str],
     default_cwd: str,
     session_key: Optional[str] = None,
+    env_type: Optional[str] = None,
 ) -> str:
     """Return the cwd for a command. Explicit ``workdir=`` overrides everything.
 
@@ -2346,10 +2495,29 @@ def _resolve_command_cwd(
     ``cd`` lands in another record and can't affect us. A session with no
     record yet (first command) runs in ``default_cwd`` (config/override cwd),
     which is also what seeds a fresh environment.
+
+    ``env_type`` makes the record container-aware: on container backends a
+    recorded HOST path (a desktop/TUI surface registering its host workspace
+    via ``register_task_env_overrides`` → ``record_session_cwd``) is unusable
+    inside the sandbox — the shell prefixes every command with ``cd <host
+    path>`` and fails with exit 126. Same guard class as the env-creation
+    sanitizers (#50636, #54447); this is the per-command sibling site.
     """
     if workdir:
         return workdir
-    return get_session_cwd(session_key) or default_cwd
+    recorded = get_session_cwd(session_key)
+    if (
+        recorded
+        and env_type in _CONTAINER_BACKENDS
+        and _is_unusable_container_cwd(recorded)
+    ):
+        logger.info(
+            "Ignoring recorded session cwd %r for %s backend "
+            "(host/relative path won't work in sandbox). Using %r instead.",
+            recorded, env_type, default_cwd,
+        )
+        return default_cwd
+    return recorded or default_cwd
 
 
 def terminal_tool(
@@ -2439,6 +2607,10 @@ def terminal_tool(
             image = ""
 
         cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
+        # Session-scoped mount resolution (single owner: _resolve_task_host_cwd).
+        # Under per-session isolation a fresh session must not inherit the
+        # process-global TERMINAL_CWD mount left behind by a previous session.
+        host_cwd = _resolve_task_host_cwd(config, task_id)
         # A per-task cwd override (registered by the gateway/TUI for workspace
         # tracking, or by RL/benchmark envs) wins over config["cwd"] — but
         # config["cwd"] was already sanitized for container backends in
@@ -2447,17 +2619,20 @@ def terminal_tool(
         # POSIX /home/<user>) reaches `docker run -w <host-path>` and the
         # container fails to start (exit 125). Re-apply the same host/relative
         # path guard to the *resolved* cwd so the override can't bypass it.
+        # When the host path IS this session's mounted workspace, remap it to
+        # /workspace (where the mount lands) instead of discarding it.
         # Valid in-container override paths (RL/benchmark sandboxes that set
         # cwd to /workspace, /root, etc.) are absolute non-host paths and pass
         # through untouched.
         if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
-            if cwd != config["cwd"]:
+            remapped = "/workspace" if host_cwd else config["cwd"]
+            if cwd != remapped:
                 logger.info(
-                    "Ignoring host/relative cwd override %r for %s backend "
+                    "Remapping host/relative cwd override %r for %s backend "
                     "(won't exist in sandbox). Using %r instead.",
-                    cwd, env_type, config["cwd"],
+                    cwd, env_type, remapped,
                 )
-            cwd = config["cwd"]
+            cwd = remapped
         default_timeout = config["timeout"]
 
         # Validate an explicit timeout before it flows into deadline math.
@@ -2562,7 +2737,7 @@ def terminal_tool(
                             container_config=container_config,
                             local_config=local_config,
                             task_id=effective_task_id,
-                            host_cwd=config.get("host_cwd"),
+                            host_cwd=host_cwd,
                         )
                     except ImportError as e:
                         return json.dumps({
@@ -2622,6 +2797,7 @@ def terminal_tool(
                 workdir=workdir,
                 default_cwd=guard_cwd_base,
                 session_key=session_key,
+                env_type=env_type,
             )
 
             def _read_script_in_env(script_path: str) -> Optional[str]:
@@ -2807,6 +2983,7 @@ def terminal_tool(
                 workdir=workdir,
                 default_cwd=cwd,
                 session_key=session_key,
+                env_type=env_type,
             )
             try:
                 if env_type == "local":
@@ -3069,6 +3246,7 @@ def terminal_tool(
                         workdir=workdir,
                         default_cwd=cwd,
                         session_key=session_key,
+                        env_type=env_type,
                     )
                     execute_kwargs = {
                         "timeout": effective_timeout,

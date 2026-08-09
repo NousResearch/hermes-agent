@@ -881,7 +881,7 @@ class DockerEnvironment(BaseEnvironment):
         forward_env: list[str] | None = None,
         env: dict | None = None,
         network: bool = True,
-        host_cwd: str = None,
+        host_cwd: Optional[str] = None,
         auto_mount_cwd: bool = False,
         run_as_host_user: bool = False,
         extra_args: list = None,
@@ -893,6 +893,10 @@ class DockerEnvironment(BaseEnvironment):
         super().__init__(cwd=cwd, timeout=timeout)
         self._persistent = persistent_filesystem
         self._persist_across_processes = persist_across_processes
+        # Set by terminal_tool._create_environment when this container is
+        # scoped to a single session (docker + container_persistent: false):
+        # survives between turns, removed at session close / idle timeout.
+        self._session_scoped = False
         self._task_id = task_id
         self._forward_env = _normalize_forward_env_names(forward_env)
         self._env = _normalize_env_dict(env)

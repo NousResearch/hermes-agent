@@ -4519,6 +4519,56 @@ class TestFastModelTier:
         with patch("hermes_cli.models.fetch_models_with_pricing", return_value=catalog):
             assert ac._fast_model_from_catalog("nous") == "google/gemini-3.6-flash"
 
+    def test_catalog_match_skips_the_non_chat_siblings_of_a_chat_model(self):
+        """A provider names its speech and image endpoints after the chat model
+        they're paired with, so they satisfy the family rungs and can't answer."""
+        from agent import auxiliary_client as ac
+
+        catalog = {
+            "openai/gpt-4o-mini-tts": {},
+            "openai/gpt-4o-mini-transcribe": {},
+            "openai/gpt-4o-mini-search-preview": {},
+            "openai/gpt-4o-mini": {},
+        }
+        with patch("hermes_cli.models.fetch_models_with_pricing", return_value=catalog):
+            assert ac._fast_model_from_catalog("nous") == "openai/gpt-4o-mini"
+
+    def test_catalog_match_takes_the_newest_of_a_family(self):
+        """The bare family rungs must land on the current generation.
+
+        A provider serves every generation of its small tier it hasn't retired,
+        and compared as strings the oldest sorts first — so the rung meant to
+        keep the titler current was pinning it to the most obsolete member.
+        """
+        from agent import auxiliary_client as ac
+
+        catalog = {
+            "openai/gpt-3.5-mini": {},
+            "openai/gpt-9-mini": {},
+            "openai/gpt-10-mini": {},
+        }
+        with patch("hermes_cli.models.fetch_models_with_pricing", return_value=catalog):
+            assert ac._fast_model_from_catalog("nous") == "openai/gpt-10-mini"
+
+    def test_catalog_fetch_is_authenticated(self):
+        """Most /v1/models endpoints need a key; anonymously they 401.
+
+        A 401 reads as "this provider serves no small model", so the titler
+        would fall back to the curated default and never notice.
+        """
+        from agent import auxiliary_client as ac
+
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={"api_key": "sk-test", "base_url": "https://api.example.com/v1"},
+        ), patch(
+            "hermes_cli.models.fetch_models_with_pricing", return_value={}
+        ) as fetch:
+            ac._fast_model_from_catalog("openai")
+
+        assert fetch.call_args.kwargs["api_key"] == "sk-test"
+        assert fetch.call_args.kwargs["base_url"] == "https://api.example.com"
+
     def test_falls_back_to_curated_default_when_catalog_unavailable(self):
         """An offline catalog degrades to the provider's pinned default."""
         from agent import auxiliary_client as ac

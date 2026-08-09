@@ -39,6 +39,7 @@ import {
   $sessions,
   $unreadFinishedSessionIds,
   lineageAliases,
+  sessionMatchesStoredId,
   setActiveSessionStoredIdRotation
 } from './session'
 import { isSecondaryWindow } from './windows'
@@ -307,6 +308,38 @@ export const $attentionSessionIds = computed(
       storedIds(states, sessions, s => s.needsInput)
     ))
 )
+
+// An open session nothing has ever been sent to — the ⌘T tab whose backend
+// session exists but is unlisted, or a tile still waiting on its first send.
+// `blankDraftTile`'s predicate, read as a status rather than as a slot to spend.
+//
+// The row's own `message_count` is the tiebreaker, and it is load-bearing: a
+// session RESUMING also holds an empty message list for the moment between
+// binding its runtime and loading its transcript, and calling that a draft
+// would flash the wrong mark on a conversation with years of history in it.
+let draftIds: readonly string[] = []
+export const $draftSessionIds = computed([$sessionStates, $sessions], (states, sessions) => {
+  const unsent = (state: ClientSessionState) => {
+    if (state.busy || state.messages.length > 0) {
+      return false
+    }
+
+    const storedId = state.storedSessionId
+
+    // No stored id is the ⌘T tab that hasn't reached the backend yet: a draft
+    // by definition, and no row to consult. Asking anyway would match a row on
+    // an empty lineage root.
+    if (!storedId) {
+      return true
+    }
+
+    const row = sessions.find(session => sessionMatchesStoredId(session, storedId))
+
+    return !row || row.message_count === 0
+  }
+
+  return (draftIds = stableArray(draftIds, storedIds(states, sessions, unsent)))
+})
 
 // ---------------------------------------------------------------------------
 // Session tiles.

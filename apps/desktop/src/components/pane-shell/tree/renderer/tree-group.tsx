@@ -313,6 +313,10 @@ export function TreeGroup({
   // leaving the tree.
   const closeableTab = (paneId: string) => !paneChrome(paneFor(paneId)).uncloseable || panesWithCloser.has(paneId)
 
+  // A pane's own live label when it has one, else its registered string.
+  const tabLabel = (paneId: string) =>
+    paneChrome(paneFor(paneId)).tabTitle?.() ?? paneFor(paneId)?.title ?? paneId
+
   // Collapse/restore a tool panel (or plain minimize elsewhere) — the header
   // chevron + tap gesture, routed so ⌃`/the titlebar toggle stay truthful.
   const toggleCollapse = () => (node.minimized ? restoreTreePane(activeId) : collapseTreePane(activeId))
@@ -379,7 +383,6 @@ export function TreeGroup({
             >
               {shown.map(paneId => {
                 const closeable = closeableTab(paneId)
-                const title = paneFor(paneId)?.title ?? paneId
 
                 return (
                   <PaneTab
@@ -397,7 +400,7 @@ export function TreeGroup({
                     side={railSide}
                     vertical
                   >
-                    <PaneTabLabel>{title}</PaneTabLabel>
+                    <PaneTabLabel>{tabLabel(paneId)}</PaneTabLabel>
                   </PaneTab>
                 )
               })}
@@ -548,7 +551,7 @@ export function TreeGroup({
                   {chrome.tabLead ? (
                     <span className="ml-2 -mr-1 flex shrink-0 items-center">{chrome.tabLead()}</span>
                   ) : null}
-                  <PaneTabLabel>{title}</PaneTabLabel>
+                  <PaneTabLabel>{tabLabel(paneId)}</PaneTabLabel>
                 </PaneTab>
               )
 

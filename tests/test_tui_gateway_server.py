@@ -12238,7 +12238,15 @@ def test_prompt_submit_wires_live_title_rename_callback(monkeypatch):
 
     hook = getattr(agent, "_on_session_title", None)
     assert callable(hook), "gateway did not install a live title-rename hook"
-    hook("Founding of Rome")
+    # Titling is two-stage, and a local surface wants both: the sidebar renames
+    # off the derived slice instantly and sharpens when the model's lands. Only
+    # the lanes that spend a rate-limited remote rename filter by stage.
+    hook("tell me about rome", "derived")
+    hook("Founding of Rome", "llm")
+    assert [payload["title"] for kind, payload in emitted if kind == "session.title"] == [
+        "tell me about rome",
+        "Founding of Rome",
+    ]
     assert (
         "session.title",
         {"session_id": "session-key", "title": "Founding of Rome"},

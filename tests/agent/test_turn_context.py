@@ -365,13 +365,44 @@ def test_between_turns_refresh_adds_late_tool_when_servers_registered():
     assert any(t["function"]["name"] == "mcp_x_tool" for t in agent.tools)
 
 
+class _TitlingAgent:
+    """Only what ``_maybe_title_session_at_turn_start`` reads off an agent."""
+
+    def __init__(self, platform):
+        self.platform = platform
+        self.session_id = "sess-1"
+        self.model = "test/model"
+        self.provider = "openrouter"
+        self.base_url = "https://openrouter.ai/api/v1"
+        self.api_key = "sk-x"
+        self.api_mode = "chat_completions"
+        self._session_db = MagicMock()
+        self._session_db_created = True
 
 
+def _title_turn(platform, message="Fix the login button"):
+    """Run the prologue's titling step and return the maybe_auto_title mock."""
+    from agent import turn_context
+
+    with patch("agent.title_generator.maybe_auto_title") as titler:
+        turn_context._maybe_title_session_at_turn_start(
+            _TitlingAgent(platform),
+            [{"role": "user", "content": message}],
+        )
+    return titler
 
 
+@pytest.mark.parametrize("platform", ["cli", "telegram", "desktop", "acp", None])
+def test_prologue_titles_the_surfaces_a_person_reads(platform):
+    assert _title_turn(platform).called
 
 
+@pytest.mark.parametrize("platform", ["cron", "CRON", "subagent"])
+def test_prologue_does_not_title_machine_driven_runs(platform):
+    """Cron names its own session after the job, and nobody opens a subagent's.
 
-
-
+    Both would otherwise pay a side-LLM call per run for a name that is either
+    overwritten or never read.
+    """
+    assert not _title_turn(platform).called
 

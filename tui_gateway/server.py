@@ -9859,7 +9859,7 @@ def _run_prompt_submit(
             # sidebar repaints the moment a title lands, rather than waiting
             # for the next list refresh.
             _title_key = session.get("session_key") or sid
-            agent._on_session_title = lambda t, _k=_title_key: _emit(
+            agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
                 "session.title", sid, {"session_id": _k, "title": t}
             )
             result = agent.run_conversation(run_message, **run_kwargs)

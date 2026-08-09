@@ -170,16 +170,34 @@ def append_notes_to_multimodal_content(content: Any, notes: str) -> bool:
         return False
 
 
+# Surfaces whose sessions must not be auto-titled. The prologue is shared by
+# EVERY agent, not only the ones a human is watching, so membership here is what
+# keeps the titler off machine-driven runs:
+#
+# - cron  — the scheduler names its own session after the job in its `finally`
+#   block, and the opener is the cron delivery hint, not a user's request.
+#   Titling it writes that scaffolding as the visible name for the whole run and
+#   bills a side-LLM call per fire, against the same job that sets
+#   `skip_memory` / `skip_background_review` to avoid exactly that.
+# - subagent — a delegated child's session is hidden from every picker, so its
+#   title is never read. A batch at `max_concurrent_children` would pay N title
+#   calls for N names nobody sees.
+_UNTITLED_PLATFORMS = frozenset({"cron", "subagent"})
+
+
 def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
     """Kick off auto-titling for this session's first user message.
 
-    Called from the turn prologue, so every surface (CLI, gateway, TUI/desktop,
-    ACP) gets identical behavior without each one re-implementing the call.
-    Fully defensive: titling is cosmetic and must never break a turn.
+    Called from the turn prologue, so every surface a human reads (CLI, gateway,
+    TUI/desktop, ACP) gets identical behavior without each one re-implementing
+    the call. Fully defensive: titling is cosmetic and must never break a turn.
     """
     session_db = getattr(agent, "_session_db", None)
     session_id = getattr(agent, "session_id", None)
     if not session_db or not session_id:
+        return
+
+    if str(getattr(agent, "platform", "") or "").lower() in _UNTITLED_PLATFORMS:
         return
 
     try:

@@ -36,6 +36,10 @@ export interface PaneMirror<T> {
    *  self-subscribing component (e.g. a session's status dot) so the strip needn't
    *  re-sync on status/color change — only `title` drives re-registration. */
   tabLead?: (key: string) => ReactNode
+  /** Custom label NODE for the tile's tab, self-subscribing for the same reason
+   *  as `tabLead` — a name that moves faster than re-registration (see
+   *  PaneChrome.tabTitle). Falls back to `title`. */
+  tabTitle?: (key: string) => ReactNode
   /** Glyph buttons the tile contributes to the strip, after the last tab (where
    *  "+" sits), while it is the ACTIVE pane — e.g. a preview's console /
    *  DevTools toggles. DATA, not markup: the strip's `PaneStripGlyph` owns the
@@ -82,6 +86,7 @@ export function paneMirror<T>(cfg: PaneMirror<T>): () => void {
         title,
         data: {
           tabLead: cfg.tabLead ? () => cfg.tabLead!(key) : undefined,
+          tabTitle: cfg.tabTitle ? () => cfg.tabTitle!(key) : undefined,
           stripTools: cfg.stripTools ? () => cfg.stripTools!(key) : undefined,
           dock: {
             before: cfg.before?.(tile),

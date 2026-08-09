@@ -735,39 +735,86 @@ _FAST_MODEL_FAMILIES: tuple = (
 # opposite of what a titler wants; ":batch" is an async queue, not a live
 # endpoint; embedding models ("all-minilm") match "-mini" but aren't chat
 # models at all; ":free" tiers are heavily rate-limited and measured slowest.
+# The modality suffixes are the same trap as the embedders — a provider names
+# its speech and image endpoints after the chat model they're paired with, so
+# "gpt-4o-mini-tts" satisfies the "-mini" rung and cannot answer a prompt.
 _FAST_MODEL_EXCLUDE: tuple = (
     "thinking", "reason", "-r1", "minilm", ":batch", ":free",
     "o1-", "o3-", "o4-", "codex", "audio", "-vl", "embed",
+    "-tts", "-transcribe", "-realtime", "-image", "-search-preview",
 )
+
+
+_VERSION_CHUNK_RE = re.compile(r"(\d+(?:\.\d+)?)")
+
+
+def _model_recency_key(model_id: str) -> tuple:
+    """Sort key that puts a family's newest release first (descending).
+
+    The rungs at the bottom of ``_FAST_MODEL_FAMILIES`` are bare family names —
+    ``-mini``, ``-flash``, ``haiku`` — and a provider serves every generation of
+    those it hasn't retired. Compared as plain strings, the oldest wins:
+    ``gpt-3.5-mini`` sorts before ``gpt-5.4-mini``, and ``claude-3-haiku`` before
+    ``claude-haiku-4.5``. So the rung meant to keep us current on a provider's
+    small tier was pinning us to its most obsolete member.
+
+    Splitting digit runs out and comparing them as numbers fixes both the
+    generation order and the 9-vs-10 cliff a string sort walks off.
+    """
+    chunks = []
+    for index, part in enumerate(_VERSION_CHUNK_RE.split(model_id.lower())):
+        if not part:
+            continue
+        # re.split with one capturing group alternates text, number, text, …
+        chunks.append((1, float(part), "") if index % 2 else (0, 0.0, part))
+    return tuple(chunks)
 
 
 def _fast_model_from_catalog(provider_id: str) -> str:
     """Pick the fastest small model the provider ACTUALLY serves right now.
 
     Reads the provider's live (cached) ``/v1/models`` catalog and returns the
-    first ``_FAST_MODEL_FAMILIES`` match. Returns "" when the catalog is
+    newest ``_FAST_MODEL_FAMILIES`` match. Returns "" when the catalog is
     unavailable or holds no small model, so the caller falls through to the
     provider's curated default. Never raises and never blocks on a cold
     network path — the underlying fetch is memory+disk cached with a
     last-known-good fallback.
     """
     try:
+        from hermes_cli.auth import resolve_api_key_provider_credentials
         from hermes_cli.models import fetch_models_with_pricing
         from providers import get_provider_profile
 
-        profile = get_provider_profile(provider_id)
-        base_url = str(getattr(profile, "base_url", "") or "").rstrip("/")
+        # The provider's own credentials, because most ``/v1/models`` endpoints
+        # are authenticated: fetched anonymously they 401, and the caller reads
+        # that as "this provider serves no small model" and quietly falls back
+        # to the curated default forever.
+        api_key, base_url = "", ""
+        try:
+            creds = resolve_api_key_provider_credentials(provider_id) or {}
+            api_key = str(creds.get("api_key", "")).strip()
+            base_url = str(creds.get("base_url", "")).strip()
+        except Exception:
+            # Not an API-key provider, or nothing configured yet. The anonymous
+            # fetch below still works for the catalogs that allow it.
+            logger.debug("No credentials for %s catalog", provider_id, exc_info=True)
+
+        if not base_url:
+            base_url = str(getattr(get_provider_profile(provider_id), "base_url", "") or "")
+        base_url = base_url.rstrip("/")
         if not base_url:
             return ""
         # fetch_models_with_pricing appends its own /v1/models.
         if base_url.endswith("/v1"):
             base_url = base_url[:-3]
-        catalog = fetch_models_with_pricing(base_url=base_url, timeout=3.0) or {}
+        catalog = fetch_models_with_pricing(
+            api_key=api_key or None, base_url=base_url, timeout=3.0
+        ) or {}
     except Exception:
         logger.debug("Fast-model catalog lookup failed for %s", provider_id, exc_info=True)
         return ""
 
-    ids = sorted(str(m) for m in catalog)
+    ids = sorted((str(m) for m in catalog), key=_model_recency_key, reverse=True)
     for family in _FAST_MODEL_FAMILIES:
         for model_id in ids:
             lowered = model_id.lower()

@@ -1573,6 +1573,30 @@ setup_venv() {
     log_success "Virtual environment ready (Python $PYTHON_VERSION)"
 }
 
+run_locked_uv_sync() {
+    # Bootstrap uv calls stay isolated from ambient config via UV_NO_CONFIG
+    # (#21269). A locked project sync is different: uv.lock records resolver
+    # settings from this checkout's [tool.uv], so hiding pyproject.toml makes
+    # uv 0.12+ reject the valid lock. Re-enable project discovery only for
+    # this subprocess while redirecting user/system config lookups to an empty
+    # directory. Keep HOME unchanged so caches, credentials, and git continue
+    # to work normally.
+    local project_env="$1"
+    local isolated_uv_config
+    local sync_rc
+    isolated_uv_config="$(mktemp -d)" || return 1
+
+    (
+        unset UV_NO_CONFIG UV_CONFIG_FILE
+        export XDG_CONFIG_HOME="$isolated_uv_config"
+        export XDG_CONFIG_DIRS="$isolated_uv_config"
+        UV_PROJECT_ENVIRONMENT="$project_env" $UV_CMD sync --extra all --locked
+    )
+    sync_rc=$?
+    rmdir "$isolated_uv_config" 2>/dev/null || true
+    return "$sync_rc"
+}
+
 install_deps() {
     log_info "Installing dependencies..."
 
@@ -1712,21 +1736,19 @@ install_deps() {
         # uv's own progress UI handles TTY detection and downgrades
         # gracefully when stdout/stderr aren't terminals.
         #
-        # Strip UV_NO_CONFIG for this one invocation. The global export at
-        # script start (the #21269 sudo -u hygiene guard) also hides the
-        # project's own [tool.uv] policy — exclude-newer and its package
-        # exemptions — from uv. The resolver then runs under a different
-        # policy than the one uv.lock was resolved under, and --locked
-        # turns that mismatch fatal:
-        #   error: The lockfile at `uv.lock` needs to be updated, but
-        #   `--locked` was provided.
-        # Every fresh install then falls through to the non-hash-verified
-        # PyPI fallback tiers, defeating the point of Tier 0. Runtime code
-        # already strips UV_NO_CONFIG before its own locked syncs for the
-        # same reason (hermes_cli/managed_uv.py, "Locked sync must see
-        # project [tool.uv] exclude-newer"). The export stays in effect for
-        # every other uv call in this script.
-        if env -u UV_NO_CONFIG UV_PROJECT_ENVIRONMENT="$INSTALL_DIR/venv" $UV_CMD sync --extra all --locked; then
+        # Run the Tier-0 locked sync via run_locked_uv_sync: the global
+        # UV_NO_CONFIG export at script start (the #21269 sudo -u hygiene
+        # guard) also hides the project's own [tool.uv] policy —
+        # exclude-newer, its package exemptions, and override-dependencies —
+        # from uv. The resolver then runs under a different policy than the
+        # one uv.lock was resolved under, and --locked turns that mismatch
+        # fatal, so every fresh install fell through to the non-hash-verified
+        # PyPI tiers. The helper re-enables project config discovery for this
+        # one subprocess while keeping ambient user/system uv config hidden
+        # (redirected to an empty XDG dir), preserving the #21269 guarantee.
+        # Runtime code does the same before its locked syncs
+        # (hermes_cli/managed_uv.py).
+        if run_locked_uv_sync "$INSTALL_DIR/venv"; then
             log_success "Main package installed (hash-verified via uv.lock)"
             log_success "All dependencies installed"
             return 0

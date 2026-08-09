@@ -301,6 +301,28 @@ def test_desktop_launch_cwd_is_not_persisted_as_a_workspace():
     ) == "/picked/repo"
 
 
+def test_home_container_dirs_are_never_a_workspace(tmp_path):
+    """`/home` and `/Users` hold homes; they are not workspaces themselves.
+
+    A session whose cwd is one of them used to be promoted to its own auto
+    project, so the sidebar showed a second row labelled "home" sitting right
+    next to the synthetic Home bucket. Both POSIX spellings are excluded on
+    every host: either can reach a local row (macOS ships an empty `/home`
+    stub) or arrive from a container/remote shell.
+    """
+    home = os.path.realpath(os.path.expanduser("~"))
+
+    for path in (os.sep, home, os.path.dirname(home), "/home", "/Users"):
+        assert server._is_session_cwd_junk(path), path
+        assert server._is_repo_junk(path), path
+
+    # An ordinary directory is still a workspace.
+    workspace = tmp_path / "a-repo"
+    workspace.mkdir()
+    assert not server._is_session_cwd_junk(str(workspace))
+    assert not server._is_repo_junk(str(workspace))
+
+
 def test_disabled_discovery_clears_cache_and_rejects_new_scan(monkeypatch, tmp_path):
     repo = tmp_path / "cached-repo"
     repo.mkdir()

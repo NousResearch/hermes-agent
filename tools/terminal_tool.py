@@ -3,18 +3,20 @@
 Terminal Tool Module
 
 A terminal tool that executes commands in local, Docker, Modal, SSH,
-Singularity, Daytona, and Vercel Sandbox environments. Supports local
-execution, containerized backends, and cloud sandboxes, including managed
-Modal mode.
+Singularity, Daytona, Vercel Sandbox, and Kubernetes environments. Supports
+local execution, containerized backends, cloud sandboxes (including managed
+Modal mode), and per-session Kubernetes pods.
 
 Environment Selection (via TERMINAL_ENV environment variable):
 - "local": Execute directly on the host machine (default, fastest)
 - "docker": Execute in Docker containers (isolated, requires Docker)
 - "modal": Execute in Modal cloud sandboxes (direct Modal or managed gateway)
 - "vercel_sandbox": Execute in Vercel Sandbox cloud sandboxes
+- "kubernetes": Execute in a session pod in a Kubernetes cluster
+  (all settings live in config.yaml under terminal.kubernetes.*)
 
 Features:
-- Multiple execution backends (local, docker, modal, vercel_sandbox)
+- Multiple execution backends (local, docker, modal, vercel_sandbox, kubernetes)
 - Background task support
 - VM/container lifecycle management
 - Automatic cleanup after inactivity
@@ -365,8 +367,16 @@ def _docker_volume_uses_host_path(volume_spec: str) -> bool:
 
 
 def _docker_has_host_access(config: Dict[str, Any]) -> bool:
-    """Return True when a Docker sandbox exposes host paths through bind mounts."""
-    if config.get("env_type") != "docker":
+    """True when a sandbox backend can reach durable/host-owned state; the
+    single input to approval._should_skip_container_guards for every backend."""
+    env_type = config.get("env_type")
+    if env_type == "kubernetes":
+        from tools.environments import kubernetes as _k8s
+
+        return not _k8s.trusted_sandbox(
+            _k8s.merge_kubernetes_config(config.get("kubernetes"))
+        )
+    if env_type != "docker":
         return False
     if config.get("host_cwd") and config.get("docker_mount_cwd_to_workspace"):
         return True
@@ -1102,6 +1112,7 @@ _docker_orphan_reaper_ran = False
 _docker_orphan_reaper_lock = threading.Lock()
 
 
+
 def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
     """Run the docker orphan reaper once per process, if enabled.
 
@@ -1242,10 +1253,21 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         - docker_image: str -- Docker image name
         - cwd: str -- Working directory inside the sandbox
 
+    NOT supported: ``kubernetes_image``. The kubernetes backend's image is
+    authored in terminal.kubernetes.spec; accepting the key and
+    ignoring it would make an RL/benchmark sweep silently evaluate every
+    rollout against the wrong image, so it fails loudly here instead.
+
     Args:
         task_id: The rollout's unique task identifier
         overrides: Dict of config keys to override
     """
+    if "kubernetes_image" in overrides:
+        raise ValueError(
+            "kubernetes backend: per-task images are not supported; the "
+            "session image is authored in terminal.kubernetes.spec. "
+            "Remove kubernetes_image from the task env overrides."
+        )
     _task_env_overrides[task_id] = overrides
 
     # If a live environment already exists for this task, a freshly registered
@@ -1490,7 +1512,13 @@ def _safe_getcwd() -> str:
 # cwd looks when it leaks toward a Linux container's ``-w`` flag.
 _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
 
-_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona", "vercel_sandbox"})
+_CONTAINER_BACKENDS = frozenset({
+    "docker", "singularity", "modal", "daytona", "vercel_sandbox", "kubernetes",
+})
+
+# Internal env var carrying the whole terminal.kubernetes block as JSON,
+# written only by the config bridges. User-facing settings stay in config.yaml.
+_KUBERNETES_CONFIG_ENV = "TERMINAL_KUBERNETES"
 
 
 def _is_unusable_container_cwd(cwd: str) -> bool:
@@ -1576,8 +1604,9 @@ def _get_env_config() -> Dict[str, Any]:
     env_type = os.getenv("TERMINAL_ENV", "local")
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
-    container_backend = env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
+    container_backend = env_type in _CONTAINER_BACKENDS
     docker_backend = env_type == "docker"
+    kubernetes_backend = env_type == "kubernetes"
 
     # Docker/container-only env vars may be bridged from config.yaml even when
     # the active backend is local/ssh.  Do not parse their JSON/numeric payloads
@@ -1605,15 +1634,33 @@ def _get_env_config() -> Dict[str, Any]:
         docker_extra_args = []
         docker_shm_size = "1g"
 
+    # The payload can be partial (not every bridge deep-merges defaults), so
+    # always go through merge_kubernetes_config(); parse only when selected.
+    if kubernetes_backend:
+        from tools.environments.kubernetes import (
+            merge_kubernetes_config,
+        )
+        kubernetes_config = merge_kubernetes_config(
+            _parse_env_var(_KUBERNETES_CONFIG_ENV, "{}", json.loads, "valid JSON")
+        )
+    else:
+        kubernetes_config = {}
+
     # Default cwd: local uses the host's current directory, ssh uses the
-    # remote home, Vercel uses its documented workspace root, and everything
-    # else starts in the backend's default root-like cwd.
+    # remote home, Vercel uses its documented workspace root, Kubernetes the
+    # session pod's workspace mount; everything else uses its default cwd.
     if env_type == "local":
         default_cwd = _safe_getcwd()
     elif env_type == "ssh":
         default_cwd = "~"
     elif env_type == "vercel_sandbox":
         default_cwd = _VERCEL_SANDBOX_DEFAULT_CWD
+    elif env_type == "kubernetes":
+        # From the exec container's workingDir: one source of truth for
+        # where a session starts.
+        from tools.environments.kubernetes import session_cwd as _k8s_session_cwd
+
+        default_cwd = _k8s_session_cwd(kubernetes_config)
     else:
         default_cwd = "/root"
 
@@ -1652,6 +1699,9 @@ def _get_env_config() -> Dict[str, Any]:
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
         "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
+        # Whole terminal.kubernetes.* block (defaults merged). Empty dict when
+        # another backend is selected.
+        "kubernetes": kubernetes_config,
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
@@ -1671,7 +1721,8 @@ def _get_env_config() -> Dict[str, Any]:
         ).lower() in {"true", "1", "yes"},
         "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
         # Container resource config (applies to docker, singularity, modal,
-        # daytona, and vercel_sandbox -- ignored for local/ssh)
+        # daytona, and vercel_sandbox -- ignored for local/ssh, and for
+        # kubernetes, which takes resources from its spec instead)
         "container_cpu": container_cpu,
         "container_memory": container_memory,     # MB (default 5GB)
         "container_disk": container_disk,        # MB (default 50GB)
@@ -1733,6 +1784,7 @@ def _container_config_from_config(config: Dict[str, Any]) -> dict:
     :func:`ensure_task_env` bring-up (see :func:`_ssh_config_from_config`).
     """
     return {
+        "kubernetes": config.get("kubernetes", {}),
         "container_cpu": config.get("container_cpu", 1),
         "container_memory": config.get("container_memory", 5120),
         "container_disk": config.get("container_disk", 51200),
@@ -1762,7 +1814,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     
     Args:
         env_type: One of "local", "docker", "singularity", "modal",
-            "daytona", "vercel_sandbox", "ssh"
+            "daytona", "vercel_sandbox", "kubernetes", "ssh"
         image: Docker/Singularity/Modal image name (ignored for local/ssh/vercel)
         cwd: Working directory
         timeout: Default command timeout
@@ -1925,6 +1977,41 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             task_id=task_id,
         )
 
+    elif env_type == "kubernetes":
+        # Lazy import: the kubernetes client is an opt-in extra.
+        from tools.environments import kubernetes as _k8s
+
+        kcfg = _k8s.merge_kubernetes_config(cc.get("kubernetes"))
+
+        # The one in-process decision: which apiVersion/kind this build can
+        # drive. The API server validates everything else.
+        _k8s.resolve_provisioner_kind(kcfg)
+
+        # Hard errors only, caught before a pod is created and pulled;
+        # warnings belong to `hermes doctor`.
+        _spec_errors, _ = _k8s.preflight_spec(kcfg)
+        if _spec_errors:
+            raise ValueError(
+                "terminal.kubernetes.spec cannot serve a session: "
+                + " ".join(_spec_errors)
+            )
+
+        core_api = _k8s.load_core_api(kcfg)
+        namespace = _k8s.resolve_namespace(kcfg)
+        owner_ref = _k8s.resolve_owner_reference(core_api, namespace, kcfg)
+
+        provisioner = _k8s.PodProvisioner(
+            kcfg, namespace, api=core_api, owner_reference=owner_ref,
+        )
+
+        return _k8s.KubernetesEnvironment(
+            provisioner=provisioner,
+            task_id=task_id,
+            cwd=cwd,
+            timeout=timeout,
+            api=core_api,
+        )
+
     elif env_type == "ssh":
         if not ssh_config or not ssh_config.get("host") or not ssh_config.get("user"):
             raise ValueError("SSH environment requires ssh_host and ssh_user to be configured")
@@ -1940,7 +2027,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', "
+            f"'kubernetes', or 'ssh'"
         )
 
 
@@ -3676,10 +3764,21 @@ def check_terminal_requirements() -> bool:
             from agent.secret_scope import get_secret
             return get_secret("DAYTONA_API_KEY") is not None
 
+        elif env_type == "kubernetes":
+            if importlib.util.find_spec("kubernetes") is None:
+                logger.error(
+                    "kubernetes backend selected but the 'kubernetes' client is "
+                    "not installed: pip install 'hermes-agent[kubernetes]'"
+                )
+                return False
+            # No config validation here: the API server validates requests,
+            # and an unsupported kind raises in the environment factory.
+            return True
+
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, vercel_sandbox, ssh.",
+                "modal, daytona, vercel_sandbox, kubernetes, ssh.",
                 env_type,
             )
             return False

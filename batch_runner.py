@@ -310,7 +310,16 @@ def _process_single_prompt(
         if prompt_data.get("cwd"):
             overrides["cwd"] = prompt_data["cwd"]
         register_task_env_overrides(task_id, overrides)
-        if config.get("verbose"):
+        if os.getenv("TERMINAL_ENV") == "kubernetes":
+            # The kubernetes session image comes from terminal.kubernetes.spec;
+            # warn instead of letting a sweep silently use the wrong image.
+            print(
+                f"   Prompt {prompt_index}: WARNING: kubernetes backend "
+                f"ignores per-prompt container images; {container_image} will "
+                "NOT be used (the session image comes from "
+                "terminal.kubernetes.spec)."
+            )
+        elif config.get("verbose"):
             print(f"   Prompt {prompt_index}: Using container image {container_image}")
     
     try:

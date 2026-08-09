@@ -357,11 +357,8 @@ _WRITE_TARGET_BOUNDARY = r'(?=[\s;&|<>"\']|$)'
 # their files and services, not trusting it to wipe the disk or power the
 # box off.
 #
-# Hardline only applies to environments that can actually damage the host
-# (local, ssh, container-host cron).  Containerized backends (docker,
-# singularity, modal, daytona) already bypass the dangerous-command layer
-# because nothing they do can touch the host, so we leave that behavior
-# alone.
+# Hardline only applies to environments that can damage the host (local,
+# ssh, container-host cron); containerized backends already bypass this layer.
 #
 # The list is deliberately tiny — only things with no recovery path:
 # filesystem destruction rooted at /, raw block device overwrites, kernel
@@ -3469,11 +3466,11 @@ def _should_skip_container_guards(env_type: str, has_host_access: bool = False) 
 
     Isolated container backends sandbox the agent away from the host, so their
     commands can't damage real files/services and we skip the approval layer.
-    Docker is the exception once host paths are bind-mounted into the container:
-    at that point a command like ``rm -rf /workspace`` reaches host files, so it
-    must go through the normal approval flow.
+    Docker is the exception once host paths are bind-mounted into the container,
+    and Kubernetes once ``trusted_sandbox`` is false: at that point the normal
+    approval flow applies. Both signal that through ``has_host_access``.
     """
-    if env_type == "docker":
+    if env_type in ("docker", "kubernetes"):
         return not has_host_access
     return env_type in ("singularity", "modal", "daytona", "vercel_sandbox")
 

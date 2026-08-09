@@ -1340,11 +1340,14 @@ def setup_terminal_backend(config: dict):
         "SSH - run on a remote machine",
         "Daytona - persistent cloud development environment",
         "Vercel Sandbox - cloud microVM with snapshot filesystem persistence",
+        "Kubernetes - stateless session pod in a Kubernetes/OpenShift cluster",
     ]
-    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona", 5: "vercel_sandbox"}
-    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4, "vercel_sandbox": 5}
+    idx_to_backend = {0: "local", 1: "docker", 2: "modal", 3: "ssh", 4: "daytona",
+                      5: "vercel_sandbox", 6: "kubernetes"}
+    backend_to_idx = {"local": 0, "docker": 1, "modal": 2, "ssh": 3, "daytona": 4,
+                      "vercel_sandbox": 5, "kubernetes": 6}
 
-    next_idx = 6
+    next_idx = 7
     if is_linux:
         terminal_choices.append("Singularity/Apptainer - HPC-friendly container")
         idx_to_backend[next_idx] = "singularity"
@@ -1591,6 +1594,77 @@ def setup_terminal_backend(config: dict):
                     print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
 
         _prompt_vercel_sandbox_settings(config)
+
+    elif selected_backend == "kubernetes":
+        print_success("Terminal backend: Kubernetes")
+        print_info(
+            "Agent commands run in a stateless pod in your cluster, shared "
+            "by the sessions this Hermes process serves."
+        )
+        print_info("Requires the optional client: pip install 'hermes-agent[kubernetes]'")
+        print_info(
+            "ALL Kubernetes settings live in config.yaml under "
+            "terminal.kubernetes.*; nothing goes in .env."
+        )
+
+        if importlib.util.find_spec("kubernetes") is None:
+            print_warning(
+                "kubernetes client not installed; run: "
+                "pip install 'hermes-agent[kubernetes]'. It lazy-installs on "
+                "first use where PyPI is reachable, but in-cluster "
+                "deployments usually cannot reach PyPI: install it up front "
+                "(the published image pre-bakes it)."
+            )
+        if not (
+            os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount/token")
+            or os.environ.get("KUBECONFIG")
+            or os.path.exists(os.path.expanduser("~/.kube/config"))
+        ):
+            print_warning(
+                "no in-cluster ServiceAccount and no kubeconfig found; the "
+                "backend will have no cluster to talk to. Run in-cluster, or "
+                "set terminal.kubernetes.kubeconfig / KUBECONFIG."
+            )
+
+        k8s_cfg = config["terminal"].setdefault("kubernetes", {})
+
+        namespace = prompt(
+            "    Namespace (blank = use the in-cluster ServiceAccount namespace)",
+            default=k8s_cfg.get("namespace", ""),
+        )
+        k8s_cfg["namespace"] = (namespace or "").strip()
+
+        # spec falls back to the shipped default at runtime; seed it anyway
+        # so the pod the operator gets is also the pod they can read and edit.
+        if not k8s_cfg.get("spec"):
+            from copy import deepcopy
+
+            from tools.environments.kubernetes import STARTER_SESSION_OBJECT
+
+            for field in ("apiVersion", "kind", "metadata", "spec"):
+                k8s_cfg[field] = deepcopy(STARTER_SESSION_OBJECT[field])
+            print_success(
+                "  Wrote a starter Pod into config.yaml "
+                "(ubuntu:26.04, emptyDir workspace, 4h deadline)."
+            )
+        print_info(
+            "  terminal.kubernetes is shaped like the manifest it creates: "
+            "apiVersion, kind, metadata and spec mean what they mean in any "
+            "manifest, and a non-empty `spec` is posted verbatim: it "
+            "replaces the default entirely, with no merge. Edit it in "
+            "config.yaml to set the image, resources, runtimeClassName for "
+            "kata, nodeSelector or volumes."
+        )
+        print_info(
+            "  The Kubernetes docs page shows the same object annotated "
+            "with which fields Hermes actually depends on and why; see also "
+            "cli-config.yaml.example (OPTION 7)."
+        )
+        print_info(
+            "  Apply the RBAC from the Kubernetes docs page so the agent ServiceAccount can provision "
+            "and exec into session pods, then run `hermes doctor` to verify "
+            "RBAC."
+        )
 
     elif selected_backend == "ssh":
         print_success("Terminal backend: SSH")

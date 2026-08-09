@@ -159,6 +159,16 @@ def annotate_failure(command: str, exit_code: int, output: str) -> Optional[str]
     if exit_code == 0:
         return None
     window = (output or "")[:_SCAN_CHARS]
+    # The cwd guard (`builtin cd || exit 126`) shares its exit code with
+    # "not executable"; the shell's own cd diagnostic tells them apart.
+    if exit_code == 126 and re.search(
+        r"\bcd: .*(No such file or directory|[Nn]ot a directory)", window
+    ):
+        return (
+            "Exit 126: the session's recorded working directory no longer "
+            "exists (the sandbox may have been recreated). `cd` to an "
+            "existing directory and re-create anything you need."
+        )
     if window:
         for fn in _OUTPUT_HINTS:
             try:

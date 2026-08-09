@@ -411,6 +411,200 @@ def _section(title: str) -> None:
     print(color(f"◆ {title}", Colors.CYAN, Colors.BOLD))
 
 
+def _check_kubernetes_backend(issues: list[str]) -> None:
+    """Diagnose the kubernetes backend. RBAC is where in-cluster deployments
+    actually fail, so this asks the API server about each needed verb."""
+    if importlib.util.find_spec("kubernetes") is None:
+        _fail_and_issue(
+            "kubernetes client not installed",
+            "(pip install 'hermes-agent[kubernetes]')",
+            "Install the Kubernetes optional dependency: pip install 'hermes-agent[kubernetes]'",
+            issues,
+        )
+        return
+    check_ok("kubernetes client", "(installed)")
+
+    try:
+        from tools.environments.kubernetes import (
+            in_cluster,
+            load_core_api,
+            merge_kubernetes_config,
+            resolve_namespace,
+        )
+        from tools.terminal_tool import _get_env_config
+
+        kcfg = merge_kubernetes_config(_get_env_config().get("kubernetes"))
+    except Exception as exc:
+        _fail_and_issue(
+            "kubernetes config unreadable", f"({exc})",
+            "Check the terminal.kubernetes block in config.yaml", issues,
+        )
+        return
+
+    # The one in-process decision: does Hermes know how to drive this
+    # apiVersion/kind. The server validates the rest via the dry-run below.
+    from tools.environments.kubernetes import object_kind, resolve_provisioner_kind
+
+    try:
+        resolve_provisioner_kind(kcfg)
+    except ValueError as exc:
+        _fail_and_issue(
+            "kubernetes kind unsupported", f"({exc})",
+            "Set terminal.kubernetes.apiVersion and terminal.kubernetes.kind",
+            issues,
+        )
+        return
+    api_version, kind = object_kind(kcfg)
+    check_ok("kubernetes config", f"({api_version}/{kind} supported)")
+
+    # Explicit kubeconfig wins over the in-cluster SA (see load_core_api),
+    # so report it first.
+    explicit_kubeconfig = str(kcfg.get("kubeconfig") or "").strip()
+    check_info(
+        f"kubernetes auth: kubeconfig ({explicit_kubeconfig})"
+        if explicit_kubeconfig
+        else "kubernetes auth: in-cluster ServiceAccount"
+        if in_cluster()
+        else "kubernetes auth: ambient KUBECONFIG/~/.kube/config"
+    )
+
+    try:
+        core_api = load_core_api(kcfg)
+        namespace = resolve_namespace(kcfg)
+    except Exception as exc:
+        _fail_and_issue(
+            "kubernetes cluster unreachable", f"({exc})",
+            "Run Hermes in-cluster, or set terminal.kubernetes.kubeconfig / "
+            "terminal.kubernetes.namespace in config.yaml",
+            issues,
+        )
+        return
+    check_ok("kubernetes namespace", f"({namespace})")
+
+    checks = [
+        ("", "pods", "create"),
+        # `get` backs readiness polling, ownership proof on 409 and the
+        # agent's own-pod lookup for the ownerReference.
+        ("", "pods", "get"),
+        ("", "pods", "delete"),
+        # Both verbs: the client opens exec as a websocket-upgrading GET, but
+        # the server also authorizes `create` on pods/exec (verified on 1.36).
+        ("", "pods/exec", "get"),
+        ("", "pods/exec", "create"),
+    ]
+
+    # Approval layer is skipped like every containerized backend; what a
+    # session pod may do is the cluster admission stack's decision.
+    check_info(
+        "dangerous-command approval guards are skipped for this backend "
+        "(commands run in a session pod; your admission policy is the control)"
+    )
+
+    try:
+        from kubernetes import client as k8s_client
+        from tools.environments.kubernetes import STRICT_FIELD_VALIDATION, api_call
+
+        auth = k8s_client.AuthorizationV1Api(core_api.api_client)
+        for group, resource, verb in checks:
+            review = k8s_client.V1SelfSubjectAccessReview(
+                spec=k8s_client.V1SelfSubjectAccessReviewSpec(
+                    resource_attributes=k8s_client.V1ResourceAttributes(
+                        namespace=namespace, group=group,
+                        resource=resource, verb=verb,
+                    )
+                )
+            )
+            # Strict on every create, without exception.
+            result = api_call(
+                auth.create_self_subject_access_review,
+                review, **STRICT_FIELD_VALIDATION
+            )
+            label = f"RBAC {verb} {resource}" + (f".{group}" if group else "")
+            if getattr(result.status, "allowed", False):
+                check_ok(label, f"(in {namespace})")
+            else:
+                _fail_and_issue(
+                    label, "(denied)",
+                    f"Grant '{verb}' on '{resource}' in {namespace}; see the RBAC on the Kubernetes docs page",
+                    issues,
+                )
+
+    except Exception as exc:
+        check_warn("kubernetes RBAC check skipped", f"({exc})")
+
+    _preflight_spec_checks(kcfg, issues)
+    _dry_run_pod_template(kcfg, namespace, core_api, issues)
+
+
+def _preflight_spec_checks(kcfg, issues) -> None:
+    """Report the invariants the API server cannot check: a legal pod can
+    still be unusable to Hermes, with no signal from Strict or a dry-run."""
+    from tools.environments.kubernetes import preflight_spec
+
+    errors, warnings = preflight_spec(kcfg)
+    for message in errors:
+        _fail_and_issue(
+            "kubernetes spec unusable", f"({message})",
+            "Fix terminal.kubernetes.spec in config.yaml", issues,
+        )
+    for message in warnings:
+        check_warn("kubernetes spec", f"({message})")
+    if not errors and not warnings:
+        check_ok("kubernetes spec", "(exec container, cwd, PID namespace, /tmp)")
+
+
+def _dry_run_pod_template(kcfg, namespace, core_api, issues) -> None:
+    """Dry-run the rendered pod with fieldValidation=Strict so the server
+    names spec typos here instead of at the first session. Creates nothing."""
+    from tools.environments.kubernetes import (
+        PodProvisioner,
+        STRICT_FIELD_VALIDATION,
+        api_call,
+    )
+
+    try:
+        provisioner = PodProvisioner(kcfg, namespace, api=core_api)
+        body = provisioner.pod_manifest("doctor")
+    except Exception as exc:
+        _fail_and_issue(
+            "kubernetes pod template unrenderable", f"({exc})",
+            "Fix terminal.kubernetes.spec in config.yaml", issues,
+        )
+        return
+
+    # Imported outside the try, or a missing SDK becomes a NameError in the
+    # except clause.
+    from kubernetes.client.exceptions import ApiException
+
+    try:
+        api_call(
+            core_api.create_namespaced_pod,
+            namespace=namespace, body=body,
+            dry_run="All", **STRICT_FIELD_VALIDATION,
+        )
+    except ApiException as exc:
+        # 400/422 = spec problems; 403 = admission refused the POD (the SSARs
+        # above already proved permission). None of these may report "skipped".
+        if exc.status in (400, 403, 422):
+            _fail_and_issue(
+                "kubernetes pod template rejected",
+                f"({exc.status} {exc.reason}: "
+                f"{(getattr(exc, 'body', None) or '').strip()[:400]})",
+                "Fix what the API server names: a 400/422 is a field in "
+                "terminal.kubernetes.spec, a 403 is your cluster's "
+                "admission policy (SCC / PSA / quota / VAP) refusing the pod",
+                issues,
+            )
+        else:
+            check_warn("kubernetes pod template dry-run skipped",
+                       f"({exc.status} {exc.reason})")
+    except Exception as exc:
+        check_warn("kubernetes pod template dry-run skipped", f"({exc})")
+    else:
+        check_ok("kubernetes pod template",
+                 "(accepted by the API server with fieldValidation=Strict)")
+
+
 def _fail_and_issue(text: str, detail: str, fix: str, issues: list[str]) -> None:
     """Emit a check_fail and append the corresponding fix instruction."""
     check_fail(text, detail)
@@ -1935,28 +2129,30 @@ def run_doctor(args):
         check_info(f"Install for faster search: {_system_package_install_cmd('ripgrep')}")
     
     # Docker (optional)
-    terminal_env = os.getenv("TERMINAL_ENV", "local")
+    # Resolve the backend the way the runtime does: TERMINAL_ENV is unset in
+    # a config.yaml-driven deployment and an env-only read reports "local".
+    terminal_env = os.getenv("TERMINAL_ENV", "").strip()
+    if not terminal_env:
+        try:
+            from tools.terminal_tool import _get_env_config
+            terminal_env = str(_get_env_config().get("env_type") or "local")
+        except Exception:
+            terminal_env = "local"
     try:
         from hermes_constants import is_container as _is_container
         running_in_container = _is_container()
     except Exception:
         running_in_container = False
 
-    if running_in_container:
-        # Inside our container the Docker terminal backend is not
-        # configured by default (Docker-in-Docker isn't set up); the
-        # local backend is the intended one. Skip the noisy "docker
-        # not found" warning. If the user has explicitly chosen
-        # TERMINAL_ENV=docker inside the container they likely mounted
-        # /var/run/docker.sock, so fall through to the normal check.
-        if terminal_env != "docker":
-            check_info(
-                "Running inside a container — using local terminal backend "
-                "(docker-in-docker is not configured by default)"
-            )
-            # Skip to next section; Docker isn't relevant here.
-            terminal_env = "local"
-    if terminal_env == "docker":
+    # In-container the Docker backend is unconfigured, so suppress only its
+    # "docker not found" noise; the other backends' checks must still run.
+    skip_docker_check = running_in_container and terminal_env != "docker"
+    if skip_docker_check and terminal_env == "local":
+        check_info(
+            "Running inside a container; using local terminal backend "
+            "(docker-in-docker is not configured by default)"
+        )
+    if terminal_env == "docker" and not skip_docker_check:
         if _safe_which("docker"):
             # Check if docker daemon is running
             try:
@@ -2041,6 +2237,10 @@ def run_doctor(args):
                 "Install daytona SDK: pip install daytona",
                 issues,
             )
+
+    # Kubernetes session pods (if using kubernetes backend)
+    if terminal_env == "kubernetes":
+        _check_kubernetes_backend(issues)
 
     # Vercel Sandbox (if using vercel_sandbox backend)
     if terminal_env == "vercel_sandbox":

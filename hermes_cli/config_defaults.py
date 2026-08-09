@@ -396,6 +396,39 @@ DEFAULT_CONFIG = {
         # When on, SETUID/SETGID caps are omitted from the container since
         # no privilege drop is needed.
         "docker_run_as_host_user": False,
+        # ── Kubernetes session-pod backend (terminal.backend: kubernetes) ──
+        # Mirror of tools/environments/kubernetes.py:DEFAULT_KUBERNETES_CONFIG,
+        # pinned by test_kubernetes_config_schema; docs: user-guide/kubernetes.
+        "kubernetes": {
+            # "" -> the kubeconfig context's namespace, else the projected
+            # ServiceAccount namespace file (in-cluster).
+            "namespace": "",
+            # Out-of-cluster dev only: a path to a kubeconfig, same class as
+            # terminal.ssh_key.
+            "kubeconfig": "",
+            "context": "",
+            # apiVersion/kind say which object Hermes creates and knows how
+            # to drive (v1/Pod today; agent-sandbox APIs would key off this).
+            "apiVersion": "v1",
+            "kind": "Pod",
+            # Labels/annotations for the objects Hermes creates. `name` and
+            # `namespace` are computed per pod and are NOT yours.
+            "metadata": {},
+            # Which container in `spec` to exec into.
+            "exec_container_name": "workspace",
+            # Ownership labels, stamped when absent and matched on 409-resume.
+            # {} = the managed-by label the default object already carries.
+            "owned_selector": {},
+            # The whole PodSpec, posted verbatim; empty falls back to the
+            # shipped default pod, non-empty replaces it with no merge.
+            "spec": {},
+            # No active_deadline_seconds: that is spec.activeDeadlineSeconds
+            # and belongs in `spec` with every other PodSpec field.
+            "ready_timeout_seconds": 120,
+            "owner_reference": "auto",      # auto | off
+            # Skip the approval layer (disposable sandbox); false keeps prompts on.
+            "trusted_sandbox": True,
+        },
         # Persistent shell — keep a long-lived bash shell across execute() calls
         # so cwd/env vars/shell variables survive between commands.
         # Enabled by default for non-local backends (SSH); local is always opt-in

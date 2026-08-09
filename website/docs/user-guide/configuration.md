@@ -134,11 +134,11 @@ Before that stash step, Hermes also restores tracked `package-lock.json` diffs l
 
 ## Terminal Backend Configuration
 
-Hermes supports seven terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, or a Singularity/Apptainer container.
+Hermes supports eight terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox (direct or via the Nous-managed gateway), a Daytona workspace, a Vercel Sandbox, a Singularity/Apptainer container, or a session pod in a Kubernetes cluster.
 
 ```yaml
 terminal:
-  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity
+  backend: local    # local | docker | ssh | modal | daytona | vercel_sandbox | singularity | kubernetes
   cwd: "."          # Gateway/cron working directory (CLI always uses launch dir)
   font_family: ""   # Desktop terminal font; e.g. "MesloLGS NF"
   timeout: 180      # Per-command timeout in seconds
@@ -164,6 +164,7 @@ For cloud sandboxes such as Modal, Daytona, and Vercel Sandbox, `container_persi
 | **daytona** | Daytona workspace | Full (cloud container) | Managed cloud dev environments |
 | **vercel_sandbox** | Vercel Sandbox | Full (cloud microVM) | Cloud execution with snapshot-backed filesystem persistence |
 | **singularity** | Singularity/Apptainer container | Namespaces (--containall) | HPC clusters, shared machines |
+| **kubernetes** | Session pod in your cluster | Full (pod, no-perms SA, optional kata runtime) | Running Hermes in-cluster with cluster-managed quotas |
 
 ### Local Backend
 
@@ -444,6 +445,76 @@ OIDC tokens are short-lived and should not be used as the documented deployment 
 **Background commands:** `terminal(background=true)` uses Hermes' generic non-local background process flow. You can spawn, poll, wait, view logs, and kill processes through the normal process tool while the sandbox is alive. Hermes does not provide native Vercel detached-process recovery after cleanup or restart.
 
 **Disk sizing:** Vercel Sandbox does not currently support Hermes' `container_disk` resource knob. Leave `container_disk` unset or at the shared default `51200`; non-default values fail diagnostics and backend creation instead of being silently ignored.
+
+### Kubernetes Backend
+
+Runs agent shell commands in a **session pod** in a [Kubernetes cluster](./kubernetes.md) instead of inside the Hermes container. Built for running Hermes itself in-cluster; the workspace is an `emptyDir` that dies with the pod.
+
+The minimal config is just the backend selection — with nothing else set, Hermes provisions the default session pod (a minimal ephemeral `ubuntu:26.04` container):
+
+```yaml
+terminal:
+  backend: kubernetes
+```
+
+Or spell out the pod yourself:
+
+```yaml
+terminal:
+  backend: kubernetes
+  kubernetes:
+    namespace: hermes-agents
+    exec_container_name: workspace # the container Hermes execs into
+    ready_timeout_seconds: 120
+    apiVersion: v1                 # which object Hermes creates and knows how
+    kind: Pod                      # to drive; v1/Pod is the only pair today
+    metadata:
+      labels:
+        app.kubernetes.io/managed-by: hermes-agent
+    spec:                          # optional — if set, it replaces the default
+      containers:                  # entirely: all values must be set
+        - name: workspace          # must match exec_container_name above
+          image: ubuntu:26.04
+          command:                 # must stay up to be exec'd into
+            - sleep
+            - infinity
+          workingDir: /workspace   # THIS is the session's cwd
+          volumeMounts:
+            - name: workspace
+              mountPath: /workspace
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: 500m
+              memory: 2Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+      volumes:
+        - name: workspace
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+      restartPolicy: Never
+      shareProcessNamespace: true  # background completion detection
+      terminationGracePeriodSeconds: 1
+      activeDeadlineSeconds: 14400 # bounds a leaked pod
+```
+
+The above is trimmed; the full annotated version and every parameter are on the [Kubernetes page](./kubernetes.md), and `hermes setup` writes a working block into your `config.yaml`.
+
+**Authentication:** in-cluster ServiceAccount, or a kubeconfig (`terminal.kubernetes.kubeconfig`, `$KUBECONFIG`, `~/.kube/config`). This backend has no credential of its own.
+
+**Required RBAC:** apply the [example objects](./kubernetes.md#example-kubernetes-objects), then run `hermes doctor` — it checks each verb the backend needs and dry-runs the pod it would submit.
+
+**Approval guards:** skipped by default (`trusted_sandbox: true`) — commands run in a session pod, not on the host. Set `terminal.kubernetes.trusted_sandbox: false` to keep the normal approval flow.
+
+**Credential files:** synced into the session pod on session start.
+
+**Session scope:** One pod per Hermes process, not per conversation — see [Session scope](./kubernetes.md#session-scope).
+
+**Storage:** stateless by default — mount a volume in `spec` to persist the workspace (see [Storage](./kubernetes.md#storage)). The idle reaper destroys the pod after `terminal.lifetime_seconds` (default 300) of inactivity, so raise it for session-length workspaces.
 
 ### Singularity/Apptainer Backend
 

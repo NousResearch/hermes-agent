@@ -18,7 +18,7 @@ The security model has eight layers:
 4. **Container isolation** — Docker/Singularity/Modal sandboxing with hardened settings
 5. **MCP credential filtering** — environment variable isolation for MCP subprocesses
 6. **Context file scanning** — prompt injection detection in project files
-7. **Cross-session isolation** — sessions cannot access each other's data or state; cron job storage paths are hardened against path traversal attacks
+7. **Cross-session isolation** — sessions cannot access each other's *conversation* data or state; cron job storage paths are hardened against path traversal attacks. This does **not** extend to the terminal: on shared-environment backends (docker, kubernetes) every session of one Hermes process executes in the same container/pod and shares its filesystem — see [Session scope](/user-guide/kubernetes#session-scope)
 8. **Input sanitization** — working directory parameters in terminal tool backends are validated against an allowlist to prevent shell injection
 
 ## Dangerous Command Approval
@@ -188,7 +188,7 @@ The following patterns trigger approval prompts (defined in `tools/approval.py`)
 | `podman --remote`/`-r`/`--url`/`--connection`/`--identity`, `CONTAINER_HOST=` | Podman remote daemon redirect |
 
 :::info
-**Container bypass**: When running in `docker`, `singularity`, `modal`, `daytona`, or `vercel_sandbox` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host.
+**Container bypass**: When running in `docker`, `singularity`, `modal`, `daytona`, `vercel_sandbox`, or `kubernetes` backends, dangerous command checks are **skipped** because the container itself is the security boundary. Destructive commands inside a container can't harm the host. (For `kubernetes` the skip is governed by `terminal.kubernetes.trusted_sandbox` — set it `false` to keep the checks on.)
 :::
 
 ### Approval Flow (CLI)
@@ -493,7 +493,7 @@ terminal:
 - **Ephemeral mode** (`container_persistent: false`): Uses tmpfs for workspace — everything is lost on cleanup
 
 :::tip
-For production gateway deployments, use `docker`, `modal`, `daytona`, or `vercel_sandbox` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
+For production gateway deployments, use `docker`, `modal`, `daytona`, `vercel_sandbox`, or `kubernetes` backend to isolate agent commands from your host system. This eliminates the need for dangerous command approval entirely.
 :::
 
 :::warning
@@ -511,6 +511,7 @@ If you add names to `terminal.docker_forward_env`, those variables are intention
 | **modal** | Cloud sandbox | ❌ Skipped | Scalable cloud isolation |
 | **daytona** | Cloud sandbox | ❌ Skipped | Persistent cloud workspaces |
 | **vercel_sandbox** | Cloud microVM | ❌ Skipped | Cloud execution with snapshot persistence |
+| **kubernetes** | Session pod | ❌ Skipped by default (`trusted_sandbox: true`); set it `false` to keep prompts on | Running Hermes in-cluster |
 
 ## Environment Variable Passthrough {#environment-variable-passthrough}
 

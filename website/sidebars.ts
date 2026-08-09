@@ -55,6 +55,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/multi-profile-gateways',
         'user-guide/git-worktrees',
         'user-guide/docker',
+        'user-guide/kubernetes',
         'user-guide/security',
         'user-guide/checkpoints-and-rollback',
       ],

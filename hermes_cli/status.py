@@ -461,6 +461,25 @@ def show_status(args):
     elif terminal_env == "daytona":
         daytona_image = os.getenv("TERMINAL_DAYTONA_IMAGE", "nikolaik/python-nodejs:python3.11-nodejs20")
         print(f"  Daytona Image: {daytona_image}")
+    elif terminal_env == "kubernetes":
+        k8s_cfg = terminal_cfg.get("kubernetes", {}) or {}
+        sdk_ok = importlib.util.find_spec("kubernetes") is not None
+        sdk_label = (
+            "installed" if sdk_ok
+            else "missing (install: pip install 'hermes-agent[kubernetes]')"
+        )
+        # Explicit kubeconfig wins over the in-cluster SA, see load_core_api.
+        auth = (
+            k8s_cfg.get("kubeconfig")
+            or ("in-cluster ServiceAccount"
+                if os.path.exists("/var/run/secrets/kubernetes.io/serviceaccount/token")
+                else "KUBECONFIG / ~/.kube/config")
+        )
+        print(f"  Namespace:    {k8s_cfg.get('namespace') or '(from kubeconfig context or ServiceAccount)'}")
+        print(f"  Object: {k8s_cfg.get('apiVersion', 'v1')}/{k8s_cfg.get('kind', 'Pod')}"
+              f"{'' if k8s_cfg.get('spec') else ' (spec unset: using the built-in default pod)'}")
+        print(f"  SDK:          {check_mark(sdk_ok)} {sdk_label}")
+        print(f"  Auth:         {auth}")
     elif terminal_env == "vercel_sandbox":
         runtime = os.getenv("TERMINAL_VERCEL_RUNTIME") or terminal_cfg.get("vercel_runtime") or "node24"
         persist = os.getenv("TERMINAL_CONTAINER_PERSISTENT")

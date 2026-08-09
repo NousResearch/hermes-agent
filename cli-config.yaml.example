@@ -346,8 +346,99 @@ terminal:
 #   daytona_image: "nikolaik/python-nodejs:python3.11-nodejs20"
 #   container_disk: 10240          # Daytona max is 10GB per sandbox
 
+# -----------------------------------------------------------------------------
+# OPTION 7: Kubernetes session pods
+# Agent shell commands run in a STATELESS session pod (one per Hermes process)
+# in a Kubernetes cluster; the workspace (an emptyDir) dies with the pod.
+# Great for: running Hermes in-cluster, kata / sandboxed-containers runtimes
+# Requires: pip install 'hermes-agent[kubernetes]' (install up front for
+#           in-cluster use; PyPI lazy-install rarely works there) + the RBAC.
 #
-# --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh) ---
+# Every setting lives in config.yaml. Every key, its default, and the RBAC /
+# NetworkPolicy manifests are documented on the Kubernetes docs page
+# (website/docs/user-guide/kubernetes.md).
+#
+# terminal:
+#   backend: "kubernetes"
+#   cwd: "/workspace"              # optional; overrides the container's workingDir
+#   timeout: 180
+#   lifetime_seconds: 14400        # idle reaper; at the default 300 the pod
+#                                  # dies after 5 min of inactivity
+#   kubernetes:
+#     namespace: ""                # "" resolution order is in the docs
+#     kubeconfig: ""               # out-of-cluster dev only (a PATH, not a secret)
+#     context: ""
+#     apiVersion: "v1"             # which object Hermes creates and knows how
+#     kind: "Pod"                  # to drive; v1/Pod is the only pair today
+#     metadata: {}                 # labels/annotations for created objects
+#     owned_selector: {}           # {} = app.kubernetes.io/managed-by: hermes-agent
+#     exec_container_name: "workspace"  # which container in `spec` to exec into
+#     spec: {}                     # the WHOLE PodSpec, posted verbatim.
+#                                  # Empty = the shipped default pod. If set, it
+#                                  # replaces the default entirely (no merge):
+#                                  # all values must be set.
+#     ready_timeout_seconds: 120   # raise for slow pulls / kata cold starts
+#     owner_reference: "auto"      # auto | off
+#     trusted_sandbox: true        # false = keep dangerous-command prompts on
+#
+# OpenShift + kata. Note this is the COMPLETE pod — nothing is filled in for
+# you, and every field below earns its place (see the Kubernetes docs page
+# for which ones Hermes depends on and what breaks without them):
+# terminal:
+#   backend: "kubernetes"
+#   lifetime_seconds: 14400
+#   kubernetes:
+#     namespace: "hermes-agents"
+#     ready_timeout_seconds: 300       # kata cold starts are slow
+#     apiVersion: "v1"
+#     kind: "Pod"
+#     spec:
+#       runtimeClassName: "kata"
+#       containers:
+#         - name: "workspace"              # == exec_container_name
+#           image: "ubuntu:26.04"
+#           command:                       # must stay up
+#             - "sleep"
+#             - "infinity"
+#           workingDir: "/workspace"       # THIS is the session cwd
+#           volumeMounts:
+#             - name: "workspace"
+#               mountPath: "/workspace"
+#             - name: "tmp"
+#               mountPath: "/tmp"
+#           resources:
+#             requests:
+#               cpu: "500m"
+#               memory: "2Gi"
+#             limits:
+#               cpu: "2"
+#               memory: "4Gi"
+#               ephemeral-storage: "8Gi"
+#           securityContext:
+#             allowPrivilegeEscalation: false
+#             capabilities:
+#               drop:
+#                 - ALL
+#       volumes:
+#         - name: "workspace"
+#           emptyDir: {}
+#         - name: "tmp"
+#           emptyDir: {}
+#       restartPolicy: "Never"
+#       shareProcessNamespace: true        # background completion detection
+#       terminationGracePeriodSeconds: 1
+#       automountServiceAccountToken: false
+#       enableServiceLinks: false
+#       hostNetwork: false
+#       hostPID: false
+#       hostIPC: false
+#       activeDeadlineSeconds: 14400
+#       securityContext:                   # no runAsUser: restricted-v2
+#         seccompProfile:                  # assigns one on OpenShift
+#           type: "RuntimeDefault"
+
+#
+# --- Container resource limits (docker, singularity, modal, daytona -- ignored for local/ssh/kubernetes) ---
 # These settings apply to all container backends. They control the resources
 # allocated to the sandbox and whether its filesystem persists across sessions.
   container_cpu: 1              # CPU cores

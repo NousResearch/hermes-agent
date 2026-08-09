@@ -857,6 +857,16 @@ def _memory_provider_options() -> List[str]:
     return list(dict.fromkeys(options))
 
 
+def _kubernetes_kind_options() -> List[str]:
+    """The terminal.kubernetes.kind select, derived from the backend's kind
+    table so the dropdown can never drift from what the factory accepts."""
+    from tools.environments.kubernetes import PROVISIONERS_BY_KIND
+
+    # Sorted by kind, not the (apiVersion, kind) tuple, so a CRD group can
+    # never bury Pod at the bottom of the dropdown.
+    return sorted({kind for _api, kind in PROVISIONERS_BY_KIND})
+
+
 def _timezone_options() -> List[str]:
     """Return sorted IANA timezone identifiers, cached at import time."""
     try:
@@ -892,7 +902,12 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "terminal.backend": {
         "type": "select",
         "description": "Terminal execution backend",
-        "options": ["local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity"],
+        "options": ["local", "docker", "ssh", "modal", "daytona", "vercel_sandbox", "singularity", "kubernetes"],
+    },
+    "terminal.kubernetes.kind": {
+        "type": "select",
+        "description": "Kubernetes object kind for session workspaces",
+        "options": _kubernetes_kind_options(),
     },
     "terminal.vercel_runtime": {
         "type": "select",
@@ -14215,6 +14230,11 @@ _TERMINAL_BACKENDS: List[Dict[str, str]] = [
         "description": "Run commands in a Daytona cloud sandbox.",
     },
     {
+        "name": "kubernetes",
+        "label": "Kubernetes",
+        "description": "Run commands in a stateless session pod in a Kubernetes cluster.",
+    },
+    {
         "name": "ssh",
         "label": "SSH",
         "description": "Run commands on a remote host over SSH.",
@@ -14321,6 +14341,44 @@ def _probe_daytona_backend() -> tuple:
     return ("needs_setup", "Set DAYTONA_API_KEY to use the Daytona backend.")
 
 
+def _probe_kubernetes_backend(terminal_cfg: dict) -> tuple:
+    """Return ``(status, detail)`` for the kubernetes backend. Never raises."""
+    import importlib.util as _ilu
+
+    if _ilu.find_spec("kubernetes") is None:
+        return ("needs_setup", "kubernetes client not installed "
+                               "(pip install 'hermes-agent[kubernetes]')")
+    try:
+        from tools.environments.kubernetes import (
+            in_cluster,
+            merge_kubernetes_config,
+            object_kind,
+            preflight_spec,
+            resolve_provisioner_kind,
+        )
+    except Exception as exc:
+        return ("unavailable", f"Backend import failed: {exc}")
+
+    kcfg = merge_kubernetes_config((terminal_cfg or {}).get("kubernetes"))
+    try:
+        resolve_provisioner_kind(kcfg)
+    except ValueError as exc:
+        return ("needs_setup", str(exc))
+    api_version, kind = object_kind(kcfg)
+    errors, _ = preflight_spec(kcfg)
+    if errors:
+        return ("needs_setup", errors[0])
+    # Explicit kubeconfig wins over the in-cluster SA, see load_core_api.
+    explicit = str(kcfg.get("kubeconfig") or "").strip()
+    if explicit:
+        return ("ready", f"kubeconfig {explicit}, {api_version}/{kind}")
+    if in_cluster():
+        return ("ready", f"in-cluster ServiceAccount, {api_version}/{kind}")
+    if os.environ.get("KUBECONFIG") or os.path.exists(os.path.expanduser("~/.kube/config")):
+        return ("ready", f"ambient kubeconfig, {api_version}/{kind}")
+    return ("needs_setup", "No in-cluster ServiceAccount and no kubeconfig found")
+
+
 def _probe_terminal_backend(name: str, terminal_cfg: dict) -> tuple:
     """Return ``(status, detail)`` for one backend. Never raises."""
     try:
@@ -14336,6 +14394,8 @@ def _probe_terminal_backend(name: str, terminal_cfg: dict) -> tuple:
             return _probe_modal_backend()
         if name == "daytona":
             return _probe_daytona_backend()
+        if name == "kubernetes":
+            return _probe_kubernetes_backend(terminal_cfg)
         return ("unavailable", f"Unknown backend: {name}")
     except Exception as exc:  # pragma: no cover — belt-and-braces guard
         return ("unavailable", f"Probe failed: {exc}")

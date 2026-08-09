@@ -55,7 +55,9 @@ export function SidebarDateDivider({ className, label, ...props }: React.Compone
   )
 }
 
-/** Outer grid — sole owner of row height. */
+/** Outer grid — sole owner of row height. The trailing `actions` slot is
+ *  marked `data-row-actions` so a row-wide drag gesture can exclude it with
+ *  one selector: it holds real controls, never grab surface. */
 export function SidebarRowShell({
   actions,
   children,
@@ -65,7 +67,11 @@ export function SidebarRowShell({
   return (
     <div className={cn(rowMinH, 'grid grid-cols-[minmax(0,1fr)_auto] items-stretch rounded-md', className)} {...props}>
       {children}
-      {actions ? <div className="flex shrink-0 items-center self-center">{actions}</div> : null}
+      {actions ? (
+        <div className="flex shrink-0 items-center self-center" data-row-actions>
+          {actions}
+        </div>
+      ) : null}
     </div>
   )
 }

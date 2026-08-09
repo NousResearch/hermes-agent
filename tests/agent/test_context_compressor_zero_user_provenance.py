@@ -280,6 +280,12 @@ def test_real_task_wins_over_trailing_max_iterations_nudge(compressor):
             "the actual tool call now to continue the task.",
             id="dropped_toolcall_nudge",
         ),
+        pytest.param(
+            "You just executed tool calls but returned an "
+            "empty response. Please process the tool "
+            "results above and continue with the task.",
+            id="empty_tool_response_nudge",
+        ),
     ],
 )
 def test_conversation_loop_retry_nudges_are_synthetic(content):

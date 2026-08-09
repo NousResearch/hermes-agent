@@ -779,7 +779,7 @@ _LENGTH_CONTINUATION_OUTPUT_LIMIT = (
 # The dropped-tools variant interpolates the tool name list right after this
 # prefix, so it can't be exact-matched — this stable prefix is what
 # _is_synthetic_compression_user_turn checks with str.startswith instead.
-_LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX = "[System: Your previous tool call ("
+_LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX = "[System: Your previous tool call "
 
 
 def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List[str]] = None) -> str:
@@ -837,6 +837,15 @@ _DROPPED_TOOLCALL_NUDGE_CONTENT = (
     "Your previous turn indicated a tool call but none was "
     "included. Do not narrate a plan or restate intent — issue "
     "the actual tool call now to continue the task."
+)
+
+# Re-prompt sent when the model returns an empty response after executing tool
+# calls (#9400). Named for the same reason as the nudges above — its
+# _empty_recovery_synthetic metadata flag doesn't survive SessionDB projection.
+_EMPTY_TOOL_RESPONSE_NUDGE = (
+    "You just executed tool calls but returned an "
+    "empty response. Please process the tool "
+    "results above and continue with the task."
 )
 
 
@@ -7070,11 +7079,7 @@ def run_conversation(
                         messages.append(_nudge_msg)
                         messages.append({
                             "role": "user",
-                            "content": (
-                                "You just executed tool calls but returned an "
-                                "empty response. Please process the tool "
-                                "results above and continue with the task."
-                            ),
+                            "content": _EMPTY_TOOL_RESPONSE_NUDGE,
                             "_empty_recovery_synthetic": True,
                         })
                         continue

@@ -374,36 +374,46 @@ class TestLaunchdRestartDrain:
         """A wedged gateway (stalled event loop) cannot process SIGTERM; the
         drain must force-kill once the budget is spent instead of leaving
         `launchctl kickstart -k` to wait on an undying process."""
-        calls: dict = {}
+        calls: dict = {"term": [], "launchctl": []}
+        clock = 0.0
+
+        def fake_monotonic():
+            nonlocal clock
+            clock += 1.0
+            return clock
+
+        def get_running_pid():
+            return None if (42, True) in calls["term"] else 42
 
         monkeypatch.setattr(gateway, "get_launchd_label", lambda: "ai.hermes.gateway")
         monkeypatch.setattr(gateway, "_launchd_domain", lambda: "gui/501")
-        monkeypatch.setattr(gateway, "_get_restart_drain_timeout", lambda: 5.0)
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 42)
+        monkeypatch.setattr(gateway, "_get_restart_drain_timeout", lambda: 10.0)
+        monkeypatch.setattr("gateway.status.get_running_pid", get_running_pid)
         monkeypatch.setattr(gateway, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr("time.monotonic", fake_monotonic)
+        monkeypatch.setattr("time.sleep", lambda _: None)
 
         def fake_terminate(pid, force=False):
-            calls.setdefault("term", []).append((pid, force))
-
-        def fake_wait(timeout, force_after):
-            calls["wait"] = (timeout, force_after)
-            return True
+            calls["term"].append((pid, force))
 
         monkeypatch.setattr(gateway, "terminate_pid", fake_terminate)
-        monkeypatch.setattr(gateway, "_wait_for_gateway_exit", fake_wait)
         monkeypatch.setattr(
             gateway.subprocess,
             "run",
-            lambda *a, **k: SimpleNamespace(returncode=0, stderr=""),
+            lambda command, **kwargs: calls["launchctl"].append(command)
+            or SimpleNamespace(returncode=0, stderr=""),
         )
         monkeypatch.setattr(gateway, "_clear_launchd_unsupported_marker", lambda: None)
 
         gateway.launchd_restart()
 
-        # The drain must force-kill at the end of the budget (force_after ==
-        # timeout), never pass force_after=None — otherwise a wedged gateway
-        # blocks the follow-up `launchctl kickstart -k` forever.
-        assert calls["wait"] == (5.0, 5.0)
+        # Exercise the real wait helper, not just the launchd call site: the
+        # wedged PID receives SIGTERM, then SIGKILL inside the ten-second
+        # budget, and only then does launchd start the replacement.
+        assert calls["term"] == [(42, False), (42, True)]
+        assert calls["launchctl"] == [
+            ["launchctl", "kickstart", "-k", "gui/501/ai.hermes.gateway"]
+        ]
 
 
 class TestStopProfileGateway:

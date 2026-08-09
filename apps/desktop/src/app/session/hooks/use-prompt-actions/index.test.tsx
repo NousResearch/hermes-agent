@@ -5172,6 +5172,9 @@ describe('usePromptActions stale-closure session routing', () => {
 })
 
 describe('usePromptActions editMessage stale-target recovery (#82462)', () => {
+  type GatewayRequestFn = <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
+  type GatewayMock = GatewayRequestFn & { mock: { calls: unknown[][] } }
+
   afterEach(() => {
     cleanup()
     clearNotifications()

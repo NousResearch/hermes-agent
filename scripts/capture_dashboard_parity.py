@@ -69,12 +69,20 @@ if _registry is None:
 _OWNED_ROOT_TOKENS = _registry
 
 
-def _register_owned_root(root: Path) -> Path:
+def _validate_disposable_root(root: Path) -> Path:
     root = root.resolve()
     try:
         root.relative_to(Path(tempfile.gettempdir()).resolve())
     except ValueError as exc:
         raise RuntimeError(f"refusing non-temporary capture root: {root}") from exc
+    repo_root = _repo_root().resolve()
+    if root == repo_root or repo_root in root.parents:
+        raise RuntimeError(f"refusing non-temporary capture root: {root}")
+    return root
+
+
+def _register_owned_root(root: Path) -> Path:
+    root = _validate_disposable_root(root)
     token = secrets.token_urlsafe(32)
     (root / _OWNERSHIP_MARKER).write_text(token + "\n", encoding="utf-8")
     _OWNED_ROOT_TOKENS[root] = token
@@ -82,11 +90,7 @@ def _register_owned_root(root: Path) -> Path:
 
 
 def _guard_owned_root(root: Path) -> Path:
-    root = root.resolve()
-    try:
-        root.relative_to(Path(tempfile.gettempdir()).resolve())
-    except ValueError as exc:
-        raise RuntimeError(f"refusing non-temporary capture root: {root}") from exc
+    root = _validate_disposable_root(root)
     marker = root / _OWNERSHIP_MARKER
     token = _OWNED_ROOT_TOKENS.get(root)
     if token is None or marker.is_symlink() or not marker.is_file():

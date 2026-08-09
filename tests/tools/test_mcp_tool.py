@@ -2787,3 +2787,73 @@ class TestMCPDiscoveryCrossProcessLock:
                 os.unlink(lock_path)
             except Exception:
                 pass
+
+
+class TestRedirectHeaderStripper:
+    """Cross-origin redirect header boundary (portable Agent Plugins v1)."""
+
+    def _make_response(self, next_headers):
+        import httpx
+
+        next_request = httpx.Request(
+            "GET", "https://other.example.test/mcp", headers=next_headers
+        )
+        response = SimpleNamespace(
+            is_redirect=True,
+            next_request=next_request,
+        )
+        return response, next_request
+
+    def test_default_strips_only_authorization(self):
+        import httpx
+
+        from tools.mcp_tool import _make_redirect_header_stripper
+
+        hook = _make_redirect_header_stripper(
+            httpx.URL("https://origin.example.test/mcp")
+        )
+        response, next_request = self._make_response(
+            {"Authorization": "Bearer x", "X-Tenant": "t"}
+        )
+        asyncio.run(hook(response))
+        assert "authorization" not in next_request.headers
+        assert next_request.headers["x-tenant"] == "t"
+
+    def test_strict_strips_configured_headers_cross_origin(self):
+        import httpx
+
+        from tools.mcp_tool import _make_redirect_header_stripper
+
+        hook = _make_redirect_header_stripper(
+            httpx.URL("https://origin.example.test/mcp"),
+            strict=True,
+            configured_header_names={"x-tenant"},
+        )
+        response, next_request = self._make_response(
+            {"Authorization": "Bearer x", "X-Tenant": "t", "Accept": "a"}
+        )
+        asyncio.run(hook(response))
+        assert "authorization" not in next_request.headers
+        assert "x-tenant" not in next_request.headers
+        # Client-generated headers unrelated to package config survive.
+        assert next_request.headers["accept"] == "a"
+
+    def test_same_origin_redirect_keeps_headers(self):
+        import httpx
+
+        from tools.mcp_tool import _make_redirect_header_stripper
+
+        hook = _make_redirect_header_stripper(
+            httpx.URL("https://origin.example.test/mcp"),
+            strict=True,
+            configured_header_names={"x-tenant"},
+        )
+        next_request = httpx.Request(
+            "GET",
+            "https://origin.example.test/other",
+            headers={"Authorization": "Bearer x", "X-Tenant": "t"},
+        )
+        response = SimpleNamespace(is_redirect=True, next_request=next_request)
+        asyncio.run(hook(response))
+        assert next_request.headers["authorization"] == "Bearer x"
+        assert next_request.headers["x-tenant"] == "t"

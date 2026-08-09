@@ -1303,6 +1303,38 @@ def _apply_identity_header(server_name: str, config: dict, headers: dict) -> dic
     return headers
 
 
+def _make_redirect_header_stripper(
+    original_url,
+    *,
+    strict: bool = False,
+    configured_header_names: "set[str] | frozenset[str]" = frozenset(),
+):
+    """Build an httpx response hook that guards cross-origin redirects.
+
+    Always strips ``Authorization`` when a redirect leaves the original
+    origin. When *strict* is true (portable Agent Plugins v1 packages with
+    ``strict_redirect_headers``), every *configured* header (lowercase names
+    in *configured_header_names*) is stripped as well — the v1 spec forbids
+    forwarding package-configured headers to a different origin without
+    explicit user authorization.
+    """
+
+    async def _strip_on_cross_origin_redirect(response):
+        if response.is_redirect and response.next_request:
+            target = response.next_request.url
+            if (target.scheme, target.host, target.port) != (
+                original_url.scheme, original_url.host, original_url.port,
+            ):
+                response.next_request.headers.pop("authorization", None)
+                response.next_request.headers.pop("Authorization", None)
+                if strict:
+                    for _name in configured_header_names:
+                        while _name in response.next_request.headers:
+                            del response.next_request.headers[_name]
+
+    return _strip_on_cross_origin_redirect
+
+
 def _format_connect_error(exc: BaseException) -> str:
     """Render nested MCP connection errors into an actionable short message."""
 
@@ -2890,6 +2922,13 @@ class MCPServerTask:
 
         url = config["url"]
         headers = dict(config.get("headers") or {})
+        # Portable Agent Plugins v1 packages set strict_redirect_headers:
+        # configured headers are visible package data and MUST NOT be
+        # forwarded to a different origin through a redirect (spec §7.2.1).
+        # Capture the configured header names before client-generated
+        # headers (identity, protocol version) are merged in.
+        _strict_cfg_headers = bool(config.get("strict_redirect_headers"))
+        _configured_header_names = {key.lower() for key in headers}
         # Optional per-user identity header (config-gated; static or
         # profile-derived). Explicit headers of the same name win.
         headers = _apply_identity_header(self.name, config, headers)
@@ -2932,6 +2971,14 @@ class MCPServerTask:
         # rather than Streamable HTTP). Configure with ``transport: sse`` in the
         # mcp_servers entry in config.yaml.
         if config.get("transport") == "sse":
+            if _strict_cfg_headers:
+                # Portable packages never translate to SSE; if a config
+                # combines both anyway, fail closed rather than run a
+                # transport that cannot enforce the redirect boundary.
+                raise ValueError(
+                    f"MCP server '{self.name}': strict_redirect_headers is "
+                    "not supported on the SSE transport."
+                )
             if sse_client is None:
                 raise ImportError(
                     f"MCP server '{self.name}' requires SSE transport but "
@@ -3028,15 +3075,11 @@ class MCPServerTask:
 
             _original_url = httpx.URL(url)
 
-            async def _strip_auth_on_cross_origin_redirect(response):
-                """Strip Authorization headers when redirected to a different origin."""
-                if response.is_redirect and response.next_request:
-                    target = response.next_request.url
-                    if (target.scheme, target.host, target.port) != (
-                        _original_url.scheme, _original_url.host, _original_url.port,
-                    ):
-                        response.next_request.headers.pop("authorization", None)
-                        response.next_request.headers.pop("Authorization", None)
+            _strip_auth_on_cross_origin_redirect = _make_redirect_header_stripper(
+                _original_url,
+                strict=_strict_cfg_headers,
+                configured_header_names=_configured_header_names,
+            )
 
             client_kwargs: dict = {
                 "follow_redirects": True,
@@ -3085,6 +3128,15 @@ class MCPServerTask:
             return reason
         else:
             # Deprecated API (mcp < 1.24.0): manages httpx client internally.
+            if _strict_cfg_headers:
+                # Fail closed: without an owned httpx client we cannot hook
+                # redirects, so the v1 cross-origin header boundary cannot be
+                # enforced on this SDK version.
+                raise ImportError(
+                    f"MCP server '{self.name}' requires mcp >= 1.24.0 to "
+                    "enforce the portable redirect-header boundary "
+                    "(strict_redirect_headers). Upgrade the mcp package."
+                )
             _http_kwargs: dict = {
                 "headers": headers,
                 "timeout": float(connect_timeout),

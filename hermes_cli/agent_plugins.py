@@ -307,6 +307,74 @@ def _validate_headers(headers: object) -> bool:
     return True
 
 
+def _validate_remote_url(url: object) -> str:
+    """Validate a portable remote MCP URL per the v1 spec and return it.
+
+    Rules (Agent Plugins v1 §7.2.1): absolute http(s) URL, no user
+    information, no fragment; non-loopback endpoints must use HTTPS. HTTP is
+    allowed only when the host is exactly ``localhost`` or an IP literal in a
+    loopback range. No placeholder or environment expansion is performed.
+    """
+
+    from urllib.parse import urlsplit
+
+    if not isinstance(url, str) or not url:
+        raise ValueError("url must be a non-empty string")
+    try:
+        parsed = urlsplit(url)
+    except ValueError as exc:
+        raise ValueError(f"url is not parseable: {exc}") from exc
+    scheme = parsed.scheme.lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError("url scheme must be http or https")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("url must not contain user information")
+    if parsed.fragment:
+        raise ValueError("url must not contain a fragment")
+    host = parsed.hostname
+    if not host:
+        raise ValueError("url must have a host")
+    if scheme == "http":
+        loopback = False
+        if host == "localhost":
+            loopback = True
+        else:
+            import ipaddress
+
+            try:
+                loopback = ipaddress.ip_address(host).is_loopback
+            except ValueError:
+                loopback = False
+        if not loopback:
+            raise ValueError("non-loopback url must use https")
+    return url
+
+
+def _translate_remote(config: Mapping[str, Any]) -> Dict[str, Any]:
+    """Translate a portable ``streamable-http`` entry into native MCP config.
+
+    The returned record targets Hermes' existing URL-based MCP runtime.
+    ``strict_redirect_headers`` instructs the runtime to drop the configured
+    headers on any cross-origin redirect, which the v1 spec requires for
+    portable packages (configured headers must not be forwarded to a
+    different origin without explicit user authorization).
+    """
+
+    if set(config) - _REMOTE_FIELDS:
+        raise ValueError("unknown remote field")
+    url = _validate_remote_url(config.get("url"))
+    if not _validate_headers(config.get("headers")):
+        raise ValueError("invalid headers")
+    translated: Dict[str, Any] = {
+        "url": url,
+        "strict_redirect_headers": True,
+    }
+    headers = config.get("headers")
+    if headers:
+        translated["headers"] = dict(headers)
+    return translated
+
+
 def _translate_stdio(
     config: Mapping[str, Any], plugin_root: Path, data_root: Path
 ) -> Dict[str, Any]:
@@ -428,7 +496,12 @@ def _discover_mcp(
                 translated[name] = translated_server
             except (OSError, ValueError) as exc:
                 diagnostics.append(AgentPluginDiagnostic(scope, str(exc)))
-        elif server_type in {"streamable-http", "sse"}:
+        elif server_type == "streamable-http":
+            try:
+                translated[name] = _translate_remote(server)
+            except ValueError as exc:
+                diagnostics.append(AgentPluginDiagnostic(scope, str(exc)))
+        elif server_type == "sse":
             if (
                 set(server) - _REMOTE_FIELDS
                 or not isinstance(server.get("url"), str)

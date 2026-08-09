@@ -4262,8 +4262,194 @@ _EXEC_CODE_SUSPICIOUS_IMPORTS = frozenset({"ctypes"})
 # ``open`` inside execute_code therefore triggers the guard.
 _EXEC_CODE_DANGEROUS_BUILTINS = frozenset({"open"})
 
+# =========================================================================
+# Layer 3 — Hard Block: Self-Destructive / Process-Killing Operations
+# =========================================================================
+# These operations can destroy the Hermes parent process or kill arbitrary
+# system processes.  They NEVER enter the approval chain — no user consent,
+# yolo mode, smart approval, or session persistence can override them.
+# Design principle: Linux seccomp / macOS SIP — if the operation is
+# fundamentally incompatible with agent operation, no bypass exists.
+# =========================================================================
 
-def _execute_code_has_dangerous_ops(code: str) -> bool:
+# Operations that are HARD BLOCKED regardless of context.
+# Detected via AST walk with import tracking (same two-pass engine as
+# _execute_code_has_dangerous_ops).
+_HARD_BLOCKED_CALLS = frozenset({
+    # Process killing — can target the Hermes parent process (os.getppid())
+    # or any arbitrary system process.
+    ("os", "kill"),
+    ("os", "killpg"),
+})
+
+
+def _execute_code_has_self_destructive_ops(code: str) -> str | None:
+    """Return a human-readable reason if *code* contains operations that
+    can destroy the Hermes process or kill arbitrary processes, or None
+    if the code is free of self-destructive operations.
+
+    These operations are HARD BLOCKED — they are never presented for
+    user approval and cannot be bypassed via yolo, smart mode, or session
+    persistence.  The design follows Linux seccomp / macOS SIP: if the
+    operation is fundamentally incompatible with the agent's continued
+    operation, no user consent can make it safe.
+
+    Detected patterns (AST walk with import tracking):
+      - ``os.kill(any_pid, any_signal)``
+      - ``os.killpg(any_pgid, any_signal)``
+      - Import-aliased equivalents:
+        ``from os import kill; kill(...)``,
+        ``import os as o; o.kill(...)``
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None
+
+    # ── Pass 1: collect imports ──────────────────────────────
+    # local_name → (module, attr_or_None_if_wildcard)
+    imports: dict = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                name = alias.asname or alias.name
+                imports[name] = (alias.name, None)
+        elif isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            for alias in node.names:
+                if alias.name == "*":
+                    continue  # star import — too broad, skip
+                name = alias.asname or alias.name
+                imports[name] = (module, alias.name)
+
+    # ── Pass 2: walk call nodes ──────────────────────────────
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+
+        # Direct module.func:  os.kill(x, y)
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            key = (func.value.id, func.attr)
+            if key in _HARD_BLOCKED_CALLS:
+                return (
+                    f"{func.value.id}.{func.attr}() — "
+                    f"process-killing operation (HARD BLOCKED, no approval path)"
+                )
+
+        # Aliased name:  from os import kill  →  kill(x, y)
+        if isinstance(func, ast.Name):
+            if func.id in imports:
+                resolved = imports[func.id]
+                if resolved in _HARD_BLOCKED_CALLS:
+                    return (
+                        f"{func.id}() (alias for {resolved[0]}.{resolved[1]}) — "
+                        f"process-killing operation (HARD BLOCKED, no approval path)"
+                    )
+
+        # Aliased attribute:  import os as o  →  o.kill(x, y)
+        if isinstance(func, ast.Attribute) and isinstance(func.value, ast.Name):
+            base = func.value.id
+            if base in imports:
+                _m, _a = imports[base]
+                if _a is None:
+                    key = (_m, func.attr)
+                else:
+                    key = (_m, _a)
+                if key in _HARD_BLOCKED_CALLS:
+                    return (
+                        f"{base}.{func.attr}() (alias for {_m}.{func.attr}) — "
+                        f"process-killing operation (HARD BLOCKED, no approval path)"
+                    )
+
+    return None
+
+
+# =========================================================================
+# Layer 1 — Capability Whitelist: Safe Imports Classification
+# =========================================================================
+# Known-safe stdlib modules whose presence alone does not indicate danger.
+# Scripts importing ONLY from these modules (and containing no dangerous
+# call patterns) are classified as pure-data / computation — they pass
+# through without triggering the approval prompt in CLI sessions.
+# =========================================================================
+
+_EXEC_CODE_SAFE_IMPORTS = frozenset({
+    # Data formats
+    "json", "csv", "base64", "binascii", "codecs",
+    # Text processing
+    "re", "string", "textwrap", "difflib", "unicodedata",
+    # Numeric / math
+    "math", "statistics", "fractions", "decimal", "numbers",
+    "random",
+    # Collections / data structures
+    "collections", "itertools", "functools", "operator",
+    "heapq", "bisect", "array", "struct",
+    # Filesystem (read-only / temp)
+    "pathlib", "tempfile", "glob", "fnmatch", "fileinput",
+    # Date / time
+    "datetime", "calendar", "time",
+    # Hashing
+    "hashlib", "hmac",
+    # Type system / introspection
+    "typing", "dataclasses", "enum", "inspect", "types",
+    # Output / formatting
+    "pprint", "textwrap",
+    # Debugging / logging (read-only use)
+    "traceback", "warnings", "logging",
+    # Markup (safe parsing)
+    "html",
+})
+
+# Modules whose import ALWAYS indicates danger (even without calling
+# specific functions).  These are the complement of safe imports —
+# importing them alone triggers the guard.
+_EXEC_CODE_DANGEROUS_IMPORTS = frozenset({
+    "os", "sys", "subprocess", "shutil", "ctypes",
+    "socket", "signal", "multiprocessing", "threading",
+    "http", "urllib", "ftplib", "smtplib", "poplib", "imaplib",
+    "telnetlib", "asyncio",
+})
+
+
+def _classify_exec_code_imports(code: str) -> tuple[list[str], list[str], list[str]]:
+    """Classify imports in *code* as (safe, dangerous, unknown).
+
+    Returns three lists of top-level module name strings.  Used by
+    Layer 1 (whitelist) to determine whether a script that has no
+    dangerous call patterns should still trigger the guard because
+    it imports dangerous or unrecognised modules.
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return [], [], ["(syntax error)"]
+
+    safe, dangerous, unknown = [], [], []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                top = alias.name.split(".")[0]
+                if top in _EXEC_CODE_DANGEROUS_IMPORTS:
+                    dangerous.append(top)
+                elif top in _EXEC_CODE_SAFE_IMPORTS:
+                    safe.append(top)
+                else:
+                    unknown.append(top)
+        elif isinstance(node, ast.ImportFrom):
+            if node.module:
+                top = node.module.split(".")[0]
+                if top in _EXEC_CODE_DANGEROUS_IMPORTS:
+                    dangerous.append(top)
+                elif top in _EXEC_CODE_SAFE_IMPORTS:
+                    safe.append(top)
+                else:
+                    unknown.append(top)
+
+    return safe, dangerous, unknown
+
+
+def _execute_code_has_dangerous_ops(code: str, include_builtins: bool = True) -> bool:
     """Return True if *code* contains operations that bypass terminal()
     / DANGEROUS_PATTERNS approval: dangerous module.func calls,
     suspicious imports (ctypes), or their aliased equivalents.
@@ -4274,6 +4460,12 @@ def _execute_code_has_dangerous_ops(code: str) -> bool:
        against the mapping.
 
     Immune to whitespace / comments / string literals (``ast.parse``).
+
+    Args:
+        code: Python source to scan.
+        include_builtins: When False, exclude builtin checks (open()).
+            Used by Layer 2 to distinguish soft-warn builtins (open() with
+            unknown mode) from hard dangerous ops (os.remove, subprocess.run).
     """
     try:
         tree = ast.parse(code)
@@ -4317,7 +4509,9 @@ def _execute_code_has_dangerous_ops(code: str) -> bool:
         if isinstance(func, ast.Name):
             # Builtin danger: open() etc. — not an import, statically
             # undetectable intent (mode arg).  Any call triggers guard.
-            if func.id in _EXEC_CODE_DANGEROUS_BUILTINS:
+            # When include_builtins=False (Layer 2 soft-warn path), this
+            # check is skipped so open() alone does not block CLI scripts.
+            if include_builtins and func.id in _EXEC_CODE_DANGEROUS_BUILTINS:
                 return True
             if func.id in imports:
                 resolved = imports[func.id]
@@ -4358,6 +4552,32 @@ def check_execute_code_guard(code: str, env_type: str,
     trusted-by-config (set a gateway/ask surface or ``approvals.cron_mode`` to
     require approval).
     """
+    # ── Layer 3: Hard Block (Self-Destructive Operations) ──────
+    # Check for process-killing operations BEFORE any other gate.
+    # These operations can destroy the Hermes parent process or kill
+    # arbitrary system processes.  They NEVER enter the approval chain —
+    # no user consent, yolo mode, smart approval, or session persistence
+    # can override them.  Design follows Linux seccomp / macOS SIP.
+    _hard_block_reason = _execute_code_has_self_destructive_ops(code)
+    if _hard_block_reason is not None:
+        return {
+            "approved": False,
+            "message": (
+                f"HARD BLOCKED: {_hard_block_reason}. "
+                "This operation can destroy the agent process or kill arbitrary "
+                "system processes. It is NEVER allowed in execute_code scripts — "
+                "there is no approval path, bypass, or override for this category. "
+                "Use normal tool calls (terminal, read_file, write_file) instead."
+            ),
+            "pattern_key": "execute_code",
+            "description": (
+                "execute_code self-destructive operation (hard blocked — "
+                "no approval path exists)"
+            ),
+            "outcome": "hard_blocked",
+            "user_consent": False,
+        }
+
     pattern_key = "execute_code"
     description = (
         "execute_code script execution. The script can spawn subprocesses or "
@@ -4414,10 +4634,38 @@ def check_execute_code_guard(code: str, env_type: str,
     #   (pandas, json, report generation) still pass through without
     #   prompting.
     if not is_gateway and not is_ask:
-        if not _execute_code_has_dangerous_ops(code):
+        has_dangerous = _execute_code_has_dangerous_ops(code)
+        if not has_dangerous:
             return {"approved": True, "message": None}
-        # Dangerous ops detected — fall through to approval prompt below
+        # ── Layer 2: Soft-Warn vs Hard-Dangerous Classification ──
+        # open() cannot be statically analyzed for mode ("r" vs "w").
+        # If the ONLY dangerous op is a builtin like open(), treat it as
+        # a soft warning rather than full approval — the script's
+        # terminal() calls still have their own DANGEROUS_PATTERNS check.
+        has_hard_dangerous = _execute_code_has_dangerous_ops(
+            code, include_builtins=False,
+        )
+        if not has_hard_dangerous:
+            # Only soft-warn ops (e.g., open() with unknown mode).
+            # Auto-approve in CLI sessions; gateway/ask already branched.
+            logger.info(
+                "execute_code: soft-warn operations only (builtins like "
+                "open()) — auto-approved in CLI session (%d chars)",
+                len(code),
+            )
+            return {"approved": True, "message": None}
+        # Hard dangerous ops detected — fall through to approval prompt
         # so the user can make an explicit decision.
+        # ── Layer 1: Log import classification for diagnostics ──
+        _safe, _dangerous, _unknown = _classify_exec_code_imports(code)
+        if _dangerous:
+            logger.info(
+                "execute_code: dangerous imports detected: %s", _dangerous,
+            )
+        if _unknown:
+            logger.debug(
+                "execute_code: unknown imports detected: %s", _unknown,
+            )
 
     session_key = get_current_session_key()
     # Built only now (past the early-return gates) so the common non-approval

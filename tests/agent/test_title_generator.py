@@ -278,6 +278,24 @@ class TestMaybeAutoTitle:
         assert db.get_session_title("sess-1") is None
         mock_auto.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "opener",
+        [
+            "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted",
+            "[CONTEXT SUMMARY]: the user was refactoring the auth module",
+            "[System note: the user switched models]",
+            "[Runtime note: resumed from checkpoint]",
+        ],
+    )
+    def test_skips_every_shape_of_machine_authored_opener(self, tmp_path, opener):
+        """A session named after our own scaffolding is named after us."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-1", opener, [])
+        assert db.get_session_title("sess-1") is None
+        mock_auto.assert_not_called()
+
     def test_titles_on_a_later_turn_when_the_opener_was_not_titleable(self, tmp_path):
         """A session whose opener couldn't be titled gets named by a later turn.
 

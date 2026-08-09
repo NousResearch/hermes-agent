@@ -4519,6 +4519,20 @@ class TestFastModelTier:
         with patch("hermes_cli.models.fetch_models_with_pricing", return_value=catalog):
             assert ac._fast_model_from_catalog("nous") == "google/gemini-3.6-flash"
 
+    def test_catalog_match_skips_the_non_chat_siblings_of_a_chat_model(self):
+        """A provider names its speech and image endpoints after the chat model
+        they're paired with, so they satisfy the family rungs and can't answer."""
+        from agent import auxiliary_client as ac
+
+        catalog = {
+            "openai/gpt-4o-mini-tts": {},
+            "openai/gpt-4o-mini-transcribe": {},
+            "openai/gpt-4o-mini-search-preview": {},
+            "openai/gpt-4o-mini": {},
+        }
+        with patch("hermes_cli.models.fetch_models_with_pricing", return_value=catalog):
+            assert ac._fast_model_from_catalog("nous") == "openai/gpt-4o-mini"
+
     def test_catalog_match_takes_the_newest_of_a_family(self):
         """The bare family rungs must land on the current generation.
 

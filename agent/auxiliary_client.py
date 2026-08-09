@@ -735,9 +735,13 @@ _FAST_MODEL_FAMILIES: tuple = (
 # opposite of what a titler wants; ":batch" is an async queue, not a live
 # endpoint; embedding models ("all-minilm") match "-mini" but aren't chat
 # models at all; ":free" tiers are heavily rate-limited and measured slowest.
+# The modality suffixes are the same trap as the embedders — a provider names
+# its speech and image endpoints after the chat model they're paired with, so
+# "gpt-4o-mini-tts" satisfies the "-mini" rung and cannot answer a prompt.
 _FAST_MODEL_EXCLUDE: tuple = (
     "thinking", "reason", "-r1", "minilm", ":batch", ":free",
     "o1-", "o3-", "o4-", "codex", "audio", "-vl", "embed",
+    "-tts", "-transcribe", "-realtime", "-image", "-search-preview",
 )
 
 

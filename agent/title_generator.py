@@ -24,6 +24,7 @@ import threading
 from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
+from agent.context_compressor import LEGACY_SUMMARY_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -122,10 +123,14 @@ _CONTROL_WRAPPERS = (
 )
 
 # Hermes' own machine-authored openers. A compaction handoff or a resumed
-# session must not be titled after the scaffolding that carried it.
+# session must not be titled after the scaffolding that carried it. The legacy
+# summary prefix comes from the compressor rather than a fourth local copy —
+# compaction still emits it, and a session named after it is named after us.
 _MACHINE_PREFIXES = (
     "[CONTEXT COMPACTION",
+    LEGACY_SUMMARY_PREFIX,
     "[Runtime note:",
+    "[System note:",
     "[SYSTEM]",
 )
 

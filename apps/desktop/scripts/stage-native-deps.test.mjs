@@ -391,7 +391,7 @@ test('win32 staging skips the darwin binding the tarball bundles on every platfo
       ]
     })
 
-    stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32' })
+    stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64' })
 
     assert.ok(existsSync(join(destRoot, 'lib', 'binding', 'napi-9-win32-unknown-x64', 'node-get-windows.node')))
     assert.ok(!existsSync(join(destRoot, 'lib', 'binding', 'napi-9-darwin-unknown-arm64')))
@@ -411,7 +411,7 @@ test('win32 staging rejects a binding dir that claims win32 but holds a foreign 
     })
 
     assert.throws(
-      () => stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32' }),
+      () => stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64' }),
       /expected win32, got darwin/
     )
   } finally {
@@ -419,7 +419,7 @@ test('win32 staging rejects a binding dir that claims win32 but holds a foreign 
   }
 })
 
-test('win32 staging fails when only foreign bindings exist', () => {
+test('win32-x64 staging fails when only foreign bindings exist', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
   try {
     const srcRoot = join(tmp, 'get-windows')
@@ -430,9 +430,31 @@ test('win32 staging fails when only foreign bindings exist', () => {
     })
 
     assert.throws(
-      () => stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32' }),
-      /no win32 prebuilt binding/
+      () => stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64' }),
+      /no win32-x64 prebuilt binding/
     )
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('win32-arm64 staging omits incompatible bindings and keeps the fail-soft JS surface', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'get-windows')
+    const destRoot = join(tmp, 'dest')
+
+    makeFakeGetWindows(srcRoot, {
+      bindings: [
+        { dir: 'napi-9-darwin-unknown-arm64', platform: 'darwin' },
+        { dir: 'napi-9-win32-unknown-x64', platform: 'win32' }
+      ]
+    })
+
+    stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'arm64' })
+
+    assert.ok(existsSync(join(destRoot, 'lib', 'windows.js')))
+    assert.ok(!existsSync(join(destRoot, 'lib', 'binding')))
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
   }
@@ -457,7 +479,7 @@ test('win32 staging self-heals through the rebuild hook when the binding is miss
       )
     }
 
-    stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', rebuild })
+    stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64', rebuild })
 
     assert.equal(calls, 1)
     assert.ok(
@@ -477,7 +499,12 @@ test('win32 staging reports the recovery steps when the rebuild hook produces no
     makeFakeGetWindows(srcRoot, { bindings: [] })
 
     assert.throws(
-      () => stageGetWindowsInto(srcRoot, destRoot, { platform: 'win32', rebuild: () => {} }),
+      () =>
+        stageGetWindowsInto(srcRoot, destRoot, {
+          platform: 'win32',
+          arch: 'x64',
+          rebuild: () => {}
+        }),
       /npm rebuild get-windows/
     )
   } finally {

@@ -437,7 +437,7 @@ const GET_WINDOWS_VERSION = '9.3.0'
 export function stageGetWindowsInto(
   srcRoot,
   destRoot,
-  { platform = process.platform, rebuild } = {}
+  { platform = process.platform, arch = process.arch, rebuild } = {}
 ) {
   // The STAGED_WINDOWS_JS rewrite mirrors this exact version's export surface.
   // A version bump must fail the build here until the rewrite is re-verified —
@@ -490,11 +490,20 @@ export function stageGetWindowsInto(
         ? readdirSync(bindingRoot).filter(
             (dir) =>
               dir.includes(`-${platform}-`) &&
+              dir.endsWith(`-${arch}`) &&
               existsSync(join(bindingRoot, dir, 'node-get-windows.node'))
           )
         : []
     let bindingDirs = scanBindingDirs()
-    if (bindingDirs.length === 0 && typeof rebuild === 'function') {
+    if (bindingDirs.length === 0 && arch === 'arm64') {
+      // get-windows 9.3.0 publishes win32 prebuilds for ia32/x64 only.
+      // The staged windows.js deliberately fails soft when binding/ is absent,
+      // so preserve the desktop build and disable only window enumeration.
+      console.warn(
+        '[stage-native-deps] get-windows has no win32-arm64 prebuilt binding; ' +
+          'staging the fail-soft JS surface without native window enumeration.'
+      )
+    } else if (bindingDirs.length === 0 && typeof rebuild === 'function') {
       // A plain `npm install` won't re-run an install script for a package
       // that is already on disk, so every checkout that installed while
       // get-windows was missing from allowScripts stays bricked even after
@@ -505,9 +514,9 @@ export function stageGetWindowsInto(
       rebuild()
       bindingDirs = scanBindingDirs()
     }
-    if (bindingDirs.length === 0) {
+    if (bindingDirs.length === 0 && arch !== 'arm64') {
       throw new Error(
-        '[stage-native-deps] get-windows has no win32 prebuilt binding under lib/binding. ' +
+        `[stage-native-deps] get-windows has no win32-${arch} prebuilt binding under lib/binding. ` +
           'Recover from the checkout root with:\n' +
           '  npm install-scripts approve get-windows\n' +
           '  npm rebuild get-windows'
@@ -546,7 +555,11 @@ function rebuildGetWindowsViaNpm() {
 }
 
 export function stageGetWindows(
-  { platform = process.platform, resolveRoot = resolveGetWindowsRoot } = {}
+  {
+    platform = process.platform,
+    arch = process.arch,
+    resolveRoot = resolveGetWindowsRoot
+  } = {}
 ) {
   const srcRoot = resolveRoot()
   const destRoot = resolve(projectRoot, 'dist/node_modules/get-windows')
@@ -575,12 +588,12 @@ export function stageGetWindows(
   // has nothing to gain from the rebuild.
   const rebuild =
     platform === 'win32' && process.platform === 'win32' ? rebuildGetWindowsViaNpm : undefined
-  return stageGetWindowsInto(srcRoot, destRoot, { platform, rebuild })
+  return stageGetWindowsInto(srcRoot, destRoot, { platform, arch, rebuild })
 }
 
 // Allow direct CLI invocation: node scripts/stage-native-deps.mjs [platform] [arch]
 if (isMain(import.meta.url)) {
   const [platform, arch] = process.argv.slice(2)
   stageNodePty({ platform, arch })
-  stageGetWindows({ platform })
+  stageGetWindows({ platform, arch })
 }

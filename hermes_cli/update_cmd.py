@@ -2909,7 +2909,14 @@ def _detect_venv_python_processes(
             exe_norm = str(exe).lower()
         cmdline_raw = " ".join(info.get("cmdline") or [])
         cmdline_low = cmdline_raw.lower()
-        cwd_low = str(info.get("cwd") or "").lower().rstrip(os.sep) + os.sep
+        cwd_val = info.get("cwd")
+        if cwd_val:
+            cwd_low = str(cwd_val).replace("/", os.sep).lower().rstrip(os.sep) + os.sep
+        else:
+            cwd_low = ""
+
+        name_low = str(info.get("name") or Path(exe).name).lower()
+        is_python_proc = any(p in name_low for p in ("python", "hermes", "uv"))
 
         # Primary match: the executable itself lives under this venv
         # (venv\Scripts\python(w).exe — the desktop backend / gateway case).
@@ -2919,10 +2926,10 @@ def _detect_venv_python_processes(
         # files. Catch those by what they're running: a cmdline that references
         # this venv's path, or a `-m hermes_cli.main ...` invocation tied to
         # this install (install root in the cmdline or as the working dir).
-        if not is_holder and venv_prefix in cmdline_low:
+        if not is_holder and is_python_proc and venv_prefix in cmdline_low:
             is_holder = True
-        if not is_holder and "hermes_cli.main" in cmdline_low:
-            if root_prefix in cmdline_low or cwd_low.startswith(root_prefix):
+        if not is_holder and is_python_proc and "hermes_cli.main" in cmdline_low:
+            if root_prefix in cmdline_low or (cwd_low and cwd_low.startswith(root_prefix)):
                 is_holder = True
         if not is_holder:
             continue

@@ -243,3 +243,110 @@ def test_main_gateway_with_long_managed_runtime_path_is_exempt(monkeypatch, caps
     assert data["blocked"] is True
     assert [p["pid"] for p in data["processes"]] == [92]
     assert len(data["processes"][0]["cmdline"]) <= 120
+
+
+def test_detect_venv_python_processes_unreadable_cwd_does_not_match_root(monkeypatch):
+    """When a process has an unreadable or empty CWD, it must not collapse to os.sep and falsely match."""
+    import psutil
+    import hermes_cli.update_cmd as update_cmd
+
+    monkeypatch.setattr(update_cmd._m(), "_is_windows", lambda: True)
+
+    class EmptyCwdProc:
+        @property
+        def info(self):
+            return {
+                "pid": 505,
+                "exe": r"C:\Python311\python.exe",
+                "name": "python.exe",
+                "cmdline": ["python.exe", "-m", "hermes_cli.main", "serve"],
+                "cwd": None,
+            }
+
+    monkeypatch.setattr(psutil, "process_iter", lambda *a, **kw: [EmptyCwdProc()])
+    matches = update_cmd._detect_venv_python_processes(exclude_pids=set())
+    assert matches == []
+
+
+def test_detect_venv_python_processes_forward_slash_cwd_matches_root(monkeypatch):
+    """Forward slashes in CWD are normalized to os.sep and match PROJECT_ROOT correctly."""
+    import psutil
+    import hermes_cli.update_cmd as update_cmd
+
+    monkeypatch.setattr(update_cmd._m(), "_is_windows", lambda: True)
+    root_str = str(update_cmd._m().PROJECT_ROOT)
+    forward_cwd = root_str.replace("\\", "/")
+
+    class ForwardSlashCwdProc:
+        @property
+        def info(self):
+            return {
+                "pid": 707,
+                "exe": r"C:\Python311\python.exe",
+                "name": "python.exe",
+                "cmdline": ["python.exe", "-m", "hermes_cli.main", "serve"],
+                "cwd": forward_cwd,
+            }
+
+    monkeypatch.setattr(psutil, "process_iter", lambda *a, **kw: [ForwardSlashCwdProc()])
+    matches = update_cmd._detect_venv_python_processes(exclude_pids=set())
+    assert len(matches) == 1
+    assert matches[0][0] == 707
+
+
+def test_detect_venv_python_processes_ignores_non_python_text_editor(monkeypatch):
+    """Non-python processes with venv paths in cmdline are not misidentified as blockers."""
+    import psutil
+    import hermes_cli.update_cmd as update_cmd
+
+    monkeypatch.setattr(update_cmd._m(), "_is_windows", lambda: True)
+
+    class NotepadProc:
+        @property
+        def info(self):
+            root = str(update_cmd._m().PROJECT_ROOT)
+            return {
+                "pid": 9999,
+                "exe": r"C:\Windows\System32\notepad.exe",
+                "name": "notepad.exe",
+                "cmdline": [r"C:\Windows\System32\notepad.exe", f"{root}\\venv\\pyvenv.cfg"],
+                "cwd": root,
+            }
+
+    monkeypatch.setattr(psutil, "process_iter", lambda *a, **kw: [NotepadProc()])
+    matches = update_cmd._detect_venv_python_processes(exclude_pids=set())
+    assert matches == []
+
+
+def test_detect_venv_python_processes_skips_broken_proc_and_finds_valid(monkeypatch):
+    """Processes throwing exceptions during proc.info access are skipped without aborting the scan."""
+    import psutil
+    import hermes_cli.update_cmd as update_cmd
+
+    monkeypatch.setattr(update_cmd._m(), "_is_windows", lambda: True)
+
+    class BrokenProc:
+        @property
+        def info(self):
+            raise psutil.AccessDenied(pid=101)
+
+    class ValidProc:
+        @property
+        def info(self):
+            venv_exe = str(update_cmd._m().PROJECT_ROOT / "venv" / "Scripts" / "python.exe")
+            return {
+                "pid": 202,
+                "exe": venv_exe,
+                "name": "python.exe",
+                "cmdline": [venv_exe, "-m", "hermes_cli.main", "serve"],
+                "cwd": str(update_cmd._m().PROJECT_ROOT),
+            }
+
+    monkeypatch.setattr(psutil, "process_iter", lambda *a, **kw: [BrokenProc(), ValidProc()])
+
+    matches = update_cmd._detect_venv_python_processes(exclude_pids=set())
+    assert len(matches) == 1
+    assert matches[0][0] == 202
+    assert matches[0][1] == "python.exe"
+
+

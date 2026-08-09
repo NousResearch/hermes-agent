@@ -187,6 +187,19 @@ describe('scanVenvBlockers', () => {
     assert.equal(o.kind, 'probe-failure')
   })
 
+  it('non-zero exit with stderr diagnostic preserves error message', async () => {
+    const execThrowWithStderr = async () => {
+      const err: any = new Error('Command failed')
+      err.status = 1
+      err.stdout = JSON.stringify({ ok: false, blocked: false, processes: [] })
+      err.stderr = 'psutil is not available: No module named psutil'
+      throw err
+    }
+    const o = await scanVenvBlockers('/r', execThrowWithStderr as any, stubVenv)
+    assert.equal(o.kind, 'probe-failure')
+    assert.equal((o as any).error, 'exit code 1; psutil is not available: No module named psutil')
+  })
+
   it('missing venv python is probe-failure', async () => {
     const o = await scanVenvBlockers('/r', execReturn(okJson), () => null)
     assert.equal(o.kind, 'probe-failure')

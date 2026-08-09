@@ -139,6 +139,12 @@ export async function scanVenvBlockers(
 
     stdout = String((proc as any).stdout ?? '')
   } catch (err: any) {
+    if (err.stdout) {
+      const parsedOutcome = parseVenvBlockerScanOutput(String(err.stdout))
+      if (parsedOutcome.kind === 'clear' || parsedOutcome.kind === 'blocked') {
+        return parsedOutcome
+      }
+    }
     const diag = [`exit code ${err.status ?? err.code ?? -1}`]
 
     if (err.stderr) {

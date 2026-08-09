@@ -26,7 +26,6 @@ from agent.tool_dispatch_helpers import (
     _plan_tool_batch_segments,
     _should_parallelize_tool_batch,
 )
-from agent.prompt_builder import STEER_MARKER_OPEN
 from tools.budget_config import BudgetConfig
 from tools.tool_result_storage import PERSISTED_OUTPUT_TAG
 
@@ -518,8 +517,8 @@ class TestSegmentedDispatchIntegration:
             assert "cancelled" in m["content"] or "skipped" in m["content"]
 
     def test_steer_lands_exactly_once_in_mixed_batch(self, agent):
-        """The whole-batch finalizer drains steer once, so the marker cannot
-        be duplicated by segment boundaries."""
+        """The whole-batch finalizer drains steer once, so the structural user
+        message cannot be duplicated by segment boundaries."""
         calls = [
             _tc("web_search", '{"query":"a"}', call_id="s1"),
             _tc("web_search", '{"query":"b"}', call_id="s2"),
@@ -583,7 +582,7 @@ class TestSegmentedDispatchIntegration:
 
         The large result forces ``enforce_turn_budget()`` to replace it.
         Before the fix, the per-tool drain consumed the steer first, so that
-        replacement silently discarded the canonical marker.
+        replacement silently discarded the user message.
         """
         messages = []
         msg = SimpleNamespace(content="", tool_calls=calls)
@@ -609,9 +608,9 @@ class TestSegmentedDispatchIntegration:
 
         large_result_index = next(i for i, call in enumerate(calls) if call.id.endswith("large"))
         _assert_budget_replaced(messages[large_result_index]["content"])
-        steer_messages = [m for m in messages if STEER_MARKER_OPEN in m["content"]]
+        steer_messages = [m for m in messages if m.get("role") == "user"]
         assert steer_messages == [messages[-1]]
-        assert "preserve this steer after budget enforcement" in steer_messages[0]["content"]
+        assert steer_messages[0]["content"] == "preserve this steer after budget enforcement"
 
     def test_steer_survives_turn_budget_after_malformed_arguments(self, agent):
         """Malformed arguments still reach the shared post-budget finalizer.
@@ -635,10 +634,12 @@ class TestSegmentedDispatchIntegration:
         with patch("agent.tool_executor._budget_for_agent", return_value=budget):
             agent._execute_tool_calls(msg, messages, "task-1")
 
-        assert len(messages) == 1
+        assert len(messages) == 2
         _assert_budget_replaced(messages[0]["content"])
-        assert messages[0]["content"].count(STEER_MARKER_OPEN) == 1
-        assert "preserve malformed-call steer after budget enforcement" in messages[0]["content"]
+        assert messages[-1] == {
+            "role": "user",
+            "content": "preserve malformed-call steer after budget enforcement",
+        }
 
 
 class TestPathCanonicalization:

@@ -1505,14 +1505,22 @@ def _model_flow_azure_foundry(config, current_model=""):
 def _model_flow_named_custom(config, provider_info):
     """Handle a named custom provider from config.yaml custom_providers list.
 
-    Always probes the endpoint's /models API to let the user pick a model.
+    Probes the endpoint's model catalog to let the user pick a model, using
+    native ``/api/tags`` for endpoints conservatively identified as Ollama.
     If a model was previously saved, it is pre-selected in the menu.
     Falls back to the saved model if probing fails.
     """
     from hermes_cli.main import _custom_provider_api_key_config_value, _custom_provider_base_url_config_value, _save_custom_provider
     from hermes_cli.auth import _save_model_choice, deactivate_provider
-    from hermes_cli.config import load_config, save_config
-    from hermes_cli.models import fetch_api_models
+    from hermes_cli.config import load_config, normalize_extra_headers, save_config
+    from hermes_cli.model_switch import _models_config_is_allowlist
+    from hermes_cli.models import (
+        fetch_api_models,
+        fetch_ollama_local_models,
+        _get_ollama_native_headers,
+        _normalize_openai_base_url,
+        should_use_ollama_native_catalog,
+    )
 
     name = provider_info["name"]
     base_url = provider_info["base_url"]
@@ -1538,13 +1546,24 @@ def _model_flow_named_custom(config, provider_info):
     if isinstance(discover, str):
         discover = discover.lower() not in {"false", "no", "0"}
     configured_models: list[str] = []
+    native_catalog_empty = False
     cfg_models = provider_info.get("models", {})
+    explicit_catalog = _models_config_is_allowlist(cfg_models)
     if isinstance(cfg_models, dict):
-        configured_models = [str(m) for m in cfg_models if str(m).strip()]
-    elif isinstance(cfg_models, list):
         configured_models = [
-            str(m) for m in cfg_models if isinstance(m, str) and m.strip()
+            str(m)
+            for m in cfg_models
+            if m != "__explicit_model_allowlist__" and str(m).strip()
         ]
+    elif isinstance(cfg_models, list):
+        configured_models = []
+        for model_entry in cfg_models:
+            if isinstance(model_entry, dict):
+                model_id = str(model_entry.get("id") or model_entry.get("model") or "").strip()
+            else:
+                model_id = str(model_entry).strip() if isinstance(model_entry, str) else ""
+            if model_id:
+                configured_models.append(model_id)
 
     print(f"  Provider: {name}")
     print(f"  URL:      {base_url}")
@@ -1552,19 +1571,75 @@ def _model_flow_named_custom(config, provider_info):
         print(f"  Current:  {saved_model}")
     print()
 
-    if not discover and configured_models:
-        # Discovery disabled with an explicit list — use it verbatim, no probe.
-        print(f"Using configured models (discover_models: false): {len(configured_models)}")
-        models = configured_models
+    if not discover:
+        # Discovery disabled: never probe, even when only the singular active
+        # model is configured. The active model is useful as the sole picker
+        # choice, but it is not an endpoint catalog.
+        models = configured_models or ([saved_model] if saved_model else [])
+        print(
+            "Using configured models (discover_models: false): "
+            f"{len(models)}"
+        )
     else:
         print("Fetching available models...")
         fetch_kwargs = {"timeout": 8.0}
         if api_mode:
             fetch_kwargs["api_mode"] = api_mode
-        live_models = fetch_api_models(api_key, base_url, **fetch_kwargs)
-        # If the probe came back empty but the operator configured an explicit
-        # list, fall back to it rather than forcing manual entry.
-        models = live_models or configured_models
+        native_catalog_provider = (
+            "ollama"
+            if provider_key.lower() == "ollama" or name.strip().lower() == "ollama"
+            else "custom"
+        )
+        extra_headers = normalize_extra_headers(provider_info.get("extra_headers")) or {}
+        candidate_headers = _get_ollama_native_headers(base_url, api_key=api_key)
+        for key in tuple(candidate_headers):
+            if any(key.lower() == existing.lower() for existing in extra_headers):
+                del candidate_headers[key]
+        candidate_headers.update(extra_headers)
+        caller_has_authorization = any(
+            key.lower() == "authorization" for key in extra_headers
+        )
+        if api_key and not caller_has_authorization:
+            for key in tuple(candidate_headers):
+                if key.lower() == "authorization":
+                    del candidate_headers[key]
+            candidate_headers["Authorization"] = f"Bearer {api_key}"
+        use_native = should_use_ollama_native_catalog(
+            native_catalog_provider, base_url, headers=candidate_headers or None
+        )
+        native_headers_arg = candidate_headers or None if use_native else (extra_headers or None)
+        explicit_allowlist = explicit_catalog
+        if use_native:
+            if explicit_catalog and configured_models:
+                live_models = configured_models
+                native_catalog_empty = False
+            else:
+                live_models = fetch_ollama_local_models(
+                    base_url,
+                    timeout=8.0,
+                    headers=native_headers_arg,
+                )
+                native_catalog_empty = live_models == []
+                if live_models is None:
+                    live_models = fetch_api_models(
+                        api_key,
+                        _normalize_openai_base_url(base_url),
+                        headers=native_headers_arg,
+                        **fetch_kwargs,
+                    )
+                    native_catalog_empty = False
+        else:
+            live_models = fetch_api_models(
+                api_key, base_url, headers=native_headers_arg, **fetch_kwargs
+            )
+            native_catalog_empty = False
+        models = (
+            configured_models
+            if explicit_allowlist
+            else []
+            if native_catalog_empty
+            else (live_models or configured_models)
+        )
         # Persist the live catalog back to the custom_providers entry so that
         # no-probe surfaces (dashboard, desktop, ACP) show the full model list
         # instead of collapsing to the single ``model:`` default. Mirrors the
@@ -1623,7 +1698,7 @@ def _model_flow_named_custom(config, provider_info):
             except (ValueError, KeyboardInterrupt, EOFError):
                 print("\nCancelled.")
                 return
-    elif saved_model:
+    elif saved_model and not native_catalog_empty:
         print("Could not fetch models from endpoint.")
         try:
             model_name = input(f"Model name [{saved_model}]: ").strip() or saved_model

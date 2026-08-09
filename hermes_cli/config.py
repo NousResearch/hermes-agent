@@ -1442,9 +1442,11 @@ def _normalize_custom_provider_entry(
     if isinstance(api_key, str) and api_key.strip():
         normalized["api_key"] = api_key.strip()
 
-    key_env = entry.get("key_env")
+    key_env = entry.get("key_env") or entry.get("api_key_env")
     if isinstance(key_env, str) and key_env.strip():
         normalized["key_env"] = key_env.strip()
+        if entry.get("api_key_env") and not entry.get("key_env"):
+            normalized["api_key_env"] = key_env.strip()
 
     api_mode = entry.get("api_mode") or entry.get("transport")
     if isinstance(api_mode, str) and api_mode.strip():
@@ -1483,6 +1485,7 @@ def _normalize_custom_provider_entry(
             }
             normalized_models[model_id.strip()] = model_meta
         if normalized_models:
+            normalized_models["__explicit_model_allowlist__"] = True
             normalized["models"] = normalized_models
 
     context_length = entry.get("context_length")

@@ -2715,7 +2715,11 @@ button[data-slot='aui_msg-reactions'] svg {
   width: 100% !important;
   max-width: none !important;
   transform: none !important;
-  translate: none !important;
+  /* Keep this value indirect. Lightning CSS folds literal identity values into
+     `transform: translate(0)`, which does not override Tailwind's standalone
+     `translate: -50%`; the dock then starts half a HUD width off-screen. */
+  --hud-composer-translate: 0;
+  translate: var(--hud-composer-translate) !important;
   padding: 0 !important;
 }
 

@@ -5,16 +5,23 @@ from __future__ import annotations
 
 import re
 
-from gateway.platforms.base import HTML_IMAGE_TAG_PATTERN, MD_IMAGE_TAG_PATTERN, BasePlatformAdapter
+from gateway.platforms.base import (
+    _MEDIA_TAG_KEYWORD,
+    HTML_IMAGE_TAG_PATTERN,
+    MD_IMAGE_TAG_PATTERN,
+    BasePlatformAdapter,
+)
 
 # A delivery directive still being typed on the open (last) line: "MEDIA:" the cleaner has not
 # stripped yet whose remainder can still become a path (MEDIA_TAG_CLEANUP_RE's openers: a quote,
 # ~/, /, a drive letter), or a prefix of "MEDIA" not glued to a preceding letter or digit. A
 # complete tag has no left boundary, so a prefix after punctuation ("图片：MED") is held too.
-# Prose such as "social media: Twitter" is not a path, so it never holds the line back.
+# Prose such as "social media: Twitter" is not a path, so it never holds the line back. The
+# uppercase ``FILE:`` alias is held the same way (prefixes ``F``..``FILE`` case-sensitively).
 _PENDING_MEDIA_RE = re.compile(
-    r"""MEDIA:\s*(?:$|[`"'~/\\]|[A-Za-z](?::|$))"""
-    r"""|(?<![A-Za-z0-9])[`"'*_]{0,3}M(?:E(?:D(?:I(?:A)?)?)?)?$""",
+    _MEDIA_TAG_KEYWORD + r"""\s*(?:$|[`"'~/\\]|[A-Za-z](?::|$))"""
+    r"""|(?<![A-Za-z0-9])[`"'*_]{0,3}M(?:E(?:D(?:I(?:A)?)?)?)?$"""
+    r"""|(?-i:(?<![A-Za-z0-9_])[`"'*]{0,3}F(?:I(?:L(?:E)?)?)?$)""",
     re.IGNORECASE)
 _PENDING_FLAG_RE = re.compile(r"\[\[?[A-Za-z_]*\]?$")
 _STREAM_FLAGS = ("[[audio_as_voice]]", "[[as_document]]")

@@ -1187,16 +1187,13 @@ MEDIA_DELIVERY_EXTS: tuple[str, ...] = (
 # Bare extensions (no dot) longest-first so a shorter ext never matches as a prefix of a longer one.
 _MEDIA_EXT_ALTERNATION = "|".join(sorted((e.lstrip(".") for e in MEDIA_DELIVERY_EXTS), key=len, reverse=True))
 
-# Anchored ``MEDIA:<path>`` cleanup pattern (dispatch path + streaming consumer). Strips only tags
+# Anchored ``MEDIA:<path>`` / ``FILE:<path>`` cleanup pattern (dispatch + streaming consumer). Strips only tags
 # whose path ends in a deliverable extension (optionally quoted/backticked); unknown-ext tags stay
 # for the bare-path detector. Rules: anchors ``~/``, ``/``, ``X:\`` / ``X:/``; up to 3 quote/
 # emphasis markers each side (code/blockquote contexts are masked earlier); non-greedy with
 # ``MEDIA:`` as a boundary so glued tags (``MEDIA:/a.pngMEDIA:/b.png``) never merge; sentence-final
 # ``.`` is a boundary only before whitespace/EOL (``data.csv.`` -> ``data.csv``, ``archive.tar.gz``
 # extends past ``.tar``); CJK full-width punctuation terminates paths (``早报.pdf（782.6 KB）``).
-# A ``MEDIA:`` tag with an unknown extension is left in the text so it can still be picked up by the
-# bare-path detector (extract_local_files) downstream rather than silently deleted. Path anchors: ``~/``
-# (Unix home-relative), ``/`` (Unix absolute), ``X:\\`` or ``X:/`` (Windows drive-letter absolute — #34632).
 # Emphasis tolerance: models routinely wrap the tag in Markdown emphasis (``**MEDIA:/x.pdf**``,
 # ``*MEDIA:/x.pdf*``, ``_MEDIA:/x.pdf_``) when they present a file to the user. The old single-quote anchor
 # (``[`"']?``) and the closing lookahead (which lacked ``*``/``_``) failed to match such tags, so the file
@@ -1217,17 +1214,18 @@ MD_IMAGE_TAG_PATTERN = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
 HTML_IMAGE_TAG_PATTERN = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
 _IMAGE_URL_MARKERS = ('.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery')
 
+# ``FILE:`` aliases ``MEDIA:``: models emit it despite the prompt and the tag leaked as literal text. Uppercase
+# only and not glued to a preceding letter/digit/``_``, so ``Profile:`` / ``LOG_FILE:`` never deliver.
+_MEDIA_TAG_KEYWORD = r'(?:MEDIA|(?-i:(?<![A-Z0-9_])FILE)):'
+_MEDIA_TAG_KEYWORD_RE = re.compile(_MEDIA_TAG_KEYWORD, re.IGNORECASE)
 MEDIA_TAG_CLEANUP_RE = re.compile(
-    r'''[`"'*_]{0,3}MEDIA:\s*'''
+    r'''[`"'*_]{0,3}''' + _MEDIA_TAG_KEYWORD + r'''\s*'''
     r'''(?P<path>`[^`\n]+?`|"[^"\n]+?"|'[^'\n]+?'|'''
     r'''(?:~/|/|[A-Za-z]:[/\\])\S+?(?:[^\S\n]+\S+?)*?\.(?:''' + _MEDIA_EXT_ALTERNATION + r'''))'''
-    r'''(?=[\s`"'*_,;:)\]}\[''' + _MEDIA_CJK_TERMINATORS + r''']|MEDIA:|\.(?:\s|$)|$)[`"'*_]{0,3}\.?''',
+    r'''(?=[\s`"'*_,;:)\]}\[''' + _MEDIA_CJK_TERMINATORS + r''']|''' + _MEDIA_TAG_KEYWORD
+    + r'''|\.(?:\s|$)|$)[`"'*_]{0,3}\.?''',
     re.IGNORECASE)
 
-# Extension-less (Caddyfile) / unknown-ext (.py, .log) tags deliver only after
-# ``validate_media_delivery_path`` accepts them, so injected paths that don't validate stay visible.
-# The bare path class is whitespace-bounded (a tag glued to the next ``MEDIA:`` or prose must not
-# absorb it); spaced paths are recovered by ``_match_extensionless_path`` with on-disk validation.
 # Paths NOT covered by MEDIA_TAG_CLEANUP_RE's extension alternation — both extension-less files (Caddyfile,
 # Dockerfile, Makefile) and files with an unknown extension (.py, .log, .weirdext, ...) — are validated and
 # delivered via MEDIA_EXTENSIONLESS_TAG_RE. Every ``MEDIA:`` path is therefore deliverable regardless of
@@ -1309,7 +1307,7 @@ def _path_lacks_deliverable_extension(path: str) -> bool:
 
 
 def _has_media_directives(text: str) -> bool:
-    return "MEDIA:" in text or "[[audio_as_voice]]" in text or "[[as_document]]" in text
+    return any(marker in text for marker in ("MEDIA:", "FILE:", "[[audio_as_voice]]", "[[as_document]]"))
 
 
 # A provider can leak its exact end-of-sequence control token glued to the last MEDIA path
@@ -3164,14 +3162,14 @@ class BasePlatformAdapter(ABC):
         spans: list = [m.span() for m in _FENCED_CODE_RE.finditer(content)]
         for m in _INLINE_CODE_RE.finditer(content):
             start = m.start()
-            if re.search(r'MEDIA:\s*$', content[max(0, start - 20):start]):
+            if re.search(_MEDIA_TAG_KEYWORD + r'\s*$', content[max(0, start - 20):start]):
                 continue  # This is a MEDIA path quote, not inline code
             # A whole tag in inline code (`MEDIA:/path.csv`) is a real directive (models format
             # paths as code): deliver IF it validates; non-existent examples stay masked.
             # See #35695.
             inner = m.group(0)[1:-1].strip()
-            if inner.upper().startswith("MEDIA:"):
-                candidate = _normalize_media_tag_path(inner[6:])
+            if tag := _MEDIA_TAG_KEYWORD_RE.match(inner):
+                candidate = _normalize_media_tag_path(inner[tag.end():])
                 if candidate and validate_media_delivery_path(candidate):
                     continue  # Real deliverable tag in inline code — keep it scannable
             spans.append((start, m.end()))
@@ -3190,13 +3188,13 @@ class BasePlatformAdapter(ABC):
         ``MEDIA_TAG_CLEANUP_RE`` would still match it and re-deliver a stale file. (Regression report
         #34375.)
         """
-        if '"' not in content or "MEDIA:" not in content:
+        if '"' not in content or not _has_media_directives(content):
             return content
         # Value-context string: quote preceded by : , { or [; escape-aware body to the closing
         # quote.
         spans = [
             m.span(1) for m in re.finditer(r'(?<=[:,{\[])\s*"((?:[^"\\\n]|\\.)*)"', content)
-            if re.search(r'MEDIA:\s*(?:~/|/|[A-Za-z]:[/\\])', m.group(1))]
+            if re.search(_MEDIA_TAG_KEYWORD + r'\s*(?:~/|/|[A-Za-z]:[/\\])', m.group(1))]
         return _blank_spans(content, spans)
 
     @staticmethod

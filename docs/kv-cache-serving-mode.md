@@ -343,6 +343,13 @@ falls back to a different tier than the operator intended.
 - `scripts/kv_cache_policy.py` — tier decision source of truth.
 - `scripts/p12_offload_gate.py` — launch-path gate + argv sanitization.
 - `scripts/p12_offload_live_check.py` — live integration check.
+- `scripts/p12_fast_path_verify.py` — live verification that **normal daily
+  work stays on the fast path** (weights GPU0-only, no offload, GPU1
+  isolated) and a performance baseline that catches regressions from the
+  P12 changes. CI-safe assertions in
+  `tests/scripts/test_p12_fast_path.py`; the live suite runs on the rig or
+  a self-hosted GPU runner via `.github/workflows/p12-gpu-verify.yml`
+  (manual dispatch).
 - `tests/scripts/test_kv_cache_policy.py` (30 tests) and
   `tests/scripts/test_p12_offload_gate.py` (30 tests) — boundary and
   coordination coverage.

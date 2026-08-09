@@ -212,6 +212,7 @@ import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { readWindowBelow } from './window-below'
 import { createWindowRevealController } from './window-reveal'
 import {
+  bindGeometryPersistence,
   computeWindowOptions,
   debounce,
   sanitizeWindowState,
@@ -2347,7 +2348,7 @@ function persistWindowState() {
   }
 }
 
-// resized/moved fire many times mid-drag on Linux; debounce to one write.
+// move/resize fire many times mid-drag; debounce to one write.
 const schedulePersistWindowState = debounce(persistWindowState, 250)
 
 // Zoom's primary store is a main-process JSON file. The renderer localStorage
@@ -9220,8 +9221,7 @@ function spawnHudWindow(sessionId) {
 
   // Remember where the user parks and sizes it (debounced — these fire many
   // times mid-drag).
-  win.on('moved', schedulePersistHudState)
-  win.on('resized', schedulePersistHudState)
+  bindGeometryPersistence(win, schedulePersistHudState)
 
   wireWindowReveal(win, {
     show: () => {
@@ -9619,10 +9619,9 @@ function createWindow() {
   mainWindow.on('hide', () => sendWindowStateChanged())
   mainWindow.on('show', () => sendWindowStateChanged())
 
-  // Reopen where the user left off. resized/moved settle once per drag; close is
-  // the cross-platform backstop, flushed synchronously before the window is gone.
-  mainWindow.on('resized', schedulePersistWindowState)
-  mainWindow.on('moved', schedulePersistWindowState)
+  // Reopen where the user left off. close is the backstop, flushed
+  // synchronously before the window is gone.
+  bindGeometryPersistence(mainWindow, schedulePersistWindowState)
   mainWindow.on('maximize', schedulePersistWindowState)
   mainWindow.on('unmaximize', schedulePersistWindowState)
   mainWindow.on('close', () => schedulePersistWindowState.flush())

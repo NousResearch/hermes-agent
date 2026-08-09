@@ -22,7 +22,8 @@ description: A multi-file test skill.
 ---
 # Demo
 Read [the guide](references/guide.md#usage), use `templates/report.md?raw=1`, and run
-`scripts/run.py`. See `examples/endpoint-inventory.md`. The repository also
+`scripts/run.py`, `references/foo%23bar.md`, and `references/my%20guide.md`. See
+`examples/endpoint-inventory.md`. The repository also
 contains assets/logo.png.
 """
 
@@ -43,6 +44,8 @@ def served_repo(tmp_path, monkeypatch):
     (repo / "SKILL.md").write_text(SKILL_MD)
     for rel, content in {
         "references/guide.md": "safe guide\n",
+        "references/foo#bar.md": "encoded delimiter\n",
+        "references/my guide.md": "encoded space\n",
         "templates/report.md": "report\n",
         "scripts/run.py": "print('ok')\n",
         "assets/logo.png": b"\x89PNG\r\n\x1a\n\x00\xff",
@@ -87,12 +90,16 @@ def test_url_source_fetches_only_referenced_allowed_support_directories(served_r
     assert set(bundle.files) == {
         "SKILL.md",
         "references/guide.md",
+        "references/foo#bar.md",
+        "references/my guide.md",
         "templates/report.md",
         "scripts/run.py",
         "assets/logo.png",
         "examples/endpoint-inventory.md",
     }
     assert bundle.files["assets/logo.png"] == b"\x89PNG\r\n\x1a\n\x00\xff"
+    assert bundle.files["references/foo#bar.md"] == b"encoded delimiter\n"
+    assert bundle.files["references/my guide.md"] == b"encoded space\n"
     assert "examples/not-installed.md" not in bundle.files
     assert bundle.metadata["source_url"] == url
 
@@ -218,6 +225,8 @@ def test_real_temp_repo_and_home_install_e2e(served_repo, monkeypatch, tmp_path)
 
     installed = home / "skills" / "demo-bundle"
     assert (installed / "references" / "guide.md").read_text() == "safe guide\n"
+    assert (installed / "references" / "foo#bar.md").read_text() == "encoded delimiter\n"
+    assert (installed / "references" / "my guide.md").read_text() == "encoded space\n"
     assert (installed / "templates" / "report.md").is_file()
     assert (installed / "scripts" / "run.py").is_file()
     assert (installed / "examples" / "endpoint-inventory.md").is_file()

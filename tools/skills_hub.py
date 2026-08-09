@@ -29,7 +29,7 @@ from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from agent.skill_utils import is_excluded_skill_path
 from typing import Any, Dict, List, Optional, Tuple, Union
-from urllib.parse import unquote, urljoin, urlparse, urlsplit, urlunparse
+from urllib.parse import quote, unquote, urljoin, urlparse, urlsplit, urlunparse
 
 import httpx
 import yaml
@@ -160,6 +160,32 @@ _LOCAL_LINK_RE = re.compile(
 _SUSPICIOUS_LOCAL_REF_RE = re.compile(
     r"(?:references|templates|scripts|assets|examples)/(?:[^\s)`\"'<>]*/)?\.\.(?:/|$)"
 )
+_VALUELESS_QUERY_FLAG_RE = re.compile(
+    r"(?:[A-Za-z0-9_~-]|%[0-9A-Fa-f]{2})+\Z"
+)
+
+
+def _query_is_concrete(query: str) -> bool:
+    """Whether ``query`` is unambiguously URL syntax rather than glob prose.
+
+    A non-empty ``key=value`` part is concrete URL syntax regardless of key
+    spelling, preserving the established behavior.  Valueless flags are also
+    accepted when they are RFC 3986 unreserved-token shaped (including valid
+    percent escapes), rather than being restricted to a fixed allowlist.
+
+    Deliberately exclude ``.`` from valueless flags.  A suffix such as
+    ``?x.md`` or ``?.md`` is indistinguishable from a single-character glob
+    completing a filename in inline prose.  Brackets and additional question
+    marks are excluded for the same reason.  This syntactic ambiguity policy
+    preserves ordinary flags such as ``?view`` and ``?preview-mode`` while
+    rejecting glob-shaped references without guessing flag names.
+    """
+    parts = query.split("&")
+    return all(
+        ("=" in part and bool(part.split("=", 1)[0]))
+        or bool(_VALUELESS_QUERY_FLAG_RE.fullmatch(part))
+        for part in parts
+    )
 
 
 def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
@@ -169,7 +195,15 @@ def _referenced_support_paths(skill_md: str) -> Optional[set[str]]:
         return None
     paths: set[str] = set()
     for match in _LOCAL_LINK_RE.finditer(normalized):
-        raw = unquote(urlsplit(match.group(1).rstrip(".,;:")).path)
+        candidate = match.group(1).rstrip(".,;:")
+        if candidate.endswith("?"):
+            continue
+        parsed = urlsplit(candidate)
+        raw = unquote(parsed.path)
+        if any(char in raw for char in "*?[]"):
+            continue
+        if parsed.query and not _query_is_concrete(parsed.query):
+            continue
         try:
             safe = _validate_bundle_rel_path(raw)
         except ValueError:
@@ -1104,7 +1138,8 @@ class GitHubSource(SkillSource):
 
     def _fetch_file_bytes(self, repo: str, path: str) -> Optional[bytes]:
         """Fetch exact file bytes from GitHub without text decoding."""
-        url = f"https://api.github.com/repos/{repo}/contents/{path}"
+        encoded_path = quote(path, safe="/")
+        url = f"https://api.github.com/repos/{repo}/contents/{encoded_path}"
         resp = self._github_get(
             url,
             headers={**self.auth.get_headers(), "Accept": "application/vnd.github.v3.raw"},
@@ -1544,7 +1579,7 @@ class UrlSource(SkillSource):
         files: Dict[str, Union[str, bytes]] = {"SKILL.md": text}
         base_url = url.rsplit("/", 1)[0] + "/"
         for rel_path in sorted(referenced):
-            support_url = urljoin(base_url, rel_path)
+            support_url = urljoin(base_url, quote(rel_path, safe="/"))
             if urlparse(support_url).netloc != urlparse(url).netloc:
                 return None
             content = self._fetch_bytes(support_url)

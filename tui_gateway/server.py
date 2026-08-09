@@ -5061,16 +5061,19 @@ def _probe_config_health(cfg: dict) -> str:
     agent_cfg = cfg.get("agent")
     if isinstance(display_cfg, dict):
         personality = str(display_cfg.get("personality", "") or "").strip().lower()
-        if (
-            personality
-            and personality not in {"default", "none", "neutral"}
-            and isinstance(agent_cfg, dict)
-            and agent_cfg.get("personalities") is None
-        ):
-            warnings.append(
-                "`display.personality` is set but `agent.personalities` is empty/null; "
-                "personality overlay will be skipped."
-            )
+        if personality and personality not in {"default", "none", "neutral"}:
+            try:
+                from hermes_cli.personality import available_personalities
+
+                if personality not in available_personalities(cfg):
+                    warnings.append(
+                        f"`display.personality: {personality}` does not match any "
+                        "built-in or `agent.personalities` entry; personality "
+                        "overlay will be skipped."
+                    )
+            except Exception:
+                pass
+    _ = agent_cfg  # retained for shape parity; built-ins exist without config
     return " ".join(warnings).strip()
 
 
@@ -5938,60 +5941,51 @@ def _wire_callbacks(sid: str):
 
 
 def _render_personality_prompt(value) -> str:
-    if isinstance(value, dict):
-        parts = [value.get("system_prompt", "")]
-        if value.get("tone"):
-            parts.append(f'Tone: {value["tone"]}')
-        if value.get("style"):
-            parts.append(f'Style: {value["style"]}')
-        return "\n".join(p for p in parts if p)
-    return str(value)
+    """Delegates to hermes_cli.personality (single owner of rendering)."""
+    from hermes_cli.personality import render_personality_prompt
+
+    return render_personality_prompt(value)
 
 
 def _available_personalities(cfg: dict | None = None) -> dict:
-    try:
-        from cli import load_cli_config
+    """Built-ins + user overrides, via hermes_cli.personality (single owner)."""
+    from hermes_cli.personality import available_personalities
 
-        return (load_cli_config().get("agent") or {}).get("personalities", {}) or {}
-    except Exception:
-        try:
-            from hermes_cli.config import load_config as _load_full_cfg
-
-            return (_load_full_cfg().get("agent") or {}).get("personalities", {}) or {}
-        except Exception:
-            cfg = cfg or _load_cfg()
-            return (cfg.get("agent") or {}).get("personalities", {}) or {}
+    if cfg is None:
+        cfg = _load_cfg()
+    return available_personalities(cfg)
 
 
 def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str]:
-    raw = str(value or "").strip()
-    name = raw.lower()
-    if not name or name in {"none", "default", "neutral"}:
-        return "", ""
+    """Resolve a requested personality against _available_personalities.
 
+    Same contract as hermes_cli.personality.resolve_personality — (name,
+    prompt) or ValueError — but resolves through the module-level
+    _available_personalities so tests (and future gateway-side overrides)
+    keep a single patch point.
+    """
+    from hermes_cli.personality import normalize_personality_name
+
+    name = normalize_personality_name(value)
+    if not name:
+        return "", ""
     personalities = _available_personalities(cfg)
     if name not in personalities:
-        names = sorted(personalities)
-        available = ", ".join(f"`{n}`" for n in names)
-        base = f"Unknown personality: `{raw}`."
-        if available:
-            base += f"\n\nAvailable: `none`, {available}"
-        else:
-            base += "\n\nNo personalities configured."
-        raise ValueError(base)
-
+        names = ", ".join(f"`{n}`" for n in sorted(personalities))
+        raise ValueError(
+            f"Unknown personality: `{str(value).strip()}`.\n\nAvailable: `none`, {names}"
+        )
     return name, _render_personality_prompt(personalities[name])
 
 
 def _prompt_text(value) -> str:
-    """Normalize config prompt values from YAML before handing them to AIAgent."""
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, list):
-        return "\n".join(str(item).strip() for item in value if str(item).strip())
-    return str(value).strip()
+    """Normalize config prompt values from YAML before handing them to AIAgent.
+
+    Delegates to hermes_cli.personality (single owner).
+    """
+    from hermes_cli.personality import prompt_text
+
+    return prompt_text(value)
 
 
 def _apply_personality_to_session(
@@ -11323,10 +11317,12 @@ def _(rid, params: dict) -> dict:
             elif key == "personality":
                 sid_key = params.get("session_id", "")
                 pname, new_prompt = _validate_personality(str(value or ""), cfg)
-                # Personality text is an in-session overlay. Keep the
-                # user-owned global system prompt intact so changing a
-                # personality cannot destroy manual configuration.
-                _write_config_key("display.personality", pname)
+                # Personality text is an in-session overlay. Persistence goes
+                # through hermes_cli.personality (single owner) and never
+                # touches the user-owned global system prompt.
+                from hermes_cli.personality import persist_personality
+
+                persist_personality(pname)
                 nv = str(value or "none")
                 history_reset, info = _apply_personality_to_session(
                     sid_key, session, new_prompt, pname
@@ -12755,6 +12751,12 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             return result.get("warning", "")
         elif name == "personality" and arg and agent:
             pname, new_prompt = _validate_personality(arg, _load_cfg())
+            # Persist through the single owner so this surface can never
+            # drift from the others (the old TUI slash path applied the
+            # overlay in-session but skipped persistence entirely).
+            from hermes_cli.personality import persist_personality
+
+            persist_personality(pname)
             _apply_personality_to_session(sid, session, new_prompt, pname)
         elif name == "prompt" and agent:
             cfg = _load_cfg()

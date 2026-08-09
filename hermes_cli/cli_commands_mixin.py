@@ -1334,22 +1334,40 @@ class CLICommandsMixin:
         _cprint(f"  Branch session:   {new_session_id}")
 
     def _handle_personality_command(self, cmd: str):
-        """Handle the /personality command to set predefined personalities."""
-        from cli import save_config_value
+        """Handle the /personality command to set predefined personalities.
+
+        All resolution/persistence goes through hermes_cli.personality —
+        the single owner of personality state on every surface.
+        """
+        from hermes_cli.personality import (
+            describe_personality,
+            normalize_personality_name,
+            persist_personality,
+            prompt_text,
+            resolve_personality,
+        )
         parts = cmd.split(maxsplit=1)
-        
+
         if len(parts) > 1:
             # Set personality
-            personality_name = parts[1].strip().lower()
-            
-            if personality_name in {"none", "default", "neutral"}:
-                # Persist the selection only. Never clear agent.system_prompt —
-                # that field is the user-owned manual overlay.
-                saved = save_config_value("display.personality", "")
-                try:
-                    from hermes_cli.config import cfg_get, read_raw_config, _prompt_text
+            personality_name = parts[1].strip()
 
-                    self.system_prompt = _prompt_text(
+            try:
+                name, personality_prompt = resolve_personality(
+                    personality_name, getattr(self, "config", None)
+                )
+            except ValueError:
+                print(f"(._.) Unknown personality: {personality_name.lower()}")
+                print(f"  Available: none, {', '.join(self.personalities.keys())}")
+                return
+
+            saved = persist_personality(name)
+            if not name:
+                # Neutral reset — fall back to the user-owned manual prompt.
+                try:
+                    from hermes_cli.config import cfg_get, read_raw_config
+
+                    self.system_prompt = prompt_text(
                         cfg_get(read_raw_config(), "agent", "system_prompt", default="")
                     )
                 except Exception:
@@ -1360,36 +1378,36 @@ class CLICommandsMixin:
                 else:
                     print("(^_^) Personality cleared (session only)")
                 print("  No personality overlay — using base agent behavior.")
-            elif personality_name in self.personalities:
-                personality_prompt = self._resolve_personality_prompt(
-                    self.personalities[personality_name]
-                )
+            else:
                 self.system_prompt = personality_prompt
                 self.agent = None  # Force re-init
-                if save_config_value("display.personality", personality_name):
-                    print(f"(^_^)b Personality set to '{personality_name}' (saved to config)")
+                if saved:
+                    print(f"(^_^)b Personality set to '{name}' (saved to config)")
                 else:
-                    print(f"(^_^) Personality set to '{personality_name}' (session only)")
+                    print(f"(^_^) Personality set to '{name}' (session only)")
                 print(f"  \"{personality_prompt[:60]}{'...' if len(personality_prompt) > 60 else ''}\"")
-            else:
-                print(f"(._.) Unknown personality: {personality_name}")
-                print(f"  Available: none, {', '.join(self.personalities.keys())}")
         else:
             # Show available personalities
+            try:
+                from hermes_cli.config import read_raw_config
+
+                current = normalize_personality_name(
+                    (read_raw_config().get("display") or {}).get("personality", "")
+                )
+            except Exception:
+                current = ""
             print()
             print("+" + "-" * 50 + "+")
             print("|" + " " * 12 + "(^o^)/ Personalities" + " " * 15 + "|")
             print("+" + "-" * 50 + "+")
             print()
-            print(f"  {'none':<12} - (no personality overlay)")
+            marker = " *" if not current else "  "
+            print(f" {marker}{'none':<12} - (no personality overlay)")
             for name, prompt in self.personalities.items():
-                if isinstance(prompt, dict):
-                    preview = prompt.get("description") or prompt.get("system_prompt", "")[:50]
-                else:
-                    preview = str(prompt)[:50]
-                print(f"  {name:<12} - {preview}")
+                marker = " *" if name == current else "  "
+                print(f" {marker}{name:<12} - {describe_personality(prompt)}")
             print()
-            print("  Usage: /personality <name>")
+            print("  Usage: /personality <name>   (* = active)")
             print()
 
     def _handle_pet_command(self, cmd: str):

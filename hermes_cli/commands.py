@@ -2022,15 +2022,16 @@ class SlashCommandCompleter(Completer):
 
     @staticmethod
     def _personality_completions(sub_text: str, sub_lower: str):
-        """Yield completions for /personality from configured personalities."""
+        """Yield completions for /personality via hermes_cli.personality."""
         try:
-            # Resolve from the same source the runtime applies personalities —
-            # agent.personalities via the CLI config (which ships the built-ins).
-            # load_config()'s schema has no agent.personalities, so the completer
-            # used to come back empty even with personalities available.
+            # Single owner: built-ins + user overrides from agent.personalities.
             from cli import load_cli_config
+            from hermes_cli.personality import (
+                available_personalities,
+                describe_personality,
+            )
 
-            personalities = (load_cli_config().get("agent") or {}).get("personalities", {}) or {}
+            personalities = available_personalities(load_cli_config())
             if "none".startswith(sub_lower) and "none" != sub_lower:
                 yield Completion(
                     "none",
@@ -2040,15 +2041,11 @@ class SlashCommandCompleter(Completer):
                 )
             for name, prompt in personalities.items():
                 if name.startswith(sub_lower) and name != sub_lower:
-                    if isinstance(prompt, dict):
-                        meta = prompt.get("description") or prompt.get("system_prompt", "")[:50]
-                    else:
-                        meta = str(prompt)[:50]
                     yield Completion(
                         name,
                         start_position=-len(sub_text),
                         display=name,
-                        display_meta=meta,
+                        display_meta=describe_personality(prompt),
                     )
         except Exception:
             pass

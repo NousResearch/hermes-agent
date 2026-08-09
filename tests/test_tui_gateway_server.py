@@ -7451,6 +7451,15 @@ def test_config_set_personality_preserves_history_and_returns_info(monkeypatch):
         server, "_session_info", lambda agent, *a: {"model": getattr(agent, "model", "?")}
     )
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
+    # Persistence now flows through the single owner (hermes_cli.personality),
+    # never _write_config_key / agent.system_prompt.
+    import hermes_cli.personality as personality_mod
+
+    monkeypatch.setattr(
+        personality_mod,
+        "persist_personality",
+        lambda name: writes.append(("display.personality", name)) or True,
+    )
     monkeypatch.setattr(
         server,
         "_write_config_key",

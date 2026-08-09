@@ -4,6 +4,12 @@
 This process never controls model lifecycle.  It turns Turbohaul's status
 snapshot into a graduated, hysteretic Sirvir policy decision stream that can
 be reviewed before a future, separately approved control plane exists.
+
+Memory policy: the P12 256K policy (docs/adr/0012-p12-256k-memory-policy.md)
+keeps model weights GPU0-only with no CPU/system-RAM offload on the normal
+fast path, reserves huge-context KV-cache offload as explicitly opt-in, and
+preserves GPU1 isolation.  This observer only reports pressure; it never
+offloads weights or moves data to CPU/system RAM.
 """
 
 import argparse

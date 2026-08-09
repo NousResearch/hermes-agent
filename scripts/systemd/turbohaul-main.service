@@ -1,5 +1,7 @@
 [Unit]
 Description=Turbohaul Main — Darwin 28B (Sirvir primary)
+# P12 memory policy: weights are GPU0-only, never offloaded; huge-context
+# CPU/system-RAM offload is opt-in only (see docs/adr/0012-p12-256k-memory-policy.md).
 After=network.target
 Wants=network.target
 

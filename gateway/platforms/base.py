@@ -1315,7 +1315,7 @@ MEDIA_EXTENSIONLESS_TAG_RE = re.compile(
 # a slash token from MessageEvent.is_command() / get_command().
 # The pattern matches to end-of-line (not just whitespace-bounded) to handle
 # Windows paths that may contain spaces (e.g. "C:\Users\John Doe\image.png").
-_ATTACHMENT_REF_RE = re.compile(r"@(?:image|file|url):[^\n@]+", re.IGNORECASE)
+_ATTACHMENT_REF_RE = re.compile(r"^(?:@(?:image|file|url):[^\n]+\n?)+", re.IGNORECASE)
 
 
 

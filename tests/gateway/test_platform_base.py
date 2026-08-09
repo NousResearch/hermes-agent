@@ -104,6 +104,11 @@ class TestMessageEventIsCommand:
         event = MessageEvent(text="@url:https://example.com\n\n/status")
         assert event.is_command() is True
 
+    def test_slash_command_with_at_in_ref_path(self):
+        """Ref path containing @ (legal on Windows, e.g. john@doe) must be fully stripped."""
+        event = MessageEvent(text="@image:C:\\Users\\john@doe\\photo.png\n\n/moa hi")
+        assert event.is_command() is True
+
     def test_non_command_with_image_ref(self):
         """A regular message (no slash command) with an image ref must NOT be detected as a command."""
         event = MessageEvent(text="@image:/tmp/foo.png\n\nwhat is this?")
@@ -133,6 +138,11 @@ class TestMessageEventGetCommandArgs:
     def test_command_with_args(self):
         event = MessageEvent(text="/new session id 123")
         assert event.get_command_args() == "session id 123"
+
+    def test_command_args_preserve_url_ref_in_args(self):
+        """@url: tokens in the middle of command args must NOT be stripped."""
+        event = MessageEvent(text="/status check @url:https://example.com")
+        assert event.get_command_args() == "check @url:https://example.com"
 
 
 # ---------------------------------------------------------------------------

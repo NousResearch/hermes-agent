@@ -125,6 +125,18 @@ export function ProjectOverviewRow({
         </>
       }
       className={cn('group/workspace', dragging && 'cursor-grabbing bg-(--ui-sidebar-surface-background)')}
+      // The label is grab surface too, not just the lead's grabber — same
+      // listeners, minus the controls that keep their own gestures. A project
+      // row has no rival drag (its title navigates on CLICK), so the sortable
+      // owns the press outright.
+      {...dragHandleProps}
+      onPointerDown={event => {
+        if ((event.target as HTMLElement).closest('[data-reorder-handle], [data-row-actions]')) {
+          return
+        }
+
+        dragHandleProps?.onPointerDown?.(event)
+      }}
       ref={rowRef}
     >
       <SidebarRowCluster className="min-w-0 flex-1">
@@ -141,6 +153,7 @@ export function ProjectOverviewRow({
             <button
               aria-label={s.projects.toggle(project.label, !open)}
               className="flex flex-1 items-center self-stretch bg-transparent p-0"
+              data-row-actions
               onClick={toggleOpen}
               type="button"
             >

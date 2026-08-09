@@ -140,19 +140,26 @@ function SidebarSessionRowImpl({
           className
         )}
         data-working={liveTurn ? 'true' : undefined}
+        // The row runs BOTH drags off one press, and each declines outside its
+        // own region — so no timing/arbitration rule is needed and neither can
+        // steal the other's gesture. Over the sidebar only the reorder has a
+        // target (the session drop denies: side chrome hosts no main tile);
+        // over the tree only the session drop does (no sortable row there).
+        // Whichever one the release lands on is the one that commits.
+        {...dragHandleProps}
         onPointerDown={event => {
-          // Reorder drags belong to dnd-kit (the grab handle); the ⋯ actions
-          // cluster keeps its own gestures. Everything else on the row —
-          // including the row-body BUTTON, the natural grab surface — is a
-          // session drag source: a POINTER drag on the shared drag session
-          // (never native HTML5 DnD: no macOS snap-back, Esc aborts
-          // instantly). Sub-threshold releases stay ordinary clicks, so
-          // resume / pin / open-in-window are untouched.
+          // The grabber already carries these same listeners, and the ⋯
+          // cluster keeps its own gestures.
           if ((event.target as HTMLElement).closest('[data-reorder-handle], [data-row-actions]')) {
             return
           }
 
+          // A POINTER drag on the shared drag session (never native HTML5 DnD:
+          // no macOS snap-back, Esc aborts instantly). Sub-threshold releases
+          // stay ordinary clicks, so resume / pin / open-in-window are
+          // untouched.
           startSessionDrag({ id: session.id, profile: session.profile || 'default', title }, event)
+          dragHandleProps?.onPointerDown?.(event)
         }}
         // Hovering a row from another profile (the all-profiles view) telegraphs
         // a cross-profile resume — start that backend's spawn now so the click

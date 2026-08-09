@@ -50,6 +50,7 @@ import {
   closeTreeTabsToRight,
   collapseTreePane,
   isCollapsePane,
+  isMainStripPane,
   isSessionStripPane,
   noteActiveTreeGroup,
   reloadTreePane,
@@ -768,10 +769,19 @@ function ZoneDropOverlay({ node }: { node: GroupNode }) {
   }
 
   // A session drag (sidebar row) reuses this exact overlay — over ANY zone
-  // now (stack into its tabs / split its edges); only a CHAT zone's center is
-  // a link-to-chat (the composer overlay owns that visual).
+  // that hosts a MAIN tile (stack into its tabs / split its edges); only a
+  // CHAT zone's center is a link-to-chat (the composer overlay owns that
+  // visual). Standing side chrome — the sidebar, files, terminal — hosts no
+  // main tile, so a session can't land there: those zones stay DARK rather
+  // than painting an idle outline the drop would only refuse. Same test
+  // `tileZoneHost` (session-drag.ts) resolves the drop with, so what lights
+  // up and what commits cannot disagree.
   const sessionDrag = dragging === SESSION_TILE_DRAG
   const chatZone = node.panes.some(isSessionStripPane)
+
+  if (sessionDrag && !chatZone && !node.panes.some(isMainStripPane)) {
+    return null
+  }
 
   const isDragSource = node.panes.includes(dragging)
 

@@ -49,7 +49,8 @@ def test_zero_drafts_still_checks_downstream_then_reports_no_work(monkeypatch, t
     monkeypatch.setattr(module, "check_publisher_readiness", lambda: calls.append(True))
     assert module.main([]) == 0
     assert calls == [True]
-    assert "no-work" in capsys.readouterr().out
+    # No-agent watchdog cron contract: empty stdout = silent = no alert.
+    assert capsys.readouterr().out == ""
 
 
 def test_preflight_reports_ready_idle_without_mutation(monkeypatch, tmp_path, capsys):

@@ -3067,7 +3067,9 @@ async function applyUpdates(opts = {}) {
         )
       }
 
-      rememberLog(`[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`)
+      rememberLog(
+        `[updates] launched updater: ${updater} ${updaterArgs.join(' ')}; exiting desktop to release venv shim`
+      )
     }
 
     // Linger on the "updating — don't reopen" overlay long enough for the user

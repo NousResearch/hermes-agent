@@ -109,6 +109,7 @@ import {
 import type { SidebarNavItem } from '../../types'
 
 import { SidebarCronJobsSection } from './cron-jobs-section'
+import { shouldShowCronSection } from './cron-section-visibility'
 import { SidebarLoadMoreRow } from './load-more-row'
 import { orderByIds, reconcileOrderIds, resolveManualSessionOrderIds, sameIds } from './order'
 import { ProfileRail } from './profile-switcher'
@@ -1520,7 +1521,7 @@ export function ChatSidebar({
                 )
               })}
 
-            {!trimmedQuery && !worktreeGroupingActive && cronJobs.length > 0 && (
+            {shouldShowCronSection({ cronJobsCount: cronJobs.length, trimmedQuery }) && (
               <SidebarCronJobsSection
                 jobs={cronJobs}
                 label={s.cronJobs}

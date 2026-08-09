@@ -19064,16 +19064,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return False
 
         chat_id = event.source.chat_id
-        voice_mode = self._voice_mode.get(self._voice_key(event.source.platform, chat_id), "off")
+        voice_key = self._voice_key(event.source.platform, chat_id)
+        voice_mode = self._voice_mode.get(voice_key)
         is_voice_input = (event.message_type == MessageType.VOICE)
+
+        # ``voice.auto_tts`` is synced into each adapter on gateway startup
+        # (and per-chat /voice on|off overrides are encoded there). The runner
+        # consults the adapter so the global default is honored on the
+        # streaming/final-text path where the base adapter receives
+        # text_content=None and cannot run its own auto-TTS.
+        adapter = self.adapters.get(event.source.platform)
+        adapter_auto_tts = False
+        if adapter and hasattr(adapter, "_should_auto_tts_for_chat"):
+            try:
+                adapter_auto_tts = bool(adapter._should_auto_tts_for_chat(chat_id))
+            except Exception:
+                adapter_auto_tts = False
 
         should = (
             (voice_mode == "all")
             or (voice_mode == "voice_only" and is_voice_input)
-            # ``voice.auto_tts`` is synced into the adapter on gateway startup.
-            # It is the fallback only when the chat has no explicit mode;
-            # otherwise the chat-level all/voice_only/off choice takes precedence.
-            or (voice_mode is None and adapter_auto_tts)
+            # Global voice.auto_tts acts as the default unless a chat was
+            # explicitly turned off (voice_mode == "off" is a hard override)
+            # or narrowed to voice_only (text replies must not widen).
+            or (voice_mode not in ("off", "voice_only") and adapter_auto_tts)
         )
         if not should:
             return False

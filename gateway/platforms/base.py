@@ -4110,11 +4110,22 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     def prepare_tts_text(self, text: str) -> str:
-        """Prepare text for TTS. Override to filter tool output, code, etc.
+        """Prepare a spoken script for TTS. Override to filter tool output, code, etc.
 
-        Default strips markdown formatting and truncates to 4000 chars.
+        Auto-TTS should not feed raw chat Markdown or compact symbols to the
+        speech provider.  It should receive a transcript-like script: headings
+        and bullets flattened into sentence pauses, units like ``°C`` expanded
+        to words such as ``degrees Celsius``, and ``<think>`` reasoning blocks
+        removed.  Routes through the shared spoken-text normalizer so every
+        TTS path (tool, gateway auto-TTS, voice-mode streaming, dashboard)
+        behaves identically.
         """
-        return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
+        try:
+            from tools.tts_text_normalize import prepare_spoken_text
+            return prepare_spoken_text(text, max_chars=4000)
+        except Exception:
+            # Keep auto-TTS best-effort if the normalizer ever fails.
+            return re.sub(r'[*_`#\[\]()]', '', text)[:4000].strip()
 
     async def play_tts(
         self,

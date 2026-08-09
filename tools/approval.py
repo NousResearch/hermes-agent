@@ -105,15 +105,13 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     pre_approval_request, post_approval_response.
     """
     try:
-        from hermes_cli.plugins import invoke_hook
+        from hermes_cli import lifecycle
     except Exception:
-        # Plugin system not available in this execution context
-        # (e.g. bare tool-only imports, minimal test environments).
         return
     try:
         kwargs.setdefault("turn_id", _approval_turn_id.get())
         kwargs.setdefault("tool_call_id", _approval_tool_call_id.get())
-        invoke_hook(hook_name, **kwargs)
+        lifecycle.invoke_hook(hook_name, **kwargs)
     except Exception as exc:
         # invoke_hook() already swallows per-callback errors, so reaching here
         # means the dispatch layer itself failed. Log and move on -- approval

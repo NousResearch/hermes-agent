@@ -9135,11 +9135,7 @@ function startHudCursorFeed(win: BrowserWindow) {
       return
     }
 
-    const point = cursorPointInWindow(
-      screen.getCursorScreenPoint(),
-      win.getBounds(),
-      win.webContents.getZoomFactor()
-    )
+    const point = cursorPointInWindow(screen.getCursorScreenPoint(), win.getBounds(), win.webContents.getZoomFactor())
 
     // Off-window is a real answer (it is what hands the mouse back), so it is
     // sent — once. Only an unchanged answer is dropped, to keep an idle cursor

@@ -296,6 +296,29 @@ class TestMaybeAutoTitle:
         assert db.get_session_title("sess-1") is None
         mock_auto.assert_not_called()
 
+    def test_a_multimodal_turn_counts_as_a_real_question(self, tmp_path):
+        """"Here's a screenshot, fix the login" is a question, parts list or not.
+
+        Judging a turn by `content` alone reads a multimodal one as machinery
+        and undercounts the conversation, so a session deep into its history
+        looks like it is still on its opening turn.
+        """
+        from agent.title_generator import _is_real_user_turn
+
+        assert _is_real_user_turn(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
+                    {"type": "text", "text": "fix the login button"},
+                ],
+            }
+        )
+        # An image with no words is not a question we can name anything after.
+        assert not _is_real_user_turn(
+            {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "x"}}]}
+        )
+
     def test_titles_on_a_later_turn_when_the_opener_was_not_titleable(self, tmp_path):
         """A session whose opener couldn't be titled gets named by a later turn.
 

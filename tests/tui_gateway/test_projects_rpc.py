@@ -146,6 +146,38 @@ def test_warm_roots_probes_in_parallel_and_fills_the_cache(monkeypatch):
     assert live["calls"] == before
 
 
+def test_missing_directory_costs_no_subprocess(monkeypatch):
+    # Deleted worktrees dominate a long session history's cwds, and `git -C` on
+    # one can only fail — so it must never reach the fork.
+    from tui_gateway import git_probe
+
+    def boom(*_a, **_kw):
+        raise AssertionError("spawned git for a directory that does not exist")
+
+    monkeypatch.setattr(git_probe, "bounded_git_probe", boom)
+
+    assert git_probe.run_git("/gone/worktree", "rev-parse", "--show-toplevel") == ""
+
+
+def test_non_repo_cwd_is_not_probed_for_a_common_dir(monkeypatch, tmp_path):
+    # `warm_roots` only reaches `common_repo_root` for cwds that ARE repos, so a
+    # common-dir probe here is one the warm can't absorb: it runs serially on
+    # the discovery pass, once per non-repo cwd.
+    from tui_gateway import git_probe
+
+    git_probe.invalidate()
+    asked = []
+
+    def probe(cwd, *args):
+        asked.append(args[-1])
+        return ""  # not a repo, whatever we ask
+
+    monkeypatch.setattr(git_probe, "run_git", probe)
+
+    assert git_probe.common_repo_root(str(tmp_path)) == ""
+    assert asked == ["--show-toplevel"]
+
+
 def test_create_list_roundtrip(tmp_path):
     created = _call("projects.create", {"name": "Demo", "folders": [str(tmp_path)], "use": True})
     assert created["project"]["slug"] == "demo"

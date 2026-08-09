@@ -1049,6 +1049,10 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # `telemetry.shared_metrics.enabled` is the only schema-surfaced telemetry
     # field — fold it into security alongside the other privacy-posture toggles.
     "telemetry": "security",
+    # `governance.profile_activity_ledger.enabled` is the only schema-surfaced
+    # governance field. It controls an audit ledger, so keep it with the other
+    # security, approvals, privacy, and telemetry posture toggles.
+    "governance": "security",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.

@@ -423,6 +423,12 @@ def _default_db_path() -> Path:
 #: ``@pytest.mark.live_system_guard_bypass``; scripts may set it explicitly.
 _STATE_DB_GUARD_BYPASS = False
 
+#: Env-carried twin of ``_STATE_DB_GUARD_BYPASS``.  A module global cannot
+#: cross a process boundary, so a test that deliberately points a *child* at
+#: the live DB has no way to opt out once ancestry arms the guard there.
+#: Export this in the child's env instead.
+_STATE_DB_GUARD_BYPASS_ENV = "HERMES_STATE_DB_GUARD_BYPASS"
+
 #: Additional production roots to refuse (beyond the platform default
 #: ``~/.hermes``).  The test conftest injects the pre-sandbox production
 #: root here so custom-``HERMES_HOME`` deployments are covered too.
@@ -463,6 +469,82 @@ def _running_under_pytest() -> bool:
     )
 
 
+#: Names that identify a pytest launcher in a process command line.  Matched
+#: against the *basename* of each argv token so ``/tmp/pytest-of-dev/...``
+#: paths — which do show up in real argv — cannot false-positive.
+_PYTEST_LAUNCHER_NAMES = frozenset(
+    {"pytest", "py.test", "pytest.exe", "py.test.exe"}
+)
+
+#: Memoised ancestry answer.  The process tree above us does not change in a
+#: way that matters here, and the walk must not cost anything on the hot path.
+_PYTEST_ANCESTOR: Optional[bool] = None
+
+
+def _process_looks_like_pytest(proc: Any) -> bool:
+    """True when *proc*'s command line is a pytest invocation.
+
+    Covers both ``pytest ...`` (launcher on argv[0]) and ``python -m pytest``
+    (launcher as a bare ``pytest`` token).  A process whose command line we
+    cannot read is treated as "not pytest": guessing the other way would
+    refuse production opens for unrelated reasons.
+    """
+    try:
+        cmdline = proc.cmdline() or []
+    except Exception:
+        return False
+    for arg in cmdline:
+        try:
+            name = os.path.basename(str(arg).strip('"').strip("'")).lower()
+        except Exception:
+            continue
+        if name in _PYTEST_LAUNCHER_NAMES:
+            return True
+    return False
+
+
+def _has_pytest_ancestor() -> bool:
+    """True when some ancestor process of this one is a pytest run.
+
+    ``_running_under_pytest`` reads ``PYTEST_*`` env vars, which a child
+    spawned with a rebuilt environment loses at the same moment it loses the
+    ``HERMES_HOME`` redirect: that child aims at the production DB *and*
+    disarms the guard in one step (#82770).  Ancestry is the one test-context
+    signal that survives an env rebuild, so it backs the env check up.
+
+    Fails open (``False``) when ``psutil`` is unavailable or the walk errors —
+    that restores the previous env-only behaviour rather than blocking real
+    user runs on a psutil hiccup.
+    """
+    global _PYTEST_ANCESTOR
+    if _PYTEST_ANCESTOR is not None:
+        return _PYTEST_ANCESTOR
+    found = False
+    if psutil is not None:
+        try:
+            for parent in psutil.Process().parents():
+                if _process_looks_like_pytest(parent):
+                    found = True
+                    break
+        except Exception:
+            found = False
+    _PYTEST_ANCESTOR = found
+    return found
+
+
+def _in_test_context() -> bool:
+    """True when this process is a test run, by environment or by ancestry.
+
+    Order matters for cost: the env probe is two dict lookups and covers the
+    common in-process case, so the ancestry walk only runs for processes the
+    environment claims are ordinary user runs — and its answer is memoised,
+    so a real ``hermes`` invocation pays for at most one walk.
+    """
+    if _running_under_pytest():
+        return True
+    return _has_pytest_ancestor()
+
+
 def _production_state_roots() -> List[Path]:
     roots: List[Path] = []
     real_root = _real_platform_state_root()
@@ -501,8 +583,15 @@ def _ensure_test_isolation(db_path: Path) -> None:
     Raises ``RuntimeError`` before any connection, mkdir, journal-mode
     pragma, or byte probe can touch the live database.  No-op outside
     pytest and for hermetic (tmp ``HERMES_HOME``) paths.
+
+    "pytest context" means environment *or* process ancestry — see
+    :func:`_in_test_context`.  Env alone is not enough: a child spawned with
+    a rebuilt environment loses ``PYTEST_*`` and ``HERMES_HOME`` together,
+    which is precisely the state in which it writes to production (#82770).
     """
-    if _STATE_DB_GUARD_BYPASS or not _running_under_pytest():
+    if _STATE_DB_GUARD_BYPASS or os.environ.get(_STATE_DB_GUARD_BYPASS_ENV):
+        return
+    if not _in_test_context():
         return
     try:
         resolved = Path(db_path).expanduser().resolve()
@@ -517,7 +606,9 @@ def _ensure_test_isolation(db_path: Path) -> None:
                 "explicit tmp db_path or let the hermetic conftest redirect "
                 "HERMES_HOME. If this test genuinely needs the live "
                 "database, mark it with "
-                "@pytest.mark.live_system_guard_bypass."
+                "@pytest.mark.live_system_guard_bypass — or, for a spawned "
+                f"child process, export {_STATE_DB_GUARD_BYPASS_ENV}=1 in "
+                "its environment."
             )
 
 # ---------------------------------------------------------------------------
@@ -4538,6 +4629,123 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             )
 
         self._execute_write(_do)
+
+    def list_never_active_keyed_sessions(
+        self, *, older_than_days: float
+    ) -> List[Dict[str, Any]]:
+        """Keyed gateway rows that were opened and then never used at all.
+
+        Selects rows that are keyed (``session_key IS NOT NULL``), still open
+        (``ended_at IS NULL``) and carry no evidence of a single turn: no
+        messages, no tokens, no tool or API calls, no recorded activity, no
+        title.  Such a row is indistinguishable from "never happened".
+
+        That is exactly the shape of a leaked test fixture (#82770) — and
+        also of a chat that was routed but never answered.  Both are safe to
+        drop: there is no transcript to lose, and the gateway mints a fresh
+        session on the next inbound message either way.
+
+        ``bulk prune``/``archive`` cannot reach these rows: their shared
+        selector is pinned to ``ended_at IS NOT NULL`` so that a live session
+        is never picked, which permanently excludes every never-closed row.
+        Hence a separate, narrower selector rather than another filter flag.
+
+        ``pinned`` and ``archived`` rows are excluded — both are explicit
+        user intent to keep the row around.
+        """
+        cutoff = time.time() - (float(older_than_days) * 86400.0)
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT s.id, s.session_key, s.source, s.chat_id,
+                       s.chat_type, s.user_id, s.started_at
+                  FROM sessions s
+                 WHERE s.session_key IS NOT NULL
+                   AND s.ended_at IS NULL
+                   AND s.title IS NULL
+                   AND s.last_activity_at IS NULL
+                   AND COALESCE(s.message_count, 0) = 0
+                   AND COALESCE(s.tool_call_count, 0) = 0
+                   AND COALESCE(s.api_call_count, 0) = 0
+                   AND COALESCE(s.input_tokens, 0) = 0
+                   AND COALESCE(s.output_tokens, 0) = 0
+                   AND COALESCE(s.pinned, 0) = 0
+                   AND COALESCE(s.archived, 0) = 0
+                   AND s.started_at IS NOT NULL
+                   AND s.started_at < ?
+                   AND NOT EXISTS (
+                           SELECT 1 FROM messages m WHERE m.session_id = s.id
+                       )
+                 ORDER BY s.started_at
+                """,
+                (cutoff,),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def _delete_routing_entries_for_sessions(self, session_ids: Set[str]) -> int:
+        """Drop ``gateway_routing`` rows pointing at any of *session_ids*.
+
+        Routing entries are keyed by ``(scope, session_key)`` and record their
+        target session inside ``entry_json``, so there is no way to reach them
+        by session id in SQL — the match is done in Python over all scopes.
+        """
+        if not session_ids:
+            return 0
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT scope, session_key, entry_json FROM gateway_routing"
+            ).fetchall()
+        doomed: List[Tuple[str, str]] = []
+        for row in rows:
+            try:
+                entry = json.loads(row["entry_json"] or "{}")
+            except Exception:
+                continue
+            if isinstance(entry, dict) and entry.get("session_id") in session_ids:
+                doomed.append((row["scope"], row["session_key"]))
+        if not doomed:
+            return 0
+
+        def _do(conn):
+            conn.executemany(
+                "DELETE FROM gateway_routing WHERE scope = ? AND session_key = ?",
+                doomed,
+            )
+
+        self._execute_write(_do)
+        return len(doomed)
+
+    def prune_never_active_keyed_sessions(
+        self,
+        *,
+        older_than_days: float,
+        sessions_dir: Optional[Path] = None,
+    ) -> Tuple[int, int]:
+        """Delete never-active keyed rows and the routing entries naming them.
+
+        Returns ``(sessions_deleted, routing_entries_deleted)``.
+
+        The routing entries go first: a stale entry that outlived its target
+        would leave the gateway resuming a session id that no longer exists.
+        Deleting the pair is what leaving them both would have amounted to
+        anyway — the target had no transcript to resume.
+
+        Deletion goes through :meth:`delete_session` rather than a bulk
+        ``DELETE`` so the delegate cascade, FTS bookkeeping and on-disk
+        transcript cleanup stay owned by one implementation.
+        """
+        candidates = self.list_never_active_keyed_sessions(
+            older_than_days=older_than_days
+        )
+        if not candidates:
+            return (0, 0)
+        ids = {str(row["id"]) for row in candidates}
+        routing_deleted = self._delete_routing_entries_for_sessions(ids)
+        deleted = 0
+        for session_id in ids:
+            if self.delete_session(session_id, sessions_dir=sessions_dir):
+                deleted += 1
+        return (deleted, routing_deleted)
 
     def list_gateway_sessions(
         self,

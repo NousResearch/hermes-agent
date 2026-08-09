@@ -12683,6 +12683,16 @@ def main():
         action="store_true",
         help="Also delete archived sessions (excluded by default)",
     )
+    sessions_prune.add_argument(
+        "--never-active",
+        action="store_true",
+        help=(
+            "Instead of ended sessions, delete keyed gateway rows that were "
+            "opened and never used (no messages, tokens, tool calls or title) "
+            "and are older than AGE (default 30 days). Ordinary prune can "
+            "never reach these — it only ever selects ended sessions"
+        ),
+    )
 
     sessions_archive = sessions_subparsers.add_parser(
         "archive",

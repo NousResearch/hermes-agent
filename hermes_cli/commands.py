@@ -16,7 +16,7 @@ import re
 import shutil
 import subprocess
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional, Tuple
 
@@ -716,7 +716,7 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     return entries
 
 
-def telegram_bot_commands() -> list[tuple[str, str]]:
+def telegram_bot_commands(*, include_plugins: bool = True) -> list[tuple[str, str]]:
     """Return (command_name, description) pairs for Telegram setMyCommands.
 
     Telegram command names cannot contain hyphens, so they are replaced with
@@ -728,7 +728,9 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
     without a payload, making them discoverable via autocomplete.
 
     Plugin-registered slash commands that require arguments are **excluded**
-    because plugins may not provide a no-arg usage fallback.
+    because plugins may not provide a no-arg usage fallback. Callers that need
+    source metadata can pass ``include_plugins=False`` and collect plugins via
+    :func:`_collect_gateway_skill_entries` instead.
     """
     overrides = _resolve_config_gates()
     result: list[tuple[str, str]] = []
@@ -741,12 +743,13 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
             result.append((tg_name, cmd.description))
-    for name, description, args_hint in _iter_plugin_command_entries():
-        if _requires_argument(args_hint):
-            continue
-        tg_name = _sanitize_telegram_name(name)
-        if tg_name:
-            result.append((tg_name, description))
+    if include_plugins:
+        for name, description, args_hint in _iter_plugin_command_entries():
+            if _requires_argument(args_hint):
+                continue
+            tg_name = _sanitize_telegram_name(name)
+            if tg_name:
+                result.append((tg_name, description))
     return result
 
 
@@ -882,24 +885,54 @@ def _telegram_effective_priority() -> tuple[str, ...]:
 def _prioritize_telegram_menu_commands(
     commands: list[tuple[str, str]],
 ) -> list[tuple[str, str]]:
-    priority = {
-        name: index
-        for index, name in enumerate(_telegram_effective_priority())
-    }
+    candidates = [(name, desc, "core", name) for name, desc in commands]
+    return [(name, desc) for name, desc, _source, _raw_name in _prioritize_telegram_menu_candidates(candidates)]
+
+
+def _prioritize_telegram_menu_candidates(
+    candidates: list[tuple[str, str, str, str]],
+) -> list[tuple[str, str, str, str]]:
+    """Order Telegram candidates while keeping default priority core-only.
+
+    Candidate tuples contain ``(final_name, description, source, raw_name)``.
+    ``raw_name`` preserves the pre-clamp command name so an explicitly
+    configured long command remains addressable after Telegram name clamping.
+    """
+    menu_cfg = _telegram_command_menu_config()
+    configured = _dedupe_sanitized_names(menu_cfg["priority"])
+    defaults = _dedupe_sanitized_names(_TELEGRAM_MENU_PRIORITY)
+    configured_rank = {name: index for index, name in enumerate(configured)}
+    default_rank = {name: index for index, name in enumerate(defaults)}
+    priority_mode = menu_cfg["priority_mode"]
+
+    def _rank(candidate: tuple[str, str, str, str], stable_index: int) -> tuple[int, int, int]:
+        final_name, _desc, source, raw_name = candidate
+        configured_index = configured_rank.get(raw_name)
+        if configured_index is None:
+            configured_index = configured_rank.get(final_name)
+        default_index = default_rank.get(final_name) if source == "core" else None
+
+        if priority_mode == "replace":
+            if configured_index is not None:
+                return (0, configured_index, stable_index)
+            return (1, 0, stable_index)
+        if priority_mode == "append":
+            if default_index is not None:
+                return (0, default_index, stable_index)
+            if configured_index is not None:
+                return (1, configured_index, stable_index)
+            return (2, 0, stable_index)
+        if configured_index is not None:
+            return (0, configured_index, stable_index)
+        if default_index is not None:
+            return (1, default_index, stable_index)
+        return (2, 0, stable_index)
+
     return [
-        command
-        for _index, command in sorted(
-            enumerate(commands),
-            key=lambda item: (
-                0,
-                priority[item[1][0]],
-                item[0],
-            )
-            if item[1][0] in priority
-            else (
-                1,
-                item[0],
-            ),
+        candidate
+        for stable_index, candidate in sorted(
+            enumerate(candidates),
+            key=lambda item: _rank(item[1], item[0]),
         )
     ]
 
@@ -931,7 +964,7 @@ def _sanitize_telegram_name(raw: str) -> str:
 
 
 def _clamp_command_names(
-    entries: list[tuple[str, ...]],
+    entries: Sequence[tuple[str, ...]],
     reserved: set[str],
 ) -> list[tuple[str, ...]]:
     """Enforce 32-char command name limit with collision avoidance.
@@ -979,11 +1012,11 @@ _clamp_telegram_names = _clamp_command_names
 
 def _collect_gateway_skill_entries(
     platform: str,
-    max_slots: int,
+    max_slots: int | None,
     reserved_names: set[str],
     desc_limit: int = 100,
     sanitize_name: "Callable[[str], str] | None" = None,
-) -> tuple[list[tuple[str, str, str]], int]:
+) -> tuple[list[tuple[str, str, str, str]], int]:
     """Collect plugin + skill entries for a gateway platform.
 
     Priority order:
@@ -998,7 +1031,8 @@ def _collect_gateway_skill_entries(
         platform: Platform identifier for per-platform skill filtering
             (``"telegram"``, ``"discord"``, etc.).
         max_slots: Maximum number of entries to return (remaining slots after
-            built-in/core commands).
+            built-in/core commands), or ``None`` to return every eligible
+            plugin and skill candidate for a caller that applies a global cap.
         reserved_names: Names already taken by built-in commands.  Mutated
             in-place as new names are added.
         desc_limit: Max description length (40 for Telegram, 100 for Discord).
@@ -1007,34 +1041,41 @@ def _collect_gateway_skill_entries(
             empty string to signal "skip this entry".
 
     Returns:
-        ``(entries, hidden_count)`` where *entries* is a list of
-        ``(name, description, cmd_key)`` triples and *hidden_count* is the
-        number of skill entries dropped due to the cap.  ``cmd_key`` is the
-        original ``/skill-name`` key from :func:`get_skill_commands`.
+        ``(entries, hidden_count)`` where *entries* contains
+        ``(name, description, cmd_key, raw_name)`` tuples. ``cmd_key`` is the
+        original skill key (empty for plugins); ``raw_name`` is the sanitized
+        pre-clamp name used for configured priority matching.
     """
-    all_entries: list[tuple[str, str, str]] = []
+    all_entries: list[tuple[str, str, str, str]] = []
 
     # --- Tier 1: Plugin slash commands (never trimmed) ---------------------
-    plugin_pairs: list[tuple[str, str]] = []
+    plugin_pairs: list[tuple[str, str, str]] = []
     try:
         from hermes_cli.plugins import get_plugin_commands
         plugin_cmds = get_plugin_commands()
         for cmd_name in sorted(plugin_cmds):
+            if platform == "telegram":
+                args_hint = str(plugin_cmds[cmd_name].get("args_hint") or "").strip()
+                if _requires_argument(args_hint):
+                    continue
             name = sanitize_name(cmd_name) if sanitize_name else cmd_name
             if not name:
                 continue
             desc = plugin_cmds[cmd_name].get("description", "Plugin command")
             if len(desc) > desc_limit:
                 desc = desc[:desc_limit - 3] + "..."
-            plugin_pairs.append((name, desc))
+            plugin_pairs.append((name, desc, name))
     except Exception:
         pass
 
-    plugin_pairs = _clamp_command_names(plugin_pairs, reserved_names)
-    reserved_names.update(n for n, _ in plugin_pairs)
-    # Plugins have no cmd_key — use empty string as placeholder
-    for n, d in plugin_pairs:
-        all_entries.append((n, d, ""))
+    plugin_pairs = [
+        (name, desc, raw_name)
+        for name, desc, raw_name in _clamp_command_names(plugin_pairs, reserved_names)
+    ]
+    reserved_names.update(n for n, _d, _raw_name in plugin_pairs)
+    # Plugins have no cmd_key — use empty string as placeholder.
+    for name, desc, raw_name in plugin_pairs:
+        all_entries.append((name, desc, "", raw_name))
 
     # --- Tier 2: Built-in skill commands (trimmed at cap) -----------------
     _platform_disabled: set[str] = set()
@@ -1044,7 +1085,7 @@ def _collect_gateway_skill_entries(
     except Exception:
         pass
 
-    skill_triples: list[tuple[str, str, str]] = []
+    skill_entries: list[tuple[str, str, str, str]] = []
     try:
         from agent.skill_commands import get_skill_commands
         from tools.skills_tool import SKILLS_DIR
@@ -1085,45 +1126,26 @@ def _collect_gateway_skill_entries(
             desc = info.get("description", "")
             if len(desc) > desc_limit:
                 desc = desc[:desc_limit - 3] + "..."
-            skill_triples.append((name, desc, cmd_key))
+            skill_entries.append((name, desc, cmd_key, name))
     except Exception:
         pass
 
-    # Clamp names; cmd_key is passed through as extra payload so it survives
-    # any clamp-induced renames.
-    skill_triples = _clamp_command_names(skill_triples, reserved_names)
+    # Clamp names; cmd_key and raw_name survive any clamp-induced rename.
+    skill_entries = [
+        (name, desc, cmd_key, raw_name)
+        for name, desc, cmd_key, raw_name in _clamp_command_names(
+            skill_entries, reserved_names
+        )
+    ]
 
-    # Telegram's configured command-menu priority applies to dynamic skills as
-    # well as core commands. Reorder before trimming so a prioritized skill can
-    # claim a scarce remaining BotCommand slot instead of losing to the
-    # alphabetical default order.
-    if platform == "telegram":
-        priority = {
-            name: index
-            for index, name in enumerate(_telegram_effective_priority())
-        }
-        skill_triples = [
-            entry
-            for original_index, entry in sorted(
-                enumerate(skill_triples),
-                key=lambda item: (
-                    0,
-                    priority[item[1][0]],
-                    item[0],
-                )
-                if item[1][0] in priority
-                else (
-                    1,
-                    item[0],
-                ),
-            )
-        ]
+    if max_slots is None:
+        return all_entries + skill_entries, 0
 
     # Skills fill remaining slots — only tier that gets trimmed
     remaining = max(0, max_slots - len(all_entries))
-    hidden_count = max(0, len(skill_triples) - remaining)
-    for n, d, k in skill_triples[:remaining]:
-        all_entries.append((n, d, k))
+    hidden_count = max(0, len(skill_entries) - remaining)
+    for name, desc, cmd_key, raw_name in skill_entries[:remaining]:
+        all_entries.append((name, desc, cmd_key, raw_name))
 
     return all_entries[:max_slots], hidden_count
 
@@ -1154,21 +1176,24 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
         (menu_commands, hidden_count) where hidden_count is the number of
         commands omitted due to the cap.
     """
-    core_commands = list(telegram_bot_commands())
+    core_commands = list(telegram_bot_commands(include_plugins=False))
     reserved_names = {n for n, _ in core_commands}
     entries, hidden_count = _collect_gateway_skill_entries(
         platform="telegram",
-        max_slots=max_commands,
+        max_slots=None,
         reserved_names=reserved_names,
         desc_limit=40,
         sanitize_name=_sanitize_telegram_name,
     )
-    # Drop the cmd_key — Telegram only needs (name, desc) pairs. Apply the
-    # configured priority across all tiers before enforcing the global cap.
-    all_commands = core_commands + [(n, d) for n, d, _k in entries]
-    all_commands = _prioritize_telegram_menu_commands(all_commands)
-    overflow_count = max(0, len(all_commands) - max_commands)
-    return all_commands[:max_commands], hidden_count + overflow_count
+    candidates = [(name, desc, "core", name) for name, desc in core_commands]
+    for name, desc, cmd_key, raw_name in entries:
+        source = "skill" if cmd_key else "plugin"
+        candidates.append((name, desc, source, raw_name))
+
+    candidates = _prioritize_telegram_menu_candidates(candidates)
+    overflow_count = max(0, len(candidates) - max_commands)
+    menu = [(name, desc) for name, desc, _source, _raw_name in candidates[:max_commands]]
+    return menu, hidden_count + overflow_count
 
 
 def discord_skill_commands(
@@ -1193,12 +1218,15 @@ def discord_skill_commands(
         ``(discord_name, description, cmd_key)`` triples.  ``cmd_key`` is
         the original ``/skill-name`` key needed for the slash handler callback.
     """
-    return _collect_gateway_skill_entries(
+    entries, hidden_count = _collect_gateway_skill_entries(
         platform="discord",
         max_slots=max_slots,
         reserved_names=set(reserved_names),  # copy — don't mutate caller's set
         desc_limit=100,
     )
+    return [
+        (name, desc, cmd_key) for name, desc, cmd_key, _raw_name in entries
+    ], hidden_count
 
 
 def discord_skill_commands_by_category(

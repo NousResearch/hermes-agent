@@ -26,7 +26,9 @@ from agent.memory_context import StreamingContextScrubber, build_memory_context_
 from session_rules.turns import sanitize_context
 from agent.memory_manager_tools import (inject_memory_provider_tools, memory_provider_tools_enabled,
                                         memory_provider_tools_exposed, normalize_tool_schema)
-from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
+from agent.memory_provider import (
+    PRE_COMPRESS_CHECKPOINT_API_VERSION, CompressionContext, MemoryProvider, ctx_bound, spawn_context_thread,
+)
 from session_rules.turns import extract_user_instruction_from_skill_message
 from hermes_constants import hermes_home_key
 from tools.hook_output_spill import get_spill_config, spill_if_oversized
@@ -733,7 +735,8 @@ class MemoryManager:
             if require_checkpoint:  # the caller keeps the uncompressed transcript
                 raise RuntimeError("Memory pre-compress checkpoint refused; see `hermes logs errors`")
             return ""
-        parts = []
+        parts: list[str] = []
+        key_facts: list[str] = []
         checkpoint_succeeded = False
         from agent.message_metadata import without_withheld_prompts
         messages, evidence_messages = _redact_for_provider(
@@ -751,7 +754,11 @@ class MemoryManager:
                 kwargs["require_checkpoint"] = require_checkpoint
             try:
                 result = provider.on_pre_compress(provider_messages, **kwargs)
-                if result and result.strip():
+                if isinstance(result, CompressionContext):
+                    if result.text.strip():
+                        parts.append(result.text)
+                    key_facts.extend(fact.strip() for fact in result.key_facts if isinstance(fact, str) and fact.strip())
+                elif result and result.strip():
                     parts.append(result)
                 checkpoint_succeeded = checkpoint_succeeded or is_checkpoint_provider
             except Exception as e:
@@ -762,6 +769,8 @@ class MemoryManager:
             raise RuntimeError(
                 f"No active memory provider completed pre-compress checkpoint API v{checkpoint_api_version}"
             )
+        if key_facts:
+            parts.append("MEMORY PROVIDER KEY FACTS:\n" + "\n".join(f"- {fact}" for fact in key_facts))
         return "\n\n".join(parts)
 
     @staticmethod

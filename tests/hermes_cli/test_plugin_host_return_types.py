@@ -43,6 +43,44 @@ def _shutdown(manager: PluginManager) -> None:
     manager._plugin_host().shutdown()
 
 
+MEMORY_PROVIDER_PLUGIN = '''
+from agent.memory_provider import CompressionContext, MemoryProvider
+
+class Archive(MemoryProvider):
+    name = "hostarchive"
+    def is_available(self): return True
+    def initialize(self, session_id, **kwargs): pass
+    def get_tool_schemas(self): return []
+
+    def on_pre_compress(self, messages):
+        if not messages:
+            return "legacy context"
+        return CompressionContext(text="archive context", key_facts=["Keep the task ID"])
+
+def register(ctx):
+    ctx.register_memory_provider(Archive())
+'''
+
+
+@pytest.mark.platforms("any")
+def test_hosted_memory_provider_restores_structured_compression_context(tmp_path, monkeypatch):
+    from agent.memory_provider import CompressionContext
+    from hermes_cli.plugin_host import is_hosted_object
+    from plugins.memory import load_memory_provider
+
+    _home_with_plugin(tmp_path, monkeypatch, "hostarchive", MEMORY_PROVIDER_PLUGIN)
+    manager = plugins_mod.get_plugin_manager()
+    try:
+        provider = load_memory_provider("hostarchive", register_skills=False)
+        assert is_hosted_object(provider)
+        assert provider.on_pre_compress([]) == "legacy context"
+        assert provider.on_pre_compress([{"role": "user", "content": "task ID"}]) == CompressionContext(
+            text="archive context", key_facts=["Keep the task ID"],
+        )
+    finally:
+        _shutdown(manager)
+
+
 SECRET_SOURCE_PLUGIN = '''
 import os
 from agent.secret_sources.base import ErrorKind, FetchResult, SecretSource

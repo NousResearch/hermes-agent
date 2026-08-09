@@ -119,6 +119,52 @@ def test_legacy_engine_receives_only_supported_compression_arguments():
     assert calls == [100_000]
 
 
+@pytest.mark.parametrize("require_checkpoint", [False, True], ids=["best-effort", "required-checkpoint"])
+def test_structured_provider_context_reaches_compressor(require_checkpoint, monkeypatch):
+    from agent.memory_manager import MemoryManager
+    from agent.memory_provider import CompressionContext, PRE_COMPRESS_CHECKPOINT_API_VERSION
+
+    secret = "sk-" + "a" * 30
+    legacy = MagicMock()
+    legacy.name = "builtin"
+    legacy.pre_compress_checkpoint_api_version = 1
+    legacy.on_pre_compress.return_value = "Legacy provider context"
+    structured = MagicMock()
+    structured.name = "external"
+    structured.pre_compress_checkpoint_api_version = PRE_COMPRESS_CHECKPOINT_API_VERSION
+    structured.on_pre_compress.return_value = CompressionContext(
+        text="Project state: Hermes",
+        key_facts=["  Python version: 3.11  ", " ", f"api key: {secret}"],
+    )
+    manager = MemoryManager()
+    manager.add_provider(legacy)
+    manager.add_provider(structured)
+
+    compressor = MagicMock()
+    compressor.compress.side_effect = lambda messages, **_kwargs: [messages[0], messages[-1]]
+    _configure_engine_state(compressor)
+    agent = _make_agent(manager, compressor)
+    agent.compression_checkpoint_required = require_checkpoint
+    monkeypatch.setattr("agent.redact._REDACT_ENABLED", False)
+
+    messages = _messages()
+    agent._compress_context(messages, "sys", approx_tokens=100_000)
+
+    legacy.on_pre_compress.assert_called_once_with(messages)
+    structured.on_pre_compress.assert_called_once_with(messages, require_checkpoint=require_checkpoint)
+    assert compressor.compress.call_count == 1
+    context = compressor.compress.call_args.kwargs["memory_context"]
+    assert context.splitlines()[:5] == [
+        "Legacy provider context",
+        "",
+        "Project state: Hermes",
+        "",
+        "MEMORY PROVIDER KEY FACTS:",
+    ]
+    assert context.splitlines()[5] == "- Python version: 3.11"
+    assert secret not in context
+
+
 def test_provider_context_is_strictly_sanitized_before_plugin_engine(monkeypatch):
     prefix_secret = "sk-" + "a" * 30
     query_secret = "opaque-query-secret"

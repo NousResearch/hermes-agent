@@ -85,6 +85,7 @@ def test_dry_run_main_exits_0_without_alert(monkeypatch, fake_home):
 
 def test_live_checks_use_http_not_docker(monkeypatch, fake_home):
     """Live probes must not require root-only Docker access."""
+    monkeypatch.setenv("SEARXNG_URL", "http://127.0.0.1:8082")
     mod = _load_module(monkeypatch, fake_home)
     calls = []
 
@@ -105,7 +106,7 @@ def test_live_checks_use_http_not_docker(monkeypatch, fake_home):
     def fake_urlopen(url, timeout):
         assert timeout <= 10
         if ":8082/" in url:
-            return Response(b'<div class="result">ok</div>')
+            return Response(b'{"results": [{"url": "https://example.com"}]}')
         return Response(b'{"status": "ok", "checks": {}}')
 
     def fake_run(cmd, **kwargs):
@@ -115,7 +116,7 @@ def test_live_checks_use_http_not_docker(monkeypatch, fake_home):
 
     monkeypatch.setattr(mod.urllib.request, "urlopen", fake_urlopen)
     monkeypatch.setattr(mod.subprocess, "run", fake_run)
-    assert mod.check_searxng() == (True, "HTML search returned results")
+    assert mod.check_searxng() == (True, "JSON search returned 1 results")
     assert mod.check_groktoCrawl() == (True, "healthy (ok)")
     assert mod.check_ddgs() == (True, "working (1 result)")
     assert len(calls) == 1

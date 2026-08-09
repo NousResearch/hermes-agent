@@ -388,6 +388,9 @@ function profileRemoteOverride(config, profile) {
 }
 
 export interface ProfileRouteOptions {
+  /** Profile name on a separately-scoped backend when it differs from the
+   * desktop's local routing label (managed SSH `remoteProfile`). */
+  backendProfile?: null | string
   globalRemote?: boolean
   primaryProfile?: null | string
   profileRemoteOverride?: boolean
@@ -442,15 +445,66 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
 }
 
 /**
- * Add renderer-side `request.profile` to a REST path when the route says the
- * serving backend is not already scoped to that profile.
+ * Reconcile the renderer's desktop-facing profile label with the backend's
+ * profile namespace, then add `request.profile` when a shared backend needs it.
+ *
+ * A managed SSH override can deliberately map local `mara` to remote `default`.
+ * Endpoint-level filters (cron list / blueprint instantiate) arrive as an
+ * explicit `?profile=mara`; translate only that self-scope. Cross-profile
+ * selectors such as `all` or another concrete profile retain their meaning.
  */
 function pathWithGlobalRemoteProfile(path, profile, opts: ProfileRouteOptions = {}) {
+  const translated = translateSelfProfileQuery(path, profile, opts.backendProfile)
+
+  if (translated !== path) {
+    return translated
+  }
+
   if (!resolveProfileBackendRoute(profile, opts).scopePath) {
     return path
   }
 
   return pathWithProfileScope(path, profile)
+}
+
+/**
+ * Translate an explicit self-profile query from a Desktop routing alias to the
+ * backend's own profile namespace (a managed SSH `remoteProfile` can map local
+ * `mara` to remote `default`). Only a `?profile=` equal to the alias itself is
+ * rewritten; cross-profile selectors (`all`, another concrete profile) and
+ * unfiltered paths pass through untouched. Used by the v1 profile route above
+ * and by the registry SSH branch of the `hermes:api` handler — both routes
+ * reach a backend whose namespace is the remote profile, not the alias.
+ */
+function translateSelfProfileQuery(path, profile, backendProfile) {
+  const scopedProfile = connectionScopeKey(profile)
+  const backend = connectionScopeKey(backendProfile)
+
+  if (!scopedProfile || !backend || backend === scopedProfile) {
+    return path
+  }
+
+  const rawPath = String(path || '')
+
+  if (!rawPath) {
+    return path
+  }
+
+  let parsed
+
+  try {
+    parsed = new URL(rawPath, 'http://hermes.local')
+  } catch {
+    return path
+  }
+
+  if (connectionScopeKey(parsed.searchParams.get('profile')) !== scopedProfile) {
+    return path
+  }
+
+  parsed.searchParams.set('profile', backend)
+
+  return `${parsed.pathname}${parsed.search}${parsed.hash}`
 }
 
 /**
@@ -650,5 +704,6 @@ export {
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   savedProfileSsh,
-  tokenPreview
+  tokenPreview,
+  translateSelfProfileQuery
 }

@@ -82,7 +82,8 @@ import {
   resolveProfileBackendRoute,
   resolveTestWsUrl,
   savedProfileSsh,
-  tokenPreview
+  tokenPreview,
+  translateSelfProfileQuery
 } from './connection-config'
 import {
   backendScopeKey,
@@ -7078,10 +7079,11 @@ async function saveGatewayFile(payload: any = {}) {
   const fallbackName = path.basename(filePath) || suggested || 'download'
   const ctx = { suggested, fallbackName }
 
-  const requestPath = pathWithGlobalRemoteProfile(`/api/fs/download?path=${encodeURIComponent(filePath)}`, profile, {
-    globalRemote: globalRemoteActive(),
-    profileRemoteOverride: profileHasRemoteOverride(profile)
-  })
+  const requestPath = pathWithGlobalRemoteProfile(
+    `/api/fs/download?path=${encodeURIComponent(filePath)}`,
+    profile,
+    profileRouteOptions(profile)
+  )
 
   const url = `${connection.baseUrl}${requestPath}`
 
@@ -7109,10 +7111,7 @@ async function saveGatewayFileViaDataUrl(connection, profile, filePath, ctx: any
   const requestPath = pathWithGlobalRemoteProfile(
     `/api/fs/read-data-url?path=${encodeURIComponent(filePath)}`,
     profile,
-    {
-      globalRemote: globalRemoteActive(),
-      profileRemoteOverride: profileHasRemoteOverride(profile)
-    }
+    profileRouteOptions(profile)
   )
 
   const url = `${connection.baseUrl}${requestPath}`
@@ -9238,10 +9237,16 @@ function primaryProfileKey() {
 
 // Options describing the current connection setup for `resolveProfileBackendRoute`.
 function profileRouteOptions(profile) {
+  const config = readDesktopConnectionConfig()
+  const sshOverride = profileSshOverride(config, profile)
+
   return {
+    // A desktop profile can be only a client-side routing alias. Keep backend
+    // endpoint filters in the SSH target's namespace (e.g. mara → default).
+    backendProfile: sshOverride?.remoteProfile,
     globalRemote: globalRemoteActive(),
     primaryProfile: primaryProfileKey(),
-    profileRemoteOverride: Boolean(profileHasRemoteOverride(profile))
+    profileRemoteOverride: Boolean(profileRemoteOverride(config, profile) || sshOverride)
   }
 }
 
@@ -9443,6 +9448,10 @@ async function connectRegistryBackend(source, profile, key, poolEntry) {
       ...connection,
       profile: profileKey,
       connectionId: source.id,
+      // The remote process runs as this profile; the desktop-side profile key
+      // is only the routing label. hermes:api uses it to translate explicit
+      // self-profile query filters into the backend's namespace.
+      remoteProfile: sshConfig.remoteProfile || '',
       logs: hermesLog.slice(-80),
       ...getWindowState()
     }
@@ -12771,7 +12780,13 @@ ipcMain.handle('hermes:api', async (_event, request) => {
   if (registryConnectionId) {
     const connection: any = await ensureRegistryBackend(registryConnectionId, request?.profile)
 
-    const requestPath = connection.sharedRemote ? pathWithProfileScope(request.path, request?.profile) : request.path
+    // A shared remote host serves every profile via ?profile=; an SSH-scoped
+    // backend instead runs AS one remote profile, so an explicit self-profile
+    // filter must be translated from the desktop routing label into that
+    // backend namespace (same contract as the v1 profileRouteOptions path).
+    const requestPath = connection.sharedRemote
+      ? pathWithProfileScope(request.path, request?.profile)
+      : translateSelfProfileQuery(request.path, request?.profile, connection.remoteProfile)
 
     return fetchJsonForBackend(connection, requestPath, {
       method: request?.method,

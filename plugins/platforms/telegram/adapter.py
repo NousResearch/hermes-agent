@@ -4336,16 +4336,45 @@ class TelegramAdapter(BasePlatformAdapter):
                     kwargs["limits"] = _pool_limits
                 return kwargs
 
-            disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in {"1", "true", "yes", "on"})
+            disable_fallback = (
+                os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "")
+                .strip()
+                .lower()
+                in {"1", "true", "yes", "on"}
+            )
             fallback_ips = self._fallback_ips()
-            if not fallback_ips:
-                logger.warning("[%s] Discovering Telegram API fallback IPs via DNS-over-HTTPS…", self.name)
-                fallback_ips = await discover_fallback_ips()
-                logger.info(
-                    "[%s] Auto-discovered Telegram fallback IPs: %s",
-                    self.name,
-                    ", ".join(fallback_ips),
+            if disable_fallback:
+                fallback_ips = []
+            if not fallback_ips and not disable_fallback:
+                discovery_timeout = self._env_float_clamped(
+                    "HERMES_TELEGRAM_FALLBACK_DISCOVERY_TIMEOUT",
+                    5.0,
+                    min_value=0.0,
                 )
+                logger.warning(
+                    "[%s] Discovering Telegram API fallback IPs via DNS-over-HTTPS…",
+                    self.name,
+                )
+                try:
+                    fallback_ips = await _await_with_thread_deadline(
+                        discover_fallback_ips(),
+                        timeout=discovery_timeout,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[%s] Telegram fallback-IP discovery failed after %.0fs; "
+                        "continuing with the plain api.telegram.org path: %s",
+                        self.name,
+                        discovery_timeout,
+                        _redact_telegram_error_text(exc),
+                    )
+                    fallback_ips = []
+                else:
+                    logger.info(
+                        "[%s] Auto-discovered Telegram fallback IPs: %s",
+                        self.name,
+                        ", ".join(fallback_ips),
+                    )
 
             proxy_targets = ["api.telegram.org", *fallback_ips]
             proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_targets)

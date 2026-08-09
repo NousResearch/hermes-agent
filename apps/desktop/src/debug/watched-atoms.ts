@@ -16,7 +16,7 @@ import {
   $currentUsage,
   $gatewayState,
   $messages,
-  $messagingSessions,
+  $messagingCache,
   $selectedStoredSessionId,
   $sessions,
   $sessionsLoading
@@ -63,7 +63,7 @@ const SIDEBAR = {
   $cronSessions,
   $currentCwd,
   $gatewayState,
-  $messagingSessions,
+  $messagingCache,
   $projects,
   $projectTree,
   $selectedStoredSessionId,

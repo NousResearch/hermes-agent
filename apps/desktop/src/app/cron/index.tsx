@@ -48,7 +48,13 @@ import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { requestModelOptions } from '@/lib/model-options'
 import { asText } from '@/lib/text'
-import { $cronFocusJobId, $cronJobs, setCronFocusJobId, setCronJobs, updateCronJobs } from '@/store/cron'
+import {
+  $cronFocusJobId,
+  $cronJobs,
+  cronCacheRequestForScope,
+  setCronFocusJobId,
+  updateCronCacheForScope
+} from '@/store/cron'
 import { $changeEventsAvailable, $cronChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileScope, ALL_PROFILES } from '@/store/profile'
@@ -317,8 +323,11 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   const profileScope = useStore($profileScope)
 
   const refresh = useCallback(async () => {
+    const request = cronCacheRequestForScope(profileScope)
+
     try {
-      setCronJobs(await getCronJobs(profileScope === ALL_PROFILES ? 'all' : profileScope))
+      const jobs = await getCronJobs(profileScope === ALL_PROFILES ? 'all' : profileScope)
+      updateCronCacheForScope(request, () => jobs)
     } catch (err) {
       notifyError(err, c.failedLoad)
     } finally {
@@ -381,12 +390,16 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   const totalCount = jobs.length
 
   async function handlePauseResume(job: CronJob) {
+    const request = cronCacheRequestForScope(profileScope)
     setBusyJobId(job.id)
 
     try {
       const isPaused = jobState(job) === 'paused'
       const updated = isPaused ? await resumeCronJob(job.id) : await pauseCronJob(job.id)
-      updateCronJobs(rows => rows.map(row => (row.id === job.id ? updated : row)))
+
+      if (!updateCronCacheForScope(request, rows => rows.map(row => (row.id === job.id ? updated : row)))) {
+        return
+      }
       notify({
         kind: 'success',
         title: isPaused ? c.resumed : c.paused,
@@ -400,11 +413,15 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   }
 
   async function handleTrigger(job: CronJob) {
+    const request = cronCacheRequestForScope(profileScope)
     setBusyJobId(job.id)
 
     try {
       const updated = await triggerCronJob(job.id)
-      updateCronJobs(rows => rows.map(row => (row.id === job.id ? updated : row)))
+
+      if (!updateCronCacheForScope(request, rows => rows.map(row => (row.id === job.id ? updated : row)))) {
+        return
+      }
       notify({ kind: 'success', title: c.triggered, message: truncate(jobTitle(job), 60) })
     } catch (err) {
       notifyError(err, c.failedTrigger)
@@ -418,11 +435,15 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
       return
     }
 
+    const request = cronCacheRequestForScope(profileScope)
     setDeleting(true)
 
     try {
       await deleteCronJob(pendingDelete.id)
-      updateCronJobs(rows => rows.filter(row => row.id !== pendingDelete.id))
+
+      if (!updateCronCacheForScope(request, rows => rows.filter(row => row.id !== pendingDelete.id))) {
+        return
+      }
       notify({ kind: 'success', title: c.deleted, message: truncate(jobTitle(pendingDelete), 60) })
       setPendingDelete(null)
     } catch (err) {
@@ -433,6 +454,8 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   }
 
   async function handleEditorSave(values: EditorValues) {
+    const request = cronCacheRequestForScope(profileScope)
+
     if (editor.mode === 'create') {
       const created = await createCronJob({
         prompt: values.prompt,
@@ -442,14 +465,18 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
         ...(values.model.trim() ? { model: values.model.trim(), provider: values.provider.trim() || undefined } : {})
       })
 
-      updateCronJobs(rows => [...rows, created])
+      if (!updateCronCacheForScope(request, rows => [...rows, created])) {
+        return
+      }
       notify({ kind: 'success', title: c.created, message: truncate(jobTitle(created), 60) })
     } else if (editor.mode === 'edit') {
       const scriptOnlyJob = jobIsScriptOnly(editor.job)
 
       const updated = await updateCronJob(editor.job.id, cronEditorUpdates(values, { scriptOnlyJob }))
 
-      updateCronJobs(rows => rows.map(row => (row.id === updated.id ? updated : row)))
+      if (!updateCronCacheForScope(request, rows => rows.map(row => (row.id === updated.id ? updated : row)))) {
+        return
+      }
       notify({ kind: 'success', title: c.updated, message: truncate(jobTitle(updated), 60) })
     }
 
@@ -462,14 +489,19 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   // real per-profile job, and "all" is not a writable target — collapse it to
   // 'default', matching the manual create path in handleEditorSave.
   async function handleBlueprintCreate(blueprint: AutomationBlueprint, values: Record<string, string>) {
+    const request = cronCacheRequestForScope(profileScope)
     const profile = profileScope === ALL_PROFILES ? 'default' : profileScope
     const job = await instantiateAutomationBlueprint({ blueprint: blueprint.key, values }, profile)
 
-    updateCronJobs(rows => {
-      const rest = rows.filter(row => row.id !== job.id)
+    if (
+      !updateCronCacheForScope(request, rows => {
+        const rest = rows.filter(row => row.id !== job.id)
 
-      return [...rest, job]
-    })
+        return [...rest, job]
+      })
+    ) {
+      return
+    }
     notify({ kind: 'success', title: c.blueprints.scheduled, message: asText(job.schedule_display) || blueprint.title })
     setEditor({ mode: 'closed' })
   }

@@ -8,7 +8,7 @@ import {
   MESSAGING_SESSION_SOURCE_IDS,
   normalizeSessionSource
 } from '@/lib/session-source'
-import { setCronJobs } from '@/store/cron'
+import { cronCacheRequestForScope, updateCronCacheForScope } from '@/store/cron'
 import {
   $pinnedSessionIds,
   $sessionsLimit,
@@ -21,19 +21,18 @@ import {
 import { ALL_PROFILES, normalizeProfileKey } from '@/store/profile'
 import { $removedSessionIds } from '@/store/projects'
 import {
-  $messagingSessions,
   $selectedStoredSessionId,
   $sessions,
   CRON_SECTION_LIMIT,
   mergeSessionPage,
   MESSAGING_SECTION_LIMIT,
+  messagingCacheForScope,
+  messagingCacheRequestForScope,
   setCronSessions,
-  setMessagingPlatformTotals,
-  setMessagingSessions,
-  setMessagingTruncated,
   setSessionProfilesTruncated,
   setSessions,
-  setSessionsLoading
+  setSessionsLoading,
+  updateMessagingCacheForScope
 } from '@/store/session'
 import { $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
 
@@ -89,45 +88,60 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // competes with local chats for the recents page budget. One combined fetch
   // seeds every platform; the sidebar splits the rows per source.
   const refreshMessagingSessions = useCallback(async () => {
+    const request = messagingCacheRequestForScope(profileScope)
+    const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+
     try {
-      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
+      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
         excludeSources: MESSAGING_EXCLUDED_SOURCES
       })
-
-      // Drop any non-messaging source the broad exclude didn't catch (custom
-      // sources) — those stay in local recents, not a platform section.
       const rows = result.sessions.filter(s => isMessagingSource(s.source))
 
-      setMessagingSessions(prev => (sameCronSignature(prev, rows) ? prev : rows))
-      // Hit the cap → at least one platform may have more on disk than loaded,
-      // so platform sections offer their own per-platform "load more".
-      setMessagingTruncated(result.sessions.length >= MESSAGING_SECTION_LIMIT)
+      updateMessagingCacheForScope(request, prev => ({
+        ...prev,
+        sessions: sameCronSignature(prev.sessions, rows) ? prev.sessions : rows,
+        truncated: result.sessions.length >= MESSAGING_SECTION_LIMIT
+      }))
     } catch {
       // Non-fatal: the messaging sections just stay empty/stale.
     }
-  }, [])
+  }, [profileScope])
 
   // Page a single platform's section independently (mirrors the per-profile
   // pager): fetch that source's next window and merge it back in place, leaving
   // every other platform's rows untouched. Resolves the platform's exact total.
-  const loadMoreMessagingForPlatform = useCallback(async (platform: string) => {
-    const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform
-    const loaded = $messagingSessions.get().filter(inPlatform).length
+  const loadMoreMessagingForPlatform = useCallback(
+    async (platform: string) => {
+      const request = messagingCacheRequestForScope(profileScope)
+      const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform
+      const cache = messagingCacheForScope(profileScope)
+      const loaded = cache.sessions.filter(inPlatform).length
+      const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
 
-    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', 'all', {
-      source: platform
-    })
+      const result = await listAllProfileSessions(
+        loaded + SIDEBAR_SESSIONS_PAGE_SIZE,
+        1,
+        'exclude',
+        'recent',
+        sessionProfile,
+        {
+          source: platform
+        }
+      )
+      const incoming = result.sessions.filter(s => normalizeSessionSource(s.source) === platform)
+      const total = result.total ?? incoming.length
 
-    const incoming = result.sessions.filter(s => normalizeSessionSource(s.source) === platform)
-
-    setMessagingSessions(prev => [
-      ...prev.filter(s => !inPlatform(s)),
-      ...mergeSessionPage(prev.filter(inPlatform), incoming, sessionsToKeep())
-    ])
-
-    const total = result.total ?? incoming.length
-    setMessagingPlatformTotals(prev => ({ ...prev, [platform]: Math.max(total, incoming.length) }))
-  }, [])
+      updateMessagingCacheForScope(request, prev => ({
+        ...prev,
+        sessions: [
+          ...prev.sessions.filter(s => !inPlatform(s)),
+          ...mergeSessionPage(prev.sessions.filter(inPlatform), incoming, sessionsToKeep())
+        ],
+        platformTotals: { ...prev.platformTotals, [platform]: Math.max(total, incoming.length) }
+      }))
+    },
+    [profileScope]
+  )
 
   // Cron *jobs* drive the sidebar "Cron jobs" section. Jobs are created
   // synchronously (agent tool call or the cron UI), so refreshing here right
@@ -137,10 +151,12 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // fetch to the sidebar's profile scope — a concrete profile sees only its
   // own jobs; ALL_PROFILES keeps the unified view.
   const refreshCronJobs = useCallback(async () => {
+    const request = cronCacheRequestForScope(profileScope)
+
     try {
       const jobs = await getCronJobs(profileScope === ALL_PROFILES ? 'all' : profileScope)
 
-      setCronJobs(jobs)
+      updateCronCacheForScope(request, () => jobs)
     } catch {
       // Non-fatal: the cron section just keeps its last-known jobs.
     }
@@ -148,6 +164,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
 
   const refreshSessions = useCallback(async () => {
     const requestId = refreshSessionsRequestRef.current + 1
+    const messagingRequest = messagingCacheRequestForScope(profileScope)
     refreshSessionsRequestRef.current = requestId
     // The loading flag exists to drive the initial skeletons (they only render
     // while the list is empty). Turn-complete / reconnect refreshes over a
@@ -233,9 +250,11 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         // platform in the UI.
         const messagingRows = result.messaging.sessions.filter(s => isMessagingSource(s.source))
 
-        setMessagingSessions(prev => (sameCronSignature(prev, messagingRows) ? prev : messagingRows))
-        // Hit the cap → at least one platform may have more on disk than loaded.
-        setMessagingTruncated(result.messaging.sessions.length >= MESSAGING_SECTION_LIMIT)
+        updateMessagingCacheForScope(messagingRequest, prev => ({
+          ...prev,
+          sessions: sameCronSignature(prev.sessions, messagingRows) ? prev.sessions : messagingRows,
+          truncated: result.messaging.sessions.length >= MESSAGING_SECTION_LIMIT
+        }))
       }
     } finally {
       if (showLoading && refreshSessionsRequestRef.current === requestId) {

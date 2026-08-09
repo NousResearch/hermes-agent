@@ -101,12 +101,11 @@ import {
   $cronSessions,
   $currentCwd,
   $gatewayState,
-  $messagingPlatformTotals,
-  $messagingSessions,
-  $messagingTruncated,
+  $messagingCache,
   $sessionProfilesTruncated,
   $sessions,
   $sessionsLoading,
+  messagingCacheForScope,
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
@@ -338,13 +337,16 @@ export function ChatSidebar({
   const sessions = useStore($sessions)
   const cronSessions = useStore($cronSessions)
   const cronJobs = useStore($cronJobs)
-  const messagingSessions = useStore($messagingSessions)
-  const messagingPlatformTotals = useStore($messagingPlatformTotals)
-  const messagingTruncated = useStore($messagingTruncated)
+  const messagingCache = useStore($messagingCache)
   const sessionsLoading = useStore($sessionsLoading)
   const sessionProfilesTruncated = useStore($sessionProfilesTruncated)
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
+  const {
+    sessions: messagingSessions,
+    platformTotals: messagingPlatformTotals,
+    truncated: messagingTruncated
+  } = messagingCacheForScope(profileScope, messagingCache)
   // Only surface the profile switcher when more than one profile exists, so
   // single-profile users see the unchanged sidebar.
   const multiProfile = profiles.length > 1

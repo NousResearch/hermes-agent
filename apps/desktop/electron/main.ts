@@ -10628,9 +10628,9 @@ async function interceptSessionRequestForRemote(request) {
       recentsSp.set('exclude_sources', recentsExclude)
     }
 
-    const cronSp = sliceParams('cron_limit', '50', { profile: 'all', source: 'cron' })
+    const cronSp = sliceParams('cron_limit', '50', { profile: recentsProfile, source: 'cron' })
 
-    const messagingSp = sliceParams('messaging_limit', '100', { profile: 'all' })
+    const messagingSp = sliceParams('messaging_limit', '100', { profile: recentsProfile })
     const messagingExclude = searchParams.get('messaging_exclude')
 
     if (messagingExclude) {

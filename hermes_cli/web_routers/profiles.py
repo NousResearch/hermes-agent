@@ -57,8 +57,11 @@ def _warn_profile_read_error(profile: str, exc: Exception) -> None:
     _profile_read_warned.add(key)
     _log.warning(
         "profile session read failed for %r (reported only in the response "
-        "errors array): %s", profile, exc,
+        "errors array): %s",
+        profile,
+        exc,
     )
+
 
 sessions_router = APIRouter()
 router = APIRouter()
@@ -111,9 +114,13 @@ def get_profiles_sessions(
     list projection as ``/api/sessions``.
     """
     if archived not in ("exclude", "only", "include"):
-        raise HTTPException(status_code=400, detail="archived must be one of: exclude, only, include")
+        raise HTTPException(
+            status_code=400, detail="archived must be one of: exclude, only, include"
+        )
     if order not in ("created", "recent"):
-        raise HTTPException(status_code=400, detail="order must be one of: created, recent")
+        raise HTTPException(
+            status_code=400, detail="order must be one of: created, recent"
+        )
 
     from hermes_cli import profiles as profiles_mod
 
@@ -213,10 +220,12 @@ def get_profiles_sessions(
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
     # Pinned rows are back-filled past each profile's LIMIT on purpose; keep
     # them in the merged window instead of re-dropping them on recency.
-    window = merged[offset:offset + limit]
+    window = merged[offset : offset + limit]
     if len(merged) > offset + limit:
         seen = {id(s) for s in window}
-        window.extend(s for s in merged[offset + limit:] if s.get("pinned") and id(s) not in seen)
+        window.extend(
+            s for s in merged[offset + limit :] if s.get("pinned") and id(s) not in seen
+        )
     if not full:
         _strip_session_list_rows(window)
     return {
@@ -241,8 +250,9 @@ def get_profiles_sessions_sidebar(
     """Batched sidebar session slices — one profile-DB open per refresh.
 
     The desktop sidebar needs three source-scoped windows per refresh: recents
-    (local chats, scoped to the active profile), cron sessions (all profiles),
-    and messaging-platform sessions (all profiles). Served as three separate
+    (local chats, scoped to the active profile), cron sessions (scoped to the
+    active profile), and messaging-platform sessions (scoped to the active
+    profile). Served as three separate
     ``/api/profiles/sessions`` calls they reopened every profile's ``state.db``
     three times and re-counted each refresh. This opens each DB once and runs
     the three filtered queries together, returning the three windows in one
@@ -257,8 +267,9 @@ def get_profiles_sessions_sidebar(
     """
     from hermes_cli import profiles as profiles_mod
 
-    # cron + messaging are cross-profile; recents is scoped to recents_profile.
-    # Scan every profile once regardless (each DB opened a single time).
+    # Every slice belongs to the requested profile. `all` remains an explicit
+    # unified-view request only. Scan every profile once regardless (each DB
+    # opened a single time).
     try:
         infos = profiles_mod.list_profiles()
         targets: List[Tuple[str, Path]] = [(info.name, info.path) for info in infos]
@@ -270,7 +281,9 @@ def get_profiles_sessions_sidebar(
 
     recents_scope = (recents_profile or "all").strip() or "all"
     recents_exclude_list = [s for s in (recents_exclude or "").split(",") if s.strip()]
-    messaging_exclude_list = [s for s in (messaging_exclude or "").split(",") if s.strip()]
+    messaging_exclude_list = [
+        s for s in (messaging_exclude or "").split(",") if s.strip()
+    ]
 
     recents_cap = min(max(recents_limit, 1), 500)
     cron_cap = min(max(cron_limit, 1), 500)
@@ -337,10 +350,14 @@ def get_profiles_sessions_sidebar(
                 unpinned_count = sum(1 for s in profile_rows if not s.get("pinned"))
                 recents_truncated[name] = unpinned_count >= recents_cap
                 recents_rows.extend(_tag(profile_rows, name))
-            cron_rows.extend(_tag(_slice(db, source="cron", cap=cron_cap), name))
-            messaging_rows.extend(
-                _tag(_slice(db, exclude=messaging_exclude_list, cap=messaging_cap), name)
-            )
+            if recents_scope == "all" or name == recents_scope:
+                cron_rows.extend(_tag(_slice(db, source="cron", cap=cron_cap), name))
+                messaging_rows.extend(
+                    _tag(
+                        _slice(db, exclude=messaging_exclude_list, cap=messaging_cap),
+                        name,
+                    )
+                )
         except Exception as exc:
             _warn_profile_read_error(name, exc)
             errors.append({"profile": name, "error": str(exc)})
@@ -348,7 +365,9 @@ def get_profiles_sessions_sidebar(
             db.close()
 
     def _window(rows: List[Dict[str, Any]], cap: int) -> List[Dict[str, Any]]:
-        rows.sort(key=lambda s: s.get("last_active") or s.get("started_at") or 0, reverse=True)
+        rows.sort(
+            key=lambda s: s.get("last_active") or s.get("started_at") or 0, reverse=True
+        )
         # Pinned rows survive the cap. The per-profile queries deliberately
         # back-fill them past the LIMIT, so truncating the merged window on
         # recency alone would throw away exactly what the back-fill fetched.
@@ -416,7 +435,9 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
     try:
         targets = [(info.name, info.path) for info in profiles_mod.list_profiles()]
     except Exception:
-        _log.exception("POST /api/profiles/sessions/pull-requests: list_profiles failed")
+        _log.exception(
+            "POST /api/profiles/sessions/pull-requests: list_profiles failed"
+        )
         targets = []
     if not targets:
         targets.append(("default", profiles_mod.get_profile_dir("default")))
@@ -453,18 +474,22 @@ def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
 @router.get("/api/profiles")
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
+
     try:
         loop = asyncio.get_running_loop()
         profiles = await loop.run_in_executor(None, profiles_mod.list_profiles)
         return {"profiles": [_profile_to_dict(p) for p in profiles]}
     except Exception:
-        _log.exception("GET /api/profiles failed; falling back to profile directory scan")
+        _log.exception(
+            "GET /api/profiles failed; falling back to profile directory scan"
+        )
         return {"profiles": _fallback_profile_dicts(profiles_mod)}
 
 
 @router.post("/api/profiles")
 async def create_profile_endpoint(body: ProfileCreate):
     from hermes_cli import profiles as profiles_mod
+
     explicit_source = (body.clone_from or "").strip()
     if explicit_source:
         # Duplicating a specific profile: clone its config/skills/SOUL (or full
@@ -540,7 +565,9 @@ async def create_profile_endpoint(body: ProfileCreate):
         try:
             skills_disabled = _disable_unselected_skills(path, body.keep_skills)
         except Exception:
-            _log.exception("Applying skill selection for new profile %s failed", body.name)
+            _log.exception(
+                "Applying skill selection for new profile %s failed", body.name
+            )
 
     # Optional skills-hub installs. Spawned async, scoped to the new profile
     # via `-p <name>` (a fresh subprocess re-binds skills_hub.SKILLS_DIR to the
@@ -585,6 +612,7 @@ async def get_active_profile_endpoint():
     the running dashboard/gateway is scoped to (derived from HERMES_HOME).
     """
     from hermes_cli import profiles as profiles_mod
+
     try:
         active = profiles_mod.get_active_profile() or "default"
     except Exception:
@@ -604,6 +632,7 @@ async def set_active_profile_endpoint(body: ProfileActiveUpdate):
     it changes which profile subsequent CLI commands and gateways use.
     """
     from hermes_cli import profiles as profiles_mod
+
     try:
         profiles_mod.set_active_profile(body.name)
     except FileNotFoundError as e:
@@ -639,7 +668,10 @@ async def open_profile_terminal_endpoint(name: str):
             subprocess.Popen(["osascript", "-e", applescript])
         else:
             terminal_commands = [
-                ("x-terminal-emulator", ["x-terminal-emulator", "-e", "sh", "-lc", command]),
+                (
+                    "x-terminal-emulator",
+                    ["x-terminal-emulator", "-e", "sh", "-lc", command],
+                ),
                 ("gnome-terminal", ["gnome-terminal", "--", "sh", "-lc", command]),
                 ("konsole", ["konsole", "-e", "sh", "-lc", command]),
                 ("xfce4-terminal", ["xfce4-terminal", "-e", f"sh -lc '{command}'"]),
@@ -651,11 +683,14 @@ async def open_profile_terminal_endpoint(name: str):
                 ("xterm", ["xterm", "-e", "sh", "-lc", command]),
             ]
             for executable, popen_args in terminal_commands:
-                if subprocess.call(
-                    ["which", executable],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                ) == 0:
+                if (
+                    subprocess.call(
+                        ["which", executable],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    == 0
+                ):
                     subprocess.Popen(popen_args)
                     break
             else:
@@ -678,6 +713,7 @@ async def open_profile_terminal_endpoint(name: str):
 @router.patch("/api/profiles/{name}")
 async def rename_profile_endpoint(name: str, body: ProfileRename):
     from hermes_cli import profiles as profiles_mod
+
     try:
         path = profiles_mod.rename_profile(name, body.new_name)
     except FileNotFoundError as e:
@@ -696,6 +732,7 @@ async def delete_profile_endpoint(name: str):
     its own dialog before this request, so we always pass ``yes=True`` to
     skip the CLI's interactive prompt."""
     from hermes_cli import profiles as profiles_mod
+
     try:
         path = profiles_mod.delete_profile(name, yes=True)
     except FileNotFoundError as e:
@@ -749,7 +786,9 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
 
 
 @router.put("/api/profiles/{name}/description")
-async def update_profile_description_endpoint(name: str, body: ProfileDescriptionUpdate):
+async def update_profile_description_endpoint(
+    name: str, body: ProfileDescriptionUpdate
+):
     """Set or clear a profile's role description (kanban routing signal).
 
     Empty string clears the description. Non-empty stores it as a
@@ -757,6 +796,7 @@ async def update_profile_description_endpoint(name: str, body: ProfileDescriptio
     auto-describer won't overwrite it on a sweep.
     """
     from hermes_cli import profiles as profiles_mod
+
     profile_dir = _resolve_profile_dir(name)
     text = (body.description or "").strip()
     try:
@@ -804,7 +844,10 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
     _resolve_profile_dir(name)
     try:
         from hermes_cli import profile_describer
-        outcome = profile_describer.describe_profile(name, overwrite=bool(body.overwrite))
+
+        outcome = profile_describer.describe_profile(
+            name, overwrite=bool(body.overwrite)
+        )
     except Exception as e:
         _log.exception("POST /api/profiles/%s/describe-auto failed", name)
         raise HTTPException(status_code=500, detail=str(e))
@@ -833,19 +876,26 @@ async def export_profile_endpoint(name: str, body: ProfileExport):
     output = (body.output or "").strip()
     if not output:
         from hermes_constants import get_hermes_home
+
         staging = get_hermes_home() / "profile-exports"
         try:
             staging.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            raise HTTPException(status_code=500, detail=f"Could not create export directory: {exc}")
+            raise HTTPException(
+                status_code=500, detail=f"Could not create export directory: {exc}"
+            )
         stamp = time.strftime("%Y%m%d-%H%M%S")
-        output = str(staging / f"{profiles_mod.normalize_profile_name(name)}-{stamp}.tar.gz")
+        output = str(
+            staging / f"{profiles_mod.normalize_profile_name(name)}-{stamp}.tar.gz"
+        )
 
     loop = asyncio.get_running_loop()
     try:
         result = await loop.run_in_executor(
             None,
-            lambda: profiles_mod.export_profile(name, output, extra_files=body.extra_files or None),
+            lambda: profiles_mod.export_profile(
+                name, output, extra_files=body.extra_files or None
+            ),
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -869,7 +919,9 @@ async def import_profile_endpoint(body: ProfileImport):
     try:
         profile_dir = await loop.run_in_executor(
             None,
-            lambda: profiles_mod.import_profile(archive, name=(body.name or "").strip() or None),
+            lambda: profiles_mod.import_profile(
+                archive, name=(body.name or "").strip() or None
+            ),
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -895,9 +947,12 @@ async def import_profile_endpoint(body: ProfileImport):
     if overlay_path.is_file():
         try:
             import json as _json
+
             desktop_overlay = _json.loads(overlay_path.read_text(encoding="utf-8"))
         except Exception:
-            _log.exception("Reading desktop.json from imported profile %s failed", imported)
+            _log.exception(
+                "Reading desktop.json from imported profile %s failed", imported
+            )
 
     return {
         "ok": True,
@@ -916,6 +971,10 @@ async def get_profile_desktop_overlay(name: str):
         return {"exists": False, "desktop": None}
     try:
         import json as _json
-        return {"exists": True, "desktop": _json.loads(overlay_path.read_text(encoding="utf-8"))}
+
+        return {
+            "exists": True,
+            "desktop": _json.loads(overlay_path.read_text(encoding="utf-8")),
+        }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not read desktop.json: {e}")

@@ -461,26 +461,81 @@ export const $cronSessions = atom<SessionInfo[]>([])
 // badge renders "N+". Lives here so the controller (fetch) and sidebar (badge)
 // share one source of truth without a circular import.
 export const CRON_SECTION_LIMIT = 50
-// Messaging-platform sessions (telegram/discord/...) are fetched as their own
-// slice — separate from local recents — so each platform renders a
-// self-managed sidebar section and never interleaves with (or buries) local
-// chats in the recents page. One combined fetch seeds every platform; a
-// platform that exceeds this cap gets its own per-platform "load more".
-export const $messagingSessions = atom<SessionInfo[]>([])
 export const MESSAGING_SECTION_LIMIT = 100
-// Exact per-platform conversation totals, keyed by source id. Empty until a
-// per-platform "load more" fetch resolves it (the combined seed fetch only
-// knows the aggregate), so sections fall back to their loaded count.
-export const $messagingPlatformTotals = atom<Record<string, number>>({})
-// True when the combined seed fetch hit MESSAGING_SECTION_LIMIT, so at least
-// one platform may have more rows on disk than were loaded.
-export const $messagingTruncated = atom<boolean>(false)
+
+export interface MessagingCacheEntry {
+  platformTotals: Record<string, number>
+  sessions: SessionInfo[]
+  truncated: boolean
+}
+
+const emptyMessagingCacheEntry = (): MessagingCacheEntry => ({
+  platformTotals: {},
+  sessions: [],
+  truncated: false
+})
+
+// Profile scope is a cache key, not a backend argument. `__all__` is kept
+// distinct from concrete profiles and translated to `all` only at the API edge.
+export const $messagingCache = atom<Record<string, MessagingCacheEntry>>({})
+
+export function messagingCacheForScope(
+  scope: string,
+  cache: Record<string, MessagingCacheEntry> = $messagingCache.get()
+): MessagingCacheEntry {
+  return cache[scope] ?? emptyMessagingCacheEntry()
+}
+
+export const setMessagingCache = (next: Updater<Record<string, MessagingCacheEntry>>) =>
+  updateAtom($messagingCache, next)
+
+let messagingCacheEpoch = 0
+const messagingCacheRequestGenerations = new Map<string, number>()
+
+export interface MessagingCacheRequest {
+  epoch: number
+  generation: number
+  scope: string
+}
+
+export function messagingCacheRequestForScope(scope: string): MessagingCacheRequest {
+  const generation = (messagingCacheRequestGenerations.get(scope) ?? 0) + 1
+
+  messagingCacheRequestGenerations.set(scope, generation)
+
+  return { epoch: messagingCacheEpoch, generation, scope }
+}
+
+export function updateMessagingCacheForScope(request: MessagingCacheRequest, next: Updater<MessagingCacheEntry>): void {
+  if (
+    request.epoch !== messagingCacheEpoch ||
+    request.generation !== messagingCacheRequestGenerations.get(request.scope)
+  ) {
+    return
+  }
+
+  setMessagingCache(cache => {
+    const current = messagingCacheForScope(request.scope, cache)
+
+    const entry =
+      typeof next === 'function' ? (next as (value: MessagingCacheEntry) => MessagingCacheEntry)(current) : next
+
+    return cache[request.scope] === entry ? cache : { ...cache, [request.scope]: entry }
+  })
+}
+
+/** Clear all scopes and reject responses from the previous gateway. */
+export function invalidateMessagingCache(): void {
+  messagingCacheEpoch += 1
+  setMessagingCache({})
+}
 // Whether a profile's last session page was CAPPED by the request limit, keyed
 // by profile name — i.e. more rows exist on disk than were loaded. Replaces the
 // old exact per-profile totals: rendering `loaded/total` in the sidebar cost a
 // COUNT(*) per profile DB on every refresh and only ever confused people, while
 // "is there another page?" is what pagination actually needs and comes free
 // from the row count the query already returned.
+
 export const $sessionProfilesTruncated = atom<Record<string, boolean>>({})
 export const $sessionsLoading = atom(true)
 export const $activeSessionId = atom<string | null>(null)
@@ -588,10 +643,7 @@ export const setConnection = (next: Updater<HermesConnection | null>) => updateA
 export const setGatewayState = (next: Updater<ConnectionState>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
 export const setCronSessions = (next: Updater<SessionInfo[]>) => updateAtom($cronSessions, next)
-export const setMessagingSessions = (next: Updater<SessionInfo[]>) => updateAtom($messagingSessions, next)
-export const setMessagingPlatformTotals = (next: Updater<Record<string, number>>) =>
-  updateAtom($messagingPlatformTotals, next)
-export const setMessagingTruncated = (next: Updater<boolean>) => updateAtom($messagingTruncated, next)
+
 export const setSessionProfilesTruncated = (next: Updater<Record<string, boolean>>) =>
   updateAtom($sessionProfilesTruncated, next)
 export const setSessionsLoading = (next: Updater<boolean>) => updateAtom($sessionsLoading, next)

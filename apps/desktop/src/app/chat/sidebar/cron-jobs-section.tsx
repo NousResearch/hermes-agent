@@ -12,9 +12,10 @@ import { deleteCronJob, getCronJobRuns, pauseCronJob, resumeCronJob, type Sessio
 import { useI18n } from '@/i18n'
 import { fmtDayTime, relativeTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import { updateCronJobs } from '@/store/cron'
+import { cronCacheRequestForScope, updateCronCacheForScope } from '@/store/cron'
 import { $changeEventsAvailable, $cronChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
+import { $profileScope } from '@/store/profile'
 import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
 
@@ -194,6 +195,7 @@ function CronJobSidebarRow({
 }) {
   const { t } = useI18n()
   const c = t.cron
+  const profileScope = useStore($profileScope)
   const state = jobState(job)
   const next = nextRunMs(job)
   const label = jobTitle(job)
@@ -206,9 +208,14 @@ function CronJobSidebarRow({
   // overlay uses) — the sidebar and overlay render from that one atom, so the
   // row updates in place.
   const togglePause = async () => {
+    const request = cronCacheRequestForScope(profileScope)
+
     try {
       const updated = isPaused ? await resumeCronJob(job.id) : await pauseCronJob(job.id)
-      updateCronJobs(rows => rows.map(row => (row.id === job.id ? updated : row)))
+
+      if (!updateCronCacheForScope(request, rows => rows.map(row => (row.id === job.id ? updated : row)))) {
+        return
+      }
       notify({ kind: 'success', title: isPaused ? c.resumed : c.paused, message: label })
     } catch (err) {
       notifyError(err, c.failedUpdate)
@@ -220,9 +227,14 @@ function CronJobSidebarRow({
       return
     }
 
+    const request = cronCacheRequestForScope(profileScope)
+
     try {
       await deleteCronJob(job.id)
-      updateCronJobs(rows => rows.filter(row => row.id !== job.id))
+
+      if (!updateCronCacheForScope(request, rows => rows.filter(row => row.id !== job.id))) {
+        return
+      }
       notify({ kind: 'success', title: c.deleted, message: label })
     } catch (err) {
       notifyError(err, c.failedDelete)

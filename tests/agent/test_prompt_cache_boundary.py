@@ -64,6 +64,19 @@ def skills(tmp_path, monkeypatch):
 
 
 class TestRegistry:
+    def test_append_user_instruction_prefix_invariant(self):
+        """The shared builder helper must return a byte-prefix of the final
+        joined message — the invariant every registration site depends on."""
+        from agent.skill_commands import append_user_instruction
+
+        parts = ["scaffold line one", "", "skill body", ""]
+        instruction = "ticket=42 time=10:00"
+        stable_prefix = append_user_instruction(parts, instruction)
+        message = "\n".join(parts)
+
+        assert message.startswith(stable_prefix)
+        assert message[len(stable_prefix):] == instruction
+
     def test_requires_proper_prefix(self):
         register_stable_prefix("scaffold")
         assert find_stable_prefix("scaffold volatile") == "scaffold"
@@ -105,12 +118,12 @@ class TestRegistry:
         assert find_stable_prefix("hot-scaffold volatile") == "hot-scaffold "
         assert find_stable_prefix("cold-0 volatile") is None
 
-    def test_total_byte_cap_evicts_oldest_and_keeps_newest(self, monkeypatch):
+    def test_total_char_cap_evicts_oldest_and_keeps_newest(self, monkeypatch):
         """Entries retain whole skill bodies, so the entry count alone does
         not bound memory."""
         from agent import prompt_cache_boundary
 
-        monkeypatch.setattr(prompt_cache_boundary, "_MAX_BYTES", 100)
+        monkeypatch.setattr(prompt_cache_boundary, "_MAX_CHARS", 100)
 
         register_stable_prefix("a" * 80)
         register_stable_prefix("b" * 80)
@@ -121,7 +134,7 @@ class TestRegistry:
     def test_single_oversized_prefix_still_registers(self, monkeypatch):
         from agent import prompt_cache_boundary
 
-        monkeypatch.setattr(prompt_cache_boundary, "_MAX_BYTES", 10)
+        monkeypatch.setattr(prompt_cache_boundary, "_MAX_CHARS", 10)
         oversized = "x" * 500
 
         register_stable_prefix(oversized)

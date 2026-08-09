@@ -71,6 +71,23 @@ SKILL_SCAFFOLD_SQL_LIKE = _SKILL_INVOCATION_PREFIX + "%"
 SKILL_EXCERPT_JOINT = "\x1e"
 
 
+def append_user_instruction(parts: list, instruction: str) -> str:
+    """Append the instruction line to ``parts``; return the stable prefix.
+
+    Shared by every builder that ends a static skill scaffold with the
+    caller-supplied volatile instruction (single-skill invocations, cron job
+    prompts). The returned prefix ends exactly at the instruction marker, so
+    registering it with ``agent.prompt_cache_boundary`` lets the Anthropic
+    cache planner put a breakpoint on the scaffold instead of caching the
+    whole message as one atomic block (#81867). Keeping construction in one
+    place guarantees the registered prefix stays a byte-prefix of the built
+    message — the invariant the request-time split depends on.
+    """
+    stable_prefix = "\n".join(parts) + "\n" + _SINGLE_SKILL_INSTRUCTION
+    parts.append(f"{_SINGLE_SKILL_INSTRUCTION}{instruction}")
+    return stable_prefix
+
+
 def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
     """Recover the user's instruction from a slash-skill-expanded turn.
 
@@ -370,15 +387,14 @@ def _build_skill_message(
         # one atomic block (#81867). The static instruction prose stays on
         # the stable side; the volatile instruction (webhook payload, ticket
         # IDs, timestamps) and any runtime note ride in the tail.
-        stable_prefix = "\n".join(parts) + "\n" + _SINGLE_SKILL_INSTRUCTION
-        parts.append(f"{_SINGLE_SKILL_INSTRUCTION}{user_instruction}")
+        stable_prefix = append_user_instruction(parts, user_instruction)
 
     if runtime_note:
         parts.append("")
         parts.append(f"[Runtime note: {runtime_note}]")
 
     message = "\n".join(parts)
-    if stable_prefix is not None and len(message) > len(stable_prefix):
+    if stable_prefix is not None and message.startswith(stable_prefix) and len(message) > len(stable_prefix):
         register_stable_prefix(stable_prefix)
     return message
 

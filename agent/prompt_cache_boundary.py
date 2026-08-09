@@ -19,6 +19,16 @@ The registry is process-local by design. A freshly fired webhook/cron
 invocation is always built and sent by the same process, which is the
 only window where the split pays off. Any miss (restart, eviction,
 historic message) falls back to the pre-existing whole-message policy.
+
+Split-shape lifetime: the split is applied only while the skill message is
+one of the plan's marked endpoints (the last few cacheable messages). Once
+later turns rotate it out of that window it ships as a single string block
+again, which changes the block boundary once and re-ingests the prefix from
+that message onward exactly one time in a long-lived session. Webhook/cron
+invocations — the workload this exists for — send the skill turn as the
+newest message every time, so they always hit the split shape; the one-time
+re-ingest only affects long interactive sessions and nets out far below the
+per-invocation full rewrite this removes.
 """
 
 import threading
@@ -32,10 +42,12 @@ _MAX_ENTRIES = 32
 
 # Entries hold whole expanded skill bodies, so an entry count alone does not
 # bound memory — a handful of large skills can retain tens of MB in a
-# long-lived gateway process. Evict by total retained bytes too, always
-# keeping the newest entry so a single oversized scaffold still gets a
-# boundary instead of silently disabling the split.
-_MAX_BYTES = 4 * 1024 * 1024
+# long-lived gateway process. Evict by total retained characters too (a
+# conservative proxy for bytes: actual memory is 1–4x depending on the
+# string's widest code point), always keeping the newest entry so a single
+# oversized scaffold still gets a boundary instead of silently disabling
+# the split.
+_MAX_CHARS = 4 * 1024 * 1024
 
 _lock = threading.Lock()
 _prefixes: "OrderedDict[str, None]" = OrderedDict()
@@ -50,7 +62,7 @@ def register_stable_prefix(prefix: str) -> None:
         _prefixes.move_to_end(prefix)
         while len(_prefixes) > _MAX_ENTRIES:
             _prefixes.popitem(last=False)
-        while len(_prefixes) > 1 and sum(map(len, _prefixes)) > _MAX_BYTES:
+        while len(_prefixes) > 1 and sum(map(len, _prefixes)) > _MAX_CHARS:
             _prefixes.popitem(last=False)
 
 
@@ -65,17 +77,15 @@ def find_stable_prefix(content: str) -> Optional[str]:
     which would silently drop it back to whole-message caching.
     """
     with _lock:
-        candidates = list(_prefixes)
-    best: Optional[str] = None
-    for prefix in candidates:
-        if len(content) > len(prefix) and content.startswith(prefix):
-            if best is None or len(prefix) > len(best):
-                best = prefix
-    if best is not None:
-        with _lock:
-            if best in _prefixes:
-                _prefixes.move_to_end(best)
-    return best
+        best: Optional[str] = None
+        for prefix in _prefixes:
+            if len(content) > len(prefix) and content.startswith(prefix):
+                if best is None or len(prefix) > len(best):
+                    best = prefix
+        if best is not None:
+            # After the scan so the OrderedDict is never mutated mid-iteration.
+            _prefixes.move_to_end(best)
+        return best
 
 
 def clear_stable_prefixes() -> None:

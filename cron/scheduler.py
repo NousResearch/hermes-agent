@@ -2815,15 +2815,14 @@ def _build_job_prompt(
 
     stable_prefix = None
     if prompt:
-        from agent.skill_commands import _SINGLE_SKILL_INSTRUCTION
+        from agent.skill_commands import append_user_instruction
 
         parts.append("")
         # The skill blocks (and any skipped-skill notice) above are stable per
         # job config; the appended instruction carries the volatile per-run
         # data (cron hint + prompt + script output + run context). Declare
         # that boundary for the Anthropic cache planner (#81867).
-        stable_prefix = "\n".join(parts) + "\n" + _SINGLE_SKILL_INSTRUCTION
-        parts.append(f"{_SINGLE_SKILL_INSTRUCTION}{prompt}")
+        stable_prefix = append_user_instruction(parts, prompt)
     assembled = _scan_assembled_cron_prompt("\n".join(parts), job, has_skills=True)
     if stable_prefix and len(assembled) > len(stable_prefix) and assembled.startswith(stable_prefix):
         # Guarded because the injection scanner may sanitize (mutate) the

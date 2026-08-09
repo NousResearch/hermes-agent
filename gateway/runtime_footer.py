@@ -9,8 +9,8 @@ Config (``~/.hermes/config.yaml``)::
     display:
       runtime_footer:
         enabled: true                         # off by default
-        fields: [model, context_pct, cwd]     # order shown; drop any to hide
-        # also: provider, account, context, quota, reasoning
+        fields: [model, reasoning, context_pct, cwd]  # order shown; drop any to hide
+        # also: provider, account, context, quota
         underline: false                      # optional separator before footer
 
 Available fields:
@@ -42,7 +42,7 @@ import re
 from datetime import datetime, timezone
 from typing import Any, Iterable, Optional
 
-_DEFAULT_FIELDS: tuple[str, ...] = ("model", "context_pct", "cwd")
+_DEFAULT_FIELDS: tuple[str, ...] = ("model", "reasoning", "context_pct", "cwd")
 _SEP = " · "
 
 

@@ -1228,7 +1228,7 @@ display:
   tool_preview_length: 0  # 工具调用预览的最大字符数（0 = 无限制，显示完整路径/命令）
   runtime_footer:         # Gateway：在最终回复中附加运行时上下文页脚
     enabled: false
-    fields: ["model", "context_pct", "cwd"]
+    fields: ["model", "reasoning", "context_pct", "cwd"]
   file_mutation_verifier: true    # 当本轮 write_file/patch 调用失败时附加建议性页脚
   language: en            # 静态消息的 UI 语言（审批提示、部分 gateway 回复）。en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
 ```
@@ -1278,7 +1278,7 @@ display:
 display:
   runtime_footer:
     enabled: true
-    fields: ["model", "context_pct", "cwd"]   # 支持字段：model、context_pct、cwd
+    fields: ["model", "reasoning", "context_pct", "cwd"]   # 启用后默认显示模型、思考程度、上下文占用和工作目录
 ```
 
 `/footer` 斜杠命令在任何会话中运行时切换此功能。

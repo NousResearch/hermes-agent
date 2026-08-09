@@ -808,13 +808,20 @@ class BuzzAdapter(BasePlatformAdapter):
                 "--file", str(local),
                 "--content", "-",
             ]
+            send_content = caption or ""
+            configured_handoffs = set()
+            for name, pubkey in self.outbound_mention_pubkeys.values():
+                if _has_complete_mention(send_content, name):
+                    configured_handoffs.add(f"@{name}".casefold())
+                    args += ["--mention", pubkey]
             if reply_to:
                 args += ["--reply-to", str(reply_to)]
-            send_content = caption or ""
             code, out, err = await self._run_cli(args, input_text=send_content)
             for _ in range(_MENTION_FALLBACK_MAX_RETRIES):
                 fallback = (
-                    _unresolved_mention_fallback(send_content, err)
+                    _unresolved_mention_fallback(
+                        send_content, err, configured_handoffs
+                    )
                     if code != 0
                     else None
                 )

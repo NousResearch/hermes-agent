@@ -852,6 +852,114 @@ class TestBuzzAdapterSend:
         assert args[args.index("--file") + 1] == str(img)
 
     @pytest.mark.asyncio
+    async def test_send_image_configured_handoff_uses_exact_pubkey(self, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG fake")
+        adapter = _make_adapter(
+            {"outbound_mention_pubkeys": {"CodexTerraM": OTHER_PUBKEY}}
+        )
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            {"accepted": True, "event_id": "evt-image-handoff", "message": ""},
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send_image(
+            CHANNEL,
+            str(img),
+            caption="@CodexTerraM — review this screenshot.",
+        )
+
+        assert result.success is True
+        args, stdin_text = cli.calls[0]
+        mention_values = [
+            args[index + 1]
+            for index, value in enumerate(args)
+            if value == "--mention"
+        ]
+        assert mention_values == [OTHER_PUBKEY]
+        assert stdin_text == "@CodexTerraM — review this screenshot."
+
+    @pytest.mark.asyncio
+    async def test_send_image_never_downgrades_configured_handoff(self, tmp_path):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG fake")
+        adapter = _make_adapter(
+            {"outbound_mention_pubkeys": {"CodexTerraM": OTHER_PUBKEY}}
+        )
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr=(
+                "mention '@CodexTerraM' does not match a current channel member"
+            ),
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send_image(
+            CHANNEL,
+            str(img),
+            caption="@CodexTerraM — review this screenshot.",
+        )
+
+        assert result.success is False
+        assert len(cli.calls) == 1
+        args, stdin_text = cli.calls[0]
+        assert args[args.index("--mention") + 1] == OTHER_PUBKEY
+        assert stdin_text == "@CodexTerraM — review this screenshot."
+
+    @pytest.mark.asyncio
+    async def test_send_image_configured_handoff_only_protects_its_marker(
+        self, tmp_path
+    ):
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"\x89PNG fake")
+        adapter = _make_adapter(
+            {"outbound_mention_pubkeys": {"CodexTerraM": OTHER_PUBKEY}}
+        )
+        cli = _ScriptedCli()
+        cli.script(
+            "messages",
+            "send",
+            "",
+            code=1,
+            stderr="mention '@ghost' does not match a current channel member",
+        )
+        cli.script(
+            "messages",
+            "send",
+            {"accepted": True, "event_id": "evt-image-mixed", "message": ""},
+        )
+        adapter._run_cli = cli
+
+        result = await adapter.send_image(
+            CHANNEL,
+            str(img),
+            caption="@CodexTerraM — ask @ghost to review this screenshot.",
+        )
+
+        assert result.success is True
+        assert len(cli.calls) == 2
+        first_args, first_text = cli.calls[0]
+        second_args, second_text = cli.calls[1]
+        mention_values = [
+            first_args[index + 1]
+            for index, value in enumerate(first_args)
+            if value == "--mention"
+        ]
+        assert mention_values == [OTHER_PUBKEY]
+        assert second_args == first_args
+        assert first_text == (
+            "@CodexTerraM — ask @ghost to review this screenshot."
+        )
+        assert second_text == "@CodexTerraM — ask ghost to review this screenshot."
+
+    @pytest.mark.asyncio
     async def test_send_image_retries_unresolved_caption_mention(self, tmp_path):
         img = tmp_path / "shot.png"
         img.write_bytes(b"\x89PNG fake")

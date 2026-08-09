@@ -5121,6 +5121,7 @@ from hermes_cli.update_cmd import (  # noqa: F401
     _record_npm_lockfile_hash,
     _refresh_active_lazy_features,
     _refresh_active_memory_provider_dependencies,
+    _refresh_bootstrap_cache_scripts,
     _refresh_windows_gateway_launchers,
     _reload_updated_runtime_modules,
     _resolve_pre_update_backup_mode,

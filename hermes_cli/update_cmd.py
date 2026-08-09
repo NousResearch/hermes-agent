@@ -889,6 +889,7 @@ def _update_via_zip(args):
             f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
         )
     _m()._record_bytecode_fingerprint()
+    _m()._refresh_bootstrap_cache_scripts()
 
     # Reinstall Python dependencies. Prefer .[all], but if one optional extra
     # breaks on this machine, keep base deps and reinstall the remaining extras
@@ -3474,6 +3475,67 @@ def _refresh_windows_gateway_launchers() -> None:
     except Exception as exc:
         logger.debug("Could not refresh Windows gateway launchers after update: %s", exc)
 
+def _refresh_bootstrap_cache_scripts() -> None:
+    """Sync the installer's bootstrap-cache scripts from the fresh checkout.
+
+    The Desktop GUI updater (``hermes-setup.exe``) executes
+    ``$HERMES_HOME/bootstrap-cache/install-<ref>.ps1`` (or ``.sh``) for its
+    repair/bootstrap stages. Installer binaries built before the #67193
+    cache-refresh fix (June 2026 and earlier) NEVER re-download a cached
+    branch-ref script — ``install-main.ps1`` cached at install time is
+    reused forever, executing months-stale code with long-fixed bugs (the
+    2026-08-09 incident: a June 4 cached script's venv stage lacked the
+    #81327 process-tree sweep and died on ``Access denied``). The binary
+    has no self-update path, so the poisoned cache outlives every
+    ``hermes update``.
+
+    Overwriting the cached branch scripts with the freshly pulled
+    ``scripts/install.ps1`` / ``scripts/install.sh`` on every update turns
+    the stale binary's unconditional reuse into a feature: it "reuses" a
+    file this function keeps permanently current. Post-#67193 installers
+    re-download on each run anyway, so for them this is a harmless
+    pre-seed of the same bytes.
+
+    Only branch-ref cache entries (mutable refs) are rewritten — commit-SHA
+    entries (``install-<40 hex>.ps1``) are immutable by design and must
+    keep matching their pinned commit. The .ps1 copy gets a UTF-8 BOM to
+    match the installer's own cache format (#67193 encoding fix).
+    Best-effort: a failed refresh must never fail the update.
+    """
+    try:
+        import re as _re
+
+        cache_dir = Path(_m().get_hermes_home()) / "bootstrap-cache"
+        if not cache_dir.is_dir():
+            return
+        sha_re = _re.compile(r"^install-[0-9a-f]{40}\.(ps1|sh)$")
+        refreshed = []
+        for kind, src_name in (("ps1", "install.ps1"), ("sh", "install.sh")):
+            src = _m().PROJECT_ROOT / "scripts" / src_name
+            if not src.is_file():
+                continue
+            data = src.read_bytes()
+            if kind == "ps1" and not data.startswith(b"\xef\xbb\xbf"):
+                # Match the installer's cache format: PowerShell needs the
+                # UTF-8 BOM or localized/em-dash text mis-decodes (#67193).
+                data = b"\xef\xbb\xbf" + data
+            for cached in cache_dir.glob(f"install-*.{kind}"):
+                if sha_re.match(cached.name):
+                    continue  # immutable commit pin — leave it alone
+                if cached.read_bytes() == data:
+                    continue  # already current
+                tmp = cached.with_suffix(cached.suffix + ".tmp")
+                tmp.write_bytes(data)
+                os.replace(tmp, cached)
+                refreshed.append(cached.name)
+        if refreshed:
+            print(
+                "  ✓ Refreshed installer bootstrap-cache script(s): "
+                + ", ".join(sorted(refreshed))
+            )
+    except Exception as exc:
+        logger.debug("Could not refresh bootstrap-cache scripts after update: %s", exc)
+
 def _resume_windows_gateways_after_update(token: dict | None) -> None:
     """Restart Windows profile gateways previously paused for update."""
     if not token or not token.get("resume_needed"):
@@ -4226,6 +4288,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
             )
         _m()._record_bytecode_fingerprint()
+        _m()._refresh_bootstrap_cache_scripts()
 
         # Fork upstream sync logic (only for main branch on forks)
         if is_fork and branch == "main":
@@ -4315,6 +4378,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
             )
         _m()._record_bytecode_fingerprint()
+        _m()._refresh_bootstrap_cache_scripts()
         _m()._reload_updated_runtime_modules()
 
         # Upgrade pip before lazy refreshes — stale pip can fail source builds

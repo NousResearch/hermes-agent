@@ -2574,18 +2574,31 @@ def _luminance_from_hex(hex_str: str) -> float | None:
     return (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255.0
 
 
+_DA1_REPLY_RE = re.compile(rb"\x1b\[\?[0-9;]*c")
+
+
 def _query_osc11_background() -> str | None:
     """Ask the terminal for its background color via OSC 11.
 
-    Most modern terminals reply with \\x1b]11;rgb:RRRR/GGGG/BBBB\\x1b\\\\
-    within a few ms.  We wait up to 100ms total before giving up.
-    Returns "#RRGGBB" or None on timeout / non-tty.
+    Most modern terminals reply with \x1b]11;rgb:RRRR/GGGG/BBBB\x1b\\
+    within a few ms.  Returns "#RRGGBB" or None on timeout / non-tty.
 
-    Skipped over SSH: the round-trip routinely exceeds our 100ms budget, so a
+    The OSC 11 query is fenced with a DA1 sentinel (\x1b[c) — the same
+    pattern the Ink TUI's TerminalQuerier uses.  Terminals answer queries
+    in order and virtually every terminal answers DA1, so seeing the DA1
+    reply proves the terminal already ignored our OSC 11 (multiplexers
+    like herdr answer DA1 in <1ms while swallowing OSC 11).  Without the
+    fence we can only wait out a blind timeout, and a reply that arrives
+    AFTER we stop listening leaks into prompt_toolkit's stdin as typed
+    text — the "gibberish ANSI characters" seen inside terminal managers
+    that relay color queries slowly (herdr, WSL bridges, some tmux
+    setups).
+
+    Skipped over SSH: the round-trip routinely exceeds our budget, so a
     late reply lands after prompt_toolkit has grabbed the tty — its payload
     leaks in as typed text and the BEL terminator reads as Ctrl+G (open
-    editor), trapping the user in a stray editor. Remote sessions fall back to
-    COLORFGBG / env hints / the dark default instead.
+    editor), trapping the user in a stray editor. Remote sessions fall back
+    to COLORFGBG / env hints / the dark default instead.
 
     After the main read + TCSAFLUSH, a short drain window (50 ms) catches
     late-arriving bytes that slipped past the flush — a race observed on VPS
@@ -2608,13 +2621,26 @@ def _query_osc11_background() -> str | None:
         except Exception:
             return None
         try:
-            sys.stdout.write("\x1b]11;?\x1b\\")
+            # OSC 11 query + DA1 sentinel fence, in one write so no
+            # reordering is possible.
+            sys.stdout.write("\x1b]11;?\x1b\\\x1b[c")
             sys.stdout.flush()
         except Exception:
             return None
-        # Read up to ~50ms for the response
+        # Read until the DA1 fence closes — proof the terminal has processed
+        # everything up to and including our OSC 11, so nothing can arrive
+        # late and leak into prompt_toolkit's stdin.  DA1 is answered by
+        # effectively every terminal ever made (it predates color), and on
+        # real terminals the fence closes in single-digit milliseconds
+        # (herdr: <1ms, xterm/kitty/tmux: <5ms).  The 1s deadline is a
+        # safety net for a hypothetical terminal that ignores DA1 — not a
+        # window we ever expect to wait out.  A slow in-order relay that
+        # delivers the OSC 11 reply at e.g. 400ms is handled correctly:
+        # we keep listening until its DA1 reply follows, so the payload is
+        # consumed here instead of leaking as typed input (the "gibberish
+        # ANSI characters" seen inside terminal managers).
         import select
-        deadline = time.monotonic() + 0.1
+        deadline = time.monotonic() + 1.0
         buf = b""
         while time.monotonic() < deadline:
             r, _, _ = select.select([fd], [], [], deadline - time.monotonic())
@@ -2627,7 +2653,7 @@ def _query_osc11_background() -> str | None:
             if not chunk:
                 break
             buf += chunk
-            if b"\x1b\\" in buf or b"\x07" in buf:
+            if _DA1_REPLY_RE.search(buf):
                 break
         # Parse: \x1b]11;rgb:RRRR/GGGG/BBBB\x1b\\
         m = re.search(rb"rgb:([0-9a-fA-F]+)/([0-9a-fA-F]+)/([0-9a-fA-F]+)", buf)

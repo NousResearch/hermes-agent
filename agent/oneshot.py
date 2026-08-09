@@ -145,6 +145,9 @@ def run_oneshot(
     )
 
     text = (extract_content_or_reasoning(response) or "").strip()
+    from agent.redact import redact_known_secret_values
+
+    text = redact_known_secret_values(text)
     return _strip_code_fence(text)
 
 

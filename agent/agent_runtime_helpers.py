@@ -3758,7 +3758,14 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
             removed_dupes,
         )
-    return messages
+
+    # Final provider-egress exact-value gate (#77487). Redact a deep copy so
+    # nested media metadata is masked on the wire without overwriting the
+    # replayable in-memory/session history. Tool-call arguments remain exact:
+    # masking them reintroduces the rejected #43083 replay regression.
+    from agent.redact import redact_provider_message_values
+
+    return redact_provider_message_values(messages)
 
 
 

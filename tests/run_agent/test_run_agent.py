@@ -2819,6 +2819,37 @@ class TestRunConversation:
         assert result["final_response"] == "Final answer"
         assert result["completed"] is True
 
+    def test_force_ascii_dispatch_masks_secret_composed_by_normalization(
+        self, agent, monkeypatch
+    ):
+        """The bytes sent after ASCII fallback pass the exact-secret gate."""
+        from agent.secret_scope import reset_secret_scope, set_secret_scope
+
+        self._setup_agent(agent)
+        agent._force_ascii_payload = True
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="Final answer",
+            finish_reason="stop",
+        )
+        source = "abécd"
+        monkeypatch.setattr("agent.redact._REDACT_ENABLED", True)
+        monkeypatch.setattr("agent.secret_scope._MULTIPLEX_ACTIVE", True)
+        token = set_secret_scope({"ACTIVE_TOKEN": "abcd"})
+        try:
+            with (
+                patch.object(agent, "_persist_session"),
+                patch.object(agent, "_save_trajectory"),
+                patch.object(agent, "_cleanup_task_resources"),
+            ):
+                result = agent.run_conversation(source)
+        finally:
+            reset_secret_scope(token)
+
+        sent = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        assert result["completed"] is True
+        assert sent[-1]["content"] == "***"
+        assert source == "abécd"
+
     def test_prompt_cache_marks_static_system_prefix_on_wire(self, agent):
         self._setup_agent(agent)
         agent._cached_system_prompt = "stable instructions\n\nsession context"

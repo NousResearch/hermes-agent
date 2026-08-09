@@ -23,6 +23,7 @@ import sqlite3
 import re
 import time
 import uuid
+from functools import wraps
 from typing import Any, Dict, List, Optional
 
 from agent.auxiliary_client import (
@@ -44,6 +45,18 @@ from agent.turn_context import drop_stale_api_content
 from tools.todo_tool import TODO_INJECTION_HEADER
 
 logger = logging.getLogger(__name__)
+
+
+def _reuse_compaction_exact_secret_pattern(func):
+    """Reuse one profile-bound exact-secret snapshot for a compaction call."""
+    @wraps(func)
+    def wrapped(*args, **kwargs):
+        from agent.redact import _exact_secret_pattern_scope
+
+        with _exact_secret_pattern_scope():
+            return func(*args, **kwargs)
+
+    return wrapped
 
 
 def _safe_int(value: Any) -> int | None:
@@ -1116,11 +1129,18 @@ def _redact_compaction_text(text: Any) -> str:
       tokens, and URL userinfo never need to survive summarization the way
       they must survive live navigation flows.
     """
-    return redact_sensitive_text(
+    redacted = redact_sensitive_text(
         text or "",
         force=True,
         redact_url_credentials=True,
     )
+    # External secret providers may use arbitrary names and opaque values that
+    # have no recognizable credential shape. Compaction is both an auxiliary
+    # provider boundary and a persistence boundary, so exact masking remains
+    # forced even when live-output redaction is disabled.
+    from agent.redact import redact_known_secret_values
+
+    return redact_known_secret_values(redacted, force=True)
 
 
 def _dedupe_append(items: list[str], value: str, *, limit: int) -> None:
@@ -3829,6 +3849,7 @@ class ContextCompressor(ContextEngine):
     # carries the full rationale) so subclasses/tests can override per-class.
     _SUMMARY_INPUT_MAX_CHARS = _SUMMARY_INPUT_MAX_CHARS
 
+    @_reuse_compaction_exact_secret_pattern
     def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
         """Serialize conversation turns into labeled text for the summarizer.
 
@@ -3917,6 +3938,7 @@ class ContextCompressor(ContextEngine):
 
         return "\n\n".join(parts)
 
+    @_reuse_compaction_exact_secret_pattern
     def _build_static_fallback_summary(
         self,
         turns_to_summarize: List[Dict[str, Any]],
@@ -4056,7 +4078,7 @@ class ContextCompressor(ContextEngine):
         )
         previous_summary_note = ""
         if self._previous_summary:
-            previous_summary = redact_sensitive_text(self._previous_summary.strip())
+            previous_summary = _redact_compaction_text(self._previous_summary.strip())
             if len(previous_summary) > _FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS:
                 previous_summary = (
                     previous_summary[: _FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS - 45].rstrip()
@@ -4322,6 +4344,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         self.summary_model = ""  # empty = use main model
         self._clear_compression_failure_cooldown()  # no cooldown — retry immediately
 
+    @_reuse_compaction_exact_secret_pattern
     def _generate_summary(
         self,
         turns_to_summarize: List[Dict[str, Any]],
@@ -6320,8 +6343,8 @@ This compaction should PRIORITISE preserving all information related to the focu
         from agent.auxiliary_client import call_llm, aux_interrupt_protection
 
         messages = self._build_micro_summary_prompt(
-            self._micro_compact_rolling_summary,
-            exchange_text,
+            _redact_compaction_text(self._micro_compact_rolling_summary),
+            _redact_compaction_text(exchange_text),
         )
 
         call_kwargs = {
@@ -6362,6 +6385,7 @@ This compaction should PRIORITISE preserving all information related to the focu
 
         from agent.agent_runtime_helpers import strip_think_blocks
         stripped = strip_think_blocks(None, content).strip()
+        stripped = _redact_compaction_text(stripped)
         return stripped if stripped else None
 
     def _needs_defrag(self) -> bool:
@@ -6433,6 +6457,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         )
         return True
 
+    @_reuse_compaction_exact_secret_pattern
     def _micro_compact(
         self,
         messages: List[Dict[str, Any]],
@@ -6874,6 +6899,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             merged.append(msg)
         return merged
 
+    @_reuse_compaction_exact_secret_pattern
     def compress(
         self,
         messages: List[Dict[str, Any]],

@@ -15,6 +15,7 @@ sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
 
 from __future__ import annotations
 
+import copy
 import contextvars
 import json
 import logging
@@ -40,6 +41,7 @@ from agent.model_metadata import is_local_endpoint
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import (
+    _sanitize_structure_non_ascii,
     _sanitize_surrogates,
     _repair_tool_call_arguments,
 )
@@ -1827,6 +1829,28 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     if tools_for_api is None:
         tools_for_api = agent.tools
 
+    # ASCII fallback normalization must precede the final exact-secret gate.
+    # Transliteration can compose a configured secret from an otherwise safe
+    # value (for example ``abécd`` -> ``abcd``); sanitizing only the finished
+    # kwargs would therefore create the secret after the gate.  Normalize a
+    # disposable request copy here so canonical history remains byte-exact,
+    # then let the provider gate inspect the exact bytes sent on the wire.
+    if getattr(agent, "_force_ascii_payload", False):
+        api_messages = copy.deepcopy(api_messages)
+        _sanitize_structure_non_ascii(api_messages)
+
+    # Final provider-egress gate. Earlier sanitization intentionally runs
+    # before alternation repair, thinking-only removal, prompt-cache rebasing,
+    # and MoA preparation. Those request-local transformations can merge
+    # individually harmless fragments into one active exact secret (for
+    # example two user turns joined with ``\n\n``). Rebind a disposable copy
+    # here, after those transformations and immediately before every transport
+    # builds its wire kwargs. Executable tool arguments and signed/sealed replay
+    # fields retain their established byte-exact exemptions.
+    from agent.redact import redact_provider_message_values
+
+    api_messages = redact_provider_message_values(api_messages)
+
     if agent.api_mode == "anthropic_messages":
         _transport = agent._get_transport()
         anthropic_messages = agent._prepare_anthropic_messages_for_api(api_messages)
@@ -3004,6 +3028,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             _cnr_sum = _ct_sum.normalize_response(summary_response)
             final_response = (_cnr_sum.content or "").strip()
         else:
+            # This legacy final-summary path calls chat.completions directly
+            # instead of routing through ``build_api_kwargs``. Apply the same
+            # post-merge exact-value gate after thinking-only removal so it
+            # cannot reintroduce a composed secret at provider egress.
+            from agent.redact import redact_provider_message_values
+
+            api_messages = redact_provider_message_values(api_messages)
             summary_kwargs = {
                 "model": agent.model,
                 "messages": api_messages,

@@ -1153,6 +1153,31 @@ def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rendered
 
 
+def _redacted_reference_messages(
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Build an exact-redacted disposable advisory view.
+
+    Provider-copy masking first removes values from tool results and other
+    visible content without mutating history. The second text-only pass masks
+    values after tool-call arguments are rendered for advisors, so modern and
+    legacy structured argument fields remain exact for replay.
+    """
+    from agent.redact import redact_known_secret_values, redact_provider_message_values
+
+    provider_copy = redact_provider_message_values(messages)
+    rendered = _reference_messages(provider_copy)
+    return [
+        {
+            **message,
+            "content": redact_known_secret_values(message.get("content", "")),
+        }
+        if isinstance(message, dict) and isinstance(message.get("content"), str)
+        else message
+        for message in rendered
+    ]
+
+
 
 def _extract_text(response: Any) -> str:
     try:
@@ -1267,7 +1292,7 @@ def aggregate_moa_context(
     """
     reference_models = [slot for slot in reference_models if slot.get("enabled", True)]
     reference_outputs: list[tuple[str, str, Any]] = []
-    ref_messages = _reference_messages(api_messages)
+    ref_messages = _redacted_reference_messages(api_messages)
     reference_outputs = _run_references_parallel(
         reference_models,
         ref_messages,
@@ -1330,6 +1355,12 @@ def aggregate_moa_context(
         f"Original user prompt:\n{user_prompt}\n\n"
         f"Reference responses:\n{joined}"
     )
+    # ``user_prompt`` is supplied separately from ``api_messages`` and advisor
+    # output can echo a known value. Treat the assembled synthesis prompt as a
+    # fresh exact-value provider boundary.
+    from agent.redact import redact_known_secret_values
+
+    synth_prompt = redact_known_secret_values(synth_prompt)
 
     agg_label = _slot_label(aggregator)
     agg_runtime = _slot_runtime(aggregator)
@@ -1812,6 +1843,12 @@ class MoAChatCompletions:
                 "MoA aggregator cache plan failed — sending undecorated "
                 "request (cache misses expected): %s", exc,
             )
+        # Reference guidance is attached inside the MoA facade, after the
+        # outer agent loop's normal sanitizer has already run. Apply the same
+        # exact-value copy gate at this final acting-aggregator boundary.
+        from agent.redact import redact_provider_message_values
+
+        agg_messages = redact_provider_message_values(agg_messages)
         # Record the exact aggregator INPUT (incl. the injected reference
         # context) into the pending trace so a trace captures what the
         # aggregator actually saw, not a reconstruction. Traces are a
@@ -1993,7 +2030,7 @@ class MoAChatCompletions:
         from agent.usage_pricing import CanonicalUsage
 
         reference_outputs: list[tuple[str, str, Any]] = []
-        ref_messages = _reference_messages(messages)
+        ref_messages = _redacted_reference_messages(messages)
 
         # Fan-out cadence. "user_turn" (default — cheapest cadence, #67199):
         # advisors run ONCE per user turn; subsequent tool iterations reuse

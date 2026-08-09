@@ -178,6 +178,33 @@ def test_non_repo_cwd_is_not_probed_for_a_common_dir(monkeypatch, tmp_path):
     assert asked == ["--show-toplevel"]
 
 
+def test_tree_build_warms_every_path_it_will_resolve(monkeypatch, tmp_path):
+    # build_tree resolves declared project folders and discovered repo roots as
+    # well as session cwds. Anything left out of the warm is probed one
+    # directory at a time while the sidebar shows a skeleton.
+    from tui_gateway import git_probe
+
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    _call("projects.create", {"name": "Repo", "folders": [str(repo)]})
+
+    warmed: list[str] = []
+    real_warm = git_probe.warm_roots
+
+    def recording_warm(cwds, **kw):
+        paths = list(cwds)
+        warmed.extend(paths)
+        return real_warm(paths, **kw)
+
+    monkeypatch.setattr(git_probe, "warm_roots", recording_warm)
+
+    server._build_project_tree(
+        server._get_db(), preview_limit=3, hydrate=False, session_limit=5, include_discovered=True
+    )
+
+    assert str(repo) in warmed
+
+
 def test_create_list_roundtrip(tmp_path):
     created = _call("projects.create", {"name": "Demo", "folders": [str(tmp_path)], "use": True})
     assert created["project"]["slug"] == "demo"

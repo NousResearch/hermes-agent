@@ -11842,6 +11842,13 @@ def _build_project_tree(
     sessions, projects, discovered, active_id = _project_tree_inputs(
         db, session_limit, include_discovered=include_discovered
     )
+    # build_tree resolves every declared project folder and every discovered
+    # repo root too, and those paths are not session cwds — without this they
+    # are the one part of the build still probing git one directory at a time.
+    git_probe.warm_roots(
+        [str(f.get("path") or "") for p in projects for f in (p.get("folders") or [])]
+        + [str(r.get("root") or "") for r in discovered]
+    )
     tree = project_tree.build_tree(
         projects,
         sessions,

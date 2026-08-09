@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any, Dict
 
 from utils import is_truthy_value
+
+logger = logging.getLogger(__name__)
 
 
 _DEFAULT_BROWSER_PROVIDER = "local"
@@ -138,12 +141,92 @@ def resolve_modal_backend_state(
     }
 
 
+def _scoped_credential(name: str) -> str:
+    """Read a credential env var under the active profile secret scope."""
+    try:
+        from agent.secret_scope import get_secret
+
+        return (get_secret(name, "") or "").strip()
+    except Exception:  # pragma: no cover - secret_scope is in-repo
+        return (os.getenv(name, "") or "").strip()
+
+
+def resolve_provider_secret(
+    env_var: str,
+    provider_id: str,
+    config_value: str = "",
+    env_getter=None,
+) -> str:
+    """Resolve one voice-provider secret without crossing profile scopes.
+
+    Precedence is explicit config, active profile/environment, the profile's
+    ``.env`` outside multiplex mode, then its credential pool. Resolution is
+    deliberately fail-closed and never borrows the process-global pool during
+    a multiplexed gateway turn.
+    """
+    value = str(config_value or "").strip()
+    if value:
+        return value
+
+    key = _scoped_credential(env_var)
+    if key:
+        return key
+
+    try:
+        from agent.secret_scope import is_multiplex_active
+
+        if is_multiplex_active():
+            return ""
+    except Exception:  # pragma: no cover - secret_scope is in-repo
+        pass
+
+    if env_getter is not None:
+        key = str(env_getter(env_var) or "").strip()
+    else:
+        try:
+            from hermes_cli.config import get_env_value
+
+            key = str(get_env_value(env_var) or "").strip()
+        except ImportError:  # pragma: no cover - config is in-repo
+            key = ""
+    if key:
+        return key
+
+    if not provider_id:
+        return ""
+    try:
+        from agent.credential_pool import load_pool
+
+        for pool_key in (provider_id, f"custom:{provider_id}"):
+            pool = load_pool(pool_key)
+            if pool is None or not pool.has_credentials():
+                continue
+            entry = pool.peek()
+            if entry is None:
+                continue
+            key = str(
+                getattr(entry, "runtime_api_key", "")
+                or getattr(entry, "access_token", "")
+                or ""
+            ).strip()
+            if key:
+                return key
+    except Exception as exc:
+        logger.debug(
+            "Could not read %s credential pool for %s: %s",
+            provider_id,
+            env_var,
+            exc,
+        )
+    return ""
+
+
 def resolve_openai_audio_api_key() -> str:
-    """Prefer the voice-tools key, but fall back to the normal OpenAI key."""
+    """Prefer the scoped voice-tools key, then normal OpenAI credentials."""
     return (
-        os.getenv("VOICE_TOOLS_OPENAI_KEY", "")
-        or os.getenv("OPENAI_API_KEY", "")
-    ).strip()
+        resolve_provider_secret("VOICE_TOOLS_OPENAI_KEY", "")
+        or resolve_provider_secret("OPENAI_API_KEY", "openai-api")
+    )
 
 
 def prefers_gateway(config_section: str) -> bool:

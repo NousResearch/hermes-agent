@@ -99,6 +99,7 @@ _DEFAULT_IMAGE_PARALLEL_REQUESTS = 4
 # Keep this above the stock auxiliary.web_extract timeout (360s) so the batch
 # guard does not preempt a slow-but-valid summarization attempt.
 _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S = 420.0
+_START_ORDER_GATE_TIMEOUT_S = 120.0
 _AUTHORIZATION_GATE_LOCK_TIMEOUT_S = 360.0
 
 
@@ -110,6 +111,10 @@ def _authorization_gate_lock_timeout() -> float:
         return human_wait_ceiling()
     except Exception:
         return _AUTHORIZATION_GATE_LOCK_TIMEOUT_S
+
+
+class _BatchAbandoned(BaseException):
+    """A worker was released after the batch had already been abandoned."""
 
 
 def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
@@ -953,18 +958,57 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
     start_condition = threading.Condition()
     next_start_order = 0
+    batch_abandoned = threading.Event()
     authorization_gate = _ConcurrentToolAuthorizationGate()
 
-    def _begin_in_order(order: int, callback=None) -> None:
+    def _abandon_batch() -> None:
+        batch_abandoned.set()
+        with start_condition:
+            start_condition.notify_all()
+
+    def _start_order_gate_timeout(batch_timeout: float | None) -> float:
+        if batch_timeout is None:
+            return _START_ORDER_GATE_TIMEOUT_S
+        return min(_START_ORDER_GATE_TIMEOUT_S, batch_timeout / 2)
+
+    def _begin_in_order(
+        order: int,
+        callback=None,
+        *,
+        tool_name: str = "",
+        gate_timeout: float | None = None,
+    ) -> bool:
+        """Serialize dispatch by submit order; return False after abandonment."""
         nonlocal next_start_order
         with start_condition:
-            start_condition.wait_for(lambda: order == next_start_order)
+            in_order = start_condition.wait_for(
+                lambda: next_start_order >= order or batch_abandoned.is_set(),
+                timeout=(
+                    _START_ORDER_GATE_TIMEOUT_S
+                    if gate_timeout is None
+                    else gate_timeout
+                ),
+            )
+            if batch_abandoned.is_set():
+                return False
+            if not in_order:
+                logger.warning(
+                    "start-order gate timed out for %s (order=%d next=%d); "
+                    "proceeding out of order",
+                    tool_name or "tool",
+                    order,
+                    next_start_order,
+                )
             try:
                 if callback is not None:
                     callback()
             finally:
-                next_start_order += 1
+                next_start_order = max(next_start_order, order + 1)
                 start_condition.notify_all()
+        return True
+
+    timeout_s = _resolve_concurrent_tool_timeout()
+    gate_timeout_s = _start_order_gate_timeout(timeout_s)
 
     # Touch activity before launching workers so the gateway knows
     # we're executing tools (not stuck).
@@ -1018,9 +1062,16 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             if start_advanced:
                 return
             try:
-                _begin_in_order(start_order, callback)
+                proceed = _begin_in_order(
+                    start_order,
+                    callback,
+                    tool_name=function_name,
+                    gate_timeout=gate_timeout_s,
+                )
             finally:
                 start_advanced = True
+            if not proceed:
+                raise _BatchAbandoned(function_name)
 
         try:
             try:
@@ -1055,6 +1106,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 middleware_trace = managed.middleware_trace
                 blocked = managed.blocked
                 dispatched = managed.dispatched
+            except _BatchAbandoned:
+                logger.info(
+                    "tool %s abandoned at start-order gate; skipping dispatch",
+                    function_name,
+                )
+                return
             except KeyboardInterrupt:
                 try:
                     agent.interrupt("keyboard interrupt")
@@ -1111,7 +1168,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 middleware_trace,
             )
         finally:
-            _advance_start()
+            try:
+                _advance_start()
+            except _BatchAbandoned:
+                pass
             # Tear down worker-tid tracking.  Clear any interrupt bit we may
             # have set so the next task scheduled onto this recycled tid
             # starts with a clean slate.  This MUST be in a finally block
@@ -1143,7 +1203,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         futures = []
         future_to_index = {}
         timed_out_indices: set[int] = set()
-        timeout_s = _resolve_concurrent_tool_timeout()
         deadline = time.monotonic() + timeout_s if timeout_s is not None else None
         if runnable_calls:
             max_workers = _max_workers_for_tool_batch(runnable_calls)
@@ -1262,6 +1321,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                         )
                         for f in not_done:
                             f.cancel()
+                        _abandon_batch()
                         with agent._tool_worker_threads_lock:
                             worker_tids = list(agent._tool_worker_threads)
                         for tid in worker_tids:
@@ -1287,6 +1347,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             )
                         for f in not_done:
                             f.cancel()
+                        _abandon_batch()
                         # Give already-running tools a moment to notice the
                         # per-thread interrupt signal and exit gracefully.
                         concurrent.futures.wait(not_done, timeout=3.0)
@@ -1305,6 +1366,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                             f"{len(not_done)} remaining: {', '.join(_still_running[:3])})"
                         )
             finally:
+                if abandon_executor:
+                    _abandon_batch()
                 # On abandon (interrupt or deadline) we intentionally do NOT
                 # join hung workers: wait=False returns immediately and
                 # cancel_futures drops queued-but-unstarted work. A wedged tool

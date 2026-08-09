@@ -2553,6 +2553,16 @@ button[data-slot='aui_msg-reactions'] svg {
   display: none !important;
 }
 
+/* The band is three lines of conversation over someone else's window, not a
+   transcript. Tool rows, file diffs, and background notices ("Self-improvement
+   review: patched …") are the docked app's job — here they push the actual
+   answer out of view and read as junk pinned over the app below. */
+[data-hud-shell] [data-slot='tool-block'],
+[data-hud-shell] [data-slot='file-diff-panel'],
+[data-hud-shell] [data-slot='aui_system-message-root'] {
+  display: none !important;
+}
+
 /* ── Edge flip ───────────────────────────────────────────────────────────────
    Parked in the top half of the screen (data-hud-edge='top', broadcast by
    main on move/resize), the whole HUD mirrors vertically: composer hugs the

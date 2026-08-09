@@ -772,6 +772,8 @@ class HermesACPAgent(acp.Agent):
                 raw = str(provider_id or "").strip().lower()
                 if raw in {"ollama", "custom:ollama"}:
                     return "ollama"
+                if raw.startswith("custom:"):
+                    return raw
                 return normalize_provider(raw)
 
             seen_semantic_ids: set[str] = set()
@@ -816,6 +818,8 @@ class HermesACPAgent(acp.Agent):
                         if raw_row_provider == "ollama"
                         else raw_row_provider
                         if raw_row_provider == "custom:ollama"
+                        else raw_row_provider
+                        if raw_row_provider.startswith("custom:")
                         else row_provider
                     )
                     choice_id = self._encode_model_choice(
@@ -848,7 +852,7 @@ class HermesACPAgent(acp.Agent):
             named_empty_authoritative: set[str] = set(native_empty_rows)
             for named_slug, named_label, named_catalog in _named_custom_provider_catalogs():
                 if not named_catalog:
-                    named_empty_authoritative.add(normalize_provider(named_slug))
+                    named_empty_authoritative.add(str(named_slug).strip().lower())
                     continue
                 for named_model, named_desc in named_catalog:
                     named_choice = self._encode_model_choice(named_slug, named_model)
@@ -879,6 +883,13 @@ class HermesACPAgent(acp.Agent):
             def empty_catalog_applies(provider_id: str) -> bool:
                 raw = str(provider_id or "").strip().lower()
                 normalized = normalize_provider(raw)
+                if normalized == "custom":
+                    return any(
+                        candidate == raw
+                        or candidate == f"custom:{raw}"
+                        or (raw == "custom" and candidate == "custom")
+                        for candidate in named_empty_authoritative
+                    )
                 return any(
                     candidate == raw
                     or candidate == f"custom:{normalized}"

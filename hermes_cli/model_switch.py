@@ -197,6 +197,17 @@ def _save_discovered_models_to_config(
             # config writes on every picker open.
             if isinstance(existing, list) and existing == model_ids:
                 continue
+            if isinstance(existing, dict):
+                existing_ids = [
+                    model_id
+                    for model_id in existing
+                    if model_id != "__discovered_model_catalog__"
+                ]
+                if (
+                    existing.get("__discovered_model_catalog__") is True
+                    and existing_ids == model_ids
+                ):
+                    continue
             entry["models"] = {
                 "__discovered_model_catalog__": True,
                 **{model_id: {} for model_id in model_ids},

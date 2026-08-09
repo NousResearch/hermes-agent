@@ -1485,7 +1485,10 @@ def _normalize_custom_provider_entry(
             }
             normalized_models[model_id.strip()] = model_meta
         if normalized_models:
-            normalized_models["__explicit_model_allowlist__"] = True
+            if normalized_models.get("__discovered_model_catalog__"):
+                normalized_models.pop("__explicit_model_allowlist__", None)
+            else:
+                normalized_models["__explicit_model_allowlist__"] = True
             normalized["models"] = normalized_models
 
     context_length = entry.get("context_length")

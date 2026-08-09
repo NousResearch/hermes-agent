@@ -88,7 +88,10 @@ def _declared_model_ids(value: Any) -> list[str]:
 
     if isinstance(value, dict):
         for model_id in value:
-            if model_id == "__explicit_model_allowlist__":
+            if model_id in {
+                "__explicit_model_allowlist__",
+                "__discovered_model_catalog__",
+            }:
                 continue
             _add(model_id)
         return ids
@@ -126,14 +129,21 @@ def _models_config_is_allowlist(value: Any) -> bool:
     if isinstance(value, str):
         return bool(value.strip())
     if isinstance(value, dict):
-        return bool(value.get("__explicit_model_allowlist__"))
+        return bool(
+            value.get("__explicit_model_allowlist__")
+            and not value.get("__discovered_model_catalog__")
+        )
     if isinstance(value, (list, tuple)):
         return bool(_declared_model_ids(value))
     return False
 
 
 def _save_discovered_models_to_config(
-    api_url: str, model_ids: list[str]
+    api_url: str,
+    model_ids: list[str],
+    *,
+    api_mode: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
 ) -> None:
     """Persist discovered models into ``custom_providers`` in config.yaml.
 
@@ -160,9 +170,18 @@ def _save_discovered_models_to_config(
         for entry in providers:
             if not isinstance(entry, dict):
                 continue
-            entry_url = (entry.get("base_url", "") or entry.get("url", "") or "").strip()
+            entry_url = (entry.get("base_url", "") or entry.get("url", "")).strip()
             if entry_url.rstrip("/").lower() != norm_url:
                 continue
+            entry_mode = str(
+                entry.get("api_mode") or entry.get("transport") or ""
+            ).strip().lower() or None
+            if entry_mode != api_mode:
+                continue
+            if headers is not None:
+                entry_headers = _extra_headers_from_config(entry)
+                if entry_headers != headers:
+                    continue
             existing = entry.get("models")
             # Preserve per-model metadata: when ``models`` is a mapping
             # (e.g. ``{"model-a": {"context_length": 8192}}``) or a list of
@@ -178,7 +197,10 @@ def _save_discovered_models_to_config(
             # config writes on every picker open.
             if isinstance(existing, list) and existing == model_ids:
                 continue
-            entry["models"] = model_ids
+            entry["models"] = {
+                "__discovered_model_catalog__": True,
+                **{model_id: {} for model_id in model_ids},
+            }
             changed = True
 
         if changed:
@@ -1650,7 +1672,13 @@ def switch_model(
                 # is already in vendor/model format and the colon is a variant
                 # tag (:free, :extended, :fast) that must be preserved.
                 colon_pos = raw_input.find(":")
-                if colon_pos > 0 and "/" not in raw_input and is_aggregator(current_provider):
+                if (
+                    colon_pos > 0
+                    and "/" not in raw_input
+                    and is_aggregator(current_provider)
+                    and not str(current_provider).strip().lower().startswith("custom")
+                    and str(current_provider).strip().lower() != "ollama"
+                ):
                     left = raw_input[:colon_pos].strip().lower()
                     right = raw_input[colon_pos + 1:].strip()
                     if left and right:
@@ -3738,7 +3766,12 @@ def list_authenticated_providers(
                             native_catalog_empty = not live_models
                         grp["models"] = live_models
                         grp["total_models"] = len(live_models)
-                        _save_discovered_models_to_config(api_url, live_models)
+                        _save_discovered_models_to_config(
+                            api_url,
+                            live_models,
+                            api_mode=grp.get("api_mode"),
+                            headers=grp.get("extra_headers") or None,
+                        )
                 except _MODEL_DISCOVERY_ERRORS:
                     pass
             elif _discovery_allowed:

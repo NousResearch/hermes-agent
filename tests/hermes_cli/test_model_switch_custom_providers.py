@@ -1409,7 +1409,7 @@ def test_discovered_models_auto_saved_to_cache(monkeypatch):
     monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
     monkeypatch.setattr(
         "hermes_cli.model_switch._save_discovered_models_to_config",
-        lambda api_url, model_ids: save_calls.append((api_url, model_ids)),
+        lambda api_url, model_ids, **kwargs: save_calls.append((api_url, model_ids)),
     )
 
     custom_providers = [
@@ -1521,7 +1521,7 @@ def test_model_flow_named_custom_persists_discovered_models(monkeypatch):
     save_calls = []
     monkeypatch.setattr(
         "hermes_cli.model_switch._save_discovered_models_to_config",
-        lambda api_url, model_ids: save_calls.append((api_url, model_ids)),
+        lambda api_url, model_ids, **kwargs: save_calls.append((api_url, model_ids)),
     )
 
     from hermes_cli.model_setup_flows import _model_flow_named_custom
@@ -1881,7 +1881,7 @@ def test_cached_catalog_is_not_written_back_to_config(monkeypatch):
     saves = []
     monkeypatch.setattr(
         "hermes_cli.model_switch._save_discovered_models_to_config",
-        lambda api_url, model_ids: saves.append((api_url, model_ids)),
+        lambda api_url, model_ids, **kwargs: saves.append((api_url, model_ids)),
     )
 
     row, _ = _no_probe_local_row(
@@ -2075,7 +2075,8 @@ def test_auto_saved_catalog_round_trips_without_pinning(tmp_path, monkeypatch):
     _save_discovered_models_to_config(_LOCAL_ENDPOINT, list(_LOCAL_CATALOG))
 
     saved = yaml.safe_load(cfg_path.read_text())["custom_providers"][0]
-    assert saved["models"] == _LOCAL_CATALOG, "probe result should be persisted"
+    assert saved["models"]["__discovered_model_catalog__"] is True
+    assert [m for m in saved["models"] if not m.startswith("__")] == _LOCAL_CATALOG
 
     # The persisted shape is what the picker will read on the next open. It
     # must not, on a keyless entry, suppress discovery of a wider catalog.

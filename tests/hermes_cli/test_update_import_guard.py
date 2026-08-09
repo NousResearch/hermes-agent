@@ -169,6 +169,9 @@ def test_import_guard_ignores_missing_third_party_dependency(monkeypatch, tmp_pa
 
 def test_import_guard_flags_missing_first_party_module(monkeypatch, tmp_path):
     """A missing *first-party* module IS skew — the update dropped a file."""
+    tools_dir = tmp_path / "tools"
+    tools_dir.mkdir()
+    (tools_dir / "__init__.py").write_text("")
     (tmp_path / "consumer.py").write_text("import tools.nonexistent_module\n")
     monkeypatch.setattr(update_cmd, "_UPDATE_CRITICAL_MODULES", ("consumer",))
 

@@ -23,6 +23,7 @@ describe('toChatMessages', () => {
     // the backend also ships the full args, and the part must carry them so
     // the expanded `$` transcript shows the whole command.
     const longCommand = `echo ${'x'.repeat(200)}`
+
     const messages = toChatMessages([
       { role: 'user', content: 'run it', timestamp: 1 },
       {

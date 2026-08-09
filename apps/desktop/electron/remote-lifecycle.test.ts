@@ -143,10 +143,7 @@ test('locateHermes returns an explicit remoteHermesPath unchanged', async () => 
   ])
 
   assert.equal(await locateHermes(ssh, '~/.local/bin/hermes'), '~/.local/bin/hermes')
-  assert.ok(
-    !ssh.calls.some(cmd => cmd.includes('python3 -c')),
-    'an explicit remoteHermesPath must never be rewritten'
-  )
+  assert.ok(!ssh.calls.some(cmd => cmd.includes('python3 -c')), 'an explicit remoteHermesPath must never be rewritten')
 })
 
 test('locateHermes falls back to ~/.local/bin/hermes when the login-shell probe misses', async () => {

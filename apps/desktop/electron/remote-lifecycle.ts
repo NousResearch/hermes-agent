@@ -128,16 +128,16 @@ function expandRemotePath(p) {
 // non-login `ssh host cmd` PATH misses user installs), then known install paths.
 async function locateHermes(ssh, remoteHermesPath) {
   const resolveLauncher = async (candidate: string) => {
-      // Return the candidate path directly. The hermes binary or wrapper script
-      // is executable and handles argument forwarding (e.g. `exec <python> <script> "$@"`)
-      // correctly on its own. Previously, this function followed `exec` wrappers and
-      // returned only the python interpreter, which broke:
-      //   - version checking: `<python> --version` printed "Python x.y.z" instead of
-      //     the Hermes version, and
-      //   - capability probing: `<python> serve --help` failed entirely.
-      // See https://github.com/NousResearch/hermes-agent/issues/74411
-      return candidate
-    }
+    // Return the candidate path directly. The hermes binary or wrapper script
+    // is executable and handles argument forwarding (e.g. `exec <python> <script> "$@"`)
+    // correctly on its own. Previously, this function followed `exec` wrappers and
+    // returned only the python interpreter, which broke:
+    //   - version checking: `<python> --version` printed "Python x.y.z" instead of
+    //     the Hermes version, and
+    //   - capability probing: `<python> serve --help` failed entirely.
+    // See https://github.com/NousResearch/hermes-agent/issues/74411
+    return candidate
+  }
 
   const isExecutable = async (candidate: string) => {
     try {

@@ -10,6 +10,7 @@ import { test } from 'vitest'
 import { profileSshOverride } from './connection-config'
 import {
   buildSpawnCommand,
+  classifySshReuseProof,
   cleanupStale,
   connect,
   disconnect,
@@ -40,6 +41,23 @@ import {
 const OWNERSHIP_ID = '0123456789abcdef0123456789abcdef'
 const SPAWN_NONCE = '0123456789abcdef'
 const exec = promisify(execCallback)
+
+test('SSH reuse proof rejects a backend whose runtime was replaced', () => {
+  assert.equal(
+    classifySshReuseProof(
+      { ok: true, sshOwnerNonce: SPAWN_NONCE, protocolVersion: 1, runtimeIntact: false },
+      SPAWN_NONCE
+    ),
+    'authenticated-stale'
+  )
+})
+
+test('SSH reuse proof remains compatible when runtime state is absent', () => {
+  assert.equal(
+    classifySshReuseProof({ ok: true, sshOwnerNonce: SPAWN_NONCE, protocolVersion: 1 }, SPAWN_NONCE),
+    'authenticated-ok'
+  )
+})
 
 function ownedLock(over: any = {}) {
   return {

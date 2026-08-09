@@ -21,7 +21,22 @@ def test_ssh_ownership_endpoint_requires_token_and_returns_exact_nonce(monkeypat
         "ok": True,
         "sshOwnerNonce": nonce,
         "protocolVersion": 1,
+        "runtimeIntact": True,
     }
+
+
+def test_ssh_ownership_reports_replaced_runtime(monkeypatch):
+    token = "t" * 64
+    monkeypatch.setattr(web_server, "_SESSION_TOKEN", token)
+    monkeypatch.setattr(web_server, "_SSH_OWNER_NONCE", "0123456789abcdef")
+    monkeypatch.setattr(web_server, "_SSH_RUNTIME_PURELIB", ("/venv/site-packages", 10, 20))
+    monkeypatch.setattr(web_server.os, "stat", lambda _path: type("Stat", (), {"st_dev": 10, "st_ino": 21})())
+    client = TestClient(web_server.app)
+
+    response = client.get("/api/ssh/ownership", headers={"X-Hermes-Session-Token": token})
+
+    assert response.status_code == 200
+    assert response.json()["runtimeIntact"] is False
 
 
 def test_ssh_ownership_endpoint_is_absent_without_owner_nonce(monkeypatch):

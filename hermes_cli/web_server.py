@@ -38,6 +38,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import threading
 import time
@@ -543,6 +544,7 @@ def _resolve_session_token() -> str:
 _SESSION_TOKEN = _resolve_session_token()
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 _SSH_OWNER_NONCE: Optional[str] = None
+_SSH_RUNTIME_PURELIB: Optional[Tuple[str, int, int]] = None
 
 
 def _apply_ssh_session_token(token: str) -> None:
@@ -552,8 +554,27 @@ def _apply_ssh_session_token(token: str) -> None:
 
 
 def _apply_ssh_owner_nonce(nonce: Optional[str]) -> None:
-    global _SSH_OWNER_NONCE
+    global _SSH_OWNER_NONCE, _SSH_RUNTIME_PURELIB
     _SSH_OWNER_NONCE = nonce
+    _SSH_RUNTIME_PURELIB = None
+    if nonce:
+        try:
+            purelib = sysconfig.get_paths()["purelib"]
+            stat = os.stat(purelib)
+            _SSH_RUNTIME_PURELIB = (purelib, stat.st_dev, stat.st_ino)
+        except (KeyError, OSError):
+            pass
+
+
+def _ssh_runtime_intact() -> bool:
+    if _SSH_RUNTIME_PURELIB is None:
+        return True
+    purelib, device, inode = _SSH_RUNTIME_PURELIB
+    try:
+        stat = os.stat(purelib)
+    except OSError:
+        return False
+    return (stat.st_dev, stat.st_ino) == (device, inode)
 
 # In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
 # desktop app and the dashboard's own Chat tab both drive the agent over the
@@ -3578,7 +3599,12 @@ async def get_ssh_ownership(request: Request):
     _require_token(request)
     if not _SSH_OWNER_NONCE:
         raise HTTPException(status_code=404, detail="SSH ownership is not active")
-    return {"ok": True, "sshOwnerNonce": _SSH_OWNER_NONCE, "protocolVersion": 1}
+    return {
+        "ok": True,
+        "sshOwnerNonce": _SSH_OWNER_NONCE,
+        "protocolVersion": 1,
+        "runtimeIntact": _ssh_runtime_intact(),
+    }
 
 
 @app.get("/api/health")

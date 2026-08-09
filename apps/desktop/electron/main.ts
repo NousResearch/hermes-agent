@@ -9529,9 +9529,7 @@ async function sshProbeReuseProof(baseUrl, token, spawnNonce) {
   try {
     const proof: any = await fetchJson(`${baseUrl}/api/ssh/ownership`, token)
 
-    return proof?.ok === true && proof.sshOwnerNonce === spawnNonce && proof.protocolVersion === 1
-      ? 'authenticated-ok'
-      : 'authenticated-stale'
+    return remoteLifecycle.classifySshReuseProof(proof, spawnNonce)
   } catch (error: any) {
     if (/^(401|403|404):/.test(String(error?.message || ''))) {
       return 'authenticated-stale'

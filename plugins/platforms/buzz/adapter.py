@@ -52,6 +52,7 @@ from urllib.parse import urlsplit, urlunsplit
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import current_secret_scope as _current_secret_scope
 from agent.secret_scope import get_secret as _scoped_get_secret
+from agent.secret_scope import is_multiplex_active as _is_multiplex_active
 
 
 def _get_scoped_secret(name, default=None):
@@ -340,6 +341,8 @@ def _credentials_candidates(extra: Optional[dict] = None) -> List[Path]:
     ).strip()
     if configured:
         return [Path(configured).expanduser()]
+    if _is_multiplex_active():
+        return []
     try:
         return sorted(_DEFAULT_CREDENTIALS_DIR.glob("*credentials*.json"))
     except OSError:

@@ -970,6 +970,23 @@ class TestCredentialResolution:
         assert _resolve_private_key() == "nsec1fromfile"
         assert json.loads(_resolve_auth_tag()) == tag
 
+    def test_empty_multiplex_scope_never_autodiscovers_ambient_credentials(self, monkeypatch, tmp_path):
+        from agent import secret_scope as ss
+
+        tag = ["auth", "a" * 64, "", "d" * 128]
+        (tmp_path / "general_credentials.json").write_text(
+            json.dumps({"nsec": "nsec1ambient", "auth_tag": tag}), encoding="utf-8"
+        )
+        monkeypatch.setattr(_buzz_mod, "_DEFAULT_CREDENTIALS_DIR", tmp_path)
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({})
+        try:
+            assert _resolve_private_key() == ""
+            assert _resolve_auth_tag() == ""
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
 
 # ── Env enablement / registration / standalone send ──────────────────────
 

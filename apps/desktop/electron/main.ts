@@ -105,6 +105,7 @@ import {
   reviewCreatePr,
   reviewDiff,
   reviewList,
+  reviewPrList,
   reviewPush,
   reviewRevert,
   reviewRevParse,
@@ -11817,6 +11818,9 @@ ipcMain.handle('hermes:git:review:commitContext', async (_event, repoPath) =>
 )
 ipcMain.handle('hermes:git:review:push', async (_event, repoPath) => reviewPush(repoPath, resolveGitBinary()))
 ipcMain.handle('hermes:git:review:shipInfo', async (_event, repoPath) => reviewShipInfo(repoPath, resolveGhBinary()))
+ipcMain.handle('hermes:git:review:prList', async (_event, repoPath, branches, numbers) =>
+  reviewPrList(repoPath, resolveGhBinary(), branches, numbers)
+)
 ipcMain.handle('hermes:git:review:createPr', async (_event, repoPath) =>
   reviewCreatePr(repoPath, resolveGitBinary(), resolveGhBinary())
 )

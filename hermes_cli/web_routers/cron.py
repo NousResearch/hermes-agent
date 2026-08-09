@@ -44,6 +44,7 @@ _delete_cron_job_sync = late("_delete_cron_job_sync")
 _find_cron_job_profile = late("_find_cron_job_profile")
 _fire_cron_job_for_profile = late("_fire_cron_job_for_profile")
 _forward_cron_fire_to_gateway = late("_forward_cron_fire_to_gateway")
+_notify_cron_provider_for_profile = late("_notify_cron_provider_for_profile")
 _call_cron_for_profile = late("_call_cron_for_profile")
 _raise_if_cron_registration_error = late("_raise_if_cron_registration_error")
 load_config = late("load_config")
@@ -251,7 +252,13 @@ async def instantiate_blueprint(body: AutomationBlueprintInstantiate, profile: s
         # like the sibling cron endpoints (partial avoids **spec keys ever
         # colliding with the wrapper's own parameters).
         _create = functools.partial(_call_cron_for_profile, profile, "create_job", **spec)
-        return await _run_cron_dashboard_io(_create)
+        created = await _run_cron_dashboard_io(_create)
+        # Same contract as the other dashboard mutations: reconcile the
+        # profile-scoped provider (best-effort; fail-closed for external
+        # providers on a multi-profile dashboard). Off the event loop —
+        # a Chronos reconcile does file I/O plus NAS network calls.
+        await _run_cron_dashboard_io(_notify_cron_provider_for_profile, profile)
+        return created
     except HTTPException:
         raise
     except Exception as e:

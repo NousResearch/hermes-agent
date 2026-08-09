@@ -712,6 +712,13 @@ def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
     than the system prompt, which has to stay byte-stable for a conversation's
     whole life.
 
+    The same is true one level down: the app underneath changes as the user
+    drags the strip around, and they carry a thought across the move ("pause
+    that and play X here"). Earlier windows are already in context as
+    read_window_below results, so the note only has to say they still count —
+    without that, the latest window reads as the only one and half of a
+    two-app request is silently dropped.
+
     Each sentence is gated on the tool it names — naming a tool outside this
     agent's schema invites a hallucinated call — and the note as a whole is
     withheld without the one it rests on.
@@ -725,7 +732,11 @@ def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
         "window sitting over whatever the user is actually working in, so an "
         'unqualified "this" or "here" usually means the app behind the HUD '
         "rather than anything inside Hermes. read_window_below identifies "
-        "that app."
+        "that app.",
+        "They move the HUD from app to app mid-conversation, so one you "
+        "identified on an earlier turn is still a live target: a reference "
+        "that does not fit the window below may name one from a turn or two "
+        "ago, and a single message can span both.",
     ]
     if "computer_use" in names:
         sentences.append(

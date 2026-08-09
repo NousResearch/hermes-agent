@@ -33,10 +33,10 @@ def isolated_registry(tmp_path, monkeypatch):
     return registry
 
 
-def _runner(adapter, *, origins=None):
+def _runner(adapter, *, origins=None, adapters=None):
     runner = object.__new__(GatewayRunner)
     runner._running = True
-    runner.adapters = {Platform.TELEGRAM: adapter}
+    runner.adapters = {Platform.TELEGRAM: adapter} if adapters is None else adapters
     runner.session_store = SimpleNamespace(
         _ensure_loaded=lambda: None,
         _entries=origins or {},
@@ -201,6 +201,201 @@ def _persist_pending_completion(event):
         "status": "completed",
         "summary": event["summary"],
     })
+
+
+def _raw_async_event(delegation_id="deleg_raw_cli"):
+    event = _async_event(delegation_id)
+    event["session_key"] = "20260711_143022_9f3c1a"
+    event["restored"] = True
+    return event
+
+
+def _durable(delegation_id):
+    from tools.async_delegation import get_durable_delegation
+
+    return get_durable_delegation(delegation_id)
+
+
+def test_unroutable_raw_completion_stays_durable_pending(
+    monkeypatch, isolated_registry,
+):
+    """A raw CLI row remains unclaimed when this gateway has no route."""
+    event = _raw_async_event()
+    _persist_pending_completion(event)
+
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    isolated.put(dict(event))
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)  # Telegram only: no api_server route.
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    adapter.handle_message.assert_not_awaited()
+    # The SQLite ledger is the durable inbox; do not hot-loop in memory.
+    assert isolated.empty()
+    record = _durable(event["delegation_id"])
+    assert record["delivery_state"] == "pending"
+    assert record["delivery_attempts"] == 0
+
+
+def test_raw_cli_completion_stays_pending_even_with_api_server_route(
+    monkeypatch, isolated_registry,
+):
+    """Adapter presence alone does not prove ownership of an opaque CLI ID."""
+    import gateway.wake as wake_module
+
+    event = _raw_async_event("deleg_raw_cli_with_api")
+    _persist_pending_completion(event)
+
+    wakes = []
+
+    async def _record_wake(_adapter, *, text, session_id="", source=None):
+        wakes.append(session_id)
+
+    monkeypatch.setattr(wake_module, "deliver_wake", _record_wake)
+    api_adapter = SimpleNamespace(
+        supports_async_delivery=False,
+        handle_message=AsyncMock(),
+    )
+    runner = _runner(None, adapters={Platform.API_SERVER: api_adapter})
+
+    result = asyncio.run(
+        runner._deliver_completion_notification("completion", dict(event))
+    )
+
+    assert result is None
+    assert wakes == []
+    record = _durable(event["delegation_id"])
+    assert record["delivery_state"] == "pending"
+    assert record["delivery_attempts"] == 0
+
+
+def test_api_origin_completion_self_posts_when_api_server_route_exists(
+    monkeypatch, isolated_registry,
+):
+    """An explicit api_server origin stamp authorizes raw-session self-post."""
+    import gateway.wake as wake_module
+
+    event = _raw_async_event("deleg_api_routable")
+    event["origin_session_id"] = event["session_key"]
+    _persist_pending_completion(event)
+
+    wakes = []
+
+    async def _record_wake(_adapter, *, text, session_id="", source=None):
+        wakes.append(session_id)
+
+    monkeypatch.setattr(wake_module, "deliver_wake", _record_wake)
+    api_adapter = SimpleNamespace(
+        supports_async_delivery=False,
+        handle_message=AsyncMock(),
+    )
+    runner = _runner(None, adapters={Platform.API_SERVER: api_adapter})
+
+    result = asyncio.run(
+        runner._deliver_completion_notification("completion", dict(event))
+    )
+
+    assert result is True
+    assert wakes == ["20260711_143022_9f3c1a"]
+    record = _durable(event["delegation_id"])
+    assert record["delivery_state"] == "delivered"
+    assert record["delivery_attempts"] == 1
+
+
+def test_structured_completion_without_matching_adapter_stays_pending(
+    isolated_registry,
+):
+    """A structured row is not claimed by a gateway lacking its platform."""
+    event = _async_event("deleg_structured_unroutable")
+    _persist_pending_completion(event)
+
+    runner = _runner(None, adapters={})
+    result = asyncio.run(
+        runner._deliver_completion_notification("completion", dict(event))
+    )
+
+    assert result is None
+    record = _durable(event["delegation_id"])
+    assert record["delivery_state"] == "pending"
+    assert record["delivery_attempts"] == 0
+
+
+def test_structured_completion_still_claims_and_acks(
+    monkeypatch, isolated_registry,
+):
+    """Structured Telegram delivery bypasses the raw-event deferral."""
+    event = _async_event("deleg_structured")
+    _persist_pending_completion(event)
+
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    isolated.put(dict(event))
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    adapter.handle_message.assert_awaited_once()
+    record = _durable(event["delegation_id"])
+    assert record["delivery_state"] == "delivered"
+    assert record["delivery_attempts"] == 1
+
+
+def test_transient_routed_failure_still_retries(
+    monkeypatch, isolated_registry,
+):
+    """A real adapter failure still uses the claim/release retry budget."""
+    event = _async_event("deleg_transient")
+    _persist_pending_completion(event)
+
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    isolated.put(dict(event))
+
+    adapter = SimpleNamespace(
+        handle_message=AsyncMock(side_effect=[RuntimeError("temporary"), None])
+    )
+    runner = _runner(adapter)
+    _stop_after_sleeps(monkeypatch, runner, count=3)
+
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    assert adapter.handle_message.await_count == 2
+    record = _durable(event["delegation_id"])
+    assert record["delivery_state"] == "delivered"
+    assert record["delivery_attempts"] == 2
+
+
+def test_route_preflight_exception_falls_back_to_normal_delivery(
+    monkeypatch, isolated_registry,
+):
+    """Resolver bugs do not create an unbounded pre-claim watcher loop."""
+    event = _async_event("deleg_preflight_error")
+    _persist_pending_completion(event)
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+
+    def _raise(_event):
+        raise RuntimeError("resolver failed")
+
+    monkeypatch.setattr(runner, "_completion_route_available", _raise)
+
+    result = asyncio.run(
+        runner._deliver_completion_notification("completion", dict(event))
+    )
+
+    assert result is True
+    adapter.handle_message.assert_awaited_once()
+    record = _durable(event["delegation_id"])
+    assert record["delivery_state"] == "delivered"
+    assert record["delivery_attempts"] == 1
 
 
 def test_explicit_kill_returns_output_before_consuming_notification(monkeypatch):

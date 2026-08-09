@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react'
 
-import { getCronJobs, listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
+import { listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
 import { sameCronSignature } from '@/lib/session-signatures'
 import {
   isMessagingSource,
@@ -8,7 +8,6 @@ import {
   MESSAGING_SESSION_SOURCE_IDS,
   normalizeSessionSource
 } from '@/lib/session-source'
-import { setCronJobs } from '@/store/cron'
 import {
   $pinnedSessionIds,
   $sessionsLimit,
@@ -37,6 +36,8 @@ import {
   setSessionsLoading
 } from '@/store/session'
 import { $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
+
+import { refreshCronJobs as refreshCronJobsStore } from '../../cron/cron-actions'
 
 // The recents list is local-only: cron rows have their own section, kanban
 // dispatcher workers are read on the board, and each messaging platform
@@ -139,9 +140,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // own jobs; ALL_PROFILES keeps the unified view.
   const refreshCronJobs = useCallback(async () => {
     try {
-      const jobs = await getCronJobs(profileScope === ALL_PROFILES ? 'all' : profileScope)
-
-      setCronJobs(jobs)
+      await refreshCronJobsStore(profileScope === ALL_PROFILES ? 'all' : profileScope)
     } catch {
       // Non-fatal: the cron section just keeps its last-known jobs.
     }

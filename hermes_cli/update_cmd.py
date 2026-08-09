@@ -3076,6 +3076,93 @@ def _leftover_pausable_gateway_pids(
     return pids
 
 
+def _orphaned_desktop_backend_pids(
+    matches: list[tuple[int, str, str]],
+) -> list[int] | None:
+    """PIDs from *matches* when every remaining holder is an ORPHANED backend.
+
+    The venv-holder guard refuses on the Desktop app's ``serve`` backend by
+    design: while the Desktop is open, killing its backend is futile (the app
+    supervises and respawns it within seconds), so the user must close the
+    app. But in the GUI-updater handoff path the Desktop has *already
+    exited* — by contract it tree-kills its backends and waits for the venv
+    shim before spawning hermes-setup, and the update-in-progress marker
+    parks any relaunched Desktop from spawning a fresh backend (#50238). A
+    ``serve`` backend still holding the venv at that point is a straggler
+    whose supervisor is gone: SIGTERM raced its spawn, or it belongs to a
+    crashed window. Nothing will respawn it, and refusing on it dead-ends
+    the update with "Hermes is still running" while the user stares at zero
+    open windows (ryanc's 2026-08-09 01:59/02:17 failures).
+
+    A holder qualifies only when BOTH hold:
+
+    - its cmdline is a Hermes backend (``hermes_cli.main`` + ``serve`` /
+      ``dashboard``), and
+    - its supervising parent is demonstrably gone: the parent PID no longer
+      exists, or the PID was reused (parent created *after* the child).
+
+    A backend whose parent is alive (the Desktop is still open) disqualifies
+    the whole set — the guard must keep refusing exactly as before. Returns
+    ``None`` in that case, or when any holder is not a backend, or when
+    psutil is unavailable (can't prove orphanhood → refuse). Never raises.
+    """
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        return None
+
+    pids: list[int] = []
+    for pid, _name, cmdline in matches:
+        argv = cmdline
+        try:
+            argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
+        except psutil.NoSuchProcess:
+            # Holder exited between scan and classification — nothing to
+            # reap, nothing blocking. Skip it.
+            continue
+        except Exception:
+            pass
+        low = argv.lower()
+        if "hermes_cli.main" not in low or not (
+            " serve" in low or " dashboard" in low
+        ):
+            return None
+        try:
+            proc = psutil.Process(int(pid))
+            ppid = proc.ppid()
+            parent = psutil.Process(ppid) if ppid else None
+            if parent is not None and parent.is_running():
+                # PID-reuse check: a "parent" created after its child is a
+                # recycled PID, not the real (dead) supervisor.
+                if parent.create_time() <= proc.create_time():
+                    return None
+        except psutil.NoSuchProcess:
+            pass  # parent gone → orphan
+        except Exception:
+            return None
+        pids.append(int(pid))
+    return pids
+
+
+def _stop_process_trees(pids: list[int]) -> None:
+    """Force-stop each PID with its full child tree (Windows).
+
+    ``taskkill /T /F`` mirrors the Desktop's ``forceKillProcessTree`` and
+    install.ps1's venv sweep: stopping only the parent can leave a managed
+    ``.hermes-runtime`` interpreter child alive and holding the install open
+    (#70026). Best effort; never raises.
+    """
+    for pid in pids:
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(int(pid)), "/T", "/F"],
+                check=False,
+                capture_output=True,
+            )
+        except Exception as exc:
+            logger.debug("Could not stop process tree %s: %s", pid, exc)
+
+
 def _pause_windows_gateways_for_update() -> dict | None:
     """Stop running Windows gateways before mutating the checkout or venv.
 
@@ -3671,6 +3758,26 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         logger.debug(
                             "Could not stop leftover gateway %s: %s", _pid, exc
                         )
+                _time.sleep(1.0)
+                _venv_holders = _m()._detect_venv_python_processes()
+        if _venv_holders:
+            _orphan_backends = _m()._orphaned_desktop_backend_pids(_venv_holders)
+            if _orphan_backends:
+                # Every remaining holder is a Desktop `serve` backend whose
+                # supervising app is GONE — the GUI-updater handoff race:
+                # Electron's teardown lost the SIGTERM race, exited, and left
+                # its backend (and any .hermes-runtime child) holding the
+                # venv. Nothing will respawn an orphan, so reap the tree and
+                # re-check instead of dead-ending with "Hermes is still
+                # running" while no window is open. Backends whose Desktop
+                # is still alive never reach here (_orphaned_desktop_
+                # backend_pids returns None for them) — that path keeps the
+                # refusal, because the app would just respawn what we kill.
+                print(
+                    f"  ⚠ {len(_orphan_backends)} orphaned Desktop backend "
+                    "process(es) still hold the venv; stopping their trees"
+                )
+                _m()._stop_process_trees(_orphan_backends)
                 _time.sleep(1.0)
                 _venv_holders = _m()._detect_venv_python_processes()
         if _venv_holders:

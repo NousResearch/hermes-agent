@@ -15,6 +15,12 @@ from pathlib import Path
 _PRIVATE_KEY_BEGIN_RE = re.compile(r"-----BEGIN[A-Z ]*PRIVATE KEY-----")
 _PRIVATE_KEY_END_RE = re.compile(r"-----END[A-Z ]*PRIVATE KEY-----")
 
+# Bounded pipe read + text buffer safety margin. 128 chars comfortably
+# covers the longest PEM ``BEGIN``/``END`` marker and typical token-shaped
+# secrets straddling a chunk boundary.
+_READ_CHUNK_BYTES = 65536
+_SAFETY_MARGIN = 128
+
 
 def open_worker_log_file(log_path: Path):
     """Open a worker log for append with owner-only permissions."""
@@ -27,45 +33,112 @@ def open_worker_log_file(log_path: Path):
     return os.fdopen(fd, "ab", buffering=0)
 
 
+def _read_chunk(src) -> bytes:
+    """Read a bounded chunk from *src* without waiting for a newline.
+
+    Uses ``read1`` on buffered pipe readers so a payload with no newline
+    still returns whatever bytes the OS has for us instead of blocking
+    until a full ``_READ_CHUNK_BYTES`` are available.
+    """
+    reader = getattr(src, "read1", None)
+    if reader is not None:
+        return reader(_READ_CHUNK_BYTES)
+    return src.read(_READ_CHUNK_BYTES)
+
+
 def copy_redacted_worker_log_stream(src, dst) -> None:
-    """Copy worker stdout to *dst*, redacting secret-shaped output per line."""
+    """Copy worker stdout to *dst* in bounded chunks with secret redaction.
+
+    Buffers decoded text across reads so token-shaped secrets and PEM
+    ``BEGIN/END PRIVATE KEY`` blocks are redacted even when split across
+    chunk boundaries.
+    """
     from agent.redact import redact_terminal_output
 
     sample_key = "-----BEGIN PRIVATE KEY-----\nsecret\n-----END PRIVATE KEY-----"
     redact_private_blocks = redact_terminal_output(sample_key) != sample_key
     inside_private_key = False
+    buffer = ""
+
+    def _emit(text: str) -> None:
+        if not text:
+            return
+        redacted = redact_terminal_output(text) if redact_private_blocks else text
+        dst.write(redacted.encode("utf-8", errors="replace"))
 
     while True:
-        raw = src.readline()
+        raw = _read_chunk(src)
         if not raw:
             break
-        text = raw.decode("utf-8", errors="replace")
-        if redact_private_blocks:
-            if inside_private_key:
-                if _PRIVATE_KEY_END_RE.search(text):
-                    dst.write(b"[REDACTED PRIVATE KEY]\n")
-                    inside_private_key = False
+        buffer += raw.decode("utf-8", errors="replace")
+
+        # Drain as much of the buffer as we can before requesting more input.
+        while True:
+            if redact_private_blocks and inside_private_key:
+                end = _PRIVATE_KEY_END_RE.search(buffer)
+                if end is None:
+                    # END has not arrived yet; suppress everything.
+                    buffer = ""
+                    break
+                dst.write(b"[REDACTED PRIVATE KEY]\n")
+                nl = buffer.find("\n", end.end())
+                buffer = buffer[nl + 1:] if nl != -1 else buffer[end.end():]
+                inside_private_key = False
                 continue
-            if (
-                _PRIVATE_KEY_BEGIN_RE.search(text)
-                and not _PRIVATE_KEY_END_RE.search(text)
-            ):
-                inside_private_key = True
-                continue
-        redacted = redact_terminal_output(text)
-        dst.write(redacted.encode("utf-8", errors="replace"))
+
+            if redact_private_blocks:
+                begin = _PRIVATE_KEY_BEGIN_RE.search(buffer)
+                if begin is not None:
+                    line_start = buffer.rfind("\n", 0, begin.start()) + 1
+                    _emit(buffer[:line_start])
+                    end = _PRIVATE_KEY_END_RE.search(buffer, begin.end())
+                    if end is not None:
+                        dst.write(b"[REDACTED PRIVATE KEY]\n")
+                        nl = buffer.find("\n", end.end())
+                        buffer = buffer[nl + 1:] if nl != -1 else buffer[end.end():]
+                        continue
+                    inside_private_key = True
+                    buffer = ""
+                    break
+
+            # No pending block: emit everything except a safety tail so a
+            # secret or ``BEGIN`` marker straddling the next chunk still
+            # gets redacted intact.
+            if len(buffer) > _SAFETY_MARGIN:
+                emittable = buffer[:-_SAFETY_MARGIN]
+                _emit(emittable)
+                buffer = buffer[-_SAFETY_MARGIN:]
+            break
 
     if inside_private_key:
         dst.write(b"[REDACTED PRIVATE KEY]\n")
+    elif buffer:
+        _emit(buffer)
+
+
+def _kill_proc_group(proc: subprocess.Popen, signum: int) -> None:
+    """Signal the child's whole process group, falling back to the child."""
+    # os.killpg is POSIX-only; on Windows we can only signal the child.
+    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+        with contextlib.suppress(ProcessLookupError, OSError):
+            os.killpg(os.getpgid(proc.pid), signum)  # windows-footgun: ok — POSIX branch guarded above
+            return
+    with contextlib.suppress(Exception):
+        proc.send_signal(signum)
 
 
 def _install_signal_forwarders(proc: subprocess.Popen) -> dict[int, object]:
     previous: dict[int, object] = {}
+    # Guard against re-entry when killpg-to-group also delivers the signal
+    # back to us — one forward per signal is enough.
+    forwarded: set[int] = set()
 
     def _forward(signum, _frame) -> None:
+        if signum in forwarded:
+            return
+        forwarded.add(signum)
         if proc.poll() is None:
-            with contextlib.suppress(Exception):
-                proc.send_signal(signum)
+            _kill_proc_group(proc, signum)
 
     for signum in (signal.SIGTERM, signal.SIGINT):
         previous[signum] = signal.getsignal(signum)
@@ -79,8 +152,22 @@ def _restore_signal_handlers(previous: dict[int, object]) -> None:
             signal.signal(signum, handler)
 
 
+def _lead_process_group() -> None:
+    """Best-effort: make this wrapper a process-group leader on POSIX.
+
+    Lets the dispatcher signal the wrapper + its child together by
+    sending to the negative wrapper pid, so SIGKILL to the wrapper still
+    reaches the child.
+    """
+    # os.setpgrp is POSIX-only; Windows has no process-group concept here.
+    if hasattr(os, "setpgrp"):
+        with contextlib.suppress(OSError):
+            os.setpgrp()
+
+
 def run_worker_with_redacted_log(log_path: Path, command: list[str]) -> int:
     """Run *command*, copying its combined stdout/stderr into a redacted log."""
+    _lead_process_group()
     try:
         with open_worker_log_file(log_path) as log_f:
             try:
@@ -89,6 +176,7 @@ def run_worker_with_redacted_log(log_path: Path, command: list[str]) -> int:
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT,
+                    start_new_session=False,
                 )
             except FileNotFoundError as exc:
                 log_f.write(f"Worker launch failed: {exc}\n".encode("utf-8"))
@@ -102,8 +190,7 @@ def run_worker_with_redacted_log(log_path: Path, command: list[str]) -> int:
             finally:
                 _restore_signal_handlers(previous_handlers)
                 if proc.poll() is None:
-                    with contextlib.suppress(Exception):
-                        proc.terminate()
+                    _kill_proc_group(proc, signal.SIGTERM)
                 if proc.stdout is not None:
                     with contextlib.suppress(Exception):
                         proc.stdout.close()

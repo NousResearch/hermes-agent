@@ -64,8 +64,7 @@ const hudBandMaxPx = () => Math.min(window.innerHeight * HUD_BAND_MAX_FRACTION, 
  *  rather than flipping to follow the screen edge the HUD is parked against. */
 const HUD_THREAD_ALWAYS_BELOW = true
 
-const composerHasFocus = () =>
-  document.activeElement?.closest(`[data-slot="${RICH_INPUT_SLOT}"]`) != null
+const composerHasFocus = () => document.activeElement?.closest(`[data-slot="${RICH_INPUT_SLOT}"]`) != null
 
 /**
  * True for a hold window after any conversation activity (a message landing,

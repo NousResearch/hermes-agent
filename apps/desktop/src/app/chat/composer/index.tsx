@@ -1133,9 +1133,7 @@ export function ChatBar({
             onDragLeave={handleDragLeave}
             onDragOver={handleDragOver}
             onDrop={handleDrop}
-            onPointerDown={
-              hudMode ? onHudDragPointerDown : popoutAllowed ? onComposerGesturePointerDown : undefined
-            }
+            onPointerDown={hudMode ? onHudDragPointerDown : popoutAllowed ? onComposerGesturePointerDown : undefined}
             onSubmit={e => {
               e.preventDefault()
 

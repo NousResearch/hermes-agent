@@ -212,3 +212,34 @@ def test_main_desktop_serve_backend_still_blocks(monkeypatch, capsys):
     assert data["blocked"] is True
     assert [p["pid"] for p in data["processes"]] == [78]
     assert data["pausable_gateways"] == 0
+
+def test_main_gateway_with_long_managed_runtime_path_is_exempt(monkeypatch, capsys):
+    """Regression: the detector must hand the FULL cmdline to the exemption.
+
+    Gateways launched via the managed-runtime interpreter carry a >120-char
+    exe path (`.hermes-runtime\python\generation-...\cpython-3.11-...`).
+    The old `cmdline_raw[:120]` truncation in the detector cut the cmdline
+    before `-m hermes_cli.main gateway run`, so the exemption never matched
+    and every Desktop update aborted with 'Update didn't finish'.
+    Here the detector returns full cmdlines (post-fix contract); the scan
+    must exempt the gateway and truncate only the *displayed* cmdline.
+    """
+    long_exe = (
+        r'"C:\Users\u\AppData\Local\hermes\hermes-agent\.hermes-runtime\python'
+        r"\generation-1785095035-66720-be29ea9c\cpython-3.11-windows-x86_64-none"
+        r'\python.exe"'
+    )
+    assert len(long_exe) > 120  # the truncation point was inside the exe path
+    gateway = (91, "python.exe", long_exe + "  -m hermes_cli.main gateway run --replace")
+    code, data = _run_main_with_detector(monkeypatch, capsys, [gateway])
+    assert code == 0
+    assert data["blocked"] is False
+    assert data["processes"] == []
+    assert data["pausable_gateways"] == 1
+
+    # A long-path NON-gateway holder still blocks, with cmdline truncated for display.
+    stray = (92, "python.exe", long_exe + "  -m some_other_module --serve-forever")
+    code, data = _run_main_with_detector(monkeypatch, capsys, [gateway, stray])
+    assert data["blocked"] is True
+    assert [p["pid"] for p in data["processes"]] == [92]
+    assert len(data["processes"][0]["cmdline"]) <= 120

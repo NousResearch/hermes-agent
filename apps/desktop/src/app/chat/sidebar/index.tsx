@@ -757,8 +757,13 @@ export function ChatSidebar({
     // Flat view: warm the tree in the background anyway. Fetching it only on
     // the switch meant the first switch of every run paid for the whole round
     // trip behind a skeleton, and the menu's Project filter had nothing to
-    // list until you'd visited the grouped view at least once.
-    const warm = window.setTimeout(() => void refreshProjectTree(), PROJECT_TREE_WARM_MS)
+    // list until you'd visited the grouped view at least once. The list is
+    // warmed alongside: after a profile switch (wipe → empty) the sidebar
+    // would otherwise show no projects until the user enters the grouped view.
+    const warm = window.setTimeout(() => {
+      void refreshProjects()
+      void refreshProjectTree()
+    }, PROJECT_TREE_WARM_MS)
 
     return () => window.clearTimeout(warm)
   }, [activeConnectionId, worktreeGroupingActive, showAllProfiles, profileScope, gatewayReady])

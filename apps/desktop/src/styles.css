@@ -2756,7 +2756,10 @@ button[data-slot='aui_msg-reactions'] svg {
   background: var(--dt-card) !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
-  box-shadow: none !important;
+  /* Bottom edge only. Enough to lift the bar off whatever it is lying over —
+     without it the HUD reads as pasted onto the other app — and tight enough
+     that it never becomes a glow around a floating card. */
+  box-shadow: 0 2px 2px -1px rgb(0 0 0 / 0.12) !important;
   transition: border-color var(--hud-reveal) var(--hud-ease-enter);
 }
 

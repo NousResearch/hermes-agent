@@ -19,16 +19,18 @@ Currently supports:
 
 import datetime
 import gzip
+import hashlib
 import io
 import json
 import logging
+import os
 import re
 import sys
 import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, BinaryIO, Optional
 
 from hermes_constants import get_hermes_home
 from utils import atomic_replace
@@ -49,6 +51,465 @@ _EMAIL_ADDRESS_RE = re.compile(
     r"(?![A-Za-z0-9._%+-])"
 )
 
+# Historical gateway logs included WhatsApp Cloud identities and message
+# previews on the inbound-routing line.  Bare digit strings on those lines are
+# structurally phone data; elsewhere they may be timestamps or diagnostic IDs
+# and must retain the global redactor's default pass-through behavior.
+_WHATSAPP_INBOUND_LOG_RE = re.compile(
+    r"\binbound message:\s.*\bplatform=whatsapp(?:_cloud)?\b",
+    re.IGNORECASE,
+)
+_WHATSAPP_CONVERSATION_LOG_RE = re.compile(
+    r"\bconversation turn:\s.*\bplatform=whatsapp(?:_cloud)?\b",
+    re.IGNORECASE,
+)
+_WHATSAPP_SESSION_KEY_LOG_RE = re.compile(
+    r"\bagent:[^:\s]+:whatsapp(?:_cloud)?:",
+    re.IGNORECASE,
+)
+_WHATSAPP_GENERIC_IDENTITY_LOG_RE = re.compile(
+    r"\b(?:"
+    r"Unauthorized user:.*\bon whatsapp(?:_cloud)?\b|"
+    r"pre_gateway_dispatch skip:.*\bplatform=whatsapp(?:_cloud)?\b|"
+    r"(?:Sent|Failed to send) shutdown notification (?:to active chat |to home channel )?"
+    r"whatsapp(?:_cloud)?:|"
+    r"Sent post-update notification to whatsapp(?:_cloud)?:|"
+    r"(?:Sent restart notification to|Restart notification to) whatsapp(?:_cloud)?:|"
+    r"(?:Sent home-channel startup notification to|"
+    r"Home-channel startup notification failed for) whatsapp(?:_cloud)?:|"
+    r"No profile route matched:\s*platform=whatsapp(?:_cloud)?\b|"
+    r"Profile route matching failed for (?:Platform\.)?whatsapp(?:_cloud)?/|"
+    r"(?:Profile .* does not exist for|Failed to resolve profile directory for) "
+    r"source whatsapp(?:_cloud)?/|"
+    r"Redelivered recovered final response to whatsapp(?:_cloud)?:|"
+    r"Slash command /[^\s]+ denied for whatsapp(?:_cloud)?:|"
+    r"Auto voice reply skipped:.*\bplatform=whatsapp(?:_cloud)?\b|"
+    r"Watch pattern notification .*\bfor whatsapp(?:_cloud)?\b|"
+    r"Could not get WhatsApp chat info for\b|"
+    r"Profile resolution failed for (?:Platform\.)?whatsapp(?:_cloud)?/"
+    r")",
+    re.IGNORECASE,
+)
+_WHATSAPP_SESSION_VALUE_RE = re.compile(
+    r"(?P<prefix>\bagent:[^:\s]+:whatsapp(?:_cloud)?:)"
+    r"(?P<value>[^\r\n]*)",
+    re.IGNORECASE,
+)
+_WHATSAPP_DELIVERY_ID_RE = re.compile(
+    r"(?P<prefix>\b(?:to|for)\s+whatsapp(?:_cloud)?:)"
+    r"(?P<value>.*?)"
+    r"(?P<suffix>\s+\(|\r?\n$|$)",
+    re.IGNORECASE,
+)
+_WHATSAPP_AUTO_VOICE_FIELDS_RE = re.compile(
+    r"(?P<prefix>\bchat=)(?P<chat>.*?)"
+    r"(?P<suffix>\s+platform=whatsapp(?:_cloud)?\b)",
+    re.IGNORECASE,
+)
+_WHATSAPP_WATCH_FIELDS_RE = re.compile(
+    r"(?P<prefix>\bchat=)(?P<chat>.*?)"
+    r"(?P<middle>\s+thread=)(?P<thread>[^\r\n]*?)"
+    r"(?P<ending>\r?\n)?$",
+    re.IGNORECASE,
+)
+_WHATSAPP_DIRECT_IDENTITY_LOG_RE = re.compile(
+    r"\[(?:whatsapp|whatsapp_cloud)\]\s+(?:"
+    r"Authorization check raised for user\b|"
+    r"Ephemeral delete failed for\b|"
+    r"Handler returned empty/None response for\b|"
+    r"Sending (?:command .* response|response|video attachment) .*\bto\b|"
+    r"response_delivery_(?:recovered|dropped):.*\b(?:for|to)\b"
+    r")",
+    re.IGNORECASE,
+)
+_WHATSAPP_CLOUD_IDENTIFIER_LOG_RE = re.compile(
+    r"\[whatsapp_cloud\].*(?:"
+    r"\bwamid\b|"
+    r"\bmedia(?:[_ ]id| metadata| bytes)\b|"
+    r"\bcached inbound .*\bmedia\b|"
+    r"\bstatus\s+\S+\s+for\s+"
+    r")",
+    re.IGNORECASE,
+)
+_WHATSAPP_DIRECT_USER_RE = re.compile(
+    r"(?P<prefix>\bAuthorization check raised for user\s+)"
+    r"(?P<value>[^;\r\n]+)"
+    r"(?P<suffix>;|\r?\n|$)",
+    re.IGNORECASE,
+)
+_WHATSAPP_EPHEMERAL_IDS_RE = re.compile(
+    r"(?P<prefix>\bEphemeral delete failed for\s+)"
+    r"(?P<chat>[^/]+?)(?P<middle>/)"
+    r"(?P<message>[^:\s]+)(?P<suffix>\s*:\s*|\s*\r?\n|$)",
+    re.IGNORECASE,
+)
+_WHATSAPP_DIRECT_CHAT_FOR_RE = re.compile(
+    r"(?P<prefix>\b(?:Handler returned empty/None response|"
+    r"response_delivery_(?:recovered|dropped):[^\r\n]*?)\s+(?:for|to)\s+)"
+    r"(?P<value>[^\s,(]+)"
+    r"(?P<suffix>\s*(?:\(|,|\r?\n|$))",
+    re.IGNORECASE,
+)
+_WHATSAPP_DIRECT_CHAT_TO_RE = re.compile(
+    r"(?P<prefix>\bto\s+)"
+    r"(?P<value>[^\s,\r\n]+)"
+    r"(?P<suffix>\s*(?:,|\r?\n|$))",
+    re.IGNORECASE,
+)
+_WHATSAPP_CHAT_INFO_RE = re.compile(
+    r"(?P<prefix>\bCould not get WhatsApp chat info for\s+)"
+    r"(?P<value>[^:\r\n]+)"
+    r"(?P<suffix>:|\r?\n|$)",
+    re.IGNORECASE,
+)
+_WHATSAPP_PROFILE_CHAT_RE = re.compile(
+    r"(?P<prefix>\bProfile resolution failed for\s+(?:Platform\.)?"
+    r"whatsapp(?:_cloud)?/)"
+    r"(?P<value>[^,\r\n]+)"
+    r"(?P<suffix>,|\r?\n|$)",
+    re.IGNORECASE,
+)
+_WHATSAPP_CLOUD_WAMID_RE = re.compile(
+    r"(?P<prefix>\bwamid\s+)"
+    r"(?P<value>[^\s,;:)]+)",
+    re.IGNORECASE,
+)
+_WHATSAPP_CLOUD_ID_FIELD_RE = re.compile(
+    r"(?P<prefix>\bid=)"
+    r"(?P<value>[^,\s)]+)",
+    re.IGNORECASE,
+)
+_WHATSAPP_CLOUD_STATUS_ID_RE = re.compile(
+    r"(?P<prefix>\bstatus\s+\S+\s+for\s+)"
+    r"(?P<value>[^\s,;)]+)",
+    re.IGNORECASE,
+)
+_WHATSAPP_CLOUD_MEDIA_ID_RE = re.compile(
+    r"(?P<prefix>\bmedia[_ ]id\s*(?:=|:)\s*|"
+    r"\brefusing malformed media id\s+)"
+    r"(?P<value>[^\s,;)]+)",
+    re.IGNORECASE,
+)
+_WHATSAPP_CLOUD_CACHED_MEDIA_RE = re.compile(
+    r"(?P<prefix>\bcached inbound [^:\r\n]+media:\s+)"
+    r"(?P<value>[^\r\n]+)",
+    re.IGNORECASE,
+)
+_LEGACY_MESSAGE_PREVIEW_LOG_RE = re.compile(
+    r"(\b(?:Processing queued message after agent completion|"
+    r"Processing pending message|Delivering leftover /steer as next turn):\s*).*$",
+    re.IGNORECASE,
+)
+_LEGACY_LOG_MESSAGE_FIELD_RE = re.compile(r"\bmsg=(.*)$", re.IGNORECASE)
+_SAFE_WHATSAPP_INBOUND_METADATA_RE = re.compile(
+    r"\bmsg_len=\d+\b.*\breply_to_id_present=(?:True|False)\b"
+    r".*\breply_to_text_len=\d+\b",
+    re.IGNORECASE,
+)
+_SAFE_WHATSAPP_INBOUND_METADATA_FIELDS_RE = re.compile(
+    r"\binbound message:\s+platform=whatsapp(?:_cloud)?\b"
+    r".*?\bmsg_len=(?P<msg_len>\d{1,9})\b"
+    r".*?\breply_to_id_present=(?P<reply_to_id_present>True|False)\b"
+    r".*?\breply_to_text_len=(?P<reply_to_text_len>\d{1,9})\b",
+    re.IGNORECASE,
+)
+_WHATSAPP_EXCEPTION_LOG_RE = re.compile(
+    r"\[(?:whatsapp|whatsapp_cloud)\].*\b(?:"
+    r"raised|failed|exception|error"
+    r")\b",
+    re.IGNORECASE,
+)
+_SAFE_WHATSAPP_LOG_ID = r"(?:absent|present(?:\(len=\d+\))?|[0-9][0-9]\*{4}[0-9][0-9])"
+_SAFE_WHATSAPP_ERROR_BODY_RE = re.compile(
+    r"(?:"
+    r"webhook server cleanup failed \(error_type=[A-Za-z_][\w.]*\)|"
+    r"http client close failed \(error_type=[A-Za-z_][\w.]*\)|"
+    r"send failed \(error_type=[A-Za-z_][\w.]*\)|"
+    r"interactive send failed \(error_type=[A-Za-z_][\w.]*\)|"
+    r"media upload failed \(error_type=[A-Za-z_][\w.]*\)|"
+    r"media send failed \(error_type=[A-Za-z_][\w.]*\)|"
+    r"ffmpeg opus conversion failed \(returncode=-?\d+, stderr_present=(?:True|False)\)|"
+    r"ffmpeg subprocess raised \(error_type=[A-Za-z_][\w.]*\)|"
+    r"media metadata fetch failed \(id=(?:absent|present\(len=\d+\)), status=\d+\)|"
+    r"media metadata fetch raised \(id=present\(len=\d+\), "
+    r"error_type=[A-Za-z_][\w.]*\)|"
+    r"media bytes fetch failed \(id=(?:absent|present\(len=\d+\)), status=\d+\)|"
+    r"media bytes fetch raised \(id=present\(len=\d+\), "
+    r"error_type=[A-Za-z_][\w.]*\)|"
+    r"failed to write cached media \(id=(?:absent|present\(len=\d+\)), "
+    r"error_type=[A-Za-z_][\w.]*\)|"
+    r"failed to build event for wamid (?:absent|present\(len=\d+\)) "
+    r"\(error_type=[A-Za-z_][\w.]*\)|"
+    r"handle_message raised for wamid (?:absent|present\(len=\d+\)) "
+    r"\(error_type=[A-Za-z_][\w.]*\)|"
+    r"mark_awaiting_text failed \(error_type=[A-Za-z_][\w.]*\)|"
+    r"clarify other-prompt failed \(error_type=[A-Za-z_][\w.]*\)|"
+    r"approval confirm failed \(error_type=[A-Za-z_][\w.]*\)|"
+    r"slash_confirm\.resolve failed \(error_type=[A-Za-z_][\w.]*\)|"
+    r"slash_confirm reply failed \(error_type=[A-Za-z_][\w.]*\)|"
+    r"WhatsApp read receipt failed \(error_type=[A-Za-z_][\w.]*\)|"
+    r"failed to download inbound (?:image|video|audio|voice|document|sticker) "
+    r"\(id=(?:absent|present\(len=\d+\))\) — agent will see message "
+    r"metadata but not the binary|"
+    r"failed to read document text \(error_type=[A-Za-z_][\w.]*\)|"
+    r"Failed to read document text \(error_type=[A-Za-z_][\w.]*\)|"
+    r"Could not acquire session lock \(non-fatal; error_type=[A-Za-z_][\w.]*\)|"
+    r"Failed to start bridge \(error_type=[A-Za-z_][\w.]*\)|"
+    r"Failed to install dependencies \(error_type=[A-Za-z_][\w.]*\)|"
+    r"Error stopping bridge \(error_type=[A-Za-z_][\w.]*\)|"
+    r"Poll error \(error_type=[A-Za-z_][\w.]*\)|"
+    r"Failed to cache (?:image|audio) \(error_type=[A-Za-z_][\w.]*\)|"
+    r"Error building event \(error_type=[A-Za-z_][\w.]*\)|"
+    r"Native WhatsApp clarify poll failed; falling back to text "
+    r"\(error_detail_present=(?:True|False)\)|"
+    r"WhatsApp read receipt failed with HTTP \d+|"
+    r"Authorization check raised for user "
+    + _SAFE_WHATSAPP_LOG_ID
+    + r" \(error_type=[A-Za-z_][\w.]*\); treating as unknown|"
+    r"Ephemeral delete failed for "
+    + _SAFE_WHATSAPP_LOG_ID
+    + "/"
+    + _SAFE_WHATSAPP_LOG_ID
+    + r" \(error_type=[A-Za-z_][\w.]*\)|"
+    r"Error sending image \(error_type=[A-Za-z_][\w.]*\)|"
+    r"Failed to send image \(error_detail=(?:present|absent)\)|"
+    r"Error batching images \(error_type=[A-Za-z_][\w.]*\)|"
+    r"Error sending media \(error_type=[A-Za-z_][\w.]*\)|"
+    r"Failed to send media \([.A-Za-z0-9_-]+\) "
+    r"\(error_detail=(?:present|absent)\)|"
+    r"Failed to send local file \([.A-Za-z0-9_-]+\) "
+    r"\(error_detail=(?:present|absent)\)|"
+    r"Error sending local file present \(error_type=[A-Za-z_][\w.]*\)|"
+    r"Failed to send error notification to user \(error_type=[A-Za-z_][\w.]*\)|"
+    r"Auto-TTS failed \(error_type=[A-Za-z_][\w.]*\)|"
+    r"Busy-session handler failed \(error_type=[A-Za-z_][\w.]*\)|"
+    r"Clarify text-intercept dispatch failed \(error_type=[A-Za-z_][\w.]*\)|"
+    r"[A-Za-z0-9_.-]+ hook failed \(error_type=[A-Za-z_][\w.]*\)|"
+    r"Command '/[A-Za-z0-9_-]+' dispatch failed \(error_type=[A-Za-z_][\w.]*\)|"
+    r"Send failed \(attempt \d+/\d+, retrying in [0-9.]+s; "
+    r"error_detail=(?:present|absent)\)|"
+    r"Failed to deliver response after \d+ retries "
+    r"\(error_detail=(?:present|absent)\)|"
+    r"Send failed \(error_detail=(?:present|absent)\) — "
+    r"trying plain-text fallback|"
+    r"Fallback send also failed \(error_detail=(?:present|absent)\)|"
+    r"Could not send delivery-failure notice \(error_detail=(?:present|absent)\)|"
+    r"send_typing error \(non-fatal; error_type=[A-Za-z_][\w.]*\)|"
+    r"Failed to resolve live adapter for final delivery|"
+    r"send_private_notice failed, falling back to public "
+    r"\(error_detail=(?:present|absent)\)|"
+    r"Post-stream image batch delivery failed: (?:present|absent)|"
+    r"Post-stream media delivery failed: (?:present|absent)|"
+    r"Error handling message \(error_type=[A-Za-z_][\w.]*\)"
+    r")"
+)
+_EXCEPTION_TYPE_LINE_RE = re.compile(
+    r"^(?P<indent>\s*)(?P<type>[A-Za-z_][\w.]*(?:Error|Exception|Warning|Failure))"
+    r"(?::[^\r\n]*)?(?P<ending>\r?\n)?$"
+)
+
+
+@dataclass
+class _WhatsAppLogRedactionState:
+    """Record state carried across upload-bound log fragments."""
+
+    record: bool = False
+    message_continuation: bool = False
+    message_quote: Optional[str] = None
+    message_legacy: bool = False
+    # A quoted WhatsApp message that crosses a physical log line has no
+    # authenticated terminator in the historical text format.  Keep this
+    # separate from ``message_legacy`` so callers can distinguish the two
+    # sources while applying the same fail-closed EOF policy.
+    message_untrusted: bool = False
+    exception_continuation: bool = False
+    # A current type/metadata-only error line is held for one look-ahead line.
+    # Historical logger.exception records can have the exact same header, so a
+    # following traceback must reclassify the header as an opener.
+    safe_error_pending: Optional[str] = None
+    # The retained view begins after a discarded prefix that was too large to
+    # replay.  No textual boundary can prove that an older selected record
+    # ended, so snapshot capture replaces the view with a safe fragment.
+    prefix_unresolved: bool = False
+
+
+def _has_unescaped_quote(text: str, quote: str) -> bool:
+    """Return whether *text* contains a non-backslash-escaped *quote*."""
+    escaped = False
+    for char in text:
+        if escaped:
+            escaped = False
+        elif char == "\\":
+            escaped = True
+        elif char == quote:
+            return True
+    return False
+
+
+def _is_safe_whatsapp_error_log_line(text: str) -> bool:
+    """Recognize current type/metadata-only WhatsApp error records."""
+    # ``splitlines(keepends=True)`` retains CRLF's ``\r``.  Normalize only the
+    # physical line ending; the body whitelist remains exact and fail-closed.
+    text = text.rstrip("\r\n")
+    match = re.search(
+        r"\[(?:whatsapp|whatsapp_cloud)\]\s+(?P<body>[^\r\n]*)$",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return False
+    return bool(_SAFE_WHATSAPP_ERROR_BODY_RE.fullmatch(match.group("body")))
+
+
+def _redact_exception_traceback_line(line: str) -> str:
+    """Keep exception type metadata while removing traceback payloads."""
+    match = _EXCEPTION_TYPE_LINE_RE.match(line)
+    if match:
+        return (
+            f"{match.group('indent')}{match.group('type')}: "
+            f"[REDACTED_EXCEPTION_DETAIL]{match.group('ending') or ''}"
+        )
+    line_ending = line[len(line.rstrip("\r\n")) :]
+    return f"[REDACTED_EXCEPTION_TRACEBACK]{line_ending}"
+
+
+def _looks_like_exception_continuation(line: str) -> bool:
+    """Recognize traceback framing without trusting a record terminator."""
+    stripped = line.lstrip()
+    if stripped.startswith("Traceback (most recent call last):"):
+        return True
+    if re.match(r"File\s+['\"].*['\"],\s+line\s+\d+", stripped):
+        return True
+    if stripped.startswith((
+        "During handling of the above exception, another exception occurred:",
+        "The above exception was the direct cause of the following exception:",
+    )):
+        return True
+    return bool(_EXCEPTION_TYPE_LINE_RE.match(line))
+
+
+def _redact_whatsapp_log_identity(value: str, redact_sensitive_text) -> str:
+    """Return a safe representation for an identity in a WhatsApp log line."""
+    if value in {"", "None", "none"}:
+        return "absent"
+    masked = redact_sensitive_text(
+        value,
+        force=True,
+        redact_bare_phone_numbers=True,
+    )
+    if masked != value:
+        return masked
+    return "present"
+
+
+def _redact_whatsapp_cloud_identifier(value: str) -> str:
+    """Return bounded metadata for a WAMID/media/status identifier."""
+    text = str(value or "")
+    sentinel = re.fullmatch(r"present\(len=(\d+)\)?", text)
+    if sentinel:
+        return f"present(len={sentinel.group(1)})"
+    return f"present(len={len(text)})" if text else "absent"
+
+
+def _redact_whatsapp_log_fields(line: str, redact_sensitive_text) -> str:
+    """Remove identities from historical gateway log formats."""
+    line = _WHATSAPP_SESSION_VALUE_RE.sub(
+        lambda match: (
+            f"{match.group('prefix')}[REDACTED_WHATSAPP_SESSION]"
+        ),
+        line,
+    )
+    line = _WHATSAPP_DELIVERY_ID_RE.sub(
+        lambda match: (
+            f"{match.group('prefix')}"
+            f"{_redact_whatsapp_log_identity(match.group('value'), redact_sensitive_text)}"
+            f"{match.group('suffix')}"
+        ),
+        line,
+    )
+    line = _WHATSAPP_AUTO_VOICE_FIELDS_RE.sub(
+        lambda match: (
+            f"{match.group('prefix')}"
+            f"{_redact_whatsapp_log_identity(match.group('chat'), redact_sensitive_text)}"
+            f"{match.group('suffix')}"
+        ),
+        line,
+    )
+    line = _WHATSAPP_WATCH_FIELDS_RE.sub(
+        lambda match: (
+            f"{match.group('prefix')}"
+            f"{_redact_whatsapp_log_identity(match.group('chat'), redact_sensitive_text)}"
+            f"{match.group('middle')}"
+            f"{_redact_whatsapp_log_identity(match.group('thread'), redact_sensitive_text)}"
+            f"{match.group('ending') or ''}"
+        ),
+        line,
+    )
+    line = _WHATSAPP_DIRECT_USER_RE.sub(
+        lambda match: (
+            f"{match.group('prefix')}"
+            f"{_redact_whatsapp_log_identity(match.group('value'), redact_sensitive_text)}"
+            f"{match.group('suffix')}"
+        ),
+        line,
+    )
+    line = _WHATSAPP_EPHEMERAL_IDS_RE.sub(
+        lambda match: (
+            f"{match.group('prefix')}"
+            f"{_redact_whatsapp_log_identity(match.group('chat'), redact_sensitive_text)}"
+            f"{match.group('middle')}"
+            f"{_redact_whatsapp_cloud_identifier(match.group('message'))}"
+            f"{match.group('suffix')}"
+        ),
+        line,
+    )
+    for pattern in (_WHATSAPP_DIRECT_CHAT_FOR_RE, _WHATSAPP_DIRECT_CHAT_TO_RE,
+                    _WHATSAPP_CHAT_INFO_RE, _WHATSAPP_PROFILE_CHAT_RE):
+        line = pattern.sub(
+            lambda match: (
+                f"{match.group('prefix')}"
+                f"{_redact_whatsapp_log_identity(match.group('value'), redact_sensitive_text)}"
+                f"{match.group('suffix')}"
+            ),
+            line,
+        )
+    line = _WHATSAPP_CLOUD_WAMID_RE.sub(
+        lambda match: (
+            f"{match.group('prefix')}"
+            f"{_redact_whatsapp_cloud_identifier(match.group('value'))}"
+        ),
+        line,
+    )
+    line = _WHATSAPP_CLOUD_ID_FIELD_RE.sub(
+        lambda match: (
+            f"{match.group('prefix')}"
+            f"{_redact_whatsapp_cloud_identifier(match.group('value'))}"
+        ),
+        line,
+    )
+    line = _WHATSAPP_CLOUD_STATUS_ID_RE.sub(
+        lambda match: (
+            f"{match.group('prefix')}"
+            f"{_redact_whatsapp_cloud_identifier(match.group('value'))}"
+        ),
+        line,
+    )
+    line = _WHATSAPP_CLOUD_MEDIA_ID_RE.sub(
+        lambda match: (
+            f"{match.group('prefix')}"
+            f"{_redact_whatsapp_cloud_identifier(match.group('value'))}"
+        ),
+        line,
+    )
+    line = _WHATSAPP_CLOUD_CACHED_MEDIA_RE.sub(
+        lambda match: (
+            f"{match.group('prefix')}"
+            f"{_redact_whatsapp_cloud_identifier(match.group('value'))}"
+        ),
+        line,
+    )
+    return line
+
 
 # ---------------------------------------------------------------------------
 # Paste services — try paste.rs first, dpaste.com as fallback.
@@ -60,6 +521,12 @@ _DPASTE_COM_URL = "https://dpaste.com/api/"
 # Maximum bytes to read from a single log file for upload.
 # paste.rs caps at ~1 MB; we stay under that with headroom.
 _MAX_LOG_BYTES = 512_000
+# Prefix redaction state is reconstructed from candidate record lines only.
+# The exact discarded bytes are still hashed on the open descriptor for the
+# snapshot race check, but ordinary diagnostic lines are never decoded and
+# passed through the state machine.  This bound limits the expensive
+# state-machine portion even when a selected record is very large.
+_WHATSAPP_STATE_SCAN_BYTES = 256 * 1024
 
 # Auto-delete pastes after this many seconds (6 hours).
 _AUTO_DELETE_SECONDS = 21600
@@ -422,6 +889,221 @@ def _resolve_log_path(log_name: str) -> Optional[Path]:
     return None
 
 
+def _redact_log_text_with_state(
+    text: str,
+    state: Optional[_WhatsAppLogRedactionState] = None,
+    *,
+    redact_output: bool = True,
+    finalize: bool = False,
+) -> tuple[str, _WhatsAppLogRedactionState]:
+    """Transform one log fragment while preserving WhatsApp record state."""
+    current = state or _WhatsAppLogRedactionState()
+    if not text:
+        return text, current
+
+    if redact_output:
+        from agent.redact import redact_sensitive_text
+
+        # Keep the general force-mode pass over the complete blob so multiline
+        # credentials (for example private keys) retain their existing coverage.
+        text = redact_sensitive_text(text, force=True)
+    else:
+        redact_sensitive_text = None
+
+    redacted_lines = []
+    pending_safe_error = current.safe_error_pending
+    current.safe_error_pending = None
+    for line in text.splitlines(keepends=True):
+        if pending_safe_error is not None:
+            if _looks_like_exception_continuation(line):
+                # The exact safe-looking header is also emitted by older
+                # logger.exception paths.  A traceback continuation proves
+                # that this occurrence is historical/ambiguous, so retain
+                # the sanitized header but enter fail-closed traceback state.
+                if redact_output:
+                    redacted_lines.append(pending_safe_error)
+                pending_safe_error = None
+                current.exception_continuation = True
+            else:
+                if redact_output:
+                    redacted_lines.append(pending_safe_error)
+                pending_safe_error = None
+
+        if current.message_continuation:
+            if current.message_legacy or current.message_untrusted:
+                # Historical queued/pending/leftover previews were emitted
+                # with ``%s`` and have no trusted length or framing metadata.
+                # A quote, literal ``...'`` suffix, timestamp, or logger
+                # prefix can all be supplied by the message itself.  The same
+                # is true of a quoted non-legacy WhatsApp message once it
+                # crosses a physical line: an apostrophe in a continuation is
+                # message data, not an authenticated closing delimiter.  Once
+                # either selected record starts, remain redacted through EOF
+                # rather than trusting an in-band terminator.  This
+                # deliberately over-redacts later diagnostics, but preserves
+                # the upload privacy invariant.
+                if current.message_untrusted:
+                    safe_metadata = _SAFE_WHATSAPP_INBOUND_METADATA_FIELDS_RE.search(
+                        line
+                    )
+                    if safe_metadata and redact_output:
+                        line_ending = line[len(line.rstrip("\r\n")) :]
+                        redacted_lines.append(
+                            "[WHATSAPP_INBOUND_METADATA] "
+                            f"msg_len={safe_metadata.group('msg_len')} "
+                            "reply_to_id_present="
+                            f"{safe_metadata.group('reply_to_id_present')} "
+                            "reply_to_text_len="
+                            f"{safe_metadata.group('reply_to_text_len')}"
+                            f"{line_ending}"
+                        )
+                        continue
+                if redact_output:
+                    line_ending = line[len(line.rstrip("\r\n")) :]
+                    redacted_lines.append(
+                        f"[REDACTED_MESSAGE_PREVIEW]{line_ending}"
+                    )
+                continue
+
+            if redact_output:
+                line_ending = line[len(line.rstrip("\r\n")) :]
+                redacted_lines.append(
+                    f"[REDACTED_MESSAGE_PREVIEW]{line_ending}"
+                )
+            continue
+
+        if current.exception_continuation:
+            # The exception message and traceback can forge both an exception
+            # type line and a complete timestamp/level/logger prefix.  No
+            # textual boundary is therefore trustworthy; keep the remainder
+            # of the upload-bound view redacted through EOF.
+            if redact_output:
+                redacted_lines.append(_redact_exception_traceback_line(line))
+            continue
+
+        whatsapp_inbound = bool(_WHATSAPP_INBOUND_LOG_RE.search(line))
+        whatsapp_conversation = bool(_WHATSAPP_CONVERSATION_LOG_RE.search(line))
+        whatsapp_session_key = bool(_WHATSAPP_SESSION_KEY_LOG_RE.search(line))
+        whatsapp_generic_identity = bool(
+            _WHATSAPP_GENERIC_IDENTITY_LOG_RE.search(line)
+        )
+        whatsapp_direct_identity = bool(
+            _WHATSAPP_DIRECT_IDENTITY_LOG_RE.search(line)
+        )
+        whatsapp_cloud_identifier = bool(
+            _WHATSAPP_CLOUD_IDENTIFIER_LOG_RE.search(line)
+        )
+        legacy_preview_match = _LEGACY_MESSAGE_PREVIEW_LOG_RE.search(line)
+        legacy_preview = bool(legacy_preview_match)
+        safe_whatsapp_error = _is_safe_whatsapp_error_log_line(line)
+        whatsapp_exception = bool(
+            _WHATSAPP_EXCEPTION_LOG_RE.search(line)
+        ) and not safe_whatsapp_error
+        if safe_whatsapp_error:
+            # Hold one line of look-ahead: a historical logger.exception
+            # record can use the exact same sanitized header as a current
+            # warning, and its following traceback must remain fail-closed.
+            whatsapp_cloud_identifier = False
+        if whatsapp_inbound:
+            current.record = True
+        message_field = _LEGACY_LOG_MESSAGE_FIELD_RE.search(line)
+        selected = (
+            current.record
+            or whatsapp_conversation
+            or whatsapp_session_key
+            or whatsapp_generic_identity
+            or whatsapp_direct_identity
+            or whatsapp_cloud_identifier
+            or legacy_preview
+            or whatsapp_exception
+        )
+
+        if redact_output and selected:
+            line = redact_sensitive_text(
+                line,
+                force=True,
+                redact_bare_phone_numbers=True,
+            )
+            if (
+                whatsapp_session_key
+                or whatsapp_generic_identity
+                or whatsapp_direct_identity
+                or whatsapp_cloud_identifier
+            ):
+                line = _redact_whatsapp_log_fields(line, redact_sensitive_text)
+
+        if redact_output and (current.record or whatsapp_conversation):
+            line = _LEGACY_LOG_MESSAGE_FIELD_RE.sub(
+                "msg=[REDACTED_MESSAGE_PREVIEW]",
+                line,
+            )
+        if (current.record or whatsapp_conversation) and message_field:
+            message_value = message_field.group(1).rstrip("\r\n")
+            if message_value[:1] in {"'", '"'}:
+                quote = message_value[0]
+                message_complete = _has_unescaped_quote(message_value[1:], quote)
+            else:
+                quote = None
+                message_complete = False
+
+            if message_complete:
+                current.record = False
+            else:
+                current.message_continuation = True
+                current.message_quote = quote
+                current.message_legacy = False
+                # A quote can delimit a complete message only while it is
+                # contained in the same physical record line.  After a
+                # newline, all subsequent quotes are attacker-controlled
+                # message bytes and cannot close this state safely.
+                current.message_untrusted = True
+        elif whatsapp_inbound and _SAFE_WHATSAPP_INBOUND_METADATA_RE.search(line):
+            # The current gateway's body-free inbound record is self-contained.
+            current.record = False
+
+        if redact_output and legacy_preview:
+            line = _LEGACY_MESSAGE_PREVIEW_LOG_RE.sub(
+                r"\1[REDACTED_MESSAGE_PREVIEW]",
+                line,
+            )
+
+        if legacy_preview_match:
+            # These legacy preview logs used ``%s`` and can contain arbitrary
+            # newlines.  Their literal quote/ellipsis suffix is forgeable by
+            # the message, so remain redacted through EOF for every selected
+            # legacy record, including one-line values.
+            current.message_continuation = True
+            current.message_quote = None
+            current.message_legacy = True
+            current.message_untrusted = False
+
+        if whatsapp_exception:
+            # Older logger.exception records may carry sensitive exception
+            # messages and complete tracebacks after an otherwise safe header.
+            # Keep only the bounded header and sanitize every ambiguous
+            # continuation line.  Current runtime sinks log exception type
+            # metadata instead, but historical debug-share inputs remain in
+            # scope.
+            current.exception_continuation = True
+
+        if safe_whatsapp_error:
+            pending_safe_error = line
+        elif redact_output:
+            redacted_lines.append(line)
+
+    if pending_safe_error is not None:
+        if finalize:
+            if redact_output:
+                redacted_lines.append(pending_safe_error)
+        else:
+            current.safe_error_pending = pending_safe_error
+
+    redacted = "".join(redacted_lines) if redact_output else ""
+    if redact_output:
+        redacted = _EMAIL_ADDRESS_RE.sub("[REDACTED_EMAIL]", redacted)
+    return redacted, current
+
+
 def _redact_log_text(text: str) -> str:
     """Run ``redact_sensitive_text`` with ``force=True`` over upload-bound text.
 
@@ -431,12 +1113,326 @@ def _redact_log_text(text: str) -> str:
     service is sanitized. Returns the redacted text (or the original
     when empty / non-string).
     """
-    if not text:
-        return text
-    from agent.redact import redact_sensitive_text
+    # The bare-phone option is intentionally not safe for arbitrary text.
+    # Select only structured WhatsApp records and exact historical
+    # message-preview records. Historical queued/pending/leftover previews and
+    # exception tracebacks have no trustworthy textual terminator, so their
+    # selected continuations remain redacted through EOF.
+    redacted, _state = _redact_log_text_with_state(text, finalize=True)
+    return redacted
 
-    text = redact_sensitive_text(text, force=True)
-    return _EMAIL_ADDRESS_RE.sub("[REDACTED_EMAIL]", text)
+
+def _whatsapp_log_state_at(
+    log_file: BinaryIO,
+    byte_offset: int,
+    *,
+    content_hash: Optional[Any] = None,
+) -> _WhatsAppLogRedactionState:
+    """Recover redaction state from a bounded suffix of the discarded prefix.
+
+    The exact discarded bytes still come from the same open descriptor and
+    are fed into ``content_hash`` when requested, preserving the later
+    append/overwrite/truncate verification.  Selector presence is detected
+    with a bounded-memory byte scan rather than replaying every ordinary line
+    through the Python state machine.  A selected continuation found inside
+    the bounded replay window is preserved as redacted message state; an
+    older selected record that cannot be replayed is marked unresolved and
+    replaced with a safe fragment instead of risking a leak.
+    """
+    state = _WhatsAppLogRedactionState()
+    if byte_offset <= 0:
+        return state
+
+    # Use the already-required complete-prefix pass to look for selectors
+    # without decoding every ordinary diagnostic line in Python.  If no
+    # selector occurs anywhere in
+    # the discarded bytes, a large ordinary log is known not to contain an
+    # older selected record and can retain its useful diagnostics.  A selector
+    # does not prove that its record ended before the retained view, so keep
+    # the fail-closed fragment in that case.
+    selector_markers = (
+        b" whatsapp",
+        b"platform=whatsapp",
+        b"[whatsapp]",
+        b"[whatsapp_cloud]",
+        b":whatsapp:",
+        b":whatsapp_cloud:",
+        b"for whatsapp",
+        b"wamid",
+        b"media_id",
+        b"media id",
+        b"processing queued message after agent completion:",
+        b"processing pending message:",
+        b"delivering leftover /steer as next turn:",
+    )
+    selector_seen = False
+    state_candidate_markers = (
+        b"processing queued message after agent completion:",
+        b"processing pending message:",
+        b"delivering leftover /steer as next turn:",
+        b"conversation turn:",
+        b"inbound message:",
+        b"[whatsapp]",
+        b"[whatsapp_cloud]",
+    )
+    state_opener_before_window = False
+    last_candidate_line_start: Optional[int] = None
+
+    def _classify_prefix_candidate(candidate_at: int, resume_at: int) -> None:
+        """Classify one pre-window candidate without retaining offsets."""
+        nonlocal state_opener_before_window, last_candidate_line_start
+        try:
+            line_start = _physical_line_start(log_file, candidate_at)
+            if line_start == last_candidate_line_start:
+                log_file.seek(resume_at)
+                return
+            last_candidate_line_start = line_start
+            log_file.seek(line_start)
+            candidate_line = log_file.readline(1_048_576)
+        except Exception:
+            state_opener_before_window = True
+            log_file.seek(resume_at)
+            return
+        finally:
+            # The caller's sequential scan must continue from the end of the
+            # chunk even when candidate classification seeks elsewhere.
+            if log_file.tell() != resume_at:
+                log_file.seek(resume_at)
+
+        if not candidate_line or (
+            b"\n" not in candidate_line and len(candidate_line) >= 1_048_576
+        ):
+            # An unbounded candidate line cannot be classified safely.
+            state_opener_before_window = True
+            return
+        candidate_text = candidate_line.decode("utf-8", errors="replace")
+        if _LEGACY_MESSAGE_PREVIEW_LOG_RE.search(candidate_text):
+            state_opener_before_window = True
+            return
+        if _is_safe_whatsapp_error_log_line(candidate_text):
+            # A current type/metadata-only warning and an older
+            # logger.exception header can be byte-for-byte identical.  Read
+            # the next physical line from this same descriptor before
+            # declaring the prefix self-contained; a traceback continuation
+            # means the retained suffix must remain fail-closed.
+            next_at = line_start + len(candidate_line)
+            log_file.seek(next_at)
+            next_line = log_file.readline(1_048_576)
+            next_text = next_line.decode("utf-8", errors="replace")
+            if next_line and _looks_like_exception_continuation(next_text):
+                state_opener_before_window = True
+            log_file.seek(resume_at)
+            return
+        if (
+            _WHATSAPP_EXCEPTION_LOG_RE.search(candidate_text)
+            and not _is_safe_whatsapp_error_log_line(candidate_text)
+        ):
+            state_opener_before_window = True
+            return
+        if not (
+            _WHATSAPP_CONVERSATION_LOG_RE.search(candidate_text)
+            or _WHATSAPP_INBOUND_LOG_RE.search(candidate_text)
+        ):
+            return
+        message_field = _LEGACY_LOG_MESSAGE_FIELD_RE.search(candidate_text)
+        if not message_field:
+            return
+        message_value = message_field.group(1).rstrip("\r\n")
+        if message_value[:1] in {"'", '"'}:
+            if not _has_unescaped_quote(message_value[1:], message_value[0]):
+                state_opener_before_window = True
+        else:
+            state_opener_before_window = True
+
+    overlap = b""
+    max_marker_len = max(map(len, selector_markers))
+    remaining = byte_offset
+    processed = 0
+    scan_start = max(0, byte_offset - _WHATSAPP_STATE_SCAN_BYTES)
+    log_file.seek(0)
+    while remaining > 0:
+        chunk = log_file.read(min(65536, remaining))
+        if not chunk:
+            break
+        if content_hash is not None:
+            content_hash.update(chunk)
+        haystack = overlap + chunk.lower()
+        if any(marker in haystack for marker in selector_markers):
+            selector_seen = True
+        for marker in state_candidate_markers:
+            search_from = 0
+            while True:
+                marker_at = haystack.find(marker, search_from)
+                if marker_at < 0:
+                    break
+                absolute_at = max(0, processed + marker_at - len(overlap))
+                if absolute_at < scan_start:
+                    _classify_prefix_candidate(absolute_at, processed + len(chunk))
+                    if state_opener_before_window:
+                        break
+                search_from = marker_at + 1
+            if state_opener_before_window:
+                break
+        overlap = haystack[-(max_marker_len - 1) :]
+        remaining -= len(chunk)
+        processed += len(chunk)
+
+    if not selector_seen:
+        return state
+
+    # Replay only the final bounded window when a selector is present.  This
+    # keeps the useful redacted-message view for the common case where the
+    # selected record is recent, while avoiding the old O(file-size) Python
+    # line replay for selector-free logs.
+    scan_start = max(0, byte_offset - _WHATSAPP_STATE_SCAN_BYTES)
+    log_file.seek(scan_start)
+    scan_remaining = byte_offset - scan_start
+    window_selector_seen = False
+    if scan_start > 0:
+        log_file.seek(scan_start - 1)
+        at_line_boundary = log_file.read(1) == b"\n"
+        log_file.seek(scan_start)
+        if not at_line_boundary:
+            fragment = log_file.readline(scan_remaining)
+            scan_remaining -= len(fragment)
+
+    while scan_remaining > 0:
+        line = log_file.readline(scan_remaining)
+        if not line:
+            break
+        scan_remaining -= len(line)
+        lowered = line.lower()
+        if any(marker in lowered for marker in selector_markers):
+            window_selector_seen = True
+        _unused, state = _redact_log_text_with_state(
+            line.decode("utf-8", errors="replace"),
+            state,
+            redact_output=False,
+        )
+        if state.message_continuation or state.exception_continuation:
+            return state
+
+    if state_opener_before_window:
+        # The selected marker predates the bounded replay, so no textual line
+        # can prove that an attacker-controlled multiline record ended before
+        # the retained view.
+        state.prefix_unresolved = True
+    return state
+
+
+def _descriptor_digest(
+    log_file: BinaryIO,
+    byte_offset: int,
+    byte_count: int,
+) -> Optional[bytes]:
+    """Hash an exact range from an already-open log descriptor."""
+    content_hash = hashlib.sha256()
+    remaining = byte_count
+    log_file.seek(byte_offset)
+    while remaining > 0:
+        chunk = log_file.read(min(65536, remaining))
+        if not chunk:
+            return None
+        remaining -= len(chunk)
+        content_hash.update(chunk)
+    return content_hash.digest()
+
+
+def _physical_line_start(log_file: BinaryIO, byte_offset: int) -> int:
+    """Find the start of the physical line containing ``byte_offset``."""
+    cursor = max(0, byte_offset)
+    while cursor:
+        start = max(0, cursor - 65536)
+        log_file.seek(start)
+        block = log_file.read(cursor - start)
+        newline = block.rfind(b"\n")
+        if newline >= 0:
+            return start + newline + 1
+        cursor = start
+    return 0
+
+
+def _split_line_is_whatsapp(
+    log_file: BinaryIO,
+    byte_offset: int,
+    file_size: int,
+) -> bool:
+    """Classify a retained no-newline suffix using its complete line.
+
+    The retained suffix can begin in the middle of a physical line.  Looking
+    only at that suffix would miss a selector split across the byte cap, while
+    unconditionally replacing every such suffix destroys ordinary diagnostics.
+    Scan the complete line on the already-open descriptor and fail closed when
+    it contains WhatsApp-related markers.  The scan keeps bounded overlap and
+    memory, and a non-WhatsApp line remains available for sharing.
+    """
+    line_start = _physical_line_start(log_file, byte_offset)
+    remaining = max(0, file_size - line_start)
+    log_file.seek(line_start)
+    overlap = b""
+    markers = (
+        b" whatsapp",
+        b"platform=whatsapp",
+        b"[whatsapp]",
+        b"[whatsapp_cloud]",
+        b":whatsapp:",
+        b":whatsapp_cloud:",
+        b"whatsapp chat info",
+        b"platform.whatsapp/",
+        b"wamid ",
+        b"wamid=",
+        b"wamid:",
+        b"for wamid",
+        b"media_id=",
+        b"media id=",
+        b"media id ",
+        # Historical watch-pattern notifications identify the platform with
+        # ``for whatsapp[_cloud]`` rather than a ``platform=`` field.  Keep
+        # this selector in the complete-line classifier so a byte-cap split
+        # cannot expose the retained identity suffix.
+        b"for whatsapp",
+    )
+    while remaining:
+        chunk = log_file.read(min(65536, remaining))
+        if not chunk:
+            break
+        remaining -= len(chunk)
+        haystack = overlap + chunk.lower()
+        if any(marker in haystack for marker in markers):
+            return True
+        overlap = haystack[-128:]
+    return False
+
+
+def _decode_capped_utf8(data: bytes, max_bytes: int) -> str:
+    """Decode a byte-capped view without invalid UTF-8 expansion.
+
+    ``errors='replace'`` can turn an orphaned continuation byte at a suffix
+    cut into a three-byte replacement character, making the returned string
+    exceed ``max_bytes`` after re-encoding.  Decode the selected suffix while
+    ignoring only incomplete/invalid leading bytes, then enforce the physical
+    line boundary on the decoded text.  The result is valid UTF-8 and its
+    encoded size is always at most the requested cap.
+    """
+    if max_bytes <= 0:
+        return ""
+    truncated = len(data) > max_bytes
+    on_boundary = True
+    selected = data
+    if truncated:
+        cut = len(data) - max_bytes
+        on_boundary = cut > 0 and data[cut - 1 : cut] == b"\n"
+        selected = data[cut:]
+
+    text = selected.decode("utf-8", errors="ignore")
+    if truncated and not on_boundary and "\n" in text:
+        text = text.split("\n", 1)[1]
+
+    # The ignore decode above normally makes this a no-op.  Keep the final
+    # invariant explicit for callers handling unusual decoder input.
+    while text and len(text.encode("utf-8")) > max_bytes:
+        text = text[1:]
+    return text
 
 
 def _capture_log_snapshot(
@@ -469,15 +1465,27 @@ def _capture_log_snapshot(
         return LogSnapshot(path=None, tail_text=tail, full_text=None)
 
     try:
-        size = log_path.stat().st_size
-        if size == 0:
-            # race: file was truncated between _resolve_log_path and stat
-            return LogSnapshot(path=log_path, tail_text="(file empty)", full_text=None)
-
         with open(log_path, "rb") as f:
+            initial_stat = os.fstat(f.fileno())
+            initial_fingerprint = (
+                initial_stat.st_dev,
+                initial_stat.st_ino,
+                initial_stat.st_size,
+                initial_stat.st_mtime_ns,
+            )
+            size = initial_stat.st_size
+            if size == 0:
+                # The file was truncated or replaced before the open completed.
+                return LogSnapshot(
+                    path=log_path,
+                    tail_text="(file empty)",
+                    full_text=None,
+                )
+
             if size <= max_bytes:
-                raw = f.read()
-                truncated = False
+                # Bind the view to the size observed at open time.  An
+                # ordinary append must not leak into this point-in-time view.
+                raw = f.read(size)
             else:
                 # Read from the end until we have enough bytes for the
                 # standalone upload and enough newline context to render the
@@ -488,7 +1496,11 @@ def _capture_log_snapshot(
                 total = 0
                 newline_count = 0
 
-                while pos > 0 and (total < max_bytes or newline_count <= tail_lines + 1) and total < max_bytes * 2:
+                while (
+                    pos > 0
+                    and (total < max_bytes or newline_count <= tail_lines + 1)
+                    and total < max_bytes * 2
+                ):
                     read_size = min(chunk_size, pos)
                     pos -= read_size
                     f.seek(pos)
@@ -499,10 +1511,92 @@ def _capture_log_snapshot(
                     chunk_size = min(chunk_size * 2, 65536)
 
                 raw = b"".join(chunks)
-                truncated = pos > 0
+
+            raw_start = pos if size > max_bytes else 0
+            split_physical_line = False
+            if raw_start > 0 and raw:
+                # Chunk reads begin at an arbitrary byte. Drop the incomplete
+                # first physical line, then scan the discarded prefix through
+                # this exact boundary so multiline state remains trustworthy.
+                first_newline = raw.find(b"\n")
+                if first_newline >= 0:
+                    raw_start += first_newline + 1
+                    raw = raw[first_newline + 1 :]
+                else:
+                    # No retained newline means the selected suffix may be
+                    # the continuation of one physical record.  Its marker
+                    # and platform selector can therefore be split across
+                    # the discarded prefix and retained bytes.  Do not parse
+                    # those fragments as independent records: redact the
+                    # entire retained fragment below.
+                    split_physical_line = _split_line_is_whatsapp(
+                        f, raw_start, size
+                    )
+
+            initial_content_hash = hashlib.sha256()
+            if redact and not split_physical_line:
+                state = _whatsapp_log_state_at(
+                    f,
+                    raw_start,
+                    content_hash=initial_content_hash,
+                )
+                if state.prefix_unresolved:
+                    split_physical_line = True
+            else:
+                if redact:
+                    # Preserve the exact initial descriptor range for the
+                    # append-race check without reconstructing state from a
+                    # partial physical line.
+                    remaining = raw_start
+                    f.seek(0)
+                    while remaining > 0:
+                        chunk = f.read(min(65536, remaining))
+                        if not chunk:
+                            break
+                        remaining -= len(chunk)
+                        initial_content_hash.update(chunk)
+                state = _WhatsAppLogRedactionState()
+            initial_content_hash.update(raw)
+            initial_content_digest = initial_content_hash.digest()
+            final_stat = os.fstat(f.fileno())
+            final_fingerprint = (
+                final_stat.st_dev,
+                final_stat.st_ino,
+                final_stat.st_size,
+                final_stat.st_mtime_ns,
+            )
+            if final_fingerprint != initial_fingerprint:
+                same_descriptor = (
+                    final_stat.st_dev == initial_stat.st_dev
+                    and final_stat.st_ino == initial_stat.st_ino
+                )
+                append_candidate = (
+                    same_descriptor and final_stat.st_size > size
+                )
+                verification_offset = 0 if redact else raw_start
+                verification_size = size - verification_offset
+                verified_digest = (
+                    _descriptor_digest(
+                        f,
+                        verification_offset,
+                        verification_size,
+                    )
+                    if append_candidate
+                    else None
+                )
+                verified_stat = os.fstat(f.fileno())
+                stable_initial_range = (
+                    verified_digest == initial_content_digest
+                    and verified_stat.st_dev == initial_stat.st_dev
+                    and verified_stat.st_ino == initial_stat.st_ino
+                    and verified_stat.st_size >= size
+                )
+                if not append_candidate or not stable_initial_range:
+                    raise RuntimeError("log changed during snapshot capture")
 
         full_raw = raw
-        if truncated and len(full_raw) > max_bytes:
+        full_was_truncated = raw_start > 0 or len(full_raw) > max_bytes
+        if len(full_raw) > max_bytes:
             cut = len(full_raw) - max_bytes
             # Check whether the cut lands exactly on a line boundary.  If the
             # byte just before the cut position is a newline the first retained
@@ -513,16 +1607,40 @@ def _capture_log_snapshot(
             if not on_boundary and b"\n" in full_raw:
                 full_raw = full_raw.split(b"\n", 1)[1]
 
-        all_text = raw.decode("utf-8", errors="replace")
-        tail_text = "".join(all_text.splitlines(keepends=True)[-tail_lines:]).rstrip("\n")
-
-        full_text = full_raw.decode("utf-8", errors="replace")
-        if truncated:
-            full_text = f"[... truncated — showing last ~{max_bytes // 1024}KB ...]\n{full_text}"
-
         if redact:
-            tail_text = _redact_log_text(tail_text)
-            full_text = _redact_log_text(full_text)
+            if split_physical_line:
+                safe_text = "[REDACTED_LOG_FRAGMENT]\n"
+            else:
+                safe_text, _state = _redact_log_text_with_state(
+                    raw.decode("utf-8", errors="replace"),
+                    state,
+                    finalize=True,
+                )
+            tail_text = "".join(
+                safe_text.splitlines(keepends=True)[-tail_lines:]
+            ).rstrip("\n")
+
+            safe_full_raw = safe_text.encode("utf-8")
+            if len(safe_full_raw) > max_bytes:
+                # Redaction can expand a selected view (for example, a bare
+                # seven-digit WhatsApp identity becomes ``12****67``).  The
+                # same line-boundary cap below then omits one or more source
+                # records, so preserve the existing truncation marker rather
+                # than presenting the shortened view as complete.
+                full_was_truncated = True
+            full_text = _decode_capped_utf8(safe_full_raw, max_bytes)
+        else:
+            all_text = raw.decode("utf-8", errors="replace")
+            tail_text = "".join(
+                all_text.splitlines(keepends=True)[-tail_lines:]
+            ).rstrip("\n")
+            full_text = _decode_capped_utf8(full_raw, max_bytes)
+
+        if full_was_truncated:
+            full_text = (
+                f"[... truncated — showing last ~{max_bytes // 1024}KB ...]\n"
+                f"{full_text}"
+            )
 
         return LogSnapshot(path=log_path, tail_text=tail_text, full_text=full_text)
     except Exception as exc:

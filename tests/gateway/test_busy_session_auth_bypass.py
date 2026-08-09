@@ -5,6 +5,7 @@ messages from non-allowlisted users must be silently dropped — matching the co
 behavior in _handle_message. Previously, the busy path skipped the auth check entirely,
 allowing unauthorized users to inject text into another user's running session.
 """
+import logging
 import time
 from unittest.mock import AsyncMock, MagicMock
 
@@ -28,6 +29,7 @@ sys.modules.setdefault("telegram.ext", types.ModuleType("telegram.ext"))
 from gateway.platforms.base import (
     MessageEvent,
     MessageType,
+    Platform,
     SessionSource,
     build_session_key,
 )
@@ -192,3 +194,78 @@ class TestBusySessionAuthBypass:
         running_agent.steer.assert_not_called()
         # Nothing queued
         assert sk not in adapter._pending_messages
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_whatsapp_busy_log_omits_identity(
+        self, caplog
+    ):
+        """The real busy auth rejection must not log the raw wa_id or name."""
+        from gateway.run import GatewayRunner
+
+        wa_id = "15551234567"
+        display_name = "Private Contact"
+        source = SessionSource(
+            platform=Platform.WHATSAPP_CLOUD,
+            chat_id=wa_id,
+            chat_type="dm",
+            user_id=wa_id,
+            user_name=display_name,
+        )
+        event = MessageEvent(
+            text="private follow-up",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="wamid.synthetic",
+        )
+        session_key = build_session_key(source)
+        runner, _sentinel = _make_runner(authorized_users=set())
+
+        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            result = await GatewayRunner._handle_active_session_busy_message(
+                runner, event, session_key
+            )
+
+        assert result is True
+        record = caplog.records[-1].message
+        assert wa_id not in record
+        assert display_name not in record
+        assert session_key not in record
+        assert "15****67" in record
+        assert "user_name_present=True" in record
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_non_whatsapp_busy_log_keeps_diagnostics(
+        self, caplog
+    ):
+        """Platform-scoped masking must not erase non-WhatsApp identifiers."""
+        from gateway.run import GatewayRunner
+
+        user_id = "123456789012345"
+        display_name = "Discord Contact"
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="987654321098765",
+            chat_type="dm",
+            user_id=user_id,
+            user_name=display_name,
+        )
+        event = MessageEvent(
+            text="follow-up",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="m1",
+        )
+        session_key = build_session_key(source)
+        runner, _sentinel = _make_runner(authorized_users=set())
+
+        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            result = await GatewayRunner._handle_active_session_busy_message(
+                runner, event, session_key
+            )
+
+        assert result is True
+        record = caplog.records[-1].message
+        assert user_id in record
+        assert display_name not in record
+        assert "user_name_present=True" in record
+        assert session_key in record

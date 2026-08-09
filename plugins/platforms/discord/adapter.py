@@ -4945,7 +4945,11 @@ class DiscordAdapter(BasePlatformAdapter):
             if not transcript or is_whisper_hallucination(transcript):
                 return
 
-            logger.info("Voice input from user %d: %s", user_id, transcript[:100])
+            logger.info(
+                "Voice input accepted from user %d: transcript_len=%d",
+                user_id,
+                len(transcript),
+            )
 
             if self._voice_input_callback:
                 await self._voice_input_callback(

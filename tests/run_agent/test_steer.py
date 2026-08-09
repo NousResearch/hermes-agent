@@ -7,6 +7,7 @@ and prompt-cache integrity.
 """
 from __future__ import annotations
 
+import logging
 import threading
 
 import pytest
@@ -503,6 +504,26 @@ class TestSteerInjection:
         assert "please also check auth.log" in messages[3]["content"]
         # And pending_steer is consumed.
         assert agent._pending_steer is None
+
+    def test_delivery_log_contains_length_not_steer_body(self, caplog):
+        agent = _bare_agent()
+        body = "call 15551234567 about private health details"
+        agent.steer(body)
+        messages = [{"role": "tool", "content": "output", "tool_call_id": "a"}]
+
+        with caplog.at_level(logging.INFO, logger="run_agent"):
+            agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=1)
+
+        records = [
+            record.message
+            for record in caplog.records
+            if "Delivered /steer to agent after tool batch" in record.message
+        ]
+        assert records == [
+            f"Delivered /steer to agent after tool batch: msg_len={len(body)}"
+        ]
+        assert body not in records[0]
+        assert "15551234567" not in records[0]
 
     def test_no_op_when_no_steer_pending(self):
         agent = _bare_agent()

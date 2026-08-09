@@ -82,6 +82,26 @@ def _platform_name(platform) -> str:
     return str(value or "").lower()
 
 
+def _log_send_error(platform, error: object) -> str:
+    """Return an error detail safe for adapter diagnostics.
+
+    Provider error bodies can echo WhatsApp message text, phone-derived IDs,
+    or media correlators. Keep the raw error available in the ``SendResult``
+    for retry/fallback decisions, but never render it in WhatsApp logs.
+    Other platforms retain their historical diagnostic detail.
+    """
+    if _platform_name(platform) in {"whatsapp", "whatsapp_cloud"}:
+        return "present" if error else "absent"
+    return str(error or "")
+
+
+def _log_media_path(platform, path: object) -> str:
+    """Render an attachment path without exposing WhatsApp filenames."""
+    if _platform_name(platform) in {"whatsapp", "whatsapp_cloud"}:
+        return "present" if path else "absent"
+    return _log_safe_path(str(path or ""))
+
+
 def _float_env(name: str, default: float) -> float:
     raw = os.environ.get(name, "").strip()
     if not raw:
@@ -577,7 +597,12 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
-from gateway.session import SessionSource, build_session_key
+from gateway.session import (
+    SessionSource,
+    build_session_key,
+    log_safe_gateway_identity,
+    session_key_for_log,
+)
 from hermes_constants import get_default_hermes_root, get_hermes_dir, get_hermes_home
 
 if TYPE_CHECKING:
@@ -3487,12 +3512,18 @@ class BasePlatformAdapter(ABC):
             key = (self.platform.value, context)
             if key not in logged:
                 logger.warning(
-                    "Failed to write runtime status (%s) for %s: %s (further failures at debug level)",
-                    context, self.platform.value, exc,
+                    "Failed to write runtime status (%s) for %s "
+                    "(error_type=%s; further failures at debug level)",
+                    context, self.platform.value, type(exc).__name__,
                 )
                 logged.add(key)
             else:
-                logger.debug("Failed to write runtime status (%s) for %s: %s", context, self.platform.value, exc)
+                logger.debug(
+                    "Failed to write runtime status (%s) for %s (error_type=%s)",
+                    context,
+                    self.platform.value,
+                    type(exc).__name__,
+                )
 
     async def _notify_fatal_error(self) -> None:
         handler = self._fatal_error_handler
@@ -3674,15 +3705,21 @@ class BasePlatformAdapter(ABC):
             return
         try:
             recovered = recover(source)
-        except Exception:
-            logger.debug("topic recovery hook failed", exc_info=True)
+        except Exception as exc:
+            logger.debug(
+                "topic recovery hook failed (error_type=%s)",
+                type(exc).__name__,
+            )
             return
         if recovered is None or str(recovered) == str(source.thread_id or ""):
             return
         try:
             event.source = dataclasses.replace(source, thread_id=str(recovered))
-        except Exception:
-            logger.debug("topic recovery rewrite failed", exc_info=True)
+        except Exception as exc:
+            logger.debug(
+                "topic recovery rewrite failed (error_type=%s)",
+                type(exc).__name__,
+            )
 
     def set_busy_session_handler(self, handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]]) -> None:
         """Set an optional handler for messages arriving during active sessions."""
@@ -3738,10 +3775,13 @@ class BasePlatformAdapter(ABC):
             return None
         try:
             return bool(self._authorization_check(user_id, chat_type, chat_id))
-        except Exception:
+        except Exception as exc:
             logger.warning(
-                "[%s] Authorization check raised for user %s; treating as unknown",
-                self.name, user_id, exc_info=True,
+                "[%s] Authorization check raised for user %s "
+                "(error_type=%s); treating as unknown",
+                self.name,
+                log_safe_gateway_identity(self.platform, user_id),
+                type(exc).__name__,
             )
             return None
     
@@ -4125,10 +4165,13 @@ class BasePlatformAdapter(ABC):
                 await self.delete_message(chat_id=chat_id, message_id=message_id)
             except asyncio.CancelledError:
                 raise
-            except Exception as e:
+            except Exception as exc:
                 logger.debug(
-                    "[%s] Ephemeral delete failed for %s/%s: %s",
-                    self.name, chat_id, message_id, e,
+                    "[%s] Ephemeral delete failed for %s/%s (error_type=%s)",
+                    self.name,
+                    log_safe_gateway_identity(self.platform, chat_id),
+                    log_safe_gateway_identity(self.platform, message_id),
+                    type(exc).__name__,
                 )
 
         coro = _run_delete()
@@ -4448,9 +4491,17 @@ class BasePlatformAdapter(ABC):
                         metadata=metadata,
                     )
                 if not img_result.success:
-                    logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                    logger.error(
+                        "[%s] Failed to send image (error_detail=%s)",
+                        self.name,
+                        _log_send_error(self.platform, img_result.error),
+                    )
             except Exception as img_err:
-                logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+                logger.error(
+                    "[%s] Error sending image (error_type=%s)",
+                    self.name,
+                    type(img_err).__name__,
+                )
 
     async def send_image(
         self,
@@ -4777,15 +4828,17 @@ class BasePlatformAdapter(ABC):
             notice = await self.send(chat_id=chat_id, content=text, metadata=metadata)
             if not notice.success:
                 logger.debug(
-                    "[%s] Could not send media-delivery-failure notice: %s",
+                    "[%s] Could not send media-delivery-failure notice "
+                    "(error_detail=%s)",
                     self.name,
-                    notice.error,
+                    _log_send_error(self.platform, notice.error),
                 )
         except Exception as notify_err:
             logger.debug(
-                "[%s] Could not send media-delivery-failure notice: %s",
+                "[%s] Could not send media-delivery-failure notice "
+                "(error_type=%s)",
                 self.name,
-                notify_err,
+                type(notify_err).__name__,
             )
 
     async def send_image_file(
@@ -4809,7 +4862,7 @@ class BasePlatformAdapter(ABC):
         # See send_voice for the rationale: do not echo host paths into chat.
         logger.warning(
             "[%s] send_image_file fallback: native image send unavailable for %s",
-            self.name, image_path,
+            self.name, _log_media_path(self.platform, image_path),
         )
         text = "⚠️ Couldn't deliver the image attachment."
         if caption:
@@ -5209,8 +5262,8 @@ class BasePlatformAdapter(ABC):
                         raise
                     except Exception as typing_err:
                         logger.debug(
-                            "[%s] send_typing error (non-fatal): %s",
-                            self.name, typing_err,
+                            "[%s] send_typing error (non-fatal; error_type=%s)",
+                            self.name, type(typing_err).__name__,
                         )
                 if stop_event is None:
                     await asyncio.sleep(interval)
@@ -5453,7 +5506,12 @@ class BasePlatformAdapter(ABC):
         try:
             await hook(*args, **kwargs)
         except Exception as e:
-            logger.warning("[%s] %s hook failed: %s", self.name, hook_name, e)
+            logger.warning(
+                "[%s] %s hook failed (error_type=%s)",
+                self.name,
+                hook_name,
+                type(e).__name__,
+            )
 
     @staticmethod
     def _is_retryable_error(error: Optional[str]) -> bool:
@@ -5573,8 +5631,13 @@ class BasePlatformAdapter(ABC):
                 else:
                     delay = base_delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
                 logger.warning(
-                    "[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s",
-                    self.name, attempt, max_retries, delay, error_str,
+                    "[%s] Send failed (attempt %d/%d, retrying in %.1fs; "
+                    "error_detail=%s)",
+                    self.name,
+                    attempt,
+                    max_retries,
+                    delay,
+                    _log_send_error(self.platform, error_str),
                 )
                 await asyncio.sleep(delay)
                 result = await self.send(
@@ -5593,7 +5656,13 @@ class BasePlatformAdapter(ABC):
                     break  # error switched to non-transient — fall through to plain-text fallback
             else:
                 # All retries exhausted (loop completed without break) — notify user
-                logger.error("[%s] Failed to deliver response after %d retries: %s", self.name, max_retries, error_str)
+                logger.error(
+                    "[%s] Failed to deliver response after %d retries "
+                    "(error_detail=%s)",
+                    self.name,
+                    max_retries,
+                    _log_send_error(self.platform, error_str),
+                )
                 notice = (
                     "\u26a0\ufe0f Message delivery failed after multiple attempts. "
                     "Please try again \u2014 your request was processed but the response could not be sent."
@@ -5601,11 +5670,20 @@ class BasePlatformAdapter(ABC):
                 try:
                     await self.send(chat_id=chat_id, content=notice, reply_to=reply_to, metadata=metadata)
                 except Exception as notify_err:
-                    logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
+                    logger.debug(
+                        "[%s] Could not send delivery-failure notice "
+                        "(error_type=%s)",
+                        self.name,
+                        type(notify_err).__name__,
+                    )
                 return result
 
         # Non-network / post-retry formatting failure: try plain text as fallback
-        logger.warning("[%s] Send failed: %s — trying plain-text fallback", self.name, error_str)
+        logger.warning(
+            "[%s] Send failed (error_detail=%s) — trying plain-text fallback",
+            self.name,
+            _log_send_error(self.platform, error_str),
+        )
         fallback_result = await self.send(
             chat_id=chat_id,
             content=f"(Response formatting failed, plain text:)\n\n{content[:3500]}",
@@ -5613,7 +5691,11 @@ class BasePlatformAdapter(ABC):
             metadata=metadata,
         )
         if not fallback_result.success:
-            logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
+            logger.error(
+                "[%s] Fallback send also failed (error_detail=%s)",
+                self.name,
+                _log_send_error(self.platform, fallback_result.error),
+            )
         return fallback_result
 
     @staticmethod
@@ -5652,7 +5734,7 @@ class BasePlatformAdapter(ABC):
             logger.debug(
                 "[%s] Queue-text debounce candidate accepted: session=%s text_len=%d",
                 self.name,
-                getattr(event, "session_key", "?"),
+                session_key_for_log(getattr(event, "session_key", "?")),
                 len(event.text or ""),
             )
         return result
@@ -5851,7 +5933,7 @@ class BasePlatformAdapter(ABC):
         logger.warning(
             "[%s] Healing stale session lock for %s (owner task is done/absent)",
             self.name,
-            session_key,
+            session_key_for_log(session_key),
         )
         self._active_sessions.pop(session_key, None)
         self._pending_messages.pop(session_key, None)
@@ -5915,7 +5997,7 @@ class BasePlatformAdapter(ABC):
             logger.debug(
                 "[%s] Cancelling active processing for session %s",
                 self.name,
-                session_key,
+                session_key_for_log(session_key),
             )
             self._expected_cancelled_tasks.add(task)
             task.cancel()
@@ -5927,13 +6009,13 @@ class BasePlatformAdapter(ABC):
                 logger.warning(
                     "[%s] Cancelled task for %s did not exit within 5s; "
                     "unblocking dispatch and letting the task unwind in the background",
-                    self.name, session_key,
+                    self.name, session_key_for_log(session_key),
                 )
             except Exception:
                 logger.debug(
                     "[%s] Session cancellation raised while unwinding %s",
                     self.name,
-                    session_key,
+                    session_key_for_log(session_key),
                     exc_info=True,
                 )
         if discard_pending:
@@ -5982,7 +6064,7 @@ class BasePlatformAdapter(ABC):
             "[%s] Command '/%s' bypassing active-session guard for %s",
             self.name,
             cmd,
-            session_key,
+            session_key_for_log(session_key),
         )
 
         current_guard = self._active_sessions.get(session_key)
@@ -6004,7 +6086,7 @@ class BasePlatformAdapter(ABC):
                     self.name,
                     cmd,
                     len(_text),
-                    event.source.chat_id,
+                    log_safe_gateway_identity(self.platform, event.source.chat_id),
                 )
                 _r = await self._send_with_retry(
                     chat_id=event.source.chat_id,
@@ -6117,8 +6199,8 @@ class BasePlatformAdapter(ABC):
                         await self._dispatch_active_session_command(event, session_key, cmd)
                     except Exception as e:
                         logger.error(
-                            "[%s] Command '/%s' dispatch failed: %s",
-                            self.name, cmd, e, exc_info=True,
+                            "[%s] Command '/%s' dispatch failed (error_type=%s)",
+                            self.name, cmd, type(e).__name__,
                         )
                     return
 
@@ -6127,7 +6209,7 @@ class BasePlatformAdapter(ABC):
                 # don't cancel the running task.
                 logger.debug(
                     "[%s] Command '/%s' bypassing active-session guard for %s",
-                    self.name, cmd, session_key,
+                    self.name, cmd, session_key_for_log(session_key),
                 )
                 try:
                     _thread_meta = _thread_metadata_for_source(event.source, _reply_anchor_for_event(event))
@@ -6147,7 +6229,10 @@ class BasePlatformAdapter(ABC):
                                 ttl_seconds=_eph_ttl,
                             )
                 except Exception as e:
-                    logger.error("[%s] Command '/%s' dispatch failed: %s", self.name, cmd, e, exc_info=True)
+                    logger.error(
+                        "[%s] Command '/%s' dispatch failed (error_type=%s)",
+                        self.name, cmd, type(e).__name__,
+                    )
                 return
 
             # Clarify reply bypass: if the agent is blocked on a
@@ -6178,7 +6263,7 @@ class BasePlatformAdapter(ABC):
                 if _has_text_clarify:
                     logger.debug(
                         "[%s] Routing message to clarify text-intercept for %s",
-                        self.name, session_key,
+                        self.name, session_key_for_log(session_key),
                     )
                     try:
                         _thread_meta = _thread_metadata_for_source(
@@ -6201,8 +6286,9 @@ class BasePlatformAdapter(ABC):
                                 )
                     except Exception as e:
                         logger.error(
-                            "[%s] Clarify text-intercept dispatch failed: %s",
-                            self.name, e, exc_info=True,
+                            "[%s] Clarify text-intercept dispatch failed "
+                            "(error_type=%s)",
+                            self.name, type(e).__name__,
                         )
                     return
 
@@ -6211,13 +6297,20 @@ class BasePlatformAdapter(ABC):
                     if await self._busy_session_handler(event, session_key):
                         return
                 except Exception as e:
-                    logger.error("[%s] Busy-session handler failed: %s", self.name, e, exc_info=True)
+                    logger.error(
+                        "[%s] Busy-session handler failed (error_type=%s)",
+                        self.name,
+                        type(e).__name__,
+                    )
 
             # Special case: photo bursts/albums frequently arrive as multiple near-
             # simultaneous messages. Queue them without interrupting the active run,
             # then process them immediately after the current task finishes.
             if event.message_type == MessageType.PHOTO:
-                logger.debug("[%s] Queuing photo follow-up for session %s without interrupt", self.name, session_key)
+                logger.debug(
+                    "[%s] Queuing photo follow-up for session %s without interrupt",
+                    self.name, session_key_for_log(session_key),
+                )
                 merge_pending_message_event(self._pending_messages, session_key, event)
                 return  # Don't interrupt now - will run after current task completes
 
@@ -6226,7 +6319,7 @@ class BasePlatformAdapter(ABC):
                     "[%s] New text message while session %s is active — "
                     "debouncing follow-up (busy_text_mode=queue, window=%.2fs)",
                     self.name,
-                    session_key,
+                    session_key_for_log(session_key),
                     self._busy_text_debounce_seconds,
                 )
                 await self._queue_text_debounce(session_key, event)
@@ -6235,7 +6328,7 @@ class BasePlatformAdapter(ABC):
                     "[%s] New message while session %s is active — queuing follow-up "
                     "(no interrupt, will cascade after current turn)",
                     self.name,
-                    session_key,
+                    session_key_for_log(session_key),
                 )
                 merge_pending_message_event(
                     self._pending_messages,
@@ -6361,11 +6454,15 @@ class BasePlatformAdapter(ABC):
                 logger.info(
                     "[%s] Suppressing stale response for interrupted session %s",
                     self.name,
-                    session_key,
+                    session_key_for_log(session_key),
                 )
                 response = None
             if not response:
-                logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
+                logger.debug(
+                    "[%s] Handler returned empty/None response for %s",
+                    self.name,
+                    log_safe_gateway_identity(self.platform, event.source.chat_id),
+                )
             if response:
                 # Capture [[as_document]] before extract_media strips it, so the
                 # dispatch partition below can route image-extension files
@@ -6441,7 +6538,9 @@ class BasePlatformAdapter(ABC):
                             "[%s] response_delivery_recovered: extract pipeline "
                             "reduced a non-empty response (%d chars) to empty with "
                             "no attachment; delivering recovered original to %s",
-                            self.name, len(_response_pre_extract), event.source.chat_id,
+                            self.name,
+                            len(_response_pre_extract),
+                            log_safe_gateway_identity(self.platform, event.source.chat_id),
                         )
                         text_content = _recovered
 
@@ -6501,7 +6600,11 @@ class BasePlatformAdapter(ABC):
                                 ]
                                 _tts_path = _tts_paths[0] if _tts_paths else None
                     except Exception as tts_err:
-                        logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
+                        logger.warning(
+                            "[%s] Auto-TTS failed (error_type=%s)",
+                            self.name,
+                            type(tts_err).__name__,
+                        )
 
                 # Play TTS audio before text (voice-first experience)
                 _tts_caption_delivered = False
@@ -6559,7 +6662,7 @@ class BasePlatformAdapter(ABC):
                         "[%s] Sending response (%d chars) to %s",
                         delivery_adapter.name,
                         len(text_content),
-                        event.source.chat_id,
+                        log_safe_gateway_identity(self.platform, event.source.chat_id),
                     )
                     _reply_anchor = _reply_anchor_for_event(event)
                     # Delivery-obligation ledger: durably record the final
@@ -6601,8 +6704,11 @@ class BasePlatformAdapter(ABC):
                                     content=text_content,
                                 )
                                 await asyncio.to_thread(mark_attempting, _obligation_id)
-                        except Exception:
-                            logger.debug("delivery ledger record failed", exc_info=True)
+                        except Exception as exc:
+                            logger.debug(
+                                "delivery ledger record failed (error_type=%s)",
+                                type(exc).__name__,
+                            )
                             _obligation_id = None
                     result = await delivery_adapter._send_with_retry(
                         chat_id=event.source.chat_id,
@@ -6659,7 +6765,11 @@ class BasePlatformAdapter(ABC):
                             human_delay=human_delay,
                         )
                     except Exception as batch_err:
-                        logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+                        logger.warning(
+                            "[%s] Error batching images (error_type=%s)",
+                            self.name,
+                            type(batch_err).__name__,
+                        )
 
 
                 # Send extracted media files — route by file type
@@ -6701,7 +6811,11 @@ class BasePlatformAdapter(ABC):
                             human_delay=human_delay,
                         )
                     except Exception as batch_err:
-                        logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
+                        logger.warning(
+                            "[%s] Error batching images (error_type=%s)",
+                            self.name,
+                            type(batch_err).__name__,
+                        )
 
                 if _non_image_media:
                     logger.info(
@@ -6725,7 +6839,7 @@ class BasePlatformAdapter(ABC):
                                 "[%s] Sending video attachment (%s) to %s",
                                 self.name,
                                 ext,
-                                event.source.chat_id,
+                                log_safe_gateway_identity(self.platform, event.source.chat_id),
                             )
                             media_result = await self.send_video(
                                 chat_id=event.source.chat_id,
@@ -6740,7 +6854,13 @@ class BasePlatformAdapter(ABC):
                             )
 
                         if not media_result.success:
-                            logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
+                            logger.warning(
+                                "[%s] Failed to send media (%s) "
+                                "(error_detail=%s)",
+                                self.name,
+                                ext,
+                                _log_send_error(self.platform, media_result.error),
+                            )
                             await self._notify_media_delivery_failure(
                                 event.source.chat_id,
                                 media_path,
@@ -6748,7 +6868,11 @@ class BasePlatformAdapter(ABC):
                                 metadata=_final_thread_metadata,
                             )
                     except Exception as media_err:
-                        logger.warning("[%s] Error sending media: %s", self.name, media_err)
+                        logger.warning(
+                            "[%s] Error sending media (error_type=%s)",
+                            self.name,
+                            type(media_err).__name__,
+                        )
 
                 # Send auto-detected local non-image files as native attachments
                 for file_path in _non_image_local:
@@ -6770,10 +6894,11 @@ class BasePlatformAdapter(ABC):
                             )
                         if not file_result.success:
                             logger.warning(
-                                "[%s] Failed to send local file (%s): %s",
+                                "[%s] Failed to send local file (%s) "
+                                "(error_detail=%s)",
                                 self.name,
                                 ext,
-                                file_result.error,
+                                _log_send_error(self.platform, file_result.error),
                             )
                             await self._notify_media_delivery_failure(
                                 event.source.chat_id,
@@ -6781,7 +6906,12 @@ class BasePlatformAdapter(ABC):
                                 metadata=_final_thread_metadata,
                             )
                     except Exception as file_err:
-                        logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
+                        logger.error(
+                            "[%s] Error sending local file %s (error_type=%s)",
+                            self.name,
+                            _log_media_path(self.platform, file_path),
+                            type(file_err).__name__,
+                        )
 
                 # A3 (#29346): if a non-empty response produced nothing
                 # deliverable, fail loudly rather than dropping it in silence.
@@ -6794,7 +6924,9 @@ class BasePlatformAdapter(ABC):
                         "[%s] response_delivery_dropped: non-empty response "
                         "(%d chars) produced no delivered message or attachment "
                         "for %s (empty after extract, recovery yielded nothing).",
-                        self.name, len(_response_pre_extract), event.source.chat_id,
+                        self.name,
+                        len(_response_pre_extract),
+                        log_safe_gateway_identity(self.platform, event.source.chat_id),
                     )
 
             # Determine overall success for the processing hook
@@ -6867,7 +6999,11 @@ class BasePlatformAdapter(ABC):
             raise
         except BaseException as e:
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
-            logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
+            logger.error(
+                "[%s] Error handling message (error_type=%s)",
+                self.name,
+                type(e).__name__,
+            )
             # Send the error to the user so they aren't left with radio silence
             try:
                 error_type = type(e).__name__
@@ -6884,8 +7020,10 @@ class BasePlatformAdapter(ABC):
                 )
             except Exception as notify_err:
                 logger.error(
-                    "[%s] Failed to send error notification to user: %s",
-                    self.name, notify_err, exc_info=True,
+                    "[%s] Failed to send error notification to user "
+                    "(error_type=%s)",
+                    self.name,
+                    type(notify_err).__name__,
                 )  # Last resort — don't let error reporting crash the handler
             # Preserve shutdown semantics: SystemExit/KeyboardInterrupt must
             # still propagate after the user-facing failure notification, so
@@ -7163,10 +7301,13 @@ class BasePlatformAdapter(ABC):
                 )
             except ProfileRouteRejected:
                 profile_route_rejected = True
-            except Exception:
+            except Exception as exc:
                 logger.warning(
-                    "Profile resolution failed for %s/%s, defaulting to active profile",
-                    self.platform, chat_id, exc_info=True,
+                    "Profile resolution failed for %s/%s (error_type=%s), "
+                    "defaulting to active profile",
+                    self.platform,
+                    log_safe_gateway_identity(self.platform, chat_id),
+                    type(exc).__name__,
                 )
 
         source = SessionSource(

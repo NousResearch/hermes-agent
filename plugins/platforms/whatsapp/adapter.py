@@ -33,6 +33,7 @@ from hermes_constants import (
     get_hermes_dir,
     with_hermes_node_path,
 )
+from gateway.session import log_safe_gateway_identity
 
 def _wenv(name: str, default: str = "") -> str:
     """Read a WHATSAPP_* env var through the profile secret scope.
@@ -339,6 +340,17 @@ def _is_allowed_bridge_path(url: str) -> bool:
     return False
 
 
+def _log_safe_media_path(path: object) -> str:
+    """Return media-path metadata without exposing bridge filenames."""
+    text = str(path or "")
+    if not text:
+        return "absent"
+    # The bridge preserves attacker-controlled document suffixes.  Even an
+    # apparently harmless extension can therefore carry private text; keep
+    # the diagnostic at presence-only rather than echoing any path component.
+    return "present"
+
+
 def _file_content_hash(path: Path) -> str:
     """Return the first 16 hex chars of the SHA-256 of *path*'s contents.
 
@@ -562,7 +574,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 return False
             lock_acquired = True
         except Exception as e:
-            logger.warning("[%s] Could not acquire session lock (non-fatal): %s", self.name, e)
+            logger.warning(
+                "[%s] Could not acquire session lock (non-fatal; error_type=%s)",
+                self.name,
+                type(e).__name__,
+            )
 
         try:
             # Auto-install npm dependencies when node_modules is missing OR
@@ -613,10 +629,15 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         except OSError:
                             pass  # Stamp is an optimization; install still succeeded
                 except Exception as e:
-                    print(f"[{self.name}] Failed to install dependencies: {e}")
+                    print(
+                        f"[{self.name}] Failed to install dependencies "
+                        f"(error_type={type(e).__name__})"
+                    )
                     self._set_fatal_error(
                         "whatsapp_npm_install_failed",
-                        f"WhatsApp bridge npm install failed ({e}). Run `cd {bridge_dir} && {_npm_bin} install` manually, then restart `hermes gateway`.",
+                        "WhatsApp bridge npm install failed. "
+                        "Run the bridge dependency install manually, then "
+                        "restart `hermes gateway`.",
                         retryable=False,
                     )
                     return False
@@ -823,7 +844,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             return True
             
         except Exception as e:
-            logger.error("[%s] Failed to start bridge: %s", self.name, e, exc_info=True)
+            logger.error(
+                "[%s] Failed to start bridge (error_type=%s)",
+                self.name,
+                type(e).__name__,
+            )
             return False
         finally:
             if not self._running:
@@ -891,7 +916,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     except (ProcessLookupError, PermissionError):
                         self._bridge_process.kill()
             except Exception as e:
-                print(f"[{self.name}] Error stopping bridge: {e}")
+                print(
+                    f"[{self.name}] Error stopping bridge "
+                    f"(error_type={type(e).__name__})"
+                )
         else:
             # Bridge was not started by us, don't kill it
             print(f"[{self.name}] Disconnecting (external bridge left running)")
@@ -1147,9 +1175,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             if result.success:
                 return result
             logger.warning(
-                "[%s] Native WhatsApp clarify poll failed; falling back to text: %s",
+                "[%s] Native WhatsApp clarify poll failed; falling back to text "
+                "(error_detail_present=%s)",
                 self.name,
-                result.error,
+                bool(result.error),
             )
         return await super().send_clarify(
             chat_id=chat_id,
@@ -1319,7 +1348,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         "participants": data.get("participants", []),
                     }
         except Exception as e:
-            logger.debug("Could not get WhatsApp chat info for %s: %s", chat_id, e)
+            logger.debug(
+                "Could not get WhatsApp chat info for %s: %s",
+                log_safe_gateway_identity("whatsapp", chat_id), type(e).__name__,
+            )
         
         return {"name": chat_id, "type": "dm"}
     
@@ -1359,7 +1391,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if bridge_exit:
                     print(f"[{self.name}] {bridge_exit}")
                     break
-                print(f"[{self.name}] Poll error: {e}")
+                print(
+                    f"[{self.name}] Poll error (error_type={type(e).__name__})"
+                )
                 await asyncio.sleep(5)
             
             await asyncio.sleep(1)  # Poll interval
@@ -1386,7 +1420,11 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         resp.status,
                     )
         except Exception as exc:
-            logger.warning("[%s] WhatsApp read receipt failed: %s", self.name, exc)
+            logger.warning(
+                "[%s] WhatsApp read receipt failed (error_type=%s)",
+                self.name,
+                type(exc).__name__,
+            )
 
     # ── Text debounce batching ──────────────────────────────────────
 
@@ -1499,9 +1537,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         cached_path = await cache_image_from_url(url, ext=".jpg")
                         cached_urls.append(cached_path)
                         media_types.append(bridge_mime or "image/jpeg")
-                        print(f"[{self.name}] Cached user image: {cached_path}", flush=True)
+                        print(
+                            f"[{self.name}] Cached user image "
+                            f"({_log_safe_media_path(cached_path)})",
+                            flush=True,
+                        )
                     except Exception as e:
-                        print(f"[{self.name}] Failed to cache image: {e}", flush=True)
+                        print(
+                            f"[{self.name}] Failed to cache image "
+                            f"(error_type={type(e).__name__})",
+                            flush=True,
+                        )
                         cached_urls.append(url)
                         media_types.append(bridge_mime or "image/jpeg")
                 elif msg_type == MessageType.PHOTO and os.path.isabs(url):
@@ -1509,17 +1555,33 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     if _is_allowed_bridge_path(url):
                         cached_urls.append(url)
                         media_types.append(bridge_mime or "image/jpeg")
-                        print(f"[{self.name}] Using bridge-cached image: {url}", flush=True)
+                        print(
+                            f"[{self.name}] Using bridge-cached image "
+                            f"({_log_safe_media_path(url)})",
+                            flush=True,
+                        )
                     else:
-                        print(f"[{self.name}] Rejected bridge image path outside cache dir: {url}", flush=True)
+                        print(
+                            f"[{self.name}] Rejected bridge image path "
+                            "outside cache dir",
+                            flush=True,
+                        )
                 elif msg_type in {MessageType.VOICE, MessageType.AUDIO} and url.startswith(("http://", "https://")):
                     try:
                         cached_path = await cache_audio_from_url(url, ext=".ogg")
                         cached_urls.append(cached_path)
                         media_types.append(bridge_mime or ("audio/ogg" if msg_type == MessageType.VOICE else "audio/mpeg"))
-                        print(f"[{self.name}] Cached user audio: {cached_path}", flush=True)
+                        print(
+                            f"[{self.name}] Cached user audio "
+                            f"({_log_safe_media_path(cached_path)})",
+                            flush=True,
+                        )
                     except Exception as e:
-                        print(f"[{self.name}] Failed to cache audio: {e}", flush=True)
+                        print(
+                            f"[{self.name}] Failed to cache audio "
+                            f"(error_type={type(e).__name__})",
+                            flush=True,
+                        )
                         cached_urls.append(url)
                         media_types.append(bridge_mime or ("audio/ogg" if msg_type == MessageType.VOICE else "audio/mpeg"))
                 elif msg_type in {MessageType.VOICE, MessageType.AUDIO} and os.path.isabs(url):
@@ -1527,9 +1589,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                     if _is_allowed_bridge_path(url):
                         cached_urls.append(url)
                         media_types.append(bridge_mime or ("audio/ogg" if msg_type == MessageType.VOICE else "audio/mpeg"))
-                        print(f"[{self.name}] Using bridge-cached audio: {url}", flush=True)
+                        print(
+                            f"[{self.name}] Using bridge-cached audio "
+                            f"({_log_safe_media_path(url)})",
+                            flush=True,
+                        )
                     else:
-                        print(f"[{self.name}] Rejected bridge audio path outside cache dir: {url}", flush=True)
+                        print(
+                            f"[{self.name}] Rejected bridge audio path "
+                            "outside cache dir",
+                            flush=True,
+                        )
                 elif msg_type == MessageType.DOCUMENT and os.path.isabs(url):
                     # Local file path — bridge already downloaded the document
                     if _is_allowed_bridge_path(url):
@@ -1537,16 +1607,32 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         ext = Path(url).suffix.lower()
                         mime = bridge_mime or SUPPORTED_DOCUMENT_TYPES.get(ext, "application/octet-stream")
                         media_types.append(mime)
-                        print(f"[{self.name}] Using bridge-cached document: {url}", flush=True)
+                        print(
+                            f"[{self.name}] Using bridge-cached document "
+                            f"({_log_safe_media_path(url)})",
+                            flush=True,
+                        )
                     else:
-                        print(f"[{self.name}] Rejected bridge document path outside cache dir: {url}", flush=True)
+                        print(
+                            f"[{self.name}] Rejected bridge document path "
+                            "outside cache dir",
+                            flush=True,
+                        )
                 elif msg_type == MessageType.VIDEO and os.path.isabs(url):
                     if _is_allowed_bridge_path(url):
                         cached_urls.append(url)
                         media_types.append(bridge_mime or "video/mp4")
-                        print(f"[{self.name}] Using bridge-cached video: {url}", flush=True)
+                        print(
+                            f"[{self.name}] Using bridge-cached video "
+                            f"({_log_safe_media_path(url)})",
+                            flush=True,
+                        )
                     else:
-                        print(f"[{self.name}] Rejected bridge video path outside cache dir: {url}", flush=True)
+                        print(
+                            f"[{self.name}] Rejected bridge video path "
+                            "outside cache dir",
+                            flush=True,
+                        )
                 else:
                     cached_urls.append(url)
                     media_types.append("unknown")
@@ -1592,7 +1678,12 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         try:
                             file_size = Path(doc_path).stat().st_size
                             if file_size > MAX_TEXT_INJECT_BYTES:
-                                print(f"[{self.name}] Skipping text injection for {doc_path} ({file_size} bytes > {MAX_TEXT_INJECT_BYTES})", flush=True)
+                                print(
+                                    f"[{self.name}] Skipping text injection "
+                                    f"(extension={ext}, bytes={file_size}, "
+                                    f"cap={MAX_TEXT_INJECT_BYTES})",
+                                    flush=True,
+                                )
                                 continue
                             content = Path(doc_path).read_text(encoding="utf-8", errors="replace")
                             fname = Path(doc_path).name
@@ -1607,9 +1698,17 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                                 body = f"{injection}\n\n{body}"
                             else:
                                 body = injection
-                            print(f"[{self.name}] Injected text content from: {doc_path}", flush=True)
+                            print(
+                                f"[{self.name}] Injected text content "
+                                f"(extension={ext}, bytes={file_size})",
+                                flush=True,
+                            )
                         except Exception as e:
-                            print(f"[{self.name}] Failed to read document text: {e}", flush=True)
+                            print(
+                                f"[{self.name}] Failed to read document text "
+                                f"(error_type={type(e).__name__})",
+                                flush=True,
+                            )
 
             metadata: Dict[str, Any] = {}
             native_type = str(data.get("nativeType") or "").strip()
@@ -1648,7 +1747,10 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 reply_to_is_own_message=reply_to_is_own_message,
             )
         except Exception as e:
-            print(f"[{self.name}] Error building event: {e}")
+            print(
+                f"[{self.name}] Error building event "
+                f"(error_type={type(e).__name__})"
+            )
             return None
 
 

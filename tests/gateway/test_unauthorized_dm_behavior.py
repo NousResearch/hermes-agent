@@ -265,6 +265,40 @@ async def test_unauthorized_whatsapp_dm_can_be_ignored(monkeypatch):
     adapter.send.assert_not_awaited()
 
 
+@pytest.mark.parametrize("platform", [Platform.WHATSAPP, Platform.WHATSAPP_CLOUD])
+@pytest.mark.asyncio
+async def test_unauthorized_whatsapp_log_masks_bare_phone_identity(
+    monkeypatch, caplog, platform
+):
+    _clear_auth_env(monkeypatch)
+    wa_id = "15551234567"
+    config = GatewayConfig(
+        platforms={
+            platform: PlatformConfig(
+                enabled=True,
+                extra={"unauthorized_dm_behavior": "ignore"},
+            ),
+        },
+    )
+    runner, adapter = _make_runner(platform, config)
+
+    with caplog.at_level("WARNING", logger="gateway.run"):
+        result = await runner._handle_message(
+            _make_event(platform, wa_id, wa_id)
+        )
+
+    records = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "gateway.run" and "Unauthorized user:" in record.getMessage()
+    ]
+    assert result is None
+    assert len(records) == 1
+    assert wa_id not in records[0]
+    assert "15****67" in records[0]
+    adapter.send.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # Allowlist-configured platforms default to "ignore" for unauthorized users
 # (#9337: Signal gateway sends pairing spam when allowlist is configured)

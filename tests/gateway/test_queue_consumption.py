@@ -6,6 +6,7 @@ after the agent finishes its current task — not silently dropped.
 """
 
 import asyncio
+import logging
 from unittest.mock import MagicMock
 
 
@@ -219,4 +220,65 @@ class TestBusyInputModeQueueFifo:
         ]
         assert runner._queue_depth(session_key, adapter=adapter) == len(texts)
 
+    def test_whatsapp_queue_cap_log_masks_session_key(self, caplog):
+        """Queue-pressure diagnostics must not expose a WhatsApp wa_id."""
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        wa_id = "15551234567"
+        session_key = f"agent:main:whatsapp_cloud:dm:{wa_id}"
+        adapter = _StubAdapter()
+        source = MagicMock(
+            chat_id=wa_id,
+            platform=Platform.WHATSAPP_CLOUD,
+            profile=None,
+        )
+        event = MessageEvent(
+            text="overflow",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="m-overflow",
+        )
+        adapter._pending_messages[session_key] = event
+        runner.adapters = {Platform.WHATSAPP_CLOUD: adapter}
+        runner._queued_events = {
+            session_key: [event] * (runner._BUSY_QUEUE_MAX_PENDING - 1)
+        }
+
+        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            runner._queue_or_replace_pending_event(session_key, event)
+
+        record = caplog.records[-1].message
+        assert wa_id not in record
+        assert session_key not in record
+        assert "agent:main:whatsapp_cloud:dm:15****67" in record
+
+    def test_non_whatsapp_queue_cap_log_keeps_session_key(self, caplog):
+        """Queue-cap masking remains scoped to WhatsApp session keys."""
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        session_key = "agent:main:discord:dm:123456789012345"
+        adapter = _StubAdapter()
+        source = MagicMock(
+            chat_id="123456789012345",
+            platform=Platform.DISCORD,
+            profile=None,
+        )
+        event = MessageEvent(
+            text="overflow",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="m-overflow",
+        )
+        adapter._pending_messages[session_key] = event
+        runner.adapters = {Platform.DISCORD: adapter}
+        runner._queued_events = {
+            session_key: [event] * (runner._BUSY_QUEUE_MAX_PENDING - 1)
+        }
+
+        with caplog.at_level(logging.WARNING, logger="gateway.run"):
+            runner._queue_or_replace_pending_event(session_key, event)
+
+        assert session_key in caplog.records[-1].message
 

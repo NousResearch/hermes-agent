@@ -3,6 +3,7 @@
 import asyncio
 import importlib.util
 import json
+import logging
 import os
 import queue
 import sys
@@ -632,6 +633,30 @@ class TestVoiceChannelCommands:
         assert event.source.chat_type == "channel"
 
     @pytest.mark.asyncio
+    async def test_duplicate_input_log_omits_transcript(self, runner, caplog):
+        from gateway.config import Platform
+
+        transcript = "private voice transcript about health"
+        mock_adapter = AsyncMock()
+        mock_adapter._voice_text_channels = {111: 123}
+        mock_adapter._voice_sources = {}
+        runner.adapters[Platform.DISCORD] = mock_adapter
+        runner._is_duplicate_voice_transcript = MagicMock(return_value=True)
+
+        with caplog.at_level(logging.INFO, logger="gateway.run"):
+            await runner._handle_voice_channel_input(111, 42, transcript)
+
+        records = [
+            record.message
+            for record in caplog.records
+            if "Suppressing duplicate voice transcript" in record.message
+        ]
+        assert len(records) == 1
+        assert transcript not in records[0]
+        assert f"transcript_len={len(transcript)}" in records[0]
+        mock_adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_input_resolves_channel_prompt(self, runner):
         """Voice input must carry the bound text channel's channel_prompt (#50149)."""
         from gateway.config import Platform
@@ -902,22 +927,32 @@ class TestDiscordVoiceChannelMethods:
 
 
     @pytest.mark.asyncio
-    async def test_process_voice_input_success(self):
+    async def test_process_voice_input_success(self, caplog):
         """Successful voice input: PCM->WAV->STT->callback."""
         adapter = self._make_adapter()
         callback = AsyncMock()
         adapter._voice_input_callback = callback
         adapter._allowed_user_ids = set()
+        transcript = "private voice transcript about health"
 
         pcm_data = b"\x00" * 96000
 
         with patch("plugins.platforms.discord.adapter.VoiceReceiver.pcm_to_wav"), \
              patch("tools.transcription_tools.transcribe_audio",
-                   return_value={"success": True, "transcript": "Hello"}), \
-             patch("tools.voice_mode.is_whisper_hallucination", return_value=False):
+                   return_value={"success": True, "transcript": transcript}), \
+             patch("tools.voice_mode.is_whisper_hallucination", return_value=False), \
+             caplog.at_level(logging.INFO, logger="plugins.platforms.discord.adapter"):
             await adapter._process_voice_input(111, 42, pcm_data)
 
-        callback.assert_called_once_with(guild_id=111, user_id=42, transcript="Hello")
+        callback.assert_called_once_with(guild_id=111, user_id=42, transcript=transcript)
+        records = [
+            record.message
+            for record in caplog.records
+            if "Voice input accepted" in record.message
+        ]
+        assert len(records) == 1
+        assert transcript not in records[0]
+        assert f"transcript_len={len(transcript)}" in records[0]
 
 
         # Should not raise

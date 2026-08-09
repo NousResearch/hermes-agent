@@ -212,13 +212,30 @@ def select_watched_runs(
     return list(newest.values())
 
 
+def runs_all_completed(runs: list[dict]) -> bool:
+    """True only when every run in the list reports ``status: completed``.
+
+    The job list alone cannot answer "is CI done": a run that GitHub just
+    created has no jobs yet, and a mid-run poll can catch the moment where
+    every visible job finished but a downstream sub-workflow has not
+    spawned its jobs. Both look identical to "all done" at the job level.
+    The run's own ``status`` is the authoritative signal, so the poller
+    must not exit while any relevant run is still ``queued`` or
+    ``in_progress``. An empty list is not done — it means the poller has
+    no run information at all.
+    """
+    return bool(runs) and all(str(r.get("status", "")) == "completed" for r in runs)
+
+
 def collect_run_jobs(
     token: str, repo: str, run_id: str, watch_workflows: list[str] | None = None,
-) -> list[dict]:
+) -> tuple[list[dict], bool]:
     """Collect all jobs in the CI run + any watched sibling runs.
 
-    Returns a flat list of job dicts (same shape as the API returns, plus
-    ``_workflow_name`` on jobs from a watched run).
+    Returns ``(jobs, runs_completed)``: a flat list of job dicts (same
+    shape as the API returns, plus ``_workflow_name`` on jobs from a
+    watched run), and whether the CI run and every selected watched run
+    report ``status: completed`` (see :func:`runs_all_completed`).
 
     Reusable-workflow (``workflow_call``) jobs need no special handling:
     GitHub flattens them into the caller run's job list, already named
@@ -247,7 +264,7 @@ def collect_run_jobs(
         all_jobs.append(job)
 
     if not watch_workflows or not head_sha:
-        return all_jobs
+        return all_jobs, runs_all_completed([run_info])
 
     # Watched sibling runs for the same commit. A run can be absent on the
     # first polls. Then classify_jobs() shows nothing for it.
@@ -255,7 +272,9 @@ def collect_run_jobs(
         f"{API_BASE}/repos/{owner}/{repo_name}/actions/runs?head_sha={head_sha}&per_page=100",
         token, list_key="workflow_runs",
     )
+    relevant_runs = [run_info]
     for watched in select_watched_runs(sibling_runs, watch_workflows, exclude_run_id=run_id):
+        relevant_runs.append(watched)
         watched_jobs = _api_get_paginated(
             f"{API_BASE}/repos/{owner}/{repo_name}/actions/runs/{watched['id']}/jobs",
             token, list_key="jobs",
@@ -264,7 +283,7 @@ def collect_run_jobs(
             job["_workflow_name"] = watched.get("name", "")
             all_jobs.append(job)
 
-    return all_jobs
+    return all_jobs, runs_all_completed(relevant_runs)
 
 
 def find_comment_id(token: str, repo: str, pr_number: str) -> int | None:
@@ -490,6 +509,7 @@ def build_comment_body(
     job_urls: dict[str, str],
     review_statuses_json: str,
     commit_info: str = "",
+    waiting: bool = False,
 ) -> str:
     """Assemble the comment body from current job states + static inputs."""
     needs_json = json.dumps(completed) if completed else ""
@@ -501,10 +521,11 @@ def build_comment_body(
         review_statuses_json=review_statuses_json,
         pending_jobs=pending if pending else None,
         commit_info=commit_info,
+        waiting=waiting,
     )
 
 
-def _commit_info_for_state(commit_info: str, pending: list[str]) -> str:
+def _commit_info_for_state(commit_info: str, pending: bool) -> str:
     """Use past tense in the final comment after every CI job completes."""
     if pending:
         return commit_info
@@ -549,7 +570,7 @@ def run(
             break
 
         try:
-            jobs = collect_run_jobs(token, repo, run_id, watch_workflows)
+            jobs, runs_completed = collect_run_jobs(token, repo, run_id, watch_workflows)
         except Exception as e:
             print(f"  API error collecting jobs: {e}", file=sys.stderr)
             time.sleep(interval)
@@ -583,12 +604,17 @@ def run(
         prev_artifact_count = len(artifact_statuses)
 
         merged_json = json.dumps(artifact_statuses) if artifact_statuses else ""
-        current_commit_info = _commit_info_for_state(commit_info, pending)
+        # The run status is authoritative for "done": an empty job list on
+        # a run that is still queued/in_progress means GitHub has not
+        # spawned the jobs yet, not that everything passed.
+        all_done = not pending and runs_completed
+        current_commit_info = _commit_info_for_state(commit_info, pending=not all_done)
 
         body = build_comment_body(
             asm, completed, pending, run_url, job_urls,
             merged_json,
             current_commit_info,
+            waiting=not runs_completed,
         )
 
         if body != last_body:
@@ -626,19 +652,24 @@ def run(
         prev_completed = completed
         prev_pending = pending
 
-        if not pending and not quiet_grace_used:
+        if all_done and not quiet_grace_used:
             quiet_grace_used = True
-            print("  No visible jobs pending — waiting 10s for downstream jobs to appear.")
+            print("  No jobs pending and runs report completed — "
+                  "waiting 10s for downstream jobs to appear.")
             time.sleep(10)
             continue
 
-        if not pending:
+        if all_done:
             failed = [name for name, result in completed.items() if result == "failure"]
             if failed:
                 print(f"  All jobs done, {len(failed)} failed: {', '.join(failed)}")
             else:
                 print("  All jobs completed — done.")
             break
+
+        if not pending:
+            print("  No visible jobs pending, but a run is still queued or "
+                  "in progress — waiting for its jobs to appear.")
 
         quiet_grace_used = False
         time.sleep(interval)

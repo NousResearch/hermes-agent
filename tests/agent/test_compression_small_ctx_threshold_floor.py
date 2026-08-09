@@ -20,9 +20,14 @@ from agent.context_compressor import ContextCompressor
 
 def _make(ctx: int, pct: float = 0.50) -> ContextCompressor:
     with patch.object(cc, "get_model_context_length", return_value=ctx):
-        return ContextCompressor(
+        compressor = ContextCompressor(
             model="test/model", threshold_percent=pct, quiet_mode=True,
         )
+        # Context resolution is intentionally lazy. Resolve while the model
+        # metadata probe is still patched so assertions below inspect the
+        # derived small-window floor rather than unresolved constructor state.
+        _ = compressor.context_length
+        return compressor
 
 
 class TestSmallContextThresholdFloor:

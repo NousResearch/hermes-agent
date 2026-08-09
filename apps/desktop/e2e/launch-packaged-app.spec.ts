@@ -71,17 +71,45 @@ test('HUD composer remains fully inside the transparent window', async () => {
 
     return {
       viewportWidth: window.innerWidth,
+      viewportHeight: window.innerHeight,
       dockLeft: dockRect.left,
       dockRight: dockRect.right,
+      dockTop: dockRect.top,
+      dockBottom: dockRect.bottom,
       inputLeft: inputRect.left,
       inputRight: inputRect.right,
+      inputTop: inputRect.top,
+      inputBottom: inputRect.bottom,
+      // The bug class this guards: a build-time CSS optimization folding the
+      // dock's identity `translate` override into `transform`, leaving
+      // Tailwind's standalone `translate: -50%` live and shifting the dock
+      // half a window off-screen. Surface the computed value so a failure
+      // says WHY the dock moved, not just that it did.
+      dockTranslate: getComputedStyle(dock).translate,
     }
   })
 
+  // Horizontal containment — the composer shifted half a window left when the
+  // standalone `translate: -50%` survived optimization (#82214, #82233).
   expect(geometry.dockLeft).toBeGreaterThanOrEqual(0)
   expect(geometry.inputLeft).toBeGreaterThanOrEqual(0)
   expect(geometry.dockRight).toBeLessThanOrEqual(geometry.viewportWidth)
   expect(geometry.inputRight).toBeLessThanOrEqual(geometry.viewportWidth)
+
+  // Vertical containment — the toolbar/transcript clipping reported on
+  // Windows (#82203) and macOS (#82214) is the same "composer escapes the
+  // window" class on the other axis.
+  expect(geometry.dockTop).toBeGreaterThanOrEqual(0)
+  expect(geometry.inputTop).toBeGreaterThanOrEqual(0)
+  expect(geometry.dockBottom).toBeLessThanOrEqual(geometry.viewportHeight)
+  expect(geometry.inputBottom).toBeLessThanOrEqual(geometry.viewportHeight)
+
+  // The dock's centering translate must be fully neutralized. Any live
+  // percentage translate means the HUD override lost to the app's centering.
+  // (Computed `translate` keeps percentages as-is, so this is assertable;
+  // computed `transform` resolves to a matrix and is covered by the
+  // geometric containment checks above.)
+  expect(geometry.dockTranslate ?? 'none').not.toContain('%')
 
   await hudPage.close()
 })

@@ -10944,6 +10944,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     self.adapters[platform] = adapter
                     self._sync_voice_mode_state_to_adapter(adapter)
                     self._wire_auto_join_voice_callbacks(adapter)
+                    # Wire voice input callback on cold start so Discord voice
+                    # transcription is forwarded without requiring /voice join
+                    # (#60623). _wire_auto_join_voice_callbacks only covers the
+                    # auto-join user path; the general callback must be wired
+                    # regardless.
+                    if hasattr(adapter, "_voice_input_callback"):
+                        adapter._voice_input_callback = self._handle_voice_channel_input
                     connected_count += 1
                     self._update_platform_runtime_status(
                         platform.value,

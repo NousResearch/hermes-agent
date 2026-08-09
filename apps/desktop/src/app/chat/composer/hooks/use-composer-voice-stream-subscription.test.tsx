@@ -1,29 +1,9 @@
 import { act, renderHook } from '@testing-library/react'
 import { beforeEach, expect, test, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => {
-  let value: unknown[] = []
-  const listeners = new Set<(next: unknown[], old: unknown[]) => void>()
-
-  const messages = {
-    get: () => value,
-    listen: (listener: (next: unknown[], old: unknown[]) => void) => {
-      listeners.add(listener)
-
-      return () => listeners.delete(listener)
-    },
-    set: (next: unknown[]) => {
-      const old = value
-      value = next
-      listeners.forEach(listener => listener(next, old))
-    },
-    subscribe: (listener: (next: unknown[], old: unknown[]) => void) => {
-      listeners.add(listener)
-      listener(value, value)
-
-      return () => listeners.delete(listener)
-    }
-  }
+const mocks = await vi.hoisted(async () => {
+  const { atom } = await import('nanostores')
+  const messages = atom<unknown[]>([])
 
   const useVoiceConversation = vi.fn(() => ({
     end: vi.fn(async () => undefined),
@@ -75,7 +55,7 @@ beforeEach(() => {
   mocks.useVoiceConversation.mockClear()
 })
 
-test('re-renders the voice loop when an in-progress assistant delta lands', () => {
+test('re-renders once when an in-progress assistant reply first becomes speakable', () => {
   renderHook(() =>
     useComposerVoice({
       busy: true,
@@ -104,5 +84,19 @@ test('re-renders the voice loop when an in-progress assistant delta lands', () =
     ])
   })
 
-  expect(mocks.useVoiceConversation.mock.calls.length).toBeGreaterThan(callsBeforeDelta)
+  const callsAfterFirstDelta = mocks.useVoiceConversation.mock.calls.length
+  expect(callsAfterFirstDelta).toBeGreaterThan(callsBeforeDelta)
+
+  act(() => {
+    mocks.messages.set([
+      {
+        id: 'assistant-stream',
+        pending: true,
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'Natural selection is the differential survival.' }]
+      }
+    ])
+  })
+
+  expect(mocks.useVoiceConversation).toHaveBeenCalledTimes(callsAfterFirstDelta)
 })

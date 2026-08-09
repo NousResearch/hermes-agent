@@ -143,7 +143,7 @@ class TestAutoTitleSession:
                 db,
                 "sess-1",
                 "hi",
-                title_callback=seen.append,
+                title_callback=lambda title, source: seen.append(title),
             )
 
         assert db.get_session_title("sess-1") == "Manual Title"
@@ -159,12 +159,14 @@ class TestAutoTitleSession:
                 db,
                 "sess-1",
                 "hello",
-                title_callback=seen.append,
+                title_callback=lambda title, source: seen.append((title, source)),
             )
         db.set_auto_title.assert_called_once_with(
             "sess-1", "Readable Session", source="llm"
         )
-        assert seen == ["Readable Session"]
+        # The stage reaches the consumer, so one that spends a rate-limited
+        # remote call per title can take this and skip the derived one.
+        assert seen == [("Readable Session", "llm")]
 
     def test_upgrades_a_derived_title_but_not_an_llm_one(self, tmp_path):
         """The instant title is provisional; a model title is final.
@@ -276,6 +278,56 @@ class TestMaybeAutoTitle:
         assert db.get_session_title("sess-1") is None
         mock_auto.assert_not_called()
 
+    def test_titles_on_a_later_turn_when_the_opener_was_not_titleable(self, tmp_path):
+        """A session whose opener couldn't be titled gets named by a later turn.
+
+        The opener here is a compaction handoff, so turn one leaves the session
+        nameless. Nothing used to reconsider it: the guard that stops re-titling
+        a named session also stopped the nameless one from ever asking again.
+        """
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        history = [
+            {"role": "user", "content": "[CONTEXT COMPACTION — REFERENCE ONLY] x"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "thanks"},
+            {"role": "assistant", "content": "sure"},
+        ]
+        with patch("agent.title_generator.auto_title_session"):
+            maybe_auto_title(db, "sess-1", "fix the flaky auth test", history)
+        assert db.get_session_title("sess-1") == "fix the flaky auth test"
+
+    def test_leaves_an_already_titled_session_alone_on_later_turns(self, tmp_path):
+        """The retry is for nameless sessions only; a named one asks nothing."""
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
+        db.set_session_title("sess-1", "Existing name")
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "user", "content": "thanks"},
+            {"role": "assistant", "content": "sure"},
+        ]
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-1", "and now something else", history)
+        assert db.get_session_title("sess-1") == "Existing name"
+        mock_auto.assert_not_called()
+
+    def test_instant_title_declines_a_name_collision(self, tmp_path):
+        """A colliding derived title is skipped, not scanned into 'hi #2'.
+
+        Common openers collide constantly, and the lineage scan that resolves
+        the collision runs inline on the turn. The model's title lands moments
+        later, so the session is named either way.
+        """
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="taken", source="cli")
+        db.set_session_title("taken", "hi")
+        db.create_session(session_id="sess-1", source="cli")
+        with patch("agent.title_generator.auto_title_session"):
+            maybe_auto_title(db, "sess-1", "hi", [])
+        assert db.get_session_title("sess-1") is None
+
 
 
 
@@ -283,6 +335,23 @@ class TestMaybeAutoTitle:
 
 class TestAutoTitleDuplicateHandling:
     """Duplicate auto-title handling and not-found hardening (#50537)."""
+
+    def test_background_stage_names_a_collision_the_instant_stage_declined(
+        self, tmp_path
+    ):
+        """The lineage scan the turn skipped happens here instead.
+
+        The inline stage declines a collision to stay off the critical path, and
+        the model can still come back empty. Between them the session would be
+        left nameless, so the background stage spends the scan the turn wouldn't.
+        """
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="taken", source="cli")
+        db.set_session_title("taken", "hi")
+        db.create_session(session_id="sess-1", source="cli")
+        with patch("agent.title_generator.generate_title", return_value=None):
+            auto_title_session(db, "sess-1", "hi")
+        assert db.get_session_title("sess-1") == "hi #2"
 
     def test_dedupes_duplicate_title_via_lineage(self):
         db = MagicMock()
@@ -295,7 +364,12 @@ class TestAutoTitleDuplicateHandling:
             return_value="Debugging Import Error",
         ):
             seen = []
-            auto_title_session(db, "sess-1", "hi", title_callback=seen.append)
+            auto_title_session(
+                db,
+                "sess-1",
+                "hi",
+                title_callback=lambda title, _source: seen.append(title),
+            )
         db.get_next_title_in_lineage.assert_called_once_with("Debugging Import Error")
         assert db.set_auto_title.call_args_list[-1][0] == (
             "sess-1",

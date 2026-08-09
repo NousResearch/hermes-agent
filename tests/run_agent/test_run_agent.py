@@ -3691,8 +3691,12 @@ class TestRunConversation:
             if m.get("role") == "assistant"
         )
         # Real history around the ghost still reaches the provider.
+        # The two consecutive user messages ("first" + "real follow-up")
+        # may be merged by repair_message_sequence, so check for the
+        # content as a substring rather than exact match.
         assert any(
-            m.get("role") == "user" and m.get("content") == "real follow-up"
+            m.get("role") == "user"
+            and "real follow-up" in str(m.get("content", ""))
             for m in replayed
         )
         assert any(

@@ -98,6 +98,11 @@ from utils import base_url_host_matches, env_var_enabled
 logger = logging.getLogger(__name__)
 
 
+# Scaffold marker used by _apply_active_turn_redirect and the ghost-row filter
+# in the api_messages loop. Module-level so both sites can never drift.
+_INTERRUPT_SCAFFOLD_MARKER = "[This response was interrupted by a user correction.]"
+
+
 def _restore_user_after_reference_handoff(
     messages: List[Dict[str, Any]], user_message: Any
 ) -> bool:
@@ -233,7 +238,7 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
         getattr(agent, "_current_streamed_assistant_text", "") or ""
     ).strip()
 
-    checkpoint_parts = ["[This response was interrupted by a user correction.]"]
+    checkpoint_parts = [_INTERRUPT_SCAFFOLD_MARKER]
     if visible:
         checkpoint_parts.extend(
             ["Visible response before the interruption:", visible]
@@ -1779,6 +1784,30 @@ def run_conversation(
                 agent.session_id or "-",
             )
 
+        # Drop legacy ghost rows from the incomplete #73146 else branch BEFORE
+        # the alternation repair below: a hidden assistant placeholder whose
+        # content/api_content is the raw interrupt scaffold. Replaying that as
+        # an assistant message makes the model echo it and self-replicate
+        # (#81841). Dropping before repair lets repair_message_sequence fix
+        # any user→user adjacency the filter creates.
+        messages = [
+            msg for msg in messages
+            if not (
+                msg.get("display_kind") == "hidden"
+                and msg.get("role") == "assistant"
+                and (
+                    (
+                        isinstance(msg.get("content"), str)
+                        and msg["content"].strip() == _INTERRUPT_SCAFFOLD_MARKER
+                    )
+                    or (
+                        isinstance(msg.get("api_content"), str)
+                        and msg["api_content"].strip() == _INTERRUPT_SCAFFOLD_MARKER
+                    )
+                )
+            )
+        ]
+
         # Defensive: repair malformed role-alternation before API call.
         # Catches cases where the history got wedged into a
         # ``tool → user`` or ``user → user`` tail (e.g. after empty-
@@ -1799,32 +1828,7 @@ def run_conversation(
             )
 
         api_messages = []
-        _interrupt_scaffold = (
-            "[This response was interrupted by a user correction.]"
-        )
         for idx, msg in enumerate(messages):
-            # Legacy ghost rows from the incomplete #73146 else branch: a
-            # hidden assistant placeholder whose content/api_content is the
-            # raw interrupt scaffold. Replaying that as an assistant message
-            # makes the model echo it and self-replicate (#81841). Drop them
-            # so pre-fix session history cannot keep poisoning new turns.
-            _ghost_content = msg.get("content")
-            _ghost_api = msg.get("api_content")
-            if (
-                msg.get("display_kind") == "hidden"
-                and msg.get("role") == "assistant"
-                and (
-                    (
-                        isinstance(_ghost_content, str)
-                        and _ghost_content.strip() == _interrupt_scaffold
-                    )
-                    or (
-                        isinstance(_ghost_api, str)
-                        and _ghost_api.strip() == _interrupt_scaffold
-                    )
-                )
-            ):
-                continue
 
             # Structural clone, NOT msg.copy(): every in-place transform
             # below (canonicalize/repair, surrogate + non-ASCII sanitizers,

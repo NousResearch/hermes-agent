@@ -503,6 +503,43 @@ class TestCardActionCallbackResponse:
         assert response.card is None
         mock_submit.assert_not_called()
 
+    def test_passes_user_id_to_update_prompt_resolver(self, _patch_callback_card_types):
+        adapter = _make_adapter()
+        adapter._loop = MagicMock()
+        adapter._loop.is_closed = MagicMock(return_value=False)
+        adapter._group_policy = "allowlist"
+        adapter._default_group_policy = "allowlist"
+        adapter._allowed_group_users = {"u_bob"}
+        adapter._update_prompt_state[2] = {
+            "session_key": "sess-up-2",
+            "message_id": "msg-up-2",
+            "chat_id": "oc_user_id_group",
+        }
+        data = _make_card_action_data(
+            {"hermes_update_prompt_action": "y", "update_prompt_id": 2},
+            chat_id="oc_user_id_group",
+            open_id="ou_not_in_allowlist",
+            user_id="u_bob",
+        )
+
+        submitted = {}
+
+        def capture_submit(coro, _loop):
+            submitted["coro"] = coro
+            coro.close()
+            return True
+
+        with patch.object(adapter, "_submit_on_loop", side_effect=capture_submit), patch.object(
+            adapter, "_resolve_update_prompt", new_callable=AsyncMock
+        ) as mock_resolve:
+            response = adapter._on_card_action_trigger(data)
+
+        assert response is not None
+        assert "coro" in submitted
+        kwargs = mock_resolve.call_args.kwargs
+        assert kwargs["open_id"] == "ou_not_in_allowlist"
+        assert kwargs["user_id"] == "u_bob"
+
 
     def test_update_prompt_chat_mismatch_returns_no_card(self, _patch_callback_card_types):
         adapter = _make_adapter()
@@ -547,5 +584,31 @@ class TestResolveUpdatePrompt:
 
         assert (tmp_path / ".hermes" / ".update_response").read_text() == "y"
         assert 1 not in adapter._update_prompt_state
+
+    @pytest.mark.asyncio
+    async def test_user_id_only_group_allowlist_writes_response(self, tmp_path, monkeypatch):
+        adapter = _make_adapter()
+        adapter._group_policy = "allowlist"
+        adapter._default_group_policy = "allowlist"
+        adapter._allowed_group_users = {"u_alice"}
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        (tmp_path / ".hermes").mkdir()
+        adapter._update_prompt_state[2] = {
+            "session_key": "sess-up-2",
+            "message_id": "msg_up_004",
+            "chat_id": "oc_user_id_group",
+        }
+
+        await adapter._resolve_update_prompt(
+            2,
+            "y",
+            "Alice",
+            open_id="ou_alice",
+            user_id="u_alice",
+            chat_id="oc_user_id_group",
+        )
+
+        assert (tmp_path / ".hermes" / ".update_response").read_text() == "y"
+        assert 2 not in adapter._update_prompt_state
 
 

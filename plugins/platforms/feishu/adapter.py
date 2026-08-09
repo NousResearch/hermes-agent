@@ -2853,7 +2853,8 @@ class FeishuAdapter(BasePlatformAdapter):
 
         operator = getattr(event, "operator", None)
         open_id = str(getattr(operator, "open_id", "") or "")
-        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
+        user_id = str(getattr(operator, "user_id", "") or "")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=user_id)
         if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
             logger.warning("[Feishu] Unauthorized update prompt click by %s", open_id or "<unknown>")
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
@@ -2877,6 +2878,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 answer,
                 user_name,
                 open_id=open_id,
+                user_id=user_id,
                 chat_id=callback_chat_id,
             ),
         ):
@@ -2955,6 +2957,7 @@ class FeishuAdapter(BasePlatformAdapter):
         user_name: str,
         *,
         open_id: str = "",
+        user_id: str = "",
         chat_id: str = "",
     ) -> None:
         """Persist an update prompt answer for the detached update process."""
@@ -2962,12 +2965,11 @@ class FeishuAdapter(BasePlatformAdapter):
         if not state:
             logger.debug("[Feishu] Update prompt %s already resolved or unknown", prompt_id)
             return
-        if open_id:
-            sender_id = SimpleNamespace(open_id=open_id, user_id="")
-            if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
-                logger.warning("[Feishu] Unauthorized update prompt click by %s for prompt %s", open_id, prompt_id)
-                return
         expected_chat_id = str(state.get("chat_id", "") or "")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=user_id)
+        if not self._allow_group_message(sender_id, expected_chat_id, is_bot=False):
+            logger.warning("[Feishu] Unauthorized update prompt click by %s for prompt %s", open_id or "<unknown>", prompt_id)
+            return
         if expected_chat_id and chat_id and expected_chat_id != chat_id:
             logger.warning(
                 "[Feishu] Update prompt %s chat mismatch (expected=%s, got=%s)",

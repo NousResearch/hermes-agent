@@ -216,6 +216,7 @@ The terminal system supports multiple backends:
 - modal
 - daytona
 - vercel_sandbox
+- kubernetes
 
 It also supports:
 

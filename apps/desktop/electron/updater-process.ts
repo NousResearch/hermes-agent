@@ -81,7 +81,10 @@ export function resolveUpdateScriptHandoff(
  * callers must not use it as a marker owner (the script claims the marker
  * itself with its own $PID).
  */
-export function wrapHandoffForDetachedConsole(handoff: UpdateScriptHandoff, extraArgs: string[]): {
+export function wrapHandoffForDetachedConsole(
+  handoff: UpdateScriptHandoff,
+  extraArgs: string[]
+): {
   command: string
   args: string[]
 } {

@@ -127,6 +127,7 @@ export function SessionStatusDot({ storedSessionId, session, branchStem, classNa
   const dotState = useStoreSelector($sessionDotStateById, states =>
     storedSessionId ? (states[storedSessionId] ?? 'idle') : 'draft'
   )
+
   const variant = DOT_VARIANTS[dotState]
 
   return (

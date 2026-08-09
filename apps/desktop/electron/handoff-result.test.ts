@@ -17,7 +17,13 @@ function write(home: string, body: any) {
 
 test('consumes and returns a fresh failure result', () => {
   const home = tempHome()
-  write(home, { ok: false, exit_code: 6, message: 'rebuild failed', branch: 'main', finished_at: Math.floor(Date.now() / 1000) })
+  write(home, {
+    ok: false,
+    exit_code: 6,
+    message: 'rebuild failed',
+    branch: 'main',
+    finished_at: Math.floor(Date.now() / 1000)
+  })
 
   const result = readAndConsumeHandoffResult(home)
 
@@ -38,7 +44,13 @@ test('reports each result at most once', () => {
 
 test('discards stale results but still consumes the file', () => {
   const home = tempHome()
-  write(home, { ok: false, exit_code: 5, message: 'old', branch: 'main', finished_at: Math.floor(Date.now() / 1000) - 3600 })
+  write(home, {
+    ok: false,
+    exit_code: 5,
+    message: 'old',
+    branch: 'main',
+    finished_at: Math.floor(Date.now() / 1000) - 3600
+  })
 
   assert.equal(readAndConsumeHandoffResult(home), null)
   assert.equal(fs.existsSync(handoffResultPath(home)), false)

@@ -314,8 +314,7 @@ export function TreeGroup({
   const closeableTab = (paneId: string) => !paneChrome(paneFor(paneId)).uncloseable || panesWithCloser.has(paneId)
 
   // A pane's own live label when it has one, else its registered string.
-  const tabLabel = (paneId: string) =>
-    paneChrome(paneFor(paneId)).tabTitle?.() ?? paneFor(paneId)?.title ?? paneId
+  const tabLabel = (paneId: string) => paneChrome(paneFor(paneId)).tabTitle?.() ?? paneFor(paneId)?.title ?? paneId
 
   // Collapse/restore a tool panel (or plain minimize elsewhere) — the header
   // chevron + tap gesture, routed so ⌃`/the titlebar toggle stay truthful.

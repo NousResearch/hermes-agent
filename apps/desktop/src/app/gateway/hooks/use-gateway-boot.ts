@@ -266,7 +266,7 @@ export function useGatewayBoot({
       const override = windowProfileOverride()
 
       try {
-        const profileKey = override ?? ((await desktop.profile?.get?.())?.profile ?? '')
+        const profileKey = override ?? (await desktop.profile?.get?.())?.profile ?? ''
         const key = normalizeProfileKey(profileKey)
         $activeGatewayProfile.set(key)
         setPrimaryGateway(gateway, key)

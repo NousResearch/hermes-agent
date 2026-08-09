@@ -92,7 +92,10 @@ describe('parseHyprlandClients', () => {
 
   it('keeps everything when it cannot find our own window', () => {
     const parsed = parseHyprlandClients(
-      payload(client({ class: 'a', pid: 2, workspace: { id: 1 } }), client({ class: 'b', pid: 3, workspace: { id: 7 } })),
+      payload(
+        client({ class: 'a', pid: 2, workspace: { id: 1 } }),
+        client({ class: 'b', pid: 3, workspace: { id: 7 } })
+      ),
       SELF_PID
     )
 

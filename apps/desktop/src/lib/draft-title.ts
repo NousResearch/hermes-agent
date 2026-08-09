@@ -16,7 +16,11 @@ const MAX_DRAFT_TITLE_CHARS = 48
  * rather than showing a title that says less than the placeholder.
  */
 export function deriveDraftTitle(text: string): string {
-  const line = text.split('\n').find(candidate => candidate.trim())?.trim() ?? ''
+  const line =
+    text
+      .split('\n')
+      .find(candidate => candidate.trim())
+      ?.trim() ?? ''
 
   if (!line) {
     return ''

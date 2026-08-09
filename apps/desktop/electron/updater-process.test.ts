@@ -204,6 +204,7 @@ test('resolveUpdateScriptHandoff is Windows-only (POSIX updates in place)', () =
 test('wrapHandoffForDetachedConsole routes through cmd start with own console', () => {
   const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
   const expected = path.join(root, 'scripts', 'desktop-update.ps1')
+
   const handoff = resolveUpdateScriptHandoff(root, {
     isWindows: true,
     fileExists: candidate => candidate === expected
@@ -214,8 +215,21 @@ test('wrapHandoffForDetachedConsole routes through cmd start with own console', 
 
   assert.equal(wrapped.command, 'cmd.exe')
   assert.deepEqual(wrapped.args, [
-    '/d', '/s', '/c', 'start', '', '/min',
-    'powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', expected,
-    '-InstallRoot', root, '-Branch', 'main'
+    '/d',
+    '/s',
+    '/c',
+    'start',
+    '',
+    '/min',
+    'powershell',
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    expected,
+    '-InstallRoot',
+    root,
+    '-Branch',
+    'main'
   ])
 })

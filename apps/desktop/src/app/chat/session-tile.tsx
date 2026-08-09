@@ -596,8 +596,7 @@ export const watchSessionTiles = paneMirror<SessionTile>({
   ),
   // Until the first turn lists a row there is no title to register, so the tab
   // takes its name from the composer instead — live, without re-registering.
-  tabTitle: storedSessionId =>
-    tileStoredRow(storedSessionId) ? null : <SessionDraftTitle scope={storedSessionId} />,
+  tabTitle: storedSessionId => (tileStoredRow(storedSessionId) ? null : <SessionDraftTitle scope={storedSessionId} />),
   render: storedSessionId => <SessionTilePane storedSessionId={storedSessionId} />,
   tabWrap: (storedSessionId, tab) => (
     <SessionTabMenu

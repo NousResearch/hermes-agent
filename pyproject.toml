@@ -82,9 +82,18 @@ dependencies = [
   # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
   # and GHSA-qccp-gfcp-xxvc (header leak across origins).
   "urllib3>=2.7.0,<3",
-  # cryptography is pulled in transitively by PyJWT[crypto]; pin it explicitly
-  # so the WeCom/Weixin crypto paths can't drift below the CVE-fixed floor.
-  "cryptography==48.0.1",  # CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf; ==48.0.1 (not 49.x): msal and alibabacloud-tea-openapi cap <49, hindsight-api-slim needs >=48.0.1
+  # PyJWT[crypto] pulls cryptography in transitively. Pin it here as well, so
+  # that the WeCom and Weixin crypto paths cannot fall below the patched
+  # version. 50.0.0 is the floor: it fixes CVE-2026-69247, a Bleichenbacher
+  # oracle in PKCS#7 EnvelopedData, and 49.0.0 fixed GHSA-m2h6-j472-rp4c,
+  # where a wildcard DNS name escapes permittedSubtrees, and
+  # GHSA-jwv3-5hgf-82ww, exponential path-building on duplicate self-signed
+  # intermediates.
+  #
+  # A pin here is not sufficient on its own. alibabacloud-tea-openapi caps
+  # cryptography<49, so [tool.uv] also holds an override. Read that comment
+  # before you move this version.
+  "cryptography==50.0.0",  # CVE-2026-69247, GHSA-m2h6-j472-rp4c, GHSA-jwv3-5hgf-82ww, CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package
@@ -367,11 +376,20 @@ override-dependencies = [
   # so, we force-override this to pynacl 1.6. here.
   # remove this when we update discord.py
   "pynacl>=1.6,<1.7",
+  # alibabacloud-tea-openapi caps cryptography<49, and its latest release
+  # still does. Without this override, that cap holds cryptography at 48.0.1
+  # and its three advisories (see the cryptography pin in
+  # [project].dependencies). The package uses cryptography only to sign
+  # requests with RSA and AES, and that API did not break in 49 or 50.
+  # Remove this line when alibabacloud-tea-openapi lifts the cap.
+  "cryptography>=50,<51",
 ]
 exclude-newer = "14 days"
 # h2: temporary exclude-newer exception for the CVE-2026-71554 (GHSA-6hr6-w5qg-qmwg,
 # request-smuggling) fix in 4.4.1, published 2026-08-03. Remove after 2026-08-17.
-exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false }
+# aiohttp, cryptography: same shape — the advisory fixes are newer than the
+# 14-day window, so the resolver cannot see them without an exception.
+exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, cryptography = false }
 
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's

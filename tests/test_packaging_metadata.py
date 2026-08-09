@@ -68,7 +68,7 @@ _UPDATE_DOWNGRADE_GUARD_FLOORS = {
     # `hermes update` reinstalls exact pins from pyproject/lazy_deps. These
     # reviewed CVE pins must not slide back to stale versions that downgrade
     # already-patched user environments.
-    "cryptography": (48, 0, 1),
+    "cryptography": (50, 0, 0),
     "starlette": (1, 3, 1),
     "python-multipart": (0, 0, 32),
 }

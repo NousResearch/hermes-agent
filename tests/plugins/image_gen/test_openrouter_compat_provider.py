@@ -380,6 +380,332 @@ class TestGenerate:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Dedicated Image API surface (POST /images/generations)
+# ---------------------------------------------------------------------------
+
+
+def _openrouter_image_api():
+    """The provider as `_build_providers` really configures it (surface on)."""
+    from plugins.image_gen.openrouter import _build_providers
+
+    return {p.name: p for p in _build_providers()}["openrouter"]
+
+
+def _mock_image_api_response(entries=None, usage=None):
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.raise_for_status = MagicMock()
+    body = {"created": 0, "data": entries if entries is not None else [
+        {"b64_json": "dGVzdA==", "media_type": "image/png"}
+    ]}
+    if usage is not None:
+        body["usage"] = usage
+    resp.json.return_value = body
+    return resp
+
+
+class TestImageApiSurface:
+    @pytest.fixture(autouse=True)
+    def _isolate(self, monkeypatch):
+        """No config bleed, no catalog cache bleed between tests."""
+        import plugins.image_gen.openrouter as mod
+
+        mod._CATALOG_CACHE.clear()
+        mod._HINTED_MODELS.clear()
+        monkeypatch.setattr(mod, "_load_image_gen_config", lambda: {})
+        for knob in ("QUALITY", "BACKGROUND", "RESOLUTION", "SEED", "N",
+                     "ASPECT_RATIO", "TIMEOUT", "SURFACE"):
+            monkeypatch.delenv(f"OPENROUTER_IMAGE_API_{knob}", raising=False)
+        monkeypatch.delenv("OPENROUTER_IMAGE_MODEL", raising=False)
+        yield
+        mod._CATALOG_CACHE.clear()
+        mod._HINTED_MODELS.clear()
+
+    # -- routing ---------------------------------------------------------
+
+    def test_curated_model_routes_without_any_probe(self):
+        """The static table answers the common case offline."""
+        from plugins.image_gen.openrouter import _select_surface
+
+        with patch("requests.get", side_effect=AssertionError("must not probe")):
+            assert _select_surface("openai/gpt-image-2", "https://x/api/v1", "k", "openrouter") == "images"
+
+    def test_chat_defaults_stay_on_chat_even_though_the_catalog_lists_them(self):
+        """The regression this guards: /images/models is a superset that
+        includes DEFAULT_MODEL and _FALLBACK_MODEL. Routing on catalog
+        membership would silently move every existing default call."""
+        from plugins.image_gen.openrouter import (
+            DEFAULT_MODEL,
+            _FALLBACK_MODEL,
+            _select_surface,
+        )
+
+        catalog = MagicMock()
+        catalog.raise_for_status = MagicMock()
+        catalog.json.return_value = {
+            "data": [{"id": DEFAULT_MODEL}, {"id": _FALLBACK_MODEL}]
+        }
+        with patch("requests.get", return_value=catalog):
+            assert _select_surface(DEFAULT_MODEL, "https://x/api/v1", "k", "openrouter") == "chat"
+            assert _select_surface(_FALLBACK_MODEL, "https://x/api/v1", "k", "openrouter") == "chat"
+
+    def test_unknown_catalog_model_is_hinted_once_but_not_rerouted(self):
+        from plugins.image_gen.openrouter import _select_surface
+
+        catalog = MagicMock()
+        catalog.raise_for_status = MagicMock()
+        catalog.json.return_value = {"data": [{"id": "brandnew/model-9"}]}
+        with patch("requests.get", return_value=catalog) as mock_get:
+            assert _select_surface("brandnew/model-9", "https://x/api/v1", "k", "openrouter") == "chat"
+            assert _select_surface("brandnew/model-9", "https://x/api/v1", "k", "openrouter") == "chat"
+        # Hinted once, and the probe never repeats for the same id.
+        assert mock_get.call_count == 1
+
+    def test_failed_probe_costs_nothing(self):
+        from plugins.image_gen.openrouter import _select_surface
+
+        with patch("requests.get", side_effect=OSError("network down")):
+            assert _select_surface("unknown/model", "https://x/api/v1", "k", "openrouter") == "chat"
+
+    def test_surface_can_be_forced_both_ways(self, monkeypatch):
+        from plugins.image_gen.openrouter import DEFAULT_MODEL, _select_surface
+
+        monkeypatch.setenv("OPENROUTER_IMAGE_API_SURFACE", "images")
+        with patch("requests.get", side_effect=AssertionError("must not probe")):
+            assert _select_surface(DEFAULT_MODEL, "https://x/api/v1", "k", "openrouter") == "images"
+
+        monkeypatch.setenv("OPENROUTER_IMAGE_API_SURFACE", "chat")
+        with patch("requests.get", side_effect=AssertionError("must not probe")):
+            assert _select_surface("openai/gpt-image-2", "https://x/api/v1", "k", "openrouter") == "chat"
+
+    def test_image_api_model_posts_to_images_generations(self):
+        with patch(_RUNTIME, return_value=_runtime_ok()), \
+             patch("requests.post", return_value=_mock_image_api_response()) as mock_post, \
+             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/i.png")):
+            result = _openrouter_image_api().generate(
+                prompt="a red square", aspect_ratio="square", model="openai/gpt-image-2"
+            )
+
+        assert result["success"] is True
+        assert mock_post.call_args[0][0] == "https://openrouter.ai/api/v1/images/generations"
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["model"] == "openai/gpt-image-2"
+        assert payload["prompt"] == "a red square"
+        assert payload["aspect_ratio"] == "1:1"
+        assert "messages" not in payload and "modalities" not in payload
+        assert result["endpoint"] == "images/generations"
+
+    def test_chat_model_still_uses_chat_completions(self):
+        """The new surface must not capture the existing default chain."""
+        with patch(_RUNTIME, return_value=_runtime_ok()), \
+             patch("requests.post", return_value=_mock_chat_response([_PNG_DATA_URI])) as mock_post, \
+             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
+            result = _openrouter_image_api().generate(prompt="a pet")
+
+        assert result["success"] is True
+        assert mock_post.call_args[0][0].endswith("/chat/completions")
+
+    def test_nous_never_uses_the_image_api(self):
+        """Nous Portal proxies chat-completions and has no /images route."""
+        from plugins.image_gen.openrouter import _build_providers
+
+        nous_runtime = _runtime_ok(
+            provider="nous", base_url="https://inference.nousresearch.com/v1", api_key="nous-tok"
+        )
+        with patch(_RUNTIME, return_value=nous_runtime), \
+             patch("requests.post", return_value=_mock_chat_response([_PNG_DATA_URI])) as mock_post, \
+             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/x.png")):
+            nous = {p.name: p for p in _build_providers()}["nous"]
+            result = nous.generate(prompt="a pet", model="openai/gpt-image-2")
+
+        assert result["success"] is True
+        assert mock_post.call_args[0][0] == "https://inference.nousresearch.com/v1/chat/completions"
+
+    # -- per-model parameter filtering ------------------------------------
+
+    def test_aspect_ratio_is_mapped_per_model(self):
+        from plugins.image_gen.openrouter import _build_image_api_payload
+
+        gemini, _ = _build_image_api_payload(
+            model_id="google/gemini-3.1-flash-lite-image", prompt="p",
+            semantic_aspect="landscape", references=[], config_key="openrouter", kwargs={},
+        )
+        mini, _ = _build_image_api_payload(
+            model_id="openai/gpt-image-1-mini", prompt="p",
+            semantic_aspect="landscape", references=[], config_key="openrouter", kwargs={},
+        )
+        # gpt-image-1-mini has no 16:9 at all, so landscape degrades to 3:2.
+        assert gemini["aspect_ratio"] == "16:9"
+        assert mini["aspect_ratio"] == "3:2"
+
+    def test_unsupported_parameter_is_dropped_and_explained(self):
+        """The endpoint silently ignores unknown fields, so we must filter."""
+        from plugins.image_gen.openrouter import _build_image_api_payload
+
+        payload, notes = _build_image_api_payload(
+            model_id="openai/gpt-image-2", prompt="p", semantic_aspect="square",
+            references=[], config_key="openrouter", kwargs={"background": "transparent"},
+        )
+        assert "background" not in payload
+        assert any("background" in n for n in notes)
+
+        payload, notes = _build_image_api_payload(
+            model_id="openai/gpt-image-1-mini", prompt="p", semantic_aspect="square",
+            references=[], config_key="openrouter", kwargs={"background": "transparent"},
+        )
+        assert payload["background"] == "transparent"
+
+    def test_n_is_clamped_to_the_model_cap(self):
+        from plugins.image_gen.openrouter import _build_image_api_payload
+
+        payload, notes = _build_image_api_payload(
+            model_id="qwen/qwen-image-3-pro", prompt="p", semantic_aspect="square",
+            references=[], config_key="openrouter", kwargs={"n": 20},
+        )
+        assert payload["n"] == 6
+        assert any("cap of 6" in n for n in notes)
+
+    def test_unknown_model_omits_the_aspect_ratio(self):
+        """An out-of-enum ratio is a hard 400, so never guess one."""
+        from plugins.image_gen.openrouter import _build_image_api_payload
+
+        payload, notes = _build_image_api_payload(
+            model_id="brandnew/model-9", prompt="p", semantic_aspect="landscape",
+            references=[], config_key="openrouter", kwargs={},
+        )
+        assert "aspect_ratio" not in payload
+        assert any("catalog" in n for n in notes)
+
+    def test_env_knob_applies(self, monkeypatch):
+        from plugins.image_gen.openrouter import _build_image_api_payload
+
+        monkeypatch.setenv("OPENROUTER_IMAGE_API_QUALITY", "high")
+        payload, _ = _build_image_api_payload(
+            model_id="openai/gpt-image-2", prompt="p", semantic_aspect="square",
+            references=[], config_key="openrouter", kwargs={},
+        )
+        assert payload["quality"] == "high"
+
+    # -- references --------------------------------------------------------
+
+    def test_references_use_the_per_model_cap(self, tmp_path):
+        """Image API models take far more references than chat's 3."""
+        refs = []
+        for i in range(5):
+            p = tmp_path / f"r{i}.png"
+            p.write_bytes(b"\x89PNG\r\n")
+            refs.append(str(p))
+
+        with patch(_RUNTIME, return_value=_runtime_ok()), \
+             patch("requests.post", return_value=_mock_image_api_response()) as mock_post, \
+             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/i.png")):
+            result = _openrouter_image_api().generate(
+                prompt="edit", model="openai/gpt-image-2", reference_image_urls=refs
+            )
+
+        payload = mock_post.call_args.kwargs["json"]
+        assert len(payload["input_references"]) == 5      # chat would have clamped to 3
+        assert payload["input_references"][0]["image_url"]["url"].startswith("data:image/png;base64,")
+        assert result["modality"] == "image"
+
+    def test_unreadable_sole_reference_fails_instead_of_degrading(self):
+        """Degrading an edit to text-to-image bills an unrelated picture."""
+        with patch(_RUNTIME, return_value=_runtime_ok()), \
+             patch("requests.post") as mock_post:
+            result = _openrouter_image_api().generate(
+                prompt="edit this", model="openai/gpt-image-2",
+                image_url="/nonexistent/definitely-missing.png",
+            )
+
+        assert result["success"] is False
+        assert result["error_type"] == "io_error"
+        mock_post.assert_not_called()
+
+    # -- response handling -------------------------------------------------
+
+    def test_cost_and_extras_are_surfaced(self):
+        with patch(_RUNTIME, return_value=_runtime_ok()), \
+             patch("requests.post", return_value=_mock_image_api_response(
+                 usage={"cost": 0.0336, "total_tokens": 1128})), \
+             patch("plugins.image_gen.openrouter.save_b64_image", return_value=Path("/tmp/i.png")):
+            result = _openrouter_image_api().generate(
+                prompt="p", aspect_ratio="portrait", model="krea/krea-2-medium"
+            )
+
+        assert result["cost_usd"] == 0.0336
+        assert result["total_tokens"] == 1128
+        assert result["exact_aspect_ratio"] == "9:16"
+        assert result["image"] == "/tmp/i.png"
+
+    def test_multiple_images_land_in_additional_images(self):
+        entries = [
+            {"b64_json": "AA==", "media_type": "image/png"},
+            {"b64_json": "BB==", "media_type": "image/png"},
+        ]
+        with patch(_RUNTIME, return_value=_runtime_ok()), \
+             patch("requests.post", return_value=_mock_image_api_response(entries)), \
+             patch("plugins.image_gen.openrouter.save_b64_image",
+                   side_effect=[Path("/tmp/a.png"), Path("/tmp/b.png")]):
+            result = _openrouter_image_api().generate(prompt="p", model="openai/gpt-image-2")
+
+        assert result["image"] == "/tmp/a.png"
+        assert result["additional_images"] == ["/tmp/b.png"]
+
+    def test_empty_data_is_typed(self):
+        with patch(_RUNTIME, return_value=_runtime_ok()), \
+             patch("requests.post", return_value=_mock_image_api_response([])):
+            result = _openrouter_image_api().generate(prompt="p", model="openai/gpt-image-2")
+
+        assert result["success"] is False
+        assert result["error_type"] == "empty_response"
+
+    def test_zod_validation_error_is_flattened(self):
+        from plugins.image_gen.openrouter import _extract_image_api_error
+
+        resp = MagicMock()
+        resp.json.return_value = {
+            "success": False,
+            "error": {
+                "name": "ZodError",
+                "message": '[{"path":["aspect_ratio"],"message":"Invalid option"}]',
+            },
+        }
+        assert _extract_image_api_error(resp, "fb").startswith("aspect_ratio: Invalid option")
+
+    def test_auth_error_is_not_retried_as_api_error(self):
+        import requests as req_lib
+
+        resp = MagicMock()
+        resp.status_code = 401
+        resp.text = "Unauthorized"
+        resp.json.return_value = {"error": {"message": "Invalid API key"}}
+        resp.raise_for_status.side_effect = req_lib.HTTPError(response=resp)
+
+        with patch(_RUNTIME, return_value=_runtime_ok()), \
+             patch("requests.post", return_value=resp):
+            result = _openrouter_image_api().generate(prompt="p", model="openai/gpt-image-2")
+
+        assert result["success"] is False
+        assert result["error_type"] == "auth_error"
+        assert "_retryable" not in result
+
+    def test_catalog_models_are_offered_only_by_openrouter(self):
+        from plugins.image_gen.openrouter import _IMAGE_API_MODELS, _build_providers
+
+        by_name = {p.name: p for p in _build_providers()}
+        openrouter_ids = {m["id"] for m in by_name["openrouter"].list_models()}
+        nous_ids = {m["id"] for m in by_name["nous"].list_models()}
+        assert "openai/gpt-image-2" in openrouter_ids
+        assert set(_IMAGE_API_MODELS) <= openrouter_ids
+        assert not (set(_IMAGE_API_MODELS) & nous_ids)
+
+    def test_default_model_is_unchanged_by_the_new_surface(self):
+        from plugins.image_gen.openrouter import DEFAULT_MODEL
+
+        assert _openrouter_image_api().default_model() == DEFAULT_MODEL
+
+
 class TestRegistration:
     def test_register_both(self):
         from plugins.image_gen.openrouter import register

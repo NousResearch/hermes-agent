@@ -87,6 +87,7 @@ class TestKillToolSubprocessesMarksCronInterrupted:
 
         runner, adapter = make_restart_runner()
         runner._restart_drain_timeout = 0.01  # force the timeout path
+        runner._cron_drain_timeout = 0.01  # ...past the cron floor too (#82161)
         adapter.disconnect = _make_async_noop()
 
         sched._running_job_ids.add("job-1")

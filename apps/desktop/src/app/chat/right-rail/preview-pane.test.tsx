@@ -332,6 +332,32 @@ describe('PreviewPane console state', () => {
     expect(rendered.queryByRole('textbox', { name: 'Address' })).not.toBeNull()
   })
 
+  // `allowpopups` is load-bearing, not a loosening: Chromium kills a guest's
+  // new-window request before ANY handler runs when the attribute is absent, so
+  // without it `<a target="_blank">` inside a preview silently does nothing
+  // (#81660). The popup itself is still denied — main.ts installs a window-open
+  // handler on every attached guest (electron/webview-window-open.ts) that
+  // navigates this pane in place instead of opening a window.
+  it('marks the preview webview as popup-capable so target=_blank is routable', async () => {
+    let rendered!: ReturnType<typeof render>
+    await act(async () => {
+      rendered = render(
+        <PreviewPane
+          target={{
+            kind: 'url',
+            label: 'Preview',
+            source: 'https://example.com',
+            url: 'https://example.com'
+          }}
+        />
+      )
+    })
+
+    const webview = rendered.container.querySelector('webview')
+
+    expect(webview?.hasAttribute('allowpopups')).toBe(true)
+  })
+
   it('renders authenticated remote HTML safely and honors source mode', async () => {
     const dataUrl = `data:text/html;base64,${btoa('<h1>remote</h1>')}`
 

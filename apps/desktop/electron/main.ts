@@ -313,6 +313,7 @@ import {
 } from './venv-blocker-scan'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
+import { installWebviewWindowOpenPolicy } from './webview-window-open'
 import { readWindowBelow } from './window-below'
 import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
@@ -10798,6 +10799,12 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
     event.preventDefault()
     openExternalUrl(url)
   })
+  // The handler above only covers the window's OWN webContents. A `<webview>`
+  // guest (the Preview pane) is a separate webContents with its own window-open
+  // gate, so `target="_blank"` inside a preview never reached any of this and
+  // died silently (#81660). Guests get their own policy, installed at attach
+  // time — see webview-window-open.ts for why the renderer can't do this.
+  installWebviewWindowOpenPolicy(win.webContents, { log: rememberLog, openExternal: openExternalUrl })
 }
 
 // Every window we open starts with `show: false` so the renderer's first themed

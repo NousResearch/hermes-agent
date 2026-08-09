@@ -18,9 +18,26 @@ import pytest
 # The scripts dir contains a local mcp/ package that shadows the installed SDK.
 import mcp as _real_mcp
 _SCRIPTS_DIR = Path("/home/kensei/.hermes/scripts")
+# Pre-import every real mcp submodule the codebase uses so a later
+# ``import mcp.shared`` / ``import mcp.types`` cannot resolve from the shadow
+# package once scripts/ is on sys.path (the top-level restore alone leaves
+# submodule resolution vulnerable to the on-disk shadow).
+import mcp.shared  # noqa: F401
+import mcp.shared.auth  # noqa: F401
+import mcp.types  # noqa: F401
 sys.path.insert(0, str(_SCRIPTS_DIR))
 # Restore the real mcp in sys.modules so the shadowed package doesn't win.
 sys.modules["mcp"] = _real_mcp
+
+# Remove scripts/ from sys.path immediately: it shadows the real mcp package
+# on disk, and leaving it on the global path poisons every later
+# ``import mcp.shared``/``mcp.types`` during full-suite collection. The
+# kensei_super_memory_mcp imports are lazy (inside test functions); an
+# autouse fixture re-adds the dir at test time.
+try:
+    sys.path.remove(str(_SCRIPTS_DIR))
+except ValueError:
+    pass
 
 # ---------------------------------------------------------------------------
 # Mock Mnemosyne at module level so create_app() doesn't raise.
@@ -47,6 +64,23 @@ def _isolate_env(monkeypatch):
     monkeypatch.setenv("KENSEI_MEMORY_BANK", "test_bank")
     monkeypatch.setenv("MNEMOSYNE_HOME", "/tmp/mnemosyne_test")
     monkeypatch.setenv("HERMES_HOME", "/tmp/hermes_test")
+
+
+@pytest.fixture(autouse=True)
+def _scripts_on_path_for_lazy_imports():
+    """Re-add scripts/ to sys.path for the lazy kensei_super_memory_mcp imports.
+
+    The module-level path entry is removed at import time so the on-disk mcp
+    shadow never poisons full-suite collection; the lazy imports inside test
+    functions still need the dir at call time.
+    """
+    if str(_SCRIPTS_DIR) not in sys.path:
+        sys.path.insert(0, str(_SCRIPTS_DIR))
+    yield
+    try:
+        sys.path.remove(str(_SCRIPTS_DIR))
+    except ValueError:
+        pass
 
 
 @pytest.fixture

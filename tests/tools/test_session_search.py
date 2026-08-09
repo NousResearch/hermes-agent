@@ -87,7 +87,19 @@ class TestSchema:
 
     def test_detail_parameter_is_appended_for_positional_compatibility(self):
         parameters = list(inspect.signature(session_search).parameters)
-        assert parameters[-1] == "detail"
+        historical_prefix = [
+            "query",
+            "role_filter",
+            "limit",
+            "db",
+            "current_session_id",
+            "session_id",
+            "around_message_id",
+            "window",
+            "sort",
+            "profile",
+        ]
+        assert parameters == [*historical_prefix, "detail"]
 
 
 class TestFormatTimestamp:

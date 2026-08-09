@@ -1998,6 +1998,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 scope_block=_ts_scope_block,
                 display_index=i,
             ))
+            tool_duration = time.time() - tool_start_time
         # ── END KENSEI CUSTOM ──
         elif agent._context_engine_tool_names and function_name in agent._context_engine_tool_names:
             # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)

@@ -2282,9 +2282,11 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("session_search", {"query": "needle"}),
         ("memory", {"action": "view", "target": "memory"}),
         ("clarify", {"question": "Continue?"}),
+        ("ask_user_questions", {"questions": [{"question": "Continue?"}]}),
         ("read_terminal", {}),
         ("read_preview", {}),
         ("delegate_task", {"goal": "Check the child path"}),
+        ("config_set", {"key": "agent.mode", "value": "auto"}),
     )
 
     @pytest.mark.parametrize(("tool_name", "tool_args"), _CASES)
@@ -2320,12 +2322,20 @@ class TestAgentRuntimePostHookOwnershipSync:
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(
+            "tools.ask_user_questions_tool.ask_user_questions_tool",
+            lambda **kwargs: '{"ok":true}',
+        )
+        monkeypatch.setattr(
             "tools.read_terminal_tool.read_terminal_tool",
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(
             "tools.read_preview_tool.read_preview_tool",
             lambda **kwargs: '{"ok":true}',
+        )
+        monkeypatch.setattr(
+            "tui_gateway.server.handle_request",
+            lambda request: {"ok": True},
         )
         monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: None)
         monkeypatch.setattr(

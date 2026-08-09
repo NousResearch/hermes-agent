@@ -330,53 +330,66 @@ def _resolve_cli_path(configured: str = "") -> str:
     return str(fallback) if fallback.is_file() else ""
 
 
-def _resolve_private_key(extra: Optional[dict] = None) -> str:
-    """Resolve the Nostr private key: env first, then a credentials JSON.
-
-    NEVER log the return value.
-    """
-    key = _get_scoped_secret("BUZZ_PRIVATE_KEY", "").strip()
-    if key:
-        return key
-    _creds_raw = _scoped_platform_setting("BUZZ_CREDENTIALS_FILE", extra, "credentials_file")
-    configured = str(_creds_raw or "").strip() or (extra or {}).get("credentials_file", "")
+def _credentials_candidates(extra: Optional[dict] = None) -> List[Path]:
+    # Scope-aware read (#98738/#95216): inside a secondary profile scope the
+    # scope is authoritative (a miss falls to the profile's own config extra,
+    # never the default profile's os.environ); unscoped reads keep env
+    # precedence plus the external-secret rung.
+    configured = str(_get_scoped_secret("BUZZ_CREDENTIALS_FILE", "") or "").strip() or str(
+        (extra or {}).get("credentials_file", "") or ""
+    ).strip()
     if configured:
-        candidates = [Path(configured).expanduser()]
-    else:
-        try:
-            candidates = sorted(_DEFAULT_CREDENTIALS_DIR.glob("*credentials*.json"))
-        except OSError:
-            candidates = []
-    for path in candidates:
+        return [Path(configured).expanduser()]
+    try:
+        return sorted(_DEFAULT_CREDENTIALS_DIR.glob("*credentials*.json"))
+    except OSError:
+        return []
+
+
+def _resolve_credentials_data(extra: Optional[dict] = None) -> dict:
+    """Load the first credential record containing a private key."""
+    for path in _credentials_candidates(extra):
         try:
             data = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         if not isinstance(data, dict):
             continue
-        for field in ("nsec", "private_key_hex", "private_key"):
-            value = data.get(field)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
+        if any(isinstance(data.get(field), str) and data[field].strip() for field in ("nsec", "private_key_hex", "private_key")):
+            return data
+    return {}
+
+
+def _resolve_private_key(extra: Optional[dict] = None) -> str:
+    """Resolve the Nostr private key: scoped secret first, then credentials JSON.
+
+    NEVER log the return value.
+    """
+    key = str(_get_scoped_secret("BUZZ_PRIVATE_KEY", "") or "").strip()
+    if key:
+        return key
+    data = _resolve_credentials_data(extra)
+    for field in ("nsec", "private_key_hex", "private_key"):
+        value = data.get(field)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
     return ""
 
 
 def _resolve_auth_tag(extra: Optional[dict] = None) -> str:
     """Resolve and validate the optional NIP-OA owner-attestation tag."""
-    configured = os.getenv("BUZZ_AUTH_TAG", "").strip()
+    configured = str(_get_scoped_secret("BUZZ_AUTH_TAG", "") or "").strip()
     if configured:
         raw: Any = configured
     else:
-        credentials_file = os.getenv("BUZZ_CREDENTIALS_FILE", "").strip() or (extra or {}).get(
-            "credentials_file", ""
-        )
-        if not credentials_file:
+        credentials_file = str(_get_scoped_secret("BUZZ_CREDENTIALS_FILE", "") or "").strip() or str(
+            (extra or {}).get("credentials_file", "") or ""
+        ).strip()
+        direct_key = str(_get_scoped_secret("BUZZ_PRIVATE_KEY", "") or "").strip()
+        if direct_key and not credentials_file:
             return ""
-        try:
-            data = json.loads(Path(credentials_file).expanduser().read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return ""
-        if not isinstance(data, dict) or "auth_tag" not in data:
+        data = _resolve_credentials_data(extra)
+        if "auth_tag" not in data:
             return ""
         raw = data["auth_tag"]
 

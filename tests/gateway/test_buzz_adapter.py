@@ -942,6 +942,34 @@ class TestCredentialResolution:
         with pytest.raises(ValueError, match="auth tag"):
             _resolve_auth_tag()
 
+    def test_scoped_credentials_and_tag_do_not_borrow_ambient_profile(self, monkeypatch, tmp_path):
+        from agent import secret_scope as ss
+
+        ambient_tag = ["auth", "a" * 64, "", "d" * 128]
+        scoped_tag = ["auth", "b" * 64, "", "c" * 128]
+        ambient = tmp_path / "ambient.json"
+        scoped = tmp_path / "scoped.json"
+        ambient.write_text(json.dumps({"nsec": "nsec1ambient", "auth_tag": ambient_tag}))
+        scoped.write_text(json.dumps({"nsec": "nsec1scoped", "auth_tag": scoped_tag}))
+        monkeypatch.setenv("BUZZ_CREDENTIALS_FILE", str(ambient))
+        monkeypatch.setenv("BUZZ_AUTH_TAG", json.dumps(ambient_tag))
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope({"BUZZ_CREDENTIALS_FILE": str(scoped)})
+        try:
+            assert _resolve_private_key() == "nsec1scoped"
+            assert json.loads(_resolve_auth_tag()) == scoped_tag
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
+    def test_owner_auth_tag_uses_credentials_autodiscovery(self, monkeypatch, tmp_path):
+        tag = ["auth", "b" * 64, "", "c" * 128]
+        creds = tmp_path / "agent_credentials.json"
+        creds.write_text(json.dumps({"nsec": "nsec1fromfile", "auth_tag": tag}), encoding="utf-8")
+        monkeypatch.setattr(_buzz_mod, "_DEFAULT_CREDENTIALS_DIR", tmp_path)
+        assert _resolve_private_key() == "nsec1fromfile"
+        assert json.loads(_resolve_auth_tag()) == tag
+
 
 # ── Env enablement / registration / standalone send ──────────────────────
 

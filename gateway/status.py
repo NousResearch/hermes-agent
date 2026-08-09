@@ -663,6 +663,124 @@ def _clear_running_pid_cache() -> None:
         _gateway_running_pid_cache.clear()
 
 
+# ── Zombie gateway state cleanup ──────────────────────────────────────────
+# A "zombie" gateway is one whose PID file and/or runtime-status file still
+# point to a process that no longer exists (crashed, killed, rebooted).  The
+# stale files prevent fresh ``start`` / ``--replace`` from succeeding because
+# ``get_running_pid()`` thinks another gateway is alive.  These functions
+# detect and remove that stale state so a new gateway can take over cleanly.
+
+
+def is_gateway_zombie(
+    *,
+    pid_path: Optional[Path] = None,
+) -> bool:
+    """Return True when the gateway PID file points to a dead/zombie process.
+
+    A zombie gateway is a classic crash-relic: the PID file and (optionally)
+    the runtime-status file still exist, but the process they refer to is gone.
+    This function checks the PID file (primary) and the runtime-status file
+    (secondary) to determine whether the gateway is in this zombie state.
+
+    Best-effort: any read / OS failure returns ``False`` rather than raising,
+    because a corrupted state file should never block a fresh gateway start.
+    """
+    try:
+        path = pid_path or _get_pid_path()
+
+        # Read the PID record from the PID file.
+        pid_record = _read_pid_record(path)
+        pid = _pid_from_record(pid_record)
+        if pid is not None and not _pid_exists(pid):
+            return True
+
+        # Secondary check: runtime-status file may survive even when the PID
+        # file is gone (e.g. the gateway was killed between removing the PID
+        # file and the next ``status`` probe).  A stale runtime status with a
+        # dead PID is also a zombie.
+        runtime_status = get_runtime_status_running_pid()
+        if runtime_status is not None:
+            return True
+
+        return False
+    except Exception:
+        return False
+
+
+def cleanup_zombie_gateway_state() -> None:
+    """Detect and remove zombie gateway state (stale PID / runtime files).
+
+    Reads the persisted PID file and runtime-status file.  When they point to
+    a process that is no longer alive, the stale files are removed so that a
+    fresh gateway start can succeed without ``--replace``.
+
+    Also tries to remove the stale runtime lock (``gateway.lock``) — a dead
+    process no longer holds the OS lock, so removing the orphan file lets the
+    new process acquire a fresh lock cleanly.
+
+    Best-effort and idempotent: any failure is logged and swallowed.  If no
+    zombie state is detected (or the files are already clean), the function
+    returns silently.
+    """
+    try:
+        pid_path = _get_pid_path()
+        lock_path = _get_gateway_lock_path(pid_path)
+
+        # ── 1. Detect: is the PID alive? ────────────────────────────
+        pid_record = _read_pid_record(pid_path)
+        pid = _pid_from_record(pid_record)
+
+        if pid is not None:
+            if _pid_exists(pid):
+                # PID is alive — not a zombie (another gateway owns it).
+                return
+        else:
+            pid = None
+
+        # ── 2. Verify via runtime-status (secondary confirmation) ───
+        runtime_status = _read_json_file(_get_runtime_status_path())
+        runtime_pid = _pid_from_record(runtime_status) if runtime_status else None
+        # runtime_pid == None here means: either no runtime-status file, or
+        # it has no valid PID — both are stale and should be cleaned up.
+
+        # Confirm the PID is actually dead before clobbering state.
+        if pid is not None and _pid_exists(pid):
+            return  # Not a zombie; another process owns this PID.
+
+        # ── 3. Remove stale files ───────────────────────────────────
+        logger.info("Cleaning up zombie gateway state (PID %s)", pid)
+
+        # Remove stale PID file.
+        if pid_path.exists():
+            try:
+                pid_path.unlink()
+            except OSError:
+                pass
+
+        # Remove stale runtime-status file.
+        runtime_path = _get_runtime_status_path()
+        if runtime_path.exists():
+            try:
+                runtime_path.unlink()
+            except OSError:
+                pass
+
+        # Remove stale lock file — a dead process no longer holds the OS
+        # lock, so removing the orphan file lets a new gateway acquire
+        # a fresh lock cleanly.
+        if lock_path.exists():
+            try:
+                lock_path.unlink()
+            except OSError:
+                pass
+
+        # Clear any cached PID so subsequent reads are fresh.
+        _clear_running_pid_cache()
+
+    except Exception as _e:
+        logger.debug("zombie-state cleanup failed (non-fatal): %s", _e)
+
+
 def _file_cache_signature(path: Path) -> tuple[bool, Optional[int], Optional[int]]:
     try:
         st = path.stat()
@@ -870,10 +988,35 @@ def acquire_gateway_runtime_lock() -> bool:
 
     Unlike the PID file, the lock is owned by the live process itself. If the
     process dies abruptly, the OS releases the lock automatically.
+
+    Layer 3 — on-entry zombie check: after acquiring the lock, verify the
+    runtime status file for a zombie PID (dead process that still owns a stale
+    PID/runtime record) and auto-clean if found.  This catches the case where
+    the PID file was cleaned but the runtime-status file survived.
     """
     global _gateway_lock_handle
     if _gateway_lock_handle is not None:
         return True
+
+    # ── Layer 3: post-lock zombie check on the runtime-status file ──
+    # The PID file may already be clean, but the runtime-status file could
+    # still point to a dead process.  Detect and remove it so subsequent
+    # liveness probes don't get confused.
+    try:
+        runtime_status = _read_json_file(_get_runtime_status_path())
+        if isinstance(runtime_status, dict):
+            rt_pid = _pid_from_record(runtime_status)
+            if rt_pid is not None and not _pid_exists(rt_pid):
+                logger.info(
+                    "Acquired lock but runtime-status points to dead PID %s — "
+                    "cleaning up stale runtime-status.",
+                    rt_pid,
+                )
+                _get_runtime_status_path().unlink(missing_ok=True)
+                _clear_running_pid_cache()
+    except Exception:
+        # Non-fatal; the gateway will still start.
+        pass
 
     path = _get_gateway_lock_path()
     path.parent.mkdir(parents=True, exist_ok=True)

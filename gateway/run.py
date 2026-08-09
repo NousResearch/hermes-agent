@@ -27146,6 +27146,17 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                  Useful for systemd services to avoid restart-loop deadlocks
                  when the previous process hasn't fully exited yet.
     """
+    # Layer 1: Clean up any zombie gateway state (stale PID / runtime files
+    # from a crashed/abruptly-killed previous instance) BEFORE the duplicate-
+    # instance guard fires.  This lets a fresh ``start`` succeed without
+    # ``--replace`` when the prior gateway died without cleaning its state.
+    try:
+        from gateway.status import cleanup_zombie_gateway_state
+        cleanup_zombie_gateway_state()
+    except Exception:
+        # Non-fatal — stale state should never block a fresh gateway start.
+        pass
+
     # Snapshot the checkout revision now, while sys.modules still matches disk,
     # so a later `git pull` under this long-lived process can be detected (and
     # risky work like model switching refused) instead of crashing on a stale

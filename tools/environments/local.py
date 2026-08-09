@@ -1421,63 +1421,52 @@ def _get_hermes_site_packages() -> list[Path]:
     return result
 
 
-# Regex to extract a Python version marker (e.g. ``python3.11``) from a path.
-# Matches ``python3.11``, ``python3.13``, etc. as a path component - i.e.
-# preceded by a path separator (``/`` or ``\``) or string start, and followed
-# by a separator or string end.  This is cross-platform: it works with both
-# POSIX forward-slash paths and Windows backslash paths regardless of the
-# host OS, so a POSIX host correctly detects version markers in Windows-style
-# paths (important for testing and for edge cases like WSL).
-_PYVER_IN_PATH_RE = re.compile(r"(?:^|[\\/])python(\d+)\.(\d+)(?:[\\/]|$)")
-
 # Regex to detect ``site-packages`` as a path component (not a substring of
 # a longer directory name).  Same cross-platform separator handling.
 _SITE_PACKAGES_RE = re.compile(r"(?:^|[\\/])site-packages(?:[\\/]|$)")
 
 
 def _strip_mismatched_site_packages(env: dict) -> None:
-    """Remove mismatched site-packages paths from PYTHONPATH.
+    """Remove Hermes-owned PYTHONPATH entries from subprocess environments.
 
-    The Desktop Electron process (and systemd units, gateway VBS launchers,
-    etc.) inject the Hermes venv's site-packages path (e.g.
-    ``.../venv/lib/python3.11/site-packages``) into ``PYTHONPATH`` so the
-    Hermes backend can import its packages.  When this ``PYTHONPATH`` leaks
-    into subprocesses running a **different** Python version (e.g. 3.13),
-    the 3.11 C extensions appear on ``sys.path`` ahead of the correct 3.13
-    versions and crash with ``ImportError`` (``PIL._imaging``,
-    ``cryptography``, etc.).
+    The Desktop Electron process (and other Hermes launchers) prepend the
+    Hermes repo root and the Hermes venv's ``site-packages`` to ``PYTHONPATH``
+    so the backend can ``import tools`` / ``import hermes_cli``.  When that
+    ``PYTHONPATH`` leaks into subprocesses, a child Python of a DIFFERENT
+    version (e.g. 3.13 vs the backend's 3.11) picks up the 3.11 C extensions
+    from ``sys.path`` ahead of its own and crashes with ``ImportError``
+    (``PIL._imaging``, ``cryptography``, ``numpy._core._multiarray_umath``,
+    etc.).
 
     Rather than stripping ``PYTHONPATH`` entirely - which would discard
     legitimate user entries (Nix uses ``PYTHONPATH`` for plugin discovery,
     users set it for custom library paths) - this function surgically
-    removes only the dangerous entries:
+    removes only the entries Hermes itself owns:
 
-    1. **Cross-version site-packages** - any entry whose path contains a
-       ``python{X.Y}/site-packages`` component where ``{X.Y}`` differs from
-       the running interpreter's version.  This catches ALL leak sources
-       (Electron, systemd, gateway scripts) with a single version check,
-       regardless of the venv path.
+    1. **Hermes repo root** - the path the Electron app prepends so the
+       backend can ``import tools``.  Subprocesses don't need it and it can
+       shadow local packages of the same name.
 
-    2. **Hermes venv site-packages** (no version marker or same-version) -
-       entries that live under the running interpreter's own venv
-       site-packages directory.  These are redundant for subprocesses: the
-       Hermes backend discovers its packages via ``sys.path``, not via an
-       inherited env var.  Only checked when running inside a venv.
+    2. **Hermes venv site-packages** - entries under the running
+       interpreter's own venv site-packages directory.  Redundant for
+       subprocesses (they get their packages via ``sys.path``, not an
+       inherited env var) and a common leak vector.  Only checked when
+       running inside a venv.
 
-    3. **Hermes repo root** - the Electron app prepends the repo root
-       (parent of ``tools/``) to ``PYTHONPATH``.  Subprocesses don't need
-       it and it can shadow local packages.
-
-    User ``PYTHONPATH`` entries (``/opt/my-lib``, Nix plugin paths, etc.)
-    are always preserved.
+    User ``PYTHONPATH`` entries (``/opt/my-lib``, Nix plugin paths, a
+    ``/custom/lib/python3.13/site-packages`` intended for a child Python 3.13)
+    are always preserved.  In particular we deliberately do NOT apply a
+    cross-version heuristic here: the subprocess env builder cannot know
+    which Python version the child will ultimately run, so judging a user
+    path against the BACKEND's interpreter version would delete legitimate
+    user entries meant for a different child Python (#74817 follow-up).
+    Hermes-owned entries are identified by path ownership, not by version.
     """
     pp = env.get("PYTHONPATH")
     if not pp:
         return
 
     hermes_site_packages = _get_hermes_site_packages() if _in_venv else []
-    running_major = sys.version_info[0]
-    running_minor = sys.version_info[1]
 
     kept: list[str] = []
     stripped: list[str] = []
@@ -1490,30 +1479,13 @@ def _strip_mismatched_site_packages(env: dict) -> None:
         entry_path = Path(entry)
         should_strip = False
 
-        # --- Check 1: cross-version site-packages ---
-        # Look for a ``python{X.Y}`` path component and compare its version
-        # against the running interpreter.  If they differ, the entry's
-        # C extensions are ABI-incompatible - strip unconditionally.
-        # We search the full entry string (not ``entry_path.parts``) because
-        # ``Path.parts`` only splits on the host OS separator, so a Windows
-        # backslash path on a POSIX host would be a single un-split part.
-        m = _PYVER_IN_PATH_RE.search(entry)
-        if m:
-            entry_major = int(m.group(1))
-            entry_minor = int(m.group(2))
-            if (entry_major, entry_minor) != (running_major, running_minor):
-                should_strip = True
-        if should_strip:
-            stripped.append(entry)
-            continue
-
-        # --- Check 2: under Hermes venv site-packages ---
+        # --- Check 1: Hermes venv site-packages ---
         # The entry lives under the running interpreter's own venv
         # site-packages.  Redundant for subprocesses (they get their packages
         # via sys.path, not PYTHONPATH) and a common leak vector.
         # Use the regex (not ``entry_path.parts``) for cross-platform detection
         # so Windows backslash paths are caught on a POSIX host.
-        if not should_strip and _SITE_PACKAGES_RE.search(entry):
+        if _SITE_PACKAGES_RE.search(entry):
             for sp in hermes_site_packages:
                 if _is_path_under(entry_path, sp):
                     should_strip = True
@@ -1522,7 +1494,7 @@ def _strip_mismatched_site_packages(env: dict) -> None:
             stripped.append(entry)
             continue
 
-        # --- Check 3: Hermes repo root ---
+        # --- Check 2: Hermes repo root ---
         # The Electron app prepends the repo root so ``import tools`` works
         # in the backend.  Subprocesses don't need it and it can shadow
         # local packages of the same name.
@@ -1550,7 +1522,7 @@ def _strip_mismatched_site_packages(env: dict) -> None:
 
     if stripped:
         logger.debug(
-            "Stripped mismatched/Hermes-venv site-packages from PYTHONPATH: %s",
+            "Stripped Hermes-owned entries from PYTHONPATH: %s",
             stripped,
         )
 

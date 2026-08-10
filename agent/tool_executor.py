@@ -45,10 +45,13 @@ from tools.terminal_tool import (
 )
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
-    maybe_persist_tool_result,
     enforce_turn_budget,
 )
-from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
+from tools.budget_config import (
+    DEFAULT_BUDGET,
+    BudgetConfig,
+    budget_for_context_window,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -868,8 +871,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
+        block_result = None
         parsed_calls.append(
-            (tool_call, function_name, function_args, [], None, _ts_scope_block)
+            (tool_call, function_name, function_args, [], block_result, _ts_scope_block)
         )
 
     # ── Logging / callbacks ──────────────────────────────────────────
@@ -1467,13 +1471,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         agent._touch_activity(f"tool completed: {name} ({tool_duration:.1f}s){_status_suffix}")
 
         display_function_result = function_result
-        function_result = maybe_persist_tool_result(
-            content=function_result,
-            tool_name=name,
-            tool_use_id=tc.id,
-            env=get_active_env(effective_task_id),
-            config=_tool_budget,
-        ) if not _is_multimodal_tool_result(function_result) else function_result
 
         subdir_hints = agent._subdirectory_hints.check_tool_call(name, args)
         if subdir_hints:
@@ -1498,6 +1495,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             _tool_content,
             tc.id,
             effect_disposition=effect_disposition,
+            env=get_active_env(effective_task_id),
+            budget_config=_tool_budget,
+            source_args=args,
         )
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
@@ -2244,13 +2244,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             logging.debug("Tool result (%d chars): %s", len(_log_result), _log_result)
 
         display_function_result = function_result
-        function_result = maybe_persist_tool_result(
-            content=function_result,
-            tool_name=function_name,
-            tool_use_id=tool_call.id,
-            env=get_active_env(effective_task_id),
-            config=_tool_budget,
-        ) if not _is_multimodal_tool_result(function_result) else function_result
 
         # Discover subdirectory context files from tool arguments
         subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
@@ -2263,7 +2256,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
-        tool_message = make_tool_result_message(function_name, _tool_content, tool_call.id)
+        tool_message = make_tool_result_message(
+            function_name,
+            _tool_content,
+            tool_call.id,
+            env=get_active_env(effective_task_id),
+            budget_config=_tool_budget,
+            source_args=function_args,
+        )
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(

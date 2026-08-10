@@ -7,16 +7,20 @@ from dataclasses import dataclass, field
 from typing import Dict
 
 # Tools whose thresholds must never be overridden.
-# read_file=inf prevents infinite persist->read->persist loops.
-PINNED_THRESHOLDS: Dict[str, float] = {
-    "read_file": float("inf"),
-}
+# Model-visible safety must not depend on an infinite exemption. ``read_file``
+# loop prevention now lives in the final result policy, where the current page
+# is bounded inline instead of being persisted as another read_file handle.
+PINNED_THRESHOLDS: Dict[str, float] = {}
 
 # Defaults matching the current hardcoded values in tool_result_storage.py.
 # Kept here as the single source of truth; tool_result_storage.py imports these.
 DEFAULT_RESULT_SIZE_CHARS: int = 100_000
 DEFAULT_TURN_BUDGET_CHARS: int = 200_000
 DEFAULT_PREVIEW_SIZE_CHARS: int = 1_500
+
+# Universal model-visible tool-result policy. The fixed limit is expressed in
+# units of the active TokenCounter; the conservative fallback uses UTF-8 bytes.
+DEFAULT_RESULT_TOKEN_LIMIT: int = 10_000
 
 
 @dataclass(frozen=True)

@@ -148,7 +148,12 @@ def inject_memory_provider_tools(agent: Any) -> int:
         tool_name = schema["name"]
         if tool_name in existing_tool_names:
             continue
-        tools.append({"type": "function", "function": schema})
+        tools.append(
+            {
+                "type": "function",
+                "function": schema,
+            }
+        )
         valid_tool_names.add(tool_name)
         existing_tool_names.add(tool_name)
         added += 1

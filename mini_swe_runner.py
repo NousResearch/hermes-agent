@@ -26,6 +26,7 @@ Usage:
     python mini_swe_runner.py --prompts_file prompts.jsonl --output_file trajectories.jsonl --env docker
 """
 
+import copy
 import json
 import logging
 import os
@@ -35,6 +36,7 @@ from typing import List, Dict, Any, Optional
 import fire
 from dotenv import load_dotenv
 from agent.tool_dispatch_helpers import make_tool_result_message
+from tools.tool_result_storage import enforce_model_visible_tool_result_limits
 
 # Load environment variables
 load_dotenv()
@@ -225,7 +227,7 @@ class MiniSWERunner:
         self.env = None
         
         # Tool definition
-        self.tools = [TERMINAL_TOOL_DEFINITION]
+        self.tools = [copy.deepcopy(TERMINAL_TOOL_DEFINITION)]
         
         print("🤖 Mini-SWE Runner initialized")
         print(f"   Model: {self.model}")
@@ -448,7 +450,9 @@ Complete the user's task step by step."""
                 print(f"\n🔄 API call #{api_call_count}/{self.max_iterations}")
                 
                 # Prepare API messages
-                api_messages = [{"role": "system", "content": system_prompt}] + messages
+                api_messages = enforce_model_visible_tool_result_limits(
+                    [{"role": "system", "content": system_prompt}] + messages
+                )
                 
                 # Make API call
                 try:
@@ -528,7 +532,10 @@ Complete the user's task step by step."""
                         
                         # Add tool response
                         messages.append(make_tool_result_message(
-                            tc.function.name, result_json, tc.id,
+                            tc.function.name,
+                            result_json,
+                            tc.id,
+                            source_args=args,
                         ))
                         
                         print(f"   ✅ exit_code={result['exit_code']}, output={len(result['output'])} chars")

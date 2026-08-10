@@ -354,13 +354,7 @@ def test_execute_tool_calls_sequential_flushes_each_tool_result_before_next_disp
 
     agent._flush_messages_to_session_db = MagicMock(side_effect=_record_flush)
 
-    with (
-        patch("run_agent.handle_function_call", side_effect=_fake_dispatch) as disp,
-        patch(
-            "agent.tool_executor.maybe_persist_tool_result",
-            side_effect=lambda **kwargs: kwargs["content"],
-        ),
-    ):
+    with patch("run_agent.handle_function_call", side_effect=_fake_dispatch) as disp:
         agent._execute_tool_calls_sequential(assistant_message, messages, "task-1")
 
     # The mock proves we exercised the REAL sequential dispatch surface.
@@ -408,10 +402,6 @@ def test_sequential_keyboard_interrupt_emits_results_for_all_calls():
 
     with (
         patch("run_agent.handle_function_call", side_effect=_interrupt_dispatch),
-        patch(
-            "agent.tool_executor.maybe_persist_tool_result",
-            side_effect=lambda **kwargs: kwargs["content"],
-        ),
         pytest.raises(KeyboardInterrupt),
     ):
         agent._execute_tool_calls_sequential(assistant_message, messages, "task-1")
@@ -466,10 +456,6 @@ def test_tool_result_is_durable_before_ui_completion_on_abnormal_exit(
     try:
         with (
             dispatch_patch,
-            patch(
-                "agent.tool_executor.maybe_persist_tool_result",
-                side_effect=lambda **kwargs: kwargs["content"],
-            ),
             pytest.raises(GeneratorExit, match="simulated process termination"),
         ):
             if executor_mode == "sequential":
@@ -509,13 +495,7 @@ def test_failed_tool_result_persist_blocks_completion_projection(executor_mode):
         else patch.object(agent, "_invoke_tool", return_value="repository result")
     )
 
-    with (
-        dispatch_patch,
-        patch(
-            "agent.tool_executor.maybe_persist_tool_result",
-            side_effect=lambda **kwargs: kwargs["content"],
-        ),
-    ):
+    with dispatch_patch:
         if executor_mode == "sequential":
             agent._execute_tool_calls_sequential(
                 assistant_message,
@@ -544,10 +524,6 @@ def test_segmented_batch_stops_before_later_segment_after_persist_failure():
     with (
         patch.object(agent, "_invoke_tool", return_value="first result") as invoke,
         patch("run_agent.handle_function_call", return_value="second result") as dispatch,
-        patch(
-            "agent.tool_executor.maybe_persist_tool_result",
-            side_effect=lambda **kwargs: kwargs["content"],
-        ),
     ):
         execute_tool_calls_segmented(
             agent,
@@ -593,13 +569,7 @@ def test_execute_tool_calls_concurrent_flushes_each_tool_result_in_order():
 
     agent._flush_messages_to_session_db = MagicMock(side_effect=_record_flush)
 
-    with (
-        patch.object(agent, "_invoke_tool", side_effect=_fake_invoke) as inv,
-        patch(
-            "agent.tool_executor.maybe_persist_tool_result",
-            side_effect=lambda **kwargs: kwargs["content"],
-        ),
-    ):
+    with patch.object(agent, "_invoke_tool", side_effect=_fake_invoke) as inv:
         agent._execute_tool_calls_concurrent(assistant_message, messages, "task-1")
 
     # Proves the real concurrent dispatch surface was exercised.

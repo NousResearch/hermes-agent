@@ -304,10 +304,6 @@ def _run_fake_turn(tool_progress_mode: str, dispatch_mode: str = "sequential"):
     with (
         patch("run_agent.handle_function_call", side_effect=fake_dispatch),
         patch.object(agent, "_invoke_tool", side_effect=fake_dispatch),
-        patch(
-            "agent.tool_executor.maybe_persist_tool_result",
-            side_effect=lambda **kwargs: kwargs["content"],
-        ),
         # Swallow display writes so the test doesn't spam stdout; the point is
         # what lands in `messages`, not what prints.
         patch("builtins.print"),

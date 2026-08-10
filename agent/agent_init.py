@@ -2666,7 +2666,10 @@ def init_agent(
             _tname = _schema["name"]
             if _tname in _existing_tool_names:
                 continue  # already registered via plugin/cache path
-            _wrapped = {"type": "function", "function": _schema}
+            _wrapped = {
+                "type": "function",
+                "function": _schema,
+            }
             agent.tools.append(_wrapped)
             agent.valid_tool_names.add(_tname)
             agent._context_engine_tool_names.add(_tname)

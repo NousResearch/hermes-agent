@@ -34,6 +34,25 @@ def _td(name: str, description: str = "", properties: Dict[str, Any] | None = No
     }
 
 
+def test_model_visible_tool_schemas_do_not_expose_result_budget_metadata():
+    import model_tools
+
+    definitions = model_tools.get_tool_definitions(
+        enabled_toolsets=["terminal"],
+        quiet_mode=True,
+        skip_tool_search_assembly=True,
+    )
+    terminal = next(
+        item for item in definitions
+        if item.get("function", {}).get("name") == "terminal"
+    )
+
+    assert (
+        "result_token_limit"
+        not in terminal["function"]["parameters"]["properties"]
+    )
+
+
 # ---------------------------------------------------------------------------
 # Config parsing
 # ---------------------------------------------------------------------------

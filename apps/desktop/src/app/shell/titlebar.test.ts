@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  MACOS_TAHOE_DARWIN_MAJOR,
   TITLEBAR_CONTROL_OFFSET_X,
   TITLEBAR_CONTROL_SIZE,
   TITLEBAR_EDGE_INSET,
@@ -10,6 +11,7 @@ import {
   titlebarControlsPosition,
   titlebarControlsYNudge,
   titlebarIconSizeCss,
+  titlebarToolsRightCss,
   titlebarToolsWidthCss
 } from './titlebar'
 
@@ -44,15 +46,35 @@ describe('titlebarControlsPosition', () => {
 })
 
 describe('titlebarControlsYNudge', () => {
-  it('nudges the left cluster on macOS when traffic lights are visible', () => {
-    expect(titlebarControlsYNudge({ x: 24, y: 10 })).toBe(TITLEBAR_MAC_TRAFFIC_LIGHTS_Y_NUDGE)
+  it('nudges pre-Tahoe macOS when traffic lights are visible', () => {
+    expect(titlebarControlsYNudge({ windowButtonPosition: { x: 24, y: 10 }, darwinMajor: 24 })).toBe(
+      TITLEBAR_MAC_TRAFFIC_LIGHTS_Y_NUDGE
+    )
   })
 
-  it('stays flat on Windows/Linux and macOS fullscreen', () => {
-    expect(titlebarControlsYNudge(null)).toBe('0px')
+  it('stays flat on Tahoe, Windows/Linux, and macOS fullscreen', () => {
+    expect(titlebarControlsYNudge({ windowButtonPosition: { x: 24, y: 10 }, darwinMajor: MACOS_TAHOE_DARWIN_MAJOR })).toBe(
+      '0px'
+    )
+    expect(titlebarControlsYNudge({ windowButtonPosition: null })).toBe('0px')
+    expect(titlebarControlsYNudge({ windowButtonPosition: { x: 24, y: 10 }, isFullscreen: true })).toBe('0px')
   })
 
-  it('nudges while macOS window-button position is still unknown', () => {
-    expect(titlebarControlsYNudge(undefined)).toBe(TITLEBAR_MAC_TRAFFIC_LIGHTS_Y_NUDGE)
+  it('nudges while macOS window-button position is still unknown on pre-Tahoe', () => {
+    expect(titlebarControlsYNudge({ darwinMajor: 24 })).toBe(TITLEBAR_MAC_TRAFFIC_LIGHTS_Y_NUDGE)
+  })
+})
+
+describe('titlebarToolsRightCss', () => {
+  it('reserves the native overlay width when present', () => {
+    expect(titlebarToolsRightCss(144)).toBe('144px')
+  })
+
+  it('matches the left edge inset on macOS fullscreen', () => {
+    expect(titlebarToolsRightCss(0, { darwinMajor: 25, isFullscreen: true })).toBe(`${TITLEBAR_EDGE_INSET}px`)
+  })
+
+  it('keeps the default chrome inset otherwise', () => {
+    expect(titlebarToolsRightCss(0)).toBe('0.75rem')
   })
 })

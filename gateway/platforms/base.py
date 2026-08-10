@@ -98,11 +98,38 @@ def _float_env(name: str, default: float) -> float:
     return _or_default(lambda: float(raw) if raw else default, default)
 
 
-def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) -> dict | None:
+def _thread_metadata_for_source(
+    source,
+    reply_to_message_id: str | None = None,
+    *,
+    session_db=None,
+) -> dict | None:
     """Platform-aware thread metadata for adapter sends. Telegram DM topics route with
     ``message_thread_id`` + a reply anchor; anchorless synthetic/resumed sends fall back to
-    ``direct_messages_topic_id`` when supported."""
+    ``direct_messages_topic_id`` when supported.
+
+    ``session_db`` (optional) is the sync ``SessionDB`` (or ``AsyncSessionDB`` wrapper). When a
+    Telegram DM source has no ``thread_id`` (synthetic / recovered / post-session-split events),
+    it is used to recover the topic's ``thread_id`` from the DM topic binding so the reply routes
+    to the correct topic instead of the General home topic.
+    """
     thread_id = getattr(source, "thread_id", None)
+    if (
+        thread_id is None
+        and session_db is not None
+        and _platform_name(getattr(source, "platform", None)) == "telegram"
+        and getattr(source, "chat_type", None) == "dm"
+    ):
+        # Lazy import to keep gateway.platforms.base's import graph light and
+        # avoid a hard dependency at module load.
+        from gateway.session import recover_telegram_dm_thread_id
+
+        recovered = recover_telegram_dm_thread_id(
+            session_db,
+            source=source,
+        )
+        if recovered:
+            thread_id = recovered
     platform = _platform_name(getattr(source, "platform", None))
     metadata = {"thread_id": thread_id} if thread_id is not None else {}
     # Slack workspace identity is routing state: carry it so a multi-workspace Socket Mode
@@ -2267,6 +2294,22 @@ class BasePlatformAdapter(ABC):
         except Exception:
             return None
         return resolved if isinstance(resolved, str) and resolved.strip() else None
+
+    def _sync_session_db(self) -> Any:
+        """Return the sync ``SessionDB`` reachable from this adapter, if any.
+
+        The gateway runner hosts the session DB (``_runner._session_db``, an
+        ``AsyncSessionDB`` wrapper). Unwrap it to the sync ``SessionDB`` so the
+        reply path can run the Telegram DM topic-binding recovery synchronously.
+        Returns None when no runner / DB is attached (tests, bare adapters).
+        """
+        runner = getattr(self, "gateway_runner", None)
+        if runner is None:
+            return None
+        session_db = getattr(runner, "_session_db", None)
+        if session_db is None:
+            return None
+        return getattr(session_db, "_db", session_db)
 
     # ── Inbound text batching: subclasses supply ``_pending_text_batches`` /
     # ``_pending_text_batch_tasks`` dicts and ``_flush_text_batch(key)``.

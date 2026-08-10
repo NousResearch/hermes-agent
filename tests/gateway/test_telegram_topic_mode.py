@@ -827,6 +827,98 @@ def test_get_telegram_topic_binding_by_session_returns_binding(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Orchestrator-reply thread recovery (issue #83180)
+# ---------------------------------------------------------------------------
+
+def _make_topic_db(tmp_path, *, session_id="sess-83180", thread_id="17585"):
+    """Build a SessionDB with a Telegram DM topic binding for one session."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.enable_telegram_topic_mode(chat_id="208214988", user_id="208214988")
+    db.create_session(session_id=session_id, source="telegram", user_id="208214988")
+    db.bind_telegram_topic(
+        chat_id="208214988",
+        thread_id=thread_id,
+        user_id="208214988",
+        session_key=f"agent:main:telegram:dm:208214988:{thread_id}",
+        session_id=session_id,
+    )
+    return db
+
+
+def test_thread_metadata_recovers_thread_id_when_source_has_none(tmp_path):
+    """Reply path recovers thread_id from the DM topic binding when source.thread_id is None."""
+    from gateway.platforms.base import _thread_metadata_for_source
+
+    db = _make_topic_db(tmp_path)
+    source = _make_source(thread_id=None)  # Telegram DM, no thread anchor
+
+    meta = _thread_metadata_for_source(source, session_db=db)
+
+    assert meta is not None
+    assert meta["thread_id"] == "17585"
+    assert meta.get("telegram_dm_topic_reply_fallback") is True
+
+
+def test_thread_metadata_keeps_explicit_thread_id_when_present(tmp_path):
+    """Reply path does NOT overwrite a real thread_id with the binding."""
+    from gateway.platforms.base import _thread_metadata_for_source
+
+    db = _make_topic_db(tmp_path)
+    source = _make_source(thread_id="9999")
+
+    meta = _thread_metadata_for_source(source, session_db=db)
+
+    assert meta["thread_id"] == "9999"
+
+
+def test_thread_metadata_no_recovery_without_session_db(tmp_path):
+    """Without a session DB handle the reply path stays unthreaded (fail-open)."""
+    from gateway.platforms.base import _thread_metadata_for_source
+
+    db = _make_topic_db(tmp_path)
+    source = _make_source(thread_id=None)
+
+    meta = _thread_metadata_for_source(source, session_db=None)
+
+    assert meta is None
+
+
+def test_recover_telegram_dm_thread_id_by_session(tmp_path):
+    """Wake-synth recovery by raw session id returns the bound thread_id."""
+    from gateway.session import recover_telegram_dm_thread_id
+
+    db = _make_topic_db(tmp_path)
+
+    tid = recover_telegram_dm_thread_id(db, session_id="sess-83180")
+
+    assert tid == "17585"
+
+
+def test_recover_telegram_dm_thread_id_unknown_session_returns_none(tmp_path):
+    """A session id with no binding is authoritative — no chat-wide fallback."""
+    from gateway.session import recover_telegram_dm_thread_id
+
+    db = _make_topic_db(tmp_path)
+
+    tid = recover_telegram_dm_thread_id(db, session_id="sess-unknown")
+
+    assert tid is None
+
+
+def test_recover_telegram_dm_thread_id_unwraps_async_db(tmp_path):
+    """The helper accepts an AsyncSessionDB wrapper the same as the sync handle."""
+    from hermes_state import AsyncSessionDB
+    from gateway.session import recover_telegram_dm_thread_id
+
+    db = _make_topic_db(tmp_path)
+    async_db = AsyncSessionDB(db)
+
+    tid = recover_telegram_dm_thread_id(async_db, session_id="sess-83180")
+
+    assert tid == "17585"
+
+
+# ---------------------------------------------------------------------------
 # Test for session-split thread_id recovery (issue #27166)
 # ---------------------------------------------------------------------------
 

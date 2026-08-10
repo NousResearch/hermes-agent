@@ -200,7 +200,7 @@ class TestLifecycle:
     def test_named_custom_provider_selects_codex_model_provider(self, monkeypatch):
         """#75186: for ``provider=custom`` + a configured ``providers.<name>`` entry, the session built by
         ``_ensure_codex_session`` sends ``model`` + ``modelProvider=<name>`` on thread/start and never the
-        API key; openai/openai-codex agents keep codex's defaults (cwd only)."""
+        API key; openai/openai-codex agents send the selected model with codex's own provider."""
         import hermes_cli.runtime_provider as rp
         from agent.codex_runtime import _ensure_codex_session
         from agent.transports import codex_app_server_session as sess_mod
@@ -224,8 +224,9 @@ class TestLifecycle:
         base = {"cwd": "/tmp", "personality": "none"}
         assert named == {**base, "modelProvider": "my-gateway", "model": "gpt-5.4"}
         assert "sk-secret" not in repr(named)
-        assert thread_start_params(provider="openai-codex", requested_provider="openai-codex", model="gpt-5.4") == base
-        assert thread_start_params(provider="custom", requested_provider="custom", model="gpt-5.4") == base
+        assert thread_start_params(provider="openai-codex", requested_provider="openai-codex", model="gpt-5.4") == {
+            **base, "model": "gpt-5.4"}
+        assert thread_start_params(provider="custom", requested_provider="custom", model="gpt-5.4") == {**base, "model": "gpt-5.4"}
 
     def test_stored_thread_is_resumed_and_an_unresumable_one_falls_back_to_a_fresh_start(self):
         """#100531: a stored id goes out as ``thread/resume`` (same params as thread/start, never a

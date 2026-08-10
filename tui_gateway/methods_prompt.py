@@ -257,8 +257,18 @@ def _(rid, params: dict) -> dict:
                     # class #80216 fixed for /retry. On an uncompacted session
                     # all rows are active=1, so this is behaviorally identical
                     # to the full replace.
+                    # archive_dropped: a rewind overwrites turns the user may
+                    # not have meant to drop, and this write is the last step
+                    # before they are gone — three reported incidents ended
+                    # here with nothing to restore from (#70516, #80763,
+                    # #82756). Soft-archiving keeps them on disk (active=0) and
+                    # in the FTS index, so a mis-aimed cut is recoverable
+                    # instead of terminal. The live transcript is unchanged.
                     db.replace_messages(
-                        session["session_key"], truncated, active_only=True
+                        session["session_key"],
+                        truncated,
+                        active_only=True,
+                        archive_dropped=True,
                     )
                 except Exception as exc:
                     logger.error(

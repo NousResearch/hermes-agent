@@ -4352,7 +4352,7 @@ def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False):
+        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
             replaced.append((key, list(messages)))
 
     history = [
@@ -4406,7 +4406,7 @@ def test_prompt_submit_refuses_unconfirmed_nonempty_truncation(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages):
+        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
             replaced.append((key, list(messages)))
 
     history = [
@@ -4469,7 +4469,7 @@ def test_prompt_submit_refuses_empty_truncation_without_confirm(monkeypatch):
     replaced = []
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False):
+        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
             replaced.append((key, list(messages)))
 
     history = [
@@ -4556,7 +4556,7 @@ def test_prompt_submit_empty_truncation_allowed_with_confirm(monkeypatch):
             self._target()
 
     class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False):
+        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
             replaced.append((key, list(messages)))
 
     history = [
@@ -9535,7 +9535,7 @@ def test_prompt_submit_can_truncate_before_user_ordinal(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def replace_messages(self, session_id, messages, active_only=False):
+        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
             self.replaced.append((session_id, list(messages)))
 
     stub_db = _StubDb()
@@ -9592,7 +9592,7 @@ def test_prompt_submit_refuses_turn_when_truncate_persist_fails(monkeypatch):
     server._sessions["trunc-fail-sid"] = sess
 
     class _FailDb:
-        def replace_messages(self, session_id, messages, active_only=False):
+        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
             raise OSError("disk full")
 
     monkeypatch.setattr(server, "_get_db", lambda: _FailDb())
@@ -9684,7 +9684,7 @@ def test_prompt_submit_truncate_ordinal_skips_display_kind_rows(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def replace_messages(self, session_id, messages, active_only=False):
+        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
             self.replaced.append((session_id, list(messages)))
 
     stub_db = _StubDb()
@@ -16762,7 +16762,7 @@ def test_personality_marker_does_not_shift_truncate_ordinal(monkeypatch):
         def __init__(self):
             self.replaced = []
 
-        def replace_messages(self, session_id, messages, active_only=False):
+        def replace_messages(self, session_id, messages, active_only=False, archive_dropped=False):
             self.replaced.append((session_id, list(messages)))
 
     session = _session(
@@ -16835,4 +16835,83 @@ def test_personality_marker_does_not_shift_truncate_ordinal(monkeypatch):
         )
     finally:
         server._sessions.pop("personality-ordinal-sid", None)
+
+
+def test_prompt_submit_truncation_archives_instead_of_deleting(monkeypatch):
+    """The rewind write must be recoverable, not a hard DELETE.
+
+    #70516 / #80763 / #82756 all ended at this one call, and all three were
+    unrecoverable for the same reason: `replace_messages` DELETEs the rows and
+    the FTS entry goes with them. Guarding the *aim* of a rewind still leaves
+    every other way of aiming it wrong terminal, so the write itself has to
+    stop destroying. The storage-layer contract this relies on is pinned in
+    tests/hermes_state/test_replace_messages_archive_siblings.py.
+    """
+
+    captured = {}
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            return {
+                "final_response": "reply",
+                "messages": [
+                    *(conversation_history or []),
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "reply"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    class _StubDb:
+        def replace_messages(
+            self, session_id, messages, active_only=False, archive_dropped=False
+        ):
+            captured["active_only"] = active_only
+            captured["archive_dropped"] = archive_dropped
+
+    server._sessions["archive-trunc-sid"] = _session(
+        agent=_Agent(),
+        history=[
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "first reply"},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "second reply"},
+        ],
+    )
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_session_info", lambda *a, **k: {})
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_get_db", lambda: _StubDb())
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "archive-trunc-sid",
+                    "text": "second, reworded",
+                    "truncate_before_user_ordinal": 1,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+        assert captured.get("archive_dropped") is True, (
+            "a rewind must soft-archive the turns it drops, not DELETE them"
+        )
+        # #80216: still must not touch rows archived by an earlier compaction.
+        assert captured.get("active_only") is True
+    finally:
+        server._sessions.pop("archive-trunc-sid", None)
 

@@ -22,7 +22,7 @@ import {
 
 import { appViewForPath, isOverlayView } from '../routes'
 
-import { titlebarButtonClass, titlebarIconSizeCss, titlebarToolClusterClass, TITLEBAR_ICON_BADGE_SCALE } from './titlebar'
+import { TITLEBAR_ICON_BADGE_SCALE, titlebarButtonClass, titlebarIconSizeCss, titlebarToolClusterClass } from './titlebar'
 import { TitlebarIcon } from './titlebar-icon'
 
 export interface TitlebarTool {

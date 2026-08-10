@@ -182,6 +182,88 @@ def test_request_review_unknown_task_returns_false(kanban_home: Path) -> None:
         assert kb.request_review(conn, "t_deadbeefcafe") is False
 
 
+def test_request_review_refuses_to_clear_live_claim_without_ownership(
+    kanban_home: Path,
+) -> None:
+    """M1 regression: a run-id-less caller must not steal a live worker's claim.
+
+    ``request_review`` on a running+claimed task without ``expected_run_id``
+    fails with a distinct reason instead of silently NULLing claim_lock /
+    worker_pid. ``force=True`` (explicit human override) and the worker path
+    (``expected_run_id=<own run>``) both still work.
+    """
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="live claim", assignee="worker")
+        claimed = kb.claim_task(conn, tid)
+        assert claimed is not None
+
+        # 1) No run id, no force -> refused with a distinct reason.
+        ok, reason = kb.request_review(conn, tid, with_reason=True)
+        assert ok is False
+        assert reason is not None and "live claim" in reason
+        row = conn.execute(
+            "SELECT status, claim_lock, current_run_id FROM tasks WHERE id = ?",
+            (tid,),
+        ).fetchone()
+        assert row["status"] == "running"
+        assert row["claim_lock"] is not None  # live claim untouched
+        # bool-mode caller sees plain False.
+        assert kb.request_review(conn, tid) is False
+
+        # 2) Worker path: proving ownership via expected_run_id works.
+        assert kb.request_review(
+            conn, tid, summary="done", expected_run_id=claimed.current_run_id,
+        ) is True
+        assert kb.get_task(conn, tid).status == "review"
+
+    # 3) force=True: explicit human override on a fresh live-claimed task.
+    with kb.connect() as conn:
+        tid2 = kb.create_task(conn, title="forced", assignee="worker")
+        assert kb.claim_task(conn, tid2) is not None
+        assert kb.request_review(conn, tid2, summary="override", force=True) is True
+        assert kb.get_task(conn, tid2).status == "review"
+
+
+def test_request_review_malformed_provenance_gets_distinct_reason(
+    kanban_home: Path,
+) -> None:
+    """M1 regression: malformed re-review provenance is a named failure, not
+    the generic 'unknown id or not in running/ready'."""
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="provenance", assignee="builder")
+        claimed = kb.claim_task(conn, tid)
+        assert kb.request_review(
+            conn, tid, summary="v1", reviewer="reviewer",
+            expected_run_id=claimed.current_run_id,
+        )
+        review = kb.claim_review_task(conn, tid)
+        assert review is not None
+        assert kb.request_changes(
+            conn, tid, reason="fix", expected_run_id=review.current_run_id,
+        ) == (True, "builder")
+        # Corrupt the changes_requested payload so re-review cannot recover
+        # the prior reviewer.
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE task_events SET payload = '{\"reviewer\": 42}' "
+                "WHERE task_id = ? AND kind = 'changes_requested'",
+                (tid,),
+            )
+        retry = kb.claim_task(conn, tid, claimer="builder:retry")
+        assert retry is not None
+        ok, reason = kb.request_review(
+            conn, tid, summary="v2",
+            expected_run_id=retry.current_run_id, with_reason=True,
+        )
+        assert ok is False
+        assert reason is not None and "provenance" in reason
+        # Passing reviewer explicitly recovers, as the reason instructs.
+        assert kb.request_review(
+            conn, tid, summary="v2", reviewer="reviewer",
+            expected_run_id=retry.current_run_id,
+        ) is True
+
+
 @pytest.mark.parametrize("blank", ["   ", "\n", "\t\n  "])
 def test_request_review_whitespace_only_summary_does_not_crash(
     kanban_home: Path, blank: str

@@ -6131,7 +6131,9 @@ def request_review(
     metadata: Optional[dict] = None,
     reviewer: Optional[str] = None,
     expected_run_id: Optional[int] = None,
-) -> bool:
+    force: bool = False,
+    with_reason: bool = False,
+):
     """Transition implementation work into the first-class review phase.
 
     Unlike :func:`block_task`, this transition never touches block recurrence
@@ -6140,17 +6142,46 @@ def request_review(
     right profile.  Supplying ``reviewer`` reassigns the task before it is
     exposed to the review dispatcher.  On re-review, omitting it reuses the
     reviewer provenance persisted by the latest ``changes_requested`` event.
+
+    When the task is ``running`` under a live claim, a caller that supplies no
+    ``expected_run_id`` must pass ``force=True`` (explicit human/CLI override)
+    — otherwise the request is refused instead of silently clearing the live
+    worker's ``claim_lock``/``worker_pid``. Workers prove ownership by passing
+    their own run id as ``expected_run_id`` (unchanged).
+
+    Returns ``bool`` by default. With ``with_reason=True`` returns
+    ``(ok, reason)`` mirroring :func:`request_changes` — ``reason`` is a
+    diagnostic string on failure, ``None`` on success.
     """
+
+    def _ret(ok: bool, reason: Optional[str] = None):
+        return (ok, reason) if with_reason else ok
+
     summary = redact_review_value(summary)
     metadata = redact_review_value(metadata)
     with write_txn(conn):
         if not _parents_satisfied(conn, task_id):
-            return False
+            return _ret(False, "parent dependencies are not satisfied")
         trow = conn.execute(
-            "SELECT assignee FROM tasks WHERE id = ?", (task_id,),
+            "SELECT assignee, status, claim_lock, current_run_id "
+            "FROM tasks WHERE id = ?", (task_id,),
         ).fetchone()
         if trow is None:
-            return False
+            return _ret(False, "task not found")
+        # Refuse to clear a live worker's claim without proof of ownership
+        # (expected_run_id) or an explicit human override (force=True).
+        if (
+            expected_run_id is None
+            and not force
+            and trow["status"] == "running"
+            and trow["claim_lock"] is not None
+        ):
+            return _ret(
+                False,
+                "task is running under a live claim; pass expected_run_id "
+                "(worker ownership) or force=True (explicit operator "
+                "override) instead of clearing the live run's claim",
+            )
         implementer = trow["assignee"]
         if reviewer is None:
             changes_run = conn.execute(
@@ -6183,7 +6214,12 @@ def request_review(
             )
             if changes_run is not None:
                 if not isinstance(prior_reviewer, str) or not prior_reviewer.strip():
-                    return False
+                    return _ret(
+                        False,
+                        "re-review has no durable reviewer provenance (the "
+                        "latest changes_requested event is missing or "
+                        "malformed); pass reviewer= explicitly",
+                    )
                 reviewer = prior_reviewer
         reviewer = _canonical_assignee(reviewer) if reviewer is not None else None
         assignee_sql = ", assignee = ?" if reviewer is not None else ""
@@ -6212,7 +6248,11 @@ def request_review(
             params,
         )
         if cur.rowcount != 1:
-            return False
+            return _ret(
+                False,
+                "task is not in running/ready (or expected_run_id did not "
+                "match the current run)",
+            )
         run_id = _end_run(
             conn,
             task_id,
@@ -6242,7 +6282,7 @@ def request_review(
             },
             run_id=run_id,
         )
-    return True
+    return _ret(True)
 
 
 def request_changes(

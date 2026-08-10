@@ -916,6 +916,9 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                     conn, task_id, summary=payload.summary,
                     metadata=payload.metadata,
                     reviewer=(payload.assignee or None),
+                    # Dashboard PATCH is an explicit human action — allowed
+                    # to override a live worker claim (M1 guard).
+                    force=True,
                 )
                 if ok and review_assignee_deferred and not payload.assignee:
                     ok = kanban_db.assign_task(conn, task_id, None)
@@ -1380,6 +1383,8 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
                             conn, tid, summary=payload.summary,
                             metadata=payload.metadata,
                             reviewer=(payload.assignee or None),
+                            # Bulk dashboard action: explicit human override.
+                            force=True,
                         )
                     elif s == "ready":
                         cur = kanban_db.get_task(conn, tid)

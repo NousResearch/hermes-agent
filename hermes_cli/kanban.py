@@ -672,6 +672,13 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         "--metadata", default=None,
         help="JSON object with structured reviewer handoff facts.",
     )
+    p_request_review.add_argument(
+        "--force", action="store_true",
+        help=(
+            "Override the live-claim guard: move a running, claimed task to "
+            "review even without owning its run (clears the worker's claim)."
+        ),
+    )
 
     p_request_changes = sub.add_parser(
         "request-changes",
@@ -2415,16 +2422,20 @@ def _cmd_request_review(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
-        if not kb.request_review(
+        ok, reason = kb.request_review(
             conn,
             tid,
             summary=summary,
             metadata=metadata,
             reviewer=reviewer,
             expected_run_id=_worker_run_id_for(tid),
-        ):
+            force=bool(getattr(args, "force", False)),
+            with_reason=True,
+        )
+        if not ok:
+            detail = reason or "not running/ready?"
             print(
-                f"cannot request review for {tid} (not running/ready?)",
+                f"cannot request review for {tid}: {detail}",
                 file=sys.stderr,
             )
             return 1

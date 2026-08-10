@@ -944,17 +944,18 @@ def _handle_request_review(args: dict, **kw) -> str:
                     "Provide acceptance evidence matching the card before "
                     "requesting review."
                 )
-            ok = kb.request_review(
+            ok, fail_reason = kb.request_review(
                 conn, tid,
                 summary=summary,
                 metadata=metadata,
                 reviewer=reviewer,
                 expected_run_id=_worker_run_id(tid),
+                with_reason=True,
             )
             if not ok:
+                detail = fail_reason or "unknown id or not in running/ready"
                 return tool_error(
-                    f"could not request review for {tid} (unknown id or not "
-                    f"in running/ready)"
+                    f"could not request review for {tid}: {detail}"
                 )
             run = kb.latest_run(conn, tid)
             landed = kb.get_task(conn, tid)

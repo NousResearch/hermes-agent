@@ -2140,6 +2140,18 @@ def _update_node_dependencies() -> list[str]:
     # Hermes profile using this checkout. Keep one per-checkout cache under the
     # shared Hermes root rather than rerunning npm once per named profile.
     shared_hermes_root = get_default_hermes_root()
+
+    # Best-effort: warm npx's cache for agent-browser (#43564). Runs before
+    # the lockfile-unchanged early return below since that's the common
+    # `hermes update` case. Synchronous and can block ~11s on a true cold
+    # cache (~0.4s once warm) — print first so that doesn't look like a hang.
+    print("→ Warming npx cache for agent-browser...")
+    try:
+        from tools.browser_tool import warm_agent_browser_npx_cache
+        warm_agent_browser_npx_cache()
+    except Exception:
+        pass
+
     if not _m()._npm_lockfile_changed(shared_hermes_root):
         logger.info("npm lockfile unchanged, skipping npm install")
         return []
@@ -2194,17 +2206,6 @@ def _update_node_dependencies() -> list[str]:
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
         failures = _partial_update_failure("ui-tui, web workspaces")
-
-    # Fire-and-forget: warm npx's cache for agent-browser so the first
-    # browser-tool call in a session doesn't pay a registry fetch that used
-    # to happen here for free back when agent-browser was an eager root
-    # dependency (see #43564). Independent of the workspace install result
-    # above — never blocks or fails `hermes update`.
-    try:
-        from tools.browser_tool import warm_agent_browser_npx_cache
-        warm_agent_browser_npx_cache()
-    except Exception:
-        pass
 
     return failures
 

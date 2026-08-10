@@ -85,7 +85,40 @@ export function closeHud(): void {
   void api.close()
 }
 
-export const toggleHud = (sessionId?: null | string) => ($hudActive.get() ? closeHud() : openHud(sessionId))
+/**
+ * Enter HUD mode, leave it, or point the open HUD at another conversation.
+ *
+ * The retarget rung is why `$hudSession` exists: asking for HUD mode from a tab
+ * the HUD is NOT on means "put this conversation in the HUD", and main already
+ * implements that (openHudWindow sends `hud:goto`, or respawns across a profile
+ * boundary). Reading `$hudActive` alone never reached it — the toggle dismissed
+ * the window instead, so the retarget path was unreachable from the UI.
+ *
+ * Two cases still dismiss, deliberately:
+ * - No target (a fresh draft with nothing selected). There is nothing to
+ *   retarget onto, and "the toggle stopped closing the HUD" is the worse bug.
+ * - Inside the HUD's own window, where the toggle is the way OUT. Its renderer
+ *   never subscribes to the state broadcast (useHudHandoff returns early there),
+ *   so `$hudSession` is always null and every target would read as a retarget —
+ *   leaving the exit keybind unable to exit.
+ */
+export function toggleHud(sessionId?: null | string): void {
+  if (!$hudActive.get()) {
+    openHud(sessionId)
+
+    return
+  }
+
+  const target = sessionId ?? null
+
+  if (!target || isHudWindow() || target === $hudSession.get()) {
+    closeHud()
+
+    return
+  }
+
+  openHud(target)
+}
 
 /** Tell main which session this HUD is on. Main holds it (the HUD's renderer
  *  doesn't outlive the window) and hands it back in the close broadcast so the

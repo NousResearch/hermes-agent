@@ -45,6 +45,9 @@ const isDesktopRelevant = (row: AgentPluginRow) => {
   return !key || !HIDDEN_KEY_PREFIXES.some(prefix => key.startsWith(prefix))
 }
 
+const agentPluginRowKey = (row: AgentPluginRow) =>
+  row.key ?? [row.name, row.source, row.version, row.description].join('\0')
+
 function reveal(file: string) {
   void window.hermesDesktop?.revealPath?.(file)?.catch(() => undefined)
 }
@@ -240,7 +243,7 @@ function AgentPluginsSection() {
       ) : (
         <div>
           {sorted.map(row => (
-            <AgentPluginRowView key={row.key || row.name} row={row} />
+            <AgentPluginRowView key={agentPluginRowKey(row)} row={row} />
           ))}
         </div>
       )}

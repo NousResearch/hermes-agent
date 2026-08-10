@@ -40,6 +40,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup()
+  vi.restoreAllMocks()
 })
 
 describe('PluginsSettings', () => {
@@ -66,6 +67,27 @@ describe('PluginsSettings', () => {
         enable: true
       })
     )
+  })
+
+  it('keeps duplicate-named legacy rows distinct after a name-addressed toggle', async () => {
+    const sibling = {
+      ...legacyRow,
+      description: 'A second plugin category with the same legacy name'
+    }
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+
+    $agentPlugins.set([legacyRow, sibling])
+    requestGateway.mockResolvedValue({ ok: true, plugin: { ...legacyRow, status: 'enabled' } })
+
+    render(<PluginsSettings />)
+    fireEvent.click(screen.getAllByRole('switch', { name: 'Enable Legacy plugin' })[0])
+
+    await waitFor(() =>
+      expect(screen.getAllByRole('switch', { name: 'Disable Legacy plugin' })).toHaveLength(2)
+    )
+
+    expect(screen.getByText(sibling.description)).toBeTruthy()
+    expect(consoleError.mock.calls.flat().join(' ')).not.toContain('same key')
   })
 
   it('keeps using the canonical key when the backend provides one', async () => {

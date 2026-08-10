@@ -96,10 +96,14 @@ export async function toggleAgentPlugin(
     const refreshed = result.plugin
 
     if (refreshed) {
+      const currentRows = $agentPlugins.get()
+
       $agentPlugins.set(
-        $agentPlugins
-          .get()
-          .map(current => ((current.key ?? current.name) === address ? { ...current, ...refreshed } : current))
+        row.key
+          ? currentRows.map(current => (current.key === row.key ? { ...current, ...refreshed } : current))
+          : currentRows.map(current =>
+              current.name === row.name ? { ...current, status: refreshed.status } : current
+            )
       )
     } else {
       await loadAgentPlugins(request)

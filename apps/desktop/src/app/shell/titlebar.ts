@@ -22,15 +22,46 @@ export const TITLEBAR_FALLBACK_WINDOW_BUTTON_X = 24
 // (traffic lights are hidden). Matches the right-cluster's 0.75rem padding.
 export const TITLEBAR_EDGE_INSET = 14
 
+// macOS Tahoe = Darwin 25+. Keep in sync with electron/titlebar-overlay-width.ts.
+export const MACOS_TAHOE_DARWIN_MAJOR = 25
+
 // macOS traffic-light row only: nudge the left toolbar cluster down to sit on
-// the same optical center as the native buttons. null windowButtonPosition means
-// Windows/Linux (controls on the right) or macOS fullscreen (lights hidden).
+// the same optical center as the native buttons on pre-Tahoe macOS. null
+// windowButtonPosition means Windows/Linux, macOS fullscreen, or Tahoe.
 export const TITLEBAR_MAC_TRAFFIC_LIGHTS_Y_NUDGE = 'calc(var(--spacing) * 0.9)'
 
-export function titlebarControlsYNudge(
-  windowButtonPosition: HermesConnection['windowButtonPosition'] | undefined
+export interface TitlebarChromeContext {
+  darwinMajor?: number
+  isFullscreen?: boolean
+  windowButtonPosition?: HermesConnection['windowButtonPosition']
+}
+
+export function titlebarControlsYNudge({
+  darwinMajor = 0,
+  isFullscreen = false,
+  windowButtonPosition
+}: TitlebarChromeContext = {}): string {
+  if (isFullscreen || windowButtonPosition === null || darwinMajor >= MACOS_TAHOE_DARWIN_MAJOR) {
+    return '0px'
+  }
+
+  return TITLEBAR_MAC_TRAFFIC_LIGHTS_Y_NUDGE
+}
+
+/** Right-cluster inset — WCO width when present; macOS fullscreen matches left edge inset. */
+export function titlebarToolsRightCss(
+  nativeOverlayWidth: number,
+  { darwinMajor = 0, isFullscreen = false }: Pick<TitlebarChromeContext, 'darwinMajor' | 'isFullscreen'> = {}
 ): string {
-  return windowButtonPosition !== null ? TITLEBAR_MAC_TRAFFIC_LIGHTS_Y_NUDGE : '0px'
+  if (nativeOverlayWidth > 0) {
+    return `${nativeOverlayWidth}px`
+  }
+
+  if (isFullscreen && darwinMajor > 0) {
+    return `${TITLEBAR_EDGE_INSET}px`
+  }
+
+  return '0.75rem'
 }
 
 // Titlebar palette only. All sizing/radius/cursor/centering come from the

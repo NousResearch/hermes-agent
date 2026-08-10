@@ -336,6 +336,64 @@ class TestConnectionLifecycle:
         connect_polling.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_connect_accepts_runner_reconnect_keyword(self, monkeypatch):
+        monkeypatch.delenv("ZALO_BOT_TOKEN", raising=False)
+        adapter = zalo.ZaloBotAdapter(PlatformConfig(enabled=True, token="tok"))
+        monkeypatch.setattr(
+            zalo.httpx,
+            "AsyncClient",
+            lambda **_kwargs: SimpleNamespace(aclose=AsyncMock()),
+        )
+        monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *_args: True)
+        monkeypatch.setattr(adapter, "_probe_bot", AsyncMock(return_value=True))
+        connect_polling = AsyncMock(return_value=True)
+        monkeypatch.setattr(adapter, "_connect_polling", connect_polling)
+
+        assert await adapter.connect(is_reconnect=True) is True
+        connect_polling.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_webhook_application_enforces_body_limit(self, monkeypatch):
+        monkeypatch.delenv("ZALO_BOT_TOKEN", raising=False)
+        adapter = zalo.ZaloBotAdapter(
+            PlatformConfig(
+                enabled=True,
+                token="tok",
+                extra={
+                    "connection_mode": "webhook",
+                    "webhook_public_url": "https://example.com/hook",
+                    "webhook_secret": "secret-123",
+                },
+            )
+        )
+        response = SimpleNamespace(
+            content=b"{}",
+            status_code=200,
+            json=lambda: {"ok": True},
+        )
+        adapter._http_client = SimpleNamespace(  # type: ignore[assignment]
+            post=AsyncMock(return_value=response),
+            aclose=AsyncMock(),
+        )
+        app = SimpleNamespace(router=SimpleNamespace(add_post=MagicMock()))
+        application = MagicMock(return_value=app)
+        runner = SimpleNamespace(setup=AsyncMock(), cleanup=AsyncMock())
+        site = SimpleNamespace(start=AsyncMock(), stop=AsyncMock())
+        fake_web = SimpleNamespace(
+            Application=application,
+            AppRunner=MagicMock(return_value=runner),
+            TCPSite=MagicMock(return_value=site),
+        )
+        monkeypatch.setattr(zalo, "web", fake_web)
+        monkeypatch.setattr(zalo, "_ensure_webhook_dependency", lambda: True)
+
+        assert await adapter._connect_webhook() is True
+        application.assert_called_once_with(client_max_size=zalo.WEBHOOK_MAX_BYTES)
+        app.router.add_post.assert_called_once_with(
+            "/hook", adapter._handle_webhook_post
+        )
+
+    @pytest.mark.asyncio
     async def test_connect_releases_lock_when_get_me_rejects_token(self, monkeypatch):
         monkeypatch.delenv("ZALO_BOT_TOKEN", raising=False)
 
@@ -709,6 +767,30 @@ class TestPluginIntegration:
         assert home_channel is not None
         assert home_channel.chat_id == "chat-1"
         assert platform in config.get_connected_platforms()
+
+    def test_yaml_only_config_constructs_registered_adapter(
+        self, monkeypatch, tmp_path
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("ZALO_BOT_TOKEN", raising=False)
+        (tmp_path / "config.yaml").write_text(
+            "platforms:\n  zalo:\n    enabled: true\n    token: yaml-only-token\n",
+            encoding="utf-8",
+        )
+        from gateway.config import load_gateway_config
+        from gateway.platform_registry import platform_registry
+        from hermes_cli.plugins import discover_plugins
+
+        discover_plugins()
+        config = load_gateway_config()
+        platform_config = config.platforms[Platform("zalo")]
+
+        adapter = platform_registry.create_adapter("zalo", platform_config)
+
+        assert adapter is not None
+        assert adapter.__class__.__name__ == "ZaloBotAdapter"
+        assert adapter.platform == Platform("zalo")
+        assert adapter._token == "yaml-only-token"
 
     def test_register_exposes_setup_status_send_and_cron_hooks(self):
         ctx = SimpleNamespace(register_platform=MagicMock())

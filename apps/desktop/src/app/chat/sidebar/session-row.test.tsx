@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { openSession } from '@/app/open-session'
 import type { SessionInfo } from '@/hermes'
+import { ar } from '@/i18n/ar'
 import { en } from '@/i18n/en'
 import { ja } from '@/i18n/ja'
 import { zh } from '@/i18n/zh'
@@ -396,6 +397,7 @@ describe('SidebarSessionRow', () => {
 
   it('keeps archived-session settings copy gesture-neutral in the updated locales', () => {
     const archivedSessionCopy = [
+      ar.settings.sessions.archivedIntro,
       en.settings.sessions.archivedIntro,
       zh.settings.sessions.archivedIntro,
       zhHant.settings.sessions.archivedIntro,

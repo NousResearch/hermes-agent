@@ -276,6 +276,13 @@ DEFAULT_CONFIG = {
         "reasoning_overrides": {},
     },
 
+    # A stable OpenTelemetry identity for bundled observability plugins. The
+    # default keeps existing credential-only Langfuse installations working;
+    # `hermes tools` writes an explicit value when a user sets Langfuse up.
+    "observability": {
+        "service_name": "hermes-agent",
+    },
+
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",

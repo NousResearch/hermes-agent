@@ -19,6 +19,16 @@ database:
   # journal_size_limit: 67108864 # cap the WAL/journal file size in bytes
 
 # =============================================================================
+# Observability Configuration
+# =============================================================================
+# Stable OpenTelemetry service identity used by observability plugins.
+# Existing Langfuse installations warn and default to "hermes-agent" when this
+# key is absent. Use a distinct value when multiple agents share one project.
+# An explicit empty value or "unknown_service" prevents Langfuse from loading.
+observability:
+  service_name: "hermes-agent"
+
+# =============================================================================
 # Model Configuration
 # =============================================================================
 model:

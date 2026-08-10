@@ -137,6 +137,8 @@ import {
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 } from './hardening'
 import { cursorPointInWindow } from './hud-cursor'
+import { createHudSnapShortcut } from './hud-snap-shortcut'
+import { snapHudBounds } from './hud-snap'
 import { buildHudWindowUrl } from './hud-url'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { ensureMainWindow } from './main-window-lifecycle'
@@ -9211,6 +9213,45 @@ const schedulePersistHudState = debounce(persistHudState, 250)
 // and, when the answer has not changed, nothing else.
 const HUD_CURSOR_POLL_MS = 60
 
+// Snap-to-pointer — global ⌘⇧G while the HUD is open (tap, not hold).
+const HUD_SNAP_ANCHOR_Y = 48
+
+function applyHudSnapToPointer() {
+  if (!hudWindow || hudWindow.isDestroyed()) {
+    return
+  }
+
+  const cursor = screen.getCursorScreenPoint()
+  const bounds = hudWindow.getBounds()
+  const display = screen.getDisplayNearestPoint(cursor)
+  const workArea = display?.workArea ?? bounds
+  const anchor = { x: Math.round(bounds.width / 2), y: HUD_SNAP_ANCHOR_Y }
+  const origin = snapHudBounds(
+    cursor,
+    anchor,
+    { width: bounds.width, height: bounds.height },
+    hudWindow.webContents.getZoomFactor(),
+    workArea
+  )
+
+  // setBounds — NOT setPosition alone: on Windows, a transparent frameless
+  // window silently grows ~1px per setPosition call (see move-by handler).
+  hudWindow.setBounds({
+    x: origin.x,
+    y: origin.y,
+    width: bounds.width,
+    height: bounds.height
+  })
+}
+
+const hudSnapShortcut = createHudSnapShortcut(globalShortcut, applyHudSnapToPointer)
+
+function registerHudSnapShortcut() {
+  if (!hudSnapShortcut.register()) {
+    rememberLog('[hud] snap shortcut unavailable — CommandOrControl+Shift+G may be owned by another app')
+  }
+}
+
 /**
  * Feed the HUD renderer the cursor position on Linux.
  *
@@ -9450,6 +9491,7 @@ function openHudWindow(sessionId, profile) {
       hudProfile = profileKey
       hudWindow = spawnHudWindow(sessionId, profileKey)
       broadcastHudState(true)
+      registerHudSnapShortcut()
 
       return hudWindow
     }
@@ -9475,11 +9517,14 @@ function openHudWindow(sessionId, profile) {
   hudProfile = profileKey
   hudWindow = spawnHudWindow(sessionId, profileKey)
   broadcastHudState(true)
+  registerHudSnapShortcut()
 
   return hudWindow
 }
 
 function closeHudWindow() {
+  hudSnapShortcut.dispose()
+
   const win = hudWindow
   hudWindow = null
 
@@ -12595,6 +12640,8 @@ app.on('before-quit', event => {
   // floating composer with nothing behind it. Close it directly rather than via
   // closeHudWindow(): that also re-shows the main window, which is wrong on the
   // way out (and `hudRestoreMainWindow` may still be armed from entering HUD).
+  hudSnapShortcut.dispose()
+
   if (hudWindow && !hudWindow.isDestroyed()) {
     hudWindow.removeAllListeners('closed')
     hudWindow.destroy()

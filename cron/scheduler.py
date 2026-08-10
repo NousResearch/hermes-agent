@@ -191,7 +191,12 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
         )
 
     # Provider/API failures are the common noisy path. Keep these short.
-    if provider_reachable and ("429" in text or "rate limit" in lower or "usage limit" in lower):
+    # Match 429 as a whole token (#83188 @cation98): bare substring matching
+    # let identifiers containing those digits (job ids, ports, hashes) trip
+    # a false "provider rate limit" alert.
+    if provider_reachable and (
+        re.search(r"\b429\b", text) or "rate limit" in lower or "usage limit" in lower
+    ):
         reason = "rate limit"
         if "weekly usage limit" in lower:
             reason = "weekly usage limit"

@@ -9,9 +9,59 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
+from cron.scheduler import (
+    SILENT_MARKER,
+    _build_job_prompt,
+    _deliver_result,
+    _merge_mcp_into_per_job_toolsets,
+    _resolve_cron_enabled_toolsets,
+    _resolve_delivery_target,
+    _resolve_origin,
+    _send_media_via_adapter,
+    _summarize_cron_failure_for_delivery,
+    run_job,
+)
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
+
+
+class TestSummarizeCronFailureForDelivery:
+    def test_embedded_429_in_source_identifier_is_not_a_rate_limit(self):
+        summary = _summarize_cron_failure_for_delivery(
+            {"name": "LLM Wiki Incremental Index", "no_agent": True},
+            "Script failed: path/hash429abc.md source snapshot failure",
+        )
+
+        assert "provider rate limit" not in summary
+        assert "hash429abc.md" in summary
+
+    def test_http_429_is_still_classified_as_a_rate_limit(self):
+        summary = _summarize_cron_failure_for_delivery(
+            {"name": "provider-backed job"},
+            "HTTP 429: Too Many Requests",
+        )
+
+        assert "provider rate limit" in summary
+        assert "Fallback chain was exhausted or unavailable" in summary
+
+    def test_no_agent_rate_limit_does_not_claim_a_fallback_chain(self):
+        summary = _summarize_cron_failure_for_delivery(
+            {"name": "script job", "no_agent": True},
+            "HTTP 429: Too Many Requests",
+        )
+
+        assert "provider rate limit" in summary
+        assert "Fallback chain" not in summary
+
+    def test_no_agent_timeout_is_identified_as_a_script_timeout(self):
+        summary = _summarize_cron_failure_for_delivery(
+            {"name": "script job", "no_agent": True},
+            "Script timed out after 3600s",
+        )
+
+        assert "script timeout" in summary
+        assert "provider timeout" not in summary
+        assert "Fallback chain" not in summary
 
 
 class TestPerJobToolsetMcpMerge:
@@ -1974,5 +2024,4 @@ class TestSetCronSessionTitle:
         out = _set_cron_session_title(db, "sess-1", "Nightly Synthesis")
         assert out == "Nightly Synthesis #2"
         db.get_next_title_in_lineage.assert_called_once_with("Nightly Synthesis")
-
 

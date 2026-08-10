@@ -245,6 +245,8 @@ class TestCmdUpdateBranchFallback:
             "hermes_cli.config.get_missing_config_fields",
             return_value=[{"key": "new.option", "default": True}],
         ), patch(
+            "hermes_cli.update_cmd._reload_config_modules"
+        ), patch(
             "hermes_cli.update_cmd._run_config_check_fresh", return_value=(1, 2)
         ), patch(
             "hermes_cli.update_cmd._run_migrate_config_fresh",
@@ -286,6 +288,8 @@ class TestCmdUpdateMigrationPrompt:
         ), patch(
             "hermes_cli.config.get_missing_config_fields", return_value=[]
         ), patch(
+            "hermes_cli.update_cmd._reload_config_modules"
+        ), patch(
             "hermes_cli.update_cmd._run_config_check_fresh", return_value=(5, 24)
         ), patch(
             "hermes_cli.update_cmd._run_migrate_config_fresh",
@@ -322,9 +326,11 @@ class TestCmdUpdateMigrationPrompt:
         ), patch(
             "hermes_cli.config.get_missing_config_fields", return_value=cfg_items
         ), patch(
-            "hermes_cli.config.check_config_version", return_value=(1, 24)
+            "hermes_cli.update_cmd._reload_config_modules"
         ), patch(
-            "hermes_cli.config.migrate_config",
+            "hermes_cli.update_cmd._run_config_check_fresh", return_value=(1, 24)
+        ), patch(
+            "hermes_cli.update_cmd._run_migrate_config_fresh",
             return_value={"env_added": [], "config_added": [], "warnings": []},
         ), patch("hermes_cli.main.sys") as mock_sys:
             mock_sys.stdin.isatty.return_value = True
@@ -356,27 +362,21 @@ class TestConfigVersionCheckUsesFreshModules:
     """
 
     def test_run_config_check_fresh_reloads_modules(self):
-        """_run_config_check_fresh must call importlib.reload on config modules."""
-        import importlib
-        import sys
+        """_run_config_check_fresh must call _reload_config_modules which
+        force-reloads the config modules from disk.
+
+        Regression: config migration was silently skipped because
+        sys.modules held the OLD hermes_cli.config with the OLD
+        DEFAULT_CONFIG["_config_version"] after git pull.
+        """
         from unittest.mock import patch
 
         import hermes_cli.update_cmd as update_cmd
 
-        reloaded = []
-        original_reload = importlib.reload
-
-        def tracking_reload(mod, *args, **kwargs):
-            reloaded.append(mod.__name__)
-            return original_reload(mod, *args, **kwargs)
-
-        with patch("importlib.reload", side_effect=tracking_reload):
+        with patch.object(update_cmd, "_reload_config_modules") as mock_reload:
             update_cmd._run_config_check_fresh()
 
-        # The config modules that hold DEFAULT_CONFIG and MIGRATIONS must
-        # have been reloaded — this is the fix for the stale-cache bug.
-        assert "hermes_cli.config" in reloaded
-        assert "hermes_cli.config_migrations" in reloaded
+        mock_reload.assert_called_once()
 
 
 class TestCmdUpdateProfileSkillSync:

@@ -86,8 +86,8 @@ def _reload_updated_runtime_modules() -> None:
         logger.debug("Could not refresh update runtime modules: %s", exc)
 
 
-def _run_config_check_fresh() -> tuple:
-    """Check config version using freshly-reloaded modules.
+def _reload_config_modules() -> None:
+    """Force-reload config modules from disk after git pull.
 
     ``hermes update`` runs in the PRE-pull Python process. After ``git pull``
     updates the source files on disk, modules already in ``sys.modules``
@@ -96,9 +96,9 @@ def _run_config_check_fresh() -> tuple:
     ``check_config_version()`` reports ``(33, 33)`` — "up to date" — even
     though the freshly-pulled code has v34 with a migration to run.
 
-    This function force-reloads ``hermes_cli.config`` and
-    ``hermes_cli.config_migrations`` from disk so the version check reads
-    the UPDATED ``DEFAULT_CONFIG``. Returns ``(current_ver, latest_ver)``.
+    This function force-reloads ``hermes_cli.config_defaults``,
+    ``hermes_cli.config``, and ``hermes_cli.config_migrations`` from disk
+    so subsequent imports read the UPDATED code.
     """
     import importlib
 
@@ -111,6 +111,14 @@ def _run_config_check_fresh() -> tuple:
             except Exception as exc:
                 logger.debug("Could not reload %s for fresh config check: %s", mod_name, exc)
 
+
+def _run_config_check_fresh() -> tuple:
+    """Check config version using freshly-reloaded modules.
+
+    See ``_reload_config_modules`` for why this is necessary.
+    Returns ``(current_ver, latest_ver)``.
+    """
+    _reload_config_modules()
     from hermes_cli.config import check_config_version
 
     return check_config_version()
@@ -119,20 +127,10 @@ def _run_config_check_fresh() -> tuple:
 def _run_migrate_config_fresh(*, interactive: bool = False, quiet: bool = False) -> dict:
     """Run config migration using freshly-reloaded modules.
 
-    See ``_run_config_check_fresh`` for why this is necessary.
+    See ``_reload_config_modules`` for why this is necessary.
     Returns the migration results dict.
     """
-    import importlib
-
-    importlib.invalidate_caches()
-    for mod_name in ("hermes_cli.config_defaults", "hermes_cli.config", "hermes_cli.config_migrations"):
-        mod = sys.modules.get(mod_name)
-        if mod is not None:
-            try:
-                importlib.reload(mod)
-            except Exception as exc:
-                logger.debug("Could not reload %s for fresh migration: %s", mod_name, exc)
-
+    _reload_config_modules()
     from hermes_cli.config import migrate_config
 
     return migrate_config(interactive=interactive, quiet=quiet)
@@ -4758,6 +4756,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # updates that should have reset it.
         print()
         print("→ Checking configuration for new options...")
+
+        # Reload config modules BEFORE any config reads so get_missing_*,
+        # check_config_version, and migrate_config all use the updated code.
+        _reload_config_modules()
 
         from hermes_cli.config import (
             get_missing_env_vars,

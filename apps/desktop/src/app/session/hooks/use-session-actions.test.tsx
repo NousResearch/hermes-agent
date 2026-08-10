@@ -1379,8 +1379,14 @@ describe('branchStoredSession desktop source tagging', () => {
       />
     )
     await waitFor(() => expect(branchStoredSession).not.toBeNull())
+    // Both capture and completion normalize the absent tree anchor to undefined.
+    // A stable no-anchor branch must still reveal its child pane.
+    vi.mocked(focusedSessionTabAnchor).mockReturnValue(null)
+    vi.mocked(revealTreePane).mockClear()
 
     await expect(branchStoredSession!('stored-parent')).resolves.toBe(true)
+
+    expect(revealTreePane).toHaveBeenCalledWith('session-tile:branch-stored')
 
     // The branch opened as its own tab...
     expect($sessionTiles.get().some(tile => tile.storedSessionId === 'branch-stored')).toBe(true)

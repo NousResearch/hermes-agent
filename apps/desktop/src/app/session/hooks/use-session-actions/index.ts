@@ -1636,7 +1636,8 @@ export function useSessionActions({
           normalizeProfileKey($activeGatewayProfile.get()) === resolvedUiIntent.profile &&
           $freshSessionRequest.get() === resolvedUiIntent.freshSessionRequest &&
           getRouteToken() === resolvedUiIntent.routeToken &&
-          selectedStoredSessionIdRef.current === resolvedUiIntent.selectedStoredSessionId
+          selectedStoredSessionIdRef.current === resolvedUiIntent.selectedStoredSessionId &&
+          focusedSessionTabAnchor() === resolvedUiIntent.anchor
 
         if (openedInActiveProfile) {
           patchSessionTile(routedSessionId, { runtimeId: branched.session_id })

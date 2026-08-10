@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Callable, Dict, Optional, Tuple, cast
 
 from gateway.config import Platform, PlatformConfig
@@ -487,6 +488,24 @@ class RelayAdapter(BasePlatformAdapter):
         except Exception:  # noqa: BLE001 - media localization must never break inbound
             logger.debug("relay inbound media localization failed", exc_info=True)
 
+    def prime_routing_cache(self, event) -> None:
+        """Warm the per-chat egress routing caches from a SYNTHETIC event.
+
+        The caches (_scope_by_chat/_dm_user_by_chat/...) are normally warmed
+        only by the inbound path (_on_inbound -> _capture_scope). A synthetic
+        completion turn injected right after a restart (durable
+        async-delegation replay) reaches handle_message with the caches COLD,
+        so every reply it produces egresses without metadata.scope_id /
+        metadata.user_id and is declined by the connector's fail-closed
+        tenant guard ("target not routed to an onboarded tenant" — staging
+        2026-08-09, defect #4). The synthetic event's session-store origin
+        already carries the discriminators; feed it through the same capture
+        used for real inbound. Never raises.
+        """
+        if event is None or getattr(event, "source", None) is None:
+            return
+        self._capture_scope(event)
+
     def _capture_scope(self, event) -> None:
         """Remember a chat_id's egress discriminator from an inbound event so our
         outbound (the agent's reply) can re-assert it for the connector's egress
@@ -823,6 +842,17 @@ class RelayAdapter(BasePlatformAdapter):
         return parts
 
     async def disconnect(self) -> None:
+        # Budget accounting: the runner wraps this whole call in
+        # asyncio.wait_for(_adapter_disconnect_timeout_secs()). Everything we
+        # spend on monitor teardown and go_idle below eats into what the
+        # transport can spend on its outbound drain, so measure from the top
+        # and thread the REMAINDER down — otherwise worst-case
+        # monitor(1s) + go_idle(2s) + drain + 3×teardown(1s) can blow the 5s
+        # budget, cancelling teardown mid-drain and skipping the transport's
+        # fail-pending loop (callers then block on _OUTBOUND_TIMEOUT_S).
+        from gateway.relay.ws_transport import _env_disconnect_budget_s
+        _started = time.monotonic()
+        _budget = _env_disconnect_budget_s()
         # Phase 7 Unit 7d-B: stop the revocation monitor first so it can't fire a
         # spurious fatal during/after a deliberate teardown.
         if self._revocation_monitor is not None:
@@ -866,7 +896,16 @@ class RelayAdapter(BasePlatformAdapter):
                         )
             finally:
                 try:
-                    await asyncio.shield(self._transport.disconnect())
+                    _remaining = max(0.0, _budget - (time.monotonic() - _started))
+                    try:
+                        _td = cast(Any, self._transport).disconnect(
+                            budget_s=_remaining
+                        )
+                    except TypeError:
+                        # Transports without the budget_s keyword (stubs,
+                        # older implementations) keep the legacy signature.
+                        _td = self._transport.disconnect()
+                    await asyncio.shield(_td)
                 except Exception:  # noqa: BLE001 - teardown must not block outer cancel propagation
                     logger.debug(
                         "relay transport disconnect failed during drain",

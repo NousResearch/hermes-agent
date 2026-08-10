@@ -85,6 +85,20 @@ _PLATFORM_CONNECT_TIMEOUT_SECS_DEFAULT = 30.0
 # wall deadlines plus readiness; other platforms retain the 30s isolation bound.
 _TELEGRAM_CONNECT_TIMEOUT_SECS_DEFAULT = 180.0
 _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT = 5.0
+# End reasons that mean the USER deliberately closed this thread of work
+# (/new -> session_reset / new_session, an explicit exit, or a /switch).
+# Shared by _classify_completion_target (pre-flight verdict) and
+# _resolve_async_delegation_session (in-pipeline routing) so the two can
+# never disagree: every reason the classifier calls "deliver" must be one
+# the resolver actually delivers, otherwise the durable row is acked at
+# adapter acceptance and then silently dropped inside the pipeline —
+# a falsely-acknowledged permanent loss.
+_USER_BOUNDARY_END_REASONS = (
+    "session_reset",
+    "user_exit",
+    "session_switch",
+    "new_session",
+)
 # Round-2 #2: upper bound on a single stall-notify adapter.send so a wedged
 # transport cannot block the session-stall watcher pass (notify-only path;
 # on timeout the latch stays clear and the next tick retries).
@@ -14258,15 +14272,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         target_session_id = pinned_session_id
         follows_compression = False
         if pinned_row.get("ended_at"):
-            if pinned_row.get("end_reason") != "compression":
+            _end_reason = str(pinned_row.get("end_reason") or "")
+            if _end_reason in _USER_BOUNDARY_END_REASONS:
                 logger.warning(
-                    "Async-delegation completion pinned to ended session %s "
+                    "Async-delegation completion pinned to user-closed session %s "
                     "(end_reason=%r); dropping injection instead of resurrecting it "
                     "(#55578 fail-closed).",
                     pinned_session_id,
-                    pinned_row.get("end_reason"),
+                    _end_reason,
                 )
                 return None
+            if _end_reason != "compression":
+                # Idle/timeout/lifecycle end (scale-to-zero norm): the chat
+                # route remains valid and ``session_entry`` IS the routing
+                # key's current session for this same chat, so deliver the
+                # finished work there instead of dropping it. This is the
+                # delivery leg _classify_completion_target promises when it
+                # returns "deliver" for non-boundary ends — without it the
+                # pre-flight verdict and this resolver disagree, and the
+                # durable row is acked at adapter acceptance then silently
+                # dropped here (falsely-acknowledged permanent loss;
+                # staging incident 2026-08-09 defect #2).
+                logger.info(
+                    "Async-delegation completion pinned to %s-ended session %s; "
+                    "retargeting to the chat's current session %s.",
+                    _end_reason or "idle",
+                    pinned_session_id,
+                    session_entry.session_id,
+                )
+                return session_entry
 
             follows_compression = True
             try:
@@ -21962,6 +21996,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
+            scope_id=str(getattr(context.source, "scope_id", "") or ""),
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
@@ -22501,6 +22536,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return None
 
+        scope_id = str(evt.get("scope_id") or "").strip() or None
+        if scope_id is None and chat_type not in ("dm", "thread"):
+            # Reconstructed (non-persisted) source for a scoped chat with no
+            # scope discriminator: on a relay-fronted deployment the
+            # connector's fail-closed tenant guard may decline the reply
+            # unless user_id resolves it (resolveByUser). Don't fail here —
+            # DMs and author-bound scoped chats still route, and native
+            # adapters don't need scope_id — but say so, so a post-restart
+            # egress decline isn't silent.
+            logger.warning(
+                "Synthetic event source for %s chat=%s (%s) reconstructed "
+                "without scope_id; scoped relay egress may be declined by "
+                "the connector's tenant guard (user_id fallback only).",
+                platform_name, chat_id, chat_type,
+            )
         return SessionSource(
             platform=platform,
             chat_id=chat_id,
@@ -22508,6 +22558,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             thread_id=str(evt.get("thread_id") or "").strip() or None,
             user_id=str(evt.get("user_id") or "").strip() or None,
             user_name=str(evt.get("user_name") or "").strip() or None,
+            scope_id=scope_id,
         )
 
     async def _inject_watch_notification(
@@ -22567,11 +22618,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return None
         platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
+        # Alias-aware resolution (relay-plane): a relay-fronted gateway
+        # registers ONE adapter under Platform.RELAY fronting N logical
+        # platforms, so a literal ``p.value == platform_name`` scan misses
+        # "slack" and silently drops the completion as "no gateway route"
+        # (staging incident 2026-08-09, second occurrence). Resolve through
+        # the shared transport resolver — native adapter wins; relay is
+        # eligible only when it advertises fronting the logical platform.
         adapter = None
-        for p, a in self.adapters.items():
-            if p.value == platform_name:
-                adapter = a
-                break
+        try:
+            _platform_enum = Platform(platform_name)
+        except (ValueError, KeyError):
+            _platform_enum = None
+        if _platform_enum is not None:
+            try:
+                _transport = resolve_delivery_transport(
+                    _platform_enum, self.config, self.adapters,
+                )
+            except Exception:
+                _transport = None
+            if _transport is not None:
+                adapter = _transport.adapter
+        if adapter is None:
+            # Legacy literal scan — still correct for native adapters, and
+            # keeps minimal runner stubs (tests) and exotic platform strings
+            # working when the resolver can't run.
+            for p, a in self.adapters.items():
+                if p.value == platform_name:
+                    adapter = a
+                    break
         if not adapter:
             return None
         from gateway.wake import adapter_supports_push as _wake_push_ok
@@ -22617,6 +22692,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source.chat_id,
                 source.thread_id,
             )
+            # Relay-plane egress priming (defect #4, staging 2026-08-09): a
+            # synthetic turn injected right after a restart reaches a relay
+            # adapter whose per-chat routing caches are cold (they warm only
+            # on inbound), so its replies egress without tenant
+            # discriminators and the connector's fail-closed guard declines
+            # them. Prime the caches from this event's session-store origin.
+            _prime = getattr(adapter, "prime_routing_cache", None)
+            if callable(_prime):
+                _prime(synth_event)
             await adapter.handle_message(synth_event)
             return True
         except Exception as e:
@@ -22678,8 +22762,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return "terminal"
         if not parent.get("ended_at"):
             return "deliver"
-        if parent.get("end_reason") != "compression":
-            return "terminal"
+        end_reason = str(parent.get("end_reason") or "")
+        if end_reason != "compression":
+            # An ended parent is only unreachable when the USER closed the
+            # thread of work (explicit boundary: /new -> session_reset /
+            # new_session, user_exit, session_switch). Idle/timeout ends are
+            # the norm on scale-to-zero relay deployments — the platform chat
+            # remains routable, and the #55578 resolver retargets the
+            # completion to the chat's current session. Dropping those loses
+            # finished work (staging incident 2026-08-09: completed
+            # delegation batch never delivered because the parent had
+            # idle-ended). The boundary set is shared with the resolver
+            # (_USER_BOUNDARY_END_REASONS) so this verdict and the pipeline's
+            # routing decision cannot drift apart.
+            if end_reason in _USER_BOUNDARY_END_REASONS:
+                return "terminal"
+            return "deliver"
         try:
             tip_session_id = await session_db.get_compression_tip(parent_session_id)
             if not tip_session_id or tip_session_id == parent_session_id:

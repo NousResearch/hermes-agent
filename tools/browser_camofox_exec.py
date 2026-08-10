@@ -40,6 +40,7 @@ from tools.browser_use_cli import (  # noqa: E402
     _DEFAULT_TIMEOUT_S,
     _MAX_TIMEOUT_S,
     _MIN_TIMEOUT_S,
+    _base_subprocess_env,
     _find_screenshot,
     _native_screenshot_result,
     _workspace_dir,
@@ -48,6 +49,7 @@ from tools.registry import tool_error, tool_result  # noqa: E402
 
 _STDERR_CAP_CHARS = 4000
 _TAB_ID_RE = None  # compiled lazily below
+_SCREENSHOT_RE = None  # compiled lazily below
 
 
 def _tab_id_re():
@@ -59,11 +61,38 @@ def _tab_id_re():
     return _TAB_ID_RE
 
 
+def _screenshot_re():
+    global _SCREENSHOT_RE
+    if _SCREENSHOT_RE is None:
+        import re
+
+        _SCREENSHOT_RE = re.compile(r"^CAMOFOX_SCREENSHOT=(.+?)\s*$", re.MULTILINE)
+    return _SCREENSHOT_RE
+
+
+def _marked_screenshot(stdout: str, since: float) -> Optional[str]:
+    """Last ``CAMOFOX_SCREENSHOT=`` path written during this exec, or None.
+
+    The runtime emits this marker with the *native* path so Windows drive
+    letters survive: ``_find_screenshot``'s regex requires a leading "/",
+    so a bare ``C:/…/x.png`` print only matches from ``/…`` onward — which
+    resolves against the process's current drive and silently misses the
+    file whenever the workspace lives on another drive.
+    """
+    for path in reversed(_screenshot_re().findall(stdout or "")):
+        try:
+            if os.path.isfile(path) and os.path.getmtime(path) >= since - 1:
+                return path
+        except OSError:
+            continue
+    return None
+
+
 def _runtime_wrapper() -> str:
     """Python -c wrapper that imports the runtime helpers and execs stdin."""
     runtime_dir = Path(__file__).resolve().parent.as_posix()
     return (
-        "import sys, pathlib\n"
+        "import sys\n"
         f"sys.path.insert(0, {runtime_dir!r})\n"
         "from browser_camofox_runtime import *\n"
         "exec(compile(sys.stdin.read(), '<browser-exec>', 'exec'))\n"
@@ -154,6 +183,12 @@ def browser_exec(
         except Exception as e:
             logger.debug("Windows hide-flags unavailable: %s", e)
 
+    # Credential-scrubbed env, exactly like the CLI backend: the model's code
+    # runs inside this subprocess, so inheriting os.environ wholesale would
+    # hand it every provider key / gateway token in the parent process.
+    proc_env = _base_subprocess_env()
+    proc_env.update(env)
+
     started = time.time()
     try:
         proc = subprocess.run(
@@ -162,7 +197,7 @@ def browser_exec(
             capture_output=True,
             text=True,
             timeout=timeout,
-            env={**os.environ, **env},
+            env=proc_env,
             **popen_extra,
         )
     except subprocess.TimeoutExpired:
@@ -190,12 +225,17 @@ def browser_exec(
             stderr = stderr[:_STDERR_CAP_CHARS] + "\n… (stderr truncated)"
         result["stderr"] = stderr
 
-    # Persist the tab id the runtime resolved (fresh tab on 404, etc.).
-    tab_match = _tab_id_re().search(proc.stdout or "")
-    if tab_match:
-        _update_session_tab(task_id, tab_match.group(1))
+    # Persist the tab id the runtime resolved (fresh tab on 404, a second
+    # new_tab() in the same script, …). The LAST marker is the live tab: the
+    # runtime prints one every time it resolves a tab, so taking the first
+    # would pin the cache to a tab the script has already navigated away from.
+    tab_ids = _tab_id_re().findall(proc.stdout or "")
+    if tab_ids:
+        _update_session_tab(task_id, tab_ids[-1])
 
-    screenshot = _find_screenshot(proc.stdout or "", started)
+    screenshot = _marked_screenshot(proc.stdout or "", started) or _find_screenshot(
+        proc.stdout or "", started
+    )
     if screenshot:
         result["screenshot_path"] = screenshot
         native = _native_screenshot_result(result, screenshot)
@@ -262,5 +302,7 @@ CAMOFOX_DESCRIPTION_HEADER = (
     "— do not spend a call per action — but for long extractions prefer "
     "several medium calls that append to workspace files over one giant "
     "call, so progress survives timeouts. Tabs opened by this backend share "
-    "the Camofox profile (cookies persist per configured identity)."
+    "the Camofox profile (cookies persist per configured identity). The "
+    "`session` argument is accepted for schema parity and ignored in "
+    "Camofox mode — tabs are keyed to the task identity."
 )

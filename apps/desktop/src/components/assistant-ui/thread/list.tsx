@@ -101,7 +101,16 @@ interface ThreadMessageListProps {
   components: ThreadMessageComponents
   emptyPlaceholder?: ReactNode
   loadingIndicator?: ReactNode
+  resumePublicationRevision?: number
   sessionKey?: string | null
+}
+
+export function shouldRestoreResumeAnchor(
+  previousRevision: number,
+  nextRevision: number,
+  followingBottom: boolean
+): boolean {
+  return nextRevision > previousRevision && followingBottom
 }
 
 // Group each user message with the assistant turn(s) that follow it so the
@@ -235,6 +244,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   components,
   emptyPlaceholder,
   loadingIndicator,
+  resumePublicationRevision = 0,
   sessionKey
 }) => {
   // TWO signatures, deliberately split. The STRUCTURAL one (ids/roles/count)
@@ -313,6 +323,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   // Session the settle loop last armed for, so a re-arm within the same load
   // is distinguishable from a switch to a different transcript.
   const settleKeyRef = useRef(sessionKey)
+  const lastResumePublicationRevisionRef = useRef(resumePublicationRevision)
 
   // Record where the view should land once a prepend has grown the content,
   // measured from the BOTTOM so the added height doesn't invalidate it. Only a
@@ -451,6 +462,48 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(() => () => endEditHold(), [endEditHold])
   // New run → snap to the latest turn.
   useAuiEvent('thread.runStart', () => void scrollToBottom())
+
+  // A cached transcript can be followed by a genuinely different persisted-
+  // authority publication under the same session key. The revision may commit
+  // before assistant-ui publishes the corresponding message DOM. Cover both
+  // schedules: restore immediately for a same-commit resize, and arm one
+  // MutationObserver for a following DOM commit. Mutation callbacks run before
+  // paint, unlike use-stick-to-bottom's ResizeObserver + rAF correction.
+  useLayoutEffect(() => {
+    const previousRevision = lastResumePublicationRevisionRef.current
+    lastResumePublicationRevisionRef.current = resumePublicationRevision
+
+    const el = scrollRef.current
+
+    if (
+      !el ||
+      !shouldRestoreResumeAnchor(previousRevision, resumePublicationRevision, el.dataset.following === 'true')
+    ) {
+      return
+    }
+
+    stopScroll()
+    const restoreIfFollowing = () => {
+      if (el.dataset.following === 'true') {
+        el.scrollTop = el.scrollHeight
+      }
+    }
+
+    restoreIfFollowing()
+
+    const observer = new MutationObserver(() => {
+      restoreIfFollowing()
+      observer.disconnect()
+    })
+    observer.observe(el, { childList: true, characterData: true, subtree: true })
+
+    const timeout = window.setTimeout(() => observer.disconnect(), 250)
+
+    return () => {
+      window.clearTimeout(timeout)
+      observer.disconnect()
+    }
+  }, [resumePublicationRevision, scrollRef, stopScroll])
 
   // Reset the cap and pin to bottom on mount + every session switch (messages
   // swap in place on a long-lived runtime, so sessionKey is the only signal).

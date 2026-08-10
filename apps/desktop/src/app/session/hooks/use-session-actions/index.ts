@@ -782,6 +782,7 @@ export function useSessionActions({
                 : activated.messages.length || activated.inflight || activated.queued
                   ? reconcileAuthoritativeMessages(activated.messages, cachedViewState.messages, activated)
                   : cachedViewState.messages
+              let resumePublicationRevision = cachedViewState.resumePublicationRevision ?? 0
 
               const running = Boolean(activated.running ?? cachedViewState.busy)
 
@@ -805,7 +806,13 @@ export function useSessionActions({
                   persisted.session_id === activatedStoredSessionId
 
                 if (persisted && persistedMatchesActivatedSession) {
-                  activatedMessages = reconcileAuthoritativeMessages(persisted.messages, activatedMessages)
+                  const persistedMessages = reconcileAuthoritativeMessages(persisted.messages, activatedMessages)
+
+                  if (!chatMessageArraysEquivalent(persistedMessages, activatedMessages)) {
+                    resumePublicationRevision += 1
+                  }
+
+                  activatedMessages = persistedMessages
                 }
               }
 
@@ -815,6 +822,7 @@ export function useSessionActions({
                   ...state,
                   ...(runtimeInfo ?? {}),
                   messages: activatedMessages,
+                  resumePublicationRevision,
                   busy: running,
                   awaitingResponse: running,
                   // Adopting someone else's turn: we'll stream its reply

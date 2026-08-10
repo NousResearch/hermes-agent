@@ -1,4 +1,4 @@
-import { computed, type ReadableAtom } from 'nanostores'
+import { atom, computed, type ReadableAtom } from 'nanostores'
 import { createContext, useContext } from 'react'
 
 import type { ClientSessionState } from '@/app/types'
@@ -44,6 +44,7 @@ export interface SessionView {
   $runtimeId: ReadableAtom<string | null>
   $storedId: ReadableAtom<string | null>
   $messages: ReadableAtom<ChatMessage[]>
+  $resumePublicationRevision?: ReadableAtom<number>
   $busy: ReadableAtom<boolean>
   $awaitingResponse: ReadableAtom<boolean>
   $messagesEmpty: ReadableAtom<boolean>
@@ -75,6 +76,7 @@ function primaryField<T>(select: (state: ClientSessionState) => T, $draft: Reada
 }
 
 const $primaryMessages = primaryField<ChatMessage[]>(state => state.messages, $messages)
+const $draftResumePublicationRevision = atom(0)
 
 export const PRIMARY_SESSION_VIEW: SessionView = {
   kind: 'primary',
@@ -88,6 +90,10 @@ export const PRIMARY_SESSION_VIEW: SessionView = {
   $model: primaryField<string>(state => state.model, $currentModel),
   $provider: primaryField<string>(state => state.provider, $currentProvider),
   $reasoningEffort: primaryField<string>(state => state.reasoningEffort, $currentReasoningEffort),
+  $resumePublicationRevision: primaryField<number>(
+    state => state.resumePublicationRevision ?? 0,
+    $draftResumePublicationRevision
+  ),
   $runtimeId: $activeSessionId,
   $storedId: $selectedStoredSessionId
 }

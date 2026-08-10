@@ -174,6 +174,9 @@ export interface SidebarNavItem {
 export interface ClientSessionState {
   storedSessionId: string | null
   messages: ChatMessage[]
+  /** Monotonic per-session signal for an idle warm resume that actually
+   *  replaces the cached transcript with a non-equivalent persisted authority. */
+  resumePublicationRevision?: number
   branch: string
   cwd: string
   model: string

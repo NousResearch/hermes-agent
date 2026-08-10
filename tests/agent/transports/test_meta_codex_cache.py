@@ -42,7 +42,7 @@ class TestMetaRetention:
         assert _default_prompt_cache_retention_for_request("muse-spark-1.2", "https://API.META.AI/v1") == "24h"
         assert _default_prompt_cache_retention_for_request("muse-spark-1.2", "https://api.meta.ai:443/v1") == "24h"
 
-    def test_meta_retention_not_sent_when_overridden(self, transport):
+    def test_meta_retention_override_wins(self, transport):
         kw = transport.build_kwargs(
             model="muse-spark-1.2",
             messages=[{"role": "user", "content": "Hi"}],

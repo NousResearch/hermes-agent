@@ -18,6 +18,7 @@ reasoning_effort into a live one that OpenAI 400s on the chat_completions path.
 from unittest.mock import patch
 
 from hermes_cli.model_switch import switch_model
+from hermes_cli.providers import host_mandated_api_mode
 
 _MOCK_VALIDATION = {
     "accepted": True,
@@ -91,8 +92,6 @@ def test_generic_endpoint_keeps_explicit_api_mode():
     generic OpenAI-compatible relay returns None from host_mandated_api_mode,
     so the switch path leaves the resolver's api_mode untouched.
     """
-    from hermes_cli.providers import host_mandated_api_mode
-
     assert host_mandated_api_mode("https://generic.example.com/v1") is None
     # Lookalike / path-spoof hosts must also NOT be treated as mandated (#32243).
     assert host_mandated_api_mode("https://api.openai.com.attacker.test/v1") is None
@@ -123,9 +122,7 @@ def test_stale_chat_overridden_on_meta_direct():
 
 def test_generic_relay_not_clobbered_on_meta_switch():
     """Generic relay does not pick up Meta mandate."""
-    assert __import__("hermes_cli.providers", fromlist=["host_mandated_api_mode"]).host_mandated_api_mode(
-        "https://generic.example.com/v1"
-    ) is None
+    assert host_mandated_api_mode("https://generic.example.com/v1") is None
     result = _run_openai_switch(
         raw_input="some-model",
         current_provider="meta",

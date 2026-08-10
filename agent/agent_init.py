@@ -711,6 +711,12 @@ def init_agent(
         # rewrites (e.g. api.anthropic.com → provider="anthropic", #63425)
         # always run first. Covers api.meta.ai → codex_responses for prompt
         # caching (0% on chat vs 93-99% on responses) and future mandates.
+        # Note: provider="meta" without an api.meta.ai base_url (or with a non-api.meta.ai
+        # base_url) intentionally falls through to chat_completions here. The wire
+        # protocol for Meta is URL-driven BY DESIGN, not provider-name-driven, because
+        # user config `providers.meta` may point at any OpenAI-compatible endpoint, and
+        # forcing `codex_responses` on the provider name alone would break custom endpoints
+        # named "meta" that do not host the Responses API.
         try:
             from hermes_cli.providers import host_mandated_api_mode as _host_mandated_api_mode
 

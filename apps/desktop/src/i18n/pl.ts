@@ -1,8 +1,8 @@
 import { defineFieldCopy } from '@/app/settings/field-copy'
 
-import { defineLocale } from './define-locale'
+import { defineLocale, mergeLocaleOverrides, type TranslationOverrides } from './define-locale'
 
-export const pl = defineLocale({
+const plTranslatedOverrides = {
   common: {
     apply: 'Zastosuj',
     back: 'Wstecz',
@@ -3170,4 +3170,207 @@ export const pl = defineLocale({
       github_comment: 'Komentarz GitHub'
     }
   }
-})
+} satisfies TranslationOverrides
+
+const plMissingOverrides = {
+  notifications: {
+    errors: { diskFull: 'Dysk jest pełny — zwolnij trochę miejsca, a następnie spróbuj ponownie.' },
+    voice: { sayStopToEnd: (phrase: string) => `Powiedz „${phrase}”, aby zakończyć rozmowę głosową.` }
+  },
+  titlebar: { enterHud: 'Tryb HUD', exitHud: 'Wyjdź z trybu HUD' },
+  keybinds: {
+    actions: {
+      'workspace.openFolder': 'Otwórz folder jako projekt',
+      'view.toggleStatusbar': 'Przełącz pasek stanu',
+      'view.toggleHud': 'Przełącz tryb HUD',
+      'view.terminalCopy': 'Kopiuj zaznaczenie terminala',
+      'view.terminalPaste': 'Wklej do terminala',
+      'view.findInPage': 'Znajdź na stronie',
+      'view.findNext': 'Znajdź następne dopasowanie',
+      'view.findPrevious': 'Znajdź poprzednie dopasowanie'
+    }
+  },
+  findInPage: { next: 'Następne dopasowanie', previous: 'Poprzednie dopasowanie' },
+  settings: {
+    plugins: {
+      agent: {
+        title: 'Wtyczki agenta',
+        blurb:
+          'Działają w backendzie Hermesa — narzędzia, umiejętności, serwery MCP, haki i polecenia ukośnikowe. Przenośne wtyczki to pakiety Agent Plugins (umiejętności i zestawy MCP działające także w innych agentach). Przełączniki dotyczą nowych sesji.',
+        empty: 'Nie zainstalowano jeszcze żadnych wtyczek agenta.',
+        loadFailed: 'Nie udało się wczytać wtyczek agenta',
+        portable: 'przenośna',
+        search: 'Szukaj wtyczek…',
+        noMatches: 'Żadna wtyczka nie pasuje do wyszukiwania.',
+        toggleFailed: (name: string) => `Nie udało się przełączyć wtyczki ${name}`,
+        updateBackendToManage: 'Zaktualizuj backend Hermesa, aby zarządzać tą wtyczką z aplikacji Desktop.',
+        sources: { bundled: 'wbudowana', user: 'użytkownika', git: 'git', project: 'projekt', entrypoint: 'pip' }
+      }
+    },
+    notifications: {
+      kinds: {
+        plugin: {
+          label: 'Powiadomienia wtyczek',
+          description: 'Wtyczka Desktop wysłała powiadomienie, gdy Hermes działał w tle.'
+        }
+      }
+    },
+    appearance: {
+      terminalFontTitle: 'Czcionka terminala',
+      terminalFontDesc:
+        'Wybierz zainstalowaną czcionkę dla terminali Desktop. Nerd Fonts wyświetlają Powerlevel10k i ikony powłoki; pozostaw puste, aby użyć dołączonej czcionki JetBrains Mono.',
+      terminalFontPlaceholder: 'MesloLGS NF lub stos czcionek CSS',
+      terminalFontPreview: 'Podgląd glifów',
+      terminalFontReset: 'Użyj domyślnej',
+      reactionsTitle: 'Reakcje na wiadomości',
+      reactionsDesc: 'Reakcje emoji w stylu iMessage — reaguj na wiadomości, a Hermes może reagować na Twoje.'
+    },
+    config: {
+      searchPlaceholder: 'Szukaj…',
+      noResults: 'Nie znaleziono wyników',
+      systemDefault: 'Domyślne ustawienie systemu',
+      attachmentSizeTitle: 'Maksymalny rozmiar podglądu / wczytywanego obrazu',
+      attachmentSizeDesc:
+        'Maksymalny rozmiar lokalnego pliku w MB, który Desktop wczyta do podglądu lub jako załącznik obrazu. Domyślnie 16 MB. Zdalne załączniki inne niż obrazy mają osobny limit 256 MB. Bardzo wysoka wartość wczyta cały plik do pamięci i może zawiesić lub zamknąć aplikację.',
+      attachmentSizeUnit: 'MB',
+      attachmentSizeLabel: 'Maksymalny rozmiar podglądu / wczytywanego obrazu w megabajtach'
+    },
+    quickEntry: {
+      enabledTitle: 'Szybkie wprowadzanie',
+      enabledDesc:
+        'Wywołaj małe pole tworzenia wiadomości z dowolnego miejsca globalnym skrótem i wyślij prompt bez otwierania Hermesa.',
+      shortcutTitle: 'Skrót szybkiego wprowadzania',
+      shortcutDesc: 'Wymaga co najmniej jednego klawisza modyfikującego, np. CommandOrControl+Shift+Space.',
+      active: 'Skrót jest aktywny.',
+      takenBy: 'Inna aplikacja już używa tego skrótu — wybierz inny.',
+      invalidShortcut: 'To nie jest prawidłowy skrót. Dodaj co najmniej jeden klawisz modyfikujący.'
+    },
+    gateway: {
+      inheritTitle: 'Użyj domyślnej bramy',
+      inheritDesc: 'Usuń zastąpienie dla tego profilu i użyj domyślnego połączenia.',
+      sshRemoteProfileTitle: 'Zdalny profil (opcjonalnie)',
+      sshRemoteProfileDesc: 'Nazwa profilu na zdalnym hoście. Pozostaw puste, aby użyć nazwy profilu Desktop.'
+    },
+    toolsets: {
+      activeBackend: 'Aktywny',
+      activeBackendHint: 'To jest Twój aktywny backend',
+      useBackend: 'Użyj tego backendu'
+    }
+  },
+  commandCenter: {
+    projects: 'Projekty',
+    openFolder: 'Otwórz folder jako projekt…',
+    openFolderAt: (path: string) => `Otwórz folder jako projekt — ${path}`,
+    newSessionInProject: (project: string) => `Nowa sesja w projekcie ${project}`
+  },
+  messaging: {
+    pendingRequests: (count: number) => `Oczekujące prośby (${count})`,
+    pendingAria: (count: number) => `${count} oczekujących próśb o parowanie`,
+    approvedUsers: (count: number) => `Zatwierdzeni użytkownicy (${count})`,
+    approve: 'Zatwierdź',
+    approving: 'Zatwierdzanie…',
+    revoke: 'Cofnij',
+    revoking: 'Cofanie…',
+    revokeAria: (name: string) => `Cofnij dostęp użytkownikowi ${name}`,
+    revokeTitle: 'Cofnąć dostęp',
+    revokeDesc: (name: string) => `${name} utraci dostęp i przestanie być rozpoznawany przy następnej wiadomości.`,
+    approvedUser: (name: string) => `Użytkownik ${name} został zatwierdzony`,
+    approvedHint: 'Zostanie rozpoznany automatycznie przy następnej wiadomości.',
+    revokedUser: (name: string) => `Użytkownikowi ${name} cofnięto dostęp`,
+    failedApprove: (name: string) => `Nie udało się zatwierdzić użytkownika ${name}`,
+    failedRevoke: (name: string) => `Nie udało się cofnąć dostępu użytkownikowi ${name}`,
+    pairingLockedOut: 'Zbyt wiele nieudanych zatwierdzeń — ta platforma została zablokowana. Spróbuj ponownie później.',
+    waitingSince: (minutes: number) => (minutes < 1 ? 'przed chwilą' : `${minutes} min temu`)
+  },
+  profiles: {
+    importProfile: 'Importuj profil…',
+    exportProfile: 'Eksportuj profil…',
+    imported: 'Profil zaimportowany',
+    exported: 'Profil wyeksportowany',
+    failedImport: 'Nie udało się zaimportować profilu',
+    failedExport: 'Nie udało się wyeksportować profilu'
+  },
+  artifactCard: {
+    kind: { code: 'Kod', html: 'Strona interaktywna', svg: 'Grafika' },
+    generating: (lines: number) => `Generowanie… ${lines} wierszy`,
+    versionBadge: (count: number) => `${count} wersji`,
+    open: 'Otwórz'
+  },
+  artifactPreview: {
+    versionOf: (current: number, total: number) => `wersja ${current} z ${total}`,
+    olderVersion: 'Starsza wersja',
+    newerVersion: 'Nowsza wersja',
+    latest: 'Najnowsza',
+    copyContent: 'Kopiuj treść',
+    download: 'Pobierz',
+    openInBrowser: 'Otwórz w przeglądarce',
+    openInBrowserFailed: 'Nie udało się otworzyć w przeglądarce',
+    missingTitle: 'Artefakt niedostępny',
+    missingBody: 'Ten artefakt nie jest już dostępny w lokalnym rejestrze.'
+  },
+  sidebar: {
+    noFilterMatches: 'Żadna sesja nie pasuje do tych filtrów',
+    projects: {
+      home: 'Strona główna',
+      moveToProject: 'Przenieś do projektu',
+      movedTo: (name: string) => `Przeniesiono do ${name}`,
+      moveFailed: 'Nie udało się przenieść sesji',
+      moveNoFolder: 'Ten projekt nie ma folderu, do którego można przenieść sesję',
+      moveNoProjects: 'Brak innych projektów',
+      worktreeProjectLabel: 'Projekt',
+      worktreeProjectPlaceholder: 'Szukaj projektów…',
+      worktreeProjectNone: 'Brak projektów z folderem',
+      branchTrackRemote: 'Śledź zdalną gałąź'
+    },
+    row: { draftSession: 'Wersja robocza — nic jeszcze nie wysłano' },
+    statusDivider: { working: 'W toku', done: 'Gotowe' }
+  },
+  composer: {
+    openDirective: 'Otwórz dyrektywę',
+    wakeWordListening: (phrase: string) => `Hasło wybudzające: „${phrase}” — nasłuchiwanie`,
+    wakeWordOff: (phrase: string) => `Hasło wybudzające: „${phrase}” — wyłączone`,
+    wakeWordPausedVoice: (phrase: string) => `Hasło wybudzające: „${phrase}” — wstrzymane podczas rozmowy głosowej`
+  },
+  statusStack: {
+    goalActive: 'Cel aktywny',
+    goalDone: 'Cel osiągnięty',
+    goalPaused: 'Cel wstrzymany',
+    goalWaiting: 'Cel oczekuje'
+  },
+  shell: {
+    statusbar: {
+      customizeTitle: 'Dostosuj pasek stanu',
+      hideStatusbar: 'Ukryj pasek stanu',
+      toggleApprovalMode: 'Przełącz tryb zatwierdzania',
+      toggleBackendVersion: 'Przełącz wersję backendu',
+      toggleCommandCenter: 'Przełącz Centrum poleceń',
+      toggleContextUsage: 'Przełącz użycie kontekstu',
+      toggleRunningTimer: 'Przełącz licznik trwającej sesji',
+      toggleSessionTimer: 'Przełącz licznik sesji',
+      toggleTerminal: 'Przełącz terminal',
+      toggleVersion: 'Przełącz wersję',
+      toggleWorkspace: 'Przełącz obszar roboczy'
+    }
+  },
+  zones: { reload: 'Wczytaj ponownie', tabCount: (count: number) => `${count} kart` },
+  assistant: {
+    thread: {
+      thought: 'Myśl',
+      thoughtBriefly: 'Krótko przemyślano',
+      thoughtFor: (duration: string) => `Myślano przez ${duration}`,
+      react: 'Zareaguj',
+      filesChanged: (count: number) => (count === 1 ? 'Zmieniono 1 plik' : `Zmieniono ${count} plików`),
+      reviewChanges: 'Przejrzyj zmiany'
+    },
+    tool: {
+      memoryWriteNoted: 'Zapis do pamięci odnotowany',
+      titles: {
+        memory: { done: 'Zapisano do pamięci', pending: 'Zapisywanie do pamięci', pendingAction: 'Zapisywanie' }
+      }
+    }
+  }
+} satisfies TranslationOverrides
+
+export const plOverrides = mergeLocaleOverrides(plTranslatedOverrides, plMissingOverrides)
+
+export const pl = defineLocale(plOverrides)

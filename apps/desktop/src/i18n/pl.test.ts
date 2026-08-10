@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { en } from './en'
-import { pl } from './pl'
+import { pl, plOverrides } from './pl'
 
 function ownLeafPaths(value: unknown, prefix = ''): string[] {
   if (
@@ -27,8 +27,8 @@ function ownLeafPaths(value: unknown, prefix = ''): string[] {
 }
 
 describe('Polish desktop catalog', () => {
-  it('has the same recursive own leaf paths as English', () => {
-    expect(ownLeafPaths(pl).sort()).toEqual(ownLeafPaths(en).sort())
+  it('overrides every English leaf without relying on the merge fallback', () => {
+    expect(ownLeafPaths(plOverrides).sort()).toEqual(ownLeafPaths(en).sort())
   })
 
   it('uses Polish for core visible actions', () => {

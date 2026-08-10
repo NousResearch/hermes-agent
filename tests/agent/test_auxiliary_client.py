@@ -4620,9 +4620,14 @@ class TestFastModelTier:
             _FAST_MODEL_TASKS
         )
         assert not overlap
+
+
 def test_auxiliary_validation_rejects_router_timeout_shim():
     """Auxiliary consumers must send HTTP-success timeout shims into recovery."""
-    from agent.auxiliary_client import _validate_llm_response
+    from agent.auxiliary_client import (
+        _is_invalid_aux_response_error,
+        _validate_llm_response,
+    )
 
     response = SimpleNamespace(
         choices=[SimpleNamespace(message=SimpleNamespace(
@@ -4631,5 +4636,9 @@ def test_auxiliary_validation_rejects_router_timeout_shim():
         usage=SimpleNamespace(completion_tokens=0),
     )
 
-    with pytest.raises(RuntimeError, match="router timeout shim"):
+    with pytest.raises(RuntimeError, match="router timeout shim") as exc_info:
         _validate_llm_response(response, task="compression")
+
+    # Both sync and async auxiliary fallback gates share this classifier.
+    assert _is_invalid_aux_response_error(exc_info.value)
+    assert not _is_invalid_aux_response_error(RuntimeError("Auxiliary compression: normal provider failure"))

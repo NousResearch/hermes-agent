@@ -4552,18 +4552,19 @@ def _is_invalid_aux_response_error(exc: Exception) -> bool:
     """Detect provider responses that authenticated but cannot serve aux shape.
 
     Some OpenAI-compatible routes return HTTP 200 with an empty/malformed
-    ChatCompletion instead of a normal provider error.  That is still a
-    provider/model capability failure for auxiliary tasks: downstream callers
-    need ``choices[0].message`` and should be able to continue through the
+    ChatCompletion or a router timeout shim instead of a normal provider error.
+    Both are provider/model capability failures for auxiliary tasks: downstream
+    callers need a usable completion and should be able to continue through the
     same fallback path as explicit model-incompatibility errors.
     """
     if not isinstance(exc, RuntimeError):
         return False
     msg = str(exc).lower()
+    if "auxiliary " not in msg:
+        return False
     return (
-        "auxiliary " in msg
-        and "llm returned invalid response" in msg
-        and "choices[0].message" in msg
+        "llm returned router timeout shim" in msg
+        or ("llm returned invalid response" in msg and "choices[0].message" in msg)
     )
 
 

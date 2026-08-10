@@ -5134,7 +5134,9 @@ def _current_profile_name() -> str:
 # v3: adds approvals.mode config RPCs and session.info reconciliation.
 # v4: session.create fast=false is an explicit per-session normal-tier override.
 # v5: uvicorn ws_max_size raised for one-shot base64 file.attach frames (>16 MiB).
-DESKTOP_BACKEND_CONTRACT = 5
+# v6: plugins.manage list rows carry the canonical registry key; toggles are
+#     key-addressed (keyless rows render read-only in Desktop Settings).
+DESKTOP_BACKEND_CONTRACT = 6
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:

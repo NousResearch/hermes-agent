@@ -54,22 +54,22 @@ describe('PluginsSettings', () => {
     expect(screen.getByText('Legacy plugin')).toBeTruthy()
   })
 
-  it('uses the legacy name address when toggling a row without a key', async () => {
-    requestGateway.mockResolvedValue({ ok: true, plugin: { ...legacyRow, status: 'enabled' } })
-
+  it('renders keyless rows read-only instead of falling back to name-addressed toggles', () => {
+    // Name-addressed toggles flip every same-named plugin across category
+    // dirs (image_gen/fal vs video_gen/fal) — the reason toggles moved to
+    // canonical keys. A pre-contract-v6 row must never reach the RPC.
     render(<PluginsSettings />)
-    fireEvent.click(screen.getByRole('switch', { name: 'Enable Legacy plugin' }))
 
-    await waitFor(() =>
-      expect(requestGateway).toHaveBeenCalledWith('plugins.manage', {
-        action: 'toggle',
-        name: 'Legacy plugin',
-        enable: true
-      })
-    )
+    const toggle = screen.getByRole('switch', { name: 'Enable Legacy plugin' })
+
+    expect(toggle.hasAttribute('disabled') || toggle.getAttribute('aria-disabled') === 'true').toBe(true)
+
+    fireEvent.click(toggle)
+
+    expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'toggle' }))
   })
 
-  it('keeps duplicate-named legacy rows distinct after a name-addressed toggle', async () => {
+  it('keeps duplicate-named keyless rows distinct (no React key collision)', () => {
     const sibling = {
       ...legacyRow,
       description: 'A second plugin category with the same legacy name'
@@ -77,15 +77,10 @@ describe('PluginsSettings', () => {
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     $agentPlugins.set([legacyRow, sibling])
-    requestGateway.mockResolvedValue({ ok: true, plugin: { ...legacyRow, status: 'enabled' } })
 
     render(<PluginsSettings />)
-    fireEvent.click(screen.getAllByRole('switch', { name: 'Enable Legacy plugin' })[0])
 
-    await waitFor(() =>
-      expect(screen.getAllByRole('switch', { name: 'Disable Legacy plugin' })).toHaveLength(2)
-    )
-
+    expect(screen.getAllByRole('switch', { name: 'Enable Legacy plugin' })).toHaveLength(2)
     expect(screen.getByText(sibling.description)).toBeTruthy()
     expect(consoleError.mock.calls.flat().join(' ')).not.toContain('same key')
   })

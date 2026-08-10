@@ -376,6 +376,7 @@ export const en: Translations = {
         search: 'Search plugins…',
         noMatches: 'No plugins match your search.',
         toggleFailed: (name: string) => `Could not toggle ${name}`,
+        updateBackendToManage: 'Update the Hermes backend to manage this plugin from Desktop.',
         sources: { bundled: 'bundled', user: 'user', git: 'git', project: 'project', entrypoint: 'pip' }
       }
     },

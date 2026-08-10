@@ -70,22 +70,24 @@ export function loadAgentPlugins(request: GatewayRequest): Promise<void> {
 }
 
 /** Flip a backend plugin on/off and patch the row from the RPC's refreshed
- *  copy. Current backends use canonical keys; legacy keyless rows fall back
- *  to the name-addressed protocol they were returned by. */
+ *  copy. Addressed by canonical key ONLY — bare names collide across category
+ *  dirs (image_gen/fal vs video_gen/fal), which is exactly why the backend
+ *  moved to key-addressed toggles. Rows without a key (pre-contract-v6
+ *  backends) render read-only instead of falling back to the collision-prone
+ *  name protocol; the backend-contract skew toast points the user at the
+ *  update. Returns whether the toggle stuck. */
 export async function toggleAgentPlugin(
   request: GatewayRequest,
-  row: Pick<AgentPluginRow, 'key' | 'name'>,
+  key: string,
   enable: boolean,
   failMessage: string
 ): Promise<boolean> {
-  const address = row.key ?? row.name
-
-  $agentPluginBusy.set(address)
+  $agentPluginBusy.set(key)
 
   try {
     const result = await request<{ ok?: boolean; plugin?: AgentPluginRow | null }>('plugins.manage', {
       action: 'toggle',
-      ...(row.key ? { key: row.key } : { name: row.name }),
+      key,
       enable
     })
 
@@ -96,15 +98,7 @@ export async function toggleAgentPlugin(
     const refreshed = result.plugin
 
     if (refreshed) {
-      const currentRows = $agentPlugins.get()
-
-      $agentPlugins.set(
-        row.key
-          ? currentRows.map(current => (current.key === row.key ? { ...current, ...refreshed } : current))
-          : currentRows.map(current =>
-              current.name === row.name ? { ...current, status: refreshed.status } : current
-            )
-      )
+      $agentPlugins.set($agentPlugins.get().map(row => (row.key === key ? { ...row, ...refreshed } : row)))
     } else {
       await loadAgentPlugins(request)
     }

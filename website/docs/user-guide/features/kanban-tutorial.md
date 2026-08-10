@@ -294,6 +294,28 @@ This replaces the "dig through comments and the work output" dance that plagues 
 
 The bulk-close guard exists because this data is per-run. `hermes kanban complete a b c --summary X` (you, from the CLI) is refused — copy-pasting the same summary to three tasks is almost always wrong. Bulk close without the handoff flags still works for the common "I finished a pile of admin tasks" case. The tool surface doesn't expose a bulk variant at all; `kanban_complete` is always single-task-at-a-time for the same reason.
 
+## Follow-up on a done card — CI remediation via the parent link
+
+Story 1's implementation card is `done`. Two hours later CI fails on the merged branch. Don't reopen the done card — completed cards are history, and their handoff flows forward. Create a remediation card with the done card as its **parent**:
+
+```bash
+hermes kanban create "Fix CI: test_backoff_jitter flakes on 3.11" \
+    --assignee backend-dev \
+    --parent t_impl \
+    --workspace worktree --branch wt/ci-fix-backoff \
+    --body "CI run #4812 failed after t_impl completed.
+FAILED tests/test_retry.py::test_backoff_jitter - TimeoutError
+Acceptance: tests/test_retry.py green on 3.11 and 3.12."
+```
+
+Three things make this work:
+
+- **Immediate dispatch.** Because the parent is already `done`, the child is created straight into `ready` — the dispatcher can claim it on the next tick. (A child of a still-open parent would wait in `todo`.)
+- **Inherited context.** The remediation worker's context includes a *Parent task results* section carrying `t_impl`'s completion summary and metadata — the changed files and decisions the original worker recorded — so it knows why the code is shaped the way it is before reading a line of it.
+- **Fresh evidence in the body.** The CI log didn't exist when `t_impl` completed, so it can't be in the parent's handoff — it goes in the new card's body, alongside explicit acceptance criteria.
+
+Prefer a fresh worktree/branch for the remediation card. Checking out the original branch gives the worker repo *state* but none of the *rationale* — the parent handoff carries that. Same assignee profile is usually right: the profile that wrote the code has the skills to fix it.
+
 ## Inspecting a task currently running
 
 For completeness — here's the drawer of a task still in flight (the API implementation from Story 1, claimed by `backend-dev` but not yet complete):

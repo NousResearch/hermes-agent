@@ -7626,7 +7626,7 @@ def _prompt_model_selection(
     menu_title = "Select default model:"
     if has_pricing:
         # Align the header with the model column.
-        # Each choice is "  {label}" (2 spaces) and simple_term_menu prepends
+        # Each choice is "  {label}" (2 spaces) and we prepend
         # a 3-char cursor region ("-> " or "   "), so content starts at col 5.
         pad = " " * 5
         header = f"\n{pad}{'':>{name_col}} {'In':>{price_col}}  {'Out':>{price_col}}"
@@ -7639,10 +7639,6 @@ def _prompt_model_selection(
             menu_title += "  ★ = on sale"
 
     # Try arrow-key menu first, fall back to number input.
-    # Uses the shared curses radiolist (ESC/arrow-key handling that works
-    # across terminals, incl. those that emit raw escape sequences) instead
-    # of simple_term_menu, which conflicts with /dev/tty and left ESC/arrow
-    # keys unreliable in the setup model picker.
     try:
         from hermes_cli.curses_ui import curses_radiolist
 

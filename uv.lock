@@ -1616,7 +1616,6 @@ all = [
     { name = "mcp" },
     { name = "pyasn1" },
     { name = "python-multipart" },
-    { name = "simple-term-menu" },
     { name = "starlette" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "youtube-transcript-api" },
@@ -1629,9 +1628,6 @@ azure-identity = [
 ]
 bedrock = [
     { name = "boto3" },
-]
-cli = [
-    { name = "simple-term-menu" },
 ]
 computer-use = [
     { name = "mcp" },
@@ -1744,7 +1740,6 @@ termux = [
     { name = "honcho-ai" },
     { name = "mcp" },
     { name = "python-telegram-bot", extra = ["webhooks"] },
-    { name = "simple-term-menu" },
     { name = "starlette" },
 ]
 termux-all = [
@@ -1761,7 +1756,6 @@ termux-all = [
     { name = "pyasn1" },
     { name = "python-multipart" },
     { name = "python-telegram-bot", extra = ["webhooks"] },
-    { name = "simple-term-menu" },
     { name = "starlette" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -1845,8 +1839,6 @@ requires-dist = [
     { name = "google-auth-oauthlib", marker = "extra == 'google'", specifier = "==1.3.1" },
     { name = "hermes-agent", extras = ["acp"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["acp"], marker = "extra == 'termux'" },
-    { name = "hermes-agent", extras = ["cli"], marker = "extra == 'all'" },
-    { name = "hermes-agent", extras = ["cli"], marker = "extra == 'termux'" },
     { name = "hermes-agent", extras = ["cron"], marker = "extra == 'all'" },
     { name = "hermes-agent", extras = ["cron"], marker = "extra == 'termux'" },
     { name = "hermes-agent", extras = ["google"], marker = "extra == 'all'" },
@@ -1918,7 +1910,6 @@ requires-dist = [
     { name = "sentencepiece", marker = "extra == 'wake'", specifier = "==0.2.2" },
     { name = "setuptools", marker = "extra == 'dev'", specifier = "==83.0.0" },
     { name = "sherpa-onnx", marker = "extra == 'wake'", specifier = "==1.13.4" },
-    { name = "simple-term-menu", marker = "extra == 'cli'", specifier = "==1.6.6" },
     { name = "slack-bolt", marker = "extra == 'messaging'", specifier = "==1.29.0" },
     { name = "slack-bolt", marker = "extra == 'slack'", specifier = "==1.29.0" },
     { name = "slack-sdk", marker = "extra == 'messaging'", specifier = "==3.43.0" },
@@ -1940,7 +1931,7 @@ requires-dist = [
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "vercel", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "tts-premium", "voice", "wake", "honcho", "supermemory", "mem0", "vision", "pty", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "otlp", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
 
 [[package]]
 name = "hf-xet"
@@ -4167,15 +4158,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/db/47/da3ea14ab647a4f6580227853fe29353e1173ff77064d42c0bb31d01b453/sherpa_onnx-1.13.4-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:88af596be24eac32982dd64fcac30af99d9130ca498bfa1a0064189c8498195b", size = 4358385, upload-time = "2026-07-07T13:10:10.265Z" },
     { url = "https://files.pythonhosted.org/packages/44/90/84205ff383ba9335c3821c2cd6d514350f52199cb640ec094517f1f911a0/sherpa_onnx-1.13.4-cp313-cp313-win32.whl", hash = "sha256:0cabb508a15be22138f9fb7695d7ec5f3893ecd088ee419b9df559fed7e8f649", size = 1929707, upload-time = "2026-07-07T12:51:53.196Z" },
     { url = "https://files.pythonhosted.org/packages/82/40/ee8a0a8c83fc6d7f5245a5a031e471d3b115e20cce867e7abb2f9d4185c9/sherpa_onnx-1.13.4-cp313-cp313-win_amd64.whl", hash = "sha256:17050fdfb48d37ae996364f697c554a1399740d18e5a56b143c011d00cfed3e0", size = 2244504, upload-time = "2026-07-07T12:32:59.882Z" },
-]
-
-[[package]]
-name = "simple-term-menu"
-version = "1.6.6"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d8/80/f0f10b4045628645a841d3d98b584a8699005ee03a211fc7c45f6c6f0e99/simple_term_menu-1.6.6.tar.gz", hash = "sha256:9813d36f5749d62d200a5599b1ec88469c71378312adc084c00c00bfbb383893", size = 35493, upload-time = "2024-12-02T16:31:50.639Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/9c/09/21d993e394c1fe5c44cd90453d88ed44932da8dfca006e424c072d77d29b/simple_term_menu-1.6.6-py3-none-any.whl", hash = "sha256:c2a869efa7a9f7e4a9c25858b42ca6974034951c137d5e281f5339b06ed8c9c2", size = 27600, upload-time = "2024-12-02T16:31:48.934Z" },
 ]
 
 [[package]]

@@ -1260,12 +1260,8 @@ Use `get_hermes_home()` from `hermes_constants` for code paths. Use `display_her
 for user-facing print/log messages. Hardcoding `~/.hermes` breaks profiles — each profile
 has its own `HERMES_HOME` directory. This was the source of 5 bugs fixed in PR #3575.
 
-### DO NOT introduce new `simple_term_menu` usage
-Existing call sites in `hermes_cli/main.py` remain for legacy fallback only;
-the preferred UI is curses (stdlib) because `simple_term_menu` has
-ghost-duplication rendering bugs in tmux/iTerm2 with arrow keys. New
-interactive menus must use `hermes_cli/curses_ui.py` — see
-`hermes_cli/tools_config.py` for the canonical pattern.
+### All CLI menu-pickers MUST use curses.
+Interactive menus must use `hermes_cli/curses_ui.py`. See `hermes_cli/tools_config.py` for an example.
 
 ### DO NOT use `\033[K` (ANSI erase-to-EOL) in spinner/display code
 Leaks as literal `?[K` text under `prompt_toolkit`'s `patch_stdout`. Use space-padding: `f"\r{line}{' ' * pad}"`.

@@ -1082,8 +1082,6 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
     """Interactive curses-based session browser with live search filtering.
 
     Returns the selected session ID, or None if cancelled.
-    Uses curses (not simple_term_menu) to avoid the ghost-duplication rendering
-    bug in tmux/iTerm when arrow keys are used.
     """
     if not sessions:
         print("No sessions found.")

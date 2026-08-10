@@ -192,7 +192,6 @@ matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0",
 # and XXE. aiohttp/httpx are already in [messaging]; defusedxml lands
 # here to keep the dependency local to wecom_callback's threat model.
 wecom = ["defusedxml==0.7.1"]
-cli = ["simple-term-menu==1.6.6"]
 tts-premium = ["elevenlabs==1.59.0"]
 voice = [
   # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime).
@@ -280,7 +279,6 @@ termux = [
   # Baseline Android / Termux path for reliable fresh installs.
   "python-telegram-bot[webhooks]==22.6",
   "hermes-agent[cron]",
-  "hermes-agent[cli]",
   "hermes-agent[mcp]",
   "hermes-agent[honcho]",
   "hermes-agent[acp]",
@@ -349,7 +347,6 @@ all = [
   # and failed on `make`. Lazy-install routes that build to first use,
   # where the user is expected to have a toolchain available.
   "hermes-agent[cron]",
-  "hermes-agent[cli]",
   "hermes-agent[pty]",
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",

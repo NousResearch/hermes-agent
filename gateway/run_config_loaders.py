@@ -219,7 +219,7 @@ class GatewayConfigLoadersMixin:
 
     @classmethod
     def _load_service_tier(cls) -> str | None:
-        """``agent.service_tier``: fast/priority/on => "priority"; normal/off => None; None when unset/unknown."""
+        """``agent.service_tier``: fast/priority/on => "priority"; flex => "flex"; normal/off => None; None when unset/unknown."""
         raw = cls._cfg_str("agent", "service_tier")
         value = raw.lower()
         if not value or value in {"normal", "default", "standard", "off", "none"}:
@@ -228,6 +228,8 @@ class GatewayConfigLoadersMixin:
             return "priority"
         if value in {"auto", "cold"}:
             return value
+        if value == "flex":
+            return "flex"
         logger.warning("Unknown service_tier '%s', ignoring", raw)
         return None
 

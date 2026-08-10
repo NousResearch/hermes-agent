@@ -11,7 +11,7 @@ module-level constants live in hermes_state_common.
 import logging
 import json
 import sqlite3
-from typing import Dict, Optional
+from typing import Dict, Optional, Sequence
 
 from hermes_constants import get_hermes_home
 from hermes_state_common import (
@@ -38,6 +38,19 @@ logger = logging.getLogger("hermes_state")
 # Cache for schema_read_probe_statements() — parsing SCHEMA_SQL spins up an
 # in-memory SQLite database, so derive the statements once per process.
 _READ_PROBE_STATEMENTS: Optional[tuple] = None
+
+# _FTS_TRIGGERS is the full canonical set, but its two halves have different
+# availability: the trigram triggers are declared ONLY by FTS_TRIGRAM_SQL /
+# LEGACY_FTS_TRIGRAM_SQL, whose CREATE VIRTUAL TABLE needs the trigram
+# tokenizer (SQLite >= 3.34). On a build without it, _ensure_fts_schema
+# soft-fails that DDL, so those three triggers can never exist and any check
+# for "all six are present" is permanently unsatisfiable. Split the set so a
+# trigger's absence is only ever measured against the DDL that can create it.
+# The two subsets are exhaustive and disjoint by construction (base is the
+# complement of trigram); test_fts_trigger_subsets_match_the_ddl pins them
+# against the DDL those triggers actually come from.
+_FTS_TRIGRAM_TRIGGERS = tuple(n for n in _FTS_TRIGGERS if "_trigram_" in n)
+_FTS_BASE_TRIGGERS = tuple(n for n in _FTS_TRIGGERS if n not in _FTS_TRIGRAM_TRIGGERS)
 
 
 def schema_read_probe_statements() -> tuple:
@@ -147,12 +160,25 @@ class SessionSchemaMixin:
                 pass
 
     @staticmethod
-    def _fts_trigger_count(cursor: sqlite3.Cursor) -> int:
-        placeholders = ",".join("?" for _ in _FTS_TRIGGERS)
+    def _fts_trigger_count(
+        cursor: sqlite3.Cursor,
+        names: Sequence[str] = _FTS_TRIGGERS,
+    ) -> int:
+        """Count how many of *names* currently exist as triggers.
+
+        Defaults to the full canonical set so existing callers are unchanged;
+        callers that need to know whether one HALF of the set is intact pass
+        _FTS_BASE_TRIGGERS or _FTS_TRIGRAM_TRIGGERS.
+        """
+        if not names:
+            # "name IN ()" is a syntax error in SQLite, and nothing can be
+            # missing from an empty set anyway.
+            return 0
+        placeholders = ",".join("?" for _ in names)
         row = cursor.execute(
             f"SELECT COUNT(*) FROM sqlite_master "
             f"WHERE type = 'trigger' AND name IN ({placeholders})",
-            _FTS_TRIGGERS,
+            tuple(names),
         ).fetchone()
         return int(row[0] if not isinstance(row, sqlite3.Row) else row[0])
 
@@ -1271,8 +1297,17 @@ class SessionSchemaMixin:
                     self._trigram_available = False
                     self._fts_cjk_available = False
             elif legacy_fts:
-                triggers_need_repair = (
-                    self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
+                # Measure BEFORE the DDL below runs, so these describe the
+                # pre-repair state. Whether the trigram half is even
+                # creatable is only known AFTER _ensure_fts_schema, which is
+                # why the two halves are combined at the `if`, not here.
+                base_triggers_missing = (
+                    self._fts_trigger_count(cursor, _FTS_BASE_TRIGGERS)
+                    < len(_FTS_BASE_TRIGGERS)
+                )
+                trigram_triggers_missing = (
+                    self._fts_trigger_count(cursor, _FTS_TRIGRAM_TRIGGERS)
+                    < len(_FTS_TRIGRAM_TRIGGERS)
                 )
                 self._fts_enabled = self._ensure_fts_schema(
                     cursor, "messages_fts", LEGACY_FTS_SQL
@@ -1282,7 +1317,9 @@ class SessionSchemaMixin:
                         cursor, "messages_fts_trigram", LEGACY_FTS_TRIGRAM_SQL
                     )
                     self._trigram_available = trigram_enabled
-                    if triggers_need_repair:
+                    if base_triggers_missing or (
+                        trigram_enabled and trigram_triggers_missing
+                    ):
                         self._run_admitted_startup_rebuild(
                             cursor,
                             lambda: self._rebuild_legacy_fts_indexes(
@@ -1290,8 +1327,14 @@ class SessionSchemaMixin:
                             ),
                         )
             else:
-                triggers_need_repair = (
-                    self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
+                # Same split as the legacy branch above, same reason.
+                base_triggers_missing = (
+                    self._fts_trigger_count(cursor, _FTS_BASE_TRIGGERS)
+                    < len(_FTS_BASE_TRIGGERS)
+                )
+                trigram_triggers_missing = (
+                    self._fts_trigger_count(cursor, _FTS_TRIGRAM_TRIGGERS)
+                    < len(_FTS_TRIGRAM_TRIGGERS)
                 )
                 self._fts_enabled = self._ensure_fts_schema(
                     cursor, "messages_fts", FTS_SQL
@@ -1305,7 +1348,9 @@ class SessionSchemaMixin:
                         cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
                     )
                     self._trigram_available = trigram_enabled
-                    if triggers_need_repair:
+                    if base_triggers_missing or (
+                        trigram_enabled and trigram_triggers_missing
+                    ):
                         self._run_admitted_startup_rebuild(
                             cursor,
                             lambda: self._rebuild_fts_indexes(

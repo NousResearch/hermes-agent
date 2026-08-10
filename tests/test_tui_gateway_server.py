@@ -16723,3 +16723,116 @@ def test_save_cfg_keeps_unicode_personalities_readable(tmp_path, monkeypatch):
     assert "(=^･ω･^=)" in text
     assert "\\u4f60" not in text
 
+
+def test_personality_marker_does_not_shift_truncate_ordinal(monkeypatch):
+    """A personality pivot must not occupy a slot in the ordinal address space.
+
+    ``_apply_personality_to_session`` injects its pivot as ``role=user`` so
+    strict OpenAI-compatible providers accept it mid-conversation. Untagged, the
+    ordinal filter (``role == "user" and not display_kind``) counted it as a
+    real user turn while no client renders it as one, so every rewind issued
+    after a personality change resolved one turn too early and
+    ``replace_messages()`` hard-deleted the extra span (#82756, third occurrence
+    after #70516 / #80763).
+
+    The sibling ``test_prompt_submit_truncate_ordinal_skips_display_kind_rows``
+    pins the filter itself; this one pins the producer, which is where the
+    invariant was actually broken.
+    """
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None, **_kwargs):
+            return {
+                "final_response": "reply",
+                "messages": [
+                    *(conversation_history or []),
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": "reply"},
+                ],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    class _StubDb:
+        def __init__(self):
+            self.replaced = []
+
+        def replace_messages(self, session_id, messages, active_only=False):
+            self.replaced.append((session_id, list(messages)))
+
+    session = _session(
+        agent=_Agent(),
+        history=[
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "first reply"},
+        ],
+    )
+    server._sessions["personality-ordinal-sid"] = session
+    stub_db = _StubDb()
+
+    try:
+        monkeypatch.setattr(server, "_session_info", lambda *a, **k: {})
+        monkeypatch.setattr(server, "_emit", lambda *a: None)
+
+        # Real production injection point — not a hand-written marker dict.
+        server._apply_personality_to_session(
+            "personality-ordinal-sid", session, "talk like a pirate", "pirate"
+        )
+
+        marker = session["history"][-1]
+        assert marker["role"] == "user", "provider compatibility: pivot rides as a user turn"
+
+        # Two more real turns land after the personality change.
+        session["history"].extend(
+            [
+                {"role": "user", "content": "second"},
+                {"role": "assistant", "content": "second reply"},
+                {"role": "user", "content": "third"},
+                {"role": "assistant", "content": "third reply"},
+            ]
+        )
+        history_before = list(session["history"])
+        third_index = history_before.index({"role": "user", "content": "third"})
+
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_get_db", lambda: stub_db)
+
+        # The client counts three user bubbles (first=0, second=1, third=2) —
+        # it never sees the pivot. Rewinding to "third" must cut exactly there.
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": "personality-ordinal-sid",
+                    "text": "third, reworded",
+                    "truncate_before_user_ordinal": 2,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+
+        expected = history_before[:third_index]
+        assert stub_db.replaced == [("session-key", expected)], (
+            "the pivot shifted the ordinal: the cut landed at "
+            f"{len(stub_db.replaced[0][1]) if stub_db.replaced else None} instead of {third_index}"
+        )
+        # The turn before the target must survive — that is the span the three
+        # reported incidents lost.
+        assert {"role": "user", "content": "second"} in expected
+        # And the mechanism that keeps it out of the address space, so a future
+        # producer cannot regress this by dropping the tag.
+        assert marker.get("display_kind"), (
+            "an untagged role=user pivot silently consumes a truncate ordinal slot"
+        )
+    finally:
+        server._sessions.pop("personality-ordinal-sid", None)
+

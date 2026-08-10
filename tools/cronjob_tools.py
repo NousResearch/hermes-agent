@@ -1459,7 +1459,7 @@ NOTE: The agent's final response is auto-delivered to the target. Put the primar
 user-facing content in the final response. Cron jobs run autonomously with no user
 present — they cannot ask questions or request clarification.
 
-Important safety rule: cron-run sessions should not recursively schedule more cron jobs.""",
+Scheduling from cron-run sessions is disabled by default and enabled via cron.allow_agent_scheduling in config.yaml. When enabled, jobs created from a cron run are user-owned in the same flat job table as every other job, and their delivery resolves to the creating job's own persistent target — never to the ephemeral cron-run session. Prefer updating an existing job (list first, then update by job_id) over creating near-duplicates.""",
     "parameters": {
         "type": "object",
         "properties": {

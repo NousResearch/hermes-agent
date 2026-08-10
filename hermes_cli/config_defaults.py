@@ -2255,6 +2255,14 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
+        # Allow cron-spawned agents to use the cronjob toolset (create/edit/
+        # remove scheduled jobs from within a cron run — the "cron-librarian"
+        # pattern). Off by default: the cronjob toolset is policy-denied in
+        # cron context to prevent unattended scheduling loops. Jobs created
+        # this way are user-owned in the same flat jobs table as every other
+        # job. Interactive toolsets (messaging/clarify) stay denied in cron
+        # context regardless of this setting.
+        "allow_agent_scheduling": False,
         # Pre-dispatch configuration validation (T1-26): before constructing
         # any agent machinery for a job, verify the provider API key resolves
         # (unless a fallback chain is configured), attached skills are ready

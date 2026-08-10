@@ -53,9 +53,9 @@ describe('titlebarControlsYNudge', () => {
   })
 
   it('stays flat on Tahoe, Windows/Linux, and macOS fullscreen', () => {
-    expect(titlebarControlsYNudge({ windowButtonPosition: { x: 24, y: 10 }, darwinMajor: MACOS_TAHOE_DARWIN_MAJOR })).toBe(
-      '0px'
-    )
+    expect(
+      titlebarControlsYNudge({ windowButtonPosition: { x: 24, y: 10 }, darwinMajor: MACOS_TAHOE_DARWIN_MAJOR })
+    ).toBe('0px')
     expect(titlebarControlsYNudge({ windowButtonPosition: null })).toBe('0px')
     expect(titlebarControlsYNudge({ windowButtonPosition: { x: 24, y: 10 }, isFullscreen: true })).toBe('0px')
   })

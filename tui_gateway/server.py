@@ -9327,6 +9327,25 @@ def _notification_poller_loop(
                 str(evt.get("session_key") or ""),
                 sid,
             )
+            # Advance the durable delivery-attempt counter on this drop. It
+            # happens BEFORE claim_event_delivery (the only other site that
+            # bumps the counter), so without this an unownable delegation never
+            # consumes its budget and restore_undelivered_completions can never
+            # reach the parking threshold — the row re-enqueues and re-drops on
+            # every boot forever. Best-effort: a bookkeeping failure must not
+            # break notification draining.
+            if evt.get("type") == "async_delegation":
+                _did = str(evt.get("delegation_id") or "")
+                if _did:
+                    try:
+                        from tools.async_delegation import _note_delivery_attempt
+
+                        _note_delivery_attempt(_did)
+                    except Exception:
+                        logger.debug(
+                            "Could not record delivery attempt for delegation %s",
+                            _did, exc_info=True,
+                        )
             continue
 
         _evt_sid = evt.get("session_id", "")

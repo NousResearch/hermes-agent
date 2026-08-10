@@ -185,10 +185,14 @@ def _plugin_provider_name() -> Optional[str]:
     return configured
 
 
-def _resolve_fal_model() -> tuple:
-    """Return ``(model_id, meta)`` for the configured FAL model, falling back to DEFAULT_MODEL (warned) when unknown."""
+def _resolve_fal_model(override: Optional[str] = None) -> tuple:
+    """``(model_id, meta)`` for the effective FAL model — a non-empty per-call ``override``
+    (the ``model`` argument surfaced in the ``image_generate`` schema) wins over the
+    configured ``image_gen.model`` — falling back to DEFAULT_MODEL (warned) when the
+    resolved id is unknown."""
+    model_id = override.strip() if isinstance(override, str) else ""
     # FAL_IMAGE_MODEL is an undocumented escape hatch (backward-compat for tests/scripts).
-    model_id = _read_image_gen_key("model") or os.getenv("FAL_IMAGE_MODEL", "").strip()
+    model_id = model_id or _read_configured_image_model() or os.getenv("FAL_IMAGE_MODEL", "").strip()
     if model_id and model_id not in FAL_MODELS:
         logger.warning("Unknown FAL model '%s' in config; falling back to %s", model_id, DEFAULT_MODEL)
         model_id = None
@@ -408,14 +412,17 @@ def image_generate_tool(
     num_inference_steps: Optional[int] = None, guidance_scale: Optional[float] = None,
     num_images: Optional[int] = None, output_format: Optional[str] = None,
     seed: Optional[int] = None, image_url: Optional[str] = None,
-    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None) -> str:
+    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None,
+    model: Optional[str] = None) -> str:
     """Generate (or, with source images + an ``edit_endpoint`` model, edit) an image via FAL.
 
     Extra kwargs are overrides filtered per-model via ``supports`` / ``edit_supports`` (dropped
-    silently so callers survive model switches). Returns JSON ``{"success", "image", "modality",
-    "error", "error_type"}``.
+    silently so callers survive model switches). ``model`` is the per-call override surfaced in
+    the ``image_generate`` schema; it wins over ``image_gen.model`` from config for this call
+    only, and empty / whitespace / non-string values fall back to the configured default.
+    Returns JSON ``{"success", "image", "modality", "error", "error_type"}``.
     """
-    model_id, meta = _resolve_fal_model()
+    model_id, meta = _resolve_fal_model(model)
     refs = reference_image_urls if isinstance(reference_image_urls, (list, tuple)) else []
     source_images = [c.strip() for c in (image_url, *refs) if isinstance(c, str) and c.strip()]
     use_edit = bool(source_images) and bool(meta.get("edit_endpoint"))
@@ -608,9 +615,11 @@ def _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale, model
 
 def _dispatch_to_plugin_provider(
     prompt: str, aspect_ratio: str, image_url: Optional[str] = None,
-    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None):
+    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None,
+    model: Optional[str] = None):
     """JSON result from the selected plugin provider, or ``None`` to fall through to in-tree FAL
-    (provider unset / ``"fal"`` / ``"nous"``). Providers without ``upscale`` ignore it via ``**kwargs``."""
+    (provider unset / ``"fal"`` / ``"nous"``). Providers without ``upscale`` ignore it via
+    ``**kwargs``; a per-call ``model`` override wins over the configured ``image_gen.model``."""
     configured = _plugin_provider_name()
     if configured is None:
         return None
@@ -634,7 +643,7 @@ def _dispatch_to_plugin_provider(
     kwargs: Dict[str, Any] = {"prompt": prompt, "aspect_ratio": aspect_ratio}
     try:
         _add_provider_kwargs(kwargs, image_url, reference_image_urls, upscale,
-                             model=_read_configured_image_model())
+                             model=((model or "").strip() or _read_configured_image_model()))
         result = provider.generate(**kwargs)
     except Exception as exc:
         # A TypeError from generate() predating image_url support (third-party plugin not yet
@@ -667,16 +676,22 @@ def _normalize_krea_model(model_id: Optional[str]) -> Optional[str]:
 
 def _maybe_route_managed_krea(
     prompt: str, aspect_ratio: str, image_url: Optional[str] = None,
-    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None) -> Optional[str]:
+    reference_image_urls: Optional[list] = None, upscale: Optional[bool] = None,
+    model: Optional[str] = None) -> Optional[str]:
     """JSON result from the managed Krea gateway, or ``None`` to fall through.
 
-    Fires only for a native ``krea-2-*`` model with no ``image_gen.provider`` other than
+    Fires only for a native ``krea-2-*`` model — the configured one, or one named by
+    the per-call ``model`` override — with no ``image_gen.provider`` other than
     ``"nous"`` stored (a picker choice dispatches normally) and a resolvable Krea gateway.
     """
     configured_provider = _read_configured_image_provider()
     if configured_provider is not None and configured_provider != NOUS_MANAGED_PROVIDER:
         return None
-    normalized = _normalize_krea_model(_read_configured_image_model())
+
+    # Per-call model wins over the configured default for routing decisions,
+    # matching the dispatch path's behavior. Routing only fires for ``krea-2-*``.
+    candidate_model = (model or "").strip() or _read_configured_image_model()
+    normalized = _normalize_krea_model(candidate_model)
     if normalized is None:
         return None
     try:
@@ -730,6 +745,12 @@ def _handle_image_generate(args, **kw):
         return tool_error("prompt is required for image generation")
     aspect_ratio = args.get("aspect_ratio", DEFAULT_ASPECT_RATIO)
     upscale = args.get("upscale")
+    if not isinstance(upscale, bool):
+        upscale = None
+    # Optional per-call model override. Strings only — anything else is treated
+    # as "unset" so a bad LLM tool-call can't crash the dispatch path.
+    raw_model = args.get("model")
+    per_call_model = raw_model.strip() if isinstance(raw_model, str) else None
     task_id = kw.get("task_id")
     # Confinement chokepoint BEFORE any dispatch: every route receives sandbox-confined bytes.
     image_url, reference_image_urls, confine_error = _confine_source_images(
@@ -739,7 +760,7 @@ def _handle_image_generate(args, **kw):
     # Order matters: explicit plugin provider (incl. "krea"), then model-driven managed Krea
     # interception (only when no provider is set, so BYO/direct FAL stays untouched), then FAL.
     sources = dict(image_url=image_url, reference_image_urls=reference_image_urls,
-                   upscale=upscale if isinstance(upscale, bool) else None)
+                   upscale=upscale, model=per_call_model)
     raw = None
     for route in (_dispatch_to_plugin_provider, _maybe_route_managed_krea, image_generate_tool):
         raw = route(prompt, aspect_ratio, **sources)
@@ -813,6 +834,19 @@ _UPSCALE_PARAM = {
     ),
 }
 
+_MODEL_PARAM = {
+    "type": "string",
+    "description": (
+        "Optional backend-specific model identifier that overrides the "
+        "configured default for this call only (e.g. a FAL model id, an "
+        "OpenAI or xAI image model, or — when the active backend exposes a "
+        "bot-name catalog — a specific bot name). The set of valid values "
+        "depends on the active backend; leave unset to use the configured "
+        "default. Ignored by backends that don't accept a per-call model "
+        "override."
+    ),
+}
+
 
 def _build_dynamic_image_schema() -> Dict[str, Any]:
     """Render description AND params from the active model's capabilities; args it cannot
@@ -847,6 +881,9 @@ def _build_dynamic_image_schema() -> Dict[str, Any]:
         edit_clause = " (text-to-image only — the active model cannot edit existing images)"
     if info.get("supports_upscale"):
         properties["upscale"] = _UPSCALE_PARAM
+    # Every backend accepts a per-call model override via the provider ``**kwargs``
+    # contract (worst case: silently ignored), so it is advertised unconditionally.
+    properties["model"] = _MODEL_PARAM
     return {"description": base_desc.format(edit_clause=edit_clause),
             "parameters": {"type": "object", "properties": properties, "required": ["prompt"]}}
 

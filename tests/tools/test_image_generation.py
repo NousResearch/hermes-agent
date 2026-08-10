@@ -9,6 +9,7 @@ tests/tools/test_managed_media_gateways.py.
 
 from __future__ import annotations
 
+import os
 from unittest.mock import patch
 
 import pytest
@@ -374,14 +375,16 @@ class TestRegistryIntegration:
         + aspect_ratio. Capability args (image_url, reference_image_urls,
         upscale) are added per-model by the dynamic override so sessions
         whose active model can't honor them never see them (#95681 diet).
-        Model selection stays a user-level config choice, never an
-        agent-level arg."""
+        Model selection stays a user-level config choice; the per-call
+        ``model`` override is advertised by the dynamic builder, not the
+        static schema."""
         props = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]
         assert set(props.keys()) == {"prompt", "aspect_ratio"}
         assert image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["required"] == ["prompt"]
-        # The dynamic builder owns the capability args.
+        # The dynamic builder owns the capability args + the per-call model override.
         dyn = image_tool._build_dynamic_image_schema()
         assert "parameters" in dyn and "prompt" in dyn["parameters"]["properties"]
+        assert dyn["parameters"]["properties"]["model"]["type"] == "string"
 
     def test_aspect_ratio_enum_is_three_values(self, image_tool):
         enum = image_tool.IMAGE_GENERATE_SCHEMA["parameters"]["properties"]["aspect_ratio"]["enum"]
@@ -670,3 +673,103 @@ class TestUpscaleDispatchForwarding:
 
         image_tool._dispatch_to_plugin_provider("a cat", "square")
         assert "upscale" not in fake_provider.generate.call_args.kwargs
+
+    def test_dispatch_per_call_model_wins_over_configured(self, image_tool, monkeypatch):
+        """A non-empty ``model`` arg overrides ``image_gen.model`` for the call."""
+        import json as _json
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "krea")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: "configured-default")
+        fake_provider = MagicMock()
+        fake_provider.generate.return_value = {"success": True, "image": "/tmp/x.png"}
+        monkeypatch.setattr(
+            "agent.image_gen_registry.get_provider", lambda name: fake_provider
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
+        )
+
+        out = image_tool._dispatch_to_plugin_provider(
+            "a cat", "square", model="per-call-override"
+        )
+        assert _json.loads(out)["success"] is True
+        assert fake_provider.generate.call_args.kwargs["model"] == "per-call-override"
+
+    def test_dispatch_falls_back_to_configured_when_model_unset(self, image_tool, monkeypatch):
+        """When ``model`` is unset / whitespace, the configured default is used."""
+        from unittest.mock import MagicMock
+
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "krea")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: "configured-default")
+        fake_provider = MagicMock()
+        fake_provider.generate.return_value = {"success": True, "image": "/tmp/x.png"}
+        monkeypatch.setattr(
+            "agent.image_gen_registry.get_provider", lambda name: fake_provider
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
+        )
+
+        image_tool._dispatch_to_plugin_provider("a cat", "square", model="   ")
+        assert fake_provider.generate.call_args.kwargs["model"] == "configured-default"
+
+    def test_handle_image_generate_extracts_model_from_args(self, image_tool, monkeypatch):
+        """The handler reads ``model`` from the LLM tool-call args and threads it through."""
+        import json as _json
+        from unittest.mock import MagicMock
+
+        fake_provider = MagicMock()
+        fake_provider.generate.return_value = {"success": True, "image": "/tmp/x.png"}
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "krea")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: "configured-default")
+        monkeypatch.setattr(
+            "agent.image_gen_registry.get_provider", lambda name: fake_provider
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
+        )
+        # Skip post-processing so we just verify what reached the provider.
+        monkeypatch.setattr(image_tool, "_postprocess_image_generate_result", lambda raw, **k: raw)
+
+        raw = image_tool._handle_image_generate(
+            {"prompt": "a cat", "model": "  Nano-Banana-Pro  "}
+        )
+        assert _json.loads(raw)["success"] is True
+        assert fake_provider.generate.call_args.kwargs["model"] == "Nano-Banana-Pro"
+
+    def test_handle_image_generate_ignores_non_string_model(self, image_tool, monkeypatch):
+        """A bad LLM tool-call that passes a non-string ``model`` doesn't crash dispatch."""
+        import json as _json
+        from unittest.mock import MagicMock
+
+        fake_provider = MagicMock()
+        fake_provider.generate.return_value = {"success": True, "image": "/tmp/x.png"}
+        monkeypatch.setattr(image_tool, "_read_configured_image_provider", lambda: "krea")
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: "configured-default")
+        monkeypatch.setattr(
+            "agent.image_gen_registry.get_provider", lambda name: fake_provider
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins._ensure_plugins_discovered", lambda *a, **k: None
+        )
+        monkeypatch.setattr(image_tool, "_postprocess_image_generate_result", lambda raw, **k: raw)
+
+        raw = image_tool._handle_image_generate(
+            {"prompt": "a cat", "model": 12345}
+        )
+        assert _json.loads(raw)["success"] is True
+        # Falls back to the configured default when the per-call value isn't usable.
+        assert fake_provider.generate.call_args.kwargs["model"] == "configured-default"
+
+    def test_resolve_fal_model_per_call_override(self, image_tool, monkeypatch):
+        """`_resolve_fal_model(override)` honors a non-empty override string."""
+        model_id, _meta = image_tool._resolve_fal_model(" fal-ai/nano-banana-pro ")
+        assert model_id == "fal-ai/nano-banana-pro"
+
+    def test_resolve_fal_model_falls_back_to_configured(self, image_tool, monkeypatch):
+        """Empty / whitespace override falls back to the configured value."""
+        monkeypatch.setattr(image_tool, "_read_configured_image_model", lambda: None)
+        monkeypatch.setattr(os, "getenv", lambda key, default=None: "fal-ai/gpt-image-1.5" if key == "FAL_IMAGE_MODEL" else (default or ""))
+        model_id, _meta = image_tool._resolve_fal_model("   ")
+        assert model_id == "fal-ai/gpt-image-1.5"

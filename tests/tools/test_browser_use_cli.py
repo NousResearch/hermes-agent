@@ -370,7 +370,9 @@ class TestLegacyCloudMigration:
         from hermes_cli.tools_config import TOOL_CATEGORIES, _is_provider_active
 
         cli_row = next(
-            r for r in TOOL_CATEGORIES["browser"]["providers"] if r.get("browser_backend")
+            r
+            for r in TOOL_CATEGORIES["browser"]["providers"]
+            if r.get("browser_backend") == "browser-use"
         )
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
         assert _is_provider_active(cli_row, dict(self._LEGACY)) is True
@@ -583,10 +585,17 @@ class TestProviderPickerIntegration:
 
         return TOOL_CATEGORIES["browser"]["providers"]
 
+    def _backend_row(self, backend):
+        return next(r for r in self._rows() if r.get("browser_backend") == backend)
+
     def test_picker_has_browser_use_cli_row(self):
-        row = next(r for r in self._rows() if r.get("browser_backend"))
-        assert row["browser_backend"] == "browser-use"
+        row = self._backend_row("browser-use")
         assert row["name"] == "Browser Use"
+
+    def test_picker_has_camofox_exec_row(self):
+        row = self._backend_row("camofox")
+        assert row["name"] == "Camofox (exec mode)"
+        assert any(v.get("key") == "CAMOFOX_URL" for v in row.get("env_vars", []))
 
     def test_picker_row_names_stay_unique(self):
         """The CLI row is named "Browser Use"; the legacy plugin API row must
@@ -600,11 +609,20 @@ class TestProviderPickerIntegration:
     def test_selecting_cli_row_writes_backend_and_keeps_cloud_provider(self):
         from hermes_cli.tools_config import _write_provider_config
 
-        row = next(r for r in self._rows() if r.get("browser_backend"))
+        row = self._backend_row("browser-use")
         config = {"browser": {"cloud_provider": "browserbase"}}
         assert row["name"] == "Browser Use"
         _write_provider_config(row, config, managed_feature=None)
         assert config["browser"]["backend"] == "browser-use"
+        assert config["browser"]["cloud_provider"] == "browserbase"
+
+    def test_selecting_camofox_exec_row_writes_backend(self):
+        from hermes_cli.tools_config import _write_provider_config
+
+        row = self._backend_row("camofox")
+        config = {"browser": {"cloud_provider": "browserbase"}}
+        _write_provider_config(row, config, managed_feature=None)
+        assert config["browser"]["backend"] == "camofox"
         assert config["browser"]["cloud_provider"] == "browserbase"
 
     def test_selecting_provider_row_keeps_cli_mode(self):
@@ -623,7 +641,7 @@ class TestProviderPickerIntegration:
     def test_provider_row_stays_active_alongside_cli_mode(self, monkeypatch):
         from hermes_cli.tools_config import _is_provider_active
 
-        cli_row = next(r for r in self._rows() if r.get("browser_backend"))
+        cli_row = self._backend_row("browser-use")
         local_row = next(
             r for r in self._rows() if r.get("browser_provider") == "local"
         )

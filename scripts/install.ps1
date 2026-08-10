@@ -2369,22 +2369,26 @@ function Install-Venv {
     # exits. Populated only with tasks that were ENABLED before we touched
     # them, so a task the user deliberately disabled is never re-armed.
     $gatewayTasksDisabled = @()
+    $venvHadExistingVenv = $false
+    $venvBackupName = $null
+    $venvParked = $false
     try {
-    if (Test-Path "venv") {
+    if (Test-Path -LiteralPath "venv") {
+        $venvHadExistingVenv = $true
         Write-Info "Virtual environment already exists, recreating..."
         # On Windows, native Python extensions (e.g. _bcrypt.pyd, tornado's
         # speedups.pyd) are loaded as DLLs by any running hermes process.
         # Windows denies deletion of loaded DLLs, so every process running out
-        # of this venv must be stopped before removing it -- otherwise
-        # Remove-Item fails with "Access to the path '...' is denied" and the
-        # whole install/update aborts at this stage.
+        # of this venv must be stopped before retiring it. This keeps cleanup
+        # from accumulating locked stale trees and avoids carrying a live
+        # gateway into the replacement venv.
         if ($env:OS -eq "Windows_NT") {
             $myPid = $PID
             Write-Info "Stopping any running hermes processes before recreating venv..."
             # Disarm the respawner FIRST: the gateway autostart Scheduled Task
             # relaunches a killed gateway within seconds, and losing that race
             # re-locks the venv's .pyd files between our kill sweep and
-            # Remove-Item (the July 2026 _brotlicffi.pyd incident). schtasks
+            # venv parking/cleanup (the July 2026 _brotlicffi.pyd incident). schtasks
             # /End stops a running task instance; /Change /DISABLE stops it
             # from re-firing mid-install. (The Startup-folder .vbs fallback is
             # NOT touched: it only fires at logon, so it cannot respawn a
@@ -2430,7 +2434,7 @@ function Install-Venv {
             #
             # The sweep is a bounded LOOP, not single-shot: supervised processes
             # (the Desktop app's backend, a watchdog-managed gateway) respawn in
-            # the window between one kill pass and the delete. Each pass re-
+            # the window between one kill pass and venv parking. Each pass re-
             # enumerates; three consecutive clean passes (or the attempt cap)
             # ends the loop.
             $venvPrefix = [System.IO.Path]::GetFullPath((Join-Path $InstallDir "venv")).TrimEnd('\') + '\'
@@ -2454,42 +2458,18 @@ function Install-Venv {
                 Start-Sleep -Milliseconds 400
             }
         }
-        # Rename-then-delete: on Windows a directory RENAME succeeds even while
-        # files inside it are mapped as DLLs (only in-place delete/replace of
-        # the mapped file is denied, and only same-volume renames are atomic
-        # moves). Moving the old venv aside means `uv venv` can create a fresh
-        # one immediately even if some straggler still holds a .pyd from the
-        # old tree; the renamed dir is deleted best-effort (now, and by the
-        # cleanup pass below on the NEXT install if a handle outlives this one).
-        $staleName = "venv.stale.{0}" -f (Get-Date -Format "yyyyMMddHHmmss")
-        $renamed = $false
+        # Move the old venv aside before creating its replacement. A directory
+        # rename is atomic on the same volume and does not require deleting
+        # files mapped as DLLs. Never fall back to deleting the live venv:
+        # Windows can remove unlocked files first, then fail on one locked
+        # file, leaving no usable interpreter and no rollback source.
+        $venvBackupName = "venv.stale.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
         try {
-            Rename-Item -Path "venv" -NewName $staleName -ErrorAction Stop
-            $renamed = $true
+            Rename-Item -LiteralPath "venv" -NewName $venvBackupName -ErrorAction Stop
+            $venvParked = $true
         } catch {
-            Write-Warn "Could not rename venv aside ($($_.Exception.Message)); falling back to in-place delete"
+            throw "Could not move existing venv aside without deleting it. Close running Hermes processes and retry. $($_.Exception.Message)"
         }
-        if ($renamed) {
-            Remove-Item -Recurse -Force $staleName -ErrorAction SilentlyContinue
-            if (Test-Path $staleName) {
-                Write-Warn "Old venv parked at $staleName (a process still holds files in it); it will be cleaned up on the next install"
-            }
-        } else {
-            Remove-Item -Recurse -Force "venv" -ErrorAction SilentlyContinue
-            # A killed process can take a moment to release its file handles, so a
-            # first Remove-Item may still hit a locked .pyd. Retry once after a short
-            # pause before giving up and letting the stage fail loudly.
-            if (Test-Path "venv") {
-                Start-Sleep -Seconds 2
-                Remove-Item -Recurse -Force "venv"
-            }
-        }
-    }
-
-    # Clean up parked venvs from previous installs whose handles have since
-    # been released. Best-effort -- a still-held tree just stays for next time.
-    Get-ChildItem -Directory -Filter "venv.stale.*" -ErrorAction SilentlyContinue | ForEach-Object {
-        Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
     }
     
     # uv creates the venv and pins the Python version in one step.  uv emits
@@ -2506,6 +2486,32 @@ function Install-Venv {
         throw "Failed to create virtual environment (uv venv exited with $venvExitCode)"
     }
 
+    # uv can return success without leaving the interpreter expected by the
+    # installer (for example after an interrupted filesystem operation). Treat
+    # that as a failed transaction so the previous venv can be restored.
+    $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
+    if (-not (Test-Path -LiteralPath $venvPythonExe -PathType Leaf)) {
+        throw "uv reported success but venv interpreter is missing at $venvPythonExe"
+    }
+
+    # The replacement is usable. The old tree is no longer needed for rollback;
+    # deletion is safe here because it cannot gut the live venv. A locked old
+    # tree remains parked and is retried by the cleanup pass below.
+    if ($venvParked) {
+        Remove-Item -LiteralPath $venvBackupName -Recurse -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $venvBackupName) {
+            Write-Warn "Old venv parked at $venvBackupName (a process still holds files in it); it will be cleaned up on the next install"
+        } else {
+            $venvParked = $false
+        }
+    }
+
+    # Clean up parked venvs from previous installs whose handles have since
+    # been released. Best-effort -- a still-held tree just stays for next time.
+    Get-ChildItem -Directory -Filter "venv.stale.*" -ErrorAction SilentlyContinue | ForEach-Object {
+        Remove-Item -Recurse -Force $_.FullName -ErrorAction SilentlyContinue
+    }
+
     # Neutralize any inherited UV_PYTHON (e.g. $env:UV_PYTHON = "3.14" left in
     # the user's shell). uv honours UV_PYTHON over an existing venv for the
     # later `uv sync` / `uv pip install` tiers, so without this it would
@@ -2513,10 +2519,43 @@ function Install-Venv {
     # -- building Rust transitives that have no wheel for that version from
     # source via maturin, which fails. Pinning UV_PYTHON to the interpreter we
     # just created forces every subsequent uv command onto it.
-    $venvPythonExe = Join-Path $InstallDir "venv\Scripts\python.exe"
-    if (Test-Path $venvPythonExe) {
-        $env:UV_PYTHON = $venvPythonExe
-    }
+    $env:UV_PYTHON = $venvPythonExe
+    } catch {
+        $originalError = $_
+        $rollbackError = $null
+
+        if ($venvParked -and $venvBackupName -and (Test-Path -LiteralPath $venvBackupName)) {
+            try {
+                if (Test-Path -LiteralPath "venv") {
+                    $failedVenvName = "venv.failed.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
+                    Rename-Item -LiteralPath "venv" -NewName $failedVenvName -ErrorAction Stop
+                    Write-Warn "Failed replacement parked at $failedVenvName"
+                }
+                Rename-Item -LiteralPath $venvBackupName -NewName "venv" -ErrorAction Stop
+                Write-Warn "Restored previous virtual environment after failed recreate"
+            } catch {
+                $rollbackError = $_.Exception.Message
+            }
+
+            if ($rollbackError) {
+                throw "Virtual environment recreate failed: $($originalError.Exception.Message). Rollback failed: $rollbackError. Previous venv remains at $venvBackupName."
+            }
+        } elseif (-not $venvHadExistingVenv -and (Test-Path -LiteralPath "venv")) {
+            # Preserve a partial first install too. This branch must not touch a
+            # pre-existing venv whose move-aside failed above.
+            try {
+                $failedVenvName = "venv.failed.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
+                Rename-Item -LiteralPath "venv" -NewName $failedVenvName -ErrorAction Stop
+                Write-Warn "Partial virtual environment parked at $failedVenvName"
+            } catch {
+                $rollbackError = $_.Exception.Message
+            }
+            if ($rollbackError) {
+                throw "Virtual environment creation failed: $($originalError.Exception.Message). Could not park partial venv: $rollbackError"
+            }
+        }
+
+        throw $originalError
     } finally {
         Pop-Location
         # Re-arm the gateway autostart tasks disabled during the venv teardown
@@ -2687,7 +2726,7 @@ except Exception:
     if (-not $NoVenv) {
         $venvPython = "$InstallDir\venv\Scripts\python.exe"
         if (-not (Test-Path $venvPython)) {
-            throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, manually: cd '$InstallDir'; Remove-Item -Recurse -Force venv,.venv; uv venv venv --python $PythonVersion; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
+            throw "Install reported success but $venvPython does not exist. The dependency sync likely landed in a sibling .venv\ directory. Re-run the installer; if it persists, close Hermes processes and preserve existing venv directories before retrying. Do not delete venv in place."
         }
         # Relax EAP=Stop while running the import probe.  Python writes
         # deprecation warnings and import-system info to stderr; under
@@ -2703,7 +2742,7 @@ except Exception:
         if ($importExitCode -ne 0) {
             $sibling = "$InstallDir\.venv"
             $hint = if (Test-Path $sibling) {
-                "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Recover with: cd '$InstallDir'; Remove-Item -Recurse -Force venv; Move-Item .venv venv"
+                "Detected sibling .venv\ at $sibling -- uv synced there instead of venv\. Close Hermes processes, preserve the existing venv, and rerun the installer so the transactional recovery path can move directories safely."
             } else {
                 "Recover with: cd '$InstallDir'; `$env:UV_PROJECT_ENVIRONMENT='$InstallDir\venv'; uv sync --extra all --locked"
             }

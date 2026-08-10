@@ -138,10 +138,10 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
   const isCollapsed = (child: LayoutNode) => subtreeGone(child, trackCtx) || (isEmptyZone(child) && !editMode)
 
   // Min/max clamps come from a direct GROUP child's panes (the same clamps
-  // the app's Pane props express) — but ONLY when they can speak for the
-  // zone: a fixed track (pure sidebar stack) or a single-pane zone. A sidebar
-  // pane fronted in a mixed flex stack must not cap it. A fixed STACK
-  // aggregates its panes' clamps (largest-tenant semantics, mirroring the
+  // the app's Pane props express). Floors apply to every zone; caps only when
+  // they can speak for the whole zone: a fixed track (pure sidebar stack) or a
+  // single-pane zone — a sidebar pane fronted in a mixed flex stack must not
+  // cap it. Stacks aggregate clamps (largest-tenant semantics, mirroring the
   // max() track basis) — the active tab's caps must never resize the zone.
   const sizingFor = (child: LayoutNode, track: string | null): PaneSizing | null => {
     if (child.type !== 'group' || child.panes.length === 0) {
@@ -150,20 +150,22 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
     const shownIds = shownPaneIds(child, trackCtx)
 
-    if (track === null && shownIds.length !== 1) {
-      return null
-    }
-
     if (shownIds.length <= 1) {
       return (paneFor(shownIds[0])?.data as PaneSizing | undefined) ?? null
     }
 
-    // Fixed STACK: floors take the largest declared min; caps stay unbounded
-    // unless EVERY pane declares one (a single uncapped tenant uncaps the
-    // zone). Same largest-tenant basis as the track size — never per-tab.
+    // STACKS aggregate floors with largest-tenant semantics (the zone's track
+    // is the max() of its panes' sizes, so its floor is the max() of their
+    // mins) — flex stacks included: the chat zone with session tabs stacked in
+    // must keep the workspace's min width, or a browser sash can crush the
+    // conversation down to the generic 80px floor. Caps only speak for a FIXED
+    // zone; a sidebar pane fronted in a mixed flex stack must not cap it. In a
+    // fixed stack caps stay unbounded unless EVERY pane declares one (a single
+    // uncapped tenant uncaps the zone).
     const all = shownIds.map(id => (paneFor(id)?.data ?? {}) as PaneSizing)
 
-    const cap = (pick: (s: PaneSizing) => string | undefined) => (all.every(pick) ? cssMax(all.map(pick)) : undefined)
+    const cap = (pick: (s: PaneSizing) => string | undefined) =>
+      track !== null && all.every(pick) ? cssMax(all.map(pick)) : undefined
 
     return {
       minWidth: cssMax(all.map(s => s.minWidth)),

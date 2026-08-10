@@ -24835,18 +24835,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "relay" if use_connector_guard else "native",
             thread_name,
         )
+        rename_kwargs = (
+            {
+                "prefer_connector_created": True,
+                "parent_chat_id": parent_chat_id,
+            }
+            if use_connector_guard
+            else {"only_if_current_name": guard_name}
+        )
         try:
             renamed = await rename_thread(
                 target_thread_id,
                 thread_name,
-                prefer_connector_created=use_connector_guard,
-                only_if_current_name=guard_name,
-                parent_chat_id=parent_chat_id,
+                **rename_kwargs,
             )
             logger.info(
                 "discord auto-thread rename result: thread=%s applied=%s",
                 target_thread_id,
                 bool(renamed),
+            )
+        except TypeError:
+            logger.warning(
+                "Discord semantic thread rename raised TypeError (adapter=%s)",
+                type(adapter).__name__,
+                exc_info=True,
             )
         except Exception:
             logger.debug("Failed to rename Discord auto-thread for generated session title", exc_info=True)

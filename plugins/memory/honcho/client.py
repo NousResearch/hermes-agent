@@ -578,6 +578,23 @@ class HonchoClientConfig:
             or raw.get("apiKey")
             or get_secret("HONCHO_API_KEY")
         )
+        # Named-profile host blocks do NOT inherit the default host's apiKey —
+        # profiles are isolated islands by design (see resolve_active_host).
+        # But the failure mode is silent: the profile runs unauthenticated and
+        # every write 401s while tools report "no context". Warn loudly so the
+        # operator learns the key must be set on THIS host block (#36098, #66125).
+        if (
+            not api_key
+            and host_block
+            and resolved_host != HOST
+            and _host_block(raw, HOST).get("apiKey")
+        ):
+            logger.warning(
+                "Honcho host block '%s' has no apiKey; the default '%s' host's key "
+                "is NOT inherited (profiles are credential-isolated). Set apiKey on "
+                "hosts.%s in %s or this profile runs unauthenticated.",
+                resolved_host, HOST, resolved_host, path,
+            )
 
         environment = (
             host_block.get("environment")
@@ -1299,19 +1316,19 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 
         # Local Honcho instances don't require an API key, but the SDK
         # expects a non-empty string.  Use a placeholder for local URLs.
-        # For local: only use config.api_key if the host block explicitly
-        # sets apiKey (meaning the user wants local auth). Otherwise skip
-        # the stored key -- it's likely a cloud key that would break local.
+        # For local: honor config.api_key when the user set it EXPLICITLY in
+        # honcho.json — host block or top-level (#36098 issue 2: the top-level
+        # key was dropped for the placeholder, 401ing AUTH_USE_AUTH=true
+        # self-hosts). Only an env-sourced key (HONCHO_API_KEY) is still
+        # treated as likely-cloud and skipped for local URLs.
         _is_local = _is_local_base_url(resolved_base_url)
         if _is_local:
-            # Check if the host block has its own apiKey (explicit local auth).
-            # For local/LAN/VPN self-hosts, a stored root key is likely a cloud
-            # key that would break a no-auth local server, so we substitute the
-            # SDK's required-non-empty placeholder unless the host block opts in.
             _raw = config.raw or {}
             _host_block_local = _host_block(_raw, config.host)  # uses dot-form legacy fallback (#37436)
-            _host_has_key = bool(_host_block_local.get("apiKey"))
-            effective_api_key = config.api_key if _host_has_key else "local"
+            _explicit_key = bool(
+                _host_block_local.get("apiKey") or _raw.get("apiKey")
+            )
+            effective_api_key = config.api_key if _explicit_key else "local"
         else:
             effective_api_key = config.api_key
 

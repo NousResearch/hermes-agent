@@ -151,3 +151,56 @@ class TestHonchoBaseUrlSanitize:
         monkeypatch.delenv('HONCHO_API_KEY', raising=False)
         cfg = HonchoClientConfig.from_env()
         assert cfg.base_url is None
+
+
+class TestProfileKeyIsolationWarning:
+    """#36098 / #66125: a named-profile host block without apiKey does NOT
+    inherit the default host's key (isolation by design), but the failure
+    must be loud, not silent."""
+
+    def test_keyless_profile_block_warns_when_default_has_key(self, tmp_path, monkeypatch, caplog):
+        import logging
+        monkeypatch.delenv('HONCHO_API_KEY', raising=False)
+        config_path = tmp_path / 'config.json'
+        config_path.write_text(json.dumps({
+            'hosts': {
+                'hermes': {'apiKey': 'shared-key'},
+                'hermes_coder': {'baseUrl': 'http://192.168.1.50:8000'},
+            },
+        }))
+        with caplog.at_level(logging.WARNING, logger='plugins.memory.honcho.client'):
+            cfg = HonchoClientConfig.from_global_config(
+                host='hermes_coder', config_path=config_path,
+            )
+        assert cfg.api_key is None  # isolation preserved — no silent inheritance
+        assert any('NOT inherited' in r.message for r in caplog.records)
+
+    def test_no_warning_when_profile_block_has_key(self, tmp_path, monkeypatch, caplog):
+        import logging
+        monkeypatch.delenv('HONCHO_API_KEY', raising=False)
+        config_path = tmp_path / 'config.json'
+        config_path.write_text(json.dumps({
+            'hosts': {
+                'hermes': {'apiKey': 'shared-key'},
+                'hermes_coder': {'apiKey': 'coder-key'},
+            },
+        }))
+        with caplog.at_level(logging.WARNING, logger='plugins.memory.honcho.client'):
+            cfg = HonchoClientConfig.from_global_config(
+                host='hermes_coder', config_path=config_path,
+            )
+        assert cfg.api_key == 'coder-key'
+        assert not any('NOT inherited' in r.message for r in caplog.records)
+
+    def test_no_warning_for_default_host(self, tmp_path, monkeypatch, caplog):
+        import logging
+        monkeypatch.delenv('HONCHO_API_KEY', raising=False)
+        config_path = tmp_path / 'config.json'
+        config_path.write_text(json.dumps({
+            'hosts': {'hermes': {'baseUrl': 'http://localhost:8000'}},
+        }))
+        with caplog.at_level(logging.WARNING, logger='plugins.memory.honcho.client'):
+            HonchoClientConfig.from_global_config(
+                host='hermes', config_path=config_path,
+            )
+        assert not any('NOT inherited' in r.message for r in caplog.records)

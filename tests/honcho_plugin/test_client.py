@@ -416,8 +416,9 @@ class TestGetHonchoClient:
         reason="honcho SDK not installed"
     )
     def test_local_base_url_without_host_key_uses_placeholder(self):
-        """Without an explicit host-block apiKey, a local base_url still gets
-        the SDK's non-empty placeholder instead of the (likely cloud) root key."""
+        """Without an explicit apiKey anywhere in honcho.json, a local
+        base_url gets the SDK's non-empty placeholder instead of the (likely
+        cloud, env-sourced) resolved key."""
         fake_honcho = MagicMock(name="Honcho")
         cfg = HonchoClientConfig(
             api_key="cloud-root-key",
@@ -431,6 +432,29 @@ class TestGetHonchoClient:
             get_honcho_client(cfg)
 
         assert mock_honcho.call_args.kwargs["api_key"] == "local"
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_local_base_url_honors_top_level_api_key(self):
+        """Regression for #36098 issue 2: a top-level apiKey in honcho.json is
+        explicit user intent and must be honored for local base_urls (AUTH_USE_AUTH
+        self-hosts). Previously only a host-block apiKey escaped the 'local'
+        placeholder, so the top-level key was dropped and every request 401'd."""
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="explicit-top-level-key",
+            base_url="http://localhost:8000",
+            host="hermes",
+            workspace_id="hermes",
+            raw={"apiKey": "explicit-top-level-key"},
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho:
+            get_honcho_client(cfg)
+
+        assert mock_honcho.call_args.kwargs["api_key"] == "explicit-top-level-key"
 
     @pytest.mark.skipif(
         not importlib.util.find_spec("honcho"),

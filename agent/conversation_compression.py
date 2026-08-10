@@ -2089,10 +2089,15 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
                 _fresh_compaction_message_copy(message),
             )
             return
-    compressed.append({
-        "role": "user",
-        "content": COMPRESSION_CONTINUATION_USER_CONTENT,
-    })
+    from agent.message_metadata import append_message
+
+    append_message(
+        compressed,
+        {
+            "role": "user",
+            "content": COMPRESSION_CONTINUATION_USER_CONTENT,
+        },
+    )
 
 
 _PENDING_CONTEXT_ENGINE_NOTIFICATION = (

@@ -14974,7 +14974,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             agent._persist_user_message_idx = None
             agent._persist_user_message_override = None
             agent._persist_user_message_timestamp = None
-            staged_user_message = {"role": "user", "content": message}
+            from agent.message_metadata import stamp_message_timestamp
+
+            staged_user_message = stamp_message_timestamp(
+                {"role": "user", "content": message}
+            )
             agent._pending_cli_user_message = staged_user_message
             self.conversation_history.append(staged_user_message)
 

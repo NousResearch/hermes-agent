@@ -736,6 +736,29 @@ def _prepare_profile_gateway_update_restart(profile: str, pid: int) -> str | Non
     return None
 
 
+def _profile_from_gateway_argv(run_argv: list[str]) -> str | None:
+    """Return a validated explicit profile from a captured gateway argv."""
+    profile: str | None = None
+    for index, arg in enumerate(run_argv):
+        if arg in {"--profile", "-p"} and index + 1 < len(run_argv):
+            profile = run_argv[index + 1]
+            break
+        if arg.startswith("--profile="):
+            profile = arg.partition("=")[2]
+            break
+    if not profile:
+        return None
+
+    from hermes_cli.profiles import normalize_profile_name, validate_profile_name
+
+    try:
+        profile = normalize_profile_name(profile)
+        validate_profile_name(profile)
+    except ValueError:
+        return None
+    return profile
+
+
 def launch_detached_gateway_restart_by_cmdline(
     old_pid: int, run_argv: list[str]
 ) -> bool:
@@ -749,17 +772,65 @@ def launch_detached_gateway_restart_by_cmdline(
     """
     if old_pid <= 0 or not run_argv:
         return False
-    return _spawn_gateway_restart_watcher(old_pid, list(run_argv))
+    profile = _profile_from_gateway_argv(run_argv)
+    watcher_env = _profile_gateway_restart_env(profile) if profile else None
+    return _spawn_gateway_restart_watcher(
+        old_pid,
+        list(run_argv),
+        watcher_env=watcher_env,
+    )
+
+
+def _profile_gateway_restart_env(profile: str) -> dict[str, str]:
+    """Build a profile-isolated environment for a gateway restart.
+
+    ``hermes update`` can restart gateways for every profile from one updater
+    process.  Reusing that process's full environment leaks the updater
+    profile's tokens and integration settings into every restarted gateway.
+    For a cross-profile restart, remove all known profile-managed variables
+    plus every secret defined by the source profile, then install only the
+    target profile's secret scope.  Same-profile restarts preserve shell-only
+    credential injection for backwards compatibility.
+    """
+    from agent.secret_scope import build_profile_secret_scope
+    from hermes_cli.config import _EXTRA_ENV_KEYS
+    from hermes_cli.config_defaults import OPTIONAL_ENV_VARS
+    from hermes_cli.profiles import get_profile_dir
+
+    restart_env = dict(os.environ)
+    source_home = Path(get_hermes_home()).resolve()
+    target_home = Path(get_profile_dir(profile)).resolve()
+    if source_home == target_home:
+        return restart_env
+
+    source_secrets = build_profile_secret_scope(source_home)
+    target_secrets = build_profile_secret_scope(target_home)
+    profile_managed_keys = (
+        set(OPTIONAL_ENV_VARS) | set(_EXTRA_ENV_KEYS) | set(source_secrets)
+    )
+    for key in profile_managed_keys:
+        restart_env.pop(key, None)
+    restart_env.update(target_secrets)
+    return restart_env
 
 
 def launch_detached_profile_gateway_restart(profile: str, old_pid: int) -> bool:
     """Relaunch a manually-run profile gateway after its current PID exits."""
     if old_pid <= 0:
         return False
-    return _spawn_gateway_restart_watcher(old_pid, _gateway_run_args_for_profile(profile))
+    return _spawn_gateway_restart_watcher(
+        old_pid,
+        _gateway_run_args_for_profile(profile),
+        watcher_env=_profile_gateway_restart_env(profile),
+    )
 
 
-def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
+def _spawn_gateway_restart_watcher(
+    old_pid: int,
+    run_argv: list[str],
+    *,
+    watcher_env: dict[str, str] | None = None,
+) -> bool:
     """Spawn the detached watcher that respawns ``run_argv`` once ``old_pid`` exits."""
     if old_pid <= 0 or not run_argv:
         return False
@@ -897,6 +968,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
             watcher_argv,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            env=watcher_env,
             **windows_detach_popen_kwargs(),
         )
     except OSError:
@@ -915,6 +987,7 @@ def _spawn_gateway_restart_watcher(old_pid: int, run_argv: list[str]) -> bool:
                 watcher_argv,
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                env=watcher_env,
                 **fallback_kwargs,
             )
         except OSError:

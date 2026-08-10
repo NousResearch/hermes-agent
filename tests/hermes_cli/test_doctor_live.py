@@ -17,6 +17,10 @@ from hermes_cli.doctor_live import (
     run_live_checks,
 )
 
+# Captured before the autouse fixture below stubs doctor_live._browser_available
+# to a constant, so TestBrowserAvailableNpxRung can exercise the real function.
+_real_browser_available = doctor_live._browser_available
+
 
 def _args(live: bool = True) -> argparse.Namespace:
     return argparse.Namespace(live=live)
@@ -184,6 +188,36 @@ class TestConfiguredOnlySelection:
             lambda timeout: (True, "about:blank ok"))
         results = {r.name: r for r in run_live_checks([])}
         assert results["Browser"].status == "pass"
+
+
+class TestBrowserAvailableNpxRung:
+    """agent-browser resolves lazily via npx on the default install (#43564),
+    invisible to the bare PATH/node_modules probes _browser_available starts
+    with. It must fall through to the same cascade `hermes doctor` uses."""
+
+    def _block_path_and_node_modules_checks(self, monkeypatch, tmp_path):
+        monkeypatch.setattr("shutil.which", lambda *a, **k: None)
+        monkeypatch.setattr("hermes_cli.doctor.HERMES_HOME", tmp_path / "home")
+        monkeypatch.setattr("hermes_cli.doctor.PROJECT_ROOT", tmp_path / "root")
+
+    def test_true_when_npx_resolves_agent_browser(self, monkeypatch, tmp_path):
+        self._block_path_and_node_modules_checks(monkeypatch, tmp_path)
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_find_agent_browser", lambda **_kw: "npx agent-browser")
+
+        assert _real_browser_available() is True
+
+    def test_false_when_nothing_resolves(self, monkeypatch, tmp_path):
+        self._block_path_and_node_modules_checks(monkeypatch, tmp_path)
+        import tools.browser_tool as bt
+
+        def _raise(**_kw):
+            raise FileNotFoundError("agent-browser CLI not found")
+
+        monkeypatch.setattr(bt, "_find_agent_browser", _raise)
+
+        assert _real_browser_available() is False
 
 
 class TestFailureIsolation:

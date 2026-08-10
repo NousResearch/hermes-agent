@@ -91,7 +91,14 @@ def _browser_available() -> bool:
                 return True
     except Exception:
         pass
-    return False
+    # agent-browser resolves lazily via npx on the default install (#43564),
+    # invisible to the PATH/node_modules probes above. Mirror the rung
+    # hermes_cli.doctor uses so this probe can't diverge from it.
+    try:
+        from tools.browser_tool import _find_agent_browser, _is_npx_agent_browser_sentinel
+        return _is_npx_agent_browser_sentinel(_find_agent_browser(validate=False))
+    except Exception:
+        return False
 
 
 def _launch_browser_probe(timeout: float) -> tuple:

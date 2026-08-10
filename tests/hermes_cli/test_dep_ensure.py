@@ -26,6 +26,38 @@ def test_find_install_script_from_checkout(tmp_path):
 
 
 
+def test_has_npx_agent_browser_true_when_npx_resolves():
+    """agent-browser resolves lazily via npx on the default install (#43564)
+    — _has_npx_agent_browser mirrors the runtime cascade so the "browser" dep
+    check doesn't wrongly report it missing."""
+    from hermes_cli.dep_ensure import _has_npx_agent_browser
+    import tools.browser_tool as bt
+
+    with patch.object(bt, "_find_agent_browser", return_value="npx agent-browser"), \
+         patch.object(bt, "_requires_real_termux_browser_install", return_value=False):
+        assert _has_npx_agent_browser() is True
+
+
+def test_has_npx_agent_browser_false_on_termux_local_bare_npx():
+    from hermes_cli.dep_ensure import _has_npx_agent_browser
+    import tools.browser_tool as bt
+
+    with patch.object(bt, "_find_agent_browser", return_value="npx agent-browser"), \
+         patch.object(bt, "_requires_real_termux_browser_install", return_value=True):
+        assert _has_npx_agent_browser() is False
+
+
+def test_has_npx_agent_browser_false_when_nothing_resolves():
+    from hermes_cli.dep_ensure import _has_npx_agent_browser
+    import tools.browser_tool as bt
+
+    def _raise(**_kw):
+        raise FileNotFoundError("agent-browser CLI not found")
+
+    with patch.object(bt, "_find_agent_browser", _raise):
+        assert _has_npx_agent_browser() is False
+
+
 @pytest.mark.windows_only
 def test_ensure_dependency_uses_powershell_on_windows(tmp_path):
     """``windows_only``: the assertion is that we shell out to a real

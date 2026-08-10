@@ -180,6 +180,13 @@ def _cmd_setup(args: argparse.Namespace) -> int:
         # The number to text the agent is the user's assigned line ("TEXTS ON"); shared-number
         # plans have no dedicated /lines entry.
         agent_number = photon_auth.user_assigned_line(user)
+        # Opt-in gate: Photon only routes a number whose user row carries meta.opt_in, which the
+        # service sets once the human texts the assigned line from their phone (the API cannot
+        # set it). Name the line and wait for the opt-in; a re-run on an opted-in row passes.
+        if photon_auth.user_opted_in(user):
+            print("  ✓ number is opted in — routing is live")
+        else:
+            agent_number = _wait_for_opt_in(dashboard_id, secret, phone, agent_number)
         # Otherwise the gateway denies the operator's own inbound and has no cron home space.
         _autoconfigure_access(phone)
     # 5. Surface the agent's iMessage number.
@@ -224,6 +231,36 @@ def _cmd_setup(args: argparse.Namespace) -> int:
     return 0
 
 
+def _wait_for_opt_in(dashboard_id: str, secret: str, phone: str, agent_number: Optional[str]) -> Optional[str]:
+    """Print the opt-in step and, on a TTY, wait for it to land. Returns the agent number
+    (the assignment can materialize with the opt-in)."""
+    line_hint = agent_number or "the line Photon assigns to your number"
+    print("\n" + color("      One manual step: opt in by texting your agent", Colors.CYAN, Colors.BOLD))
+    print("      Your number only enters iMessage routing after it has messaged the line\n"
+          f"      Photon assigned to it:\n        1. Open Messages on {phone}.\n"
+          f"        2. Text {line_hint} — one message of any content is enough.")
+    if not sys.stdin.isatty():  # scripted setup / CI: nobody can answer the poll
+        print("      Non-interactive run — skipping the opt-in wait. Verify later with `hermes photon status`.")
+        return agent_number
+    print("      Setup waits here (up to 5 minutes) and continues once the opt-in lands.\n"
+          "      (Ctrl-C to skip — re-running setup resumes where it left off.)")
+
+    def _on_waiting(attempt: int) -> None:
+        if attempt % 6 == 0:
+            print("      ... still waiting for your message to land")
+    try:
+        opted = photon_auth.wait_for_opted_in_user(dashboard_id, secret, phone, on_waiting=_on_waiting)
+    except KeyboardInterrupt:
+        opted = None
+        print()
+    if opted is None:
+        print(f"      ⚠ {phone} is not opted in yet. Send one message from {phone} to {line_hint}, "
+              "then re-run `hermes photon setup` — it resumes where it left off.")
+        return agent_number
+    print("  ✓ opt-in landed — routing is live")
+    return photon_auth.user_assigned_line(opted) or agent_number
+
+
 def _autoconfigure_access(phone: str) -> None:
     """Set PHOTON_ALLOWED_USERS and PHOTON_HOME_CHANNEL to the operator's number, each only
     when unset so a hand-tuned value is never clobbered on re-run."""
@@ -259,6 +296,7 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     print(f"  node binary         : {node_bin or '✗ missing (install Node 18+)'}")
     print(f"  sidecar deps        : {'✓ installed' if sidecar_deps_installed() else '✗ run `hermes photon install-sidecar`'}")
     print(f"  telemetry           : {'on' if _telemetry_enabled() else 'off'} (`hermes photon telemetry on|off`)")
+    photon_auth.print_routing_status(print)
     return 0
 
 

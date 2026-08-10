@@ -3554,13 +3554,12 @@ def _strip_leaked_bracketed_paste_wrappers(text: str) -> str:
 def _suspend_cli_process() -> None:
     """Suspend only the CLI process, not its whole process group (Unix).
 
-    Ctrl+Z used to signal the process group via ``os.kill(0, SIGTSTP)``,
-    which also stopped every background job sharing the group (e.g. a
-    long-running terminal/OCR task spawned from the session) and made a
-    stray 0x1A byte in pasted input look like a crash (#83006). Shell job
-    control stops only the foreground job; mirror that by signaling just
-    this process so ``fg`` resumes the CLI while background tasks keep
-    running.
+    Ctrl+Z used to signal the group via ``os.kill(0, SIGTSTP)``, stopping
+    every background job sharing it (long-running terminal/OCR tasks) and
+    making a stray 0x1A byte in pasted input look like a crash (#83006).
+    Shell job control stops only the foreground job; mirror that by
+    signaling just this process so ``fg`` resumes the CLI while background
+    tasks keep running.
     """
     import signal as _sig
 

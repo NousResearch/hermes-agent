@@ -372,8 +372,9 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     act(() => FakeWebSocket.instances[0].drop())
     await flushAsync()
 
-    // Walk the backoff past the ~45s escalation threshold.
-    for (let i = 0; i < 8; i += 1) {
+    // Walk the backoff well past the historical 45s threshold and into the
+    // current multi-minute escalate window. Chat must stay unlocked either way.
+    for (let i = 0; i < 24; i += 1) {
       await advanceBackoff()
     }
 
@@ -393,7 +394,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     act(() => FakeWebSocket.instances[0].drop())
     await flushAsync()
 
-    for (let i = 0; i < 8; i += 1) {
+    for (let i = 0; i < 24; i += 1) {
       await advanceBackoff()
     }
 

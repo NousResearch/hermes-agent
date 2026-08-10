@@ -64,11 +64,15 @@ import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './ga
 
 // After the reconnect loop has been failing for this long, raise a NON-blocking
 // warning toast. Full-screen BootFailureOverlay used to lock the user out of
-// reading/drafting for the whole 1–3 minute blip even though the transcript is
-// still on screen underneath. Confirmed reauth still escalates to the overlay
-// (Sign in is required). Time-based (not attempt-count) because full-jitter
-// backoff makes attempt counts a meaningless clock.
-const RECONNECT_ESCALATE_AFTER_MS = 45_000
+// reading/drafting for the whole blip even though the transcript is still on
+// screen underneath. Confirmed reauth still escalates to the overlay (Sign in
+// is required). Time-based (not attempt-count) because full-jitter backoff
+// makes attempt counts a meaningless clock.
+//
+// 5 minutes (not the historical ~45s) so brief transport weather — ticket mint
+// flaps, sleep/wake, Wi‑Fi blips that self-heal in 1–3 minutes — never even
+// toast. Chat stays readable/draftable the whole time either way.
+const RECONNECT_ESCALATE_AFTER_MS = 300_000
 
 // Bounded self-heal for a failed REMOTE boot (#82679): when the primary boot
 // fails on a transient remote fault (dropped SSH/HTTP registered connection,
@@ -158,9 +162,8 @@ export function useGatewayBoot({
     // identical error toasts (and their haptics). Reset on the next clean open.
     let reauthNotified = false
     // Raised once the reconnect loop has been failing for
-    // RECONNECT_ESCALATE_AFTER_MS so the recovery overlay replaces the
-    // dead-end CONNECTING screen. Reset on a clean open or a manual/
-    // wake-driven reconnect.
+    // RECONNECT_ESCALATE_AFTER_MS so we fire a single non-blocking toast.
+    // Reset on a clean open or a manual/wake-driven reconnect.
     let escalated = false
     // Bounded automatic boot retry for transient REMOTE failures (#82679).
     let bootRetryAttempt = 0

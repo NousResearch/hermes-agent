@@ -13,6 +13,8 @@ from tools.browser_tool import (
     _discover_homebrew_node_dirs,
     _find_agent_browser,
     _run_browser_command,
+    _run_chrome_fallback_command,
+    AGENT_BROWSER_NPX_SPEC,
     _SANE_PATH,
     check_browser_requirements,
 )
@@ -349,6 +351,59 @@ class TestRunBrowserCommandPathConstruction:
         ]
 
 
+    def test_npx_sentinel_resolves_via_resolve_npx_bin_with_pinned_spec(self, tmp_path):
+        """When _find_agent_browser resolves the npx sentinel, the cmd prefix
+        must come from _resolve_npx_bin() (not a bare shutil.which("npx"), which
+        could let a broken system npx shadow a healthy Hermes-managed one) and
+        use the pinned agent-browser npx spec, not a bare "agent-browser"."""
+        captured_cmd = None
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+
+        def capture_popen(cmd, **kwargs):
+            nonlocal captured_cmd
+            captured_cmd = cmd
+            return mock_proc
+
+        fake_session = {
+            "session_name": "test-session",
+            "session_id": "test-id",
+            "cdp_url": None,
+        }
+        fake_json = json.dumps({"success": True})
+        hermes_home = str(tmp_path / "hermes-home")
+
+        with patch("tools.browser_tool._find_agent_browser", return_value="npx agent-browser"), \
+             patch("tools.browser_tool._resolve_npx_bin", return_value="/opt/hermes/node/bin/npx"), \
+             patch("tools.browser_tool._chromium_installed", return_value=True), \
+             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
+             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+             patch("hermes_constants.Path.home", return_value=tmp_path), \
+             patch("subprocess.Popen", side_effect=capture_popen), \
+             patch("os.open", return_value=99), \
+             patch("os.close"), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.dict(
+                 os.environ,
+                 {
+                     "PATH": "/usr/bin:/bin",
+                     "HOME": "/home/test",
+                     "HERMES_HOME": hermes_home,
+                 },
+                 clear=True,
+             ):
+            with patch("builtins.open", mock_open(read_data=fake_json)):
+                _run_browser_command("test-task", "navigate", ["https://example.com"])
+
+        assert captured_cmd is not None
+        assert captured_cmd[:4] == [
+            "/opt/hermes/node/bin/npx", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC,
+        ]
+        assert captured_cmd[4:8] == ["--session", "test-session", "--json", "navigate"]
+
     def test_subprocess_path_includes_termux_fallback_dirs(self, tmp_path):
         """Termux fallback dirs should survive browser PATH rebuilding."""
         captured_env = {}
@@ -397,3 +452,41 @@ class TestRunBrowserCommandPathConstruction:
         result_path = captured_env.get("PATH", "")
         assert "/data/data/com.termux/files/usr/bin" in result_path
         assert "/data/data/com.termux/files/usr/sbin" in result_path
+
+
+class TestRunChromeFallbackCommandNpxResolution:
+    """_run_chrome_fallback_command builds its own npx cmd prefix independently
+    of _run_browser_command's — it must resolve npx the same way (via
+    _resolve_npx_bin(), not a bare shutil.which("npx")) and use the pinned
+    agent-browser npx spec."""
+
+    def test_npx_sentinel_resolves_via_resolve_npx_bin_with_pinned_spec(self, tmp_path):
+        captured_cmds = []
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+
+        def capture_popen(cmd, **kwargs):
+            captured_cmds.append(cmd)
+            return mock_proc
+
+        url_result = {"success": True, "data": {"result": "https://example.com"}}
+
+        with patch("tools.browser_tool._run_browser_command", return_value=url_result), \
+             patch("tools.browser_tool._find_agent_browser", return_value="npx agent-browser"), \
+             patch("tools.browser_tool._resolve_npx_bin", return_value="/opt/hermes/node/bin/npx"), \
+             patch("tools.browser_tool._chromium_installed", return_value=True), \
+             patch("tools.browser_tool._running_in_docker", return_value=False), \
+             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("subprocess.Popen", side_effect=capture_popen):
+            _run_chrome_fallback_command("test-task", "navigate", ["https://example.com"], timeout=10)
+
+        assert captured_cmds, "expected at least one Popen call for the chrome-fallback session"
+        first_cmd = captured_cmds[0]
+        assert first_cmd[:4] == [
+            "/opt/hermes/node/bin/npx", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC,
+        ]
+        assert first_cmd[4] == "--engine" and first_cmd[5] == "chrome"
+        assert first_cmd[6] == "--session" and first_cmd[7].startswith("h_cfb_")
+        assert first_cmd[8] == "--json"

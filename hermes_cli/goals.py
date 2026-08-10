@@ -40,6 +40,8 @@ from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from hermes_cli.runtime_outcomes import RuntimeOutcome, outcome_for_worker_result
+
 logger = logging.getLogger(__name__)
 
 
@@ -2070,7 +2072,16 @@ def run_kanban_goal_loop(
         # The kanban worker loop has no wait-barrier concept (workers finish
         # via kanban_complete / kanban_block, not by parking), so a WAIT
         # verdict is treated as CONTINUE here.
-        verdict, reason, _parse_failed, _wait, _transport_failed = judge_goal(goal_text, last_response)
+        verdict, reason, _parse_failed, _wait, transport_failed = judge_goal(goal_text, last_response)
+        if transport_failed:
+            runtime_outcome = RuntimeOutcome.judge_transport_failure(reason)
+            _log(f"kanban goal loop: judge transport failure; deferring ({reason})")
+            return {
+                "outcome": "transient",
+                "turns_used": turns_used,
+                "reason": reason,
+                "runtime_outcome": runtime_outcome,
+            }
         if verdict == "wait":
             verdict = "continue"
         _log(f"kanban goal loop: turn {turns_used}/{max_turns} verdict={verdict} reason={_truncate(reason, 120)}")
@@ -2108,7 +2119,26 @@ def run_kanban_goal_loop(
 
         # Run another turn in the same session.
         try:
-            last_response = run_turn(prompt) or ""
+            turn_result = run_turn(prompt)
+            if isinstance(turn_result, RuntimeOutcome):
+                if turn_result.is_transient:
+                    return {
+                        "outcome": "transient",
+                        "turns_used": turns_used,
+                        "reason": turn_result.reason,
+                        "runtime_outcome": turn_result,
+                    }
+                last_response = ""
+            else:
+                turn_outcome = outcome_for_worker_result(turn_result)
+                if turn_outcome.is_transient:
+                    return {
+                        "outcome": "transient",
+                        "turns_used": turns_used,
+                        "reason": turn_outcome.reason,
+                        "runtime_outcome": turn_outcome,
+                    }
+                last_response = turn_result or ""
         except Exception as exc:
             _log(f"kanban goal loop: run_turn failed ({exc}); stopping")
             return {"outcome": "stopped", "turns_used": turns_used, "reason": f"run_turn error: {type(exc).__name__}"}

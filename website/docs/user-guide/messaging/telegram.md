@@ -236,6 +236,10 @@ The first word filters the catalog; everything after it is carried into the sent
 
 Results are only served to users who pass your gateway allowlist — unauthorized users get an empty list, so your installed skill catalog is not exposed to strangers (inline queries can be sent from any chat, even ones the bot is not in).
 
+### Forum topics
+
+In Telegram supergroups with topics enabled, the command menu does **not** inherit from the global `AllGroupChats` scope — each forum supergroup needs its own chat-scoped command registration. Hermes handles this automatically: the first time a message arrives in a forum supergroup, the gateway lazily registers the same capped menu scoped to that chat (`BotCommandScopeChat`). This happens once per forum chat per gateway run and is transparent to users — the `/` menu appears in forum topics just like in regular groups, without any configuration.
+
 ## Step 3: Privacy Mode (Critical for Groups)
 
 Telegram bots have a **privacy mode** that is **enabled by default**. This is the single most common source of confusion when using bots in groups.

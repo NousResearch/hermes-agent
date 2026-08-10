@@ -191,7 +191,6 @@ export const pl = defineLocale({
     unmuteHaptics: 'Włącz haptykę',
     openSettings: 'Otwórz ustawienia',
     openStarmap: 'Otwórz graf pamięci',
-    openKeybinds: 'Skróty klawiaturowe',
     layoutEditor: 'Edytor układu',
     layoutEditorTitle: 'Edytor układu — kliknięcie z ⌘ przywraca układ'
   },
@@ -2685,10 +2684,6 @@ export const pl = defineLocale({
 
   preview: {
     tab: 'Podgląd',
-    closeTab: label => `Zamknij ${label}`,
-    closeOthers: 'Zamknij pozostałe',
-    closeToRight: 'Zamknij po prawej',
-    closeAll: 'Zamknij wszystko',
     closePane: 'Zamknij panel podglądu',
     loading: 'Ładowanie podglądu',
     unavailable: 'Podgląd niedostępny',

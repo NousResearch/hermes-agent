@@ -1681,7 +1681,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 return json.dumps(result_dict, ensure_ascii=False)
 
         # ── Binary file guard ─────────────────────────────────────────
-        # Block binary files by extension (no I/O).
+        # Block binary files by extension (no I/O). Name what we know:
+        # the extension is a claim, so keep this branch's message to the
+        # extension itself — the content-sniffing path below names the
+        # actual magic-byte type for extension-less/lying files.
         if has_binary_extension(str(_resolved)):
             _ext = _resolved.suffix.lower()
             return tool_error(

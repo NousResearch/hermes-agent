@@ -222,6 +222,19 @@ contains pytest, the runner accepts the explicit `HERMES_PYTHON` above. It
 clears credentials, isolates `HERMES_HOME`, and runs each test file in a separate
 subprocess through `scripts/run_tests_parallel.py`. It does not use xdist.
 
+Bare `pytest` and `python -m pytest` are refused before test collection. For an
+intentional direct run, such as debugging a single test in an IDE, set
+`HERMES_ALLOW_BARE_PYTEST=1` for that invocation or the IDE's test configuration:
+
+```bash
+HERMES_ALLOW_BARE_PYTEST=1 python -m pytest tests/agent/test_foo.py -k test_x
+```
+
+Use a disposable checkout and `HERMES_HOME` when bypassing the runner: direct
+runs do not get its credential clearing or per-file process isolation. The
+guard prevents accidental bypass; it is not a security sandbox. The live-provider
+CI canaries explicitly opt out because they require provider credentials.
+
 Run the relevant JS workspace checks for JS changes. Native install/update
 E2E runs on disposable CI hosts, never against the developer's live app.
 See [Package management](website/docs/reference/package-management.md) for PM commands and runtime ownership.

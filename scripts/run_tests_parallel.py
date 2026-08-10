@@ -48,6 +48,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -777,10 +778,7 @@ def _print_inline_failure(
     """
     rel = _format_file(file, repo_root)
     # Build a repro command the developer can copy-paste.
-    passthrough_str = " ".join(pytest_passthrough) if pytest_passthrough else ""
-    repro = f"python -m pytest {rel}"
-    if passthrough_str:
-        repro += f" {passthrough_str}"
+    repro = shlex.join(["scripts/run_tests.sh", rel, *pytest_passthrough])
 
     # Grab just the failure lines (last ~30 lines of pytest output —
     # typically the FAILED summary + short test info).
@@ -982,6 +980,10 @@ def _pytest_flag_error(tokens: List[str]) -> Optional[str]:
 
 def main() -> int:
     _make_stdio_glyph_safe()
+    # Every per-file attempt (including retries) inherits this marker, so
+    # tests/conftest.py can reject accidental direct pytest invocations.
+    # Set it here so direct use of this driver also retains per-file isolation.
+    os.environ["HERMES_TEST_RUNNER"] = "1"
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,

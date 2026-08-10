@@ -95,6 +95,7 @@ jobs:
         # `env -i` precisely so no credential can reach a test, which would skip
         # every case here. `-m live` overrides the default `not live` addopts.
         env:
+          HERMES_ALLOW_BARE_PYTEST: "1"
           LIVE_FILTER: ${{ inputs.filter }}
           OPENROUTER_API_KEY: ${{ secrets.LIVE_OPENROUTER_API_KEY }}
           ANTHROPIC_API_KEY: ${{ secrets.LIVE_ANTHROPIC_API_KEY }}

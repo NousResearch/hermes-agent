@@ -1098,9 +1098,26 @@ def pytest_unconfigure(config):  # noqa: D401 — pytest hook
     _remove_relocated_basetemp(config)
 
 
+def _require_canonical_test_runner() -> None:
+    """Catch accidental direct runs before test-module imports can mutate the checkout."""
+    if os.environ.get("HERMES_TEST_RUNNER") == "1":
+        return
+    if os.environ.get("HERMES_ALLOW_BARE_PYTEST") == "1":
+        return
+    raise pytest.UsageError(
+        "Refusing to run tests without the canonical runner.\n\n"
+        "Bare `pytest` bypasses per-file isolation and can mutate your working "
+        "tree. Use:\n\n"
+        "    scripts/run_tests.sh [paths...]\n\n"
+        "For deliberate one-off debugging only:\n\n"
+        "    HERMES_ALLOW_BARE_PYTEST=1 python -m pytest ...\n"
+    )
+
+
 @pytest.hookimpl(trylast=True)  # after _pytest.tmpdir has built config._tmp_path_factory
 def pytest_configure(config):  # noqa: D401 — pytest hook
     """Register markers used by hermetic conftest."""
+    _require_canonical_test_runner()
     _relocate_basetemp_outside_operator_home(config)
     config.addinivalue_line(
         "markers",

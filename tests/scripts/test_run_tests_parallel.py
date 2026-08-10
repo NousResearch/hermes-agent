@@ -21,6 +21,7 @@ POSIX-only: Windows has its own grandchild lifecycle (no shared session,
 from __future__ import annotations
 
 import json
+import shlex
 import shutil
 import os
 import subprocess
@@ -48,6 +49,73 @@ def _probe_root(tmp_path):
     # The runner shares the platforms() spec resolver with the CI lane selector.
     shutil.copy2(real / "ci" / "list_os_marked_tests.py", scripts / "ci")
     return root
+
+
+@pytest.mark.parametrize("mode", ["bare", "disabled", "debug", "runner"])
+def test_runner_guard_precedes_collection_and_allows_explicit_runs(tmp_path, mode):
+    root = _probe_root(tmp_path)
+    collected = tmp_path / "collected"
+    attempted = tmp_path / "attempted"
+    probe = root / "test_guard_probe.py"
+    probe.write_text(
+        "from pathlib import Path\nimport os\n"
+        f"Path({str(collected)!r}).write_text('collected')\n"
+        "def test_probe():\n"
+        f"    attempted = Path({str(attempted)!r})\n"
+        "    count = int(attempted.read_text()) if attempted.exists() else 0\n"
+        "    attempted.write_text(str(count + 1))\n"
+        f"    if {mode == 'runner'!r}:\n"
+        "        assert os.environ.get('HERMES_TEST_RUNNER') == '1'\n"
+        "        assert count == 1, 'retry canary'\n",
+        encoding="utf-8",
+    )
+    config = root / "pytest.ini"
+    config.write_text("[pytest]\n", encoding="utf-8")
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path(__file__).resolve().parents[2]),
+        "HERMES_HOME": str(tmp_path / "home"),
+        "HERMES_RUNTIME_DIR": str(tmp_path / "runtime"),
+    }
+    env.pop("HERMES_TEST_RUNNER", None)
+    env.pop("HERMES_ALLOW_BARE_PYTEST", None)
+    env.pop("PYTEST_PLUGINS", None)
+    if mode == "disabled":
+        env.update(HERMES_TEST_RUNNER="0", HERMES_ALLOW_BARE_PYTEST="0")
+    elif mode == "debug":
+        env["HERMES_ALLOW_BARE_PYTEST"] = "1"
+    pytest_args = ["-p", "tests.conftest", "-c", str(config)]
+    command = [sys.executable, "-m", "pytest", str(probe), *pytest_args]
+    if mode == "runner":
+        command = [
+            sys.executable, str(root / "scripts/run_tests_parallel.py"),
+            "--paths", str(probe), "-j", "1", "--file-retries", "1",
+            "--", *pytest_args,
+        ]
+    result = subprocess.run(
+        command, cwd=root, env=env, capture_output=True, text=True, timeout=120,
+    )
+    output = result.stdout + result.stderr
+    if mode in {"bare", "disabled"}:
+        assert result.returncode == pytest.ExitCode.USAGE_ERROR, output
+        assert "scripts/run_tests.sh" in output
+        assert not collected.exists(), output
+        assert not attempted.exists(), output
+    else:
+        assert result.returncode == 0, output
+        assert collected.exists(), output
+        assert attempted.read_text() == ("2" if mode == "runner" else "1"), output
+
+
+def test_failure_repro_uses_runner_and_preserves_arguments(tmp_path, capsys):
+    from scripts.run_tests_parallel import _print_inline_failure
+
+    case = tmp_path / "tests" / "test_some case.py"
+    flags = ["-k", "first or second", "--tb=short"]
+    _print_inline_failure(case, "failure details", tmp_path, flags)
+    output = capsys.readouterr().out
+    command = next(line.split("Repro: ", 1)[1] for line in output.splitlines() if "Repro: " in line)
+    assert shlex.split(command) == ["scripts/run_tests.sh", "tests/test_some case.py", *flags]
 
 
 def _pid_alive(pid: int) -> bool:

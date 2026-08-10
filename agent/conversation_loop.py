@@ -161,6 +161,57 @@ _HANDOFF_SKIP_FINAL_RESPONSE = (
     "awaiting your next message."
 )
 
+# Sentinel Hermes injects as assistant content when a model returns nothing
+# usable after tool calls (see the post-tool nudge and the empty terminal in
+# run_conversation). A model echoing it back into its own final answer has
+# leaked scratchpad shorthand instead of answering. Named so the guard and its
+# tests cannot drift from the injection sites.
+EMPTY_RESPONSE_SENTINEL = "(empty)"
+
+# Content part types that are NOT visible assistant prose.
+# ``flatten_message_text`` deliberately keeps reasoning parts (callers use it to
+# recover text from any shape) and its key list includes the generic ``content``
+# key, so a block like {"type": "thinking", "content": "..."} flattens into the
+# visible string. For deciding whether the VISIBLE answer leaked a sentinel that
+# is wrong: it judges a turn by its scratchpad instead of its answer.
+_NON_VISIBLE_CONTENT_PART_TYPES = frozenset({
+    "thinking",
+    "reasoning",
+    "redacted_thinking",
+    "reasoning_content",
+})
+
+
+def _visible_text_for_sentinel_check(content: Any) -> str:
+    """Return only the visible assistant prose from any assistant-content shape.
+
+    Type-tolerant by design: assistant ``content`` may be a str, a list of
+    blocks (Anthropic via OpenRouter returns
+    ``[{"type":"text"},{"type":"thinking"}]``), or a single mapping. Reasoning
+    blocks are dropped so a scratchpad note is never mistaken for the visible
+    answer. Never raises — a bad shape yields ``""`` and the caller's guard
+    simply does not fire, which is the safe direction (terminate as before
+    rather than crash the turn).
+    """
+    from agent.message_content import flatten_message_text
+
+    def _is_non_visible(part: Any) -> bool:
+        if not isinstance(part, dict):
+            return False
+        part_type = str(part.get("type") or "").strip().lower()
+        return part_type in _NON_VISIBLE_CONTENT_PART_TYPES
+
+    try:
+        if isinstance(content, list):
+            return flatten_message_text(
+                [part for part in content if not _is_non_visible(part)]
+            )
+        if _is_non_visible(content):
+            return ""
+        return flatten_message_text(content)
+    except Exception:
+        logger.debug("visible-text extraction for sentinel check failed", exc_info=True)
+        return ""
 
 # Stable prefix of the local interrupt status string emitted when a turn is
 # cancelled while waiting on the provider. Surfaces (ACP, TUI) match on this
@@ -7002,25 +7053,33 @@ def run_conversation(
                 # contentless: the sentinel is injected by the post-tool nudge below, so
                 # a model echoing it back has leaked scratchpad shorthand into the final
                 # answer instead of answering (observed: "(empty) again risk. Need
-                # progress + tool.").  Such a turn must recover, not terminate.
+                # progress + tool.").  Such a turn is routed into the recovery ladder
+                # below rather than terminating on the shorthand.  NOTE the ladder only
+                # *recovers* it when the post-tool nudge is still available; with the
+                # nudge latch already consumed this turn the leak reaches the empty
+                # terminal and the user sees a bare "(empty)".  That is still preferable
+                # to shipping scratchpad shorthand as a final answer, but it is not a
+                # guaranteed recovery.
                 # Measured on 3,804 real non-trivial stop-messages: exactly 1 match, the
                 # leak itself — so this cannot swallow a legitimate short answer.
                 #
-                # flatten_message_text() is required, NOT a bare .lstrip(): assistant
-                # ``content`` is not always a str.  Anthropic-via-OpenRouter returns a
-                # list of blocks ([{"type":"text"},{"type":"thinking"}]) — the reason
+                # Flattening is required, NOT a bare .lstrip(): assistant ``content`` is
+                # not always a str.  Anthropic-via-OpenRouter returns a list of blocks
+                # ([{"type":"text"},{"type":"thinking"}]) — the reason
                 # strip_think_blocks() coerces its input — and a non-empty list is
                 # truthy, so ``(final_response or "").lstrip()`` would survive the
                 # ``or ""`` and raise AttributeError, killing the whole turn on a
                 # vision/multimodal reply.
-                from agent.message_content import (
-                    flatten_message_text as _flatten_final,
-                )
-
+                #
+                # Only VISIBLE text parts are considered.  flatten_message_text() does
+                # not exclude ``thinking``/``reasoning`` parts and its key list includes
+                # ``content``, so a reasoning block phrased as
+                # {"type":"thinking","content":"(empty) ..."} would otherwise prepend
+                # scratchpad text to the flattened string and fire this guard on a turn
+                # whose visible answer was perfectly good.
+                _visible_final = _visible_text_for_sentinel_check(final_response)
                 _leaked_empty_sentinel = (
-                    _flatten_final(final_response)
-                    .lstrip()
-                    .startswith("(empty)")
+                    _visible_final.lstrip().startswith(EMPTY_RESPONSE_SENTINEL)
                     and agent._has_content_after_think_block(final_response)
                 )
                 if (

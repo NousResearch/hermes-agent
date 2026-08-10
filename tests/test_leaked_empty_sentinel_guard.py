@@ -6,77 +6,82 @@ phase=final_answer and finish_reason=stop, ending a 27-minute task mid-flight.
 Content was non-empty, so the post-tool empty-response nudge never fired.
 
 DESIGN NOTE — no mirrored oracle.
-An earlier version of this file defined its own copies of
-``_has_content_after_think_block`` and the guard expression. 7 of its 9 tests
-then passed with the production fix reverted, because they tested the copies.
-This version imports the REAL production helpers and extracts the REAL guard
-expression from source, so reverting the fix fails the behavioural tests.
+Round 1 of this file defined its own copies of `_has_content_after_think_block`
+and of the guard expression; 7 of its 9 tests then passed with the production
+fix reverted, because they tested the copies. Round 2 still inlined the
+production body of `_has_content_after_think_block`.
+
+This version imports every production symbol it exercises:
+  * `_visible_text_for_sentinel_check` and `EMPTY_RESPONSE_SENTINEL`
+    from `agent.conversation_loop`
+  * `AIAgent._has_content_after_think_block` bound to a minimal object
+so a change to any of them fails here rather than silently diverging.
 """
 import ast
-import re
 import unittest
 from pathlib import Path
 
-from agent.agent_runtime_helpers import strip_think_blocks
-from agent.message_content import flatten_message_text
+import run_agent
+from agent.conversation_loop import (
+    EMPTY_RESPONSE_SENTINEL,
+    _visible_text_for_sentinel_check,
+)
 
 SRC = Path(__file__).resolve().parents[1] / "agent" / "conversation_loop.py"
 SOURCE = SRC.read_text(encoding="utf-8")
+OWN_SOURCE = Path(__file__).read_text(encoding="utf-8")
 
 LEAK = "(empty) again risk. Need progress + tool. Already can. Use execute."
 
 
 class _MinimalAgent:
-    """Only what the production helpers actually touch."""
+    """Borrows the REAL predicate off AIAgent — no reimplementation."""
 
-    def _strip_think_blocks(self, content):
-        return strip_think_blocks(self, content)
-
-    def _has_content_after_think_block(self, content):
-        # Production body, verbatim (run_agent.py:1649) — delegates to the
-        # real strip_think_blocks, so tag handling cannot drift.
-        if not content:
-            return False
-        return bool(self._strip_think_blocks(content).strip())
+    _has_content_after_think_block = run_agent.AIAgent._has_content_after_think_block
+    _strip_think_blocks = run_agent.AIAgent._strip_think_blocks
 
 
-def _extract_guard_source():
-    """Pull the real guard expression out of conversation_loop.py.
+def _guard_source() -> str:
+    """The production guard, located by AST (not by brittle text search).
 
-    Fails loudly if the fix is absent, so a revert cannot silently pass.
+    Raises if the fix is absent so a revert cannot pass silently.
     """
-    m = re.search(
-        r"_leaked_empty_sentinel = \(\n(.*?)\n\s*\)\n", SOURCE, re.S
+    tree = ast.parse(SOURCE)
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and any(
+                isinstance(t, ast.Name) and t.id == "_leaked_empty_sentinel"
+                for t in node.targets
+            )
+        ):
+            return ast.unparse(node.value)
+    raise AssertionError(
+        "`_leaked_empty_sentinel = ...` not found in agent/conversation_loop.py "
+        "— the fix is missing or was renamed"
     )
-    if not m:
-        raise AssertionError(
-            "guard `_leaked_empty_sentinel = (...)` not found in "
-            "agent/conversation_loop.py — the fix is missing or was reworded"
-        )
-    return m.group(1)
 
 
-GUARD_SRC = _extract_guard_source()
+GUARD_EXPR = _guard_source()
 
 
 def leaked_empty_sentinel(agent, final_response):
-    """Evaluate the PRODUCTION guard expression against real helpers."""
-    expr = GUARD_SRC.replace("_flatten_final", "flatten_message_text")
-    # Collapse to a single expression and evaluate with production callables.
+    """Evaluate the PRODUCTION guard expression against PRODUCTION helpers."""
     return bool(
-        eval(  # noqa: S307 - evaluating our own source under test, by design
-            " ".join(expr.split()),
+        eval(  # noqa: S307 - our own source under test, by design
+            GUARD_EXPR,
             {
-                "flatten_message_text": flatten_message_text,
+                "_visible_text_for_sentinel_check": _visible_text_for_sentinel_check,
+                "EMPTY_RESPONSE_SENTINEL": EMPTY_RESPONSE_SENTINEL,
                 "agent": agent,
                 "final_response": final_response,
+                "_visible_final": _visible_text_for_sentinel_check(final_response),
             },
         )
     )
 
 
 def enters_recovery(agent, final_response):
-    """The full `if` condition guarding the empty-recovery block."""
     return (
         not agent._has_content_after_think_block(final_response)
         or leaked_empty_sentinel(agent, final_response)
@@ -91,36 +96,66 @@ class TestLeakedEmptySentinel(unittest.TestCase):
 
     def test_the_real_leak_recovers(self):
         self.assertTrue(leaked_empty_sentinel(self.agent, LEAK))
-        self.assertTrue(
-            enters_recovery(self.agent, LEAK),
-            "leaked shorthand must not end the turn",
-        )
+        self.assertTrue(enters_recovery(self.agent, LEAK))
 
     def test_leading_whitespace_does_not_evade(self):
         self.assertTrue(enters_recovery(self.agent, "\n  (empty) need tool"))
 
+    # ---- BLOCKER from review round 1: crash on non-str content ----
+
     def test_multimodal_list_content_does_not_crash(self):
-        """A non-empty list is truthy: a bare .lstrip() raised AttributeError.
+        self.assertTrue(
+            leaked_empty_sentinel(
+                self.agent,
+                [{"type": "text", "text": "(empty) need tool"}],
+            )
+        )
 
-        Anthropic-via-OpenRouter really returns this shape, which is why
-        strip_think_blocks() coerces its input.
+    def test_multimodal_legitimate_answer_does_not_trip(self):
+        self.assertFalse(
+            leaked_empty_sentinel(
+                self.agent, [{"type": "text", "text": "The chart shows a decline."}]
+            )
+        )
+
+    # ---- FALSE POSITIVE from review round 2: reasoning must not be judged ----
+
+    def test_thinking_block_starting_with_sentinel_does_not_trip(self):
+        """A scratchpad note must never condemn a good visible answer.
+
+        flatten_message_text() keeps reasoning parts and accepts the generic
+        `content` key, so {"type":"thinking","content":"(empty) ..."} used to
+        flatten AHEAD of the real answer and fire the guard.
         """
-        multimodal = [
-            {"type": "text", "text": "(empty) need tool"},
-            {"type": "thinking", "thinking": "scratch"},
-        ]
-        self.assertTrue(leaked_empty_sentinel(self.agent, multimodal))
+        for reasoning_key in ("thinking", "content", "text"):
+            for part_type in ("thinking", "reasoning", "redacted_thinking"):
+                with self.subTest(type=part_type, key=reasoning_key):
+                    content = [
+                        {"type": part_type, reasoning_key: "(empty) scratch note"},
+                        {"type": "text", "text": "Done."},
+                    ]
+                    self.assertFalse(
+                        leaked_empty_sentinel(self.agent, content),
+                        f"{part_type}/{reasoning_key} leaked into the visible check",
+                    )
 
-    def test_multimodal_legitimate_answer_does_not_crash_or_trip(self):
-        multimodal = [{"type": "text", "text": "The chart shows a decline."}]
-        self.assertFalse(leaked_empty_sentinel(self.agent, multimodal))
+    def test_visible_leak_still_caught_alongside_reasoning(self):
+        content = [
+            {"type": "thinking", "thinking": "all good"},
+            {"type": "text", "text": "(empty) need tool"},
+        ]
+        self.assertTrue(leaked_empty_sentinel(self.agent, content))
+
+    def test_helper_never_raises_on_hostile_shapes(self):
+        for junk in (None, 0, object(), [None], [{"type": None}], {"no": "type"}):
+            with self.subTest(junk=junk):
+                self.assertIsInstance(_visible_text_for_sentinel_check(junk), str)
 
     # ---- false-positive guards: legitimate answers MUST still end the turn ----
 
     def test_short_legitimate_answer_still_ends_turn(self):
         for good in ("Done.", "PASS", "OK", "42", "Yes — verified."):
             with self.subTest(good=good):
-                self.assertFalse(leaked_empty_sentinel(self.agent, good))
                 self.assertFalse(enters_recovery(self.agent, good))
 
     def test_answer_merely_mentioning_the_word_empty_ends_turn(self):
@@ -145,41 +180,43 @@ class TestLeakedEmptySentinel(unittest.TestCase):
 
 
 class TestNoMirroredOracle(unittest.TestCase):
-    """Meta-test: this file must not reimplement the logic it tests."""
+    """Meta-tests: this file must not reimplement what it tests."""
 
-    def test_guard_is_extracted_from_production_not_retyped(self):
-        self.assertIn("_leaked_empty_sentinel = (", SOURCE)
-        self.assertIn("re.search", Path(__file__).read_text(encoding="utf-8"))
-
-    def test_helpers_are_imported_not_copied(self):
-        own = Path(__file__).read_text(encoding="utf-8")
-        self.assertIn("from agent.agent_runtime_helpers import strip_think_blocks", own)
-        # A local `def _strip_think_blocks` copy would be the mirror antipattern.
-        self.assertNotIn("re.sub(r\"<(think", own)
-
-    def test_guard_uses_a_type_tolerant_flattener(self):
-        """Pin the BLOCKER fix: a bare .lstrip() on content crashes on lists.
-
-        Comments are stripped first: the explanatory comment above the guard
-        legitimately quotes the old broken expression, and a naive substring
-        assertion would match its own documentation (the
-        'comment-grepping tests self-trip' pitfall).
-        """
-        code_only = "\n".join(
-            line.split("#", 1)[0] for line in SOURCE.splitlines()
+    def test_predicate_is_borrowed_from_production(self):
+        self.assertIs(
+            _MinimalAgent._has_content_after_think_block,
+            run_agent.AIAgent._has_content_after_think_block,
         )
+
+    def test_no_local_copy_of_the_stripper(self):
+        # Compare against code only: the assertions themselves contain these
+        # needles, so scanning raw source would always self-trip.
+        code_only = "\n".join(
+            line for line in OWN_SOURCE.splitlines()
+            if "assertNotIn" not in line and "assertIn" not in line
+        )
+        self.assertNotIn("def _strip_think_blocks(self", code_only)
+        self.assertNotIn("_NON_VISIBLE_CONTENT_PART_TYPES = ", code_only)
+
+    def test_guard_expression_is_extracted_not_retyped(self):
+        self.assertIn("ast.unparse", OWN_SOURCE)
+        # The unparsed guard binds the pre-computed visible text and the shared
+        # constant — proof it came from production, not from this file.
+        self.assertIn("_visible_final", GUARD_EXPR)
+        self.assertIn("EMPTY_RESPONSE_SENTINEL", GUARD_EXPR)
+        self.assertIn("_has_content_after_think_block", GUARD_EXPR)
+
+    def test_sentinel_is_a_shared_constant(self):
+        self.assertEqual(EMPTY_RESPONSE_SENTINEL, "(empty)")
+        code_only = "\n".join(l.split("#", 1)[0] for l in SOURCE.splitlines())
+        self.assertIn("startswith(EMPTY_RESPONSE_SENTINEL)", code_only)
+
+    def test_guard_does_not_use_a_bare_lstrip(self):
+        """Comments are stripped: they legitimately quote the old broken code."""
+        code_only = "\n".join(l.split("#", 1)[0] for l in SOURCE.splitlines())
         self.assertNotIn('(final_response or "").lstrip()', code_only)
-        self.assertIn("_flatten_final(final_response)", code_only)
 
     def test_partial_stream_recovery_cannot_redeliver_the_leak(self):
-        tree = ast.parse(SOURCE)
-        self.assertTrue(
-            any(
-                isinstance(n, ast.Name) and n.id == "_leaked_empty_sentinel"
-                for n in ast.walk(tree)
-            ),
-            "guard variable vanished from production",
-        )
         self.assertIn(
             "if not _leaked_empty_sentinel and agent._has_content_after_think_block("
             "_partial_streamed):",

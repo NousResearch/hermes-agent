@@ -452,6 +452,17 @@ def _profile_scoped_config_load() -> bool:
         return False
 
 
+def discord_deps_present() -> bool:
+    """PASSIVE probe: is discord.py importable right now?
+
+    Registry ``check_fn`` — called from status displays and config loading,
+    so it must never install anything.  The ACTIVE lazy-installer
+    (``check_discord_requirements``) is registered as ``ensure_deps_fn``
+    and runs from ``create_adapter()`` when this returns False (#79812).
+    """
+    return DISCORD_AVAILABLE
+
+
 def check_discord_requirements() -> bool:
     """Check if Discord dependencies are available.
 
@@ -11806,7 +11817,10 @@ async def _standalone_send(
             result["warnings"] = warnings
         return result
     except Exception as e:
-        return {"error": _standalone_sanitize_error(f"Discord send failed: {e}")}
+        # Include the exception type: TimeoutError().str() is empty, so
+        # "Discord send failed: " alone gave no diagnostic signal.
+        logger.error("Discord standalone send failed", exc_info=True)
+        return {"error": _standalone_sanitize_error(f"Discord send failed: {type(e).__name__}: {e}")}
 
 
 # ── Plugin entry point ────────────────────────────────────────────────────────
@@ -12139,7 +12153,8 @@ def register(ctx) -> None:
         name="discord",
         label="Discord",
         adapter_factory=_build_adapter,
-        check_fn=check_discord_requirements,
+        check_fn=discord_deps_present,
+        ensure_deps_fn=check_discord_requirements,
         is_connected=_is_connected,
         required_env=["DISCORD_BOT_TOKEN"],
         install_hint="Run `hermes setup` to install Discord support.",

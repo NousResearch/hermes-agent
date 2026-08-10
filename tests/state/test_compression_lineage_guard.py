@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from hermes_state import SessionDB
@@ -42,6 +44,144 @@ def test_find_live_compression_child_fails_closed_when_ambiguous(db: SessionDB) 
     assert db.find_live_compression_child("parent") is None
 
 
+def test_reopen_orphaned_compression_session_reopens_parent_without_child(
+    db: SessionDB,
+) -> None:
+    _compression_parent(db, "orphan")
+
+    assert db.reopen_orphaned_compression_session("orphan") is True
+    assert db.get_session("orphan")["ended_at"] is None
+    assert db.get_session("orphan")["end_reason"] is None
+
+    db.append_message("orphan", "user", "recovered turn")
+    assert [m["content"] for m in db.get_messages("orphan")] == [
+        "before split",
+        "recovered turn",
+    ]
+
+
+def test_reopen_orphaned_compression_session_fails_closed_with_child(
+    db: SessionDB,
+) -> None:
+    _compression_parent(db, "parent-with-child")
+    db.create_session("child", source="webui", parent_session_id="parent-with-child")
+
+    assert db.reopen_orphaned_compression_session("parent-with-child") is False
+    parent = db.get_session("parent-with-child")
+    assert parent["end_reason"] == "compression"
+    assert parent["ended_at"] is not None
+
+
+def test_reopen_orphaned_compression_session_ignores_non_continuation_children(
+    db: SessionDB,
+) -> None:
+    _compression_parent(db, "parent-with-non-continuation-children")
+    db.create_session(
+        "branch",
+        source="webui",
+        parent_session_id="parent-with-non-continuation-children",
+        model_config={"_branched_from": "parent-with-non-continuation-children"},
+    )
+    db.create_session(
+        "delegate",
+        source="tool",
+        parent_session_id="parent-with-non-continuation-children",
+        model_config={"_delegate_from": "parent-with-non-continuation-children"},
+    )
+
+    assert db.reopen_orphaned_compression_session(
+        "parent-with-non-continuation-children"
+    ) is True
+
+
+def test_reopen_fails_closed_when_continuation_inherits_foreign_markers(
+    db: SessionDB,
+) -> None:
+    """A REAL continuation can carry ``_delegate_from``/``_branched_from``
+    pointing at some OTHER session: ``publish_compression_child`` callers
+    pass the rotated agent's ``_session_init_model_config`` verbatim, so a
+    delegate subagent's continuation inherits ``_delegate_from=<the
+    delegate's own parent>``. Marker-presence matching misclassified it as
+    a delegate child — reopen returned True with a live continuation
+    present, forking the lineage. Markers only disqualify a child when
+    they point at the queried parent."""
+    _compression_parent(db, "delegate-session")
+    db.create_session(
+        "delegate-continuation",
+        source="subagent",
+        parent_session_id="delegate-session",
+        model_config={"_delegate_from": "some-original-parent"},
+    )
+
+    assert db.reopen_orphaned_compression_session("delegate-session") is False
+    parent = db.get_session("delegate-session")
+    assert parent["end_reason"] == "compression"
+
+
+def test_find_live_child_returns_continuation_with_foreign_markers(
+    db: SessionDB,
+) -> None:
+    """Adoption-side twin of the reopen test above: the continuation that
+    inherited a foreign ``_delegate_from`` must still be adoptable."""
+    _compression_parent(db, "delegate-session-2")
+    db.create_session(
+        "inherited-continuation",
+        source="subagent",
+        parent_session_id="delegate-session-2",
+        model_config={"_delegate_from": "some-original-parent"},
+    )
+
+    child = db.find_live_compression_child("delegate-session-2")
+    assert child is not None
+    assert child["id"] == "inherited-continuation"
+
+
+def test_reopen_orphaned_compression_session_fails_closed_with_active_lease(
+    db: SessionDB,
+) -> None:
+    _compression_parent(db, "leased-parent")
+    assert db.try_acquire_compression_lock("leased-parent", "compressor")
+
+    assert db.reopen_orphaned_compression_session("leased-parent") is False
+    assert db.get_session("leased-parent")["end_reason"] == "compression"
+
+
+def test_reopen_orphaned_compression_session_reclaims_expired_lease(
+    db: SessionDB,
+) -> None:
+    _compression_parent(db, "expired-lease-parent")
+    now = time.time()
+    db._conn.execute(
+        "INSERT INTO compression_locks "
+        "(session_id, holder, acquired_at, expires_at) VALUES (?, ?, ?, ?)",
+        ("expired-lease-parent", "old-compressor", now - 60, now - 30),
+    )
+    db._conn.commit()
+
+    assert db.reopen_orphaned_compression_session("expired-lease-parent") is True
+    assert db.refresh_compression_lock(
+        "expired-lease-parent", "old-compressor"
+    ) is False
+    assert db.get_compression_lock_holder("expired-lease-parent") is None
+
+
+def test_reopen_orphaned_compression_session_loses_to_expired_lease_refresh(
+    db: SessionDB,
+) -> None:
+    _compression_parent(db, "refreshed-lease-parent")
+    now = time.time()
+    db._conn.execute(
+        "INSERT INTO compression_locks "
+        "(session_id, holder, acquired_at, expires_at) VALUES (?, ?, ?, ?)",
+        ("refreshed-lease-parent", "live-compressor", now - 60, now - 30),
+    )
+    db._conn.commit()
+
+    assert db.refresh_compression_lock(
+        "refreshed-lease-parent", "live-compressor"
+    ) is True
+    assert db.reopen_orphaned_compression_session("refreshed-lease-parent") is False
+    assert db.get_session("refreshed-lease-parent")["end_reason"] == "compression"
 
 
 def test_find_live_compression_child_ignores_non_continuation_children(
@@ -67,12 +207,6 @@ def test_find_live_compression_child_ignores_non_continuation_children(
 
     assert child is not None
     assert child["id"] == "canonical"
-
-
-
-
-
-
 
 
 def test_publish_compression_child_is_atomic_on_handoff_failure(

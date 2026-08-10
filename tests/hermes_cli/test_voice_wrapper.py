@@ -10,6 +10,8 @@ stack.
 """
 
 
+import json
+
 import pytest
 
 
@@ -186,18 +188,22 @@ class TestSpeakTextGuards:
         assert voice.speak_text("Hello world") is None
         assert played == [returned_path]
 
-    def test_speak_text_prefers_requested_mp3_over_returned_ogg(self, monkeypatch):
+    def test_speak_text_plays_returned_file_paths(self, monkeypatch):
         import hermes_cli.voice as voice
         from tools import tts_tool
 
         played = []
-        requested_paths = []
 
         def fake_tts(**kwargs):
             requested_path = kwargs["output_path"]
-            requested_paths.append(requested_path)
             ogg_path = requested_path.rsplit(".", 1)[0] + ".ogg"
-            return f'{{"success": true, "file_path": "{ogg_path}"}}'
+            # The tool may return a different path than the requested MP3;
+            # the result's file_paths is authoritative for playback.
+            return json.dumps({
+                "success": True,
+                "file_path": ogg_path,
+                "file_paths": [ogg_path],
+            })
 
         monkeypatch.setattr(tts_tool, "text_to_speech_tool", fake_tts)
         monkeypatch.setattr(voice.os, "makedirs", lambda *_args, **_kwargs: None)
@@ -207,7 +213,9 @@ class TestSpeakTextGuards:
         monkeypatch.setattr(voice, "play_audio_file", lambda path: played.append(path))
 
         assert voice.speak_text("Hello world") is None
-        assert played == requested_paths
+        # Should play the path from the result, not the requested MP3 path
+        assert len(played) == 1
+        assert played[0].endswith(".ogg")
 
 
 class TestContinuousAPI:

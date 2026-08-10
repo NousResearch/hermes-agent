@@ -44,6 +44,7 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
             "HERMES_MAX_ITERATIONS",
             "HERMES_AGENT_TIMEOUT",
             "HERMES_AGENT_TIMEOUT_WARNING",
+            "HERMES_TURN_LEASE_TIMEOUT",
             "HERMES_SESSION_STALL_TIMEOUT",
             "HERMES_GATEWAY_BUSY_INPUT_MODE",
             "HERMES_GATEWAY_BUSY_TEXT_MODE",
@@ -57,8 +58,23 @@ def _run_gateway_import(hermes_home: Path, initial_env: dict[str, str]) -> dict[
     )
     env = dict(initial_env)
     env["HERMES_HOME"] = str(hermes_home)
-    # Keep PATH / PYTHONPATH so venv imports resolve.
-    for k in ("PATH", "PYTHONPATH", "VIRTUAL_ENV", "HOME"):
+    # Keep interpreter paths plus the Windows bootstrap variables required by
+    # stdlib platform detection and native dependency loading.  The child is
+    # otherwise intentionally clean so stale Hermes settings cannot leak in.
+    for k in (
+        "PATH",
+        "PYTHONPATH",
+        "VIRTUAL_ENV",
+        "HOME",
+        "USERPROFILE",
+        "HOMEDRIVE",
+        "HOMEPATH",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "SYSTEMROOT",
+        "TEMP",
+        "TMP",
+    ):
         if k in os.environ and k not in env:
             env[k] = os.environ[k]
 
@@ -94,12 +110,12 @@ def _write_config(home: Path, agent_cfg: dict | None = None, display_cfg: dict |
         cfg["gateway"] = gateway_cfg
     if timezone:
         cfg["timezone"] = timezone
-    (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg), encoding="utf-8")
 
 
 def _write_env(home: Path, entries: dict[str, str]) -> None:
     lines = [f"{k}={v}\n" for k, v in entries.items()]
-    (home / ".env").write_text("".join(lines))
+    (home / ".env").write_text("".join(lines), encoding="utf-8")
 
 
 @pytest.fixture
@@ -127,6 +143,51 @@ def test_config_gateway_timeout_wins_over_stale_env(hermes_home: Path) -> None:
     assert env.get("HERMES_AGENT_TIMEOUT") == "1800"
     assert env.get("HERMES_AGENT_TIMEOUT_WARNING") == "900"
     assert env.get("HERMES_SESSION_STALL_TIMEOUT") == "300"
+
+
+def test_config_turn_lease_timeout_wins_over_stale_env(hermes_home: Path) -> None:
+    """The user-facing lease wait budget belongs to config.yaml."""
+    _write_config(
+        hermes_home,
+        agent_cfg={"gateway_turn_lease_timeout": 600},
+    )
+    _write_env(
+        hermes_home,
+        {"HERMES_TURN_LEASE_TIMEOUT": "60"},
+    )
+
+    env = _run_gateway_import(hermes_home, initial_env={})
+
+    assert env.get("HERMES_TURN_LEASE_TIMEOUT") == "600"
+
+
+def test_default_turn_lease_timeout_overrides_stale_env_when_key_is_omitted(
+    hermes_home: Path,
+) -> None:
+    """The internal env mirror must never become a second config source."""
+    _write_env(
+        hermes_home,
+        {"HERMES_TURN_LEASE_TIMEOUT": "60"},
+    )
+
+    env = _run_gateway_import(hermes_home, initial_env={})
+
+    assert env.get("HERMES_TURN_LEASE_TIMEOUT") == "1800"
+
+
+def test_default_turn_lease_timeout_matches_the_runtime_fallback() -> None:
+    """The advertised config default must match the fail-closed runtime fallback.
+
+    Invariant, not a snapshot: whatever the default becomes, config and the
+    lease registry's DEFAULT_LEASE_WAIT must move together.
+    """
+    from gateway.turn_lease import DEFAULT_LEASE_WAIT
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert (
+        float(DEFAULT_CONFIG["agent"]["gateway_turn_lease_timeout"])
+        == DEFAULT_LEASE_WAIT
+    )
 
 
 def test_config_platform_connect_timeout_supplies_env_when_unset(hermes_home: Path) -> None:

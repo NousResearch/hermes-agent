@@ -69,7 +69,40 @@ MESSAGE_DEDUP_TTL_SECONDS = 300
 
 
 def check_wecom_callback_requirements() -> bool:
+    """PASSIVE probe: are aiohttp/httpx/defusedxml importable right now?
+
+    Registry ``check_fn`` — must never install anything.  The ACTIVE
+    lazy-installer is ``ensure_wecom_callback_requirements`` below.
+    """
     return AIOHTTP_AVAILABLE and HTTPX_AVAILABLE and DEFUSEDXML_AVAILABLE
+
+
+def ensure_wecom_callback_requirements() -> bool:
+    """ACTIVE lazy-installer for the ``platform.wecom_callback`` feature.
+
+    Registered as ``ensure_deps_fn``: the registry's ``create_adapter()``
+    runs it when the passive probe fails, right before the gateway connects
+    the platform (#79812).  Installs ``defusedxml`` (the only non-core dep;
+    aiohttp/httpx ship with every messaging install) and rebinds the module
+    globals.  Before this hook existed, the passive ``check_fn`` returned
+    False forever on installs without the ``wecom`` extra and the
+    ``platform.wecom_callback`` LAZY_DEPS entry was never exercised.
+    """
+    if check_wecom_callback_requirements():
+        return True
+
+    def _import() -> dict:
+        import defusedxml.ElementTree as _ET
+
+        return {"ET": _ET, "DEFUSEDXML_AVAILABLE": True}
+
+    try:
+        from tools.lazy_deps import ensure_and_bind
+    except Exception:  # pragma: no cover — defensive
+        return False
+    if not ensure_and_bind("platform.wecom_callback", _import, globals(), prompt=False):
+        return False
+    return check_wecom_callback_requirements()
 
 
 class WecomCallbackAdapter(BasePlatformAdapter):

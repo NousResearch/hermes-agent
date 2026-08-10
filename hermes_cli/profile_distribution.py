@@ -273,6 +273,13 @@ def write_manifest(profile_dir: Path, manifest: DistributionManifest) -> Path:
     # tracking and env_requires with no error surfaced anywhere.
     from utils import atomic_yaml_write
 
+    # create_mode=0o644: _materialize() reaches this line with no manifest on
+    # disk whenever a distribution declares an explicit `distribution_owned`
+    # allowlist that does not list distribution.yaml itself, so the file is
+    # never copied out of the staged tree. The manifest is a shareable
+    # descriptor rather than a secret and used to land at the umask default,
+    # so don't leave a freshly created one at mkstemp's 0600. An existing
+    # file's mode is preserved as before.
     atomic_yaml_write(
         mf_path,
         manifest.to_dict(),

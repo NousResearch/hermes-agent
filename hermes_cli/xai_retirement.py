@@ -260,8 +260,10 @@ def apply_migration(
     buf = io.StringIO()
     yaml.dump(doc, buf)
 
-    # Preserve both permission bits and ownership across the atomic replace,
-    # including root-run migrations on user-owned volumes.
+    # preserve_mode carries the existing permission bits AND owner across the
+    # replace: _secure_file deliberately leaves config.yaml alone under managed
+    # (NixOS 0640) and container installs, and a root-run migration on a
+    # user-owned volume must not flip ownership to root.
     atomic_write_text(config_path, buf.getvalue(), preserve_mode=True)
 
     return ApplyResult(

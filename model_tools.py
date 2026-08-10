@@ -629,6 +629,21 @@ def _compute_tool_definitions(
                     }
                     break
 
+    # browser_exec (Browser Use mode) runs arbitrary Python on the host via
+    # the browser-use CLI subprocess.  A session whose toolset selection
+    # excludes the terminal surface (e.g. a messaging platform configured
+    # without terminal access) must not regain host code execution through
+    # the browser toolset — that would silently widen the operator's chosen
+    # security posture.  Session-level gate, NOT a check_fn: check_fn results
+    # are TTL-cached process-wide while one gateway process serves many
+    # sessions with different toolset configs.
+    if "browser_exec" in available_tool_names and "terminal" not in available_tool_names:
+        filtered_tools = [
+            td for td in filtered_tools
+            if td.get("function", {}).get("name") != "browser_exec"
+        ]
+        available_tool_names.discard("browser_exec")
+
     if not quiet_mode:
         if filtered_tools:
             tool_names = [t["function"]["name"] for t in filtered_tools]
@@ -742,6 +757,24 @@ def _resolve_active_context_length() -> int:
                     "context gate (provider=%s): %s — using config values only",
                     provider, rt_exc,
                 )
+        # Fast path: a previously discovered on-disk cache entry is plenty
+        # for SIZING the tool-search gate — unlike compression budgeting, a
+        # slightly stale window can't corrupt anything (should_activate only
+        # picks a disclosure tier). The full resolver below deliberately
+        # bypasses the persistent cache for some providers (Nous portal,
+        # Codex OAuth) so IT can reconcile against the authoritative live
+        # /models endpoint — correct for compression sizing, but it costs a
+        # ~200ms network probe on EVERY CLI startup. When any prior session
+        # already learned the window, use it for the gate and let the full
+        # resolver (called later on the compression path) do reconciliation.
+        if config_ctx is None and base_url:
+            try:
+                from agent.model_metadata import get_cached_context_length
+                cached_ctx = get_cached_context_length(model_id, base_url)
+                if isinstance(cached_ctx, int) and cached_ctx > 0:
+                    return cached_ctx
+            except Exception:
+                pass
         return int(get_model_context_length(
             model_id,
             base_url=base_url,
@@ -789,7 +822,11 @@ _TOOL_ERROR_ROLE_TAG_RE = re.compile(
 _TOOL_ERROR_FENCE_OPEN_RE = re.compile(r'^\s*```(?:json|xml|html|markdown)?\s*', re.MULTILINE)
 _TOOL_ERROR_FENCE_CLOSE_RE = re.compile(r'\s*```\s*$', re.MULTILINE)
 _TOOL_ERROR_CDATA_RE = re.compile(r'<!\[CDATA\[.*?\]\]>', re.DOTALL)
-_TOOL_ERROR_MAX_LEN = 2000
+# Single home for the tool-error context cap: tools/registry.py. Both this
+# sanitizer (exception paths) and the dispatch-boundary bounding
+# (tool_error / _bound_json_error_result) trim to the same budget so text
+# never passes two different caps with two different markers.
+from tools.registry import _MAX_TOOL_ERROR_CHARS as _TOOL_ERROR_MAX_LEN
 
 
 def _sanitize_tool_error(error_msg: str) -> str:

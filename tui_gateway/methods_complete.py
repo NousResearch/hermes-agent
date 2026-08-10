@@ -266,9 +266,39 @@ def _(rid, params: dict) -> dict:
         # An argument stage (`/personality `, `/details c`) keeps the order
         # its own command chose.
         if text.rsplit(" ", 1)[-1].startswith("/"):
+            score_of = None
+            # Description-aware fuzzy scoring (ported from grok-cli's slash
+            # menu) at the command-token stage: the completer above only
+            # emits name-prefix matches, so merge in catalog entries whose
+            # name SUBSTRING or DESCRIPTION words match the query — typing
+            # `/summary` surfaces a command whose description mentions
+            # summaries. Command matches always outrank description matches.
+            if " " not in text and len(text) > 1:
+                from tui_gateway.slash_fuzzy import (
+                    fuzzy_rank_slash_items,
+                    normalize_slash_search_query,
+                )
+
+                universe = [
+                    {
+                        "text": c.text,
+                        "display": to_plain_text(c.display) if c.display else c.text,
+                        "meta": to_plain_text(c.display_meta) if c.display_meta else "",
+                        "kind": (
+                            "skill"
+                            if c.text.strip().lstrip("/").lower() in skill_names
+                            else "command"
+                        ),
+                    }
+                    for c in completer.get_completions(Document("/", 1), None)
+                ]
+                items, score_of = fuzzy_rank_slash_items(
+                    items, universe, normalize_slash_search_query(text)
+                )
+
             usage, origin_of = _skill_usage_lookup()
             items = _rank_slash_completions(
-                items, usage, origin_of, browsing=text == "/"
+                items, usage, origin_of, browsing=text == "/", score_of=score_of
             )
         else:
             items = items[:_SLASH_COMPLETION_LIMIT]

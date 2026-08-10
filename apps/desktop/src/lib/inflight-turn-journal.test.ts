@@ -10,7 +10,8 @@ import {
   recoverInFlightTurnJournal
 } from '@/lib/inflight-turn-journal'
 
-const STORAGE_KEY = 'hermes.desktop.inflightTurnJournal.v1'
+const STORAGE_PREFIX = 'hermes.desktop.inflightTurnJournal.v2:'
+const LEGACY_STORAGE_KEY = 'hermes.desktop.inflightTurnJournal.v1'
 
 function user(id: string, text: string): ChatMessage {
   return { id, role: 'user', parts: [{ type: 'text', text }] }
@@ -112,11 +113,52 @@ describe('persistInFlightTurnState', () => {
     persistInFlightTurnState(journalState())
     vi.advanceTimersByTime(400)
 
-    const raw = JSON.parse(window.localStorage.getItem(STORAGE_KEY)!)
-    raw.entries['stored-1'].updatedAt = Date.now() - 8 * 24 * 60 * 60 * 1000
-    window.localStorage.setItem(STORAGE_KEY, JSON.stringify(raw))
+    const raw = JSON.parse(window.localStorage.getItem(`${STORAGE_PREFIX}stored-1`)!)
+    raw.updatedAt = Date.now() - 8 * 24 * 60 * 60 * 1000
+    window.localStorage.setItem(`${STORAGE_PREFIX}stored-1`, JSON.stringify(raw))
 
     expect(readInFlightTurnJournal('stored-1')).toBeNull()
+  })
+
+  it('writes each session under its own key, untouched by other sessions settling', () => {
+    persistInFlightTurnState(journalState())
+    persistInFlightTurnState(journalState({ storedSessionId: 'stored-2' }))
+    vi.advanceTimersByTime(400)
+
+    expect(window.localStorage.getItem(`${STORAGE_PREFIX}stored-1`)).not.toBeNull()
+    expect(window.localStorage.getItem(`${STORAGE_PREFIX}stored-2`)).not.toBeNull()
+
+    clearInFlightTurnJournal('stored-2')
+
+    expect(readInFlightTurnJournal('stored-1')).not.toBeNull()
+    expect(readInFlightTurnJournal('stored-2')).toBeNull()
+  })
+
+  it('recovers entries journaled by the v1 single-key store', () => {
+    // A pre-upgrade crash leaves a v1 store behind; the first journal touch
+    // after the upgrade must still recover its turns.
+    window.localStorage.setItem(
+      LEGACY_STORAGE_KEY,
+      JSON.stringify({
+        entries: {
+          'stored-legacy': {
+            messages: [user('u1', 'legacy prompt'), assistant('a1', 'legacy partial', { pending: true })],
+            streamId: 'a1',
+            turnStartedAt: 500,
+            updatedAt: Date.now()
+          }
+        },
+        version: 1
+      })
+    )
+
+    const entry = readInFlightTurnJournal('stored-legacy')
+
+    expect(entry?.streamId).toBe('a1')
+    expect(entry?.messages).toHaveLength(2)
+    expect(window.localStorage.getItem(LEGACY_STORAGE_KEY)).toBeNull()
+
+    clearInFlightTurnJournal('stored-legacy')
   })
 })
 

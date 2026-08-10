@@ -328,6 +328,26 @@ hermes kanban create "audit auth flow" \
 
 调度器为列出的每个 skill 发出一个 `--skills <name>` 标志，因此 worker 在自动注入的 kanban 指引之上加载了所有这些 skill。skill 名称必须与受让人配置文件上实际安装的 skill 匹配（运行 `hermes skills list` 查看可用内容）；没有运行时安装。
 
+### 成本策略：前沿模型编排，低价模型执行
+
+Kanban 的按 profile 配置让规划者/执行者的成本分层水到渠成。将项目分解为范围清晰的卡片需要前沿模型级别的判断力；而执行一张已经带有明确目标、上下文和交接证据的卡片通常不需要——并且绝大多数 token 消耗发生在 worker 身上，因此成本真正落在 worker 模型上。让编排器/调度器 profile 运行前沿模型，让 worker profile 指向低价模型。每个 profile 在 `~/.hermes/profiles/<name>/` 下有自己的 `config.yaml`，调度器在生成 `hermes -p <assignee>` 时注入 profile 范围的 `HERMES_HOME`，因此每个 worker 读取自己 profile 的模型设置：
+
+```yaml
+# ~/.hermes/config.yaml（编排器 / 调度器 profile）
+model:
+  default: "your-frontier-model"
+
+# ~/.hermes/profiles/coder/config.yaml（worker profile）
+model:
+  default: "your-inexpensive-model"
+
+# ~/.hermes/profiles/researcher/config.yaml（另一个 worker profile）
+model:
+  default: "your-inexpensive-model"
+```
+
+对于偶尔出现的质量敏感型卡片，可以只为该任务固定更强的模型（按任务模型覆盖）：创建时用 `--model`/`--provider`，之后用 `hermes kanban set-model <task-id> <model> --provider <name>`（`set-model ... none` 清除覆盖），或使用仪表盘的按任务模型下拉框——无需修改 profile 配置。未设置覆盖时，worker 使用其 profile 配置的模型。
+
 ### 编排器的行为方式
 
 **行为良好的编排器不会自己做工作。** 它将用户的目标分解为任务，链接它们，将每个任务分配给你设置的配置文件之一，然后退后。编排器指引 —— 反诱惑规则、Step-0 配置文件发现提示（调度器在未知受让人名称上静默失败，因此编排器必须将每张卡片落地到你机器上实际存在的配置文件），以及以 `kanban_create` / `kanban_link` / `kanban_comment` 为核心的分解手册 —— 会自动注入到 worker 的系统 prompt 中；无需安装任何东西。
@@ -634,6 +654,44 @@ Gateway 平台有实际的消息长度限制。如果 `/kanban list`、`/kanban 
 | **P9 分诊规格器** | 粗略想法 → `triage` → `hermes kanban specify` 扩展正文 → `todo` | "将这个一行描述变成规格化任务" |
 
 每种模式的详细示例，请参阅 `docs/hermes-kanban-v1-spec.pdf`。
+
+## 向后续卡片传递上下文（父任务链接）
+
+父任务链接不只是调度门槛——它是从**已完成**卡片向新卡片传递上下文的通道。当你用 `--parent <已完成卡片id>` 创建卡片时，会发生两件事：
+
+1. **立即可调度。** `create_task` 根据父任务状态设置新卡片的状态：所有父任务均为 `done` 的子任务直接以 `ready` 状态创建——无需等待，无需手动提升。（父任务尚未完成的子任务停在 `todo`，直到最后一个父任务完成后由 `recompute_ready` 提升。）
+2. **父任务的交接内容随之而来。** 为子任务组装的 worker 上下文（`build_worker_context`，即 `kanban_show()` 返回的内容）包含 `## Parent task results` 部分，逐字呈现每个父任务的完成 `summary` 和 `metadata`：
+
+```
+## Parent task results
+### t_77c26979 (completed just now)
+Added exponential backoff with jitter to the retry helper.
+_metadata_: `{"changed_files": ["hermes_cli/retry.py", "tests/test_retry.py"], "decisions": ["capped backoff at 60s", "jitter = full"]}`
+```
+
+这就是为什么对已完成卡片的后续工作应当**创建新的子卡片，而不是重开已完成的卡片**。已完成的卡片是不可变的历史——它的上下文通过父任务链接向前流动。同卡片返工（失败卡片上的重试循环）是另一种机制：*同一张*卡片的先前尝试会作为"prior attempts"出现在该卡片自己的上下文中。
+
+单靠 worktree 或分支无法替代这一点：仓库状态告诉后续 worker 代码*是什么样*，但不告诉它*为什么*——决策、运行过的测试、改动的文件都在父任务的结构化交接中，而不在 git 里。父任务完成时尚不存在的证据（例如后来才失败的 CI 日志）应写入新卡片的**正文**。
+
+```bash
+# 实现卡片 t_impl 已完成。两小时后 CI 失败。
+hermes kanban create "Fix CI failure from t_impl: test_retry flakes on 3.11" \
+    --assignee coder \
+    --parent t_impl \
+    --body "$(cat <<'EOF'
+CI run #4812 failed after t_impl merged.
+Log excerpt: FAILED tests/test_retry.py::test_backoff_jitter - TimeoutError
+Acceptance: tests/test_retry.py green on 3.11 and 3.12 in CI.
+Use a fresh worktree/branch; do not force-push the original branch.
+EOF
+)"
+```
+
+修复 worker 启动时，原卡片的 summary 和 metadata（改动的文件、决策）已在其上下文中，再加上你写入正文的新证据。
+
+### 调解冲突的 worker 分支
+
+在工程流水线（使用 worktree 的 P1/P2）中，两个 worker 的分支合并时可能发生冲突。不要让任一 worker 自行裁决 —— 发生冲突的 agent 缺乏对方的上下文，往往会覆盖对方的改动或放弃自己的改动。正确做法是：创建一张调解卡片，指派给**第三个中立配置文件**，并把**两张**冲突卡片都链接为其父任务：父任务链接会把双方的完成摘要带入调解者的上下文，使其同时获得双方的 diff *和*双方的意图。内置的 [`merge-reconciler` 技能](https://github.com/NousResearch/hermes-agent/blob/main/skills/autonomous-ai-agents/merge-reconciler/SKILL.md) 为该 worker 提供完整流程：对每个冲突块分类、公正地解决、验证，并在交回摘要中说明每一项决定。
 
 ## 多租户使用
 

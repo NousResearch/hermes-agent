@@ -66,33 +66,19 @@ def _resolve_requests_verify() -> bool | str:
             return val
     return True
 
-# Provider names that can appear as a "provider:" prefix before a model ID.
-# Only these are stripped — Ollama-style "model:tag" colons (e.g. "qwen3.5:27b")
-# are preserved so the full model name reaches cache lookups and server queries.
-_PROVIDER_PREFIXES: frozenset[str] = frozenset({
-    "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek", "deepinfra",
-    "opencode-zen", "opencode-go", "ai-gateway", "kilocode", "alibaba", "novita",
-    "qwen-oauth",
-    "xiaomi",
-    "arcee",
-    "gmi",
-    "tencent-tokenhub",
-    "custom", "local",
-    # Common aliases
-    "google", "google-gemini", "google-ai-studio",
-    "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
-    "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek", "deep-infra",
-    "ollama",
-    "stepfun", "opencode", "zen", "go", "vercel", "kilo", "dashscope", "aliyun", "qwen",
-    "mimo", "xiaomi-mimo",
-    "tencent", "tokenhub", "tencent-cloud", "tencentmaas",
-    "arcee-ai", "arceeai",
-    "gmi-cloud", "gmicloud",
-    "xai", "x-ai", "x.ai", "grok",
-    "nvidia", "nim", "nvidia-nim", "nemotron",
-    "qwen-portal", "novita-ai", "novitaai",
-})
+# Compatibility snapshot for callers that inspect this private constant.
+# Prefix routing below queries the registry live so later registrations work.
+try:
+    from providers import list_providers as _list_providers
+except Exception:
+    def _list_providers():
+        return []
+
+_PROVIDER_PREFIXES: frozenset[str] = frozenset(
+    value.lower()
+    for profile in _list_providers()
+    for value in (profile.name, *profile.aliases)
+)
 
 
 _OLLAMA_TAG_PATTERN = re.compile(
@@ -111,6 +97,9 @@ _TAILSCALE_CGNAT = ipaddress.IPv4Network("100.64.0.0/10")
 def _strip_provider_prefix(model: str) -> str:
     """Strip a recognised provider prefix from a model string.
 
+    Provider names and aliases come from the provider-profile registry, so
+    bundled and user plugins are recognised without a core catalog update.
+
     ``"local:my-model"`` → ``"my-model"``
     ``"qwen3.5:27b"``   → ``"qwen3.5:27b"``  (unchanged — not a provider prefix)
     ``"qwen:0.5b"``     → ``"qwen:0.5b"``    (unchanged — Ollama model:tag)
@@ -120,7 +109,13 @@ def _strip_provider_prefix(model: str) -> str:
         return model
     prefix, suffix = model.split(":", 1)
     prefix_lower = prefix.strip().lower()
-    if prefix_lower in _PROVIDER_PREFIXES:
+    try:
+        from providers import get_provider_profile
+
+        is_provider = get_provider_profile(prefix_lower) is not None
+    except Exception:
+        is_provider = False
+    if is_provider:
         # Don't strip if suffix looks like an Ollama tag (e.g. "7b", "latest", "q4_0")
         if _OLLAMA_TAG_PATTERN.match(suffix.strip()):
             return model
@@ -704,7 +699,6 @@ _URL_TO_PROVIDER: Dict[str, str] = {
 # Auto-extend with hostnames derived from provider profiles.
 # Any provider with a base_url not already in the map gets added automatically.
 try:
-    from providers import list_providers as _list_providers
     for _pp in _list_providers():
         _host = _pp.get_hostname()
         if _host and _host not in _URL_TO_PROVIDER:

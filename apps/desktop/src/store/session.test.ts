@@ -13,6 +13,7 @@ import {
   $unreadFinishedSessionIds,
   _resetLegacyDiscardForTests,
   applyConfiguredDefaultProjectDir,
+  commitWorkspaceCwdForSelectedSession,
   getRememberedRoute,
   getRememberedSessionId,
   mergeSessionPage,
@@ -21,6 +22,7 @@ import {
   sessionBelongsToProfile,
   sessionPinId,
   setCurrentCwd,
+  setCurrentCwdTransient,
   setRememberedRoute,
   setRememberedSessionId,
   setSelectedStoredSessionId,
@@ -79,9 +81,12 @@ describe('computed $attentionSessionIds', () => {
     expect($attentionSessionIds.get()).toEqual([])
   })
 
-  it('ignores sessions without a storedSessionId', () => {
+  // A chat that hasn't been persisted yet has no stored id, and until it gets
+  // one the surfaces key on its runtime id — so publishing under that is what
+  // lets a clarify prompt on the very first turn reach the row.
+  it('falls back to the runtime id for a session with no storedSessionId', () => {
     publishSessionState('rt1', { ...createClientSessionState(null), needsInput: true })
-    expect($attentionSessionIds.get()).toEqual([])
+    expect($attentionSessionIds.get()).toEqual(['rt1'])
   })
 })
 
@@ -370,6 +375,34 @@ describe('workspaceCwdForNewSession', () => {
     // never reads the remote keys (nor inherits the sticky local workspace).
     $connection.set(null)
     expect(workspaceCwdForNewSession()).toBe('')
+  })
+
+  it('remembers only the workspace the user picked, not the one they looked at', () => {
+    // The reported bug (#77496 / #80213): on a remote backend a new chat starts
+    // in the remembered workspace, and every session resume used to write that
+    // key — so opening a project chat silently made it the destination for the
+    // next "New session". Following a conversation must leave the memory alone.
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+    setCurrentCwd('/backend/picked')
+
+    setCurrentCwdTransient('/backend/some-other-project')
+
+    expect($currentCwd.get()).toBe('/backend/some-other-project')
+    expect(workspaceCwdForNewSession()).toBe('/backend/picked')
+  })
+
+  it('settling a resumed session does not move where the next new chat starts', () => {
+    // The reporter's exact sequence: work in a project, open a chat from it,
+    // then ask for a new session. Resume settling publishes the conversation's
+    // cwd through commitWorkspaceCwdForSelectedSession — which must not claim
+    // that folder as the user's chosen workspace.
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+    setCurrentCwd('/backend/picked')
+
+    setSelectedStoredSessionId('sess-in-project')
+    commitWorkspaceCwdForSelectedSession('/backend/last-project')
+
+    expect(workspaceCwdForNewSession()).toBe('/backend/picked')
   })
 })
 

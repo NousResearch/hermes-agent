@@ -1911,12 +1911,16 @@ def register(ctx) -> None:
         allow_update_command=True,
     )
 
-    from plugins.platforms.wecom.callback_adapter import check_wecom_callback_requirements
+    from plugins.platforms.wecom.callback_adapter import (
+        check_wecom_callback_requirements,
+        ensure_wecom_callback_requirements,
+    )
     ctx.register_platform(
         name="wecom_callback",
         label="WeCom Callback (self-built apps)",
         adapter_factory=_build_callback_adapter,
         check_fn=check_wecom_callback_requirements,
+        ensure_deps_fn=ensure_wecom_callback_requirements,
         is_connected=_callback_is_connected,
         validate_config=_callback_is_connected,
         required_env=["WECOM_CALLBACK_CORP_ID", "WECOM_CALLBACK_CORP_SECRET"],

@@ -24,7 +24,7 @@ export const SCAFFOLD_META_CLASS = 'shrink-0 text-[0.625rem] tabular-nums text-(
 
 /**
  * One scaffold line. `children` is the label and whatever trails it in flow
- * (meta, diff counts); `trailing` overlays the right edge for a live timer.
+ * (meta, diff counts); `trailing` reserves a right-side slot for a live timer.
  */
 export function ScaffoldRow({
   children,

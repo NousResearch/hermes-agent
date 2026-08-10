@@ -98,9 +98,10 @@ export function installZoomReassertOnWindowEvents(win, reassert, platform = proc
 }
 
 /**
- * Zoom-wiring decision per window kind. Chat windows (main + session) keep
- * global UI zoom; the pet overlay and the Quick Entry composer opt out because
- * they size their own OS window and inheriting zoom would crop/overflow them.
+ * Zoom-wiring decision per window kind. Chat windows (main + session + the HUD)
+ * keep global UI zoom; the pet overlay and the Quick Entry composer opt out
+ * because they size their own OS window and inheriting zoom would crop or
+ * overflow them.
  *
  * Extracted so the "helper windows opt out, everything else opts in" contract is
  * unit-testable without booting a BrowserWindow or reading source.

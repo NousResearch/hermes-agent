@@ -189,14 +189,14 @@ class TestReadManifest:
         assert result == {}
 
     def test_invalid_yaml_returns_empty_and_logs(self, tmp_path, caplog):
-        (tmp_path / "plugin.yaml").write_text(": : : bad yaml [[[")
+        (tmp_path / "plugin.yaml").write_text(": : : bad yaml [[[", encoding="utf-8")
         with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins_cmd"):
             result = _read_manifest(tmp_path)
         assert result == {}
         assert any("Failed to read plugin.yaml" in r.message for r in caplog.records)
 
     def test_empty_file_returns_empty(self, tmp_path):
-        (tmp_path / "plugin.yaml").write_text("")
+        (tmp_path / "plugin.yaml").write_text("", encoding="utf-8")
         result = _read_manifest(tmp_path)
         assert result == {}
 
@@ -388,7 +388,7 @@ class TestCopyExampleFiles:
 
         # Create example file
         example_file = tmp_path / "config.yaml.example"
-        example_file.write_text("key: value")
+        example_file.write_text("key: value", encoding="utf-8")
 
         _copy_example_files(tmp_path, console)
 
@@ -404,7 +404,7 @@ class TestCopyExampleFiles:
 
         # Create example file
         example_file = tmp_path / "config.yaml.example"
-        example_file.write_text("key: value")
+        example_file.write_text("key: value", encoding="utf-8")
 
         # Mock shutil.copy2 to raise an error
         with patch(
@@ -497,10 +497,10 @@ class TestProviderDiscovery:
         """Saving a context engine persists to config.yaml."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         config_file = tmp_path / "config.yaml"
-        config_file.write_text("context:\n  engine: compressor\n")
+        config_file.write_text("context:\n  engine: compressor\n", encoding="utf-8")
         from hermes_cli.plugins_cmd import _save_context_engine
         _save_context_engine("lcm")
-        content = yaml.safe_load(config_file.read_text())
+        content = yaml.safe_load(config_file.read_text(encoding="utf-8"))
         assert content["context"]["engine"] == "lcm"
 
 
@@ -525,7 +525,7 @@ class TestNoAutoActivation:
         # This tests the run_agent.py logic indirectly by checking that the
         # code path for default config doesn't call get_plugin_context_engine.
         import run_agent as ra_module
-        source = open(ra_module.__file__).read()
+        source = Path(ra_module.__file__).read_text(encoding="utf-8")
         # The old code had: "Even with default config, check if a plugin registered one"
         # The fix removes this. Verify it's gone.
         assert "Even with default config, check if a plugin registered one" not in source
@@ -545,16 +545,19 @@ class TestSubdirInstallE2E:
 
         repo_root.mkdir(parents=True, exist_ok=True)
         # Root-level noise: docs + tests that should NOT be installed.
-        (repo_root / "README.md").write_text("# Monorepo docs\n")
+        (repo_root / "README.md").write_text("# Monorepo docs\n", encoding="utf-8")
         (repo_root / "tests").mkdir()
-        (repo_root / "tests" / "test_x.py").write_text("def test_x():\n    pass\n")
+        (repo_root / "tests" / "test_x.py").write_text(
+            "def test_x():\n    pass\n", encoding="utf-8"
+        )
         # The actual plugin in a subdirectory.
         plugin_dir = repo_root / "my-plugin"
         plugin_dir.mkdir()
         (plugin_dir / "plugin.yaml").write_text(
-            "name: my-plugin\nmanifest_version: 1\ndescription: A subdir plugin\n"
+            "name: my-plugin\nmanifest_version: 1\ndescription: A subdir plugin\n",
+            encoding="utf-8",
         )
-        (plugin_dir / "__init__.py").write_text("# plugin entry\n")
+        (plugin_dir / "__init__.py").write_text("# plugin entry\n", encoding="utf-8")
 
         env = {
             **os.environ,
@@ -616,3 +619,67 @@ class TestSubdirInstallE2E:
         identifier = f"file://{repo_root}#does-not-exist"
         with pytest.raises(PluginOperationError, match="does not exist"):
             pc._install_plugin_core(identifier, force=False)
+
+    def test_installs_portable_root_package_disabled(self, tmp_path, monkeypatch):
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+
+        import json
+        import subprocess as sp
+        from hermes_cli import plugins_cmd as pc
+        from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
+
+        repo_root = tmp_path / "portable-repo"
+        repo_root.mkdir()
+        (repo_root / "plugin.json").write_text(
+            json.dumps({"$schema": PLUGIN_SCHEMA_V1, "name": "portable.test"})
+        )
+        env = {
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@t",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@t",
+        }
+        sp.run(["git", "init", "-q"], cwd=repo_root, check=True, env=env)
+        sp.run(["git", "add", "-A"], cwd=repo_root, check=True, env=env)
+        sp.run(["git", "commit", "-q", "-m", "init"], cwd=repo_root, check=True, env=env)
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+
+        target, manifest, name = pc._install_plugin_core(
+            f"file://{repo_root}", force=False
+        )
+
+        assert name == "portable.test"
+        assert manifest["name"] == "portable.test"
+        assert target == (plugins_dir / "portable.test").resolve()
+        assert pc._resolve_plugin_key("portable.test") == "portable.test"
+
+
+def test_portable_manifest_is_visible_to_plugin_cli(tmp_path):
+    import json
+
+    from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1
+    from hermes_cli.plugins_cmd import _read_manifest_info
+
+    plugin = tmp_path / "portable"
+    plugin.mkdir()
+    (plugin / "plugin.json").write_text(
+        json.dumps(
+            {
+                "$schema": PLUGIN_SCHEMA_V1,
+                "name": "portable.test",
+                "version": "1.0.0",
+                "description": "Portable test plugin",
+            }
+        )
+    )
+
+    assert _read_manifest_info(plugin, "") == (
+        "portable.test",
+        "1.0.0",
+        "Portable test plugin",
+        "portable.test",
+    )

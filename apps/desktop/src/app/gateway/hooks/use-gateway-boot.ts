@@ -39,6 +39,7 @@ import {
   setSessionsLoading
 } from '@/store/session'
 import { $attentionSessionIds, $workingSessionIds, resetTileRuntimeBindings } from '@/store/session-states'
+import { windowProfileOverride } from '@/store/windows'
 import type { RpcEvent } from '@/types/hermes'
 
 import { stashGatewaySurvivor, survivorIsStale, takeGatewaySurvivor } from './gateway-hmr-survivor'
@@ -254,15 +255,24 @@ export function useGatewayBoot({
     // resumes are no-op swaps and reconnects target the right backend.
     // Best-effort: a missing preference means "default". Shared by boot + soft
     // switch.
+    //
+    // Helper windows (the HUD) can carry an explicit profile override in their
+    // URL: the HUD is opened ON a conversation, and when that conversation
+    // belongs to a non-primary profile, adopting the primary here resolves the
+    // session id against the wrong backend — the HUD then falls back to the
+    // default profile's last session (#82285). The override wins over the
+    // stored preference; absent, behavior is unchanged.
     async function adoptPrimaryProfile() {
+      const override = windowProfileOverride()
+
       try {
-        const pref = await desktop.profile?.get?.()
-        const profileKey = (pref?.profile ?? '').trim() || 'default'
-        $activeGatewayProfile.set(profileKey)
-        setPrimaryGateway(gateway, profileKey)
-        void ensureGatewayForProfile(profileKey)
+        const profileKey = override ?? (await desktop.profile?.get?.())?.profile ?? ''
+        const key = normalizeProfileKey(profileKey)
+        $activeGatewayProfile.set(key)
+        setPrimaryGateway(gateway, key)
+        void ensureGatewayForProfile(key)
       } catch {
-        $activeGatewayProfile.set('default')
+        $activeGatewayProfile.set(normalizeProfileKey(override))
       }
     }
 
@@ -298,7 +308,9 @@ export function useGatewayBoot({
         gateway.close()
         closeSecondaryGateways()
 
-        const conn = await desktop.getConnection()
+        // Same override rule as boot(): a profile-pinned helper window stays
+        // on its pinned profile's backend across a soft switch.
+        const conn = await desktop.getConnection(windowProfileOverride() ?? undefined)
 
         if (cancelled) {
           return
@@ -488,7 +500,10 @@ export function useGatewayBoot({
 
     async function boot() {
       try {
-        const conn = await desktop.getConnection()
+        // A profile-pinned helper window (the HUD) dials its target profile's
+        // backend directly — ensureBackend spawns/reuses it from the pool.
+        // Everything else keeps dialing the primary.
+        const conn = await desktop.getConnection(windowProfileOverride() ?? undefined)
 
         if (cancelled) {
           return
@@ -500,6 +515,20 @@ export function useGatewayBoot({
           progress: 95
         })
         publish(conn)
+
+        // Seed the workspace BEFORE the gateway opens: every session-restore
+        // path is gated on gatewayState === 'open', so nothing can be active yet
+        // and ensureDefaultWorkspaceCwd's live-session guard passes. The
+        // post-connect seed could lose that race on a slow start (#71873). A
+        // resumed session's own cwd still supersedes this once its runtime
+        // arrives. Non-fatal: the remembered cwd is a fine fallback and the
+        // post-connect pass retries the sync.
+        try {
+          await ensureDefaultWorkspaceCwd()
+        } catch (err) {
+          console.warn('Failed to seed default workspace cwd pre-connect', err)
+        }
+
         // Mint a fresh WS URL right before connecting. For OAuth gateways the
         // ticket is single-use with a short TTL, so the ticket baked into
         // conn.wsUrl is stale; resolveGatewayWsUrl() re-mints it rather than
@@ -526,7 +555,10 @@ export function useGatewayBoot({
         })
 
         await Promise.all([
-          seedDefaultCwd(),
+          // The pre-connect seed already applied the configured default; this
+          // post-connect pass covers the remote backend default. Non-fatal: a
+          // failed sync must not abort boot (the remembered cwd remains).
+          seedDefaultCwd().catch(err => console.warn('Failed to sync default workspace cwd post-connect', err)),
           callbacksRef.current.refreshHermesConfig(),
           // Session-list population is never boot-fatal. The gateway WS is
           // already open by this point — a failed sidebar fetch (transient

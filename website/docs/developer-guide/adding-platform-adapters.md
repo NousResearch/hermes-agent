@@ -120,7 +120,15 @@ def register(ctx):
         name="my_platform",
         label="My Platform",
         adapter_factory=lambda cfg: MyPlatformAdapter(cfg),
+        # PASSIVE probe — "are deps/config present right now?".  Called from
+        # status displays and config loading, so it must NEVER pip-install.
         check_fn=check_requirements,
+        # ACTIVE installer (optional) — only for platforms with a
+        # lazy-installable SDK.  create_adapter() calls it when check_fn
+        # returns False, right before the gateway connects the platform.
+        # Typically wraps tools.lazy_deps.ensure_and_bind(...).  Omit it
+        # and a False check_fn is a hard block.
+        # ensure_deps_fn=ensure_requirements,
         validate_config=validate_config,
         required_env=["MY_PLATFORM_TOKEN"],
         install_hint="pip install my-platform-sdk",

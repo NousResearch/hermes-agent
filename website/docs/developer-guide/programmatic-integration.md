@@ -50,11 +50,24 @@ clarify.respond         sudo.respond            secret.respond
 approval.respond        config.set / config.get commands.catalog
 command.resolve         command.dispatch        cli.exec
 reload.mcp              reload.env              process.stop
-delegation.status       subagent.interrupt      spawn_tree.save / list / load
+delegation.status       subagent.interrupt      subagent.steer
+spawn_tree.save / list / load
 terminal.resize         clipboard.paste         image.attach
 ```
 
 `session.active_list`, `session.activate`, and `session.close` are the process-local live-session controls used by the TUI session switcher. Use `session.list` / `/resume` for saved transcript discovery; use the active-session methods only for sessions that are currently open in the TUI gateway process.
+
+### Rewinding history on `prompt.submit`
+
+A rewind / edit / regenerate is a `prompt.submit` that drops part of the stored transcript before running the new turn. Because that write is a destructive rewrite of the session's durable rows, the gateway honors it only when the client states its intent:
+
+| Parameter | Meaning |
+|-----------|---------|
+| `truncate_before_user_ordinal` | Zero-based index of the user turn to cut at. Everything from that turn onward is dropped. Display-only timeline rows (`display_kind`) are not counted. Must be a real integer — a JSON boolean is refused with code `4004`. |
+| `confirm_truncate` | Required whenever an ordinal is sent. Declares that this submit really is a rewind, not an ordinary send that happens to carry a leftover ordinal. Sending it without an ordinal is refused with code `4004` (leaked rewind state). |
+| `confirm_empty_truncate` | Additionally required when the cut would leave the transcript empty (ordinal `0`). |
+
+An ordinal without `confirm_truncate` is refused with code `4029` and nothing is written. Hosts that implement rewind must set the flag at the moment the user asks for it, and must never keep the ordinal in state across ordinary submits.
 
 ### Events streamed back
 

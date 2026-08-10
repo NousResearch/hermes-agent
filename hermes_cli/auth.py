@@ -33,6 +33,46 @@ import threading
 import time
 import uuid
 import webbrowser
+
+# httpx is imported lazily: it costs ~30ms at import time and hermes_cli.auth
+# is on the interactive-CLI startup path via credential_pool → auxiliary_client
+# → cli_commands_mixin, where no HTTP request is ever made before first use.
+# The proxy resolves to the real module on first attribute access; every
+# consumer in this file uses `httpx.<attr>` so the swap is transparent.
+# Annotations like ``httpx.Client`` stay valid: `from __future__ import
+# annotations` (above) keeps them unevaluated at runtime, and the
+# TYPE_CHECKING import gives static checkers the real module.
+import importlib as _importlib
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import httpx
+else:
+    class _LazyHttpx:
+        __slots__ = ("_mod",)
+
+        def __init__(self) -> None:
+            object.__setattr__(self, "_mod", None)
+
+        def _resolve(self):
+            mod = object.__getattribute__(self, "_mod")
+            if mod is None:
+                mod = _importlib.import_module("httpx")
+                object.__setattr__(self, "_mod", mod)
+            return mod
+
+        def __getattr__(self, name):
+            return getattr(self._resolve(), name)
+
+        # Forward set/del to the real module so monkeypatch.setattr
+        # ("hermes_cli.auth.httpx.Client", ...) keeps working in tests.
+        def __setattr__(self, name, value):
+            setattr(self._resolve(), name, value)
+
+        def __delattr__(self, name):
+            delattr(self._resolve(), name)
+
+    httpx = _LazyHttpx()
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -40,8 +80,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
-
-import httpx
 
 from hermes_cli.config import (
     get_hermes_home,
@@ -939,7 +977,7 @@ def format_auth_error(error: Exception) -> str:
             return _format_nous_entitlement_auth_error(error)
         return "Subscription credits are exhausted. Top up/renew credits, then retry."
 
-    if error.code in {"subscription_expired", "no_usable_credits", "account_missing"}:
+    if error.code in {"subscription_expired", "no_usable_credits", "account_missing", "member_spend_cap_exceeded"}:
         if error.provider == "nous":
             return _format_nous_entitlement_auth_error(error)
 
@@ -1218,7 +1256,7 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
         return {"version": AUTH_STORE_VERSION, "providers": {}}
 
     try:
-        raw = json.loads(auth_file.read_text(encoding="utf-8"))
+        raw = json.loads(auth_file.read_text(encoding="utf-8-sig"))
     except OSError:
         # The file exists (checked above) but could not be READ: EMFILE under
         # fd exhaustion, EACCES, EIO, a stalled network mount. None of those
@@ -3950,7 +3988,7 @@ def _import_codex_cli_tokens() -> Optional[Dict[str, str]]:
     if not auth_path.is_file():
         return None
     try:
-        payload = json.loads(auth_path.read_text(encoding="utf-8"))
+        payload = json.loads(auth_path.read_text(encoding="utf-8-sig"))
         tokens = payload.get("tokens")
         if not isinstance(tokens, dict):
             return None
@@ -5442,7 +5480,7 @@ def _read_shared_nous_state() -> Optional[Dict[str, Any]]:
     if not path.is_file():
         return None
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
     except (OSError, ValueError) as exc:
         logger.debug("Shared Nous auth store at %s is unreadable: %s", path, exc)
         return None
@@ -7588,7 +7626,7 @@ def _prompt_model_selection(
     menu_title = "Select default model:"
     if has_pricing:
         # Align the header with the model column.
-        # Each choice is "  {label}" (2 spaces) and simple_term_menu prepends
+        # Each choice is "  {label}" (2 spaces) and we prepend
         # a 3-char cursor region ("-> " or "   "), so content starts at col 5.
         pad = " " * 5
         header = f"\n{pad}{'':>{name_col}} {'In':>{price_col}}  {'Out':>{price_col}}"
@@ -7601,10 +7639,6 @@ def _prompt_model_selection(
             menu_title += "  ★ = on sale"
 
     # Try arrow-key menu first, fall back to number input.
-    # Uses the shared curses radiolist (ESC/arrow-key handling that works
-    # across terminals, incl. those that emit raw escape sequences) instead
-    # of simple_term_menu, which conflicts with /dev/tty and left ESC/arrow
-    # keys unreliable in the setup model picker.
     try:
         from hermes_cli.curses_ui import curses_radiolist
 

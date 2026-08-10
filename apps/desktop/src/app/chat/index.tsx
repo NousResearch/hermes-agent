@@ -20,7 +20,7 @@ import { TitleMenuTrigger } from '@/components/ui/title-menu-trigger'
 import { type HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
+import { NEW_SESSION_TITLE, quickModelOptions, sessionTitle } from '@/lib/chat-runtime'
 import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { cn } from '@/lib/utils'
@@ -43,7 +43,7 @@ import {
   sessionPinId,
   shouldMigrateComposerScope
 } from '@/store/session'
-import { isSecondaryWindow, isWatchWindow } from '@/store/windows'
+import { isAuxiliaryWindow, isWatchWindow } from '@/store/windows'
 import type { ModelOptionsResponse } from '@/types/hermes'
 
 import { primaryRouteSelectedSessionId, routeSessionId } from '../routes'
@@ -116,7 +116,7 @@ function ChatHeader({
   const activeStoredSession =
     (selectedSessionId && sessions.find(session => sessionMatchesStoredId(session, selectedSessionId))) || null
 
-  const title = activeStoredSession ? sessionTitle(activeStoredSession) : 'New session'
+  const title = activeStoredSession ? sessionTitle(activeStoredSession) : NEW_SESSION_TITLE
 
   // Which agent/persona owns this chat — glanceable in the header once a
   // second profile exists, so the open session's ownership is never ambiguous
@@ -135,7 +135,7 @@ function ChatHeader({
   // Secondary windows (new-session scratch, subagent watch, cmd-click pop-out)
   // are compact side panels — they drop the session-actions header + border
   // entirely. A brand-new draft has nothing to pin/delete/rename either.
-  if (isSecondaryWindow() || (!selectedSessionId && !activeSessionId && !isRoutedSessionView)) {
+  if (isAuxiliaryWindow() || (!selectedSessionId && !activeSessionId && !isRoutedSessionView)) {
     return null
   }
 
@@ -397,7 +397,7 @@ export const ChatView = memo(function ChatView({
   // scratch window, not the full-height empty state.
   const showIntro =
     isPrimary &&
-    !isSecondaryWindow() &&
+    !isAuxiliaryWindow() &&
     freshDraftReady &&
     !isRoutedSessionView &&
     !selectedSessionId &&

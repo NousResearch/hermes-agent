@@ -141,6 +141,34 @@ DEFAULT_CONFIG = {
         # tools or receiving API responses.  Only fires when the agent has
         # been completely idle for this duration.  0 = unlimited.
         "gateway_timeout": 1800,
+        # Maximum time an alias routing key waits for the active turn holding
+        # the same resolved session lease. On expiry the inbound message is
+        # rejected with a resend notice rather than run without serialization.
+        # Non-positive values fall back to 1800 seconds.
+        "gateway_turn_lease_timeout": 1800,
+        # Per-session AIAgent cache in the gateway. Each cached agent keeps a
+        # warm prompt prefix AND the session's full transcript, so the cache
+        # trades memory for cost: too small and every turn re-pays an uncached
+        # prompt, too large and tool-heavy transcripts fill the heap.
+        "agent_cache": {
+            # LRU entry cap.
+            "max_size": 128,
+            # Evict an agent that has been idle this long (seconds).
+            "idle_ttl_secs": 3600,
+            # Anonymous-RSS budget (MB) above which the gateway starts shedding
+            # least-recently-used transcripts, which reload from the persisted
+            # session on the next turn. "auto" derives the budget from the
+            # cgroup memory limit the gateway runs under (or total RAM when
+            # uncapped); a number sets it explicitly; 0/off disables the pass
+            # and lets memory grow to whatever the two bounds above allow.
+            "memory_high_mb": "auto",
+            # Upper bound on how many sessions one pressure pass sheds, so a
+            # burst of teardowns cannot stall the gateway.
+            "max_evictions_per_pass": 16,
+            # Most-recently-used sessions the pressure pass never touches —
+            # they are the ones actively paying for a warm prompt cache.
+            "protect_recent": 8,
+        },
         # Force-interrupt budget once gateway stop()/drain has begun
         # (seconds). Applies to SIGTERM/external stop and to the final
         # phase of in-band restart after any after-turn wait. 0 = interrupt
@@ -357,6 +385,12 @@ DEFAULT_CONFIG = {
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",
+        # Remote-backend graceful degradation: when a connection-class
+        # infrastructure failure occurs (SSH host unreachable, Docker daemon
+        # down), "warn" (default) returns a structured degraded tool result
+        # with a reason + retry hint so the model can act on it; "fail"
+        # preserves the historical error + traceback behavior.
+        "degraded_mode": "warn",
         "cwd": ".",  # Use current directory
         # Terminal font family for the desktop app's embedded xterm.js terminal.
         # When set (e.g. "'CaskaydiaCoveNerdFont', 'JetBrains Mono', monospace"),
@@ -475,6 +509,12 @@ DEFAULT_CONFIG = {
     },
 
     "browser": {
+        # Browser tool implementation.
+        # ""            — built-in browser tools (browser_navigate, browser_click, …)
+        # "browser-use" — Browser Use mode: one browser_exec tool driving the
+        #                 Browser Use CLI 3.0 (local Chrome over CDP or Browser
+        #                 Use cloud browsers)
+        "backend": "",
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
@@ -815,6 +855,16 @@ DEFAULT_CONFIG = {
                                       # Hermes' compression threshold triggers
                                       # thread/compact/start; off = never auto-trigger
                                       # (codex may still compact natively).
+        "codex_responses_native": False,  # Opt in to OpenAI's server-side compaction
+                                      # on the Responses API. Engages ONLY for
+                                      # gpt-5.6-family models on api.openai.com or
+                                      # the ChatGPT Codex backend; every other
+                                      # route/model is unaffected. Hermes' local
+                                      # compression stays armed as the fallback.
+        "codex_responses_compact_threshold": 200000,  # Server-side compaction trigger
+                                      # (input tokens). Clamped below the local
+                                      # compression threshold at request time so
+                                      # the server compacts before Hermes does.
         "in_place": True,             # When True, compaction rewrites the message
                                       # list and rebuilds the system prompt WITHOUT
                                       # rotating the session id — the conversation
@@ -1620,6 +1670,14 @@ DEFAULT_CONFIG = {
         # "STT transcribed the wrong language". Set to "" to restore
         # auto-detect, or to your language code ("es", "zh", "uk", ...).
         "language": "en",
+        # Pre-upload silence trim for cloud providers (groq/openai/mistral/
+        # xai/elevenlabs/deepinfra). Local whisper gets Silero VAD; cloud
+        # endpoints otherwise receive raw audio — silence inflates upload
+        # time, per-audio-minute billing, and hallucination risk. Collapses
+        # pauses with ffmpeg client-side; any failure uploads the original.
+        "cloud_trim_silence": True,
+        "cloud_trim_threshold_db": -40,  # audio quieter than this counts as silence
+        "cloud_trim_keep_ms": 300,  # how much of each pause survives (keeps natural pacing)
         "local": {
             "model": "base",  # tiny, base, small, medium, large-v3
             "language": "",  # auto-detect by default; set to "en", "es", "fr", etc. to force
@@ -1630,6 +1688,7 @@ DEFAULT_CONFIG = {
             "vad_min_silence_ms": 500,  # min silence (ms) that splits speech chunks when vad is on
             "no_speech_prob_threshold": 0.6,  # drop a segment only if no_speech_prob is ABOVE this...
             "logprob_threshold": -1.0,  # ...AND its avg_logprob is BELOW this (both must hit)
+            "unload_after_idle_seconds": 0,  # 0=never (default); e.g. 300 releases the model after 5min idle
         },
         "groq": {
             "model": "whisper-large-v3-turbo",  # whisper-large-v3, whisper-large-v3-turbo, distil-whisper-large-v3-en
@@ -2238,6 +2297,12 @@ DEFAULT_CONFIG = {
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": True,
+        # Writes to agent-instruction files (AGENTS.md/CLAUDE.md/SOUL.md/
+        # .cursorrules, project-local .hermes config) always require human
+        # approval — even under auto-approve/yolo. Extra patterns are
+        # fnmatch globs matched against the basename (e.g. "*.mdc").
+        "protected_instruction_files": True,
+        "protected_instruction_extra_patterns": [],
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
@@ -2265,6 +2330,14 @@ DEFAULT_CONFIG = {
     },
 
     "cron": {
+        # Pre-dispatch configuration validation (T1-26): before constructing
+        # any agent machinery for a job, verify the provider API key resolves
+        # (unless a fallback chain is configured), attached skills are ready
+        # (required env/commands present), and delivery platforms are
+        # configured. A failing job is recorded as last_status=blocked_config
+        # with ONE alert (no re-alert every tick) and NO LLM call is made.
+        # Set to false to restore the old behavior (fail during the run).
+        "preflight": True,
         # Fail closed when an unpinned job's current global model/provider
         # differs from its creation-time snapshot. This prevents unattended
         # jobs from silently inheriting a paid default. Set to false only when
@@ -2445,6 +2518,12 @@ DEFAULT_CONFIG = {
             # How many run trace files to keep per task after pruning.
             "retain_runs": 20,
         },
+        # Orphaned-card reconciliation: each dispatcher tick, requeue
+        # 'running' cards whose claim bookkeeping is broken (claim_lock or
+        # claim_expires NULL with a dead/gone worker) — zombies invisible
+        # to the TTL/crash/stale recovery paths. Set false to keep orphans
+        # frozen for manual forensics.
+        "reconcile_orphans": True,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.
@@ -2642,14 +2721,24 @@ DEFAULT_CONFIG = {
         # keeps triggering another kill (e.g. the agent runs a raw
         # `launchctl kickstart ai.hermes.gateway` that defenses 1-2 don't
         # cover), the result is a tight SIGTERM-respawn loop. This breaker
-        # counts restart-interrupted boots in a rolling window and, once
-        # `max_restarts` boots happen within `window_seconds`, SKIPS
-        # auto-resume for that boot — the gateway still starts and serves
-        # real inbound messages, it just stops replaying the session that
-        # keeps killing it. Set `max_restarts` to 0 to disable the breaker.
+        # chains restart-interrupted boots together and, once `max_restarts`
+        # of them chain up, SKIPS auto-resume for that boot — the gateway
+        # still starts and serves real inbound messages, it just stops
+        # replaying the session that keeps killing it. Set `max_restarts` to
+        # 0 to disable the breaker.
+        # Two boots belong to the same chain when they are no more than
+        # `max_gap_seconds` apart (floored by `window_seconds`). Chaining on
+        # the GAP rather than on a fixed window is what makes the breaker see
+        # SLOW crash cycles: a loop whose period exceeds the window used to
+        # prune its own history on every boot, so the counter never left 1 and
+        # the breaker never tripped — e.g. the ~150s wedged-event-loop cycle in
+        # #81642 (stall -> ~90s liveness-watchdog hard-exit -> respawn ->
+        # auto-resume replays the same session), which also makes
+        # `hermes update` hang because it can never drain the gateway.
         "restart_loop_guard": {
             "max_restarts": 3,
             "window_seconds": 60,
+            "max_gap_seconds": 300,
         },
 
         # Portable respawn-storm circuit breaker (complements
@@ -2855,6 +2944,17 @@ DEFAULT_CONFIG = {
         # attributable per query shape. 0 logs every search. Bridged to
         # HERMES_SEARCH_SLOW_MS (internal carrier).
         "search_slow_ms": 1000,
+        # Transcript safety limits. A runaway session (hundreds of thousands
+        # of rows) can exhaust memory when its transcript is materialized in
+        # one shot, so interactive resume and in-memory export are guarded by
+        # bounded row counts. Set a limit to 0 to disable that guard.
+        # Max active messages (across the full compression lineage) a session
+        # may hold and still be resumed interactively (CLI/TUI/desktop).
+        "max_resume_messages": 20000,
+        # Max active messages a single session may hold for an in-memory
+        # (non-streaming) export such as `hermes sessions export`. Checked
+        # per session, so full-DB backups of many small sessions still work.
+        "max_export_messages": 20000,
     },
 
     # Contextual first-touch onboarding hints (see agent/onboarding.py).
@@ -2876,6 +2976,13 @@ DEFAULT_CONFIG = {
         "shared_metrics": {
             "enabled": False,
         },
+    },
+
+    # ``hermes doctor`` behaviour.
+    "doctor": {
+        # Per-probe timeout (seconds) for the opt-in `hermes doctor --live`
+        # real-call backend probes (Firecrawl/FAL/browser/MCP/TTS/STT).
+        "live_probe_timeout": 10,
     },
 
     # ``hermes update`` behaviour.
@@ -3259,7 +3366,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 33,
+    "_config_version": 34,
 }
 
 # Optional environment variables that enhance functionality

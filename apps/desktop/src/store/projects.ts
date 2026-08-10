@@ -11,21 +11,19 @@ import { translateNow } from '@/i18n'
 import { desktopDefaultCwd, isDesktopFsRemoteMode, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { isUnderPath } from '@/lib/path-compare'
 import { persistentAtom } from '@/lib/persisted'
 import { $gateway, activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
-import { $activeGatewayProfile, requestFreshSession } from '@/store/profile'
+import { $activeGatewayProfile, $profileScope, ALL_PROFILES, requestFreshSession } from '@/store/profile'
 import {
-  $currentCwd,
   $selectedStoredSessionId,
   $sessions,
-  idsShareLineage,
   sessionMatchesStoredId,
   setSessions,
   workspaceCwdForNewSession
 } from '@/store/session'
-import { $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
@@ -204,15 +202,14 @@ export function goToProject(id: string, options?: { newSession?: boolean }): voi
 //
 // Priority (first hit wins):
 //   1. Explicit sidebar project scope (drilled into a project / Home bucket)
-//   2. The FOCUSED session's workspace — so ⌘N / ⌘T from a chat that's already
-//      in a project/worktree stay there without requiring a sidebar drill-in
-//   3. Configured default project dir / remote remembered cwd (detached otherwise)
+//   2. Configured default project dir / remote remembered cwd (detached otherwise)
 //
-// The "active project" is just an atom ($projectScope) — so when you're inside
-// a project, a new session (cmd-n, the trunk "+") starts at that project's root
-// (its primary repo = the default-branch checkout). Outside a project it used
-// to fall straight to the plain default (detached), which dropped the workspace
-// of the chat you were looking at — that's the case (2) covers.
+// The "active project" is just an atom ($projectScope) — so inside a project a
+// new session (cmd-n, the trunk "+") starts at that project's root (its primary
+// repo = the default-branch checkout). Outside one it does NOT inherit the chat
+// you were looking at: after a restart that's the just-resumed session, whose
+// stored cwd is often a home-dir fallback, so every new chat landed there
+// instead of the configured default (#71873, #80213, #77496).
 export function resolveNewSessionCwd(): string {
   const scope = $projectScope.get()
 
@@ -230,60 +227,8 @@ export function resolveNewSessionCwd(): string {
     }
   }
 
-  // Inherit the focused chat's workspace. ⌘N/⌘T from a session that already
-  // has a project/pwd should stay there — drilling into the sidebar project
-  // is the uncommon path, not the requirement.
-  const focusedCwd = focusedSessionWorkspaceCwd()
-
-  if (focusedCwd) {
-    return focusedCwd
-  }
-
   return workspaceCwdForNewSession()
 }
-
-/** Live workspace of the session the user is looking at (tile or primary). */
-function focusedSessionWorkspaceCwd(): string {
-  const focusedStoredId = $focusedStoredSessionId.get()
-  const state = $focusedSessionState.get()
-
-  // Prefer the live runtime slice when it belongs to the focused chat
-  // (agent can relocate mid-turn). Cold tabs / mid-switch lag fall through
-  // to the stored session row.
-  const stateCwd = state?.cwd?.trim() || ''
-  const stateStoredId = state?.storedSessionId?.trim() || ''
-
-  if (
-    stateCwd &&
-    (!focusedStoredId ||
-      !stateStoredId ||
-      stateStoredId === focusedStoredId ||
-      idsShareLineage(focusedStoredId, stateStoredId, $sessions.get()))
-  ) {
-    return stateCwd
-  }
-
-  if (focusedStoredId) {
-    const row = $sessions.get().find(s => sessionMatchesStoredId(s, focusedStoredId))
-    const rowCwd = row?.cwd?.trim() || ''
-
-    if (rowCwd) {
-      return rowCwd
-    }
-
-    // Focused a real session with no workspace → stay detached. Do NOT fall
-    // through to `$currentCwd` (it may still hold a remembered path from an
-    // earlier chat and would re-attach a project the user left).
-    return ''
-  }
-
-  // No focused stored session: primary draft. The composer atom is the draft's
-  // workspace target (set by startFreshSession / startSessionInWorkspace).
-  return $currentCwd.get().trim()
-}
-
-const underPath = (parent: string, child: string): boolean =>
-  child === parent || child.startsWith(parent.endsWith('/') ? parent : `${parent}/`)
 
 // The project (explicit or auto) that owns `cwd`, by longest path match across
 // the live tree. Null when no project covers it (it'll surface as a fresh
@@ -301,7 +246,7 @@ export function projectIdForCwd(cwd: string): null | string {
     for (const path of paths) {
       const p = (path || '').trim()
 
-      if (p && underPath(p, cwd) && p.length > bestLen) {
+      if (p && isUnderPath(p, cwd) && p.length > bestLen) {
         bestLen = p.length
         best = project.id
       }
@@ -339,7 +284,7 @@ export function projectNameForCwd(cwd: string): null | string {
     for (const path of paths) {
       const p = (path || '').trim()
 
-      if (p && underPath(p, target) && p.length > bestLen) {
+      if (p && isUnderPath(p, target) && p.length > bestLen) {
         bestLen = p.length
         best = project.label
       }
@@ -447,7 +392,32 @@ interface ProjectTreePayload {
   scoped_session_ids: string[]
 }
 
+const PROJECT_TREE_PREVIEW_LIMIT = 3
+// The all-profiles fan-out reads one database per profile, so it is allowed the
+// same headroom as the cross-profile session list rather than the interactive
+// default.
+const PROJECT_TREE_REQUEST_TIMEOUT_MS = 60_000
+
 let projectTreeRefreshGeneration = 0
+
+function applyProjectTreePayload(res: ProjectTreePayload): void {
+  const scoped = new Set(res.scoped_session_ids ?? [])
+  $projectTree.set(res.projects ?? [])
+  $activeProjectId.set(res.active_id ?? null)
+  const tombstones = $removedSessionIds.get()
+
+  if (tombstones.size) {
+    // Keep a tombstone while the backend still lists the id (delete pending on
+    // its side) OR while its mutation is still in flight locally — dropping it
+    // early flashes the row back until the RPC lands.
+    const inFlight = $sessionMutationsInFlight.get()
+    const pending = new Set([...tombstones].filter(id => scoped.has(id) || inFlight.has(id)))
+
+    if (pending.size !== tombstones.size) {
+      $removedSessionIds.set(pending)
+    }
+  }
+}
 
 async function refreshProjectTreeOn(gateway: HermesGateway): Promise<void> {
   const generation = ++projectTreeRefreshGeneration
@@ -458,30 +428,14 @@ async function refreshProjectTreeOn(gateway: HermesGateway): Promise<void> {
 
   try {
     const res = await gatewayRequestOn<ProjectTreePayload>(gateway, 'projects.tree', {
-      preview_limit: 3
+      preview_limit: PROJECT_TREE_PREVIEW_LIMIT
     })
 
     if (generation !== projectTreeRefreshGeneration || activeGateway() !== gateway) {
       return
     }
 
-    const scoped = new Set(res.scoped_session_ids ?? [])
-    $projectTree.set(res.projects ?? [])
-    $activeProjectId.set(res.active_id ?? null)
-    const tombstones = $removedSessionIds.get()
-
-    if (tombstones.size) {
-      // Keep a tombstone while the backend still lists the id (delete pending on
-      // its side) OR while its mutation is still in flight locally — dropping it
-      // early flashes the row back until the RPC lands.
-      const inFlight = $sessionMutationsInFlight.get()
-      const pending = new Set([...tombstones].filter(id => scoped.has(id) || inFlight.has(id)))
-
-      if (pending.size !== tombstones.size) {
-        $removedSessionIds.set(pending)
-      }
-    }
-
+    applyProjectTreePayload(res)
     markProjectsRpcSuccess()
   } catch (err) {
     if (activeGateway() === gateway) {
@@ -498,11 +452,48 @@ async function refreshProjectTreeOn(gateway: HermesGateway): Promise<void> {
 // sessions + the scoped-session-id set). Best-effort: a failure leaves the
 // cached tree intact so the sidebar doesn't flicker.
 export async function refreshProjectTree(): Promise<void> {
+  if ($profileScope.get() === ALL_PROFILES) {
+    await refreshProjectTreeAcrossProfiles()
+
+    return
+  }
+
   try {
     const { gateway } = await activeProjectsContext()
     await refreshProjectTreeOn(gateway)
   } catch {
     // Backend may not be ready; keep the last known tree.
+  }
+}
+
+// The grouped sidebar in all-profiles mode. `projects.tree` answers for one
+// backend's own profile, so it can only ever describe a slice of this view;
+// the REST fan-out reads every profile's databases directly instead of asking
+// us to hold a backend open per profile just to draw lanes.
+async function refreshProjectTreeAcrossProfiles(): Promise<void> {
+  const generation = ++projectTreeRefreshGeneration
+  $projectTreeLoading.set(true)
+
+  try {
+    const res = await window.hermesDesktop.api<ProjectTreePayload>({
+      path: `/api/profiles/projects/tree?preview_limit=${PROJECT_TREE_PREVIEW_LIMIT}`,
+      timeoutMs: PROJECT_TREE_REQUEST_TIMEOUT_MS
+    })
+
+    // A profile switch mid-flight leaves this payload describing the wrong
+    // scope; the newer refresh owns the tree.
+    if (generation !== projectTreeRefreshGeneration || $profileScope.get() !== ALL_PROFILES) {
+      return
+    }
+
+    applyProjectTreePayload(res)
+    markProjectsRpcSuccess()
+  } catch (err) {
+    markProjectsRpcFailure(err)
+  } finally {
+    if (generation === projectTreeRefreshGeneration) {
+      $projectTreeLoading.set(false)
+    }
   }
 }
 
@@ -672,7 +663,10 @@ export async function scanAndRecordRepos(force = false): Promise<void> {
     }
 
     state.completedSignature = signature
-    await refreshProjectTreeOn(context.gateway)
+    // Scope-aware on purpose: the scan records into one profile, but folding
+    // its result back in through the active scope keeps an all-profiles tree
+    // from being overwritten by the scanned profile's own.
+    await refreshProjectTree()
   } catch {
     state.completedSignature = undefined
   } finally {

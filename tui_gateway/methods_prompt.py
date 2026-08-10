@@ -113,6 +113,11 @@ def _(rid, params: dict) -> dict:
         return err
     if (limit_message := _ensure_active_session_slot(sid, session)) is not None:
         return _err(rid, 4090, limit_message)
+    # Which desktop window this message was typed into. Rewritten on every
+    # submit, because one session can be driven from the app window and the HUD
+    # in turn: a stale "hud" would tell the model the user is still floating
+    # over another app when they are back in Hermes.
+    session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
     if truncate_user_ordinal is not None and isinstance(text, str):
         # A rewind/regenerate replays a turn from what the transcript shows. A
         # skill turn shows its invocation, so re-expand it here — otherwise
@@ -157,12 +162,51 @@ def _(rid, params: dict) -> dict:
         # the upgrade resumes the child's transcript as a normal conversation.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
             return _err(rid, 4009, "subagent still running — wait for it to finish")
+        # confirm_truncate with no target is malformed: the flag is consent for
+        # a specific cut, and a client that sends it bare has leaked rewind
+        # state onto an ordinary submit (#82756). Fail fast instead of quietly
+        # ignoring the flag so the broken client state is surfaced.
+        if is_truthy_value(params.get("confirm_truncate")) and truncate_user_ordinal is None:
+            return _err(
+                rid,
+                4004,
+                "confirm_truncate requires truncate_before_user_ordinal",
+            )
         if truncate_user_ordinal is not None:
+            # bool is an int subclass: a JSON `true` would coerce via int() to
+            # ordinal 1 and aim a confirmed rewind at the second user turn.
+            if isinstance(truncate_user_ordinal, bool):
+                return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
             try:
                 ordinal = int(truncate_user_ordinal)
             except (TypeError, ValueError):
                 return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
             history = session.get("history", [])
+            # An ordinal alone is not consent. A client that carries a leftover
+            # ordinal into an ORDINARY submit sends a request that is
+            # indistinguishable, field by field, from a real rewind — same
+            # method, same shape, an in-range target — and the cut it asks for
+            # is a destructive replace_messages() the user never requested
+            # (#80763: 296 -> 52 messages, 244 durable rows gone). Only the
+            # client knows whether this submit is a rewind/edit/regenerate, so
+            # it has to say so; refuse the cut when it doesn't.
+            if not is_truthy_value(params.get("confirm_truncate")):
+                logger.warning(
+                    "prompt.submit: REFUSED unconfirmed truncation of session %s "
+                    "(%d messages held; ordinal=%d). The client attached "
+                    "truncate_before_user_ordinal without confirm_truncate — "
+                    "likely a stale ordinal on an ordinary submit.",
+                    sid,
+                    len(history),
+                    ordinal,
+                )
+                return _err(
+                    rid,
+                    4029,
+                    "truncate_before_user_ordinal requires confirm_truncate=true; "
+                    "an ordinary prompt.submit must not drop session history "
+                    "(update your Hermes client if a rewind was intended)",
+                )
             user_indices = [
                 i for i, m in enumerate(history)
                 if m.get("role") == "user" and not m.get("display_kind")
@@ -175,12 +219,11 @@ def _(rid, params: dict) -> dict:
             if ordinal < 0 or ordinal >= len(user_indices):
                 return _err(rid, 4018, "target user message is no longer in session history")
             truncated = history[: user_indices[ordinal]]
-            # Stale clients can attach truncate_before_user_ordinal=0 to an
-            # ordinary submit. That resolves to history[:0] == [] and
-            # replace_messages() DELETEs every durable row — silent total
-            # transcript loss. Refuse the empty-truncation edge unless the
-            # client explicitly opts in (legitimate restore/regenerate of the
-            # first user turn).
+            # Second gate, on top of confirm_truncate: ordinal 0 resolves to
+            # history[:0] == [] and replace_messages() DELETEs every durable
+            # row. A confirmed rewind that happens to erase the whole
+            # transcript still needs its own opt-in (legitimate restore/
+            # regenerate of the first user turn).
             if (
                 not truncated
                 and history
@@ -220,7 +263,27 @@ def _(rid, params: dict) -> dict:
             # Fail closed: refuse the turn and leave memory/DB unchanged.
             if (db := _get_db()) is not None:
                 try:
-                    db.replace_messages(session["session_key"], truncated)
+                    # active_only=True: replace only the live (active=1) rows.
+                    # In-place compaction (#38763) keeps the pre-compaction
+                    # transcript as active=0/compacted=1 rows under this same
+                    # session key; a bare replace_messages() would DELETE that
+                    # durable archive on every edit/regenerate — the same bug
+                    # class #80216 fixed for /retry. On an uncompacted session
+                    # all rows are active=1, so this is behaviorally identical
+                    # to the full replace.
+                    # archive_dropped: a rewind overwrites turns the user may
+                    # not have meant to drop, and this write is the last step
+                    # before they are gone — three reported incidents ended
+                    # here with nothing to restore from (#70516, #80763,
+                    # #82756). Soft-archiving keeps them on disk (active=0) and
+                    # in the FTS index, so a mis-aimed cut is recoverable
+                    # instead of terminal. The live transcript is unchanged.
+                    db.replace_messages(
+                        session["session_key"],
+                        truncated,
+                        active_only=True,
+                        archive_dropped=True,
+                    )
                 except Exception as exc:
                     logger.error(
                         "prompt.submit: replace_messages failed for session %s "
@@ -899,6 +962,15 @@ def _(rid, params: dict) -> dict:
     # `text` is a JSON string of the active preview tab's serialized contents.
     # allow_expired=True for the same reason as terminal.read: the tool's
     # bounded wait can expire while a slow page extraction is still running.
+    return _respond(rid, params, "text", allow_expired=True)
+
+
+@method("window.read.respond")
+def _(rid, params: dict) -> dict:
+    # `text` is a JSON string describing the OS window underneath the Hermes
+    # window (read_window_below tool). allow_expired=True for the same reason
+    # as terminal.read: the tool's bounded wait can expire while the renderer's
+    # round-trip to the main process is still in flight.
     return _respond(rid, params, "text", allow_expired=True)
 
 

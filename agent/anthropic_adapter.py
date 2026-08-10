@@ -1867,7 +1867,16 @@ def _to_plain_data(value: Any, *, _depth: int = 0, _path: Optional[set] = None) 
 
     if hasattr(value, "model_dump"):
         _path.add(obj_id)
-        result = _to_plain_data(value.model_dump(), _depth=_depth + 1, _path=_path)
+        try:
+            # warnings=False: content blocks from the streaming accumulator
+            # (ParsedTextBlock et al.) trip pydantic's serializer-mismatch
+            # UserWarning against the generic Message union; the dump itself
+            # is correct, and the warning leaks to the user's terminal.
+            dumped = value.model_dump(warnings=False)
+        except TypeError:
+            # Duck-typed model_dump without pydantic's signature.
+            dumped = value.model_dump()
+        result = _to_plain_data(dumped, _depth=_depth + 1, _path=_path)
         _path.discard(obj_id)
         return result
     if isinstance(value, dict):

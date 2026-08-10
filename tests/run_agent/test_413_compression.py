@@ -771,13 +771,16 @@ class TestPreflightCompression:
         assert not any("Preflight compression" in msg for msg in lifecycle_messages)
 
 
-    def test_preflight_compresses_when_rough_growth_after_fit_is_large(self, agent):
-        """Large rough growth after a fitting request still triggers preflight."""
+    def test_preflight_compresses_when_projected_real_usage_crosses(self, agent):
+        """Projected real usage (last real + rough growth) crossing the
+        threshold still triggers preflight: 95K real + 12K rough growth =
+        107K >= 100K. Growth alone no longer decides — real usage far below
+        the threshold defers instead (see TestPreflightDeferral)."""
         agent.compression_enabled = True
         agent.context_compressor.context_length = 200_000
         agent.context_compressor.threshold_tokens = 100_000
-        agent.context_compressor.last_prompt_tokens = 58_000
-        agent.context_compressor.last_real_prompt_tokens = 58_000
+        agent.context_compressor.last_prompt_tokens = 95_000
+        agent.context_compressor.last_real_prompt_tokens = 95_000
         agent.context_compressor.last_rough_tokens_when_real_prompt_fit = 113_000
 
         big_history = []

@@ -533,6 +533,49 @@ class TestRunJobSessionPersistence:
             yield fake_db, mock_agent_cls
 
 
+    def test_run_job_memory_toolset_disabled_in_cron(self, tmp_path):
+        """memory toolset must be disabled in cron sessions — issue #38129.
+
+        Cron agents are constructed with skip_memory=True, so the memory
+        backend is not initialised.  Exposing the memory tool only gives the
+        model an unbacked tool that fails at runtime with
+        "Memory is not available."  Hiding it from the schema prevents that.
+        """
+        job = {
+            "id": "memory-hide-job",
+            "name": "test",
+            "prompt": "hello",
+        }
+        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert "memory" in (kwargs["disabled_toolsets"] or []), (
+            "memory toolset should be disabled in cron to match skip_memory=True"
+        )
+
+    def test_run_job_disables_memory_even_when_per_job_enables_it(self, tmp_path):
+        """Cron runs pass skip_memory=True, so memory must not be exposed.
+
+        A cron job can request the memory tool through enabled_toolsets, but
+        there is no MemoryStore injected for cron agents.  Keep memory in the
+        disabled set so AIAgent filters the unbacked tool out before the model
+        can call it and receive "Memory is not available" failures.
+        """
+        job = {
+            "id": "memory-toolset-job",
+            "name": "test",
+            "prompt": "remember what you learn",
+            "enabled_toolsets": ["memory", "file"],
+        }
+        with self._run_job_patches(tmp_path) as (fake_db, mock_agent_cls):
+            run_job(job)
+
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["skip_memory"] is True
+        assert kwargs["enabled_toolsets"] == ["memory", "file"]
+        assert "memory" in kwargs["disabled_toolsets"]
+
     def test_tick_skips_due_jobs_while_dispatch_is_paused(self, tmp_path):
         """The drain gate runs before advancing a due job's schedule."""
         from cron.scheduler import tick
@@ -1225,7 +1268,7 @@ class TestParallelTick:
         barrier = threading.Barrier(2, timeout=5)
         call_order = []
 
-        def mock_run_job(job, *, defer_agent_teardown=None):
+        def mock_run_job(job, *, defer_agent_teardown=None, **kw):
             """Each job hits a barrier — both must be active simultaneously."""
             call_order.append(("start", job["id"]))
             barrier.wait()  # blocks until both threads reach here
@@ -1259,7 +1302,7 @@ class TestParallelTick:
         from gateway.session_context import get_session_env
         seen = {}
 
-        def mock_run_job(job, *, defer_agent_teardown=None):
+        def mock_run_job(job, *, defer_agent_teardown=None, **kw):
             origin = job.get("origin", {})
             # run_job sets ContextVars — verify each job sees its own
             from gateway.session_context import set_session_vars, clear_session_vars
@@ -1892,6 +1935,30 @@ class TestMultiTargetDeliveryContinuesOnFailure:
         assert "a@example.com" in result
         assert "b@example.com" in result
         assert mock_pool.submit.call_count == 2
+
+class TestBuildJobPromptExtraPrompt:
+    """Regression: _build_job_prompt merges extra_prompt into the assembled prompt."""
+
+    def test_extra_prompt_appended_with_header(self):
+        """extra_prompt appears under a '## Run Context' header."""
+        job = {"prompt": "stored prompt"}
+        result = _build_job_prompt(job, extra_prompt="CONTEXT: client=Foo")
+        assert "stored prompt" in result
+        assert "## Run Context" in result
+        assert "CONTEXT: client=Foo" in result
+
+    def test_extra_prompt_does_not_mutate_job(self):
+        """The job dict's 'prompt' field must remain unchanged."""
+        job = {"prompt": "original"}
+        _build_job_prompt(job, extra_prompt="transient context")
+        assert job["prompt"] == "original"
+
+    def test_no_extra_prompt_omits_header(self):
+        """Without extra_prompt, no '## Run Context' header is injected."""
+        job = {"prompt": "just the stored prompt"}
+        result = _build_job_prompt(job)
+        assert "## Run Context" not in result
+        assert "just the stored prompt" in result
 
 
 class TestSetCronSessionTitle:

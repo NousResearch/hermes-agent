@@ -146,7 +146,7 @@ class TestSequentialPool:
 
         barrier = threading.Barrier(2, timeout=5)
 
-        def slow_run(j, *, defer_agent_teardown=None):
+        def slow_run(j, *, defer_agent_teardown=None, **_kw):
             barrier.wait()
             return True, "out", "resp", None
 

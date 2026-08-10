@@ -138,11 +138,32 @@ hermes -r 20250305_091523_a1b2c3d4
 # Resume by title
 hermes --resume "refactoring auth"
 
+# Resume the most recent session — same lookup as -c
+hermes --resume latest
+
 # Or with the chat subcommand
 hermes chat --resume 20250305_091523_a1b2c3d4
 ```
 
 Session IDs are shown when you exit a CLI session, and can be found with `hermes sessions list`.
+
+:::note
+`latest` is a reserved keyword for `--resume`. A session literally titled "latest" is still reachable by its ID or via `-c latest` (title match).
+:::
+
+### Resume in a Specific Directory
+
+Pass `--in <dir>` to change into a directory before starting or resuming. Combined with `--resume latest` (or `-c`), the most recent session for that directory's workspace is picked — no need to `cd` first or remember session IDs:
+
+```bash
+# Resume the latest session that belongs to ./my-project
+hermes --resume latest --in ./my-project
+
+# Works with the TUI too
+hermes --tui --resume latest --in ./my-project
+```
+
+`--in` also pins the session to that directory: the resumed session's recorded working directory is not restored (as if `--no-restore-cwd` were passed).
 
 ### Resume Restores the Working Directory
 
@@ -546,6 +567,49 @@ Database size: 12.4 MB
 
 For deeper analytics — token usage, cost estimates, tool breakdown, and activity patterns — use [`hermes insights`](/reference/cli-commands#hermes-insights).
 
+### Repair Stranded Gateway Sessions
+
+If a gateway conversation ever "jumps back in time" after a restart — resuming
+a days-old topic as though recent messages never happened — the live
+conversation may be stranded in a session row that lost its routing identity
+(the damage class fixed in the v0.21 session-continuity work; current versions
+prevent it by construction and self-heal at runtime).
+
+`hermes sessions repair-routing` finds message-bearing session rows with no
+routing identity and re-attaches each one to the conversation it continues —
+but only when the evidence is unambiguous:
+
+```bash
+# Report only — shows each orphan, the proposed adoption, and the evidence
+hermes sessions repair-routing
+
+# Perform the adoptions (stop the gateway first — a running gateway holds
+# the old routing in memory and would write it back over the repair)
+hermes sessions repair-routing --apply
+
+# Widen/narrow the contiguity window (default 900 seconds)
+hermes sessions repair-routing --max-gap-seconds 300
+```
+
+Evidence rules:
+
+- **lineage** — the orphan's `parent_session_id` points at a keyed row of the
+  same platform (a recorded fact; no time window applies)
+- **contiguity** — exactly one keyed row of the same platform fell quiet
+  within the window of the orphan's start
+
+Anything ambiguous (two candidate predecessors, two orphans claiming the same
+predecessor) is reported with a reason and left untouched — a wrong adoption
+would splice one conversation into another chat. The superseded row is retired
+under `superseded_by_repair`, so restart recovery can never resurrect it.
+
+Repair is deliberately **not automatic**: if the chat has since built up a
+second history, choosing which thread it continues is your call. The stranded
+conversation stays readable via `/resume` and session search either way —
+routing is the only thing the repair changes. Back up first
+(`cp ~/.hermes/state.db ~/.hermes/state.db.bak`).
+
+
 ## Session Search Tool
 
 The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. No LLM calls, no summarization, no truncation. Every shape returns actual messages from the DB.
@@ -662,6 +726,26 @@ in to automatic resets via the `session_reset` section in `config.yaml`:
 Before a session is auto-reset, the agent is given a turn to save any important memories or skills from the conversation.
 
 Sessions with **active background processes** are never auto-reset, regardless of policy.
+
+### Continuity After Crashes and Restarts
+
+A gateway chat is designed to be **one continuous session** — compacted
+repeatedly as it grows — until you explicitly run `/new` (or `/reset`). This
+holds across gateway crashes, restarts, and updates:
+
+- Session identity (routing key, chat, origin) is written **atomically** when
+  the session row is created, on every creation path (`/new`, first message,
+  `/branch` children). If that write ever fails, the very next turn's routing
+  refresh repairs the row automatically.
+- After a restart, the gateway re-resolves each chat to the session with the
+  most recent **actual activity** — an older, stale row can never win over the
+  conversation you were actually having.
+- Recovery **respects `/new` boundaries**: if the most recent event for a chat
+  is an intentional reset, recovery starts fresh rather than reaching behind
+  the reset to resurrect an older session. Recovered sessions also keep their
+  real idle time, so an opt-in idle/daily reset policy applies correctly to
+  them instead of treating every recovered session as brand new.
+
 
 ## Storage Locations
 

@@ -61,11 +61,17 @@ _PRE_SANDBOX_HERMES_HOME = os.environ.get("HERMES_HOME", "")
 
 
 def _hermes_home_points_at_production(value: str) -> bool:
-    """Return whether a pre-set HERMES_HOME resolves to a live user root.
+    """True when a pre-set HERMES_HOME resolves to the real production root.
 
-    Gateway and developer shells commonly export ``HERMES_HOME=~/.hermes``.
-    That must still be replaced before collection-time imports freeze paths
-    into the live database. Genuine custom roots remain supported.
+    Gateway-launched shells (and developer shells that ``export
+    HERMES_HOME=~/.hermes``) hand pytest the PRODUCTION home. Historically
+    the session sandbox below honored any pre-set value, so collection-time
+    imports (logging handlers, ``hermes_state.DEFAULT_DB_PATH``) froze paths
+    inside the real ``~/.hermes`` — the escape vector that landed pytest
+    fixture rows (chat-1 / wx-chat sessions, /tmp/pytest-of-* routing
+    scopes) in the live state.db and flipped its journal mode under the
+    WAL-mode gateway writer. Only a genuinely custom (non-production)
+    HERMES_HOME is honored now.
     """
     if not value:
         return True
@@ -76,6 +82,7 @@ def _hermes_home_points_at_production(value: str) -> bool:
         return True
     if resolved == real_root:
         return True
+    # Profile home directly under the production root: <root>/profiles/<name>
     return resolved.parent.name == "profiles" and resolved.parent.parent == real_root
 
 
@@ -632,7 +639,11 @@ def _capture_real_kanban_root() -> Path:
     if _PRE_SANDBOX_HERMES_HOME and not _hermes_home_points_at_production(
         _PRE_SANDBOX_HERMES_HOME
     ):
-        # A genuinely custom pre-set home is its own production authority.
+        # HERMES_HOME was genuinely set to a CUSTOM root before the sandbox
+        # (production-pointing values are sandboxed away above, in which case
+        # the env still holds the tempdir and the resolver would be wrong) —
+        # honor it via the normal resolver (it may be a profile dir whose
+        # root matters).
         from hermes_constants import get_default_hermes_root
         return get_default_hermes_root().resolve()
     # No pre-existing HERMES_HOME: the real root is the platform default,
@@ -698,10 +709,19 @@ def _kanban_write_guard(_hermetic_environment, monkeypatch):
 
 
 # ── Live state.db write guard ───────────────────────────────────────────────
-# Companion to the kanban guard. The production guard in hermes_state is
-# env-activated so subprocesses are covered; this fixture supplies test-local
-# marker bypass and custom-root deny-list state without importing hermes_state
-# into unrelated shards.
+# Companion to the kanban guard above, for the MAIN state database.
+# ``hermes_state._ensure_test_isolation`` (the single choke point every
+# ``SessionDB()`` construction goes through) refuses, under pytest, any DB
+# path that resolves inside the REAL Hermes root. This fixture wires the
+# test-side knobs:
+#   • honors ``@pytest.mark.live_system_guard_bypass`` (the established
+#     escape-hatch marker) by disabling the state-db guard for that test;
+#   • injects the pre-sandbox CUSTOM production root (Docker/portable
+#     installs where HERMES_HOME is not ~/.hermes) into the guard's
+#     deny-list, mirroring the kanban deny-list capture above.
+# The guard itself is env-activated (PYTEST_CURRENT_TEST / PYTEST_VERSION),
+# so subprocess children that import hermes_state directly are covered even
+# without this fixture.
 
 
 @pytest.fixture(autouse=True)
@@ -710,7 +730,7 @@ def _state_db_write_guard(request, monkeypatch):
     if _hs is None or not hasattr(_hs, "_STATE_DB_GUARD_BYPASS"):
         yield
         return
-    if request.node.get_closest_marker(_LIVE_SYSTEM_GUARD_BYPASS_MARK) is not None:
+    if request.node.get_closest_marker("live_system_guard_bypass") is not None:
         monkeypatch.setattr(_hs, "_STATE_DB_GUARD_BYPASS", True)
         yield
         return
@@ -719,7 +739,9 @@ def _state_db_write_guard(request, monkeypatch):
     if _PRE_SANDBOX_HERMES_HOME and not _hermes_home_points_at_production(
         _PRE_SANDBOX_HERMES_HOME
     ):
-        extra_roots.append(Path(_PRE_SANDBOX_HERMES_HOME).expanduser().resolve())
+        extra_roots.append(
+            Path(_PRE_SANDBOX_HERMES_HOME).expanduser().resolve()
+        )
     monkeypatch.setattr(
         _hs, "_STATE_DB_GUARD_EXTRA_DENY_ROOTS", tuple(extra_roots)
     )
@@ -1032,6 +1054,64 @@ def _wal_is_usable() -> bool:
 _AUDIO_GUARD_BYPASS_MARK = "real_audio_playback"
 _ALLOW_MACOS_KEYCHAIN_MARK = "allow_macos_keychain"
 
+# ---------------------------------------------------------------------------
+# OS gating
+#
+# Hermes runs on Linux, macOS and native Windows, and a lot of its behaviour
+# genuinely differs per host: PTY vs pywinpty, taskkill vs SIGTERM, launchd
+# vs systemd, Keychain vs libsecret, ``%LOCALAPPDATA%`` vs ``~/.hermes``.
+#
+# Historically those code paths were tested by *faking* the host — patching
+# ``sys.platform`` to ``"win32"`` inside a Linux CI job. That gives a green
+# test on a machine where the code under test could not actually run: the
+# fake covers the ``if sys.platform == "win32"`` branch selection but nothing
+# underneath it (``msvcrt`` still isn't importable, ``taskkill`` still isn't
+# on PATH, paths are still POSIX, ``signal.SIGKILL`` still exists). The
+# result was tests that pass on Linux and tell us nothing about Windows.
+#
+# So: a test whose subject is genuinely OS-specific declares the OS it
+# belongs to and runs there for real —
+#
+#   @pytest.mark.windows_only   → only on native Windows (``sys.platform == "win32"``)
+#   @pytest.mark.macos_only     → only on macOS (``sys.platform == "darwin"``)
+#   @pytest.mark.linux_only     → only on Linux (``sys.platform.startswith("linux")``)
+#
+# Elsewhere the test is skipped, not faked. CI runs a dedicated macOS job
+# (``-m macos_only``) and a dedicated Windows job (``-m windows_only``) so
+# those markers are actually exercised on their own host rather than
+# quietly skipped everywhere.
+#
+# This does NOT mean every mention of another platform must be gated. Two
+# things are legitimately host-independent and stay on the Linux runner:
+#
+#   • Pure functions that TAKE a platform as data — e.g.
+#     ``hidden_windows_child_options(opts, is_windows=True)`` or a
+#     ``resolve_launcher(platform_name)`` helper. Passing "win32" as an
+#     argument is not faking the host; the function's whole contract is
+#     that it maps input to output.
+#   • Declaration/packaging invariants — e.g. "pyproject declares tzdata
+#     with a ``sys_platform == 'win32'`` marker". That's an assertion about
+#     a file, not about runtime behaviour.
+#
+# The line is: if the test needs the interpreter to BELIEVE it is on
+# another OS in order to pass, it belongs on that OS.
+# ---------------------------------------------------------------------------
+
+_OS_MARKS = {
+    "linux_only": (
+        lambda: sys.platform.startswith("linux"),
+        "Linux",
+    ),
+    "macos_only": (
+        lambda: sys.platform == "darwin",
+        "macOS",
+    ),
+    "windows_only": (
+        lambda: sys.platform == "win32",
+        "native Windows",
+    ),
+}
+
 
 def pytest_configure(config):  # noqa: D401 — pytest hook
     """Register markers used by hermetic conftest."""
@@ -1058,6 +1138,18 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         f"{_ALLOW_MACOS_KEYCHAIN_MARK}: allow a test to exercise the macOS "
         "Keychain credential reader with its own subprocess/platform mocks.",
     )
+    config.addinivalue_line(
+        "markers",
+        "require_symlinks: skip the test if symbolic links cannot be "
+        "created in the current environment (needs admin/developer mode "
+        "on Windows).",
+    )
+    # NOTE: linux_only / macos_only / windows_only are declared in
+    # pyproject.toml's ``markers`` list, not here — they are part of the
+    # project's public marker vocabulary (``pytest --markers``, and the CI
+    # lanes select on them), whereas the marks above are conftest-internal
+    # guards. Declaring them in both places just meant two descriptions that
+    # could drift apart.
 
     # The pyproject addopts pin ``--timeout-method=signal`` relies on
     # ``signal.SIGALRM``, which does not exist on Windows — pytest-timeout
@@ -1068,13 +1160,83 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         config.option.timeout_method = "thread"
 
 
-def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
-    """Skip ``requires_wal`` tests when the linked SQLite can't use WAL.
+_symlink_supported_cache = None
 
-    Cheaper and more honest than each test hand-rolling a version check: the
-    reason string names the actual linked version so the skip is diagnosable
-    rather than mysterious.
+
+def _check_symlink_support() -> bool:
+    global _symlink_supported_cache
+    if _symlink_supported_cache is not None:
+        return _symlink_supported_cache
+
+    try:
+        with tempfile.TemporaryDirectory() as d:
+            src = Path(d) / "src"
+            src.touch()
+            lnk = Path(d) / "lnk"
+            lnk.symlink_to(src)
+            _symlink_supported_cache = True
+            return True
+    except OSError:
+        _symlink_supported_cache = False
+        return False
+
+
+def pytest_runtest_setup(item):
+    if item.get_closest_marker("require_symlinks"):
+        if not _check_symlink_support():
+            pytest.skip(
+                "Environment does not support symbolic links "
+                "(requires admin/developer mode on Windows)"
+            )
+
+
+def _reject_multiple_os_marks(items):
+    """Fail collection when one test carries two host-OS markers.
+
+    Every marker in ``_OS_MARKS`` skips on all but one host, so two of them
+    on the same item means it is skipped on *every* host — a test that never
+    runs anywhere, reported as green by both the Linux suite and the
+    tests-os lanes. That is the exact silent-coverage-loss the markers were
+    introduced to remove, so it is a hard collection error rather than a
+    warning nobody reads.
     """
+    offenders = []
+    for item in items:
+        marks = sorted({m.name for m in item.iter_markers() if m.name in _OS_MARKS})
+        if len(marks) > 1:
+            offenders.append(f"  {item.nodeid}: {', '.join(marks)}")
+    if offenders:
+        raise pytest.UsageError(
+            "a test may carry at most one host-OS marker "
+            f"({', '.join(_OS_MARKS)}); these carry several and would be "
+            "skipped on every host:\n" + "\n".join(offenders)
+        )
+
+
+def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
+    """Apply host-OS gating, then skip ``requires_wal`` where WAL is unusable.
+
+    OS gating: a test marked ``linux_only`` / ``macos_only`` /
+    ``windows_only`` runs only on that host. See the ``_OS_MARKS`` block
+    comment above for why these tests are skipped rather than run against a
+    patched ``sys.platform``.
+
+    WAL gating is cheaper and more honest than each test hand-rolling a
+    version check: the reason string names the actual linked version so the
+    skip is diagnosable rather than mysterious.
+    """
+    _reject_multiple_os_marks(items)
+
+    for mark_name, (is_host, label) in _OS_MARKS.items():
+        if is_host():
+            continue
+        skip_os = pytest.mark.skip(
+            reason=f"{label}-only test (marked {mark_name}); host is {sys.platform}"
+        )
+        for item in items:
+            if item.get_closest_marker(mark_name) is not None:
+                item.add_marker(skip_os)
+
     if _wal_is_usable():
         return
 

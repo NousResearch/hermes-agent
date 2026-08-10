@@ -252,6 +252,7 @@ LEGACY_AUTHOR_MAP = {
     "jmmaloney4@gmail.com": "jmmaloney4",  # PR #25206 salvage (re-select credential pool on primary runtime restore; #25205)
     "hmirin@users.noreply.github.com": "hmirin",
     "dale@dalenguyen.me": "dalenguyen",  # PR #53678 salvage (strip VIRTUAL_ENV/CONDA_PREFIX from terminal subprocess env; #23473)
+    "prashantjain25@gmail.com": "prashantjain25",  # PR #80740 salvage (custom-endpoint /v1/models disk cache; #72762)
     "liruixinch@outlook.com": "HexLab98",  # PR #53863 salvage (env-only proxy policy for auxiliary OpenAI clients on macOS; #53702)
     "blaryx@gmail.com": "Blaryxoff",  # PR #32602 salvage (deep-merge PUT /api/config to preserve unrelated sections; #13396)
     "diamondeyesfox@gmail.com": "DiamondEyesFox",  # PR #53351 salvage (rebaseline in-place compression flushes to prevent duplicate compacted rows; #9096)
@@ -569,6 +570,7 @@ LEGACY_AUTHOR_MAP = {
     "frowte3k@gmail.com": "Frowtek",
     "211828103+julio-cloudvisor@users.noreply.github.com": "julio-cloudvisor",
     "17778+kweiner@users.noreply.github.com": "kweiner",
+    "ken@kenweiner.com": "kweiner",
     "223516181+faisfamilytravel@users.noreply.github.com": "faisfamilytravel",
     "45189813+baofuen@users.noreply.github.com": "baofuen",
     "interstellar.consulting@gmail.com": "Interstellar-code",

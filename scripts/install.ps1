@@ -553,6 +553,62 @@ function Show-NpmCertHint {
     return $true
 }
 
+function Write-NpmDebugLogTail {
+    # On failure npm prints only a terse summary to stdout/stderr; the real
+    # evidence (postinstall script stderr like Electron's install.js, network
+    # traces, EBUSY retries) lives in npm's own debug log under
+    # <npm-cache>\_logs\<timestamp>-debug-0.log. The bootstrap installer's
+    # streaming sink only captures what WE emit, so on any npm failure this
+    # helper locates that debug log and replays its tail into our output
+    # stream -- making the bootstrap log a self-contained diagnosis instead
+    # of "exit 1, details in a file on a VM nobody can reach".
+    param(
+        [string]$NpmOutput,
+        [int]$TailLines = 200
+    )
+    $logPath = $null
+    # Preferred: npm names the exact file in its failure summary.
+    if ($NpmOutput -and $NpmOutput -match "A complete log of this run can be found in:\s*(?<path>[^\r\n]+)") {
+        $candidate = $Matches['path'].Trim()
+        if (Test-Path -LiteralPath $candidate) { $logPath = $candidate }
+    }
+    # Fallback (covers --silent runs, truncated output): newest debug log in
+    # npm's cache _logs directory.
+    if (-not $logPath) {
+        try {
+            $npm = Resolve-NpmCmd
+            if ($npm) {
+                $prevEAPLocal = $ErrorActionPreference
+                $ErrorActionPreference = "Continue"
+                $cacheDir = (& $npm config get cache 2>$null | Select-Object -Last 1)
+                $ErrorActionPreference = $prevEAPLocal
+                if ($cacheDir) {
+                    $logsDir = Join-Path ("$cacheDir").Trim() "_logs"
+                    if (Test-Path -LiteralPath $logsDir) {
+                        $newest = Get-ChildItem -LiteralPath $logsDir -Filter "*-debug-*.log" -ErrorAction SilentlyContinue |
+                            Sort-Object LastWriteTime -Descending | Select-Object -First 1
+                        if ($newest) { $logPath = $newest.FullName }
+                    }
+                }
+            }
+        } catch { }
+    }
+    if (-not $logPath) {
+        Write-Warn "npm debug log could not be located -- no further npm detail available"
+        return
+    }
+    $tail = $null
+    try {
+        $tail = Get-Content -LiteralPath $logPath -Tail $TailLines -ErrorAction Stop
+    } catch {
+        Write-Warn "Could not read npm debug log ${logPath}: $($_.Exception.Message)"
+        return
+    }
+    Write-Warn "---- npm debug log: last $TailLines lines of $logPath ----"
+    foreach ($line in $tail) { Write-Host "    $line" -ForegroundColor DarkGray }
+    Write-Warn "---- end npm debug log ----"
+}
+
 # --- Ensure-mode helpers ---
 
 function Resolve-NpmCmd {
@@ -620,6 +676,9 @@ function Install-AgentBrowser {
         Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
         Write-Err "npm install -g failed (exit $npmExit): $npmDetail"
         Show-NpmCertHint $npmDetail | Out-Null
+        # This install runs with --silent, so $npmDetail is often near-empty;
+        # npm's debug log is the only place the real error survives.
+        Write-NpmDebugLogTail -NpmOutput $npmDetail
         throw "npm install failed"
     }
     Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
@@ -2265,9 +2324,12 @@ function Install-Venv {
             # `pythonw.exe -m hermes_cli.main gateway run` straight out of
             # venv\Scripts\, so its image name is python/pythonw, not hermes.exe.
             # That process holds the venv's .pyd files open and re-triggers the
-            # access-denied failure. Stop anything whose executable lives under
-            # this venv, matched by path prefix so the image name does not matter
-            # and a global/system python outside the venv is never touched.
+            # access-denied failure. Select only roots whose executable lives
+            # under this venv, then stop each root's whole process tree. Some
+            # Hermes children re-exec through .hermes-runtime, so killing only
+            # the selected venv process can leave its child holding the install
+            # open. The path-prefix check still keeps unrelated Python processes
+            # outside this venv untouched.
             #
             # The gateway autostart task registers with /RL LIMITED as the current
             # user (see hermes_cli/gateway_windows.py), so the installer always
@@ -2291,8 +2353,9 @@ function Install-Venv {
                         Where-Object { $_.ProcessId -ne $myPid -and $_.ExecutablePath -and $_.ExecutablePath.StartsWith($venvPrefix, [System.StringComparison]::OrdinalIgnoreCase) } |
                         ForEach-Object {
                             $found++
-                            Write-Info "  stopping PID $($_.ProcessId) ($($_.Name)) running from venv"
-                            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+                            $treePid = [string]$_.ProcessId
+                            Write-Info "  stopping process tree at PID $treePid ($($_.Name)) running from venv"
+                            & taskkill /F /T /PID $treePid 2>$null | Out-Null
                         }
                 } catch {
                     Write-Warn "Could not enumerate venv processes: $($_.Exception.Message)"
@@ -2969,6 +3032,7 @@ function Install-NodeDeps {
                     }
                     Write-Info "  Full log: $logPath"
                     Show-NpmCertHint $errText | Out-Null
+                    Write-NpmDebugLogTail -NpmOutput $errText
                 }
             }
             Write-Info "Run manually later: cd `"$installDir`"; npm install"
@@ -3340,6 +3404,10 @@ function Install-Desktop {
                 Try-RestoreElectronDist -InstallDir $InstallDir | Out-Null
             } else {
                 Show-NpmCertHint ($npmOut -join "`n") | Out-Null
+                # Replay npm's own debug log into our stream: the terse
+                # summary above rarely contains the postinstall stderr
+                # (e.g. Electron's install.js) that explains the failure.
+                Write-NpmDebugLogTail -NpmOutput ($npmOut -join "`n")
                 throw "desktop workspace npm install failed (exit $code) -- see lines above for cause"
             }
         } else {
@@ -3461,6 +3529,10 @@ function Install-Desktop {
                 foreach ($line in $snippet -split "`n") { Write-Host "    $line" -ForegroundColor DarkGray }
                 Write-Info "  Full log: $buildLog"
             }
+            # `npm run pack` failures (lifecycle script exits) also land in
+            # npm's debug log; replay it so the bootstrap log carries the
+            # full evidence even when $buildLog's tail cuts off the cause.
+            Write-NpmDebugLogTail -NpmOutput $errText
             throw "apps/desktop build failed (exit $code)"
         }
         Write-Success "Desktop app built"

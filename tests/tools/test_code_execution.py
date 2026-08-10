@@ -338,6 +338,21 @@ assert escaped.startswith("'")
         self.assertEqual(result["status"], "success")
 
 
+    def test_json_parse_helper_bom(self):
+        """json_parse strips a leading UTF-8 BOM and tolerates control chars (#57870)."""
+        code = """
+from hermes_tools import json_parse
+# A leading UTF-8 BOM (e.g. from Windows CLI output) must also parse (#57870)
+bom_text = "\\ufeff" + '{"body": "bom-ok"}'
+bom_result = json_parse(bom_text)
+assert bom_result == {"body": "bom-ok"}, bom_result
+print("bom:" + bom_result["body"])
+"""
+        result = self._run(code)
+        self.assertEqual(result["status"], "success")
+        self.assertIn("bom:bom-ok", result["output"])
+
+
     def test_retry_helper_all_fail(self):
         """retry raises the last error when all attempts fail."""
         code = """

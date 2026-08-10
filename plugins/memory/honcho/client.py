@@ -934,8 +934,9 @@ def _resolve_timeout_from_sources(config: HonchoClientConfig | None) -> float:
 def _apply_fresh_oauth_token(config: HonchoClientConfig) -> None:
     """Refresh a near-expiry OAuth grant and point ``config.api_key`` at it.
 
-    No-op for static API keys or when refresh fails (fail-open: the stale token
-    is left in place and the existing 401 handling degrades gracefully).
+    No-op for static API keys or when refresh fails: the stale token stays in
+    place and the first rejected call triggers the post-401 recovery in
+    session.py (forced rotation, one retry).
     """
     try:
         from plugins.memory.honcho import oauth

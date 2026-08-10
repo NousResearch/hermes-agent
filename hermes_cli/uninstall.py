@@ -97,8 +97,9 @@ def remove_path_from_shell_configs():
                 # that to a warning, so the next login just starts a bare
                 # shell. atomic_replace also resolves a symlinked rc file, so a
                 # dotfiles-repo setup keeps the symlink instead of having it
-                # replaced by a regular file. Preserve its permission bits and
-                # owner, including when uninstall is run through sudo.
+                # replaced by a regular file. preserve_mode keeps the rc's
+                # permission bits (normally 0644) and owner (sudo-run
+                # uninstalls) instead of mkstemp's 0600/root.
                 atomic_write_text(config_path, new_content, preserve_mode=True)
                 removed_from.append(config_path)
                 

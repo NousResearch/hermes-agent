@@ -246,17 +246,29 @@ class TestResolveToolsetIncludeRegistry:
     by platform reverse-mapping. Regression harness for issue #49622."""
 
     def test_include_registry_false_excludes_registry_tools(self):
-        from tools.registry import discover_builtin_tools
-        discover_builtin_tools()  # registers read_terminal into 'terminal'
+        from tools.registry import discover_builtin_tools, registry
+        discover_builtin_tools()
 
-        merged = set(resolve_toolset("terminal"))
-        static = set(resolve_toolset("terminal", include_registry=False))
+        # Register a tool into `terminal` at runtime, the way plugins and MCP
+        # servers do, so the split is exercised on the mechanism rather than on
+        # whichever built-in currently happens to live where.
+        registry.register(
+            name="__probe_registry_only_tool__",
+            toolset="terminal",
+            schema={"name": "__probe_registry_only_tool__", "parameters": {"type": "object", "properties": {}}},
+            handler=lambda args, **kw: "",
+        )
+        try:
+            merged = set(resolve_toolset("terminal"))
+            static = set(resolve_toolset("terminal", include_registry=False))
+        finally:
+            registry.deregister("__probe_registry_only_tool__")
 
         assert static == {"terminal", "process"}, static
-        # read_terminal is registered into 'terminal' but is desktop-only and
-        # not part of the static definition — it must only appear in the merged view.
-        assert "read_terminal" in merged
-        assert "read_terminal" not in static
+        # Registered into 'terminal' but not part of the static definition — it
+        # must only appear in the merged view.
+        assert "__probe_registry_only_tool__" in merged
+        assert "__probe_registry_only_tool__" not in static
 
 
     def test_static_view_threads_through_includes(self):

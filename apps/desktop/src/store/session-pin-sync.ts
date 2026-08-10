@@ -17,7 +17,8 @@
  * authoritative: adopt pins this app hasn't seen, and drop local pins the
  * server says are gone. Only rows actually present in the payload are
  * consulted, so a backend predating the flag (`pinned === undefined`) leaves
- * the local set untouched.
+ * the local set untouched — and a page that predates one of our own writes is
+ * fenced out until a later page confirms the value we wrote.
  */
 
 import { setSessionPinnedRemote } from '@/hermes'
@@ -28,11 +29,17 @@ import { $sessions, sessionMatchesStoredId, sessionPinId } from '@/store/session
 const mirrored = new Set<string>()
 // pin ids awaiting their row so we can resolve the owning profile before PATCH.
 const pending = new Set<string>()
-// Writes we've issued but not yet had acked, id -> value written. A list page
-// already in flight when we PATCH still carries the old value, so it must not
-// be read as the server disagreeing with us. Cleared when the write settles —
-// the request's own lifetime is the guard, so nothing can leave one open.
-const unconfirmed = new Map<string, boolean>()
+// Writes we've issued, id -> the value we wrote and when. A list page already
+// in flight when we PATCH still carries the OLD value, and it can land after
+// our ack — so the ack is not proof the page we're reading is newer than the
+// write. Hold the guard until a page actually CONFIRMS the written value,
+// with a cooldown so a row that never comes back can't fence itself forever.
+const unconfirmed = new Map<string, { at: number; value: boolean }>()
+
+// How long an unconfirmed write outranks a page that contradicts it. Long
+// enough to cover a list request issued just before the PATCH (those are the
+// slow ones), short enough that a genuine server-side change still wins.
+const WRITE_GUARD_MS = 10_000
 
 function profileFor(pinId: string): null | string | undefined {
   return $sessions.get().find(row => sessionMatchesStoredId(row, pinId))?.profile
@@ -40,13 +47,18 @@ function profileFor(pinId: string): null | string | undefined {
 
 /** PATCH the flag, guarding reads against pages that predate the write. */
 function writePin(id: string, pinned: boolean, profile?: null | string): Promise<void> {
-  unconfirmed.set(id, pinned)
+  unconfirmed.set(id, { at: Date.now(), value: pinned })
 
   return setSessionPinnedRemote(id, pinned, profile).then(
     () => {
-      unconfirmed.delete(id)
+      // Deliberately NOT cleared here: a list request issued before this PATCH
+      // can still land after the ack carrying the pre-write value. The guard
+      // is released by pullRemotePins when a page confirms the written value,
+      // or by the cooldown if none ever does.
     },
     (err: unknown) => {
+      // A failed write leaves the server on the old value, so the guard would
+      // be fencing out the truth. Drop it and let the page win.
       unconfirmed.delete(id)
       throw err
     }
@@ -76,11 +88,22 @@ function pullRemotePins(): void {
     const pinId = sessionPinId(row)
     const heldLocally = local.has(pinId) || local.has(row.id)
 
-    // A write of ours the page hasn't caught up to yet is newer than the page.
-    const awaited = unconfirmed.has(pinId) ? unconfirmed.get(pinId) : unconfirmed.get(row.id)
+    // A write of ours this page may predate. Confirmed (page agrees) → release
+    // the guard, the server has caught up. Contradicted but still inside the
+    // cooldown → the page was almost certainly issued before our PATCH, so our
+    // write is newer: skip the row. Contradicted past the cooldown → no page
+    // ever confirmed us, so stop fencing and let the server win.
+    const guardKey = unconfirmed.has(pinId) ? pinId : unconfirmed.has(row.id) ? row.id : null
+    const guard = guardKey ? unconfirmed.get(guardKey) : undefined
 
-    if (awaited !== undefined && awaited !== row.pinned) {
-      continue
+    if (guard && guardKey) {
+      if (guard.value === row.pinned) {
+        unconfirmed.delete(guardKey)
+      } else if (Date.now() - guard.at < WRITE_GUARD_MS) {
+        continue
+      } else {
+        unconfirmed.delete(guardKey)
+      }
     }
 
     // Local intent still waiting on its PATCH (row unresolved when the push
@@ -159,4 +182,21 @@ export function watchSessionPins(): void {
   reconcile()
   $pinnedSessionIds.listen(reconcile)
   $sessions.listen(reconcile)
+}
+
+/**
+ * Forget what we've mirrored, because the backend we mirrored it TO is gone.
+ *
+ * `mirrored` / `pending` / `unconfirmed` all mean "relative to the gateway we
+ * are talking to". After a soft switch the next backend has its own state.db
+ * and has never seen these pins, but `mirrored` would report them as already
+ * pushed and suppress the PATCHes — so the user's pins silently fail to reach
+ * the new gateway (and its auto-archive sweep is free to hide them). Dropping
+ * the bookkeeping makes the next reconcile re-assert the whole set, which is
+ * the same path that migrates pre-existing pins at boot.
+ */
+export function resetSessionPinMirror(): void {
+  mirrored.clear()
+  pending.clear()
+  unconfirmed.clear()
 }

@@ -293,6 +293,28 @@ Run 1 — `crashed`，错误为 `OOM kill at row 2.3M (process 99999 gone)`。Ru
 
 批量关闭保护的存在正是因为这些数据是按 run 存储的。`hermes kanban complete a b c --summary X`（你，从 CLI 执行）会被拒绝——将相同的 summary 复制粘贴到三个任务几乎总是错误的。不带交接标志的批量关闭仍然适用于常见的"我完成了一堆行政任务"场景。工具界面根本不提供批量变体；`kanban_complete` 始终是单任务操作，原因相同。
 
+## 已完成卡片的后续工作 — 通过父任务链接进行 CI 修复
+
+场景一的实现卡片已经 `done`。两小时后，合并分支上的 CI 失败了。不要重开已完成的卡片——已完成的卡片是历史，它的交接内容会向前流动。创建一张以该卡片为**父任务**的修复卡片：
+
+```bash
+hermes kanban create "Fix CI: test_backoff_jitter flakes on 3.11" \
+    --assignee backend-dev \
+    --parent t_impl \
+    --workspace worktree --branch wt/ci-fix-backoff \
+    --body "CI run #4812 failed after t_impl completed.
+FAILED tests/test_retry.py::test_backoff_jitter - TimeoutError
+Acceptance: tests/test_retry.py green on 3.11 and 3.12."
+```
+
+三个要点让这个模式生效：
+
+- **立即调度。** 由于父任务已经 `done`，子任务直接以 `ready` 状态创建——调度器在下一个 tick 就能认领它。（父任务尚未完成的子任务会停在 `todo` 等待。）
+- **继承的上下文。** 修复 worker 的上下文包含 *Parent task results* 部分，携带 `t_impl` 的完成 summary 和 metadata——原 worker 记录的改动文件与决策——因此它在读任何一行代码之前就知道代码为什么是现在这个样子。
+- **正文中的新证据。** CI 日志在 `t_impl` 完成时尚不存在，不可能出现在父任务的交接中——所以它写在新卡片的正文里，连同明确的验收标准。
+
+修复卡片优先使用全新的 worktree/分支。检出原分支只能给 worker 仓库*状态*，但没有*缘由*——缘由由父任务交接携带。assignee 通常沿用同一 profile：写这段代码的 profile 也具备修复它的技能。
+
 ## 检查当前正在运行的任务
 
 作为补充——以下是一个仍在执行中的任务的抽屉视图（场景一中的 API 实现，已被 `backend-dev` 认领但尚未完成）：

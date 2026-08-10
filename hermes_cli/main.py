@@ -451,9 +451,11 @@ from hermes_cli.subcommands.login import build_login_parser
 from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.status import build_status_parser
+from hermes_cli.subcommands.pause import build_pause_parser
 from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
+from hermes_cli.subcommands.verify import build_verify_parser
 from hermes_cli.subcommands.security import build_security_parser
 from hermes_cli.subcommands.approvals import build_approvals_parser
 from hermes_cli.subcommands.dump import build_dump_parser
@@ -577,6 +579,7 @@ def _apply_profile_override() -> None:
         "-r", "--resume",
         "-s", "--skills",
         "--usage-file",
+        "--in",
     }
     optional_value_flags = {"-c", "--continue"}
     i = 0
@@ -1023,7 +1026,7 @@ def _has_any_provider_configured() -> bool:
         try:
             import json
 
-            auth = json.loads(auth_file.read_text(encoding="utf-8"))
+            auth = json.loads(auth_file.read_text(encoding="utf-8-sig"))
             active = auth.get("active_provider")
             if active:
                 status = get_auth_status(active)
@@ -1079,8 +1082,6 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
     """Interactive curses-based session browser with live search filtering.
 
     Returns the selected session ID, or None if cancelled.
-    Uses curses (not simple_term_menu) to avoid the ghost-duplication rendering
-    bug in tmux/iTerm when arrow keys are used.
     """
     if not sessions:
         print("No sessions found.")
@@ -2531,6 +2532,41 @@ def cmd_chat(args):
 
     _apply_safe_mode(args)
 
+    # --in DIR: run in DIR. Must happen before any session resolution so the
+    # workspace-scoped "latest"/-c lookups key off DIR, and it pins the
+    # session there — an explicit --in wins over a resumed session's
+    # recorded cwd (so the restore step below is skipped).
+    in_dir = getattr(args, "in_dir", None)
+    if in_dir:
+        _target_dir = os.path.abspath(os.path.expanduser(in_dir))
+        if not os.path.isdir(_target_dir):
+            print(f"Error: --in directory not found: {in_dir}")
+            sys.exit(1)
+        try:
+            os.chdir(_target_dir)
+        except OSError as e:
+            print(f"Error: cannot enter --in directory {in_dir}: {e}")
+            sys.exit(1)
+        args.no_restore_cwd = True
+
+    # --resume latest: keyword for "most recent session" — same resolution
+    # as `-c` with no name (workspace-scoped MRU, then global fallback).
+    # The keyword wins over a session literally titled "latest"; that
+    # session stays reachable via its ID or `-c latest` (title match).
+    _resume_raw = getattr(args, "resume", None)
+    if isinstance(_resume_raw, str) and _resume_raw.strip().lower() == "latest":
+        _source = "tui" if use_tui else "cli"
+        _last_id = _resolve_last_session(source=_source)
+        if not _last_id and _source == "tui":
+            _last_id = _resolve_last_session(source="cli")
+        if _last_id:
+            args.resume = _last_id
+        else:
+            kind = "TUI" if use_tui else "CLI"
+            print(f"No previous {kind} session found to resume.")
+            print("Use 'hermes sessions list' to see available sessions.")
+            sys.exit(1)
+
     # Resolve --continue into --resume with the latest session or by name
     continue_val = getattr(args, "continue_last", None)
     if continue_val and not getattr(args, "resume", None):
@@ -2646,17 +2682,31 @@ def cmd_chat(args):
     # competes for CPU on single-core devices, so keep it opt-in there.
     if _termux_should_prefetch_update_check():
         try:
-            from hermes_cli.banner import prefetch_update_check
+            from hermes_cli.banner import prefetch_banner_data, prefetch_update_check
 
             prefetch_update_check()
+            # Warm git banner state + skills index off-thread too — their
+            # subprocess/file-I/O waits overlap the CPU-bound cli import.
+            prefetch_banner_data()
         except Exception:
             pass
 
-    # Sync bundled skills on every CLI launch (fast -- skips unchanged skills)
-    try:
-        _sync_bundled_skills_for_startup()
-    except Exception:
-        pass
+    # Sync bundled skills on every CLI launch. Runs in a background daemon
+    # thread: the sync is idempotent, hash-gated (unchanged skills are
+    # skipped), and nothing on the banner path depends on it, yet the scan
+    # alone costs ~120-170ms of rglob/hashing on the startup path. Skill
+    # loading happens at agent init (first message), by which point the
+    # sync has long finished; a same-instant race would only matter in the
+    # rare launch right after `hermes update` changed a bundled skill.
+    def _skills_sync_bg() -> None:
+        try:
+            _sync_bundled_skills_for_startup()
+        except Exception:
+            pass
+
+    threading.Thread(
+        target=_skills_sync_bg, name="bundled-skills-sync", daemon=True
+    ).start()
 
     # --yolo: bypass all dangerous command approvals.
     # Also set in main() before _prepare_agent_startup() — that is the
@@ -4849,6 +4899,13 @@ def cmd_doctor(args):
     run_doctor(args)
 
 
+def cmd_verify(args):
+    """Detect a project's run recipe and smoke-test it."""
+    from hermes_cli.verify_cmd import run_verify_command
+
+    sys.exit(run_verify_command(args))
+
+
 def cmd_security(args):
     """Dispatch `hermes security <subcmd>`."""
     sub = getattr(args, "security_command", None)
@@ -5071,6 +5128,7 @@ from hermes_cli.update_cmd import (  # noqa: F401
     _npm_lockfile_changed,
     _npm_manifest_paths,
     _npm_manifests_digest,
+    _orphaned_desktop_backend_pids,
     _pause_windows_gateways_for_update,
     _print_curator_first_run_notice,
     _print_curator_recent_run_notice,
@@ -5080,6 +5138,7 @@ from hermes_cli.update_cmd import (  # noqa: F401
     _record_npm_lockfile_hash,
     _refresh_active_lazy_features,
     _refresh_active_memory_provider_dependencies,
+    _refresh_bootstrap_cache_scripts,
     _refresh_windows_gateway_launchers,
     _reload_updated_runtime_modules,
     _resolve_pre_update_backup_mode,
@@ -5091,6 +5150,7 @@ from hermes_cli.update_cmd import (  # noqa: F401
     _should_skip_upstream_prompt,
     _stash_apply_failed_only_on_existing_untracked,
     _stash_local_changes_if_needed,
+    _stop_process_trees,
     _sync_fork_with_upstream,
     _sync_with_upstream_if_needed,
     _update_node_dependencies,
@@ -10183,7 +10243,7 @@ def _read_ssh_session_token_file(path: str) -> str:
         if hasattr(os, "getuid") and (file_stat.st_mode & 0o777) & ~0o600:
             raise SystemExit("--ssh-session-token-file has unsafe permissions")
 
-        with os.fdopen(file_fd, "r") as token_stream:
+        with os.fdopen(file_fd, "r", encoding="utf-8") as token_stream:
             file_fd = -1
             token = token_stream.read(65)
 
@@ -10627,12 +10687,14 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "dump", "egress", "fallback", "gateway", "hooks", "import", "import-agent", "insights",
         "gui", "desktop", "kanban", "login", "logout", "logs", "lsp", "mcp", "memory", "migrate", "moa",
         "journey", "memory-graph", "learning",
-        "model", "monitoring", "pairing", "pets", "plugins", "portal", "profile",
+        "model", "monitoring", "pairing", "pause", "pets", "plugins", "portal", "profile",
         "project", "proxy",
         "prompt-size",
+        "resume",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
+        "verify",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
         # expensive eager import of every bundled plugin module.
@@ -10658,6 +10720,7 @@ _TOP_LEVEL_VALUE_FLAGS = frozenset(
         "-r", "--resume",
         "-s", "--skills",
         "--usage-file",
+        "--in",
         # ``-c / --continue`` is nargs='?' (optional value). Treat it as
         # value-taking: if the next token is a subcommand-looking word
         # the user almost certainly meant it as the session name, and
@@ -10802,9 +10865,16 @@ def _prepare_agent_startup(args) -> None:
 
     _accept_hooks = bool(getattr(args, "accept_hooks", False))
     try:
-        from hermes_cli.plugins import discover_plugins
+        from hermes_cli.plugins import start_background_plugin_discovery
 
-        discover_plugins()
+        # Discovery runs in a daemon thread so its ~150ms of manifest
+        # scanning + plugin imports overlaps the rest of startup (cli /
+        # prompt_toolkit imports, worktree git calls). Correctness is
+        # unchanged: every synchronous reader goes through
+        # discover_plugins(), which joins this thread first — including
+        # the discover_plugins() call model_tools makes at import time,
+        # which happens before any tool list is built.
+        start_background_plugin_discovery()
     except Exception:
         logger.warning(
             "plugin discovery failed at CLI startup",
@@ -10886,6 +10956,79 @@ def _set_chat_arg_defaults(args) -> None:
     ]:
         if not hasattr(args, attr):
             setattr(args, attr, default)
+
+
+def _try_fast_chat_launch() -> bool:
+    """Fast path for unambiguous interactive chat launches (all hosts).
+
+    ``hermes`` / ``hermes -w -s foo --yolo`` / ``hermes chat`` don't need the
+    full argparse tree: building all ~40 subcommand parsers costs ~140ms of
+    pure-Python argparse setup plus their module imports, none of which the
+    chat path uses. Parse the lightweight top-level/chat parser instead and
+    dispatch straight to ``cmd_chat``.
+
+    Bails out (returns False) whenever the invocation is not certainly a
+    chat launch — a subcommand positional, ``--help``, unknown flags — so
+    every other path still goes through the full parser unchanged. Mirrors
+    ``_try_termux_fast_cli_launch`` minus the Termux-specific deferred
+    startup; kept separate so phone-tuned behavior doesn't leak to desktops.
+    """
+    if os.environ.get("HERMES_DISABLE_FAST_CHAT_LAUNCH") == "1":
+        return False
+    argv = sys.argv[1:]
+    if "-h" in argv or "--help" in argv:
+        return False
+    # Container-aware routing must win: when NixOS container mode is
+    # active, EVERY invocation is forwarded into the managed container.
+    try:
+        from hermes_cli.config import get_container_exec_info
+        if get_container_exec_info():
+            return False
+    except Exception:
+        return False
+    # TUI launches have their own startup path (bounded MCP joins etc.) —
+    # keep them on full dispatch outside Termux.
+    if _wants_tui_early(argv):
+        return False
+    if _first_positional_argv() not in {None, "chat"}:
+        return False
+
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, chat_parser = build_top_level_parser()
+    chat_parser.set_defaults(func=cmd_chat)
+    try:
+        args, unknown = parser.parse_known_args(_coalesce_session_name_args(argv))
+    except SystemExit:
+        return False
+    if unknown:
+        # Flags the light parser doesn't know — could belong to a plugin
+        # subcommand or a newer full-parser flag. Fall back to full dispatch.
+        return False
+    if getattr(args, "version", False):
+        return False
+    if getattr(args, "command", None) not in {None, "chat"}:
+        return False
+
+    if getattr(args, "yolo", False):
+        os.environ["HERMES_YOLO_MODE"] = "1"
+    _prepare_agent_startup(args)
+
+    if getattr(args, "oneshot", None):
+        _run_and_exit_oneshot(
+            args.oneshot,
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
+            toolsets=getattr(args, "toolsets", None),
+            usage_file=getattr(args, "usage_file", None),
+        )
+
+    if (args.resume or args.continue_last) and args.command is None:
+        args.command = "chat"
+
+    _set_chat_arg_defaults(args)
+    cmd_chat(args)
+    return True
 
 
 def _try_termux_fast_cli_launch() -> bool:
@@ -11198,11 +11341,32 @@ def cmd_claw(args):
     claw_command(args)
 
 
+def _advertise_agent_env() -> None:
+    """Advertise the agent harness to child processes.
+
+    ``AI_AGENT`` is the emerging cross-agent standard (huggingface_hub's agent
+    detection reads it; pi and other agents set it — earendil-works/pi#7493)
+    so generic tooling can attribute subprocesses to the harness that spawned
+    them. The value must be our id in the public agent-harness registry
+    (``hermes-agent`` in huggingface.js ``agent-harnesses.ts``): standard-var
+    matching is exact, so any other value is counted as "unknown".
+    ``HERMES_AGENT`` is the Hermes-specific marker. setdefault: never
+    clobber an outer harness (e.g. Hermes running inside another agent's
+    terminal).
+    """
+    os.environ.setdefault("AI_AGENT", "hermes-agent")
+    os.environ.setdefault("HERMES_AGENT", "true")
+
+
 def main():
     """Main entry point for hermes CLI."""
     # Cosmetic: make the process show up as 'hermes' instead of 'python3.11'
     # in ps/top/htop.  Non-fatal — just a nicer UX.
     _set_process_title()
+
+    # Let child processes (and tools like huggingface_hub) detect they run
+    # under an AI agent harness.
+    _advertise_agent_env()
 
     # Force UTF-8 stdio on Windows before anything prints.  No-op elsewhere.
     try:
@@ -11244,6 +11408,8 @@ def main():
     if _try_termux_fast_tui_launch():
         return
     if _try_termux_fast_cli_launch():
+        return
+    if _try_fast_chat_launch():
         return
 
     from hermes_cli._parser import build_top_level_parser
@@ -11499,6 +11665,11 @@ def main():
     build_status_parser(subparsers, cmd_status=cmd_status)
 
     # =========================================================================
+    # pause / resume commands  (parser built in hermes_cli/subcommands/pause.py)
+    # =========================================================================
+    build_pause_parser(subparsers)
+
+    # =========================================================================
     # cron command  (parser built in hermes_cli/subcommands/cron.py)
     # =========================================================================
     build_cron_parser(subparsers, cmd_cron=cmd_cron)
@@ -11542,6 +11713,11 @@ def main():
     # doctor command  (parser built in hermes_cli/subcommands/doctor.py)
     # =========================================================================
     build_doctor_parser(subparsers, cmd_doctor=cmd_doctor)
+
+    # =========================================================================
+    # verify command  (parser built in hermes_cli/subcommands/verify.py)
+    # =========================================================================
+    build_verify_parser(subparsers, cmd_verify=cmd_verify)
 
     # =========================================================================
     # security command — on-demand supply-chain audit
@@ -12282,6 +12458,36 @@ def main():
         "--no-backup",
         action="store_true",
         help="Skip the timestamped backup copy (not recommended)",
+    )
+
+    sessions_repair_routing = sessions_subparsers.add_parser(
+        "repair-routing",
+        help="Re-stamp gateway sessions that lost their routing identity",
+        description=(
+            "Find gateway conversations stranded in session rows whose "
+            "routing identity (session_key/chat_id/origin) was never "
+            "written — the damage a corrupt state.db write path leaves "
+            "behind (#82616). Such a row is invisible to restart recovery, "
+            "so the chat resumes an older session instead. Re-stamps each "
+            "orphan from the keyed predecessor it continues, and only when "
+            "that predecessor is unambiguous. Reports without touching the "
+            "database unless --apply is given."
+        ),
+    )
+    sessions_repair_routing.add_argument(
+        "--apply",
+        action="store_true",
+        help="Perform the adoptions (default: report only)",
+    )
+    sessions_repair_routing.add_argument(
+        "--max-gap-seconds",
+        type=float,
+        default=None,
+        help=(
+            "Window between a keyed predecessor's last activity and an "
+            "orphan's start for them to count as the same conversation "
+            "(default: 900)"
+        ),
     )
 
     sessions_recover = sessions_subparsers.add_parser(

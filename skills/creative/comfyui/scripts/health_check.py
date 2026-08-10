@@ -163,7 +163,7 @@ def main(argv: list[str] | None = None) -> int:
             workflow_check = {"error": "workflow file not found"}
         else:
             try:
-                with wf_path.open() as f:
+                with wf_path.open(encoding="utf-8-sig") as f:
                     workflow = unwrap_workflow(json.load(f))
                 from check_deps import check_deps
                 workflow_check = check_deps(workflow, host=args.host, api_key=api_key)

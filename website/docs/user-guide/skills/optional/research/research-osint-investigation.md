@@ -18,6 +18,7 @@ Follow the money via public records and sanctions data.
 | Path | `optional-skills/research/osint-investigation` |
 | Version | `0.1.0` |
 | Author | Hermes Agent (adapted from ShinMegamiBoson/OpenPlanter, MIT) |
+| License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `osint`, `investigation`, `public-records`, `sec`, `sanctions`, `corporate-registry`, `property`, `courts`, `due-diligence`, `journalism` |
 | Related skills | [`domain-intel`](/docs/user-guide/skills/optional/research/research-domain-intel), [`arxiv`](/docs/user-guide/skills/bundled/research/research-arxiv) |

@@ -398,7 +398,9 @@ class TestWebServerEndpoints:
         assert response.json()["sessions"] == []
         assert response.json()["total"] == 0
 
-    @pytest.mark.parametrize("missing_column", ["archived", "pinned"])
+    @pytest.mark.parametrize(
+        "missing_column", ["archived", "pinned", "last_activity_at"]
+    )
     def test_get_sessions_heals_stale_schema_store(self, missing_column):
         import sqlite3
 
@@ -433,6 +435,109 @@ class TestWebServerEndpoints:
         finally:
             healed.close()
         assert missing_column in columns
+
+    def test_profiles_sidebar_heals_stale_schema_store(self):
+        """The desktop's batched sidebar route must heal a stale store too.
+
+        The shipped regression (#72424 aftermath): a store predating
+        ``sessions.last_activity_at`` made every per-profile read raise
+        "no such column", which this endpoint swallowed into its ``errors``
+        array — the desktop rendered "No sessions yet" after `hermes update`
+        until the user's first message forced a writable open elsewhere.
+        """
+        import sqlite3
+
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        seed = SessionDB(db_path=db_path)
+        try:
+            seed.create_session("sidebar-stale", source="cli")
+            seed.append_message(
+                session_id="sidebar-stale", role="user", content="hi"
+            )
+        finally:
+            seed.close()
+
+        legacy = sqlite3.connect(str(db_path))
+        try:
+            legacy.execute("ALTER TABLE sessions DROP COLUMN last_activity_at")
+            legacy.commit()
+        finally:
+            legacy.close()
+
+        response = self.client.get("/api/profiles/sessions/sidebar")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["errors"] == []
+        assert [row["id"] for row in payload["recents"]["sessions"]] == [
+            "sidebar-stale"
+        ]
+
+    def test_heal_gives_up_when_reconcile_cannot_fix_the_store(self, monkeypatch):
+        """A probe failure reconciliation can't cure must not retry forever.
+
+        The writable heal is a full SessionDB init against a possibly-live
+        DB. If the store is STILL behind the probe afterwards (schema problem
+        ADD COLUMN can't express), retrying that init on every sidebar poll
+        would hammer the DB for nothing: serve reads probe-less instead, warn
+        once, and never pay the writable open for that store again.
+        """
+        from hermes_cli import web_server
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+
+        db_path = get_hermes_home() / "state.db"
+        seed = SessionDB(db_path=db_path)
+        try:
+            seed.create_session("unfixable", source="cli")
+        finally:
+            seed.close()
+
+        # A column no SCHEMA_SQL declares: the heal's writable reconcile
+        # cannot add it, so the re-probe keeps failing.
+        monkeypatch.setattr(
+            web_server,
+            "_session_db_read_probe_statements",
+            lambda: ('SELECT "sessions"."not_a_real_column" FROM "sessions" LIMIT 0',),
+        )
+        monkeypatch.setattr(web_server, "_session_db_heal_exhausted", set())
+        monkeypatch.setattr(web_server, "_session_db_heal_warned", set())
+
+        writable_opens = []
+
+        import hermes_state
+
+        original_init = hermes_state.SessionDB.__init__
+
+        def counting_init(self, *args, **kwargs):
+            if not kwargs.get("read_only", False):
+                writable_opens.append(1)
+            return original_init(self, *args, **kwargs)
+
+        # web_server imports SessionDB inside the function body, so patching
+        # the class on hermes_state covers every open the helper makes.
+        monkeypatch.setattr(hermes_state.SessionDB, "__init__", counting_init)
+
+        # First open: probe fails -> one writable heal -> re-probe fails ->
+        # exhausted. Still returns a usable read-only handle.
+        db = web_server._open_session_db_for_profile(None, read_only=True)
+        try:
+            assert db.list_sessions_rich(limit=10, compact_rows=True)
+        finally:
+            db.close()
+        assert len(writable_opens) == 1
+        assert str(db_path) in web_server._session_db_heal_exhausted
+
+        # Second open: probe skipped, NO further writable opens.
+        db = web_server._open_session_db_for_profile(None, read_only=True)
+        try:
+            assert db.list_sessions_rich(limit=10, compact_rows=True)
+        finally:
+            db.close()
+        assert len(writable_opens) == 1
 
     def test_get_sessions_zero_byte_store_returns_empty_list(self):
         from hermes_constants import get_hermes_home
@@ -1720,6 +1825,89 @@ class TestWebServerEndpoints:
         resp = self.client.get("/api/sessions/many-messages/messages?limit=1000")
         assert resp.status_code == 200
         assert resp.json()["pagination"]["limit"] == 500
+
+    def test_get_session_messages_omitted_limit_defaults_to_500(self):
+        """The dashboard must never load an entire unbounded transcript."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="default-limit-messages", source="cli")
+            db.append_messages_batch(
+                "default-limit-messages",
+                [
+                    {"role": "user", "content": f"msg {i}"}
+                    for i in range(501)
+                ],
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/default-limit-messages/messages")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["pagination"] == {
+            "limit": 500,
+            "offset": 0,
+            "order": "latest",
+            "returned": 500,
+        }
+        assert len(payload["messages"]) == 500
+        assert payload["messages"][0]["content"] == "msg 1"
+        assert payload["messages"][-1]["content"] == "msg 500"
+
+        explicit = self.client.get(
+            "/api/sessions/default-limit-messages/messages?limit=2&offset=1"
+        ).json()
+        assert explicit["pagination"]["order"] == "oldest"
+        assert [message["content"] for message in explicit["messages"]] == [
+            "msg 1",
+            "msg 2",
+        ]
+
+        latest = self.client.get(
+            "/api/sessions/default-limit-messages/messages"
+            "?limit=2&offset=1&order=latest"
+        ).json()
+        assert latest["pagination"]["order"] == "latest"
+        assert [message["content"] for message in latest["messages"]] == [
+            "msg 498",
+            "msg 499",
+        ]
+
+    def test_export_session_streams_bounded_message_pages(self, monkeypatch):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="stream-export", source="cli")
+            db.append_messages_batch(
+                "stream-export",
+                [
+                    {"role": "user", "content": f"msg {i}"}
+                    for i in range(501)
+                ],
+            )
+        finally:
+            db.close()
+
+        calls = []
+        original_get_messages = SessionDB.get_messages
+
+        def tracked_get_messages(self, session_id, *args, **kwargs):
+            calls.append((kwargs.get("limit"), kwargs.get("after_id")))
+            return original_get_messages(self, session_id, *args, **kwargs)
+
+        monkeypatch.setattr(SessionDB, "get_messages", tracked_get_messages)
+        response = self.client.get("/api/sessions/stream-export/export")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["id"] == "stream-export"
+        assert len(payload["messages"]) == 501
+        assert payload["messages"][0]["content"] == "msg 0"
+        assert payload["messages"][-1]["content"] == "msg 500"
+        assert calls == [(500, 0), (500, 500)]
 
 
 

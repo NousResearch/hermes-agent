@@ -252,7 +252,7 @@ class TestRunJobKanbanIsolation:
             },
         )
         monkeypatch.setattr(
-            sched, "_build_job_prompt", lambda job, prerun_script=None: "hi"
+            sched, "_build_job_prompt", lambda job, prerun_script=None, **kw: "hi"
         )
         monkeypatch.setattr(sched, "_resolve_origin", lambda job: None)
         monkeypatch.setattr(sched, "_resolve_delivery_target", lambda job: None)

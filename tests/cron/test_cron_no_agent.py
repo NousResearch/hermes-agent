@@ -105,6 +105,36 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
     assert "RAM 92% on host" in doc
 
 
+def test_run_job_no_agent_reloads_dotenv_before_script(hermes_env, monkeypatch):
+    """Regression: a standalone cron tick process starts without home-channel
+    vars in its environment, and the agent path's per-run dotenv reload never
+    executes for no_agent jobs — delivery home channels stayed unresolved.
+    run_job must load .env at the top of the no_agent branch."""
+    import hermes_cli.env_loader as env_loader
+    from cron.jobs import create_job
+    from cron.scheduler import run_job
+
+    loaded_homes: list = []
+
+    def fake_load(*, hermes_home=None, project_env=None):
+        loaded_homes.append(hermes_home)
+        return []
+
+    monkeypatch.setattr(env_loader, "load_hermes_dotenv", fake_load)
+
+    script_path = hermes_env / "scripts" / "probe.sh"
+    script_path.write_text('#!/bin/bash\necho "ok"\n')
+
+    job = create_job(
+        prompt=None, schedule="every 5m", script="probe.sh", no_agent=True, deliver="local"
+    )
+    success, doc, final_response, error = run_job(job)
+    assert success is True
+    assert error is None
+    assert loaded_homes, "load_hermes_dotenv was not called on the no_agent path"
+    assert str(loaded_homes[0]) == str(hermes_env)
+
+
 # ---------------------------------------------------------------------------
 # _run_job_script: shell-script support
 # ---------------------------------------------------------------------------
@@ -131,3 +161,16 @@ def test_run_job_script_exports_authoritative_runtime_root(hermes_env, tmp_path)
     ok, output = _run_job_script("root.sh", workdir=str(runtime))
     assert ok is True
     assert output == str(runtime)
+
+
+def test_run_job_script_nul_path_fails_cleanly(hermes_env):
+    """Sibling of the lifecycle-guard ingestion fix: a NUL-bearing script
+    value can survive to fire time (the creation-time guard treats it as
+    "nothing to scan"), and ``Path.expanduser()`` raises ValueError — not
+    OSError — on it. The scheduler must fail the run with a report, not
+    crash with an unhandled exception."""
+    from cron.scheduler import _run_job_script
+
+    ok, output = _run_job_script("~user\x00bad.sh")
+    assert ok is False
+    assert "Blocked" in output

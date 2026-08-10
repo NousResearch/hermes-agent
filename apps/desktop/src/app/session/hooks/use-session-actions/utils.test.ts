@@ -5,12 +5,20 @@ import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/c
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $desktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
-import { $currentBranch, $currentCwd, setCurrentBranch, setCurrentCwd } from '@/store/session'
+import {
+  $currentBranch,
+  $currentCwd,
+  setCurrentBranch,
+  setCurrentCwd,
+  setSelectedStoredSessionId,
+  workspaceCwdBelongsToSelectedSession
+} from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import {
   appendLiveSessionProjection,
   applyRuntimeInfo,
+  applyStoredSessionPreviewRuntimeInfo,
   chatMessageArraysEquivalent,
   chatMessagesEquivalent,
   chatPartsEquivalent,
@@ -109,6 +117,93 @@ describe('applyRuntimeInfo foreground scoping', () => {
     expect($currentBranch.get()).toBe('main')
     // ...while the caller still gets everything it needs for its own session.
     expect(patch).toMatchObject({ branch: 'bb/tile', cwd: '/other-worktree' })
+  })
+
+  // #71254: `if (info.cwd)` treated '' as "no opinion", so a detached session
+  // never released the previous project and the Files pane stayed on it forever.
+  it('treats an empty runtime cwd as authoritative and releases ownership', () => {
+    setSelectedStoredSessionId('session-detached')
+    const patch = applyRuntimeInfo({ cwd: '' })
+
+    expect(patch).toMatchObject({ cwd: '' })
+    expect(workspaceCwdBelongsToSelectedSession()).toBe(false)
+  })
+
+  // The release must NOT blank the path: setCurrentCwd persists, so writing ''
+  // would also wipe the remembered workspace that seeds $currentCwd on boot.
+  it('leaves the path in place when releasing, so panes do not collapse', () => {
+    setSelectedStoredSessionId('session-detached')
+    applyRuntimeInfo({ cwd: '' })
+
+    expect($currentCwd.get()).toBe('/main-repo')
+  })
+
+  it('claims ownership for the selected session when a real cwd arrives', () => {
+    setSelectedStoredSessionId('session-b')
+    applyRuntimeInfo({ cwd: '/project-b' })
+
+    expect($currentCwd.get()).toBe('/project-b')
+    expect(workspaceCwdBelongsToSelectedSession()).toBe(true)
+  })
+})
+
+describe('applyStoredSessionPreviewRuntimeInfo workspace paint', () => {
+  beforeEach(() => {
+    setCurrentCwd('/previous-project')
+    setSelectedStoredSessionId(null)
+  })
+
+  afterEach(() => {
+    setCurrentCwd('')
+    setSelectedStoredSessionId(null)
+  })
+
+  // The core of the report: cold resume paints before session.resume returns.
+  it('rebinds the workspace from the selected session row before resume settles', () => {
+    applyStoredSessionPreviewRuntimeInfo({ cwd: '/next-project', model: 'gpt' }, 'session-next')
+    setSelectedStoredSessionId('session-next')
+
+    expect($currentCwd.get()).toBe('/next-project')
+    expect(workspaceCwdBelongsToSelectedSession()).toBe(true)
+  })
+
+  it('releases ownership when the selected session row reports no workspace', () => {
+    applyStoredSessionPreviewRuntimeInfo({ cwd: '', model: 'gpt' }, 'session-detached')
+    setSelectedStoredSessionId('session-detached')
+
+    expect(workspaceCwdBelongsToSelectedSession()).toBe(false)
+  })
+
+  // Regression guard: a session outside the loaded sidebar page has no row at
+  // all. Blanking $currentCwd here would drop file-tree state on every switch
+  // into older history, so the path must survive and ownership carry the signal.
+  it('does not blank the pane when the session row is not loaded', () => {
+    applyStoredSessionPreviewRuntimeInfo(undefined, 'session-off-page')
+    setSelectedStoredSessionId('session-off-page')
+
+    expect($currentCwd.get()).toBe('/previous-project')
+    expect(workspaceCwdBelongsToSelectedSession()).toBe(false)
+  })
+
+  // Regression guard: git_repo_root is documented null for non-git workspaces
+  // and not-yet-backfilled rows, so it must never stand in for a real cwd —
+  // doing so reads as "no workspace" and blanks a pane that was correct.
+  it('uses the row cwd for a non-git workspace with no repo root', () => {
+    applyStoredSessionPreviewRuntimeInfo(
+      { cwd: '/plain/folder', git_repo_root: null, model: 'gpt' } as never,
+      'session-nongit'
+    )
+    setSelectedStoredSessionId('session-nongit')
+
+    expect($currentCwd.get()).toBe('/plain/folder')
+    expect(workspaceCwdBelongsToSelectedSession()).toBe(true)
+  })
+
+  it('clears the branch label so the previous project does not leak across a switch', () => {
+    setCurrentBranch('bb/previous')
+    applyStoredSessionPreviewRuntimeInfo({ cwd: '/next-project', model: 'gpt' }, 'session-next')
+
+    expect($currentBranch.get()).toBe('')
   })
 })
 

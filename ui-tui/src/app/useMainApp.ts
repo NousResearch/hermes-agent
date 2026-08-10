@@ -604,7 +604,7 @@ export function useMainApp(gw: GatewayClient) {
 
   useEffect(() => {
     if (!ui.sid) {
-      patchUiState({ liveSessionCount: 0 })
+      patchUiState({ liveSessionCount: 0, sessionTitle: '' })
 
       return
     }
@@ -1306,6 +1306,7 @@ export function useMainApp(gw: GatewayClient) {
       goodVibesTick,
       lastTurnEndedAt: ui.sid ? lastTurnEndedAt : null,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
+      sessionTitle: ui.sid ? ui.sessionTitle : '',
       showStickyPrompt: !!stickyPrompt,
       statusColor: statusColorOf(ui.status, ui.theme.color),
       stickyPrompt,

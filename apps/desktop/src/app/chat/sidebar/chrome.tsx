@@ -1,8 +1,13 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 
 import { Codicon } from '@/components/ui/codicon'
+import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { RowButton } from '@/components/ui/row-button'
+import { Tip } from '@/components/ui/tooltip'
+import { compactNumber } from '@/lib/format'
 import { cn } from '@/lib/utils'
+import { $sidebarRowMeta } from '@/store/layout'
 
 // Shared, content-agnostic sidebar chrome — used by both the flat session
 // sections and the project/workspace tree, so it lives outside either to keep
@@ -36,7 +41,7 @@ export function SidebarRowStack({ className, ...props }: React.ComponentProps<'d
 
 /** Nested rows (session previews, worktree bodies). */
 export function SidebarRowNest({ className, ...props }: React.ComponentProps<'div'>) {
-  return <SidebarRowStack className={cn('pb-1 pl-4', className)} {...props} />
+  return <SidebarRowStack className={cn('pb-1 pl-2', className)} {...props} />
 }
 
 /**
@@ -44,18 +49,28 @@ export function SidebarRowNest({ className, ...props }: React.ComponentProps<'di
  * the session list. One flat row — a small caption plus a hairline rule — so it
  * groups sessions by recency without adding a level of indentation.
  */
-export function SidebarDateDivider({ className, label, ...props }: React.ComponentProps<'div'> & { label: string }) {
+export function SidebarDateDivider({
+  action,
+  className,
+  label,
+  ...props
+}: React.ComponentProps<'div'> & { action?: React.ReactNode; label: string }) {
   return (
-    <div className={cn('flex select-none items-center gap-2 px-2 pb-0.5 pt-2', className)} {...props}>
+    // group/workspace: a divider heads a group the same way a repo header does,
+    // so it borrows the header's hover-revealed "+" verbatim.
+    <div className={cn('group/workspace flex select-none items-center gap-2 px-2 pb-0.5 pt-2', className)} {...props}>
       <span className="shrink-0 text-[0.64rem] font-semibold uppercase tracking-[0.12em] text-(--ui-text-quaternary)">
         {label}
       </span>
       <span aria-hidden="true" className="h-px flex-1 bg-(--ui-stroke-tertiary)" />
+      {action}
     </div>
   )
 }
 
-/** Outer grid — sole owner of row height. */
+/** Outer grid — sole owner of row height. The trailing `actions` slot is
+ *  marked `data-row-actions` so a row-wide drag gesture can exclude it with
+ *  one selector: it holds real controls, never grab surface. */
 export function SidebarRowShell({
   actions,
   children,
@@ -65,7 +80,11 @@ export function SidebarRowShell({
   return (
     <div className={cn(rowMinH, 'grid grid-cols-[minmax(0,1fr)_auto] items-stretch rounded-md', className)} {...props}>
       {children}
-      {actions ? <div className="flex shrink-0 items-center self-center">{actions}</div> : null}
+      {actions ? (
+        <div className="flex shrink-0 items-center self-center" data-row-actions>
+          {actions}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -102,6 +121,90 @@ export function SidebarRowLead({ className, ...props }: React.ComponentProps<'sp
 /** Standard row label typography. */
 export function SidebarRowLabel({ className, ...props }: React.ComponentProps<'span'>) {
   return <span className={cn(rowLabel, className)} {...props} />
+}
+
+/** What a group's sessions add up to, for the Show options that count something. */
+export interface SidebarGroupTotals {
+  costUsd: number
+  tokens: number
+}
+
+/**
+ * Header for a group of sessions that hangs its rows underneath — a project, a
+ * profile. Row-shaped rather than caption-shaped (that's {@link SidebarDateDivider},
+ * for groupings that only separate), so a group header lines up with the session
+ * rows it heads. `toggle` omitted keeps the caret's space with nothing to reveal.
+ */
+export function SidebarGroupRow({
+  actions,
+  className,
+  label,
+  lead,
+  toggle,
+  totals,
+  ...props
+}: React.ComponentProps<'div'> & {
+  actions?: React.ReactNode
+  label: React.ReactNode
+  lead: React.ReactNode
+  toggle?: { ariaLabel: string; onToggle: () => void; open: boolean }
+  totals?: SidebarGroupTotals
+}) {
+  const rowMeta = useStore($sidebarRowMeta)
+
+  const facts = [
+    totals && rowMeta.includes('tokens') && totals.tokens > 0 ? compactNumber(totals.tokens) : null,
+    // Sub-cent spend rounds to "$0.00", which reads as a bug rather than as a
+    // cheap group — below a cent the header says nothing at all.
+    totals && rowMeta.includes('cost') && totals.costUsd >= 0.01 ? `$${totals.costUsd.toFixed(2)}` : null
+  ].filter(Boolean) as string[]
+
+  return (
+    <SidebarRowShell
+      actions={
+        // The controls overlay the figures rather than sitting beside them: in
+        // flow they hold their width open at all times, which reads as a gap
+        // torn between the total and the row's edge. Same trade the session row
+        // makes with its kebab and age — you read the number or you act on the
+        // group, never both at once.
+        facts.length ? (
+          <div className="relative flex items-center">
+            <span className="min-w-9 whitespace-nowrap text-right text-[0.625rem] leading-none text-(--ui-text-tertiary) transition-opacity group-hover/workspace:opacity-0">
+              {facts.join(' · ')}
+            </span>
+            {actions ? <div className="absolute right-0 flex items-center">{actions}</div> : null}
+          </div>
+        ) : (
+          actions
+        )
+      }
+      className={cn('group/workspace', className)}
+      {...props}
+    >
+      <SidebarRowCluster className="min-w-0 flex-1">
+        {lead}
+        {label}
+        {toggle ? (
+          <Tip label={toggle.ariaLabel}>
+            <button
+              aria-label={toggle.ariaLabel}
+              className="flex flex-1 items-center self-stretch bg-transparent p-0"
+              data-row-actions
+              onClick={toggle.onToggle}
+              type="button"
+            >
+              <DisclosureCaret
+                className="shrink-0 text-(--ui-text-tertiary) opacity-0 transition group-hover/workspace:opacity-100"
+                open={toggle.open}
+              />
+            </button>
+          </Tip>
+        ) : (
+          <span className="flex-1" />
+        )}
+      </SidebarRowCluster>
+    </SidebarRowShell>
+  )
 }
 
 /** Dot ↔ grabber swap for dnd-kit reorder rows. */

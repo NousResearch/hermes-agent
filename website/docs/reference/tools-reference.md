@@ -8,7 +8,7 @@ description: "Authoritative reference for Hermes built-in tools, grouped by tool
 
 This page documents Hermes' built-in tools, grouped by toolset. Availability varies by platform, credentials, and enabled toolsets.
 
-**Quick counts (current registry):** ~82 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 4 Home Assistant tools, 7 terminal tools (`terminal`, `process`, plus desktop-GUI-gated `read_terminal`, `close_terminal`, `open_preview`, `read_preview`, `focus_pane`), 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 12 kanban tools (registered when the kanban dispatcher spawns the agent), 3 project tools (desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo`, `computer_use`, `x_search`).
+**Quick counts (current registry):** ~83 tools — 10 browser tools (core) + 2 CDP-gated browser tools, 4 file tools, 4 Home Assistant tools, 2 terminal tools (`terminal`, `process`), 7 desktop-GUI tools (`read_terminal`, `close_terminal`, `open_preview`, `read_preview`, `read_window_below`, `focus_pane`, `react_to_message` — desktop-app sessions only), 2 web tools, 5 Feishu tools, 7 Spotify tools (registered by the bundled `spotify` plugin), 5 Yuanbao tools, 12 kanban tools (registered when the kanban dispatcher spawns the agent), 3 project tools (desktop/GUI sessions), 2 Discord tools, 3 video tools (`video_generate`, `xai_video_edit`, `xai_video_extend`), and a handful of standalone tools (`memory`, `clarify`, `delegate_task`, `execute_code`, `cronjob`, `session_search`, `skill_view`/`skill_manage`/`skills_list`, `text_to_speech`, `image_generate`, `vision_analyze`, `video_analyze`, `todo`, `computer_use`, `x_search`).
 
 :::tip MCP Tools
 In addition to built-in tools, Hermes can load tools dynamically from MCP servers. MCP tools appear with the prefix `mcp__<server>__` (e.g., `mcp__github__create_issue` for the `github` MCP server). See [MCP Integration](/user-guide/features/mcp) for configuration.
@@ -171,11 +171,22 @@ Tools for driving desktop [Projects](../user-guide/cli.md) — named, multi-fold
 |------|-------------|----------------------|
 | `process` | Manage background processes started with terminal(background=true). Actions: 'list' (show all), 'poll' (check status + new output), 'log' (full output with pagination), 'wait' (block until done or timeout), 'kill' (terminate), 'write' (sen… | — |
 | `terminal` | Execute shell commands on a Linux environment. Filesystem persists between calls. Set `background=true` for long-running servers. Set `notify_on_complete=true` (with `background=true`) to get an automatic notification when the process finishes — no polling needed. Do NOT use cat/head/tail — use read_file. Do NOT use grep/rg/find — use search_files. | — |
-| `read_terminal` | Read what's currently shown in the in-app terminal pane of the Hermes desktop GUI (the embedded shell beside this chat). Desktop-app only. | — |
-| `close_terminal` | Close the read-only terminal tab for a background process in the Hermes desktop GUI. Does NOT kill the process — only drops the tab/view; use process(action='kill') to stop it. Desktop-app only. | — |
-| `open_preview` | Open a web URL, localhost dev-server URL, or file path in the preview pane beside the chat in the Hermes desktop app. Desktop-app only. | — |
-| `read_preview` | Read what's currently shown in the preview pane of the Hermes desktop GUI — the in-app Browser's page text (URL + title + rendered text, pageable with `start`/`count`), or a file/artifact tab's identity. Desktop-app only. | — |
-| `focus_pane` | Reveal and focus a pane in the Hermes desktop app (chat, files, terminal, review, sessions). Desktop-app only. | — |
+
+## `desktop_ui` toolset
+
+Enabled for sessions whose source is the Hermes desktop app, on any backend it
+is connected to (local, SSH, URL, or Hermes Cloud). Absent from CLI, TUI,
+messaging, and cron sessions.
+
+| Tool | Description | Requires environment |
+|------|-------------|----------------------|
+| `read_terminal` | Read what's currently shown in the in-app terminal pane of the Hermes desktop GUI (the embedded shell beside this chat). | — |
+| `close_terminal` | Close the read-only terminal tab for a background process in the Hermes desktop GUI. Does NOT kill the process — only drops the tab/view; use process(action='kill') to stop it. | — |
+| `open_preview` | Open a web URL, localhost dev-server URL, or file path in the preview pane beside the chat in the Hermes desktop app. | — |
+| `read_preview` | Read what's currently shown in the preview pane of the Hermes desktop GUI — the in-app Browser's page text (URL + title + rendered text, pageable with `start`/`count`), or a file/artifact tab's identity. | — |
+| `read_window_below` | Identify the OS window directly underneath the Hermes desktop window — app name, title, bounds (metadata only, never pixels). On macOS, other apps' titles appear only when Screen Recording is already granted; the tool never prompts for it. | — |
+| `focus_pane` | Reveal and focus a pane in the Hermes desktop app (chat, files, terminal, review, sessions). | — |
+| `react_to_message` | React to a message with a single emoji, iMessage-tapback style. Opt-in via Settings → Appearance (`display.message_reactions`). | — |
 
 ## `todo` toolset
 

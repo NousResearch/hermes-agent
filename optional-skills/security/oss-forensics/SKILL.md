@@ -1,10 +1,9 @@
 ---
 name: oss-forensics
-description: |
-  Supply chain investigation, evidence recovery, and forensic analysis for GitHub repositories.
-  Covers deleted commit recovery, force-push detection, IOC extraction, multi-source evidence
-  collection, hypothesis formation/validation, and structured forensic reporting.
-  Inspired by RAPTOR's 1800+ line OSS Forensics system.
+description: "GitHub supply-chain forensics: recovery, IOCs, reporting."
+version: 1.0.0
+author: Teknium (teknium1), Hermes Agent
+license: MIT
 platforms: [linux, macos, windows]
 category: security
 triggers:
@@ -23,6 +22,10 @@ toolsets:
   - web
   - file
   - delegation
+metadata:
+  hermes:
+    tags: [Security, Forensics, GitHub, Supply-Chain]
+    related_skills: []
 ---
 
 # OSS Security Forensics Skill

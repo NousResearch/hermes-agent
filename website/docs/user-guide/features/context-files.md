@@ -27,6 +27,21 @@ Only **one** project context type is loaded per session (first match wins): `.he
 
 `AGENTS.md` is the primary project context file. It tells the agent how your project is structured, what conventions to follow, and any special instructions.
 
+### Directory Chain (git root → working directory)
+
+When your working directory sits inside a git repository, Hermes loads a **merged chain** of `AGENTS.md` files at session start: the git-root `AGENTS.md` first, then the `AGENTS.md` in every intermediate directory down to your working directory. Deeper files appear later in the prompt, so more specific guidance takes precedence. Each file gets its own provenance header (e.g. `## ../../AGENTS.md`), and identical copies along the chain are deduplicated.
+
+```
+monorepo/                   (git root, cwd = packages/webapp/)
+├── AGENTS.md              ← Loaded first (repo-wide conventions)
+└── packages/
+    ├── AGENTS.md          ← Loaded second
+    └── webapp/
+        └── AGENTS.md      ← Loaded last (most specific, takes precedence)
+```
+
+Outside a git repository, only the working directory itself is checked — parents are never consulted, so an `AGENTS.md` planted in `/tmp` or `$HOME` can't leak into unrelated sessions.
+
 ### Progressive Subdirectory Discovery
 
 At session start, Hermes loads the `AGENTS.md` from your working directory into the system prompt. As the agent navigates into subdirectories during the session (via `read_file`, `terminal`, `search_files`, etc.), it **progressively discovers** context files in those directories and injects them into the conversation at the moment they become relevant.

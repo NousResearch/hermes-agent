@@ -66,7 +66,6 @@ def _fake_psutil(monkeypatch, *, wait_gone=None, wait_alive=None):
 
 class TestReapGatewayChildren:
     def test_reaps_orphaned_children_sigterm_then_wait(self, monkeypatch):
-        monkeypatch.setattr(status, "_IS_WINDOWS", False)
         fake = _fake_psutil(monkeypatch)
         orphans = [_FakeChild(101, ppid=1), _FakeChild(102, ppid=1)]
 
@@ -78,7 +77,6 @@ class TestReapGatewayChildren:
         fake.wait_procs.assert_called_once()
 
     def test_survivors_of_sigterm_get_sigkill(self, monkeypatch):
-        monkeypatch.setattr(status, "_IS_WINDOWS", False)
         stubborn = _FakeChild(103, ppid=1)
         _fake_psutil(monkeypatch, wait_gone=[], wait_alive=[stubborn])
 
@@ -91,7 +89,6 @@ class TestReapGatewayChildren:
 
 class TestSnapshotGatewayChildren:
     def test_snapshot_walks_descendants_recursively(self, monkeypatch):
-        monkeypatch.setattr(status, "_IS_WINDOWS", False)
         fake = _fake_psutil(monkeypatch)
         kids = [_FakeChild(201), _FakeChild(202)]
         fake.Process.return_value.children.return_value = kids

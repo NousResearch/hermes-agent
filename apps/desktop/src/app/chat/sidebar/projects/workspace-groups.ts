@@ -2,6 +2,8 @@ import type { HermesGitWorktree } from '@/global'
 import type { ProjectInfo, SessionInfo } from '@/hermes'
 import { normalize } from '@/lib/text'
 
+import { rankSessions } from '../order'
+
 // Session grouping is now computed authoritatively on the backend
 // (`tui_gateway/project_tree.py`, exposed via `projects.tree` /
 // `projects.project_sessions`). The desktop is a thin renderer: this module
@@ -26,14 +28,8 @@ export interface SidebarSessionGroup {
   // worktrees (`<repo>/.worktrees/t_*`) into one row, so a heavy board doesn't
   // spray hundreds of throwaway branch lanes across the sidebar.
   isKanban?: boolean
-  loadingMore?: boolean
   mode?: 'profile' | 'source' | 'workspace'
-  onLoadMore?: () => void
   sourceId?: string
-  /** Profile lanes only: the backend page was capped, so more rows exist on
-   *  disk than were loaded. Replaces the old exact `totalCount`, which cost a
-   *  COUNT(*) per profile on every sidebar refresh just to render `n/total`. */
-  hasMore?: boolean
 }
 
 /** A repo node: holds its branch/worktree lanes (`repo -> lane -> sessions`). */
@@ -62,6 +58,10 @@ export interface SidebarProjectTree {
   isNoProject?: boolean
   repos: SidebarWorkspaceTree[]
   sessionCount: number
+  // Tokens and spend over the same sessions `sessionCount` counts, summed by
+  // the backend — the tree only carries a preview of the rows themselves.
+  totalTokens?: number
+  totalCostUsd?: number
   // Max activity timestamp across the project's sessions (overview sort key).
   lastActive?: number
   // Up to N most-recent sessions for the overview preview (set by `projects.tree`).
@@ -700,13 +700,19 @@ export function overlayLiveLanes(
   return { ...project, repos, sessionCount: repos.reduce((n, repo) => n + repo.sessionCount, 0) }
 }
 
+interface PreviewOverlayOptions {
+  removed?: ReadonlySet<string>
+  /** The active sort key as an id order; recency when empty. */
+  rankIds?: string[]
+}
+
 /** Merge live sessions into per-project overview previews, keyed by project id. */
 export function overlayLivePreviews(
   projects: SidebarProjectTree[],
   live: SessionInfo[],
   explicitProjects: ProjectInfo[],
   limit: number,
-  removed: ReadonlySet<string> = new Set()
+  { removed = NO_REMOVED, rankIds }: PreviewOverlayOptions = {}
 ): Record<string, SessionInfo[]> {
   const byProject = new Map<string, SessionInfo[]>()
 
@@ -746,7 +752,9 @@ export function overlayLivePreviews(
       }
     }
 
-    out[node.id] = [...map.values()].sort((a, b) => sessionRecency(b) - sessionRecency(a)).slice(0, limit)
+    const pool = [...map.values()].sort((a, b) => sessionRecency(b) - sessionRecency(a))
+
+    out[node.id] = rankSessions(pool, rankIds).slice(0, limit)
   }
 
   return out

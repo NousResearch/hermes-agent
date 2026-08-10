@@ -32,7 +32,9 @@ Usage:
 
 Environment:
     HERMES_TEST_WORKERS  Override worker count (default: os.cpu_count())
-    HERMES_TEST_PATHS    Override discovery roots (colon-sep, default: 'tests')
+    HERMES_TEST_PATHS    Override discovery roots (colon-sep; on Windows
+                         ';' also works and drive letters are handled;
+                         default: 'tests')
 
 Exit code: 0 if every file's pytest exited 0; 1 otherwise.
 """
@@ -42,6 +44,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -98,6 +101,76 @@ _DEFAULT_FILE_RETRIES = 1
 # wall-clock seconds. Used by ``--slice`` to distribute files across
 # CI jobs by estimated total time, so no one job gets all the slow files.
 _DURATIONS_FILE = "test_durations.json"
+
+
+def _split_pathspec(value: str) -> List[str]:
+    """Split a separator-joined path list (``--paths``/``--files``/
+    ``HERMES_TEST_PATHS``) into individual paths.
+
+    POSIX: ``:``-separated, as documented.
+
+    Windows: ``;`` (``os.pathsep``) and ``:`` are both accepted as
+    separators, but a ``:`` that forms a drive letter (``C:\\...`` or
+    ``C:/...``) stays glued to its path — a naive ``split(":")`` turns
+    ``C:\\repo\\tests`` into ``['C', '\\repo\\tests']``, where the bogus
+    ``C`` becomes a phantom discovery root and the rooted remainder only
+    resolves by accident of ``Path.__truediv__`` re-anchoring it onto
+    ``repo_root``'s drive.
+    """
+    if sys.platform != "win32":
+        return [p for p in value.split(":") if p.strip()]
+    parts: List[str] = []
+    for chunk in value.split(";"):
+        raw = chunk.split(":")
+        i = 0
+        while i < len(raw):
+            part = raw[i]
+            if (
+                len(part) == 1
+                and part.isalpha()
+                and i + 1 < len(raw)
+                and raw[i + 1][:1] in ("\\", "/")
+            ):
+                part = f"{part}:{raw[i + 1]}"
+                i += 1
+            parts.append(part)
+            i += 1
+    return [p for p in parts if p.strip()]
+
+# Host-OS gating (see the ``_OS_MARKS`` block in tests/conftest.py): tests
+# marked for another host are collected and SKIPPED by the conftest hook —
+# this runner never executes them, by construction. The summary calls that
+# out explicitly so a local run isn't misread as covering macOS/Windows
+# behaviour, and names the CI lane where those tests actually execute.
+_OS_MARKERS = {
+    "linux_only": ("linux", "the main Linux CI lane"),
+    "macos_only": ("darwin", "the tests-os CI lane (macos-latest)"),
+    "windows_only": ("win32", "the tests-os CI lane (windows-latest)"),
+}
+
+
+def _off_host_marker_files(files: List[Path]) -> dict[str, int]:
+    """Count discovered files referencing each marker for an OS we are not on.
+
+    Whole-word text match, same approach as scripts/ci/list_os_marked_tests.py:
+    over-counting a prose mention is harmless here (the note is informational);
+    what matters is never reporting 0 while gated tests exist.
+    """
+    off_host = {
+        marker: re.compile(rf"\b{marker}\b")
+        for marker, (host_prefix, _) in _OS_MARKERS.items()
+        if not sys.platform.startswith(host_prefix)
+    }
+    counts = {marker: 0 for marker in off_host}
+    for path in files:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for marker, pattern in off_host.items():
+            if pattern.search(text):
+                counts[marker] += 1
+    return {marker: n for marker, n in counts.items() if n}
 
 
 def _approximately_count_tests(
@@ -384,8 +457,6 @@ def _parse_pytest_summary(output: str) -> dict[str, int]:
     Returns a dict with keys ``passed``, ``failed``, ``skipped``, ``errors``,
     ``xfailed``, ``xpassed`` (only keys found in the output are present).
     """
-    import re
-
     result: dict[str, int] = {}
     # Walk backwards from the end — the summary line is always near the tail.
     for line in reversed(output.splitlines()):
@@ -689,7 +760,11 @@ def main() -> int:
     parser.add_argument(
         "--paths",
         default=os.environ.get("HERMES_TEST_PATHS", ":".join(_DEFAULT_ROOTS)),
-        help="Colon-separated discovery roots (default: 'tests')",
+        help=(
+            "Colon-separated discovery roots (default: 'tests'). On "
+            "Windows, ';' also separates and drive letters (C:\\...) are "
+            "kept intact."
+        ),
     )
     parser.add_argument(
         "--include-integration",
@@ -748,9 +823,10 @@ def main() -> int:
         "--files",
         metavar="LIST",
         help=(
-            "Explicit colon-separated list of test files to run. Bypasses "
-            "discovery entirely — used by CI matrix jobs that receive their "
-            "file list from the generate job."
+            "Explicit colon-separated list of test files to run (on "
+            "Windows, ';' also separates and drive letters are kept "
+            "intact). Bypasses discovery entirely — used by CI matrix "
+            "jobs that receive their file list from the generate job."
         ),
     )
     parser.add_argument(
@@ -885,7 +961,7 @@ def main() -> int:
 
     # --files: explicit file list from the CI generate job — skip discovery.
     if args.files:
-        files = [repo_root / f for f in args.files.split(":") if f.strip()]
+        files = [repo_root / f for f in _split_pathspec(args.files)]
         roots = []
     else:
         # Resolve discovery roots: positional path args override --paths if any
@@ -893,7 +969,7 @@ def main() -> int:
         if args.paths_positional:
             roots = [repo_root / p for p in args.paths_positional]
         else:
-            roots = [repo_root / p for p in args.paths.split(":") if p]
+            roots = [repo_root / p for p in _split_pathspec(args.paths)]
 
         if args.include_integration:
             # Caller takes responsibility — typically used via explicit -k filter.
@@ -963,6 +1039,7 @@ def main() -> int:
     fail_count = 0
     tests_passed = 0
     tests_failed = 0
+    tests_skipped = 0
     # Every collected outcome, not just pass/fail: a legitimately all-skipped
     # (platform-gated) file reports "2 skipped" and must NOT trip the
     # nothing-ran guard, whereas a file that died before collection reports
@@ -971,7 +1048,7 @@ def main() -> int:
     lock = threading.Lock()
 
     def _on_done(file: Path, started_at: float, fut: "Future[Tuple[Path, int, str, Dict[str, int], float]]") -> None:
-        nonlocal files_done, tests_done, pass_count, fail_count, tests_passed, tests_failed
+        nonlocal files_done, tests_done, pass_count, fail_count, tests_passed, tests_failed, tests_skipped
         nonlocal tests_collected
         n_tests = test_counts.get(file, 0)
         try:
@@ -996,6 +1073,7 @@ def main() -> int:
             # Accumulate test-level counts from parsed summary.
             tests_passed += summary.get("passed", 0)
             tests_failed += summary.get("failed", 0)
+            tests_skipped += summary.get("skipped", 0)
             tests_collected += sum(
                 summary.get(k, 0)
                 for k in ("passed", "failed", "skipped", "errors", "xfailed", "xpassed")
@@ -1036,7 +1114,22 @@ def main() -> int:
     elapsed = time.monotonic() - started
     print()
     pct = min(100, (tests_done / approx_total_tests * 100)) if approx_total_tests else 0
-    print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed ({pct:.0f}% complete) in {elapsed:.1f}s ({args.jobs} workers) ===")
+    skipped_note = f", {tests_skipped} skipped" if tests_skipped else ""
+    print(f"=== Summary: {len(files)} files, {tests_passed} tests passed, {tests_failed} failed{skipped_note} ({pct:.0f}% complete) in {elapsed:.1f}s ({args.jobs} workers) ===")
+
+    # Host-OS gating note: tests marked for another OS were skipped by the
+    # conftest hook, not run. Say so explicitly — a green local run on Linux
+    # proves nothing about the macos_only/windows_only tests, and the reader
+    # should know where they DO run rather than misreading skips as coverage.
+    off_host = _off_host_marker_files(files)
+    if off_host:
+        print()
+        for marker, n in sorted(off_host.items()):
+            _, lane = _OS_MARKERS[marker]
+            print(
+                f"  note: {marker} tests (in {n} file{'s' if n != 1 else ''}) were "
+                f"SKIPPED on this host ({sys.platform}); they run on {lane}."
+            )
 
     # Zero tests collected across the WHOLE run is NOT a pass. Per-file rc=5
     # is deliberately tolerated above (platform-gated files), but if NOTHING

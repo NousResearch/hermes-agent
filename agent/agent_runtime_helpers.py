@@ -2370,6 +2370,17 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     # copy locks the contract so future transport/keepalive work can't reintroduce
     # the same class of bug.
     client_kwargs = dict(client_kwargs)
+    # The MoA virtual provider has no real OpenAI wire endpoint - the facade
+    # *is* the client. Rebuilding a native OpenAI client while
+    # agent.provider == "moa" (client replacement, stream-retry pool cleanup,
+    # credential rotation, fallback+restore) drops the facade: the next primary
+    # call either raises a `_moa_prepared_request` TypeError (#78382) or, when
+    # _client_kwargs carry an unrelated relay base_url, leaks the request to a
+    # foreign gateway. Rebuild the facade instead (build_moa_facade also
+    # re-wires the reference relay, see #53802).
+    if (getattr(agent, "provider", "") or "").strip().lower() == "moa":
+        from agent.moa_loop import build_moa_facade
+        return build_moa_facade(agent, getattr(agent, "model", None) or "default")
     ssl_ca_cert = client_kwargs.pop("ssl_ca_cert", None)
     ssl_verify_cfg = client_kwargs.pop("ssl_verify", None)
     httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)

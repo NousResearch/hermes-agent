@@ -296,7 +296,8 @@ def _remembered_consent(session_key: str, choice, remember_key: str | None, unre
 def request_elicitation_consent(message: str, description: str, *,
                                 timeout_seconds: int | None = None,
                                 surface: str = "mcp-elicitation", title: str = "Confirm this action?",
-                                remember_key: str | None = None) -> str:
+                                remember_key: str | None = None,
+                                approval_callback=None) -> str:
     """Route an MCP elicitation request to the surface owning the active session:
     gateway sessions through ``_await_gateway_decision``, CLI/TUI through
     ``prompt_dangerous_approval``. Always fails closed: a missing notify_cb in a
@@ -366,7 +367,7 @@ def request_elicitation_consent(message: str, description: str, *,
         # Pass the agent thread's panel callback: without it prompt_toolkit fails the prompt closed unseen.
         choice = prompt_dangerous_approval(message, description, timeout_seconds=timeout_seconds,
                                            allow_permanent=scoped, allow_session=scoped, title=title,
-                                           approval_callback=_get_approval_callback())
+                                           approval_callback=approval_callback or _get_approval_callback())
         hook_choice = choice
     except Exception as exc:
         logger.error("Elicitation CLI prompt failed: %s", exc, exc_info=True)

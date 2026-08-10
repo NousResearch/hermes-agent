@@ -244,5 +244,7 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   // Code. Plain Ctrl+C also copies when text is selected (Windows Terminal /
   // Tabby behavior); with no selection it stays SIGINT, so it isn't listed.
   { id: 'view.terminalCopy', category: 'view', keys: IS_MAC ? ['mod+c'] : ['mod+shift+c'] },
-  { id: 'view.terminalPaste', category: 'view', keys: IS_MAC ? ['mod+v'] : ['mod+shift+v'] }
+  { id: 'view.terminalPaste', category: 'view', keys: IS_MAC ? ['mod+v'] : ['mod+shift+v'] },
+  // Global OS chord registered in main while HUD mode is up.
+  { id: 'hud.snapToPointer', category: 'view', keys: ['mod+shift+g'] }
 ]

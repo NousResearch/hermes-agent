@@ -11,6 +11,7 @@ import { type PointerEvent as ReactPointerEvent, useCallback, useMemo, useRef, u
 
 import { beginSashDrag, endSashDrag } from '@/components/pane-shell/geometry'
 import { useContributions } from '@/contrib/react/use-contributions'
+import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
 import { $paneStates, type PaneStateSnapshot, setPaneHeightOverride, setPaneWidthOverride } from '@/store/panes'
@@ -258,6 +259,10 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
       document.body.style.cursor = horizontal ? 'col-resize' : 'row-resize'
       document.body.style.userSelect = 'none'
+      // Webview/iframe guests must not swallow the gesture — without this the
+      // drag froze the moment the pointer entered the in-app browser, so the
+      // seam could only shrink it a few px per press.
+      const releaseGuests = guardGuestPointers()
       // Suppress :root geometry-var writes for the gesture (see geometry.ts —
       // each one restyles the whole document; they republish on release).
       beginSashDrag()
@@ -323,13 +328,22 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
 
       const resize = rafCoalesce(previewShift)
       let lastShift: null | number = null
+      let done = false
 
       const onMove = (ev: PointerEvent) => {
         lastShift = Math.max(lo, Math.min(hi, (horizontal ? ev.clientX : ev.clientY) - start))
         resize.push(lastShift)
       }
 
+      // Ends through several racing paths (pointerup, pointercancel, window
+      // blur, lostpointercapture — releasePointerCapture below fires the
+      // latter re-entrantly), so it must run exactly once.
       const cleanup = () => {
+        if (done) {
+          return
+        }
+
+        done = true
         resize.finish()
 
         if (lastShift !== null) {
@@ -367,6 +381,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         // Geometry vars re-enable AFTER the final store commit above, so the
         // release publishes exactly one fresh measurement.
         endSashDrag()
+        releaseGuests()
         document.body.style.cursor = restoreCursor
         document.body.style.userSelect = restoreSelect
 
@@ -379,12 +394,16 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
         window.removeEventListener('pointermove', onMove, true)
         window.removeEventListener('pointerup', cleanup, true)
         window.removeEventListener('pointercancel', cleanup, true)
+        window.removeEventListener('blur', cleanup)
+        handle.removeEventListener('lostpointercapture', cleanup)
         persistTree()
       }
 
       window.addEventListener('pointermove', onMove, true)
       window.addEventListener('pointerup', cleanup, true)
       window.addEventListener('pointercancel', cleanup, true)
+      window.addEventListener('blur', cleanup)
+      handle.addEventListener('lostpointercapture', cleanup)
     },
     // trackCtx is derived state rebuilt per render; the drag captures it once.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -19031,6 +19031,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     _hyg_in_place = bool(
                                         getattr(_hyg_agent, "_last_compaction_in_place", False)
                                     )
+                                    # Anti-regression guard: never persist a
+                                    # compression that did not shrink the
+                                    # transcript. A summary that is larger than
+                                    # the middle it replaces would GROW the
+                                    # session instead of reclaiming it (observed:
+                                    # 427K -> 598K). Compare like-for-like (both
+                                    # rough estimates) so an "actual vs
+                                    # estimate" measurement mismatch can't
+                                    # produce a false verdict. On growth, keep
+                                    # the original transcript untouched.
+                                    if (
+                                        _hyg_rotated
+                                    ) and estimate_messages_tokens_rough(
+                                        _compressed
+                                    ) > estimate_messages_tokens_rough(history):
+                                        logger.warning(
+                                            "Gateway hygiene compression for session %s "
+                                            "would grow transcript (~%s -> ~%s tokens); "
+                                            "keeping the original transcript unchanged",
+                                            session_entry.session_id,
+                                            f"{estimate_messages_tokens_rough(history):,}",
+                                            f"{estimate_messages_tokens_rough(_compressed):,}",
+                                        )
+                                        _hyg_rotated = False
+                                        _compressed = history
                                     # Only rewrite the transcript when rotation produced
                                     # a NEW session id.  In-place compaction does NOT
                                     # need a rewrite: archive_and_compact() has already

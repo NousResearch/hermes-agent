@@ -265,8 +265,12 @@ class TestNonRegularFileReads(unittest.TestCase):
 
             result = self._read_within_deadline(fifo_path, "fifo_read_test")
 
-        self.assertIn("error", result)
-        self.assertIn("not a regular file", result["error"])
+        # The tool layer intercepts first with a success=False NOTE (a fact
+        # about the file, not an error — merged stat-guard design); the
+        # shell-layer sentinel behind it errors. Accept either surface.
+        surface = result.get("error") or result.get("note") or ""
+        self.assertTrue(surface, f"expected error or note, got: {result}")
+        self.assertIn("not a regular file", surface)
 
     def test_read_file_tool_on_directory_errors_instead_of_blocking(self):
         with tempfile.TemporaryDirectory() as tmpdir:

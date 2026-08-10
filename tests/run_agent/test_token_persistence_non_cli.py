@@ -2,6 +2,9 @@ from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock, patch
 import json
 import sys
+from pathlib import Path
+
+import pytest
 
 from run_agent import AIAgent
 
@@ -129,3 +132,58 @@ def test_sequential_session_search_forwards_detail(monkeypatch):
     assert captured["db"] is session_db
     assert captured["query"] == "Hermes"
     assert captured["detail"] == "full"
+
+
+@pytest.mark.parametrize("execution_path", ["inline", "sequential"])
+def test_session_search_uses_requested_profile_database(
+    monkeypatch, tmp_path, execution_path
+):
+    """Both public agent dispatch paths search only the requested profile."""
+    from hermes_state import SessionDB
+
+    hermes_home = tmp_path / ".hermes"
+    profile_home = hermes_home / "profiles" / "llm-wiki"
+    profile_home.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    current_db = SessionDB(hermes_home / "state.db")
+    current_db.create_session("default-session", source="gateway")
+    current_db.append_message(
+        "default-session", role="user", content="weekly report default"
+    )
+    current_db._conn.commit()
+
+    profile_db = SessionDB(profile_home / "state.db")
+    profile_db.create_session("profile-session", source="cli")
+    profile_db.append_message(
+        "profile-session", role="user", content="weekly report llm wiki"
+    )
+    profile_db._conn.commit()
+    profile_db.close()
+
+    agent = _make_agent(current_db, platform="acp")
+    tool_args = {"query": "weekly report", "profile": "llm-wiki"}
+
+    try:
+        if execution_path == "inline":
+            raw_result = agent._invoke_tool("session_search", tool_args, "task-id")
+        else:
+            tool_call = SimpleNamespace(
+                id="session-search-1",
+                function=SimpleNamespace(
+                    name="session_search", arguments=json.dumps(tool_args)
+                ),
+            )
+            messages = []
+            agent._execute_tool_calls_sequential(
+                SimpleNamespace(tool_calls=[tool_call]), messages, "task-id"
+            )
+            raw_result = messages[-1]["content"]
+    finally:
+        current_db.close()
+
+    result = json.loads(raw_result)
+    assert result["success"] is True
+    assert [entry["session_id"] for entry in result["results"]] == ["profile-session"]
+    assert result["results"][0]["link"] == "@session:llm-wiki/profile-session"

@@ -100,13 +100,22 @@ def _session_search(agent, args: dict, ctx: InlineToolContext) -> Any:
 
         return json.dumps({"success": False, "error": format_session_db_unavailable()})
     return _call_tool(
-        "tools.session_search_tool", "session_search", args,
+        "tools.session_search_tool",
+        "session_search",
+        args,
         (
-            ("query", "query", ""), ("role_filter", "role_filter"), ("limit", "limit", 3),
-            ("session_id", "session_id"), ("around_message_id", "around_message_id"),
-            ("window", "window", 5), ("sort", "sort"), ("detail", "detail", "adaptive"),
+            ("query", "query", ""),
+            ("role_filter", "role_filter"),
+            ("limit", "limit", 3),
+            ("session_id", "session_id"),
+            ("around_message_id", "around_message_id"),
+            ("window", "window", 5),
+            ("sort", "sort"),
+            ("profile", "profile"),
+            ("detail", "detail", "adaptive"),
         ),
-        db=session_db, current_session_id=agent.session_id,
+        db=session_db,
+        current_session_id=agent.session_id,
     )
 
 

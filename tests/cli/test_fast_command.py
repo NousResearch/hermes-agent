@@ -1,5 +1,6 @@
 """Tests for the /fast CLI command and service-tier config handling."""
 
+import copy
 import unittest
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -29,6 +30,21 @@ class TestParseServiceTierConfig(unittest.TestCase):
         self.assertEqual(self._parse("fast"), "priority")
         self.assertEqual(self._parse("priority"), "priority")
 
+    def test_invocation_override_wins_over_persisted_default(self):
+        cli_mod = _import_cli()
+        config = copy.deepcopy(cli_mod.CLI_CONFIG)
+        config["agent"]["service_tier"] = "fast"
+
+        with patch.object(cli_mod, "CLI_CONFIG", config):
+            cli = cli_mod.HermesCLI(service_tier="normal", compact=True)
+
+        self.assertIsNone(cli.service_tier)
+
+        config["agent"]["service_tier"] = "normal"
+        with patch.object(cli_mod, "CLI_CONFIG", config):
+            cli = cli_mod.HermesCLI(service_tier="fast", compact=True)
+
+        self.assertEqual(cli.service_tier, "priority")
 
 
 class TestHandleFastCommand(unittest.TestCase):

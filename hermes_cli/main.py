@@ -2751,6 +2751,7 @@ def cmd_chat(args):
         "model": args.model,
         "provider": getattr(args, "provider", None),
         "reasoning": getattr(args, "reasoning", None),
+        "service_tier": getattr(args, "service_tier", None),
         "toolsets": args.toolsets,
         "skills": getattr(args, "skills", None),
         "verbose": getattr(args, "verbose", None),

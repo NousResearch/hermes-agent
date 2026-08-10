@@ -226,6 +226,20 @@ up on the next tick (60s by default).
 kanban:
   dispatch_in_gateway: true        # default
   dispatch_interval_seconds: 60    # default
+  service_tier: ""                 # empty = inherit each assignee profile
+```
+
+Set `kanban.service_tier` to `normal` or `fast` when unattended workers should
+use a different request tier from ordinary conversations. The override applies
+only to dispatcher-spawned workers; an empty or omitted value preserves the
+existing behavior and inherits the assignee profile's `agent.service_tier`.
+For example, this keeps chats fast while Kanban workers use the normal tier:
+
+```yaml
+agent:
+  service_tier: fast
+kanban:
+  service_tier: normal
 ```
 
 Override the config flag at runtime via `HERMES_KANBAN_DISPATCH_IN_GATEWAY=0`
@@ -583,6 +597,7 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
+| `service_tier` | `""` | Request tier for dispatcher-spawned workers: `fast` or `normal`. Empty = inherit each assignee profile's `agent.service_tier`. |
 | `auto_subscribe_on_create` | `true` | When a worker calls `kanban_create` from inside a session with a persistent delivery channel (messaging gateway or TUI), the originating session is auto-subscribed to the new task's completion/block events. The dispatcher still drives the delivery — this only changes whether the caller's chat/key shows up in the notify-sub table. Set to `false` to require explicit `kanban_notify-subscribe` calls per task. |
 
 And the two auxiliary LLM slots:

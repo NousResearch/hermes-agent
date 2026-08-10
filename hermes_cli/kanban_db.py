@@ -8784,6 +8784,36 @@ def _positive_int(value: Any, default: int, *, minimum: int = 1) -> int:
     return parsed if parsed >= minimum else default
 
 
+def kanban_service_tier_config(kanban_cfg: Optional[dict] = None) -> Optional[str]:
+    """Return a worker-only ``fast`` / ``normal`` invocation override.
+
+    An absent or empty value deliberately returns ``None`` so dispatched
+    workers preserve the historical behavior and inherit their assignee
+    profile's ``agent.service_tier``. Invalid values are ignored with a warning
+    rather than silently forcing a billing-sensitive request tier.
+    """
+    if kanban_cfg is None:
+        try:
+            from hermes_cli.config import load_config
+
+            kanban_cfg = (load_config().get("kanban") or {})
+        except Exception:
+            kanban_cfg = {}
+    raw = (kanban_cfg or {}).get("service_tier")
+    value = str(raw or "").strip().lower()
+    if not value:
+        return None
+    if value in {"fast", "priority", "on"}:
+        return "fast"
+    if value in {"normal", "default", "standard", "off", "none"}:
+        return "normal"
+    _log.warning(
+        "Unknown kanban.service_tier %r; inheriting the assignee profile setting",
+        raw,
+    )
+    return None
+
+
 def worker_log_rotation_config(kanban_cfg: Optional[dict] = None) -> tuple[int, int]:
     """Return ``(rotate_bytes, backup_count)`` for worker log rotation.
 
@@ -9228,11 +9258,17 @@ def _default_spawn(
     # branch, not a nested one.
     if task.reasoning_effort:
         cmd.extend(["--reasoning", task.reasoning_effort])
+    # Config-level worker service tier. This is independent of per-task model
+    # and reasoning controls; absent config intentionally adds no flag so the
+    # assignee profile keeps its existing agent.service_tier behavior.
+    service_tier = kanban_service_tier_config()
     worker_toolsets = _resolve_worker_cli_toolsets(env.get("HERMES_HOME"))
     if worker_toolsets:
         cmd.extend(["--toolsets", ",".join(worker_toolsets)])
+    cmd.append("chat")
+    if service_tier:
+        cmd.extend(["--service-tier", service_tier])
     cmd.extend([
-        "chat",
         "-q", prompt,
     ])
     if task.goal_mode:

@@ -4270,6 +4270,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         toolsets: List[str] = None,
         provider: str = None,
         reasoning: str = None,
+        service_tier: str = None,
         api_key: str = None,
         base_url: str = None,
         max_turns: int = None,
@@ -4288,6 +4289,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             toolsets: List of toolsets to enable (default: all)
             provider: Inference provider ("auto", "openrouter", "nous", "openai-codex", "zai", "kimi-coding", "minimax", "minimax-cn")
             reasoning: Reasoning effort override for this run (none|minimal|low|medium|high|xhigh|max|ultra). Wins over config.
+            service_tier: Service tier override for this run (fast|normal). Wins over config.
             api_key: API key (default: from environment)
             base_url: API base URL (default: OpenRouter)
             max_turns: Maximum tool-calling iterations shared with subagents (default: 500)
@@ -4577,6 +4579,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
         )
+        # An invocation-scoped tier (used by Kanban workers) wins without
+        # persisting into the assignee profile. ``normal`` intentionally maps
+        # to None, overriding a configured ``fast`` value for this process.
+        if service_tier is not None and str(service_tier).strip():
+            _raw_service_tier = str(service_tier).strip().lower()
+            if _raw_service_tier in {
+                "fast", "priority", "on",
+                "normal", "default", "standard", "off", "none",
+            }:
+                self.service_tier = _parse_service_tier_config(service_tier)
+            else:
+                logger.warning(
+                    "Unknown --service-tier '%s', keeping the configured tier",
+                    service_tier,
+                )
         
         # OpenRouter provider routing preferences
         pr = CLI_CONFIG.get("provider_routing", {}) or {}
@@ -18177,6 +18194,7 @@ def main(
     model: str = None,
     provider: str = None,
     reasoning: str = None,
+    service_tier: str = None,
     api_key: str = None,
     base_url: str = None,
     max_turns: int = None,
@@ -18321,6 +18339,7 @@ def main(
         toolsets=toolsets_list,
         provider=provider,
         reasoning=reasoning,
+        service_tier=service_tier,
         api_key=api_key,
         base_url=base_url,
         max_turns=max_turns,

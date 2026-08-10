@@ -72,6 +72,6 @@ jobs:
           COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
           COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
         run: |
-          python3 scripts/ci/live_comment.py \
+          python3 -u scripts/ci/live_comment.py \
             --interval 15 \
             --timeout 3000

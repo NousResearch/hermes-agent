@@ -676,6 +676,7 @@ const BOOT_FAKE_STEP_MS = (() => {
 })()
 
 const APP_NAME = process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
+const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 
@@ -9377,6 +9378,7 @@ function spawnHudWindow(sessionId, profile) {
     ...hudBounds(),
     minWidth: 380,
     minHeight: 160,
+    title: HUD_WINDOW_TITLE,
     frame: false,
     transparent: true,
     // NOT resizable. A transparent frameless window on Windows keeps a

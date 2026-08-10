@@ -8765,6 +8765,14 @@ def _validate_llm_response(
             f"Auxiliary {task or 'call'}: LLM returned None response"
         )
     from agent.aux_accounting import record_aux_usage
+    # Account only accepted payloads. A router shim is an HTTP-success response
+    # but contains no generated result and must remain eligible for fallback.
+    from agent.chat_completion_validation import classify_chat_completion_response
+    invalid_reason = classify_chat_completion_response(response)
+    if invalid_reason == "router_timeout_shim":
+        raise RuntimeError(
+            f"Auxiliary {task or 'call'}: LLM returned router timeout shim"
+        )
     record_aux_usage(response, task, provider=provider, base_url=base_url)
     # Allow SimpleNamespace responses from adapters (CodexAuxiliaryClient,
     # AnthropicAuxiliaryClient) — they have .choices[0].message.

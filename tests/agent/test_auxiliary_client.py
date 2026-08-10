@@ -4620,3 +4620,16 @@ class TestFastModelTier:
             _FAST_MODEL_TASKS
         )
         assert not overlap
+def test_auxiliary_validation_rejects_router_timeout_shim():
+    """Auxiliary consumers must send HTTP-success timeout shims into recovery."""
+    from agent.auxiliary_client import _validate_llm_response
+
+    response = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(
+            content="Connect timeout, please try again later.", tool_calls=None,
+        ))],
+        usage=SimpleNamespace(completion_tokens=0),
+    )
+
+    with pytest.raises(RuntimeError, match="router timeout shim"):
+        _validate_llm_response(response, task="compression")

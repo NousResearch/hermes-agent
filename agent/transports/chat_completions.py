@@ -12,6 +12,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 import json
 from typing import Any, Dict
 
+from agent.chat_completion_validation import is_valid_chat_completion_response
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.reasoning_effort import (
     KIMI_K3_EFFORTS,
@@ -90,32 +91,6 @@ def _add_prompt_cache_key(
     )
     if cache_key:
         api_kwargs["prompt_cache_key"] = cache_key
-
-
-_ROUTER_TIMEOUT_SHIM = "Connect timeout, please try again later."
-
-
-def _has_positive_completion_tokens(usage: Any) -> bool:
-    """Return whether a response usage object proves text was generated."""
-    for field in ("completion_tokens", "output_tokens"):
-        value = usage.get(field) if isinstance(usage, dict) else getattr(usage, field, None)
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
-            return True
-    return False
-
-
-def _is_router_timeout_shim(response: Any) -> bool:
-    """Recognize a router failure encoded as a successful ChatCompletion."""
-    choices = getattr(response, "choices", None)
-    if not isinstance(choices, list) or len(choices) != 1:
-        return False
-    message = getattr(choices[0], "message", None)
-    content = getattr(message, "content", None)
-    if not isinstance(content, str) or content.strip() != _ROUTER_TIMEOUT_SHIM:
-        return False
-    if getattr(message, "tool_calls", None):
-        return False
-    return not _has_positive_completion_tokens(getattr(response, "usage", None))
 
 
 def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> dict | None:
@@ -1036,15 +1011,7 @@ class ChatCompletionsTransport(ProviderTransport):
 
     def validate_response(self, response: Any) -> bool:
         """Check that response has valid choices and is not a router failure shim."""
-        if response is None:
-            return False
-        if not hasattr(response, "choices") or response.choices is None:
-            return False
-        if not response.choices:
-            return False
-        if _is_router_timeout_shim(response):
-            return False
-        return True
+        return is_valid_chat_completion_response(response)
 
     def extract_cache_stats(self, response: Any) -> dict[str, int] | None:
         """Extract cache stats from prompt_tokens_details (OpenRouter/OpenAI)

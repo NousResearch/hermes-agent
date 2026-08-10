@@ -350,6 +350,34 @@ class TestStreamingCallbacks:
 
         assert deltas == ["a", "b", "c"]
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_router_timeout_shim_is_not_emitted_before_final_validation(self, mock_close, mock_create):
+        """A streamed HTTP-success timeout shim must reach retry handling silently."""
+        from run_agent import AIAgent
+
+        deltas = []
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter([
+            _make_stream_chunk(content="Connect timeout, please "),
+            _make_stream_chunk(content="try again later.", finish_reason="stop"),
+            _make_empty_chunk(usage=SimpleNamespace(completion_tokens=0)),
+        ])
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key", base_url="https://openrouter.ai/api/v1",
+            model="test/model", quiet_mode=True, skip_context_files=True,
+            skip_memory=True, stream_delta_callback=deltas.append,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.choices[0].message.content == "Connect timeout, please try again later."
+        assert agent._get_transport().validate_response(response) is False
+        assert deltas == []
+
 
 
 

@@ -29,6 +29,10 @@ from typing import Any, Dict, Optional
 
 from hermes_cli.timeouts import get_provider_request_timeout, get_provider_stale_timeout
 from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
+from agent.chat_completion_validation import (
+    ROUTER_TIMEOUT_SHIM,
+    is_valid_chat_completion_response,
+)
 from agent.error_classifier import (
     FailoverReason,
     PROVIDER_STREAM_NON_JSON_ERROR_CODE,
@@ -3095,8 +3099,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     lambda request: summary_client.chat.completions.create(**request),
                     retry_count=0,
                 )
-                _summary_result = agent._get_transport().normalize_response(summary_response)
-                final_response = (_summary_result.content or "").strip()
+                _summary_transport = agent._get_transport()
+                if not _summary_transport.validate_response(summary_response):
+                    final_response = ""
+                else:
+                    _summary_result = _summary_transport.normalize_response(summary_response)
+                    final_response = (_summary_result.content or "").strip()
 
         if final_response:
             if "<think>" in final_response:
@@ -3160,8 +3168,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
                     lambda request: summary_client.chat.completions.create(**request),
                     retry_count=1,
                 )
-                _retry_result = agent._get_transport().normalize_response(summary_response)
-                final_response = (_retry_result.content or "").strip()
+                _retry_transport = agent._get_transport()
+                if not _retry_transport.validate_response(summary_response):
+                    final_response = ""
+                else:
+                    _retry_result = _retry_transport.normalize_response(summary_response)
+                    final_response = (_retry_result.content or "").strip()
 
             if final_response:
                 if "<think>" in final_response:
@@ -3898,6 +3910,29 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         role = "assistant"
         reasoning_parts: list = []
         usage_obj = None
+        # Hold only a possible router-timeout shim until the completed stream
+        # can be classified. Ordinary text is released as soon as it diverges
+        # from the sentinel, preserving normal token streaming behavior.
+        pending_timeout_prefix: list[str] = []
+
+        def _emit_stream_text(piece: str) -> None:
+            candidate = "".join(pending_timeout_prefix) + piece
+            if pending_timeout_prefix or ROUTER_TIMEOUT_SHIM.startswith(piece):
+                if ROUTER_TIMEOUT_SHIM.startswith(candidate):
+                    pending_timeout_prefix.append(piece)
+                    return
+                if pending_timeout_prefix:
+                    agent._fire_stream_delta("".join(pending_timeout_prefix))
+                    pending_timeout_prefix.clear()
+            agent._fire_stream_delta(piece)
+            deltas_were_sent["yes"] = True
+
+        def _flush_valid_timeout_prefix(response: Any) -> None:
+            if pending_timeout_prefix and is_valid_chat_completion_response(response):
+                agent._fire_stream_delta("".join(pending_timeout_prefix))
+                deltas_were_sent["yes"] = True
+            pending_timeout_prefix.clear()
+
         _diag = agent._stream_diag_init()
         request_client_holder["diag"] = _diag
         _writer_token = {"value": None}
@@ -4028,8 +4063,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             if not tool_calls_acc:
                 for text in pending_parts:
                     _fire_first_delta()
-                    agent._fire_stream_delta(text)
-                    deltas_were_sent["yes"] = True
+                    _emit_stream_text(text)
                 return
             if agent.stream_delta_callback:
                 for text in pending_parts:
@@ -4156,8 +4190,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         _flush_pending_stream_text()
                         continue
                     _fire_first_delta()
-                    agent._fire_stream_delta(delta_content)
-                    deltas_were_sent["yes"] = True
+                    _emit_stream_text(delta_content)
                 # Tool calls suppress regular content streaming (avoids
                 # displaying chatty "I'll use the tool..." text alongside
                 # tool calls).  But reasoning tags embedded in suppressed
@@ -4294,7 +4327,7 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 else None
             )
             message = getattr(first_choice, "message", None)
-            if message is not None:
+            if message is not None and is_valid_chat_completion_response(final_response):
                 reasoning_text = (
                     getattr(message, "reasoning_content", None)
                     or getattr(message, "reasoning", None)
@@ -4458,12 +4491,14 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             message=mock_message,
             finish_reason=effective_finish_reason,
         )
-        return SimpleNamespace(
+        response = SimpleNamespace(
             id="stream-" + str(uuid.uuid4()),
             model=model_name,
             choices=[mock_choice],
             usage=usage_obj,
         )
+        _flush_valid_timeout_prefix(response)
+        return response
 
     def _call_anthropic(request_client):
         """Stream an Anthropic Messages API response.

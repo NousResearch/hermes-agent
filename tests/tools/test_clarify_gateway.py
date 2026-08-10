@@ -92,6 +92,34 @@ class TestClarifyPrimitive:
             assert result == ""
 
 
+    def test_clear_session_preserves_resolved_response(self):
+        """clear_session must not clobber an answer that already won.
+
+        First-writer-wins (doryani-ai on PR #75732): a button callback that
+        resolved the entry before session cleanup must keep its response.
+        clear_session only cancels entries whose event is not yet set, so
+        the racing waiter observes the real answer, not the empty sentinel.
+        """
+        from tools import clarify_gateway as cm
+
+        cm.register("id-race", "sk-race", "Pick one", ["A", "B"])
+
+        def waiter():
+            return cm.wait_for_response("id-race", timeout=10.0)
+
+        with ThreadPoolExecutor(1) as pool:
+            fut = pool.submit(waiter)
+            time.sleep(0.05)
+            # Button wins the race first...
+            assert cm.resolve_gateway_clarify("id-race", "B") is True
+            # ...then session cleanup runs before the waiter wakes.
+            cancelled = cm.clear_session("sk-race")
+            assert cancelled == 0
+            result = fut.result(timeout=10.0)
+            # The real answer must survive cleanup, not the "" cancellation.
+            assert result == "B"
+
+
     def test_notify_register_unregister_clears_pending(self):
         """unregister_notify cancels any pending clarify so threads unwind."""
         from tools import clarify_gateway as cm

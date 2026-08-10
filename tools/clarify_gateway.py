@@ -372,22 +372,39 @@ def clear_session(session_key: str) -> int:
 
     Used by session-boundary cleanup (e.g. ``/new``, gateway shutdown,
     cached-agent eviction) so blocked agent threads don't hang past the
-    end of their session.  Returns the number of entries cancelled.
+    end of their session.  Returns the number of entries actually
+    cancelled (i.e. whose event had not yet been set).  Already-resolved
+    entries are dropped from the registry but their response is preserved.
+
+    First-writer-wins: an entry whose event is already set has been resolved
+    by a real response (button callback or text intercept).  Session cleanup
+    must NOT overwrite that response with the empty cancellation sentinel —
+    the waiting agent thread would observe a cancelled prompt even though the
+    user answered.  Only unresolved entries are cancelled here.
     """
     with _lock:
         ids = list(_session_index.pop(session_key, []) or [])
         entries = [_entries.pop(cid, None) for cid in ids]
-    cancelled = 0
-    for entry in entries:
-        if entry is None:
-            continue
-        # Empty string sentinel — agent code can distinguish from a real
-        # response by inspecting the wait_for_response return value
-        # alongside its own timeout deadline.  Most callers just treat any
-        # falsy result as "user did not respond".
-        entry.response = ""
-        entry.event.set()
-        cancelled += 1
+        # The mutation loop must stay inside the lock: the pop above and the
+        # event.is_set() check below have to be atomic with respect to
+        # resolve_gateway_clarify, or a button callback could win between the
+        # pop and the check and have its answer clobbered by the sentinel.
+        cancelled = 0
+        for entry in entries:
+            if entry is None:
+                continue
+            # Entry is removed from the global registry regardless of its
+            # state — a cleared session must not be resurrected by late
+            # callbacks — but a resolved entry keeps its real response.
+            if entry.event.is_set():
+                continue
+            # Empty string sentinel — agent code can distinguish from a real
+            # response by inspecting the wait_for_response return value
+            # alongside its own timeout deadline.  Most callers just treat any
+            # falsy result as "user did not respond".
+            entry.response = ""
+            entry.event.set()
+            cancelled += 1
     return cancelled
 
 

@@ -332,6 +332,67 @@ def test_review_dispatch_gate_prevents_phantom_reviewer(
         assert tid in [s[0] for s in res_on.spawned]
 
 
+def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B2 regression: a fresh PR-URL comment must not block reviewer spawns.
+
+    A task parked in ``review`` with a PR link younger than 24h is the
+    CANONICAL review handoff (worker opened a PR then requested review) —
+    the review-lane dispatch must still claim/spawn it. The same comment on
+    a ready-lane task is a duplicate-work signal and stays deferred.
+    Rate-limit cooldown still applies in the review lane.
+    """
+    import hermes_cli.config as cfgmod
+    import hermes_cli.profiles as profmod
+
+    monkeypatch.setattr(profmod, "profile_exists", lambda name: True)
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda *a, **k: {"kanban": {"review_dispatch": True}},
+    )
+    pr_comment = "Opened https://github.com/example/repo/pull/123 for review."
+
+    with kb.connect() as conn:
+        # Review-lane task with a fresh PR comment.
+        review_id = kb.create_task(conn, title="review me", assignee="reviewer")
+        claimed = kb.claim_task(conn, review_id)
+        assert claimed is not None
+        kb.add_comment(conn, review_id, author="worker", body=pr_comment)
+        assert kb.request_review(
+            conn, review_id, summary="PR ready",
+            expected_run_id=claimed.current_run_id,
+        )
+        # Ready-lane task with the same fresh PR comment.
+        ready_id = kb.create_task(conn, title="already PRed", assignee="worker")
+        kb.add_comment(conn, ready_id, author="worker", body=pr_comment)
+
+        assert kb.check_respawn_guard(conn, ready_id) == "active_pr"
+        assert kb.check_respawn_guard(conn, review_id, lane="review") is None
+
+        res = kb.dispatch_once(conn, dry_run=True)
+        spawned_ids = [s[0] for s in res.spawned]
+        guarded = dict(res.respawn_guarded)
+        assert review_id in spawned_ids
+        assert ready_id not in spawned_ids
+        assert guarded.get(ready_id) == "active_pr"
+
+        # Rate-limit cooldown still defers the review lane.
+        _now = int(__import__("time").time())
+        with kb.write_txn(conn):
+            conn.execute(
+                "INSERT INTO task_runs (task_id, profile, status, outcome, "
+                "started_at, ended_at) VALUES (?, 'reviewer', 'rate_limited', "
+                "'rate_limited', ?, ?)",
+                # ended_at strictly after the review-handoff run so the
+                # "latest run" query deterministically picks this one.
+                (review_id, _now, _now + 5),
+            )
+        assert kb.check_respawn_guard(
+            conn, review_id, lane="review"
+        ) == "rate_limit_cooldown"
+
+
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -368,7 +429,7 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         monkeypatch.setattr(
             kb,
             "check_respawn_guard",
-            lambda _conn, _task_id: "rate_limit_cooldown",
+            lambda _conn, _task_id, **_kw: "rate_limit_cooldown",
         )
         guarded = kb.dispatch_once(conn, spawn_fn=spawn)
         assert guarded.respawn_guarded == [(task_id, "rate_limit_cooldown")]
@@ -377,7 +438,7 @@ def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
         assert guarded_task is not None
         assert guarded_task.status == "review"
 
-        monkeypatch.setattr(kb, "check_respawn_guard", lambda _conn, _task_id: None)
+        monkeypatch.setattr(kb, "check_respawn_guard", lambda _conn, _task_id, **_kw: None)
         result = kb.dispatch_once(conn, spawn_fn=spawn)
 
     assert task_id in [task[0] for task in result.spawned]

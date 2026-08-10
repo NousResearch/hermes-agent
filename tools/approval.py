@@ -51,6 +51,16 @@ _approval_tool_call_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_tool_call_id",
     default="",
 )
+# Hermes session id (observability identity, distinct from the gateway
+# routing session_key above). Approval hooks forward it so observer
+# plugins can attach approval marks to the REAL session scope — without
+# it they fall back to a synthetic "default" session whose scope never
+# closes, and close-time exporters never ship the marks (staging defect
+# 2026-08-10: approvals invisible on the audit board).
+_approval_session_id: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "approval_session_id",
+    default="",
+)
 
 # Interactive-CLI flag. Concurrent ACP sessions run on a shared
 # ThreadPoolExecutor (acp_adapter/server.py), so mutating the process-global
@@ -113,6 +123,12 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
     try:
         kwargs.setdefault("turn_id", _approval_turn_id.get())
         kwargs.setdefault("tool_call_id", _approval_tool_call_id.get())
+        # Forward the Hermes session id so observer plugins parent approval
+        # marks to the real session scope instead of a synthetic "default"
+        # session (whose scope never closes → marks never export).
+        _session_id = _approval_session_id.get()
+        if _session_id:
+            kwargs.setdefault("session_id", _session_id)
         invoke_hook(hook_name, **kwargs)
     except Exception as exc:
         # invoke_hook() already swallows per-callback errors, so reaching here
@@ -183,19 +199,26 @@ def set_current_observability_context(
     *,
     turn_id: str = "",
     tool_call_id: str = "",
-) -> tuple[contextvars.Token[str], contextvars.Token[str]]:
+    session_id: str = "",
+) -> tuple[
+    contextvars.Token[str], contextvars.Token[str], contextvars.Token[str]
+]:
     """Bind active tool correlation IDs to approval hooks."""
     return (
         _approval_turn_id.set(turn_id or ""),
         _approval_tool_call_id.set(tool_call_id or ""),
+        _approval_session_id.set(session_id or ""),
     )
 
 
 def reset_current_observability_context(
-    tokens: tuple[contextvars.Token[str], contextvars.Token[str]],
+    tokens: tuple[
+        contextvars.Token[str], contextvars.Token[str], contextvars.Token[str]
+    ],
 ) -> None:
     """Restore prior approval hook correlation IDs."""
-    turn_token, tool_token = tokens
+    turn_token, tool_token, session_token = tokens
+    _approval_session_id.reset(session_token)
     _approval_tool_call_id.reset(tool_token)
     _approval_turn_id.reset(turn_token)
 

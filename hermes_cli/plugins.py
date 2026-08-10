@@ -5511,6 +5511,7 @@ def resolve_pre_tool_block(
                 approval_tokens = set_current_observability_context(
                     turn_id=turn_id,
                     tool_call_id=tool_call_id,
+                    session_id=session_id,
                 )
             except Exception:
                 pass

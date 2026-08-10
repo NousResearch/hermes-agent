@@ -298,6 +298,41 @@ def test_has_agent_browser_import_failure_falls_back_to_path_check(monkeypatch):
     assert ns._has_agent_browser() is True
 
 
+def test_has_agent_browser_import_failure_falls_back_to_hermes_managed_node_path(
+    monkeypatch, tmp_path
+):
+    """If tools.browser_tool cannot be imported, the managed-Node rung must
+    still find a runnable agent-browser under the Hermes Node dir even when
+    it's absent from the probe process's PATH — the Windows installer shape
+    where install succeeded but the GUI still said needs setup."""
+    monkeypatch.setitem(sys.modules, "tools.browser_tool", None)
+    managed_dir = tmp_path / "node"
+    managed_dir.mkdir()
+    managed_bin = managed_dir / "agent-browser"
+    managed_bin.write_text("#!/bin/sh\nexit 0\n")
+    managed_bin.chmod(0o755)
+
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda cmd, *args, **kwargs: (
+            None
+            if cmd == "agent-browser" and not kwargs.get("path")
+            else real_which(cmd, *args, **kwargs)
+        ),
+    )
+    monkeypatch.setattr(
+        "hermes_constants.with_hermes_node_path", lambda: {"PATH": str(managed_dir)}
+    )
+    monkeypatch.setattr(
+        "hermes_constants.agent_browser_runnable",
+        lambda p: bool(p) and str(p) == str(managed_bin),
+    )
+
+    assert ns._has_agent_browser() is True
+
+
 def test_has_agent_browser_import_failure_and_no_binary_is_false(monkeypatch):
     monkeypatch.setitem(sys.modules, "tools.browser_tool", None)
     _block_legacy_agent_browser_checks(monkeypatch)

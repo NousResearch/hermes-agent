@@ -1315,7 +1315,12 @@ class TelegramAdapter(BasePlatformAdapter):
         return "thread not found" in str(error).lower()
 
     def _prune_stale_dm_topic_binding(
-        self, chat_id: Any, thread_id: Any,
+        self,
+        chat_id: Any,
+        thread_id: Any,
+        *,
+        metadata: Optional[Dict[str, Any]] = None,
+        profile_name: Optional[str] = None,
     ) -> None:
         """Drop the stale ``telegram_dm_topic_bindings`` row for a
         topic Telegram has confirmed deleted.
@@ -1328,6 +1333,16 @@ class TelegramAdapter(BasePlatformAdapter):
         on to a fresh topic).  Best-effort: we never raise from a
         send-fallback path — a failed cleanup must not turn into a
         failed user-facing send.
+
+        Namespace resolution (issue #76423 / profile_routes):
+        1. Explicit ``profile_name`` argument
+        2. Routed profile on this send's metadata (``hermes_profile``)
+        3. Adapter stamp (``_hermes_profile_name``) for secondary bots
+        4. ``\"default\"``
+
+        Under ``gateway.profile_routes`` the receiving *transport* adapter
+        may not own the runtime that wrote the binding — metadata carries
+        the routed profile so we prune the correct namespace.
         """
         if chat_id is None or thread_id is None:
             return
@@ -1338,8 +1353,16 @@ class TelegramAdapter(BasePlatformAdapter):
         if db is None or not hasattr(db, "delete_telegram_topic_binding"):
             return
         try:
+            resolved = profile_name
+            if not resolved and metadata:
+                resolved = metadata.get("hermes_profile") or metadata.get("profile")
+            if not resolved:
+                resolved = getattr(self, "_hermes_profile_name", None) or "default"
+            resolved = str(resolved).strip() or "default"
             removed = db.delete_telegram_topic_binding(
-                chat_id=str(chat_id), thread_id=str(thread_id),
+                chat_id=str(chat_id),
+                thread_id=str(thread_id),
+                profile_name=resolved,
             )
         except Exception:
             logger.debug(
@@ -4714,7 +4737,9 @@ class TelegramAdapter(BasePlatformAdapter):
                                     self.name, effective_thread_id,
                                 )
                                 self._prune_stale_dm_topic_binding(
-                                    chat_id, effective_thread_id,
+                                    chat_id,
+                                    effective_thread_id,
+                                    metadata=metadata,
                                 )
                                 used_thread_fallback = True
                                 effective_thread_id = None
@@ -5487,9 +5512,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Same prune as the streaming send path — the
                 # control-message retry tells us the topic is gone,
                 # so the binding row in state.db must go too
-                # (#31501).
+                # (#31501). Prefer routed profile from kwargs metadata
+                # when present (profile_routes / multiplex).
                 self._prune_stale_dm_topic_binding(
-                    kwargs.get("chat_id"), message_thread_id,
+                    kwargs.get("chat_id"),
+                    message_thread_id,
+                    metadata=kwargs.get("metadata") if isinstance(kwargs.get("metadata"), dict) else None,
+                    profile_name=kwargs.get("hermes_profile") or kwargs.get("profile_name"),
                 )
                 retry_kwargs = dict(kwargs)
                 retry_kwargs.pop("message_thread_id", None)

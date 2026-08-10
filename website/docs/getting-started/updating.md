@@ -108,6 +108,14 @@ Close the listed processes and re-run. If you're sure the concurrent process won
 
 A second, separate guard refuses to touch the venv while any process is running from its Python interpreter (the Desktop app's backend, a gateway, a Python REPL). Those processes keep native extension files (`.pyd`) locked, and a dependency sync that dies partway on an access-denied error strands the install between versions. This guard is **not** bypassed by `--force`; if you're certain the detected holders are false positives, use the explicit `hermes update --force-venv`.
 
+#### Windows venv recreation is transactional
+
+When the Windows installer must recreate an existing `venv`, it first moves the old directory to a unique `venv.stale.*` name, then creates and verifies the replacement. The old tree is deleted only after `venv\Scripts\python.exe` exists in the new tree.
+
+If the move cannot be completed, the installer stops and leaves the live `venv` untouched. If `uv` fails or reports success without creating the interpreter, any partial replacement is moved to `venv.failed.*` and the previous venv is restored. This keeps the health and blocker checks usable after a failed install.
+
+A `venv.stale.*` or `venv.failed.*` directory can remain when another process still owns a file handle. Close Hermes Desktop, gateways, and Python processes using the install, then retry the install/update; parked directories are cleaned up best-effort after a successful recreation.
+
 Expected output looks like:
 
 ```

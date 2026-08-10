@@ -66,4 +66,11 @@ describe('Polish desktop catalog', () => {
     expect(pl.assistant.clarify.gatewayDisconnected).toBe('Brama Hermesa nie jest podłączona')
     expect(pl.prompts.gatewayDisconnected).toBe('Brama Hermesa nie jest podłączona')
   })
+
+  it('preserves state-specific toggle labels', () => {
+    expect(pl.settings.mcp.toggleFailed('serwer', true)).not.toBe(pl.settings.mcp.toggleFailed('serwer', false))
+    expect(pl.skills.toggleToolset('web', true)).not.toBe(pl.skills.toggleToolset('web', false))
+    expect(pl.sidebar.projects.toggle('Projekt', true)).not.toBe(pl.sidebar.projects.toggle('Projekt', false))
+    expect(pl.webhooks.toggleFailed('subskrypcja', true)).not.toBe(pl.webhooks.toggleFailed('subskrypcja', false))
+  })
 })

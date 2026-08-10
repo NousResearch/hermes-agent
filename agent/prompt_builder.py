@@ -1985,7 +1985,11 @@ def build_nous_subscription_prompt(valid_tool_names: "set[str] | None" = None) -
         "execute_code",
     }
 
-    if valid_names and not (valid_names & relevant_tool_names):
+    if not (valid_names & relevant_tool_names):
+        # No relevant Nous-managed tools are available — including the empty
+        # set (valid_tool_names=[] or suppressed via model.tools: false,
+        # #79639). An empty capability block would still read like the agent
+        # can use Nous tools, which it cannot.
         return ""
 
     features = get_nous_subscription_features()

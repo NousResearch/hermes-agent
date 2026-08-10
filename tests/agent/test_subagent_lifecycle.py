@@ -1,6 +1,8 @@
 """Contract tests for the public plugin subagent lifecycle API."""
 
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -69,8 +71,88 @@ def lifecycle(monkeypatch):
     return SubagentLifecycleService(lambda: parent)
 
 
+def test_duplicate_correlation_is_reserved_during_child_construction(
+    lifecycle, monkeypatch
+):
+    first_build_started = threading.Event()
+    release_first_build = threading.Event()
+    build_count = iter(range(2))
+
+    def slow_build(**_kwargs):
+        ident = next(build_count)
+        if ident == 0:
+            first_build_started.set()
+            assert release_first_build.wait(timeout=1)
+        return FakeChild(f"sa-race-{ident}")
+
+    monkeypatch.setattr(
+        "tools.delegate_tool._build_child_preserving_parent_tools", slow_build
+    )
+    request = SubagentLaunchRequest(goal="x", correlation_id="same-concurrent")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(lifecycle.launch, request)
+        assert first_build_started.wait(timeout=1)
+        second = executor.submit(lifecycle.launch, request)
+        try:
+            with pytest.raises(SubagentLifecycleError, match="Duplicate"):
+                second.result(timeout=1)
+        finally:
+            release_first_build.set()
+        handle = first.result(timeout=1)
+
+    assert handle.correlation_id == "same-concurrent"
+    lifecycle.wait(handle, timeout_seconds=1)
 
 
+@pytest.mark.parametrize("failure", ["build", "identity"])
+def test_failed_child_construction_releases_correlation_reservation(
+    lifecycle, monkeypatch, failure
+):
+    attempts = iter(range(2))
+
+    def build(**_kwargs):
+        if next(attempts) == 0:
+            if failure == "build":
+                raise RuntimeError("build failed")
+            return SimpleNamespace(_subagent_id="")
+        return FakeChild(f"sa-retry-{failure}")
+
+    monkeypatch.setattr(
+        "tools.delegate_tool._build_child_preserving_parent_tools", build
+    )
+    request = SubagentLaunchRequest(goal="x", correlation_id=f"retry-{failure}")
+
+    expected = RuntimeError if failure == "build" else SubagentLifecycleError
+    with pytest.raises(expected):
+        lifecycle.launch(request)
+    handle = lifecycle.launch(request)
+
+    assert handle.subagent_id == f"sa-retry-{failure}"
+    lifecycle.wait(handle, timeout_seconds=1)
+
+
+def test_failed_executor_submission_rolls_back_record_and_correlation(
+    lifecycle, monkeypatch
+):
+    import agent.subagent_lifecycle as lifecycle_module
+
+    executor = lifecycle_module._EXECUTOR
+    real_submit = executor.submit
+
+    def reject_submission(*_args, **_kwargs):
+        raise RuntimeError("executor rejected")
+
+    monkeypatch.setattr(executor, "submit", reject_submission)
+    request = SubagentLaunchRequest(goal="x", correlation_id="retry-after-reject")
+
+    with pytest.raises(RuntimeError, match="executor rejected"):
+        lifecycle.launch(request)
+    monkeypatch.setattr(executor, "submit", real_submit)
+    handle = lifecycle.launch(request)
+
+    assert handle.correlation_id == "retry-after-reject"
+    lifecycle.wait(handle, timeout_seconds=1)
 
 
 def test_cancel_is_cooperative_and_forged_handle_is_unknown(lifecycle):

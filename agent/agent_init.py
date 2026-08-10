@@ -2164,6 +2164,24 @@ def init_agent(
                 )
     agent._session_init_model_config["max_tokens"] = agent.max_tokens
 
+    # Opt-in per-model tool suppression: `model.tools: false` drops the tools
+    # payload from API requests even when a toolset is loaded. Needed for
+    # endpoints whose tool-use template corrupts conversation history — e.g.
+    # Ollama drops prior non-tool turns for some models (Gemma 4, qwen3),
+    # making the model "forget" earlier context (#79639). Default is to send
+    # tools (existing behavior); only an explicit `false` suppresses them.
+    agent._suppress_tools = False
+    if isinstance(_model_cfg, dict):
+        _model_tools_cfg = _model_cfg.get("tools")
+        if _model_tools_cfg is False:
+            agent._suppress_tools = True
+        elif _model_tools_cfg is not None and not isinstance(_model_tools_cfg, bool):
+            _ra().logger.warning(
+                "Invalid model.tools in config.yaml: %r — "
+                "must be a boolean (e.g. `tools: false`). Ignoring.",
+                _model_tools_cfg,
+            )
+
     # Read explicit context_length override from model config
     if isinstance(_model_cfg, dict):
         _config_context_length = _model_cfg.get("context_length")

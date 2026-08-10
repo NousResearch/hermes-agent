@@ -776,3 +776,72 @@ class TestPromptCacheKeyCapability:
             provider_profile=profile,
         )
         assert "prompt_cache_key" not in kwargs
+
+
+class TestSuppressTools:
+    """``suppress_tools`` opt-in (per-model ``model.tools: false``) drops the
+    tools payload even when a toolset is loaded. Regression for #79639:
+    Ollama's tool-use template drops prior non-tool turns for some models
+    (Gemma 4, reproduced on qwen3), so the model "forgets" earlier context
+    the moment ``tools`` is present. Default behavior must be unchanged:
+    tools are still sent unless the user explicitly opts out."""
+
+    TOOLS = [{"type": "function", "function": {"name": "get_weather",
+             "description": "Get the weather", "parameters": {"type": "object"}}}]
+    MSGS = [{"role": "user", "content": "The password is banana"}]
+
+    # ── Legacy path (no provider_profile) ──────────────────────
+
+    def test_tools_sent_by_default(self, transport):
+        """Default (no suppress flag) keeps sending tools — existing behavior."""
+        kw = transport.build_kwargs(model="gpt-4o", messages=self.MSGS, tools=self.TOOLS)
+        assert kw["tools"] == self.TOOLS
+
+    def test_suppress_tools_omits_tools_legacy(self, transport):
+        """``suppress_tools=True`` drops the tools payload (legacy path)."""
+        kw = transport.build_kwargs(
+            model="gemma4:12b", messages=self.MSGS, tools=self.TOOLS, suppress_tools=True
+        )
+        assert "tools" not in kw
+
+    def test_suppress_tools_false_still_sends(self, transport):
+        """Explicit ``suppress_tools=False`` keeps sending tools."""
+        kw = transport.build_kwargs(
+            model="gemma4:12b", messages=self.MSGS, tools=self.TOOLS, suppress_tools=False
+        )
+        assert kw["tools"] == self.TOOLS
+
+    def test_suppress_tools_no_tools_noop(self, transport):
+        """With no tools there is nothing to suppress — no tools key either way."""
+        kw = transport.build_kwargs(
+            model="gemma4:12b", messages=self.MSGS, tools=[], suppress_tools=True
+        )
+        assert "tools" not in kw
+
+    # ── Provider-profile path (Ollama resolves to custom profile) ──
+
+    def test_suppress_tools_omits_tools_profile(self, transport):
+        """``suppress_tools=True`` drops the tools payload on the profile path —
+        the path Ollama/custom endpoints actually use."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
+        kw = transport.build_kwargs(
+            model="gemma4:12b",
+            messages=self.MSGS,
+            tools=self.TOOLS,
+            suppress_tools=True,
+            provider_profile=profile,
+        )
+        assert "tools" not in kw
+
+    def test_profile_path_sends_tools_by_default(self, transport):
+        """Profile path keeps sending tools by default (no regression)."""
+        from providers import get_provider_profile
+        profile = get_provider_profile("custom")
+        kw = transport.build_kwargs(
+            model="gemma4:12b",
+            messages=self.MSGS,
+            tools=self.TOOLS,
+            provider_profile=profile,
+        )
+        assert kw["tools"] == self.TOOLS

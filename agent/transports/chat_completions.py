@@ -371,6 +371,9 @@ class ChatCompletionsTransport(ProviderTransport):
             request_overrides: dict | None
             session_id: str | None
             model_lower: str — lowercase model name for pattern matching
+            suppress_tools: bool — opt-in (per-model `model.tools: false`):
+                drop the tools payload even when a toolset is loaded. For
+                endpoints whose tool template corrupts history (#79639).
             # Provider profile path (all per-provider quirks live in providers/)
             provider_profile: ProviderProfile | None — when present, delegates to
                 _build_kwargs_from_profile(); all flag params below are bypassed.
@@ -443,7 +446,12 @@ class ChatCompletionsTransport(ProviderTransport):
             api_kwargs["timeout"] = timeout
 
         # Tools
-        if tools:
+        # suppress_tools (opt-in, per-model config `model.tools: false`) lets
+        # users disable the tools payload for endpoints whose models choke on
+        # it — e.g. Ollama's tool-use chat template drops prior non-tool turns
+        # for some models (Gemma 4, and reproduced on qwen3), so the model
+        # "forgets" earlier context the moment `tools` is present (#79639).
+        if tools and not params.get("suppress_tools", False):
             # Moonshot/Kimi uses a stricter flavored JSON Schema.  Rewriting
             # tool parameters here keeps aggregator routes (Nous, OpenRouter,
             # etc.) compatible, in addition to direct moonshot.ai endpoints.
@@ -639,8 +647,11 @@ class ChatCompletionsTransport(ProviderTransport):
         if timeout is not None:
             api_kwargs["timeout"] = timeout
 
-        # Tools — apply Moonshot/Kimi schema sanitization regardless of path
-        if tools:
+        # Tools — apply Moonshot/Kimi schema sanitization regardless of path.
+        # suppress_tools: opt-in per-model config (`model.tools: false`) to drop
+        # the tools payload — Ollama's tool-use template drops prior non-tool
+        # turns for some models (#79639).
+        if tools and not params.get("suppress_tools", False):
             if is_moonshot_model(model):
                 tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools

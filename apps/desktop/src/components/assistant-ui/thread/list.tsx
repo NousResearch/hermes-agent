@@ -22,7 +22,6 @@ import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
 import {
-  $threadScrolledUp,
   onScrollToBottomRequest,
   onThreadEditClose,
   onThreadEditOpen,
@@ -123,6 +122,49 @@ export const resolveThreadScrollTarget: GetTargetScrollTop = (targetScrollTop, {
   const remaining = targetScrollTop - currentScrollTop
 
   return remaining >= 0 && remaining <= SCROLL_TARGET_EPSILON_PX ? currentScrollTop : targetScrollTop
+}
+
+export function subscribeToThreadForeground(shouldReanchor: () => boolean, onReanchor: () => void): () => void {
+  let frameId: number | null = null
+  let framePending = false
+
+  const onForeground = () => {
+    if (framePending || document.visibilityState !== 'visible' || !shouldReanchor()) {
+      return
+    }
+
+    framePending = true
+
+    const scheduledId = requestAnimationFrame(() => {
+      frameId = null
+      framePending = false
+
+      if (document.visibilityState === 'visible' && shouldReanchor()) {
+        onReanchor()
+      }
+    })
+
+    // Browser callbacks are asynchronous; the guard also keeps synchronous
+    // requestAnimationFrame test doubles from leaving a completed frame pending.
+    if (framePending) {
+      frameId = scheduledId
+    }
+  }
+
+  document.addEventListener('visibilitychange', onForeground)
+  window.addEventListener('focus', onForeground)
+
+  return () => {
+    document.removeEventListener('visibilitychange', onForeground)
+    window.removeEventListener('focus', onForeground)
+
+    if (frameId !== null) {
+      cancelAnimationFrame(frameId)
+    }
+
+    frameId = null
+    framePending = false
+  }
 }
 
 interface ThreadMessageListProps {
@@ -526,21 +568,18 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(() => onScrollToBottomRequest(() => void scrollToBottom()), [scrollToBottom])
 
   // Waking from display: hidden (HUD mode hides the main window; OS hide does
-  // the same to any window): rAF and ResizeObserver were frozen the whole
-  // time, so the virtualizer's measurements — and scrollTop itself — are
-  // stale. If the user was following the bottom, re-anchor once visible;
-  // leave a scrolled-up reader exactly where they were.
-  useEffect(() => {
-    const onVisible = () => {
-      if (document.visibilityState === 'visible' && !$threadScrolledUp.get()) {
-        requestAnimationFrame(() => void scrollToBottom())
-      }
-    }
-
-    document.addEventListener('visibilitychange', onVisible)
-
-    return () => document.removeEventListener('visibilitychange', onVisible)
-  }, [scrollToBottom])
+  // the same to any window): rAF and ResizeObserver may have been frozen, so
+  // the virtualizer's measurements — and scrollTop itself — are stale. Active
+  // turns disable Chromium's background throttling, which can keep visibility
+  // pinned at `visible`; window focus is then the only foreground edge. If the
+  // user was following the bottom, re-anchor on either signal. Consult this
+  // thread's local state rather than the composer-facing global mirror, which
+  // can be overwritten by another mounted pane; leave a scrolled-up reader
+  // exactly where they were.
+  useEffect(
+    () => subscribeToThreadForeground(() => isAtBottom, () => void scrollToBottom()),
+    [isAtBottom, scrollToBottom]
+  )
 
   const endEditHold = useCallback(() => {
     scrollRef.current?.removeAttribute('data-editing')

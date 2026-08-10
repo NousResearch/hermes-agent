@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   buildGroups,
@@ -9,8 +9,81 @@ import {
   liveTailStart,
   type MessageGroup,
   resolveThreadScrollTarget,
+  subscribeToThreadForeground,
   transcriptPaneBudget
 } from './list'
+
+afterEach(() => {
+  vi.restoreAllMocks()
+})
+
+describe('subscribeToThreadForeground', () => {
+  it('reanchors on focus when an active turn keeps document visibility pinned visible', () => {
+    const reanchor = vi.fn()
+
+    const raf = vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      callback(0)
+
+      return 1
+    })
+
+    const unsubscribe = subscribeToThreadForeground(() => true, reanchor)
+
+    window.dispatchEvent(new Event('focus'))
+
+    expect(raf).toHaveBeenCalledOnce()
+    expect(reanchor).toHaveBeenCalledOnce()
+    unsubscribe()
+  })
+
+  it('leaves a scrolled-up reader in place when the window focuses', () => {
+    const reanchor = vi.fn()
+    const raf = vi.spyOn(window, 'requestAnimationFrame')
+    const unsubscribe = subscribeToThreadForeground(() => false, reanchor)
+
+    window.dispatchEvent(new Event('focus'))
+
+    expect(raf).not.toHaveBeenCalled()
+    expect(reanchor).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
+  it('drops a queued reanchor when the reader scrolls away before the frame', () => {
+    const frames: FrameRequestCallback[] = []
+    let following = true
+    const reanchor = vi.fn()
+
+    vi.spyOn(window, 'requestAnimationFrame').mockImplementation(callback => {
+      frames.push(callback)
+
+      return 7
+    })
+
+    const unsubscribe = subscribeToThreadForeground(() => following, reanchor)
+
+    window.dispatchEvent(new Event('focus'))
+    following = false
+    frames[0]?.(0)
+
+    expect(reanchor).not.toHaveBeenCalled()
+    unsubscribe()
+  })
+
+  it('cancels a queued reanchor when its thread unmounts', () => {
+    const cancel = vi.spyOn(window, 'cancelAnimationFrame')
+    const reanchor = vi.fn()
+
+    vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(9)
+
+    const unsubscribe = subscribeToThreadForeground(() => true, reanchor)
+
+    window.dispatchEvent(new Event('focus'))
+    unsubscribe()
+
+    expect(cancel).toHaveBeenCalledWith(9)
+    expect(reanchor).not.toHaveBeenCalled()
+  })
+})
 
 // Signature rows are `${index}:${id}:${role}:${weight}` (see the useAuiState
 // selector in list.tsx).

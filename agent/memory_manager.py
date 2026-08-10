@@ -559,8 +559,13 @@ class MemoryManager:
             except Exception as exc:  # pragma: no cover - re-raised by caller
                 error_box["value"] = exc
 
+        # Propagate the caller's contextvars (profile HERMES_HOME override)
+        # to the prefetch thread — see _submit_background.
+        import contextvars
+
+        _ctx = contextvars.copy_context()
         thread = threading.Thread(
-            target=_run,
+            target=lambda: _ctx.run(_run),
             daemon=True,
             name=f"memory-prefetch-{provider.name}",
         )
@@ -728,7 +733,19 @@ class MemoryManager:
     # -- Background dispatch -------------------------------------------------
 
     def _submit_background(self, fn, *, kind: str = "write") -> None:
-        """Queue ``fn`` on the serialized worker and track its durability class."""
+        """Queue ``fn`` on the serialized worker and track its durability class.
+
+        The submitted callable is wrapped with the CALLER's contextvars:
+        profile isolation in multi-profile processes (gateway multiplexer,
+        dashboard, cron) is a ContextVar-scoped HERMES_HOME override, and
+        executor worker threads start with empty contexts — without the
+        wrap, a provider resolving ambient state (config paths, secrets)
+        from the worker would silently land on the default profile.
+        """
+        import contextvars
+
+        ctx = contextvars.copy_context()
+        fn = (lambda inner: (lambda: ctx.run(inner)))(fn)
         executor = self._get_sync_executor()
         if executor is None:
             if self._shutting_down:

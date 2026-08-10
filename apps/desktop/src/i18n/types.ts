@@ -127,6 +127,7 @@ export interface Translations {
       backendStopped: string
       desktopBootFailed: string
       gatewayConnectionLost: string
+      gatewayConnectionLostDetail: string
       gatewaySignInRequired: string
       ipcBridgeUnavailable: string
     }

@@ -96,6 +96,8 @@ const coderConn = {
 }
 
 function fakeDesktop() {
+  let bootProgressHandler: ((payload: Record<string, unknown>) => void) | null = null
+
   return {
     getConnection: vi.fn(async (profile?: null | string) => {
       const key = (profile ?? '').trim()
@@ -113,7 +115,17 @@ function fakeDesktop() {
       running: true as boolean,
       timestamp: Date.now()
     })),
-    onBootProgress: vi.fn(() => () => undefined),
+    onBootProgress: vi.fn(callback => {
+      bootProgressHandler = callback
+
+      return () => {
+        bootProgressHandler = null
+      }
+    }),
+    // Test helper: fire a post-boot progress event through the real subscription.
+    emitBootProgress(payload: Record<string, unknown>) {
+      bootProgressHandler?.(payload)
+    },
     onBackendExit: vi.fn(() => () => undefined),
     onConnectionApplied: vi.fn(callback => {
       connectionApplied = callback
@@ -340,11 +352,9 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     act(() => FakeWebSocket.instances[0].drop())
     await flushAsync()
 
-    // Burn a couple backoff cycles BEFORE the escalation threshold (<6 attempts,
-    // ~the first ~15s). This is the window where stock and fixed behave the
-    // same: socket down, hook retrying, gatewayState non-open, boot.error still
-    // null → CONNECTING covers the screen with no recovery surface. (Past ~45s
-    // the fix raises boot.error; that's asserted in the next test.)
+    // Burn a couple backoff cycles BEFORE the escalation threshold. Socket
+    // down, hook retrying, gatewayState non-open, boot.error still null so
+    // chat stays usable (no CONNECTING / no couldn't-start overlay).
     await advanceBackoff()
 
     expect($gatewayState.get()).not.toBe('open')
@@ -353,7 +363,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(FakeWebSocket.instances.length).toBeGreaterThan(1)
   })
 
-  it('FIX: after the prolonged drop the hook raises a recoverable boot error (the escape hatch)', async () => {
+  it('FIX: after a prolonged drop the chat stays unlocked (toast, not boot.error)', async () => {
     render(<Harness />)
     await flushAsync()
     expect($desktopBoot.get().error).toBeNull()
@@ -362,17 +372,20 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     act(() => FakeWebSocket.instances[0].drop())
     await flushAsync()
 
-    // Walk the backoff past the >=6 attempt threshold (~45s of failures).
+    // Walk the backoff past the ~45s escalation threshold.
     for (let i = 0; i < 8; i += 1) {
       await advanceBackoff()
     }
 
-    // The hook surfaced the recoverable error → BootFailureOverlay (Use local
-    // gateway / Sign in / Retry) becomes reachable instead of CONNECTING.
-    expect($desktopBoot.get().error).toBeTruthy()
+    // Transport blips must NOT take the full-screen "couldn't start" overlay —
+    // users were locked out of reading/drafting for the whole reconnect window.
+    expect($desktopBoot.get().error).toBeNull()
+    expect($gatewayState.get()).not.toBe('open')
+    // Still retrying.
+    expect(FakeWebSocket.instances.length).toBeGreaterThan(1)
   })
 
-  it('FIX: a successful reconnect clears the recoverable error', async () => {
+  it('FIX: a successful reconnect after a prolonged drop restores the open gateway', async () => {
     render(<Harness />)
     await flushAsync()
 
@@ -384,7 +397,7 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
       await advanceBackoff()
     }
 
-    expect($desktopBoot.get().error).toBeTruthy()
+    expect($desktopBoot.get().error).toBeNull()
 
     // The remote comes back: next reconnect attempt opens.
     FakeWebSocket.mode = 'open'
@@ -421,6 +434,36 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(2)
     expect(FakeWebSocket.instances).toHaveLength(2)
     expect($gatewayState.get()).toBe('open')
+  })
+
+  it('FIX: post-boot ticket-mint boot-progress errors do not lock the UI', async () => {
+    const desktop = fakeDesktop() as ReturnType<typeof fakeDesktop> & {
+      emitBootProgress: (payload: Record<string, unknown>) => void
+    }
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+
+    // Main re-emits the exact transient ticket error after a liveness rebuild.
+    // That used to promote into BootFailureOverlay and lock reading/drafting.
+    act(() => {
+      desktop.emitBootProgress({
+        error:
+          'Could not reach the remote Hermes gateway while refreshing its WebSocket ticket. Try reconnecting.',
+        message: 'Desktop boot failed',
+        phase: 'backend.error',
+        progress: 94,
+        running: false,
+        timestamp: Date.now()
+      })
+    })
+
+    expect($desktopBoot.get().error).toBeNull()
+    expect($desktopBoot.get().visible).toBe(false)
   })
 
   it('FIX: a failed session-list fetch during boot is non-fatal — the app still boots', async () => {

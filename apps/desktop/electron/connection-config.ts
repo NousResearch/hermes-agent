@@ -151,6 +151,41 @@ function gatewayTicketFailure(error, authMessage, transportMessage) {
   return err
 }
 
+/**
+ * Retry a one-shot mint/fetch that can flap on brief network blips.
+ * Auth rejections (401/403 / needsOauthLogin) fail immediately — retrying those
+ * just hammers a dead session. Transport/server failures retry with short delays.
+ */
+async function withTransientRetries(run, options: any = {}) {
+  const attempts = Number.isInteger(options.attempts) && options.attempts > 0 ? options.attempts : 3
+  const delaysMs = Array.isArray(options.delaysMs) && options.delaysMs.length > 0 ? options.delaysMs : [250, 750]
+
+  const sleep =
+    typeof options.sleep === 'function' ? options.sleep : (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+  const isRetryable =
+    typeof options.isRetryable === 'function' ? options.isRetryable : (error: unknown) => !isGatewayAuthRejection(error)
+
+  let lastError: unknown
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await run()
+    } catch (error) {
+      lastError = error
+
+      if (!isRetryable(error) || attempt >= attempts - 1) {
+        throw error
+      }
+
+      const delay = delaysMs[Math.min(attempt, delaysMs.length - 1)]
+      await sleep(delay)
+    }
+  }
+
+  throw lastError
+}
+
 /** Serialize a fresh-WS-URL attempt across Electron's IPC boundary. */
 async function gatewayWsUrlIpcResult(resolveWsUrl: () => Promise<string>) {
   try {
@@ -964,5 +999,6 @@ export {
   RT_COOKIE_VARIANTS,
   savedProfileSsh,
   tokenPreview,
-  translateSelfProfileQuery
+  translateSelfProfileQuery,
+  withTransientRetries
 }

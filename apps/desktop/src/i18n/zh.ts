@@ -81,6 +81,8 @@ export const zh: Translations = {
       backendStopped: '后端已停止',
       desktopBootFailed: '桌面启动失败',
       gatewayConnectionLost: '与网关的连接已断开',
+      gatewayConnectionLostDetail:
+        'Still retrying in the background. You can keep reading and drafting — open Gateway settings if this persists.',
       gatewaySignInRequired: '需要登录网关',
       ipcBridgeUnavailable: '桌面 IPC 桥不可用。'
     },

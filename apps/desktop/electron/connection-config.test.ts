@@ -49,7 +49,8 @@ import {
   RT_COOKIE_VARIANTS,
   savedProfileSsh,
   tokenPreview,
-  translateSelfProfileQuery
+  translateSelfProfileQuery,
+  withTransientRetries
 } from './connection-config'
 
 // --- connectionScopeKey / normAuthMode ---
@@ -1132,6 +1133,54 @@ test('gateway ticket failures classify only explicit auth rejection statuses as 
   const serverFailure = gatewayTicketFailure(new Error('network timeout'), 'sign in', 'retry connection') as any
   assert.equal(serverFailure.message, 'retry connection')
   assert.equal(serverFailure.needsOauthLogin, undefined)
+})
+
+test('withTransientRetries retries transport blips but not auth rejections', async () => {
+  const sleeps: number[] = []
+  let transportAttempts = 0
+
+  const ticket = await withTransientRetries(
+    async () => {
+      transportAttempts += 1
+
+      if (transportAttempts < 3) {
+        throw Object.assign(new Error('500: unavailable'), { statusCode: 500 })
+      }
+
+      return 'tkt-ok'
+    },
+    {
+      delaysMs: [10, 10],
+      sleep: async (ms: number) => {
+        sleeps.push(ms)
+      }
+    }
+  )
+
+  assert.equal(ticket, 'tkt-ok')
+  assert.equal(transportAttempts, 3)
+  assert.deepEqual(sleeps, [10, 10])
+
+  let authAttempts = 0
+  await assert.rejects(
+    () =>
+      withTransientRetries(
+        async () => {
+          authAttempts += 1
+          throw Object.assign(new Error('401: rejected'), { statusCode: 401 })
+        },
+        {
+          delaysMs: [10],
+          sleep: async () => undefined
+        }
+      ),
+    (err: any) => {
+      assert.equal(err.statusCode, 401)
+
+      return true
+    }
+  )
+  assert.equal(authAttempts, 1)
 })
 
 test('gateway WS URL IPC result serializes success and the auth-vs-transport matrix', async () => {

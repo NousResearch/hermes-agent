@@ -3,6 +3,13 @@
 @import 'tw-shimmer';
 @import 'katex/dist/katex.min.css';
 @import '@vscode/codicons/dist/codicon.css';
+
+/* Titlebar clusters: 24×24 hit targets, 13.9px glyphs. codicon.css is
+   unlayered (`font: 16px/1`); Tailwind utilities in @layer lose that fight. */
+.titlebar-icon-button .codicon[class*='codicon-'] {
+  font-size: var(--titlebar-icon-size);
+}
+
 @custom-variant dark (&:is(.dark *));
 
 /* Blanket reduced-motion override: kill ALL CSS animations and transitions
@@ -468,8 +475,9 @@
 
     --sidebar-width: 14.8125rem;
     --chat-min-width: 28rem;
-    --titlebar-control-size: 1.25rem;
-    --titlebar-control-height: 1.375rem;
+    --titlebar-control-size: 24px;
+    --titlebar-control-height: 24px;
+    --titlebar-icon-size: 13.9px;
     --sidebar-content-inline-padding: 1rem;
 
     --sidebar: var(--dt-sidebar-bg);

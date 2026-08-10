@@ -8026,9 +8026,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 raise CompressionSessionClosedError(session_id)
             if archive_dropped:
                 # Content-preserving UPDATE: the rows keep their FTS entries
-                # (the messages_fts triggers index on INSERT / drop on DELETE
-                # and don't key on active), so the replaced turns stay both
-                # readable and searchable-by-id after the rewrite.
+                # (the messages_fts triggers fire on INSERT / DELETE / UPDATE
+                # of content columns, not on `active`), so the replaced turns
+                # stay readable via get_messages(include_inactive=True) and
+                # searchable with include_inactive=True after the rewrite.
                 conn.execute(
                     "UPDATE messages SET active = 0 "
                     "WHERE session_id = ? AND active = 1",

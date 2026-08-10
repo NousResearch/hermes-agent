@@ -16611,7 +16611,26 @@ def _branch_history():
             "codex_reasoning_items": BRANCH_CODEX_REASONING_ITEMS,
             "codex_message_items": BRANCH_CODEX_MESSAGE_ITEMS,
         },
+        # Timeline marker: rides as role=user but must keep its tag through
+        # the branch copy, or it re-enters the truncate ordinal address space
+        # as a phantom user turn after a restart (#82756).
+        {
+            "role": "user",
+            "content": "[System: personality changed]",
+            "display_kind": "personality_switch",
+        },
     ]
+
+
+def _branched_marker(db, session_key):
+    return next(
+        (
+            m
+            for m in db.get_messages_as_conversation(session_key)
+            if m.get("display_kind") == "personality_switch"
+        ),
+        None,
+    )
 
 
 def _branched_assistant(db, session_key):
@@ -16650,6 +16669,11 @@ def test_persist_branch_seed_keeps_reasoning_fields(monkeypatch, tmp_path):
         assert assistant["reasoning_details"] == BRANCH_REASONING_DETAILS
         assert assistant["codex_reasoning_items"] == BRANCH_CODEX_REASONING_ITEMS
         assert assistant["codex_message_items"] == BRANCH_CODEX_MESSAGE_ITEMS
+        marker = _branched_marker(db, "branch-key")
+        assert marker is not None, (
+            "the branch seed dropped display_kind: the marker re-entered the "
+            "truncate ordinal address space as a phantom user turn (#82756)"
+        )
         assert session["_branch_seed_persisted"] is True
     finally:
         db.close()
@@ -16692,6 +16716,11 @@ def test_session_branch_keeps_reasoning_fields(monkeypatch, tmp_path):
         assert assistant["reasoning_details"] == BRANCH_REASONING_DETAILS
         assert assistant["codex_reasoning_items"] == BRANCH_CODEX_REASONING_ITEMS
         assert assistant["codex_message_items"] == BRANCH_CODEX_MESSAGE_ITEMS
+        marker = _branched_marker(db, "branch-key")
+        assert marker is not None, (
+            "session.branch dropped display_kind: the marker re-entered the "
+            "truncate ordinal address space as a phantom user turn (#82756)"
+        )
     finally:
         server._sessions.pop("sid", None)
         db.close()
@@ -16997,4 +17026,3 @@ def test_prompt_submit_truncation_archives_instead_of_deleting(monkeypatch):
         assert captured.get("active_only") is True
     finally:
         server._sessions.pop("archive-trunc-sid", None)
-

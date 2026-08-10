@@ -7005,8 +7005,22 @@ def run_conversation(
                 # progress + tool.").  Such a turn must recover, not terminate.
                 # Measured on 3,804 real non-trivial stop-messages: exactly 1 match, the
                 # leak itself — so this cannot swallow a legitimate short answer.
+                #
+                # flatten_message_text() is required, NOT a bare .lstrip(): assistant
+                # ``content`` is not always a str.  Anthropic-via-OpenRouter returns a
+                # list of blocks ([{"type":"text"},{"type":"thinking"}]) — the reason
+                # strip_think_blocks() coerces its input — and a non-empty list is
+                # truthy, so ``(final_response or "").lstrip()`` would survive the
+                # ``or ""`` and raise AttributeError, killing the whole turn on a
+                # vision/multimodal reply.
+                from agent.message_content import (
+                    flatten_message_text as _flatten_final,
+                )
+
                 _leaked_empty_sentinel = (
-                    (final_response or "").lstrip().startswith("(empty)")
+                    _flatten_final(final_response)
+                    .lstrip()
+                    .startswith("(empty)")
                     and agent._has_content_after_think_block(final_response)
                 )
                 if (

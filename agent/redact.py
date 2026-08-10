@@ -743,6 +743,26 @@ _COOKIE_HEADER_JSON_UNTERMINATED_RE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+# Cookie credentials are bearer credentials: possession alone can
+# authenticate (a session cookie grants access). They leak verbatim through
+# the assignment and header redactors because ``cookie`` is deliberately NOT
+# in the shared secret-keyword set (_KEY_KEYWORD_RE) — adding it there would
+# misclassify prose (``cookie_policy: strict``, ``mycookiejar=1``,
+# ``cookies enabled``). So cookie credentials get their own narrow patterns,
+# keyed on a word-bounded ``cookie`` marker followed by an ``=`` (assignment)
+# or ``:`` (header). The false-positive prose never matches: ``cookie_policy``
+# and ``cookiejar`` have letters after ``cookie`` (not ``=``/``:``),
+# ``cookies`` is a different word, and ``mycookiejar=1`` has no word boundary
+# before ``cookie``.
+_COOKIE_ASSIGN_RE = re.compile(
+    r"(\bcookie\s*=\s*)(\S+)",
+    re.IGNORECASE,
+)
+_COOKIE_HEADER_RE = re.compile(
+    r"((?:Set-?Cookie|Cookie)\s*:\s*)(\S+)",
+    re.IGNORECASE,
+)
+
 # Telegram bot tokens: [bot]<digits>:<token>, token >= 30 chars. The lookbehind
 # anchors the id at the start of its digit run: without it, a long run of digits
 # with no ":<token>" after it (a Unity/YAML ``_typelessdata`` blob in a 2 MB PR
@@ -1744,6 +1764,25 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
                 text,
             )
         text = _TELEGRAM_RE.sub(lambda m: f"{m.group(1) or ''}{m.group(2)}:***", text)
+
+    # Cookie credentials — assignment (`cookie=…`) and header
+    # (`Set-Cookie: …` / `Cookie: …`) forms. Cookie values are bearer
+    # credentials, so they must not appear verbatim in logs/tool output.
+    # Run outside the `code_file` guard like the other header patterns: a
+    # real Set-Cookie/assignment in tool output is a credential, not source
+    # (the word-bounded marker + `=`/`:` shapes never match `Cookie.set` or
+    # `cookiejar`). See #80936.
+    if "cookie" in text.lower():
+        if "=" in text:
+            text = _COOKIE_ASSIGN_RE.sub(
+                lambda m: m.group(1) + _mask_token(m.group(2)),
+                text,
+            )
+        if ":" in text:
+            text = _COOKIE_HEADER_RE.sub(
+                lambda m: m.group(1) + _mask_token(m.group(2)),
+                text,
+            )
 
     # Database connection string passwords. With code_file=True, a password group that is a pure ``{...}``
     # brace expression is an f-string template reference (e.g. f"postgresql://{user}:{pass}@{host}"), not a

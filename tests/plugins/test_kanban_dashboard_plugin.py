@@ -49,6 +49,10 @@ def kanban_home(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(
+        kb, "_worktree_writer_pids",
+        lambda _path: kb._WorktreeWriterScan((), True, False, ()),
+    )
     kb.init_db()
     return home
 
@@ -78,6 +82,51 @@ def test_board_empty(client):
     assert data["tenants"] == []
     assert data["assignees"] == []
     assert data["latest_event_id"] == 0
+
+
+def test_submit_review_accepts_frozen_head_without_claim(client, kanban_home, tmp_path):
+    repo = tmp_path / "frozen-api"
+    repo.mkdir()
+    subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
+    (repo / "implementation.txt").write_text("done\n")
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run([
+        "git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.com",
+        "commit", "-qm", "implementation",
+    ], check=True)
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+    tree_sha = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD^{tree}"], check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+    with kb.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="API frozen", workspace_kind="dir", workspace_path=str(repo))
+        assert kb.complete_task(
+            conn, task_id, summary="implemented",
+            metadata={
+                "changed_files": ["implementation.txt"],
+                "tests_run": 1,
+                "head_sha": head,
+                "tree_sha": tree_sha,
+            },
+        )
+    payload = {
+        "head_sha": head,
+        "worktree_path": str(repo),
+        "evidence": {
+            "head_sha": head,
+            "tree_sha": tree_sha,
+            "worktree_path": str(repo),
+            "clean": True,
+            "implementation_complete": True,
+        },
+    }
+    response = client.post(f"/api/plugins/kanban/tasks/{task_id}/submit-review", json=payload)
+    assert response.status_code == 200, response.text
+    assert response.json()["task"]["status"] == "review"
 
 
 # ---------------------------------------------------------------------------

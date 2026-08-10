@@ -44,7 +44,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Optional
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect, status as http_status
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -851,6 +851,82 @@ class UpdateTaskBody(BaseModel):
     clear_reasoning_effort: bool = False
 
 
+class FrozenHeadReviewBody(BaseModel):
+    head_sha: str
+    worktree_path: str
+    evidence: dict[str, Any]
+    actor: Optional[str] = "dashboard"
+
+
+@router.post("/tasks/{task_id}/submit-review")
+async def submit_review(
+    request: Request,
+    task_id: str,
+    board: Optional[str] = Query(None),
+):
+    """Submit a completed exact frozen implementation head without claiming it."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 131072:
+                raise HTTPException(status_code=409, detail="FROZEN_HEAD_REVIEW_REJECTED")
+        try:
+            raw_payload = json.loads(bytes(body))
+            def check_shape(value: Any, depth: int = 0, nodes: list[int] | None = None) -> None:
+                nodes = nodes or [0]
+                nodes[0] += 1
+                if depth > 32 or nodes[0] > 4096:
+                    raise ValueError
+                if isinstance(value, str) and len(value) > 8192:
+                    raise ValueError
+                if isinstance(value, list):
+                    if len(value) > 256:
+                        raise ValueError
+                    for item in value:
+                        check_shape(item, depth + 1, nodes)
+                elif isinstance(value, dict):
+                    if len(value) > 128:
+                        raise ValueError
+                    for key, item in value.items():
+                        if not isinstance(key, str) or len(key) > 256:
+                            raise ValueError
+                        check_shape(item, depth + 1, nodes)
+            check_shape(raw_payload)
+            payload = FrozenHeadReviewBody.model_validate(raw_payload)
+        except Exception:
+            raise HTTPException(status_code=409, detail="FROZEN_HEAD_REVIEW_REJECTED")
+        if kanban_db.get_task(conn, task_id) is None:
+            raise HTTPException(status_code=404, detail="FROZEN_HEAD_REVIEW_NOT_FOUND")
+        # Bound untrusted dashboard input before it reaches SQLite/events.  The
+        # kernel applies the same caps for CLI and direct Python callers; this
+        # route additionally turns oversized requests into a fixed 409 rather
+        # than reflecting arbitrary values in a validation error.
+        if (
+            len(payload.worktree_path) > 4096
+            or len(payload.actor or "") > 128
+            or len(json.dumps(payload.evidence, ensure_ascii=False)) > 65536
+        ):
+            raise HTTPException(status_code=409, detail="FROZEN_HEAD_REVIEW_REJECTED")
+        try:
+            kanban_db.submit_frozen_head_for_review(
+                conn,
+                task_id,
+                head_sha=payload.head_sha,
+                worktree_path=payload.worktree_path,
+                evidence=payload.evidence,
+                actor=payload.actor or "dashboard",
+            )
+        except kanban_db.FrozenHeadReviewError:
+            raise HTTPException(status_code=409, detail="FROZEN_HEAD_REVIEW_REJECTED")
+        task = kanban_db.get_task(conn, task_id)
+        return {"task": _task_dict(task) if task else None}
+    finally:
+        conn.close()
+
+
 @router.patch("/tasks/{task_id}")
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
@@ -1059,6 +1135,12 @@ def _set_status_direct(
             (task_id,),
         ).fetchone()
         if prev is None:
+            return False
+
+        # Frozen-head review is not a generic drag/drop state.  Every exit
+        # must use the lifecycle helper so thaw authorization and manifest
+        # cleanup cannot be bypassed by a direct status write.
+        if prev["status"] == "review" and kanban_db._frozen_head_identity(conn, task_id) is not None:
             return False
 
         # Guard: don't allow promoting to 'ready' unless all parents are done.

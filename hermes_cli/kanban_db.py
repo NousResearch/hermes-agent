@@ -81,15 +81,18 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import stat
+import tempfile
 import threading
 import logging
 import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Optional
+from typing import Any, Iterable, Mapping, NoReturn, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
+from hermes_constants import get_hermes_home
 from toolsets import get_toolset_names
 
 _log = logging.getLogger(__name__)
@@ -4223,6 +4226,48 @@ def recompute_ready(
 # Claim / complete / block
 # ---------------------------------------------------------------------------
 
+def _frozen_head_identity(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[tuple[str, Path, bool]]:
+    """Return verified ``(head, root, manifest_present)`` for frozen review."""
+    event = _latest_frozen_event(conn, task_id)
+    row = conn.execute(
+        "SELECT workspace_path FROM tasks WHERE id=?", (task_id,)
+    ).fetchone()
+    if not event or not row or not row["workspace_path"]:
+        return None
+    try:
+        root = Path(row["workspace_path"]).resolve(strict=True)
+        info = root.stat()
+        identity = (int(info.st_dev), int(info.st_ino))
+        if str(root) != str(row["workspace_path"]) or identity != event["root_identity"]:
+            return event["head_sha"], root, False
+        locks_fd, manifests_fd = _open_admission_dirs()
+        os.close(locks_fd)
+        try:
+            name = _manifest_name(task_id, event["head_sha"], identity)
+            manifest = _read_manifest(manifests_fd, name)
+            _validate_manifest(manifest, task_id, event["head_sha"], root)
+            return event["head_sha"], root, True
+        except FileNotFoundError:
+            return event["head_sha"], root, False
+        finally:
+            os.close(manifests_fd)
+    except (OSError, RuntimeError, FrozenHeadReviewError):
+        return event["head_sha"], Path(row["workspace_path"]), False
+
+
+def _reject_frozen_claim(conn: sqlite3.Connection, task_id: str) -> None:
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status='blocked', claim_lock=NULL, claim_expires=NULL, "
+            "worker_pid=NULL WHERE id=? AND status='ready'", (task_id,),
+        )
+        _append_event(conn, task_id, "frozen_head_claim_rejected", {
+            "code": "FROZEN_HEAD_REVIEW_CLAIM_REJECTED",
+            "message": "FROZEN_HEAD_REVIEW_CLAIM_REJECTED",
+        })
+
 def claim_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4238,6 +4283,21 @@ def claim_task(
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
+    try:
+        reconcile_frozen_workspace(conn, task_id)
+    except (FrozenHeadReviewError, OSError, RuntimeError):
+        _reject_frozen_claim(conn, task_id)
+        return None
+    frozen = _frozen_head_identity(conn, task_id)
+    if frozen is not None:
+        frozen_head, _, manifest_present = frozen
+        try:
+            if not manifest_present:
+                raise FrozenHeadReviewError("claim")
+            _thaw_frozen_manifest(conn, task_id, head_sha=frozen_head)
+        except (FrozenHeadReviewError, OSError, RuntimeError):
+            _reject_frozen_claim(conn, task_id)
+            return None
     with write_txn(conn):
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
@@ -4367,6 +4427,14 @@ def claim_review_task(
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
+    frozen = _frozen_head_identity(conn, task_id)
+    if frozen is not None and not frozen[2]:
+        with write_txn(conn):
+            _append_event(conn, task_id, "frozen_head_claim_rejected", {
+                "code": "FROZEN_HEAD_REVIEW_CLAIM_REJECTED",
+                "message": "FROZEN_HEAD_REVIEW_CLAIM_REJECTED",
+            })
+        return None
     with write_txn(conn):
         cur = conn.execute(
             """
@@ -4833,6 +4901,1302 @@ class ArtifactPreservationError(RuntimeError):
     """Raised when a declared scratch deliverable cannot be preserved."""
 
 
+class FrozenHeadReviewError(ValueError):
+    """Raised when an exact frozen implementation head cannot enter review."""
+
+    MESSAGES = {
+        "rejected": "FROZEN_HEAD_REVIEW_REJECTED",
+        "not_found": "FROZEN_HEAD_REVIEW_NOT_FOUND: not found",
+        "cleanup": "FROZEN_HEAD_REVIEW_CLEANUP_INCOMPLETE",
+        "claim": "FROZEN_HEAD_REVIEW_CLAIM_REJECTED",
+    }
+    HINT_MESSAGES = (
+        ("full 40-character", "FROZEN_HEAD_REVIEW_REJECTED: full 40-character identity required"),
+        ("evidence head_sha", "FROZEN_HEAD_REVIEW_REJECTED: evidence head_sha mismatch"),
+        ("clean must be true", "FROZEN_HEAD_REVIEW_REJECTED: evidence clean must be true"),
+        ("implementation_complete", "FROZEN_HEAD_REVIEW_REJECTED: implementation_complete required"),
+        ("metadata is malformed", "FROZEN_HEAD_REVIEW_REJECTED: metadata is malformed"),
+        ("requires changed_files and tests_run", "FROZEN_HEAD_REVIEW_REJECTED: metadata is malformed"),
+        ("completed implementation evidence is absent", "FROZEN_HEAD_REVIEW_REJECTED: completed implementation evidence is absent"),
+        ("completed implementation evidence", "FROZEN_HEAD_REVIEW_REJECTED: completed implementation evidence invalid"),
+        ("changed during verification", "FROZEN_HEAD_REVIEW_REJECTED: changed during verification"),
+        ("unrelated blocked state", "FROZEN_HEAD_REVIEW_REJECTED: unrelated blocked state"),
+        ("active OS writers", "FROZEN_HEAD_REVIEW_REJECTED: active OS writers"),
+        ("live claim", "FROZEN_HEAD_REVIEW_REJECTED: live claim"),
+        ("dirty", "FROZEN_HEAD_REVIEW_REJECTED: dirty worktree"),
+        ("status 'review'", "FROZEN_HEAD_REVIEW_REJECTED: status 'review'"),
+        ("cannot be submitted", "FROZEN_HEAD_REVIEW_REJECTED: cannot be submitted"),
+        ("not found", "FROZEN_HEAD_REVIEW_NOT_FOUND: not found"),
+    )
+
+    def __init__(self, message: str = "rejected", *, code: str | None = None):
+        reverse = {value: name for name, value in self.MESSAGES.items()}
+        key = code if code in self.MESSAGES else reverse.get(message, message if message in self.MESSAGES else "rejected")
+        text = self.MESSAGES[key]
+        if key == "rejected" and isinstance(message, str):
+            for hint, fixed in self.HINT_MESSAGES:
+                if hint in message:
+                    text = fixed
+                    break
+        self.code = key
+        super().__init__(text)
+
+
+def _validate_bounded_json_shape(value: Any) -> None:
+    """Bound direct-Python evidence before any serializer traverses it."""
+    pending: list[tuple[Any, int]] = [(value, 0)]
+    nodes = 0
+    while pending:
+        current, depth = pending.pop()
+        nodes += 1
+        if depth > 32 or nodes > 4096:
+            raise FrozenHeadReviewError("rejected")
+        if isinstance(current, str):
+            if len(current) > 8192 or "\x00" in current:
+                raise FrozenHeadReviewError("rejected")
+        elif isinstance(current, list):
+            if len(current) > 256:
+                raise FrozenHeadReviewError("rejected")
+            pending.extend((item, depth + 1) for item in current)
+        elif isinstance(current, dict):
+            if len(current) > 128:
+                raise FrozenHeadReviewError("rejected")
+            for key, item in current.items():
+                if not isinstance(key, str) or len(key) > 256 or "\x00" in key:
+                    raise FrozenHeadReviewError("rejected")
+                pending.append((item, depth + 1))
+        elif current is not None and not isinstance(current, (bool, int, float)):
+            raise FrozenHeadReviewError("rejected")
+
+
+
+def submit_task_for_review(
+    conn: sqlite3.Connection,
+    task_id: str,
+    reviewer: str,
+) -> Optional[Task]:
+    """Atomically hand a running or legacy review-required block to a reviewer."""
+    reviewer = _canonical_assignee(reviewer)
+    if not reviewer:
+        raise ValueError("reviewer is required")
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, claim_lock, current_run_id, assignee FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            return None
+        if row["status"] not in {"running", "blocked"}:
+            raise RuntimeError(
+                f"cannot submit {task_id} for review from status {row['status']!r}"
+            )
+        if row["status"] == "blocked":
+            legacy = conn.execute(
+                "SELECT payload FROM task_events WHERE task_id=? AND kind='blocked' "
+                "ORDER BY id DESC LIMIT 1", (task_id,),
+            ).fetchone()
+            try:
+                blocked_payload = json.loads(legacy["payload"] or "{}") if legacy else {}
+            except (TypeError, ValueError):
+                blocked_payload = {}
+            if not str(blocked_payload.get("reason") or "").startswith("review-required:"):
+                raise RuntimeError(
+                    f"cannot submit {task_id} for review from unrelated blocked state"
+                )
+        if row["status"] == "running" and row["claim_lock"] is None:
+            raise RuntimeError(f"cannot submit {task_id}: running task is unclaimed")
+        old_run_id = _end_run(conn, task_id, outcome="review_submitted", status="review")
+        conn.execute(
+            "UPDATE tasks SET status='review', assignee=?, claim_lock=NULL, "
+            "claim_expires=NULL, worker_pid=NULL, block_kind=NULL, block_recurrences=0 "
+            "WHERE id=?", (reviewer, task_id),
+        )
+        _append_event(
+            conn, task_id, "submitted_for_review",
+            {"reviewer": reviewer, "previous_assignee": row["assignee"]},
+            run_id=old_run_id,
+        )
+        return get_task(conn, task_id)
+
+
+@dataclass(frozen=True)
+class _WorktreeWriterScan:
+    writers: tuple[int, ...]
+    complete: bool
+    unsupported: bool
+    errors: tuple[str, ...]
+
+
+@dataclass
+class _WorkspaceAdmissionLease:
+    """Cross-process lease; commit makes the read-only state durable."""
+
+    handle: Any
+    parent_fd: int
+    manifest_path: Path
+    original_modes: tuple[tuple[str, int], ...]
+    root_identity: tuple[int, int] = (0, 0)
+    parent_identity: tuple[int, int] = (0, 0)
+    committed: bool = False
+    root_fd: int = -1
+    manifest_dir_fd: int = -1
+    manifest_name: str = ""
+    prepared: bool = False
+
+    def commit(self) -> None:
+        if self.prepared and self.manifest_dir_fd >= 0 and self.manifest_name:
+            manifest = _read_manifest(self.manifest_dir_fd, self.manifest_name)
+            manifest["phase"] = "frozen_committed"
+            _atomic_manifest_write(self.manifest_dir_fd, self.manifest_name, manifest)
+        self.committed = True
+
+
+_ADMISSION_MAX_MANIFEST_BYTES = 8 * 1024 * 1024
+_ADMISSION_MAX_ENTRIES = 100_000
+_ADMISSION_MANIFEST_VERSION = 2
+_ADMISSION_DIR_MODE = 0o700
+_ADMISSION_FILE_MODE = 0o600
+
+
+def _verify_private_dir(fd: int, *, private: bool = True) -> None:
+    info = os.fstat(fd)
+    if (
+        not stat.S_ISDIR(info.st_mode)
+        or (private and (info.st_uid != os.getuid() or info.st_mode & 0o077))
+    ):
+        raise FrozenHeadReviewError("rejected")
+
+
+def _open_nofollow_dir(
+    path: Path, *, create: bool = False, private_final: bool = True,
+) -> int:
+    """Open a directory through dirfds, refusing symlink ancestors."""
+    path = Path(path).expanduser()
+    if not path.is_absolute() or "\x00" in str(path):
+        raise FrozenHeadReviewError("rejected")
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    current = os.open(os.sep, flags)
+    try:
+        for component in path.parts[1:]:
+            if component in {"", ".", ".."}:
+                raise FrozenHeadReviewError("rejected")
+            try:
+                child = os.open(component, flags, dir_fd=current)
+            except FileNotFoundError:
+                if not create:
+                    raise FrozenHeadReviewError("rejected")
+                os.mkdir(component, _ADMISSION_DIR_MODE, dir_fd=current)
+                child = os.open(component, flags, dir_fd=current)
+            _verify_private_dir(
+                child,
+                private=(private_final and component == path.parts[-1]),
+            )
+            os.close(current)
+            current = child
+        return current
+    except Exception:
+        os.close(current)
+        raise
+
+
+def _open_admission_dirs() -> tuple[int, int]:
+    home_fd = _open_nofollow_dir(
+        get_hermes_home(), create=False, private_final=False,
+    )
+    try:
+        # Do not chmod the profile home (or any ancestor).  Only the dedicated
+        # admission directories below it are security boundaries.
+        kanban_fd = _open_child_dir(home_fd, "kanban")
+        admission_fd = _open_child_dir(kanban_fd, "admission")
+        locks_fd = _open_child_dir(admission_fd, "locks")
+        manifests_fd = _open_child_dir(admission_fd, "manifests")
+        os.close(home_fd)
+        os.close(kanban_fd)
+        os.close(admission_fd)
+        return locks_fd, manifests_fd
+    except Exception:
+        os.close(home_fd)
+        raise
+
+
+def _open_child_dir(parent_fd: int, name: str) -> int:
+    if not name or "/" in name or "\\x00" in name:
+        raise FrozenHeadReviewError("rejected")
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(name, flags, dir_fd=parent_fd)
+    except FileNotFoundError:
+        os.mkdir(name, _ADMISSION_DIR_MODE, dir_fd=parent_fd)
+        fd = os.open(name, flags, dir_fd=parent_fd)
+    _verify_private_dir(fd)
+    return fd
+
+
+def _admission_state_root() -> Path:
+    """Return the profile-aware admission directory after secure setup."""
+    locks_fd, manifests_fd = _open_admission_dirs()
+    os.close(locks_fd)
+    os.close(manifests_fd)
+    return get_hermes_home() / "kanban" / "admission"
+
+
+def _secure_admission_file(path: Path, *, mode: int = _ADMISSION_FILE_MODE) -> int:
+    parent_fd = _open_nofollow_dir(path.parent, create=False)
+    try:
+        name = path.name
+        if not name or name in {".", ".."} or "/" in name or "\x00" in name:
+            raise FrozenHeadReviewError("rejected")
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+        fd = os.open(name, flags, mode, dir_fd=parent_fd)
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            os.close(fd)
+            raise FrozenHeadReviewError("rejected")
+        os.fchmod(fd, mode)
+        return fd
+    finally:
+        os.close(parent_fd)
+
+
+def _manifest_name(task_id: str, head_sha: str, identity: tuple[int, int]) -> str:
+    return hashlib.sha256(
+        f"{task_id}:{head_sha.lower()}:{identity[0]}:{identity[1]}".encode()
+    ).hexdigest() + ".json"
+
+
+def _fsync_dir(fd: int) -> None:
+    os.fsync(fd)
+
+
+def _full_write(fd: int, data: bytes) -> None:
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("short admission write")
+        view = view[written:]
+
+
+def _atomic_manifest_write(dir_fd: int, name: str, payload: dict) -> None:
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode()
+    if len(raw) > _ADMISSION_MAX_MANIFEST_BYTES:
+        raise FrozenHeadReviewError("rejected")
+    tmp_name = f".{name}.{secrets.token_hex(12)}.tmp"
+    fd = os.open(
+        tmp_name,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+        _ADMISSION_FILE_MODE,
+        dir_fd=dir_fd,
+    )
+    try:
+        _full_write(fd, raw)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    try:
+        os.replace(tmp_name, name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
+        _fsync_dir(dir_fd)
+    except Exception:
+        try:
+            os.unlink(tmp_name, dir_fd=dir_fd)
+        except OSError:
+            pass
+        raise
+
+
+def _read_manifest(dir_fd: int, name: str) -> dict:
+    fd = os.open(name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0), dir_fd=dir_fd)
+    try:
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.getuid()
+            or info.st_mode & 0o077
+            or info.st_size > _ADMISSION_MAX_MANIFEST_BYTES
+        ):
+            raise FrozenHeadReviewError("rejected")
+        data = bytearray()
+        while len(data) <= _ADMISSION_MAX_MANIFEST_BYTES:
+            chunk = os.read(fd, min(65536, _ADMISSION_MAX_MANIFEST_BYTES + 1 - len(data)))
+            if not chunk:
+                break
+            data.extend(chunk)
+        if len(data) > _ADMISSION_MAX_MANIFEST_BYTES:
+            raise FrozenHeadReviewError("rejected")
+        value = json.loads(bytes(data))
+        if not isinstance(value, dict):
+            raise FrozenHeadReviewError("rejected")
+        return value
+    finally:
+        os.close(fd)
+
+
+def _valid_relative_entry(value: Any) -> bool:
+    if not isinstance(value, str) or not value or "\x00" in value:
+        return False
+    p = Path(value)
+    return not p.is_absolute() and ".." not in p.parts and value not in {".", ""}
+
+
+def _open_relative_parent(root_fd: int, relative: str) -> tuple[int, str]:
+    parts = relative.split("/")
+    if not parts or any(part in {"", ".", ".."} or "\x00" in part for part in parts):
+        raise FrozenHeadReviewError("rejected")
+    current = os.dup(root_fd)
+    flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        for component in parts[:-1]:
+            child = os.open(component, flags, dir_fd=current)
+            info = os.fstat(child)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+                os.close(child)
+                raise FrozenHeadReviewError("rejected")
+            os.close(current)
+            current = child
+        return current, parts[-1]
+    except Exception:
+        os.close(current)
+        raise
+
+
+def _entry_stat(root_fd: int, relative: str) -> os.stat_result:
+    parent_fd, name = _open_relative_parent(root_fd, relative)
+    try:
+        return os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    finally:
+        os.close(parent_fd)
+
+
+def _chmod_relative(root_fd: int, relative: str, mode: int) -> None:
+    parent_fd, name = _open_relative_parent(root_fd, relative)
+    try:
+        os.chmod(name, mode, dir_fd=parent_fd, follow_symlinks=False)
+    finally:
+        os.close(parent_fd)
+
+
+def _tree_modes(root_fd: int) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    stack: list[tuple[int, str]] = [(os.dup(root_fd), "")]
+    try:
+        while stack:
+            directory_fd, prefix = stack.pop()
+            try:
+                with os.scandir(directory_fd) as scan:
+                    children = list(scan)
+                for entry in children:
+                    relative = f"{prefix}/{entry.name}" if prefix else entry.name
+                    if not _valid_relative_entry(relative):
+                        raise FrozenHeadReviewError("rejected")
+                    info = entry.stat(follow_symlinks=False)
+                    is_link = stat.S_ISLNK(info.st_mode)
+                    item = {
+                        "path": relative,
+                        "mode": int(info.st_mode & 0o7777),
+                        "frozen_mode": int(info.st_mode & 0o7777 & ~0o222),
+                        "kind": "symlink" if is_link else "dir" if stat.S_ISDIR(info.st_mode) else "file",
+                        "dev": int(info.st_dev),
+                        "ino": int(info.st_ino),
+                    }
+                    entries.append(item)
+                    if len(entries) > _ADMISSION_MAX_ENTRIES:
+                        raise FrozenHeadReviewError("rejected")
+                    if stat.S_ISDIR(info.st_mode) and not is_link:
+                        child_fd = os.open(
+                            entry.name,
+                            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+                            dir_fd=directory_fd,
+                        )
+                        stack.append((child_fd, relative))
+            finally:
+                os.close(directory_fd)
+        return entries
+    except Exception:
+        for fd, _ in stack:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        raise
+
+
+def _workspace_admission_lock_path(worktree: Path) -> Path:
+    """Return a profile-scoped lock keyed by canonical root identity."""
+    root = worktree.resolve(strict=True)
+    st = root.stat()
+    digest = hashlib.sha256(f"{st.st_dev}:{st.st_ino}:{root}".encode()).hexdigest()
+    return _admission_state_root() / "locks" / f"{digest}.lock"
+
+
+@contextlib.contextmanager
+def _workspace_admission_lock(
+    worktree: Path, *, exclusive: bool, task_id: str | None = None,
+    head_sha: str | None = None,
+):
+    """Hold a dirfd-backed lease and persist a relative-mode freeze."""
+    if sys.platform != "linux" and exclusive:
+        raise FrozenHeadReviewError("rejected")
+    import fcntl
+
+    root = Path(worktree).resolve(strict=True)
+    parent_fd = _open_nofollow_dir(root.parent, create=False, private_final=False)
+    root_fd = -1
+    lock_fd = -1
+    locks_fd = manifests_fd = -1
+    handle = None
+    protected: list[tuple[str, int]] = []
+    manifest_name = ""
+    manifest_path = Path()
+    try:
+        root_name = root.name
+        root_fd = os.open(
+            root_name,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        root_info = os.fstat(root_fd)
+        parent_info = os.fstat(parent_fd)
+        root_identity = (int(root_info.st_dev), int(root_info.st_ino))
+        parent_identity = (int(parent_info.st_dev), int(parent_info.st_ino))
+        path_stat = os.stat(root_name, dir_fd=parent_fd, follow_symlinks=False)
+        if (path_stat.st_dev, path_stat.st_ino) != root_identity:
+            raise FrozenHeadReviewError("rejected")
+        locks_fd, manifests_fd = _open_admission_dirs()
+        lock_name = hashlib.sha256(
+            f"{root_identity[0]}:{root_identity[1]}:{root}".encode()
+        ).hexdigest() + ".lock"
+        lock_fd = os.open(
+            lock_name,
+            os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0),
+            _ADMISSION_FILE_MODE,
+            dir_fd=locks_fd,
+        )
+        lock_info = os.fstat(lock_fd)
+        if not stat.S_ISREG(lock_info.st_mode) or lock_info.st_uid != os.getuid():
+            raise FrozenHeadReviewError("rejected")
+        os.fchmod(lock_fd, _ADMISSION_FILE_MODE)
+        handle = os.fdopen(lock_fd, "a+b", buffering=0)
+        lock_fd = -1
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        if task_id and head_sha:
+            manifest_name = _manifest_name(task_id, head_sha, root_identity)
+            manifest_path = _admission_state_root() / "manifests" / manifest_name
+        lease = _WorkspaceAdmissionLease(
+            handle, parent_fd, manifest_path, (), root_identity, parent_identity,
+            root_fd=root_fd, manifest_dir_fd=manifests_fd, manifest_name=manifest_name,
+        )
+        if exclusive and task_id and head_sha:
+            entries = _tree_modes(root_fd)
+            root_mode = int(root_info.st_mode & 0o7777)
+            protected = [("", root_mode)] + [
+                (item["path"], int(item["mode"])) for item in entries
+            ]
+            lease.original_modes = tuple(protected)
+            # This is the first durable state transition.  It must precede
+            # every chmod so a kill on any subsequent line is recoverable.
+            manifest = {
+                    "version": _ADMISSION_MANIFEST_VERSION,
+                    "phase": "freeze_prepared",
+                    "task_id": task_id,
+                    "head_sha": head_sha.lower(),
+                    "root_path_hash": hashlib.sha256(str(root).encode()).hexdigest(),
+                    "root_identity": [root_identity[0], root_identity[1]],
+                    "parent_identity": [parent_identity[0], parent_identity[1]],
+                    "root_mode": root_mode,
+                    "root_frozen_mode": root_mode & ~0o222,
+                    "entries": entries,
+                }
+            _atomic_manifest_write(manifests_fd, manifest_name, manifest)
+            lease.prepared = True
+            try:
+                if root_mode & 0o222:
+                    os.fchmod(root_fd, root_mode & ~0o222)
+                for item in entries:
+                    if item["kind"] != "symlink" and item["mode"] & 0o222:
+                        _chmod_relative(root_fd, item["path"], item["frozen_mode"])
+            except Exception:
+                for relative, mode in reversed(protected):
+                    try:
+                        if relative:
+                            _chmod_relative(root_fd, relative, mode)
+                        else:
+                            os.fchmod(root_fd, mode)
+                    except OSError:
+                        pass
+                raise
+        yield lease
+    finally:
+        restore_error = False
+        lease = locals().get("lease")
+        if lease is not None and not lease.committed:
+            for relative, original_mode in reversed(protected):
+                try:
+                    if relative:
+                        _chmod_relative(root_fd, relative, original_mode)
+                    else:
+                        os.fchmod(root_fd, original_mode)
+                except OSError:
+                    restore_error = True
+            if lease.prepared and manifests_fd >= 0:
+                try:
+                    os.unlink(manifest_name, dir_fd=manifests_fd)
+                    _fsync_dir(manifests_fd)
+                except OSError:
+                    restore_error = True
+        if handle is not None:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+        for fd in (root_fd, parent_fd, locks_fd, manifests_fd):
+            if fd >= 0:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+        if restore_error:
+            raise FrozenHeadReviewError("cleanup")
+
+
+def _latest_frozen_event(conn: sqlite3.Connection, task_id: str) -> Optional[dict]:
+    row = conn.execute(
+        "SELECT id, payload FROM task_events WHERE task_id=? "
+        "AND kind='review_submitted_frozen_head' ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if not row:
+        return None
+    terminal = conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id=? AND id>? "
+        "AND kind IN ('frozen_head_thawed', 'frozen_head_cleanup_complete') LIMIT 1",
+        (task_id, row["id"]),
+    ).fetchone()
+    if terminal:
+        return None
+    try:
+        payload = json.loads(row["payload"] or "null")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict) or payload.get("code") != "FROZEN_HEAD_REVIEW_SUBMITTED":
+        return None
+    head = payload.get("head_sha")
+    root_identity = payload.get("root_identity")
+    parent_identity = payload.get("parent_identity")
+    if not isinstance(head, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", head):
+        return None
+    if any(
+        not isinstance(identity, list) or len(identity) != 2
+        or any(not isinstance(value, int) or value < 0 for value in identity)
+        for identity in (root_identity, parent_identity)
+    ):
+        return None
+    return {
+        "head_sha": head.lower(),
+        "root_identity": (int(root_identity[0]), int(root_identity[1])),
+        "parent_identity": (int(parent_identity[0]), int(parent_identity[1])),
+    }
+
+
+def _validate_manifest(manifest: dict, task_id: str, head_sha: str, root: Path) -> None:
+    if (
+        manifest.get("version") != _ADMISSION_MANIFEST_VERSION
+        or manifest.get("task_id") != task_id
+        or manifest.get("head_sha") != head_sha.lower()
+        or manifest.get("phase") not in {"freeze_prepared", "frozen_committed", "thaw_prepared"}
+        or manifest.get("root_path_hash") != hashlib.sha256(str(root).encode()).hexdigest()
+    ):
+        raise FrozenHeadReviewError("cleanup")
+    for key in ("root_identity", "parent_identity"):
+        value = manifest.get(key)
+        if not isinstance(value, list) or len(value) != 2 or any(
+            not isinstance(item, int) or item < 0 for item in value
+        ):
+            raise FrozenHeadReviewError("cleanup")
+    entries = manifest.get("entries")
+    if not isinstance(entries, list) or len(entries) > _ADMISSION_MAX_ENTRIES:
+        raise FrozenHeadReviewError("cleanup")
+    seen: set[str] = set()
+    for item in entries:
+        if not isinstance(item, dict) or not _valid_relative_entry(item.get("path")):
+            raise FrozenHeadReviewError("cleanup")
+        path = item["path"]
+        if path in seen or item.get("kind") not in {"file", "dir", "symlink"}:
+            raise FrozenHeadReviewError("cleanup")
+        seen.add(path)
+        for key in ("mode", "frozen_mode", "dev", "ino"):
+            value = item.get(key)
+            if not isinstance(value, int) or value < 0:
+                raise FrozenHeadReviewError("cleanup")
+            if key.endswith("mode") and value > 0o7777:
+                raise FrozenHeadReviewError("cleanup")
+    for key in ("root_mode", "root_frozen_mode"):
+        if not isinstance(manifest.get(key), int) or not 0 <= manifest[key] <= 0o7777:
+            raise FrozenHeadReviewError("cleanup")
+
+
+def reconcile_frozen_workspace(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Reconcile interrupted admission state conservatively.
+
+    Prepared state is restored only when no matching review event exists;
+    otherwise it is completed as a committed freeze.  Thaw-prepared state is
+    re-frozen unless its durable thaw event already exists.  No path is made
+    writable by reconciliation without that event.
+    """
+    row = conn.execute("SELECT status, workspace_path FROM tasks WHERE id=?", (task_id,)).fetchone()
+    if not row or not row["workspace_path"]:
+        return True
+    root = Path(row["workspace_path"])
+    if not root.is_absolute() or root.resolve(strict=True) != root:
+        raise FrozenHeadReviewError("reconcile")
+    locks_fd, manifests_fd = _open_admission_dirs()
+    os.close(locks_fd)
+    try:
+        for entry in os.scandir(manifests_fd):
+            if not entry.name.endswith(".json"):
+                continue
+            manifest = _read_manifest(manifests_fd, entry.name)
+            if manifest.get("task_id") != task_id:
+                continue
+            head = manifest.get("head_sha")
+            if not isinstance(head, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", head):
+                raise FrozenHeadReviewError("reconcile")
+            _validate_manifest(manifest, task_id, head, root)
+            root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0))
+            try:
+                root_info = os.fstat(root_fd)
+                if (root_info.st_dev, root_info.st_ino) != tuple(manifest["root_identity"]):
+                    raise FrozenHeadReviewError("reconcile")
+                event = _latest_frozen_event(conn, task_id)
+                thawed = conn.execute(
+                    "SELECT 1 FROM task_events WHERE task_id=? AND kind='frozen_head_thawed' "
+                    "AND payload LIKE ? LIMIT 1", (task_id, '%' + head.lower() + '%')
+                ).fetchone()
+                if manifest["phase"] == "freeze_prepared" and event is None:
+                    for item in reversed(manifest["entries"]):
+                        if item["kind"] != "symlink":
+                            _chmod_relative(root_fd, item["path"], item["mode"])
+                    os.fchmod(root_fd, manifest["root_mode"])
+                    os.unlink(entry.name, dir_fd=manifests_fd)
+                    _fsync_dir(manifests_fd)
+                    with write_txn(conn):
+                        _append_event(conn, task_id, "frozen_head_freeze_rolled_back", {
+                            "code": "FROZEN_HEAD_REVIEW_FREEZE_ROLLED_BACK"
+                        })
+                elif manifest["phase"] == "thaw_prepared" and thawed is None:
+                    os.fchmod(root_fd, manifest["root_frozen_mode"])
+                    for item in manifest["entries"]:
+                        if item["kind"] != "symlink":
+                            _chmod_relative(root_fd, item["path"], item["frozen_mode"])
+                    manifest["phase"] = "frozen_committed"
+                    _atomic_manifest_write(manifests_fd, entry.name, manifest)
+                elif thawed is not None:
+                    os.unlink(entry.name, dir_fd=manifests_fd)
+                    _fsync_dir(manifests_fd)
+                else:
+                    for item in manifest["entries"]:
+                        if item["kind"] != "symlink" and _entry_stat(root_fd, item["path"]).st_mode & 0o222:
+                            raise FrozenHeadReviewError("reconcile")
+                    if os.fstat(root_fd).st_mode & 0o222:
+                        raise FrozenHeadReviewError("reconcile")
+                    if manifest["phase"] == "freeze_prepared":
+                        manifest["phase"] = "frozen_committed"
+                        _atomic_manifest_write(manifests_fd, entry.name, manifest)
+            finally:
+                os.close(root_fd)
+    finally:
+        os.close(manifests_fd)
+    return True
+
+
+def _thaw_frozen_manifest(
+    conn: sqlite3.Connection, task_id: str, *, head_sha: str,
+) -> bool:
+    if not re.fullmatch(r"[0-9a-fA-F]{40}", head_sha):
+        raise FrozenHeadReviewError("cleanup")
+    task = conn.execute(
+        "SELECT status, workspace_path FROM tasks WHERE id=?", (task_id,)
+    ).fetchone()
+    if not task:
+        raise FrozenHeadReviewError("cleanup")
+    root = Path(task["workspace_path"]).resolve(strict=True)
+    if str(root) != str(task["workspace_path"]):
+        raise FrozenHeadReviewError("cleanup")
+    event = _latest_frozen_event(conn, task_id)
+    # A thaw is authorized only by the exact durable review event.  Never
+    # synthesize identity from the current path: that would authorize a
+    # replacement worktree after the original manifest/event disappeared.
+    if event is None and task["status"] not in {"done", "archived"}:
+        raise FrozenHeadReviewError("cleanup")
+    if event is not None and event["head_sha"] != head_sha.lower():
+        raise FrozenHeadReviewError("cleanup")
+    with _workspace_admission_lock(root, exclusive=True) as lease:
+        if event is not None and tuple(event["root_identity"]) != lease.root_identity:
+            raise FrozenHeadReviewError("cleanup")
+        name = _manifest_name(task_id, head_sha, lease.root_identity)
+        try:
+            manifest = _read_manifest(lease.manifest_dir_fd, name)
+        except FileNotFoundError:
+            # A successful cleanup is idempotent.  An absent manifest without
+            # its durable completion event is unsafe and remains non-writable.
+            done = conn.execute(
+                "SELECT 1 FROM task_events WHERE task_id=? AND kind='frozen_head_thawed' "
+                "AND payload LIKE ? LIMIT 1", (task_id, '%"head_sha":%'),
+            ).fetchone()
+            if done:
+                return True
+            raise FrozenHeadReviewError("cleanup")
+        _validate_manifest(manifest, task_id, head_sha, root)
+        if event is None:
+            event = {
+                "head_sha": head_sha.lower(),
+                "root_identity": tuple(manifest["root_identity"]),
+            }
+        if manifest.get("phase") not in {"frozen_committed", "thaw_prepared"}:
+            raise FrozenHeadReviewError("cleanup")
+        if tuple(manifest["root_identity"]) != lease.root_identity:
+            raise FrozenHeadReviewError("cleanup")
+        parent_info = os.fstat(lease.parent_fd)
+        if tuple(manifest["parent_identity"]) != (parent_info.st_dev, parent_info.st_ino):
+            raise FrozenHeadReviewError("cleanup")
+        # Persist thaw intent while the root and its parent are still
+        # non-writable.  Recovery can then distinguish an interrupted thaw
+        # from an authorized one.
+        if manifest.get("phase") == "frozen_committed":
+            manifest["phase"] = "thaw_prepared"
+            _atomic_manifest_write(lease.manifest_dir_fd, name, manifest)
+        changed: list[tuple[str, int]] = []
+        try:
+            for item in reversed(manifest["entries"]):
+                if item["kind"] == "symlink":
+                    continue
+                info = _entry_stat(lease.root_fd, item["path"])
+                if (info.st_dev, info.st_ino) != (item["dev"], item["ino"]):
+                    raise FrozenHeadReviewError("cleanup")
+                current = int(info.st_mode & 0o7777)
+                if current == item["mode"]:
+                    continue
+                if current != item["frozen_mode"]:
+                    raise FrozenHeadReviewError("cleanup")
+                _chmod_relative(lease.root_fd, item["path"], item["mode"])
+                changed.append((item["path"], item["frozen_mode"]))
+            root_info = os.fstat(lease.root_fd)
+            if (root_info.st_dev, root_info.st_ino) != lease.root_identity:
+                raise FrozenHeadReviewError("cleanup")
+            root_current = int(root_info.st_mode & 0o7777)
+            if root_current == manifest["root_mode"]:
+                pass
+            elif root_current == manifest["root_frozen_mode"]:
+                os.fchmod(lease.root_fd, manifest["root_mode"])
+                changed.append(("", manifest["root_frozen_mode"]))
+            else:
+                raise FrozenHeadReviewError("cleanup")
+            _fsync_dir(lease.root_fd)
+            _fsync_dir(lease.parent_fd)
+            # Authorization is durable before the manifest can disappear.
+            with write_txn(conn):
+                _append_event(conn, task_id, "frozen_head_thawed", {
+                    "code": "FROZEN_HEAD_REVIEW_THAWED",
+                    "head_sha": head_sha.lower(),
+                    "root_identity": [lease.root_identity[0], lease.root_identity[1]],
+                    "parent_identity": [lease.parent_identity[0], lease.parent_identity[1]],
+                })
+            os.unlink(name, dir_fd=lease.manifest_dir_fd)
+            _fsync_dir(lease.manifest_dir_fd)
+        except Exception as exc:
+            for relative, frozen_mode in reversed(changed):
+                try:
+                    if relative:
+                        _chmod_relative(lease.root_fd, relative, frozen_mode)
+                    else:
+                        os.fchmod(lease.root_fd, frozen_mode)
+                except OSError:
+                    pass
+            raise FrozenHeadReviewError("cleanup") from exc
+    with write_txn(conn):
+        _append_event(conn, task_id, "frozen_head_cleanup_complete", {
+            "code": "FROZEN_HEAD_REVIEW_CLEANUP_COMPLETE",
+            "head_sha": head_sha.lower(),
+        })
+    return True
+
+
+def thaw_frozen_workspace(conn: sqlite3.Connection, task_id: str, *, head_sha: str) -> bool:
+    """Restore exact modes for an authorized review exit, idempotently."""
+    return _thaw_frozen_manifest(conn, task_id, head_sha=head_sha)
+
+
+def _worktree_writer_pids(worktree: Path) -> _WorktreeWriterScan:
+    """Inspect process writers; never report an empty result without proof.
+
+    ``/proc`` is a moving target.  A missing descriptor is not evidence that
+    the process exited: only a second, explicit liveness check can establish
+    that.  Every other partial read is an incomplete proof and therefore
+    rejects admission.  Paths are checked by the target directory's stable
+    device/inode identity, not by spelling, so bind mounts and namespace
+    aliases cannot evade the check.
+    """
+    if sys.platform != "linux":
+        return _WorktreeWriterScan((), False, True, (f"unsupported platform: {sys.platform}",))
+    proc = Path("/proc")
+    try:
+        entries = list(proc.iterdir())
+    except FileNotFoundError:
+        return _WorktreeWriterScan((), False, False, ("proc unavailable",))
+    except OSError:
+        return _WorktreeWriterScan((), False, False, ("proc enumeration denied",))
+    try:
+        target = worktree.resolve(strict=True)
+        target_stat = target.stat()
+        target_identity = (int(target_stat.st_dev), int(target_stat.st_ino))
+    except (OSError, RuntimeError):
+        return _WorktreeWriterScan((), False, False, ("target identity unavailable",))
+
+    def process_exited(base: Path, pid: int) -> bool:
+        """Return True only when process disappearance is proven.
+
+        ``/proc/<pid>`` may disappear between any two component reads.  If it
+        is still present, or ``kill(pid, 0)`` cannot prove ESRCH, the process
+        remains an unknown live writer and the scan must fail closed.
+        """
+        try:
+            base.stat()
+            return False
+        except FileNotFoundError:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return True
+            except OSError:
+                return False
+            return False
+        except OSError:
+            return False
+
+    def process_path(
+        base: Path, link: Path, *, probe_before_read: bool = False,
+    ) -> Optional[Path]:
+        """Resolve a proc symlink through the process's mount namespace."""
+        if probe_before_read:
+            link.resolve(strict=True)
+        raw = os.readlink(link)
+        if not raw.startswith("/"):
+            # Pipes, sockets, anon_inode, and other non-filesystem FDs are
+            # unrelated to worktree ancestry and carry no path evidence.
+            return None
+        # Keep an explicit strict resolve as the existence/permission probe.
+        # The returned spelling is deliberately *not* used for ancestry: it
+        # is host-namespace text and is exactly what bind mounts can spoof.
+        link.resolve(strict=True)
+        root = base / "root"
+        return root / raw.lstrip("/")
+
+    def reaches_target_root(candidate: Path) -> bool:
+        """Compare each candidate ancestor to the target root identity."""
+        current = candidate
+        while True:
+            st = current.stat()
+            if (int(st.st_dev), int(st.st_ino)) == target_identity:
+                return True
+            parent = current.parent
+            if parent == current:
+                return False
+            current = parent
+
+    def inspect_component(base: Path, pid: int, label: str, fn):
+        try:
+            return fn()
+        except FileNotFoundError:
+            if process_exited(base, pid):
+                return None
+            errors.append(f"pid {pid}: {label} disappeared while process remained")
+        except PermissionError:
+            errors.append(f"pid {pid}: permission denied")
+        except (OSError, ValueError, RuntimeError):
+            errors.append(f"pid {pid}: {label} inspection failed")
+        return None
+
+    found: set[int] = set()
+    errors: list[str] = []
+    for entry in entries:
+        if not entry.name.isdigit() or int(entry.name) == os.getpid():
+            continue
+        pid = int(entry.name)
+        base = proc / str(pid)
+        cwd = inspect_component(
+            base, pid, "cwd",
+            lambda: process_path(base, base / "cwd", probe_before_read=True),
+        )
+        if cwd is not None:
+            try:
+                if reaches_target_root(cwd):
+                    found.add(pid)
+            except (FileNotFoundError, PermissionError, OSError, RuntimeError):
+                if not process_exited(base, pid):
+                    errors.append(f"pid {pid}: cwd identity unavailable")
+
+        fds = inspect_component(base, pid, "fd", lambda: list((base / "fd").iterdir()))
+        if fds is not None:
+            for fd in fds:
+                resolved = inspect_component(
+                    base, pid, "fd", lambda fd=fd: process_path(base, fd),
+                )
+                if resolved is None:
+                    continue
+                try:
+                    related = reaches_target_root(resolved)
+                except (FileNotFoundError, PermissionError, OSError, RuntimeError):
+                    if not process_exited(base, pid):
+                        errors.append(f"pid {pid}: fd identity unavailable")
+                    continue
+                if not related:
+                    continue
+                flags = inspect_component(
+                    base, pid, "fdinfo", lambda fd=fd: next(
+                        (line for line in (base / "fdinfo" / fd.name).read_text(
+                            encoding="utf-8", errors="replace"
+                        ).splitlines() if line.startswith("flags:")), ""
+                    ),
+                )
+                if flags is None:
+                    continue
+                try:
+                    if not flags:
+                        raise ValueError
+                    if int(flags.split()[1], 8) & (os.O_WRONLY | os.O_RDWR):
+                        found.add(pid)
+                except (IndexError, ValueError):
+                    errors.append(f"pid {pid}: fdinfo inspection failed")
+
+        maps_text = inspect_component(
+            base, pid, "maps",
+            lambda: (base / "maps").read_text(
+                encoding="utf-8", errors="replace"
+            ),
+        )
+        if maps_text is not None:
+            for line in maps_text.splitlines():
+                fields = line.split()
+                if len(fields) < 6:
+                    continue
+                # Linux's proc format puts the shared/private marker in the
+                # permission field today.  Check characters rather than an
+                # exact string so rwxs and future flag ordering stay covered.
+                perms = fields[1]
+                if "w" not in perms or "s" not in perms:
+                    continue
+                mapped_name = " ".join(fields[5:]).removesuffix(" (deleted)")
+                if not mapped_name.startswith("/"):
+                    errors.append(f"pid {pid}: mapped path ambiguous")
+                    continue
+                mapped = inspect_component(
+                    base, pid, "map", lambda: base / "root" / mapped_name.lstrip("/"),
+                )
+                if mapped is None:
+                    continue
+                try:
+                    if reaches_target_root(mapped):
+                        found.add(pid)
+                except (FileNotFoundError, PermissionError, OSError, RuntimeError):
+                    if not process_exited(base, pid):
+                        errors.append(f"pid {pid}: map identity unavailable")
+    return _WorktreeWriterScan(
+        tuple(sorted(found))[:32], not errors, False, tuple(errors[:32])
+    )
+
+
+def _git_worktree_snapshot(path: Path) -> tuple[str, str, str]:
+    """Return exact HEAD, committed tree id, and complete porcelain status."""
+    def run(*args: str) -> str:
+        return subprocess.run(
+            ["git", "-C", str(path), *args], check=True, capture_output=True,
+            text=True, timeout=10,
+        ).stdout
+    return (
+        run("rev-parse", "--verify", "HEAD").strip(),
+        run("rev-parse", "--verify", "HEAD^{tree}").strip(),
+        run("status", "--porcelain=v1", "--untracked-files=all"),
+    )
+
+
+def submit_frozen_head_for_review(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    head_sha: str,
+    worktree_path: str,
+    evidence: Optional[dict[str, Any]],
+    actor: str = "operator",
+) -> bool:
+    """Move a completed, immutable implementation head into ``review``.
+
+    This is deliberately separate from the worker ``running`` and legacy
+    ``blocked`` review handoffs.  The caller must provide a duplicated,
+    explicit evidence record; the database then verifies the record against
+    the live git worktree and the completed implementation run before making
+    the transition.  Every rejection is recorded, but no task state is
+    changed on rejection.
+    """
+    row = conn.execute(
+        "SELECT status, workspace_path, current_run_id, claim_lock, worker_pid "
+        "FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+
+    def reject(reason: str) -> NoReturn:
+        safe_reason = FrozenHeadReviewError(reason).args[0]
+        if row is None:
+            raise FrozenHeadReviewError(safe_reason)
+        safe_path = str(worktree_path)[:4096] if isinstance(worktree_path, str) else ""
+        path_hash = hashlib.sha256(safe_path.encode("utf-8", "replace")).hexdigest()[:16]
+        actor_hash = hashlib.sha256(str(actor)[:128].encode("utf-8", "replace")).hexdigest()[:16]
+        with write_txn(conn):
+            _append_event(conn, task_id, "review_submission_rejected", {
+                "route": "frozen_head",
+                "code": "FROZEN_HEAD_REVIEW_REJECTED",
+                # Rejection events are durable and may cross trust boundaries;
+                # never persist the internal exception text.
+                "message": "FROZEN_HEAD_REVIEW_REJECTED",
+                "head_sha": (
+                    head_sha if isinstance(head_sha, str)
+                    and re.fullmatch(r"[0-9a-fA-F]{40}", head_sha)
+                    else None
+                ),
+                "worktree_path_hash": path_hash,
+                "actor_hash": actor_hash,
+            })
+        raise FrozenHeadReviewError(safe_reason)
+
+    if not isinstance(head_sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", head_sha):
+        reject("head_sha must be a full 40-character commit id")
+    if not isinstance(worktree_path, str) or not worktree_path.strip() or len(worktree_path) > 4096:
+        reject("worktree_path is required")
+    if not isinstance(evidence, dict):
+        reject("explicit evidence object is required")
+    try:
+        _validate_bounded_json_shape(evidence)
+    except FrozenHeadReviewError:
+        reject("evidence is not serializable")
+    try:
+        serialized_evidence = json.dumps(evidence, ensure_ascii=False)
+    except (TypeError, ValueError, OverflowError):
+        reject("evidence is not serializable")
+    if len(serialized_evidence) > 65536:
+        reject("evidence exceeds the maximum allowed size")
+    evidence = dict(evidence)
+    if evidence.get("head_sha") != head_sha:
+        reject("evidence head_sha must exactly match head_sha")
+    submitted_tree_sha = evidence.get("tree_sha")
+    if not isinstance(submitted_tree_sha, str) or not re.fullmatch(
+        r"[0-9a-fA-F]{40}", submitted_tree_sha
+    ):
+        reject("evidence tree_sha must be a full 40-character tree id")
+    if evidence.get("worktree_path") != worktree_path:
+        reject("evidence worktree_path must exactly match the submitted worktree")
+    if evidence.get("clean") is not True:
+        reject("evidence clean must be true")
+    if evidence.get("implementation_complete") is not True:
+        reject("evidence implementation_complete must be true")
+
+    path = Path(worktree_path).expanduser()
+    if not path.is_dir() or not path.is_absolute():
+        reject("worktree_path is not a canonical directory")
+    try:
+        submitted_path = path.resolve(strict=True)
+    except (OSError, RuntimeError):
+        reject("worktree_path is not a canonical directory")
+    if str(submitted_path) != worktree_path:
+        reject("worktree_path must be the canonical path")
+    if row is None:
+        reject("task not found")
+    if row["status"] in {"triage", "running", "review", "archived"}:
+        reject(f"frozen head cannot be submitted from status {row['status']!r}")
+    if row["status"] == "blocked":
+        legacy = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='blocked' "
+            "ORDER BY id DESC LIMIT 1", (task_id,),
+        ).fetchone()
+        try:
+            blocked_payload = json.loads(legacy["payload"] or "{}") if legacy else {}
+        except (TypeError, ValueError):
+            blocked_payload = {}
+        if not str(blocked_payload.get("reason") or "").startswith("review-required:"):
+            reject("frozen head cannot be submitted from unrelated blocked state")
+    if row["status"] not in {"scheduled", "ready", "todo", "blocked", "done"}:
+        reject(f"frozen head cannot be submitted from status {row['status']!r}")
+    if not row["workspace_path"]:
+        reject("task has no canonical workspace")
+    try:
+        canonical_path = Path(row["workspace_path"]).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        reject("task canonical workspace is unavailable")
+    if str(canonical_path) != row["workspace_path"] or submitted_path != canonical_path:
+        reject("worktree is unrelated to the task canonical workspace")
+    if row["current_run_id"] is not None or row["claim_lock"] is not None or row["worker_pid"] is not None:
+        reject("task has a live claim or current writer")
+
+    try:
+        verified_head, tree_sha, dirty = _git_worktree_snapshot(submitted_path)
+    except (OSError, subprocess.SubprocessError):
+        reject("unable to verify git worktree")
+    if verified_head.lower() != head_sha.lower():
+        reject("worktree HEAD does not match exact head_sha")
+    if tree_sha.lower() != submitted_tree_sha.lower():
+        reject("worktree tree_sha does not match exact tree_sha")
+    if dirty:
+        reject("worktree is dirty")
+    first_snapshot = (verified_head.lower(), tree_sha.lower(), dirty)
+    writer_scan = _worktree_writer_pids(submitted_path)
+    if writer_scan.writers:
+        reject("worktree has active OS writers")
+    if not writer_scan.complete or writer_scan.unsupported:
+        reject("OS writer inspection incomplete or unsupported")
+
+    run = conn.execute(
+        "SELECT id, metadata FROM task_runs WHERE task_id = ? "
+        "AND outcome = 'completed' AND ended_at IS NOT NULL "
+        "ORDER BY ended_at DESC, id DESC LIMIT 1", (task_id,),
+    ).fetchone()
+    if run is None:
+        reject("completed implementation evidence is absent")
+    try:
+        run_metadata = json.loads(run["metadata"] or "null")
+    except (TypeError, json.JSONDecodeError):
+        run_metadata = None
+    if not isinstance(run_metadata, dict):
+        reject("completed implementation evidence metadata is malformed")
+    changed_files = run_metadata.get("changed_files")
+    if (
+        not isinstance(changed_files, list)
+        or not changed_files
+        or any(not isinstance(item, str) or not item or len(item) > 1024 for item in changed_files[:256])
+        or len(changed_files) > 256
+        or "tests_run" not in run_metadata
+        or run_metadata.get("tests_run") is None
+    ):
+        reject("completed implementation evidence requires changed_files and tests_run")
+    run_head_sha = run_metadata.get("head_sha")
+    if not isinstance(run_head_sha, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", run_head_sha):
+        reject("completed implementation evidence requires a full 40-character head_sha")
+    if run_head_sha.lower() != head_sha.lower():
+        reject("completed implementation evidence head_sha does not match exact head_sha")
+    run_tree_sha = run_metadata.get("tree_sha")
+    if not isinstance(run_tree_sha, str) or not re.fullmatch(
+        r"[0-9a-fA-F]{40}", run_tree_sha
+    ):
+        reject("completed implementation evidence requires a full 40-character tree_sha")
+    if run_tree_sha.lower() != tree_sha.lower():
+        reject("completed implementation evidence tree_sha does not match exact tree_sha")
+
+    original_identity = {
+        "status": row["status"], "workspace_path": row["workspace_path"],
+        "current_run_id": row["current_run_id"], "claim_lock": row["claim_lock"],
+        "worker_pid": row["worker_pid"],
+    }
+    try:
+        with _workspace_admission_lock(
+            submitted_path, exclusive=True, task_id=task_id, head_sha=head_sha
+        ) as admission:
+            # The exclusive lease and read-only protection are held across the
+            # final scan, final Git snapshot, BEGIN IMMEDIATE, CAS, and COMMIT.
+            final_scan = _worktree_writer_pids(submitted_path)
+            if final_scan.writers:
+                raise FrozenHeadReviewError("worktree has active OS writers")
+            if not final_scan.complete or final_scan.unsupported:
+                raise FrozenHeadReviewError("OS writer inspection incomplete or unsupported")
+            try:
+                second_head, second_tree_sha, second_dirty = _git_worktree_snapshot(submitted_path)
+            except (OSError, subprocess.SubprocessError) as exc:
+                raise FrozenHeadReviewError("unable to re-verify git worktree") from exc
+            if (second_head.lower(), second_tree_sha.lower(), second_dirty) != first_snapshot:
+                raise FrozenHeadReviewError("git HEAD, tree, or full clean status changed during verification")
+            root_stat = submitted_path.stat()
+            parent_stat = submitted_path.parent.stat()
+            if (root_stat.st_dev, root_stat.st_ino) != admission.root_identity or (
+                parent_stat.st_dev, parent_stat.st_ino
+            ) != admission.parent_identity or (
+                os.fstat(admission.parent_fd).st_dev,
+                os.fstat(admission.parent_fd).st_ino,
+            ) != admission.parent_identity:
+                raise FrozenHeadReviewError("workspace root identity changed during verification")
+            with write_txn(conn):
+                locked_row = conn.execute(
+                    "SELECT status, workspace_path, current_run_id, claim_lock, worker_pid "
+                    "FROM tasks WHERE id = ?", (task_id,),
+                ).fetchone()
+                if locked_row is None or any(
+                    locked_row[key] != original_identity[key] for key in original_identity
+                ):
+                    raise FrozenHeadReviewError("task state changed while submitting frozen head")
+                latest_run = conn.execute(
+                    "SELECT id, metadata FROM task_runs WHERE task_id = ? "
+                    "AND outcome = 'completed' AND ended_at IS NOT NULL "
+                    "ORDER BY ended_at DESC, id DESC LIMIT 1", (task_id,),
+                ).fetchone()
+                if latest_run is None or int(latest_run["id"]) != int(run["id"]):
+                    raise FrozenHeadReviewError("completed implementation evidence changed while submitting")
+                if latest_run["metadata"] != run["metadata"]:
+                    raise FrozenHeadReviewError("completed implementation metadata changed while submitting")
+                cur = conn.execute(
+                    "UPDATE tasks SET status = 'review' WHERE id = ? AND status = ? "
+                    "AND workspace_path IS ? AND current_run_id IS ? "
+                    "AND claim_lock IS ? AND worker_pid IS ?",
+                    (task_id, original_identity["status"], original_identity["workspace_path"],
+                     original_identity["current_run_id"], original_identity["claim_lock"],
+                     original_identity["worker_pid"]),
+                )
+                if cur.rowcount != 1:
+                    raise FrozenHeadReviewError("task state changed while submitting frozen head")
+                _append_event(conn, task_id, "review_submitted_frozen_head", {
+                    "route": "frozen_head",
+                    "code": "FROZEN_HEAD_REVIEW_SUBMITTED",
+                    "actor_hash": hashlib.sha256(str(actor)[:128].encode("utf-8", "replace")).hexdigest()[:16],
+                    "head_sha": head_sha,
+                    "tree_sha": second_tree_sha,
+                    "stable_head_sha": second_head,
+                    "stable_tree_sha": second_tree_sha,
+                    "root_identity": [admission.root_identity[0], admission.root_identity[1]],
+                    "parent_identity": [admission.parent_identity[0], admission.parent_identity[1]],
+                    "worktree_path_hash": hashlib.sha256(str(submitted_path).encode("utf-8")).hexdigest()[:16],
+                    "evidence": {
+                        "head_sha": evidence["head_sha"],
+                        "tree_sha": evidence["tree_sha"],
+                        "worktree_path_hash": hashlib.sha256(worktree_path.encode("utf-8")).hexdigest()[:16],
+                        "clean": True,
+                        "implementation_complete": True,
+                    },
+                    "implementation_run_id": int(run["id"]),
+                }, run_id=int(run["id"]))
+            # Re-prove both descriptors and the parent/name binding after the
+            # SQLite commit.  If the path was replaced, the committed review
+            # remains frozen and is reconciled later; it is never reported as
+            # a rejected writable review.
+            try:
+                post_root = os.stat(
+                    submitted_path.name,
+                    dir_fd=admission.parent_fd,
+                    follow_symlinks=False,
+                )
+                held_root = os.fstat(admission.root_fd)
+                held_parent = os.fstat(admission.parent_fd)
+                if (
+                    (post_root.st_dev, post_root.st_ino) != admission.root_identity
+                    or (held_root.st_dev, held_root.st_ino) != admission.root_identity
+                    or (held_parent.st_dev, held_parent.st_ino) != admission.parent_identity
+                ):
+                    raise OSError
+            except OSError:
+                admission.commit()
+                with write_txn(conn):
+                    _append_event(conn, task_id, "frozen_head_cleanup_incomplete", {
+                        "code": "FROZEN_HEAD_REVIEW_CLEANUP_INCOMPLETE",
+                        "message": "FROZEN_HEAD_REVIEW_CLEANUP_INCOMPLETE",
+                    })
+                return True
+            admission.commit()
+    except FrozenHeadReviewError as exc:
+        reject(str(exc))
+    return True
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -4872,6 +6236,7 @@ def complete_task(
     and never blocks.
     """
     now = int(time.time())
+    frozen_review = _frozen_head_identity(conn, task_id)
 
     # Gate: verify created_cards BEFORE the main write txn. A rejected
     # completion still needs an auditable event, so we emit it in a
@@ -4917,7 +6282,7 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                   AND status IN ('running', 'ready', 'blocked', 'review')
                 """,
                 (result, now, task_id),
             )
@@ -4934,7 +6299,7 @@ def complete_task(
                        block_kind   = NULL,
                        block_recurrences = 0
                  WHERE id = ?
-                   AND status IN ('running', 'ready', 'blocked')
+                   AND status IN ('running', 'ready', 'blocked', 'review')
                    AND current_run_id = ?
                 """,
                 (result, now, task_id, int(expected_run_id)),
@@ -5001,6 +6366,17 @@ def complete_task(
             completed_payload,
             run_id=run_id,
         )
+    if frozen_review is not None:
+        try:
+            _thaw_frozen_manifest(conn, task_id, head_sha=frozen_review[0])
+        except (FrozenHeadReviewError, OSError, RuntimeError):
+            with write_txn(conn):
+                _append_event(conn, task_id, "frozen_head_cleanup_incomplete", {
+                    "code": "FROZEN_HEAD_REVIEW_CLEANUP_INCOMPLETE",
+                    "message": "FROZEN_HEAD_REVIEW_CLEANUP_INCOMPLETE",
+                })
+            return False
+
     # Prose-scan the summary + result for t_<hex> references that do
     # not resolve. Advisory — does not block the completion. Runs in
     # its own txn so the completion itself is already durable by the
@@ -5654,6 +7030,26 @@ def block_task(
         raise ValueError(
             f"block kind must be one of {sorted(VALID_BLOCK_KINDS)} or None"
         )
+    frozen_review = _frozen_head_identity(conn, task_id)
+    current = conn.execute(
+        "SELECT status FROM tasks WHERE id=?", (task_id,)
+    ).fetchone()
+    if current and current["status"] == "review":
+        if frozen_review is None:
+            return False
+        with write_txn(conn):
+            run_id = _end_run(conn, task_id, outcome="blocked", status="blocked")
+            cur = conn.execute(
+                "UPDATE tasks SET status='blocked', claim_lock=NULL, claim_expires=NULL, "
+                "worker_pid=NULL WHERE id=? AND status='review'", (task_id,),
+            )
+            if cur.rowcount != 1:
+                return False
+            _append_event(conn, task_id, "blocked", {
+                "code": "FROZEN_HEAD_REVIEW_REQUEST_CHANGES",
+                "message": "FROZEN_HEAD_REVIEW_REQUEST_CHANGES",
+            }, run_id=run_id)
+        return True
     recurrences = 0
     with write_txn(conn):
         cur_row = conn.execute(
@@ -6289,6 +7685,7 @@ def decompose_triage_task(
 
 
 def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    frozen_review = _frozen_head_identity(conn, task_id)
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'archived', "
@@ -6307,6 +7704,16 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             summary="task archived with run still active",
         )
         _append_event(conn, task_id, "archived", None, run_id=run_id)
+    if frozen_review is not None:
+        try:
+            _thaw_frozen_manifest(conn, task_id, head_sha=frozen_review[0])
+        except (FrozenHeadReviewError, OSError, RuntimeError):
+            with write_txn(conn):
+                _append_event(conn, task_id, "frozen_head_cleanup_incomplete", {
+                    "code": "FROZEN_HEAD_REVIEW_CLEANUP_INCOMPLETE",
+                    "message": "FROZEN_HEAD_REVIEW_CLEANUP_INCOMPLETE",
+                })
+            return False
     # ``archived`` parents no longer block children, same as ``done``.
     # Promote newly-unblocked dependents immediately instead of waiting
     # for a later dispatcher tick.
@@ -6321,6 +7728,8 @@ def delete_archived_task(conn: sqlite3.Connection, task_id: str) -> bool:
     tasks must be explicitly archived first so accidental data loss requires a
     second deliberate action.
     """
+    if _frozen_head_identity(conn, task_id) is not None:
+        raise FrozenHeadReviewError("rejected")
     with write_txn(conn):
         row = conn.execute(
             "SELECT status FROM tasks WHERE id = ?",
@@ -6345,11 +7754,11 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
 
     Because the schema does not use ``ON DELETE CASCADE`` foreign keys,
     we explicitly delete from child tables first, then the task row.
-    This keeps the operation atomic (single ``write_txn``).
-
     Returns ``True`` if the task existed and was deleted, ``False``
     if the task was not found.
     """
+    if _frozen_head_identity(conn, task_id) is not None:
+        raise FrozenHeadReviewError("rejected")
     with write_txn(conn):
         cur = conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
         if cur.rowcount != 1:
@@ -9252,25 +10661,35 @@ def _default_spawn(
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
 
-    # Use 'a' so a re-run on unblock appends rather than overwrites.
-    log_f = open(log_path, "ab")
-    try:
-        proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
-            cmd,
-            cwd=workspace if os.path.isdir(workspace) else None,
-            stdin=subprocess.DEVNULL,
-            stdout=log_f,
-            stderr=subprocess.STDOUT,
-            env=env,
-            start_new_session=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
-        )
-    except FileNotFoundError:
-        log_f.close()
-        raise RuntimeError(
-            "`hermes` executable not found on PATH. "
-            "Install Hermes Agent or activate its venv before running the kanban dispatcher."
-        )
+    # Use 'a' so a re-run on unblock appends rather than overwrites.  Worker
+    # creation participates in the same lease as frozen-head admission: a
+    # review freeze cannot race a dispatcher opening a new writer.
+    # Some legacy dispatcher tests (and failed worktree setup recovery) invoke
+    # spawn before a workspace exists.  There is no inode to lease in that
+    # case; once the directory exists every managed spawn takes the lease.
+    admission = (
+        _workspace_admission_lock(Path(workspace), exclusive=False)
+        if os.path.isdir(workspace) else contextlib.nullcontext()
+    )
+    with admission:
+        log_f = open(log_path, "ab")
+        try:
+            proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
+                cmd,
+                cwd=workspace if os.path.isdir(workspace) else None,
+                stdin=subprocess.DEVNULL,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                env=env,
+                start_new_session=True,
+                creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            )
+        except FileNotFoundError:
+            log_f.close()
+            raise RuntimeError(
+                "`hermes` executable not found on PATH. "
+                "Install Hermes Agent or activate its venv before running the kanban dispatcher."
+            )
     # NOTE: we intentionally do NOT close log_f here — we want Popen's
     # child process to keep writing after this function returns.  The
     # handle is kept alive by the child's inheritance.  The parent's

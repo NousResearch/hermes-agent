@@ -601,6 +601,18 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                             help='JSON dict of structured facts (e.g. \'{"changed_files": [...], '
                                  '"tests_run": 12}\'). Stored on the closing run.')
 
+    p_review = sub.add_parser(
+        "submit-review",
+        help="Submit a completed immutable exact implementation head for review",
+    )
+    p_review.add_argument("task_id")
+    p_review.add_argument("--head-sha", required=True, help="Exact 40-character implementation HEAD")
+    p_review.add_argument("--worktree", required=True, dest="worktree_path",
+                          help="Worktree containing the frozen implementation HEAD")
+    p_review.add_argument("--evidence", required=True,
+                          help="JSON evidence object; must repeat exact head/worktree and completion facts")
+    p_review.add_argument("--actor", default=None, help="Audit actor (default: active profile/user)")
+
     p_edit = sub.add_parser(
         "edit",
         help="Edit recovery fields on an already-completed task",
@@ -1062,6 +1074,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "attachments": _cmd_attachments,
             "attach-rm": _cmd_attach_rm,
             "complete": _cmd_complete,
+            "submit-review": _cmd_submit_review,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
             "schedule": _cmd_schedule,
@@ -2225,6 +2238,31 @@ def _cmd_complete(args: argparse.Namespace) -> int:
             else:
                 print(f"Completed {tid}")
     return 0 if not failed else 1
+
+
+def _cmd_submit_review(args: argparse.Namespace) -> int:
+    try:
+        evidence = json.loads(args.evidence)
+        if not isinstance(evidence, dict):
+            raise ValueError("must be a JSON object")
+    except (ValueError, json.JSONDecodeError) as exc:
+        print(f"kanban: --evidence: {exc}", file=sys.stderr)
+        return 2
+    try:
+        with kb.connect_closing() as conn:
+            kb.submit_frozen_head_for_review(
+                conn,
+                args.task_id,
+                head_sha=args.head_sha,
+                worktree_path=args.worktree_path,
+                evidence=evidence,
+                actor=args.actor or _profile_author(),
+            )
+    except kb.FrozenHeadReviewError as exc:
+        print(f"cannot submit {args.task_id} for review: {exc}", file=sys.stderr)
+        return 1
+    print(f"Submitted {args.task_id} for review (frozen head {args.head_sha})")
+    return 0
 
 
 def _cmd_edit(args: argparse.Namespace) -> int:

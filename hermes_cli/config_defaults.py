@@ -2166,10 +2166,11 @@ DEFAULT_CONFIG = {
         # real memory cost. Default 32 MiB matches the historical hardcoded
         # cap. Set to 0 for no cap. Env override: DISCORD_MAX_ATTACHMENT_BYTES.
         "max_attachment_bytes": 33554432,
-        # When True, Discord approval prompts mention numeric allowed users so
-        # owners notice approval requests in shared channels/threads. Env
-        # override: DISCORD_APPROVAL_MENTIONS. Default false avoids surprise
-        # pings.
+        # When True, Discord blocking prompts mention numeric allowed users so
+        # owners notice requests waiting in shared channels/threads. Applies to
+        # command approvals, slash confirmations, clarify questions, and update
+        # prompts. Env override: DISCORD_APPROVAL_MENTIONS. Default false avoids
+        # surprise pings.
         "approval_mentions": False,
         # Discord voice-channel inactivity timeout, in seconds. Set to 0 to
         # keep the bot in VC until an explicit `/voice leave` / disconnect.

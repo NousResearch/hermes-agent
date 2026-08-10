@@ -32,6 +32,18 @@ import logging
 import os
 import subprocess
 import sys
+from pathlib import Path
+
+# Resolve hermes_cli from the canonical repo checkout(s). The deployed copy
+# under ~/.hermes/scripts/ has no hermes_cli on sys.path, so bootstrap it from
+# the repo that owns this script (or the canonical KenseiAgent checkout).
+for _root in (
+    Path(__file__).resolve().parents[1],  # repo checkout layout
+    Path.home() / "repos" / "KenseiAgent",  # canonical repo
+    Path.home() / "repos" / "KenseiAgent-runtime-20260802",  # runtime copy
+):
+    if (_root / "hermes_cli").is_dir() and str(_root) not in sys.path:
+        sys.path.insert(0, str(_root))
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s"

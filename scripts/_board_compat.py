@@ -50,9 +50,14 @@ def _kanban_db():
     """
     import sys
 
-    repo_root = str(Path(__file__).resolve().parents[1])
-    if repo_root not in sys.path:
-        sys.path.insert(0, repo_root)
+    candidates = [
+        Path(__file__).resolve().parents[1],  # repo checkout layout
+        Path.home() / "repos" / "KenseiAgent",  # canonical repo
+        Path.home() / "repos" / "KenseiAgent-runtime-20260802",  # runtime copy
+    ]
+    for root in candidates:
+        if (root / "hermes_cli").is_dir() and str(root) not in sys.path:
+            sys.path.insert(0, str(root))
     from hermes_cli import kanban_db as kb
     return kb
 

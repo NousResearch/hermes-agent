@@ -29,6 +29,15 @@ class TestParseServiceTierConfig(unittest.TestCase):
         self.assertEqual(self._parse("fast"), "priority")
         self.assertEqual(self._parse("priority"), "priority")
 
+    def test_flex_is_accepted(self):
+        """agent.service_tier: flex was rejected as unknown and silently dropped."""
+        self.assertEqual(self._parse("flex"), "flex")
+        self.assertEqual(self._parse("  FLEX  "), "flex")
+
+    def test_normal_and_unknown_still_disable(self):
+        for raw in ["", "normal", "off", "standard", "bogus"]:
+            self.assertIsNone(self._parse(raw), f"{raw!r} should not enable a tier")
+
 
 
 class TestHandleFastCommand(unittest.TestCase):
@@ -143,6 +152,90 @@ class TestPriorityProcessingModels(unittest.TestCase):
         result = resolve_fast_mode_overrides("gpt-4.1")
         assert result == {"service_tier": "priority"}
 
+
+
+class TestTwoLevelModelPaths(unittest.TestCase):
+    """Aggregators route models as ``aggregator/vendor/model``.
+
+    Only the aggregator segment was stripped, so ``openrouter/openai/gpt-4.1``
+    reduced to ``openai/gpt-4.1`` and matched no prefix — service_tier was
+    silently dropped for every OpenRouter-routed model.
+    """
+
+    def test_openrouter_openai_path_supports_fast_mode(self):
+        from hermes_cli.models import model_supports_fast_mode
+
+        assert model_supports_fast_mode("openrouter/openai/gpt-4.1")
+
+
+class TestGoogleServiceTier(unittest.TestCase):
+    """Gemini accepts a top-level ``service_tier`` on generateContent.
+
+    See https://ai.google.dev/gemini-api/docs/flex-inference (flex) and
+    https://ai.google.dev/gemini-api/docs/generate-content/priority-inference
+    (priority).
+    """
+
+    def test_gemini_models_detected(self):
+        from hermes_cli.models import _is_google_service_tier_model
+
+        for model in [
+            "gemini-3.6-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-2.5-pro",
+            "google/gemini-3.5-flash",
+            "openrouter/google/gemini-3.5-flash",
+        ]:
+            assert _is_google_service_tier_model(model), f"{model} should be tier-eligible"
+
+    def test_non_gemini_models_not_detected(self):
+        from hermes_cli.models import _is_google_service_tier_model
+
+        for model in ["gpt-5.4", "claude-opus-4-6", "openrouter/openai/gpt-4.1"]:
+            assert not _is_google_service_tier_model(model), f"{model} is not a Gemini model"
+
+
+class TestFlexTier(unittest.TestCase):
+    """``agent.service_tier: flex`` must survive all the way to the override dict."""
+
+    def test_openai_flex_override(self):
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        assert resolve_fast_mode_overrides("gpt-5.4", tier="flex") == {"service_tier": "flex"}
+
+    def test_gemini_flex_override(self):
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        assert resolve_fast_mode_overrides(
+            "openrouter/google/gemini-3.5-flash", tier="flex"
+        ) == {"service_tier": "flex"}
+
+    def test_gemini_priority_override(self):
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        assert resolve_fast_mode_overrides("gemini-3.6-flash", tier="priority") == {
+            "service_tier": "priority"
+        }
+
+    def test_anthropic_flex_returns_none(self):
+        """Anthropic has no flex equivalent — speed=fast is a priority-only knob."""
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        assert resolve_fast_mode_overrides("claude-opus-4-6", tier="flex") is None
+
+    def test_anthropic_priority_still_returns_speed(self):
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        assert resolve_fast_mode_overrides("claude-opus-4-6", tier="priority") == {
+            "speed": "fast"
+        }
+
+    def test_default_tier_is_priority(self):
+        """Existing callers pass no tier and must keep priority semantics."""
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        assert resolve_fast_mode_overrides("gpt-5.4") == {"service_tier": "priority"}
+        assert resolve_fast_mode_overrides("claude-opus-4-6") == {"speed": "fast"}
 
 
 class TestFastModeRouting(unittest.TestCase):

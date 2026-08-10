@@ -457,3 +457,70 @@ class TestGemini3ToolCallIds:
         result = translate_gemini_response(resp, model="gemini-2.5-flash")
         tool_calls = result.choices[0].message.tool_calls
         assert tool_calls[0].id.startswith("call_")
+def test_build_gemini_request_emits_top_level_service_tier():
+    """Gemini takes service_tier as a TOP-LEVEL generateContent body field.
+
+    Flex:     https://ai.google.dev/gemini-api/docs/flex-inference
+    Priority: https://ai.google.dev/gemini-api/docs/generate-content/priority-inference
+
+    Both docs show it as a sibling of ``contents``, not inside
+    ``generationConfig`` — putting it in generationConfig would be silently
+    ignored and bill at the standard rate.
+    """
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        service_tier="flex",
+    )
+
+    assert request["service_tier"] == "flex"
+    assert "service_tier" not in request.get("generationConfig", {})
+
+
+def test_build_gemini_request_omits_service_tier_when_unset():
+    """No tier configured must mean no field — not an explicit standard."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(messages=[{"role": "user", "content": "hi"}])
+
+    assert "service_tier" not in request
+
+
+def test_build_gemini_request_accepts_priority():
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[{"role": "user", "content": "hi"}],
+        service_tier="priority",
+    )
+
+    assert request["service_tier"] == "priority"
+
+
+def test_native_client_sends_service_tier_on_the_wire(monkeypatch):
+    """End-to-end: the tier must appear in the posted generateContent body."""
+    from agent.gemini_native_adapter import GeminiNativeClient
+
+    posted = {}
+
+    class _HTTP:
+        def post(self, url, json=None, headers=None, timeout=None):
+            posted["url"] = url
+            posted["body"] = json
+            return DummyResponse(
+                payload={
+                    "candidates": [
+                        {"content": {"parts": [{"text": "ok"}]}, "finishReason": "STOP"}
+                    ]
+                }
+            )
+
+    client = GeminiNativeClient(api_key="test-key", http_client=_HTTP())
+    client._create_chat_completion(
+        model="gemini-3.6-flash",
+        messages=[{"role": "user", "content": "hi"}],
+        service_tier="flex",
+    )
+
+    assert posted["body"]["service_tier"] == "flex"

@@ -4497,6 +4497,8 @@ def _load_service_tier() -> str | None:
         return None
     if raw in {"fast", "priority", "on"}:
         return "priority"
+    if raw == "flex":
+        return "flex"
     return None
 
 
@@ -7074,6 +7076,23 @@ def _make_agent(
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
     _pr = _load_provider_routing()
+    # Resolve the tier once: the transport emits ``service_tier`` only from
+    # ``request_overrides``, so setting ``service_tier=`` alone left the
+    # configured tier stranded on the agent and never sent it. Without this,
+    # a tier only ever reached the wire via the runtime ``/fast`` toggle.
+    _effective_tier = (
+        service_tier_override
+        if service_tier_override is not None
+        else _load_service_tier()
+    )
+    _tier_overrides = None
+    if _effective_tier:
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        try:
+            _tier_overrides = resolve_fast_mode_overrides(model, tier=_effective_tier)
+        except Exception:
+            _tier_overrides = None
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 500),
@@ -7095,11 +7114,8 @@ def _make_agent(
             if reasoning_config_override is not None
             else _load_reasoning_config(str(model or ""))
         ),
-        service_tier=(
-            service_tier_override
-            if service_tier_override is not None
-            else _load_service_tier()
-        ),
+        service_tier=_effective_tier,
+        request_overrides=_tier_overrides or {},
         enabled_toolsets=_load_enabled_toolsets(_resolve_agent_platform(platform_override)),
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same

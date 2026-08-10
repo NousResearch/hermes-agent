@@ -8052,7 +8052,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return route
 
         try:
-            overrides = resolve_fast_mode_overrides(route["model"])
+            overrides = resolve_fast_mode_overrides(route["model"], tier=service_tier)
         except Exception:
             overrides = None
         route["request_overrides"] = overrides or {}
@@ -9353,6 +9353,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
         if value in {"fast", "priority", "on"}:
             return "priority"
+        if value == "flex":
+            return "flex"
         logger.warning("Unknown service_tier '%s', ignoring", raw)
         return None
 

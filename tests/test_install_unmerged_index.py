@@ -159,9 +159,10 @@ def test_install_ps1_stops_venv_resident_processes_before_parking_venv() -> None
     A gateway autostarted by a scheduled task runs as
     ``venv\\Scripts\\pythonw.exe -m hermes_cli.main gateway run`` — image name
     ``pythonw``, not ``hermes.exe`` — so the ``taskkill /IM hermes.exe`` guard
-    misses it, the loaded ``.pyd`` stays locked, and ``Remove-Item venv`` fails
-    mid-recursion (issues #47036/#47557/#47910). The recreate branch must also
-    sweep by venv path prefix, and that sweep must run before the delete.
+    misses it and the loaded ``.pyd`` stays locked (issues #47036/#47557/#47910).
+    The recreate branch must sweep by venv path prefix before Rename-Item, and
+    must never fall back to an in-place ``Remove-Item`` of the live ``venv``
+    (#83149 — that path can gut site-packages with no rollback).
     """
     text = INSTALL_PS1.read_text()
 
@@ -184,3 +185,7 @@ def test_install_ps1_stops_venv_resident_processes_before_parking_venv() -> None
     assert idx_sweep < idx_park, (
         "venv-resident processes must be stopped before Rename-Item parks the venv"
     )
+    assert 'Remove-Item -Recurse -Force "venv"' not in text[idx_recreate:], (
+        "must not fall back to in-place delete of the live venv (#83149)"
+    )
+    assert "Could not move the existing venv aside" in text[idx_recreate:]

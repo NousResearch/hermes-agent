@@ -2526,6 +2526,11 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Windows only: manage this exact Scheduled Task instead of the
+        # profile-derived Hermes_Gateway[_profile] default. Keep empty unless
+        # an external supervisor already owns the task identity.
+        "windows_task_name": "",
+
         # Durable delivery-obligation ledger: final agent responses are
         # recorded in state.db around the platform send, and a gateway that
         # died between finalize and platform ACK redelivers the stored

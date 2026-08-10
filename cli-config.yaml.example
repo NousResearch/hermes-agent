@@ -754,6 +754,12 @@ max_concurrent_sessions: null
 # explicitly want one shared "room brain" per group/channel.
 group_sessions_per_user: true
 
+# Optional Windows Scheduled Task identity. Profiles default to
+# Hermes_Gateway_<profile>; set this only when Hermes must manage an existing
+# externally named task.
+# gateway:
+#   windows_task_name: My_Hermes_Gateway
+
 # ─────────────────────────────────────────────────────────────────────────────
 # API Server — per-client model routing
 # ─────────────────────────────────────────────────────────────────────────────

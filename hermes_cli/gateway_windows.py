@@ -292,12 +292,27 @@ def get_task_name() -> str:
 
     Default profile: ``Hermes_Gateway``
     Named profile X: ``Hermes_Gateway_<X>``
+
+    Optional override: ``gateway.windows_task_name`` when Hermes must manage
+    an existing externally named task.
     """
     _assert_windows()
-    # Local import to avoid circular module initialization during hermes_cli boot.
+    # Local imports avoid circular module initialization during hermes_cli boot.
     from hermes_cli.gateway import _profile_suffix
+    from hermes_cli.config import load_config_readonly
 
     suffix = _profile_suffix()
+    config = load_config_readonly()
+    gateway_config = config.get("gateway") if isinstance(config, dict) else None
+    override = (
+        str(gateway_config.get("windows_task_name") or "").strip()
+        if isinstance(gateway_config, dict)
+        else ""
+    )
+    if override:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", override):
+            raise ValueError("invalid gateway.windows_task_name")
+        return override
     if not suffix:
         return _TASK_NAME_DEFAULT
     return f"{_TASK_NAME_DEFAULT}_{suffix}"

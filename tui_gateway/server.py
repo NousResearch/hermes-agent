@@ -2283,6 +2283,25 @@ def _make_agent(
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
+    # Resolve the tier into request_overrides here: AIAgent stores
+    # ``service_tier`` but no transport reads that attribute —
+    # ``agent/transports/chat_completions.py`` emits it only from
+    # ``request_overrides``. Passing the tier alone left it stranded on the
+    # agent, so a tier set in config.yaml was reported in session info and
+    # then dropped on the wire unless the user flipped the runtime /fast
+    # toggle (the only other writer of request_overrides).
+    _effective_tier = (
+        service_tier_override if service_tier_override is not None else _load_service_tier()
+    )
+    _tier_overrides = None
+    if _effective_tier:
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        try:
+            _tier_overrides = resolve_fast_mode_overrides(
+                model, provider=runtime.get("provider"), base_url=runtime.get("base_url"))
+        except Exception:
+            _tier_overrides = None
     agent = AIAgent(
         model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
         base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
@@ -2291,7 +2310,8 @@ def _make_agent(
         verbose_logging=False,  # DEBUG agent logging; independent of tool_progress_mode
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
-        service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
+        service_tier=_effective_tier,
+        request_overrides=_tier_overrides or {},
         enabled_toolsets=_load_enabled_toolsets(platform),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),

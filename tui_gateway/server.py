@@ -7160,6 +7160,26 @@ def _make_agent(
                 raise RuntimeError("Auth fallback resolved without a model")
             model = resolution.selected_model
     _pr = _load_provider_routing()
+    # Resolve the tier into request_overrides here: AIAgent stores
+    # ``service_tier`` but no transport reads that attribute —
+    # ``agent/transports/chat_completions.py`` emits it only from
+    # ``request_overrides``. Passing the tier alone left it stranded on the
+    # agent, so a tier set in config.yaml was reported in session info and
+    # then dropped on the wire unless the user flipped the runtime /fast
+    # toggle (the only other writer of request_overrides).
+    _effective_tier = (
+        service_tier_override
+        if service_tier_override is not None
+        else _load_service_tier()
+    )
+    _tier_overrides = None
+    if _effective_tier:
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        try:
+            _tier_overrides = resolve_fast_mode_overrides(model)
+        except Exception:
+            _tier_overrides = None
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 500),
@@ -7181,11 +7201,8 @@ def _make_agent(
             if reasoning_config_override is not None
             else _load_reasoning_config(str(model or ""))
         ),
-        service_tier=(
-            service_tier_override
-            if service_tier_override is not None
-            else _load_service_tier()
-        ),
+        service_tier=_effective_tier,
+        request_overrides=_tier_overrides or {},
         enabled_toolsets=_load_enabled_toolsets(_resolve_agent_platform(platform_override)),
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same

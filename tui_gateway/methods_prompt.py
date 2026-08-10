@@ -162,7 +162,21 @@ def _(rid, params: dict) -> dict:
         # the upgrade resumes the child's transcript as a normal conversation.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
             return _err(rid, 4009, "subagent still running — wait for it to finish")
+        # confirm_truncate with no target is malformed: the flag is consent for
+        # a specific cut, and a client that sends it bare has leaked rewind
+        # state onto an ordinary submit (#82756). Fail fast instead of quietly
+        # ignoring the flag so the broken client state is surfaced.
+        if is_truthy_value(params.get("confirm_truncate")) and truncate_user_ordinal is None:
+            return _err(
+                rid,
+                4004,
+                "confirm_truncate requires truncate_before_user_ordinal",
+            )
         if truncate_user_ordinal is not None:
+            # bool is an int subclass: a JSON `true` would coerce via int() to
+            # ordinal 1 and aim a confirmed rewind at the second user turn.
+            if isinstance(truncate_user_ordinal, bool):
+                return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
             try:
                 ordinal = int(truncate_user_ordinal)
             except (TypeError, ValueError):

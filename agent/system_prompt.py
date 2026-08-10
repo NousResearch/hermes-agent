@@ -195,7 +195,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     if getattr(agent, "_suppress_tools", False):
         _effective_tools: set = set()
     else:
-        _effective_tools = set(agent.valid_tool_names)
+        _effective_tools = set(agent.valid_tool_names or ())
 
     # Try SOUL.md as primary identity unless the caller explicitly skipped it.
     # Some execution modes (cron) still want HERMES_HOME persona while keeping

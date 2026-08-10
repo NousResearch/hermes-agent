@@ -686,15 +686,6 @@ export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStor
 // session-states.ts (live busy→idle edge), cleared here on session open.
 export const $unreadFinishedSessionIds = atom<string[]>([])
 
-/** A session is "read" the moment the user opens it — main-thread resume AND
- *  tile/tab open both call this, so the green dot can't stick while the user
- *  is looking at the session. */
-export function markSessionRead(storedSessionId: string) {
-  if ($unreadFinishedSessionIds.get().includes(storedSessionId)) {
-    $unreadFinishedSessionIds.set($unreadFinishedSessionIds.get().filter(x => x !== storedSessionId))
-  }
-}
-
 /** Sidebar "mark all as read" — clears every finished-unread dot. Purely
  *  renderer-local, like the atom itself. */
 export function markAllSessionsRead() {
@@ -703,14 +694,46 @@ export function markAllSessionsRead() {
   }
 }
 
+// Last time the user actually viewed a session. A finished turn should only
+// re-arm the unread marker if it settles AFTER this baseline; otherwise an
+// already-viewed completion keeps re-lighting the row.
+export const $lastReadAtBySessionId = atom<Record<string, number>>({})
+
 export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
   updateAtom($selectedStoredSessionId, next)
   // Opening a session clears its unread state — the user is now looking at it.
+  // Clear the whole conversation family (branch children + compression lineage
+  // root), not just the exact row: the sidebar lights the dot for every alias
+  // of a lineage, so reading any row must clear all of them.
   const id = $selectedStoredSessionId.get()
 
   if (id) {
     markSessionRead(id)
   }
+}
+
+/** Record that the user has seen a session (and its conversation family) at
+ *  this moment. Clears the unread set for the family and stores a last-read
+ *  baseline so a later completion that settles BEFORE this view is not
+ *  re-lit. Must be callable before any focus short-circuit (openSession top)
+ *  so re-clicking an already-visible session still clears its dot. */
+export const markSessionRead = (storedSessionId: string | null | undefined) => {
+  if (!storedSessionId) {
+    return
+  }
+
+  const sessions = $sessions.get()
+  const familyIds = new Set<string>(lineageAliases(storedSessionId, sessions))
+
+  const lastReadAt = Date.now()
+  const nextReadMap = { ...$lastReadAtBySessionId.get() }
+
+  for (const id of familyIds) {
+    nextReadMap[id] = lastReadAt
+  }
+
+  $lastReadAtBySessionId.set(nextReadMap)
+  $unreadFinishedSessionIds.set($unreadFinishedSessionIds.get().filter(id => !familyIds.has(id)))
 }
 
 export const setMessages = (next: Updater<ChatMessage[]>) => updateAtom($messages, next)

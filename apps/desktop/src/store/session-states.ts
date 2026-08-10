@@ -35,6 +35,7 @@ import type { SessionInfo } from '@/types/hermes'
 import { $activeGatewayProfile, normalizeProfileKey } from './profile'
 import {
   $activeSessionId,
+  $lastReadAtBySessionId,
   $selectedStoredSessionId,
   $sessions,
   $unreadFinishedSessionIds,
@@ -187,9 +188,17 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
     // FOCUSED, not selected: a session finishing in the tile the user is
     // watching is already seen, and a tile is never the primary selection.
     if (storedId !== $focusedStoredSessionId.get()) {
-      // Flags the transient atom AND persists a marker, so the green dot
-      // survives an app restart (see session-unread.ts).
-      markSessionUnreadFinished(storedId)
+      // Re-light only genuinely new completions: if the user already viewed
+      // this session (or its family) at or after this settle moment, a
+      // re-assert of the same completion must not re-arm the dot. `-1` for
+      // "never read" (not `0`) so fake-timer tests pinned to t=0 still light.
+      const lastReadAt = $lastReadAtBySessionId.get()[storedId] ?? -1
+
+      if (Date.now() > lastReadAt) {
+        // Flags the transient atom AND persists a marker, so the green dot
+        // survives an app restart (see session-unread.ts).
+        markSessionUnreadFinished(storedId)
+      }
     }
   }
 }

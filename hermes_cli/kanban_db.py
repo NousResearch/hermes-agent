@@ -6364,6 +6364,10 @@ def request_changes(
             reviewer = None
 
         new_status = _landing_status_after_parents(conn, task_id)
+        # NOTE: consecutive_failures is deliberately PRESERVED (neither
+        # reset nor incremented). Review transitions are not evidence the
+        # pathology cleared — only complete_task's success path resets the
+        # breaker counter (mirrors unblock_task, #35072).
         cur = conn.execute(
             """
             UPDATE tasks
@@ -6371,9 +6375,7 @@ def request_changes(
                    assignee = COALESCE(?, assignee),
                    claim_lock = NULL,
                    claim_expires = NULL,
-                   worker_pid = NULL,
-                   consecutive_failures = 0,
-                   last_failure_error = NULL
+                   worker_pid = NULL
              WHERE id = ? AND status = 'running' AND current_run_id = ?
             """,
             (new_status, implementer, task_id, int(current_run_id)),
@@ -6588,7 +6590,7 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
     The "changes requested" counterpart of :func:`request_review`: sends the
     task back out of the review lane so the dispatcher re-runs the implementer
     on the new comments. Mirrors :func:`unblock_task` (parent re-gating,
-    defensive stale-run close, ``consecutive_failures`` reset) and emits a
+    defensive stale-run close, ``consecutive_failures`` preserved) and emits a
     ``review_reopened`` event.
 
     Deliberately does NOT touch ``block_recurrences``/``block_kind``: review is
@@ -6628,8 +6630,10 @@ def reopen_review_task(conn: sqlite3.Connection, task_id: str) -> bool:
         )
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
-            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
-            "consecutive_failures = 0, last_failure_error = NULL "
+            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+            # consecutive_failures deliberately PRESERVED: review reopen is
+            # not a success signal; only complete_task resets the breaker
+            # counter (mirrors unblock_task, #35072).
             + assignee_sql
             + " WHERE id = ? AND status = 'review'",
             params,

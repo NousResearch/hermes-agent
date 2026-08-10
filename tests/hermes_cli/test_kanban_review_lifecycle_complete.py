@@ -636,3 +636,74 @@ def test_hard_block_with_waiting_child_is_not_mislabeled_as_review_deadlock(conn
         },
     )
     assert not any(d.kind == "review_dependency_deadlock" for d in diagnostics)
+
+
+def _failures(conn, task_id: str) -> int:
+    return int(conn.execute(
+        "SELECT consecutive_failures FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()[0])
+
+
+def test_review_transitions_preserve_consecutive_failures(conn) -> None:
+    """M2 regression: review transitions neither reset nor increment the
+    circuit-breaker counter.
+
+    A task with consecutive_failures=1 that cycles through
+    request_review -> request_changes -> re-request keeps the counter at 1;
+    a crash after request_changes increments it to 2 and trips a
+    failure_limit=2 breaker. Only complete_task's success path resets it.
+    """
+    task_id = kb.create_task(conn, title="flaky feature", assignee="builder")
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures = 1 WHERE id = ?",
+            (task_id,),
+        )
+
+    implementation = kb.claim_task(conn, task_id, claimer="builder:1")
+    assert implementation is not None
+    assert kb.request_review(
+        conn, task_id, summary="v1", reviewer="reviewer",
+        expected_run_id=implementation.current_run_id,
+    )
+    assert _failures(conn, task_id) == 1  # request_review preserved it
+
+    review = kb.claim_review_task(conn, task_id)
+    assert review is not None
+    assert kb.request_changes(
+        conn, task_id, reason="needs fixes",
+        expected_run_id=review.current_run_id,
+    ) == (True, "builder")
+    assert _failures(conn, task_id) == 1  # request_changes preserved it
+
+    retry = kb.claim_task(conn, task_id, claimer="builder:2")
+    assert retry is not None
+    assert kb.request_review(
+        conn, task_id, summary="v2",
+        expected_run_id=retry.current_run_id,
+    )
+    assert _failures(conn, task_id) == 1  # full re-review cycle: still 1
+
+    # reopen_review_task (manual changes-requested) also preserves it.
+    assert kb.reopen_review_task(conn, task_id)
+    assert _failures(conn, task_id) == 1
+
+    # A crash now increments 1 -> 2 and trips a failure_limit=2 breaker —
+    # the counter accumulated across the review cycle instead of being
+    # amnesia-reset back to 0.
+    tripped = kb._record_task_failure(
+        conn, task_id, "worker crashed", outcome="crashed", failure_limit=2,
+    )
+    assert tripped is True
+    assert _failures(conn, task_id) == 2
+    assert kb.get_task(conn, task_id).status == "blocked"
+
+    # Sanity: complete_task's success path still clears the counter.
+    ok_id = kb.create_task(conn, title="healthy", assignee="builder")
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET consecutive_failures = 1 WHERE id = ?",
+            (ok_id,),
+        )
+    assert kb.complete_task(conn, ok_id, summary="done")
+    assert _failures(conn, ok_id) == 0

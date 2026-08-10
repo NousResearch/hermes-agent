@@ -113,6 +113,27 @@ export function allPaneIds(node: LayoutNode): string[] {
   return node.type === 'group' ? [...node.panes] : node.children.flatMap(allPaneIds)
 }
 
+/** The split whose DIRECT child carries `childId`, or null. */
+export function findParentSplit(node: LayoutNode, childId: string): SplitNode | null {
+  if (node.type !== 'split') {
+    return null
+  }
+
+  if (node.children.some(child => child.id === childId)) {
+    return node
+  }
+
+  for (const child of node.children) {
+    const hit = findParentSplit(child, childId)
+
+    if (hit) {
+      return hit
+    }
+  }
+
+  return null
+}
+
 // ---------------------------------------------------------------------------
 // Structural edits (pure)
 // ---------------------------------------------------------------------------
@@ -225,7 +246,11 @@ export function insertAtGroup(
   before?: null | string,
   /** Front the inserted pane — TRUE for a gesture (drop/reveal), FALSE for silent
    *  adoption (logs stacking into the terminal zone must not steal its tab). */
-  activate: boolean = true
+  activate: boolean = true,
+  /** Edge splits only: the [target zone, added pane] weight pair (default
+   *  even). Lets a re-opened tile take the share it held when it closed
+   *  instead of half the anchor zone. */
+  edgeWeights?: readonly [number, number]
 ): LayoutNode | null {
   const walk = (n: LayoutNode): LayoutNode => {
     if (n.type === 'group') {
@@ -252,8 +277,9 @@ export function insertAtGroup(
       const leading = pos === 'left' || pos === 'top'
       const added = group([paneId])
       const children = leading ? [added, n] : [n, added]
+      const [targetWeight, addedWeight] = edgeWeights ?? [1, 1]
 
-      return split(orientation, children, [1, 1])
+      return split(orientation, children, leading ? [addedWeight, targetWeight] : [targetWeight, addedWeight])
     }
 
     return { ...n, children: n.children.map(walk) }

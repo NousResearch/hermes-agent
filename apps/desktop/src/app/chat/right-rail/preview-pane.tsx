@@ -5,6 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Tip } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
+import { guardGuestPointers } from '@/lib/guest-pointer-guard'
 import { openPreviewTargetInBrowser, remoteHtmlPreviewDocument } from '@/lib/local-preview'
 import { rafCoalesce } from '@/lib/raf-coalesce'
 import { cn } from '@/lib/utils'
@@ -187,6 +188,8 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
       document.body.style.cursor = 'row-resize'
       document.body.style.userSelect = 'none'
+      // The webview above the console must not swallow the gesture.
+      const releaseGuests = guardGuestPointers()
 
       // pointermove outpaces 60fps and each setHeight reflows the webview +
       // console split, so coalesce to one apply per frame (commits on cleanup).
@@ -207,6 +210,7 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
 
         active = false
         resize.finish()
+        releaseGuests()
         document.body.style.cursor = previousCursor
         document.body.style.userSelect = previousUserSelect
         handle.releasePointerCapture?.(pointerId)

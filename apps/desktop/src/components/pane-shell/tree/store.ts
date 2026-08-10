@@ -20,6 +20,7 @@ import {
   type DropPosition,
   findGroup,
   findGroupOfPane,
+  findParentSplit,
   groupLeafIds,
   type GroupNode,
   insertAtGroup,
@@ -194,6 +195,55 @@ function setDismissed(paneId: string, dismissed: boolean) {
   if (next) {
     saveDismissed(next)
   }
+}
+
+// SPLIT-SHARE MEMORY — a tile pane that leaves the tree (the browser closed,
+// a page tile closed) records the share it held against its seam neighbor, so
+// re-opening it docks at the size the user left it. Without this every
+// re-open split the anchor zone [1, 1] again: each agent-triggered browser
+// open re-took half the chat, whatever the user had resized it to.
+const PANE_SHARE_KEY = 'hermes.desktop.paneShare.v1'
+
+const paneShares: Record<string, number> = readJson<Record<string, number>>(PANE_SHARE_KEY) ?? {}
+
+const validShare = (share: unknown): share is number =>
+  typeof share === 'number' && Number.isFinite(share) && share > 0 && share < 1
+
+function rememberPaneShare(tree: LayoutNode, paneId: string) {
+  const zone = findGroupOfPane(tree, paneId)
+
+  // Only a pane ALONE in its zone owns the zone's track — a stacked tab's
+  // removal doesn't change geometry, so there's no share to remember.
+  if (!zone || zone.panes.length !== 1) {
+    return
+  }
+
+  const parent = findParentSplit(tree, zone.id)
+
+  if (!parent) {
+    return
+  }
+
+  // The previous sibling is the seam partner a re-dock will split again (a
+  // trailing dock lands the tile right of / below its anchor); the pane at
+  // index 0 pairs with the sibling after it instead.
+  const at = parent.children.findIndex(child => child.id === zone.id)
+  const partner = at > 0 ? at - 1 : at + 1
+  const pair = (parent.weights[at] ?? 1) + (parent.weights[partner] ?? 1)
+  const share = pair > 0 ? (parent.weights[at] ?? 1) / pair : null
+
+  if (validShare(share)) {
+    paneShares[paneId] = share
+    writeJson(PANE_SHARE_KEY, paneShares)
+  }
+}
+
+/** The [target, added] weight pair a re-inserted pane's edge split should get,
+ *  or undefined for the even default. Persisted state is untrusted. */
+function recalledEdgeWeights(paneId: string): [number, number] | undefined {
+  const share = paneShares[paneId]
+
+  return validShare(share) ? [1 - share, share] : undefined
 }
 
 const paneClosers: Record<string, () => void> = {}
@@ -635,6 +685,7 @@ export function removeTreePane(paneId: string) {
   const tree = $layoutTree.get()
 
   if (tree) {
+    rememberPaneShare(tree, paneId)
     commit(removePane(tree, paneId))
   }
 }
@@ -697,6 +748,7 @@ export function dismissTreePane(paneId: string) {
 
   if (tree) {
     setDismissed(paneId, true)
+    rememberPaneShare(tree, paneId)
     commit(removePane(tree, paneId))
   }
 }
@@ -1102,8 +1154,18 @@ function adoptContributedPanes(): void {
       // drag but wrong for adoption into a zone whose bar the user hid.
       const hostHeaderHidden = findGroup(next, target)?.headerHidden === true
 
-      // Silent adoption: don't front over the zone's active tab — a reveal does.
-      next = insertAtGroup(next, target, pane.id, dock?.pos ?? 'center', dock?.before, false) ?? next
+      // Silent adoption: don't front over the zone's active tab — a reveal
+      // does. An edge dock re-takes the share the pane held when it closed.
+      next =
+        insertAtGroup(
+          next,
+          target,
+          pane.id,
+          dock?.pos ?? 'center',
+          dock?.before,
+          false,
+          recalledEdgeWeights(pane.id)
+        ) ?? next
 
       // An adopted pane ARRIVES with its chip showing — a surprise zone with
       // zero chrome has no obvious handle to drag or close. (Explicit reveal;
@@ -1214,7 +1276,7 @@ export function dockPaneBeside(paneId: string, anchorPaneId: string) {
 
   const next = findGroupOfPane(tree, paneId)
     ? movePaneOp(tree, paneId, { groupId: anchor.id, pos })
-    : insertAtGroup(tree, anchor.id, paneId, pos)
+    : insertAtGroup(tree, anchor.id, paneId, pos, undefined, true, recalledEdgeWeights(paneId))
 
   if (next && next !== tree) {
     commit(next)

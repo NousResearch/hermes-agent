@@ -1107,6 +1107,13 @@ code {
   border-color: var(--dt-destructive);
 }
 
+/* Drag in progress (sash resize, console resize, tab drag): webview/iframe
+   guests hit-test in their own process and swallow the gesture the moment the
+   pointer crosses them — see lib/guest-pointer-guard.ts. */
+body.guest-pointer-lock :is(webview, iframe) {
+  pointer-events: none;
+}
+
 @layer components {
   /* Chromium 121+ (Electron) prefers standard scrollbar-* over
      ::-webkit-scrollbar and ignores the latter when both are set — platform

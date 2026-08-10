@@ -105,10 +105,38 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot is not None
     assert snapshot.plan == "Pro"
     assert len(snapshot.windows) == 2
-    assert snapshot.windows[0].label == "Session"
+    assert [window.label for window in snapshot.windows] == ["5h", "7d"]
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
+
+
+def test_fetch_account_usage_codex_labels_single_primary_by_actual_duration(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "plan_type": "pro",
+                "rate_limit": {
+                    "primary_window": {
+                        "used_percent": 95,
+                        "reset_at": 1_900_000_000,
+                        "limit_window_seconds": 604800,
+                    },
+                    "secondary_window": None,
+                },
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage(
+        "openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="access-token",
+    )
+
+    assert snapshot is not None
+    assert [(window.label, window.used_percent) for window in snapshot.windows] == [("7d", 95.0)]
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():

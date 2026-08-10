@@ -193,39 +193,44 @@ def _quota_label(window: Any, provider: Optional[str] = None, model: Optional[st
     """
     raw = str(getattr(window, "label", "") or "quota").strip() or "quota"
     label = raw.lower().replace("_", "-")
-    provider_text = str(provider or getattr(window, "provider", "") or "").lower()
     model_text = str(model or "").lower()
 
     if "opus" in label:
         return "opus7d"
     if "sonnet" in label:
         return "sonnet7d"
-    if (
-        "five" in label
-        or "5" in label
-        or "current session" in label
-        or label == "session"
-        or "primary" in label
-    ):
+    if label in {
+        "5h",
+        "5-hour",
+        "5 hour",
+        "five-hour",
+        "five hour",
+        "current session",
+        "session",
+        "primary",
+        "primary-window",
+        "primary window",
+    }:
         return "5h"
-    if (
-        "seven" in label
-        or "7" in label
-        or "current week" in label
-        or label == "weekly"
-        or "secondary" in label
-    ):
+    if label in {
+        "7d",
+        "7-day",
+        "7 day",
+        "seven-day",
+        "seven day",
+        "current week",
+        "week",
+        "weekly",
+        "secondary",
+        "secondary-window",
+        "secondary window",
+    }:
         return "7d"
     if "week" in label:
         if "opus" in model_text:
             return "opus7d"
         if "sonnet" in model_text:
             return "sonnet7d"
-        return "7d"
-    if "codex" in provider_text and label in {"session", "primary window"}:
-        return "5h"
-    if "codex" in provider_text and label in {"weekly", "secondary window"}:
-        return "7d"
     return raw
 
 

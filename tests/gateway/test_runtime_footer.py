@@ -147,8 +147,8 @@ def test_format_footer_extended_fields_with_quota_and_underline():
         fetched_at=datetime.now(timezone.utc),
         plan="Team",
         windows=(
-            AccountUsageWindow(label="Session", used_percent=20, reset_at=None),
-            AccountUsageWindow(label="Weekly", used_percent=30, reset_at=None),
+            AccountUsageWindow(label="5h", used_percent=20, reset_at=None),
+            AccountUsageWindow(label="7d", used_percent=30, reset_at=None),
         ),
     )
     out = format_runtime_footer(
@@ -211,6 +211,29 @@ def test_format_footer_uses_provider_specific_compact_quota_labels():
         fields=("quota",),
     )
     assert out == "7d 60% · opus7d 50% · sonnet7d 40%"
+
+
+def test_format_footer_preserves_nonstandard_quota_durations():
+    snapshot = AccountUsageSnapshot(
+        provider="openai-codex",
+        source="usage_api",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(
+            AccountUsageWindow(label="15d", used_percent=10, reset_at=None),
+            AccountUsageWindow(label="17h", used_percent=20, reset_at=None),
+        ),
+    )
+
+    out = format_runtime_footer(
+        model="openai/gpt-5.6-sol",
+        provider="openai-codex",
+        context_tokens=0,
+        context_length=200_000,
+        account_usage=snapshot,
+        fields=("quota",),
+    )
+
+    assert out == "15d 90% · 17h 80%"
 
 
 def test_format_footer_includes_balance_details_for_quota():
@@ -397,8 +420,8 @@ def test_build_footer_passes_extended_runtime_metadata():
         fetched_at=datetime.now(timezone.utc),
         plan="Team",
         windows=(
-            AccountUsageWindow(label="Session", used_percent=20, reset_at=None),
-            AccountUsageWindow(label="Weekly", used_percent=30, reset_at=None),
+            AccountUsageWindow(label="5h", used_percent=20, reset_at=None),
+            AccountUsageWindow(label="7d", used_percent=30, reset_at=None),
         ),
     )
     out = build_footer_line(

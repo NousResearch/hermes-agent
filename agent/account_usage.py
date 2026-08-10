@@ -451,6 +451,21 @@ def _resolve_codex_usage_url(base_url: str) -> str:
     return _codex_backend_urls(base_url)[0]
 
 
+def _codex_window_label(window: dict[str, Any], fallback: str) -> str:
+    """Label a Codex quota window from its declared duration when available."""
+    raw_seconds = window.get("limit_window_seconds")
+    if isinstance(raw_seconds, (int, float)) and not isinstance(raw_seconds, bool):
+        seconds = int(raw_seconds)
+        if seconds > 0:
+            if seconds % 86400 == 0:
+                return f"{seconds // 86400}d"
+            if seconds % 3600 == 0:
+                return f"{seconds // 3600}h"
+            if seconds % 60 == 0:
+                return f"{seconds // 60}m"
+    return fallback
+
+
 def _resolve_codex_usage_credentials(
     base_url: Optional[str],
     api_key: Optional[str],
@@ -527,14 +542,14 @@ def _fetch_codex_account_usage(
     payload = response.json() or {}
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
-    for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
+    for key, fallback_label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
         window = rate_limit.get(key) or {}
         used = window.get("used_percent")
         if used is None:
             continue
         windows.append(
             AccountUsageWindow(
-                label=label,
+                label=_codex_window_label(window, fallback_label),
                 used_percent=float(used),
                 reset_at=_parse_dt(window.get("reset_at")),
             )

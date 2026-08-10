@@ -1432,16 +1432,23 @@ class HonchoMemoryProvider(MemoryProvider):
         msg_limit = self._config.message_max_chars if self._config else 25000
         clean_user_content = sanitize_context(user_content or "").strip()
         clean_assistant_content = sanitize_context(assistant_content or "").strip()
-        if not clean_user_content or not clean_assistant_content:
+        # Skip only when the whole turn is empty. An interrupted or tool-only
+        # turn can legitimately have an empty assistant side; the user's
+        # message must still be persisted (the manager already drops
+        # empty-user turns upstream). Empty sides are skipped per-loop below
+        # so we never write empty-string messages either.
+        if not clean_user_content and not clean_assistant_content:
             return
 
         def _sync():
             try:
                 session = self._manager.get_or_create(self._session_key)
-                for chunk in self._chunk_message(clean_user_content, msg_limit):
-                    session.add_message("user", chunk)
-                for chunk in self._chunk_message(clean_assistant_content, msg_limit):
-                    session.add_message("assistant", chunk)
+                if clean_user_content:
+                    for chunk in self._chunk_message(clean_user_content, msg_limit):
+                        session.add_message("user", chunk)
+                if clean_assistant_content:
+                    for chunk in self._chunk_message(clean_assistant_content, msg_limit):
+                        session.add_message("assistant", chunk)
                 self._manager._flush_session(session)
             except Exception as e:
                 logger.debug("Honcho sync_turn failed: %s", e)

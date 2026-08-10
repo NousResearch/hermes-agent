@@ -22,11 +22,7 @@ interface Rect {
  * Window top-left in screen space (DIP) that places `anchor` — a point in the
  * window's CSS pixels — under `cursor` (screen DIP).
  */
-export function windowOriginForCursorAnchor(
-  cursor: Point,
-  anchor: Point,
-  zoomFactor: number
-): Point {
+export function windowOriginForCursorAnchor(cursor: Point, anchor: Point, zoomFactor: number): Point {
   const scale = Number.isFinite(zoomFactor) && zoomFactor > 0 ? zoomFactor : 1
 
   return {

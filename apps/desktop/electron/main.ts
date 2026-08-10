@@ -9226,6 +9226,7 @@ function applyHudSnapToPointer() {
   const display = screen.getDisplayNearestPoint(cursor)
   const workArea = display?.workArea ?? bounds
   const anchor = { x: Math.round(bounds.width / 2), y: HUD_SNAP_ANCHOR_Y }
+
   const origin = snapHudBounds(
     cursor,
     anchor,

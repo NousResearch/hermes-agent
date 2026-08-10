@@ -18,7 +18,10 @@ export interface HudSnapShortcutController {
   dispose(): void
 }
 
-export function createHudSnapShortcut(globalShortcut: GlobalShortcutLike, onSnap: () => void): HudSnapShortcutController {
+export function createHudSnapShortcut(
+  globalShortcut: GlobalShortcutLike,
+  onSnap: () => void
+): HudSnapShortcutController {
   let active: null | string = null
 
   const release = () => {

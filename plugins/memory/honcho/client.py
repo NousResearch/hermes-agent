@@ -461,6 +461,24 @@ class HonchoClientConfig:
     # block exists or enabled was set explicitly), vs auto-enabled from a
     # stray HONCHO_API_KEY env var.
     explicitly_configured: bool = False
+    # Provenance: WHERE this config was resolved from, captured at resolution
+    # time (inside the caller's profile scope). Bound consumers (session
+    # manager, OAuth refresh paths) use these instead of re-resolving
+    # resolve_config_path()/get_hermes_home() later — those resolvers read a
+    # ContextVar that background threads cannot see, so re-resolution from a
+    # daemon thread silently lands on the DEFAULT profile (#69123, #74065).
+    config_path: Path | None = None
+    hermes_home: Path | None = None
+
+    def bound_config_path(self) -> Path:
+        """Return the config path this config was resolved from.
+
+        Falls back to ambient resolution only for hand-constructed configs
+        (tests, env-only setups) that carry no provenance.
+        """
+        if self.config_path is not None:
+            return self.config_path
+        return resolve_config_path()
 
     @classmethod
     def from_env(
@@ -482,6 +500,7 @@ class HonchoClientConfig:
             timeout=timeout,
             ai_peer=resolved_host,
             enabled=bool(api_key or base_url),
+            hermes_home=get_hermes_home(),
         )
 
     @classmethod
@@ -733,6 +752,8 @@ class HonchoClientConfig:
             sessions=raw.get("sessions", {}),
             raw=raw,
             explicitly_configured=_explicitly_configured,
+            config_path=path,
+            hermes_home=get_hermes_home(),
         )
 
     @staticmethod
@@ -857,13 +878,16 @@ class HonchoClientConfig:
 
 _honcho_client_slot: SingletonSlot = SingletonSlot()
 _cached_timeout: float | None = None
-# Memo for the honcho.json-derived timeout, keyed on the file's mtime_ns so
-# the staleness check on every get_honcho_client() call costs one stat()
-# instead of a JSON parse. mtime -1 = file absent; (None, None) = not yet
-# populated. config.yaml needs no such memo: load_config_readonly() is
-# internally cached on both the user and managed files' signatures, and a
-# bespoke key here would have to duplicate that invalidation logic.
-_honcho_json_timeout_memo: tuple[int | None, float | None] = (None, None)
+# Memo for the honcho.json-derived timeout, keyed PER CONFIG PATH on the
+# file's mtime_ns so the staleness check on every get_honcho_client() call
+# costs one stat() instead of a JSON parse. Path-keyed because multi-profile
+# processes resolve different honcho.json files — a single-slot memo would
+# thrash between profiles and return profile A's timeout for profile B.
+# mtime -1 = file absent. config.yaml needs no such memo:
+# load_config_readonly() is internally cached on both the user and managed
+# files' signatures, and a bespoke key here would have to duplicate that
+# invalidation logic.
+_honcho_json_timeout_memo: dict[str, tuple[int, float | None]] = {}
 
 
 def _config_yaml_timeout() -> float | None:
@@ -884,15 +908,16 @@ def _config_yaml_timeout() -> float | None:
 
 def _honcho_json_timeout() -> float | None:
     """Read timeout/requestTimeout from honcho.json (host block wins), memoized on mtime."""
-    global _honcho_json_timeout_memo
     try:
         path = resolve_config_path()
+        path_key = str(path)
         try:
             mtime_ns: int = path.stat().st_mtime_ns
         except OSError:
             mtime_ns = -1
-        if _honcho_json_timeout_memo[0] == mtime_ns:
-            return _honcho_json_timeout_memo[1]
+        memo = _honcho_json_timeout_memo.get(path_key)
+        if memo is not None and memo[0] == mtime_ns:
+            return memo[1]
 
         timeout = None
         if mtime_ns != -1:
@@ -904,7 +929,7 @@ def _honcho_json_timeout() -> float | None:
                 raw.get("timeout"),
                 raw.get("requestTimeout"),
             )
-        _honcho_json_timeout_memo = (mtime_ns, timeout)
+        _honcho_json_timeout_memo[path_key] = (mtime_ns, timeout)
         return timeout
     except Exception:
         return None
@@ -941,7 +966,11 @@ def _apply_fresh_oauth_token(config: HonchoClientConfig) -> None:
     try:
         from plugins.memory.honcho import oauth
 
-        token, _ = oauth.ensure_fresh_token(resolve_config_path(), config.host)
+        # Bound path: refresh against the honcho.json this config came from,
+        # not whatever the current context resolves to. On daemon threads the
+        # ambient resolver lands on the default profile and a refresh here
+        # would persist the rotated token into the WRONG profile's file.
+        token, _ = oauth.ensure_fresh_token(config.bound_config_path(), config.host)
         if token:
             config.api_key = token
     except Exception:
@@ -957,8 +986,13 @@ def _refresh_cached_oauth(client: "Honcho", config: HonchoClientConfig | None) -
     try:
         from plugins.memory.honcho import oauth
 
-        host = config.host if config is not None else resolve_active_host()
-        token, refreshed = oauth.ensure_fresh_token(resolve_config_path(), host)
+        if config is not None:
+            host = config.host
+            path = config.bound_config_path()
+        else:
+            host = resolve_active_host()
+            path = resolve_config_path()
+        token, refreshed = oauth.ensure_fresh_token(path, host)
         if refreshed and token and not oauth.apply_token_to_client(client, token):
             _honcho_client_slot.reset()
     except Exception:
@@ -1108,7 +1142,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
 
 def reset_honcho_client() -> None:
     """Reset the Honcho client singleton (useful for testing)."""
-    global _cached_timeout, _honcho_json_timeout_memo
+    global _cached_timeout
     _honcho_client_slot.reset()
     _cached_timeout = None
-    _honcho_json_timeout_memo = (None, None)
+    _honcho_json_timeout_memo.clear()

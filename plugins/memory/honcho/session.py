@@ -9,6 +9,7 @@ import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, TYPE_CHECKING
 
 from plugins.memory.honcho.client import get_honcho_client
@@ -209,10 +210,15 @@ class HonchoSessionManager:
     def honcho(self) -> Honcho:
         """Get the Honcho client, refreshing a near-expiry OAuth token in place.
 
-        Routes every access through ``get_honcho_client`` (which returns the same
-        cached singleton) so a long session can't outlive its 1h access token.
+        Routes every access through ``get_honcho_client`` WITH this manager's
+        bound config so a long session can't outlive its 1h access token AND
+        so background threads (async writer, prefetch, sync) acquire the
+        client for the profile this manager was built under — a bare
+        ``get_honcho_client()`` re-resolves ambient ContextVar-backed state
+        that daemon threads cannot see, migrating every access onto the
+        first-built profile's client (#69123, #74065).
         """
-        self._honcho = get_honcho_client()
+        self._honcho = get_honcho_client(self._config)
         return self._honcho
 
     def _record_auth_failure(self, exc: BaseException) -> None:
@@ -238,6 +244,20 @@ class HonchoSessionManager:
         self._auth_notice_emitted = True
         return self._auth_failure
 
+    def _bound_config_path(self) -> Path:
+        """Config path for OAuth checks, bound to this manager's profile.
+
+        Falls back to ambient resolution only when the manager was built
+        without a config (tests) — on the hot path the bound path keeps
+        background threads reading THIS profile's honcho.json, not the
+        default profile the ContextVar-blind resolver would land on.
+        """
+        from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
+
+        if isinstance(self._config, HonchoClientConfig):
+            return self._config.bound_config_path()
+        return resolve_config_path()
+
     def _reauth_required(self) -> bool:
         """True when the grant is dead and only a new login can fix it.
 
@@ -251,12 +271,10 @@ class HonchoSessionManager:
             if not oauth.any_dead_grants():
                 return False
 
-            from plugins.memory.honcho.client import resolve_config_path
-
             host = getattr(self._config, "host", "") or ""
             if not host:
                 return False
-            return oauth.reauth_required(resolve_config_path(), host)
+            return oauth.reauth_required(self._bound_config_path(), host)
         except Exception:
             return False
 
@@ -267,15 +285,12 @@ class HonchoSessionManager:
         """
         try:
             from plugins.memory.honcho import oauth
-            from plugins.memory.honcho.client import (
-                reset_honcho_client,
-                resolve_config_path,
-            )
+            from plugins.memory.honcho.client import reset_honcho_client
 
             host = getattr(self._config, "host", "") or ""
             if not host:
                 return False
-            token = oauth.force_refresh_token(resolve_config_path(), host)
+            token = oauth.force_refresh_token(self._bound_config_path(), host)
             if not token:
                 return False
             if not oauth.apply_token_to_client(self.honcho, token):

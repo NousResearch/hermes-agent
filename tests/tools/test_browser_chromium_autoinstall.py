@@ -72,7 +72,7 @@ class TestInstall:
         )
 
         assert bt._maybe_autoinstall_chromium() is True
-        assert captured["cmd"] == ["/usr/bin/npx", "-y", "agent-browser", "install"]
+        assert captured["cmd"] == ["/usr/bin/npx", "-y", bt.AGENT_BROWSER_NPX_SPEC, "install"]
         assert "--with-deps" not in captured["cmd"]
 
     def test_nonzero_exit_returns_false(self, monkeypatch):

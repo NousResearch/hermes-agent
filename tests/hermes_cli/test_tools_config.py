@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
+from tools.browser_tool import AGENT_BROWSER_NPX_SPEC
 from hermes_cli.nous_account import NousPortalAccountInfo, NousToolAccessInfo
 from hermes_cli.nous_subscription import NousSubscriptionFeatures
 from hermes_cli.tools_config import (
@@ -454,7 +455,7 @@ class TestAgentBrowserPostSetup:
 
         run.assert_called_once()
         assert run.call_args.args[0] == [
-            "/usr/bin/npx", "-y", "agent-browser", "install", "--with-deps",
+            "/usr/bin/npx", "-y", AGENT_BROWSER_NPX_SPEC, "install", "--with-deps",
         ]
 
     def test_installs_chromium_via_npx_resolved_only_through_extended_path(self):
@@ -482,7 +483,7 @@ class TestAgentBrowserPostSetup:
 
         run.assert_called_once()
         assert run.call_args.args[0] == [
-            hermes_npx, "-y", "agent-browser", "install", "--with-deps",
+            hermes_npx, "-y", AGENT_BROWSER_NPX_SPEC, "install", "--with-deps",
         ]
 
     def test_warns_instead_of_crashing_when_npx_unresolvable_after_all(self):

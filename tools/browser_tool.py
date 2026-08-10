@@ -905,8 +905,26 @@ def _browser_install_hint() -> str:
     return "npm install -g agent-browser && agent-browser install --with-deps"
 
 
+# Sentinel _find_agent_browser returns/caches to mean "resolve via npx" rather
+# than a concrete executable path. A named constant + predicate keep the six
+# comparison sites (four here, plus hermes_cli/tools_config.py and
+# hermes_cli/doctor.py) from drifting if the sentinel's exact spelling ever
+# changes.
+NPX_AGENT_BROWSER_SENTINEL = "npx agent-browser"
+
+# Pinned to match scripts/install.sh / scripts/install.ps1's
+# "agent-browser@^0.26.0" managed install so a git-clone install resolving
+# agent-browser via bare npx gets the same version as a managed install,
+# instead of floating latest with no integrity check. Update both together.
+AGENT_BROWSER_NPX_SPEC = "agent-browser@^0.26.0"
+
+
+def _is_npx_agent_browser_sentinel(browser_cmd: str) -> bool:
+    return browser_cmd.strip() == NPX_AGENT_BROWSER_SENTINEL
+
+
 def _requires_real_termux_browser_install(browser_cmd: str) -> bool:
-    return _is_termux_environment() and _is_local_mode() and browser_cmd.strip() == "npx agent-browser"
+    return _is_termux_environment() and _is_local_mode() and _is_npx_agent_browser_sentinel(browser_cmd)
 
 
 def _termux_browser_install_error() -> str:
@@ -1210,14 +1228,16 @@ def _run_chrome_fallback_command(
             )
         return {"success": False, "error": hint}
 
-    # On Windows npx is npx.cmd — use shutil.which so CreateProcessW can
-    # execute the batch shim.  shutil.which honours PATHEXT on Windows and
-    # returns the plain executable on POSIX.  If npx isn't on PATH (Termux,
-    # bare container), fall back to the bare name and let Popen raise with
-    # a readable "FileNotFoundError: 'npx'" rather than WinError 193.
-    if browser_cmd == "npx agent-browser":
-        _npx_bin = shutil.which("npx") or "npx"
-        cmd_prefix = [_npx_bin, "agent-browser"]
+    # Resolve npx via the same PATH + extended-PATH cascade _find_agent_browser
+    # uses, not a bare shutil.which("npx") — Hermes-managed-Node-only setups
+    # resolve npx only through the extended fallback path, and a bare lookup
+    # would let a broken system npx shadow a healthy managed one. If npx isn't
+    # found at all (Termux, bare container), fall back to the bare name and
+    # let Popen raise with a readable "FileNotFoundError: 'npx'" rather than
+    # WinError 193.
+    if _is_npx_agent_browser_sentinel(browser_cmd):
+        _npx_bin = _resolve_npx_bin() or "npx"
+        cmd_prefix = [_npx_bin, "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
     else:
         cmd_prefix = [browser_cmd]
     base_args = cmd_prefix + ["--engine", "chrome", "--session", tmp_session, "--json"]
@@ -2453,8 +2473,8 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     npx_path = _resolve_npx_bin()
     if npx_path:
         if not validate:
-            return "npx agent-browser"
-        _cached_agent_browser = "npx agent-browser"
+            return NPX_AGENT_BROWSER_SENTINEL
+        _cached_agent_browser = NPX_AGENT_BROWSER_SENTINEL
         _agent_browser_resolved = True
         return _cached_agent_browser
 
@@ -2514,7 +2534,7 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
             # --fix` runs shouldn't hit the registry just to re-confirm
             # "latest" is still latest — that would defeat the point of
             # warming the cache in the first place.
-            [npx_bin, "--prefer-offline", "-y", "agent-browser", "--version"],
+            [npx_bin, "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC, "--version"],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -2646,10 +2666,12 @@ def _run_browser_command(
 
     # Keep concrete executable paths intact, even when they contain spaces.
     # Only the synthetic npx fallback needs to expand into multiple argv items.
-    # shutil.which resolves npx → npx.cmd on Windows; bare "npx" stays on POSIX.
-    if browser_cmd == "npx agent-browser":
-        _npx_bin = shutil.which("npx") or "npx"
-        cmd_prefix = [_npx_bin, "agent-browser"]
+    # Resolve via the same PATH + extended-PATH cascade _find_agent_browser
+    # uses (see the chrome-fallback call site above for why a bare
+    # shutil.which("npx") is wrong here).
+    if _is_npx_agent_browser_sentinel(browser_cmd):
+        _npx_bin = _resolve_npx_bin() or "npx"
+        cmd_prefix = [_npx_bin, "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
     else:
         cmd_prefix = [browser_cmd]
 
@@ -4966,8 +4988,8 @@ def _maybe_autoinstall_chromium() -> bool:
     except FileNotFoundError:
         return False
 
-    if browser_cmd == "npx agent-browser":
-        install_cmd = [shutil.which("npx") or "npx", "-y", "agent-browser", "install"]
+    if _is_npx_agent_browser_sentinel(browser_cmd):
+        install_cmd = [_resolve_npx_bin() or "npx", "-y", AGENT_BROWSER_NPX_SPEC, "install"]
     else:
         install_cmd = [browser_cmd, "install"]
 

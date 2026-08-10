@@ -2115,12 +2115,12 @@ def run_doctor(args):
         # existence check with no subprocess spawn or install side effects.
         agent_browser_ok = False
         try:
-            from tools.browser_tool import _find_agent_browser
+            from tools.browser_tool import _find_agent_browser, _is_npx_agent_browser_sentinel
             _resolved_ab = _find_agent_browser(validate=False)
         except Exception:
             _resolved_ab = None
 
-        if _resolved_ab == "npx agent-browser":
+        if _resolved_ab and _is_npx_agent_browser_sentinel(_resolved_ab):
             check_ok("agent-browser", "(resolves via npx on first use)")
             agent_browser_ok = True
             if should_fix:
@@ -2130,8 +2130,7 @@ def run_doctor(args):
                 # doesn't pay the registry fetch either way.
                 from tools.browser_tool import warm_agent_browser_npx_cache
                 if warm_agent_browser_npx_cache():
-                    check_ok("  Warmed npx cache for agent-browser")
-                    fixed_count += 1
+                    check_info("  Warmed npx cache for agent-browser")
                 else:
                     check_info("  Could not warm npx cache (offline or npx unavailable)")
         elif _resolved_ab and agent_browser_runnable(_resolved_ab):

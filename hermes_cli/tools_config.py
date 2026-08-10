@@ -1659,6 +1659,8 @@ def _run_post_setup(post_setup_key: str):
                 _running_in_docker,
                 _find_agent_browser,
                 _resolve_npx_bin,
+                _is_npx_agent_browser_sentinel,
+                AGENT_BROWSER_NPX_SPEC,
             )
         except Exception as exc:  # pragma: no cover — defensive
             _print_warning(f"    Could not check Chromium status: {exc}")
@@ -1707,7 +1709,7 @@ def _run_post_setup(post_setup_key: str):
         # browser_cmd was already resolved above (same PATH -> Homebrew ->
         # Hermes-managed-node -> npx cascade _find_agent_browser uses at
         # runtime), so this can't diverge from what actually gets invoked.
-        if browser_cmd == "npx agent-browser":
+        if _is_npx_agent_browser_sentinel(browser_cmd):
             # Re-resolve via the same PATH + extended-PATH cascade
             # _find_agent_browser used, rather than a bare shutil.which("npx")
             # — Hermes-managed-Node-only setups resolve npx only through the
@@ -1719,7 +1721,7 @@ def _run_post_setup(post_setup_key: str):
                     "    npx not found - install Chromium manually: npx agent-browser install --with-deps"
                 )
                 return
-            install_cmd = [npx_bin, "-y", "agent-browser", "install", "--with-deps"]
+            install_cmd = [npx_bin, "-y", AGENT_BROWSER_NPX_SPEC, "install", "--with-deps"]
         else:
             install_cmd = [browser_cmd, "install", "--with-deps"]
 

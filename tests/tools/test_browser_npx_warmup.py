@@ -15,7 +15,7 @@ from __future__ import annotations
 import subprocess
 from unittest.mock import patch
 
-from tools.browser_tool import warm_agent_browser_npx_cache
+from tools.browser_tool import AGENT_BROWSER_NPX_SPEC, warm_agent_browser_npx_cache
 
 
 def test_returns_false_without_calling_subprocess_when_npx_missing():
@@ -35,7 +35,7 @@ def test_invokes_npx_with_prefer_offline_version_check():
 
     mock_run.assert_called_once()
     args, kwargs = mock_run.call_args
-    assert args[0] == ["/usr/bin/npx", "--prefer-offline", "-y", "agent-browser", "--version"]
+    assert args[0] == ["/usr/bin/npx", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC, "--version"]
     assert kwargs.get("check") is False
 
 

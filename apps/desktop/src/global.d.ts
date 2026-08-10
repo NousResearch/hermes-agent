@@ -198,6 +198,13 @@ declare global {
       }
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
+      /** Persist a renderer error-boundary catch to desktop.log (fire-and-forget). */
+      reportRendererError?: (report: {
+        label: string
+        boundary: string
+        message: string
+        componentStack: string
+      }) => void
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
       // Reveal a path in the OS file manager (Finder / Explorer).

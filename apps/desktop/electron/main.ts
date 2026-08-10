@@ -173,6 +173,7 @@ import {
   revalidatePooledRemoteBackends,
   revalidateRemoteConnection
 } from './remote-liveness'
+import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -8916,6 +8917,7 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
 
   streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
+  attachRendererConsoleCapture(win, 'session-window', rememberLog)
 
   loadWindowUrl(
     win,
@@ -9001,6 +9003,7 @@ function createInstanceWindow() {
     instanceWindows.delete(win)
   })
 
+  attachRendererConsoleCapture(win, 'instance', rememberLog)
   loadWindowUrl(win, DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(), 'Instance window')
 
   return win
@@ -9120,6 +9123,7 @@ function spawnPetOverlayWindow(bounds) {
     }
   })
 
+  attachRendererConsoleCapture(win, 'pet-overlay', rememberLog)
   loadWindowUrl(win, petOverlayUrl(), 'Pet overlay')
 
   return win
@@ -9483,6 +9487,7 @@ function spawnHudWindow(sessionId, profile) {
     broadcastHudState(false)
   })
 
+  attachRendererConsoleCapture(win, 'hud', rememberLog)
   loadWindowUrl(win, hudUrl(sessionId, profile), 'HUD')
 
   return win
@@ -9688,6 +9693,7 @@ function spawnQuickEntryWindow() {
     }
   })
 
+  attachRendererConsoleCapture(win, 'quick-entry', rememberLog)
   loadWindowUrl(win, quickEntryUrl(), 'Quick entry')
 
   return win
@@ -9970,21 +9976,10 @@ function createWindow() {
 
   // Electron always passes the event first. The canonical (Electron 36+) shape
   // is (event, messageDetails); the deprecated positional shape is
-  // (event, level, message, line, sourceId). Handle both. `level` is numeric
-  // (0..3), where 3 === error.
-  mainWindow.webContents.on('console-message', (_event, detailsOrLevel, message, line, sourceId) => {
-    const details = detailsOrLevel && typeof detailsOrLevel === 'object' ? detailsOrLevel : null
-    const level = details ? details.level : detailsOrLevel
-
-    if (level !== 3) {
-      return
-    }
-
-    const text = details ? details.message : message
-    const src = details ? details.sourceUrl : sourceId
-    const lineNo = details ? details.lineNumber : line
-    rememberLog(`[renderer console] ${text} (${src}:${lineNo})`)
-  })
+  // (event, level, message, line, sourceId). Handled in renderer-log.ts, which
+  // every renderer-content window shares (#79428: crashes in secondary/HUD/
+  // quick-entry windows used to vanish without a trace).
+  attachRendererConsoleCapture(mainWindow, 'main', rememberLog)
 
   loadWindowUrl(mainWindow, DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(), 'Renderer')
 
@@ -11548,6 +11543,17 @@ ipcMain.handle('hermes:logs:reveal', async () => {
 })
 
 ipcMain.handle('hermes:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, lines: hermesLog.slice(-200) }))
+
+// Renderer error-boundary catches (#79428 defect B): the component stack only
+// exists in renderer memory, so the boundary posts it here and we persist it
+// via the desktop.log pipeline. `on`, not `handle` — the sender may be mid-
+// crash and must not await. Flush immediately: a crashing window can be gone
+// before the debounced flush timer fires.
+ipcMain.on('hermes:logs:renderer-error', (_event, report) => {
+  const { label, boundary, message, componentStack } = report && typeof report === 'object' ? report : {}
+  rememberLog(formatRendererBoundaryReport(label, boundary, message, componentStack))
+  flushDesktopLogBufferSync()
+})
 
 function isExecutableFile(filePath) {
   if (!filePath || !path.isAbsolute(filePath)) {

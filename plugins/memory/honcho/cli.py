@@ -406,34 +406,50 @@ def _setup_identity_mapping(cfg: dict, hermes_host: dict, current_peer: str) -> 
         print(f"\n  Gateway platforms detected: {', '.join(gw_platforms)}")
     else:
         notice, question = (
-            ("\n  Gateway identity mapping routes platform users to memory peers.",
+            ("\n  Each gateway account (a Telegram user, a Discord user, ...)\n"
+             "  resolves to a peer. Honcho builds one representation per peer.",
              "Running the Hermes gateway (Telegram/Discord/etc.)? (y/N)") if gw_platforms is None else
-            ("\n  No gateway platforms connected — identity mapping only affects\n"
-             "  gateway users, so this step doesn't apply here.", "Configure gateway mapping anyway? (y/N)"))
+            ("\n  No gateway platforms connected — nothing to map.", "Configure anyway? (y/N)"))
         print(notice)
         if not _yes(_prompt(question, default="n")):
             return
 
     peer_target = hermes_host.get("peerName") or current_peer or "user"
-    default_choice = {"single": "1", "hybrid": "2"}.get(current_shape, "3")
-    print("\n  How should gateway users map to memory peers?\n"
-          "    [1] just me — every non-agent user collapses to your peer\n"
-          "    [2] me + other people — keep mine pooled, others separate\n"
-          "    [3] only other people — everyone gets their own peer\n"
-          "    [s] skip (leave untouched)   [e] edit raw keys")
+    ai_peer_label = hermes_host.get("aiPeer") or cfg.get("aiPeer") or "hermes"
+    # Fresh configs default to the personal shape; configured ones keep their detected shape.
+    identity_configured = any(k in hermes_host or k in cfg for k in _IDENTITY_MAPPING_KEYS)
+    default_choice = {"single": "1", "hybrid": "2", "multi": "3"}[current_shape] if identity_configured else "1"
+    print("\n  This step covers the HUMAN mapping only. Each account using the\n"
+          "  gateway resolves to a peer — the entity Honcho reasons about over\n"
+          f"  time. This agent is already its own peer ('{ai_peer_label}'), and each\n"
+          "  Hermes profile brings its own AI peer to the gateway.\n"
+          "\n  How should accounts resolve?\n"
+          "    [1] single peer — one person uses this agent; every account\n"
+          f"        resolves to '{peer_target}'. The common personal setup.\n"
+          "        Never for a gateway serving other people — their memory\n"
+          "        would merge into yours\n"
+          "    [2] your peer + one per other account — your accounts are\n"
+          f"        aliased to '{peer_target}'; each other account gets its own\n"
+          "        peer until you alias it. For a gateway you share\n"
+          "    [3] one peer per account — no aliases; every account is its\n"
+          "        own peer. For agents serving other people\n"
+          "    [s] skip (leave untouched)   [e] edit raw keys\n"
+          f"\n  Tip: alias your Telegram UID and your Discord ID to '{peer_target}' —\n"
+          "  both accounts then resolve to one peer.")
     choice = _prompt("Choice", default=default_choice).strip().lower()
 
     if choice in {"2", "me+others", "both"}:
-        pooled = _prompt("  Keep my own memory pooled across platforms? (Y/n)", default="y").strip().lower()
+        pooled = _prompt("  Resolve all YOUR accounts to one peer? (Y/n)", default="y").strip().lower()
         shape = "hybrid" if pooled in {"y", "yes", ""} else "multi"
     else:
         shape = _SHAPE_CHOICES.get(choice, "skip")
 
     # Un-pinning without aliasing strands the pooled peerName history; steer toward pooling.
     if current_pin and shape == "multi":
-        print(f"\n  ⚠ Un-pinning will orphan memory accumulated under peer\n"
-              f"    '{peer_target}'.  Existing gateway users resolve to fresh,\n    empty peers.")
-        if _prompt("  Pool my own memory instead (alias my IDs to peerName)? (Y/n)", default="y").strip().lower() in {"y", "yes", ""}:
+        print(f"\n  ⚠ The peer '{peer_target}' already has a representation built\n"
+              f"    from your messages. One peer per account means your accounts\n"
+              f"    resolve to new peers with no history.")
+        if _prompt(f"  Keep your accounts resolving to '{peer_target}' instead? (Y/n)", default="y").strip().lower() in {"y", "yes", ""}:
             shape = "hybrid"
 
     if shape == "skip":
@@ -450,7 +466,7 @@ def _setup_identity_mapping(cfg: dict, hermes_host: dict, current_peer: str) -> 
         _scrub_identity_mapping(hermes_host)  # each shape starts from a clean slate
         hermes_host["pinUserPeer"] = shape == "single"
         if shape == "single":
-            print(f"  All non-agent gateway users route to '{peer_target}' (pin overrides aliases).")
+            print(f"  Every gateway account resolves to peer '{peer_target}'.")
         else:
             aliases = prior_aliases if shape == "multi" else _collect_operator_aliases(prior_aliases, peer_target)
             if aliases:
@@ -458,8 +474,8 @@ def _setup_identity_mapping(cfg: dict, hermes_host: dict, current_peer: str) -> 
             _apply_runtime_prefix(hermes_host, current_prefix, prefix_from_root,
                                   "Runtime peer prefix (e.g. 'telegram_', blank for none)" if shape == "multi" else
                                   "Runtime peer prefix for unknown users (e.g. 'telegram_', blank for none)")
-            print("  Each gateway user → own peer." if shape == "multi" else
-                  f"  Your runtime IDs → '{peer_target}', others → own peer.")
+            print("  Each gateway account resolves to its own peer." if shape == "multi" else
+                  f"  Your accounts resolve to '{peer_target}'; each other account to its own peer.")
     _echo_identity_mapping(hermes_host)
 
 

@@ -20,6 +20,7 @@ Usage::
 """
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -34,7 +35,10 @@ from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 
+logger = logging.getLogger(__name__)
+
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_WARNED_MISSING_ALLOWLIST_ENTRIES: set[tuple[str, ...]] = set()
 
 # Directories bootstrapped inside every new profile
 _PROFILE_DIRS = [
@@ -954,7 +958,10 @@ def list_profiles() -> List[ProfileInfo]:
     return profiles
 
 
-def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
+def profiles_to_serve(
+    multiplex: bool,
+    profile_allowlist: Optional[List[str]] = None,
+) -> List[Tuple[str, Path]]:
     """Return the ``(profile_name, hermes_home)`` pairs a gateway should serve.
 
     This is the single chokepoint for "which profiles does the inbound gateway
@@ -965,7 +972,9 @@ def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
       always had. The name is ``"default"`` for the default profile or the
       active named profile's id.
     - ``multiplex=True``: returns the default profile plus every valid named
-      profile under ``profiles/``, each paired with its own HERMES_HOME.
+      profile under ``profiles/``, each paired with its own HERMES_HOME. When
+      ``profile_allowlist`` is provided, only selected named profiles are
+      included; the default profile is always served.
 
     Intentionally lightweight (a directory scan + name validation only): no
     per-profile config reads, gateway-running probes, or skill counts like
@@ -979,6 +988,19 @@ def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
         return [(active, get_profile_dir(active))]
 
     serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
+    allowed: Optional[set[str]] = None
+    if profile_allowlist is not None:
+        allowed = set()
+        for entry in profile_allowlist:
+            if not isinstance(entry, str):
+                continue
+            try:
+                name = normalize_profile_name(entry)
+                validate_profile_name(name)
+            except ValueError:
+                continue
+            if name != "default":
+                allowed.add(name)
 
     profiles_root = _get_profiles_root()
     if profiles_root.is_dir():
@@ -990,7 +1012,18 @@ def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
                 continue  # default is the built-in entry already added above
             if not _PROFILE_ID_RE.match(name):
                 continue
+            if allowed is not None and name not in allowed:
+                continue
             serve.append((name, entry))
+
+    if allowed is not None:
+        missing = tuple(sorted(allowed - {name for name, _ in serve}))
+        if missing and missing not in _WARNED_MISSING_ALLOWLIST_ENTRIES:
+            _WARNED_MISSING_ALLOWLIST_ENTRIES.add(missing)
+            logger.warning(
+                "Skipping missing gateway.multiplex_profile_allowlist profile(s): %s",
+                ", ".join(missing),
+            )
 
     return serve
 

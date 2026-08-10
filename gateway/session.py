@@ -182,6 +182,9 @@ class SessionSource:
     # None => the gateway's active/default profile. Drives both session-key
     # namespacing and the per-turn config/credential scope.
     profile: Optional[str] = None
+    # Transport-local fail-closed signal for an explicit profile route whose
+    # target is not served. Excluded from repr/equality and wire serialization.
+    profile_route_rejected: bool = field(default=False, repr=False, compare=False)
 
     # Discord auto-thread metadata.  Newly auto-created Discord threads start
     # with a fast placeholder title from the raw message, then the gateway can

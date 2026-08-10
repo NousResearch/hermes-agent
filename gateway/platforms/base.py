@@ -7007,8 +7007,11 @@ class BasePlatformAdapter(ABC):
 
         # Resolve profile from configured routes (None when no match / no routes)
         profile = None
+        profile_route_rejected = False
         runner = getattr(self, "gateway_runner", None)
         if runner is not None:
+            from gateway.profile_routing import ProfileRouteRejected
+
             try:
                 profile = runner._profile_name_for_source(
                     SessionSource(
@@ -7029,6 +7032,8 @@ class BasePlatformAdapter(ABC):
                         message_id=str(message_id) if message_id else None,
                     )
                 )
+            except ProfileRouteRejected:
+                profile_route_rejected = True
             except Exception:
                 logger.warning(
                     "Profile resolution failed for %s/%s, defaulting to active profile",
@@ -7060,6 +7065,11 @@ class BasePlatformAdapter(ABC):
         # SessionSource.to_dict(). The live receiving adapter is authoritative
         # for this turn even when profile_routes selects a different runtime.
         source._transport_adapter_ref = weakref.ref(self)
+        # Keep this transport-only fail-closed signal out of SessionSource
+        # serialization/session identity. The shared gateway handler consumes it
+        # before auth, hooks, or session setup, so every adapter drops matched
+        # routes to unserved profiles consistently without surfacing HTTP 500s.
+        source.profile_route_rejected = profile_route_rejected
         return source
     
     @abstractmethod

@@ -1990,6 +1990,18 @@ class SecondaryPortBindingConfigError(MultiplexConfigError):
     """A secondary profile conflicts with the multiplexer's shared listener."""
 
 
+def _multiplex_profile_homes(config: object) -> list[tuple[str, "Path"]]:
+    """Return the authoritative profile set for one multiplex gateway config."""
+    from hermes_cli.profiles import profiles_to_serve
+
+    return list(
+        profiles_to_serve(
+            multiplex=True,
+            profile_allowlist=getattr(config, "multiplex_profile_allowlist", None),
+        )
+    )
+
+
 @_contextmanager
 def _profile_runtime_scope(profile_home: "Path"):
     """Scope config/skills/memory AND credentials to a profile for one turn.
@@ -13580,7 +13592,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return 0
 
         try:
-            from hermes_cli.profiles import profiles_to_serve, get_active_profile_name
+            from hermes_cli.profiles import get_active_profile_name
         except Exception:
             return 0
 
@@ -13606,7 +13618,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if isinstance(retry_claim, tuple):
                     claimed[retry_claim] = active
 
-        for profile_name, profile_home in profiles_to_serve(multiplex=True):
+        profile_homes = _multiplex_profile_homes(self.config)
+        for profile_name, profile_home in profile_homes:
             if profile_name == active:
                 continue  # handled by the primary startup loop
             try:
@@ -13627,11 +13640,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     profile_name, e, exc_info=True,
                 )
 
-        # Record served profiles in runtime status for `hermes status`.
+        # Record the authoritative served set in runtime status for `hermes status`.
+        # "Served" means eligible for shared routing, HTTP prefixes, cron, and
+        # profile runtime scope; it is intentionally broader than profiles with a
+        # successfully connected secondary adapter (or any adapter configured).
         try:
             from gateway.status import write_runtime_status
             from gateway.pairing import PairingStore
-            served = [active] + sorted(self._profile_adapters.keys())
+            served = [active] + sorted(
+                name for name, _home in profile_homes if name != active
+            )
             # Per-profile PairingStores so authz_mixin can route pairing
             # checks to the right whitelist. The active profile gets a store
             # at its HERMES_HOME; additional served profiles resolve from
@@ -14815,6 +14833,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             reset_session_vars()
         except Exception:
             logger.debug("reset_session_vars failed at handler entry", exc_info=True)
+
+        # Most adapters resolve profile routes in build_source(), before they
+        # hand us the event. A few internal/voice paths construct SessionSource
+        # directly, so resolve those here as the shared fail-closed ingress gate
+        # before authorization, hooks, or session side effects.
+        if (
+            getattr(getattr(self, "config", None), "multiplex_profiles", False)
+            and not getattr(source, "profile", None)
+            and not getattr(source, "profile_route_rejected", False)
+        ):
+            from gateway.profile_routing import ProfileRouteRejected
+
+            try:
+                source.profile = self._profile_name_for_source(source)
+            except ProfileRouteRejected:
+                source.profile_route_rejected = True
+
+        if getattr(source, "profile_route_rejected", False):
+            logger.warning(
+                "Dropping inbound message because its explicit profile route "
+                "targets an unserved profile"
+            )
+            return None
 
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
@@ -25179,7 +25220,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         routes = getattr(config, "profile_routes", None)
         if not routes:
             return None
-        from gateway.profile_routing import match_profile_route
+        from gateway.profile_routing import ProfileRouteRejected, match_profile_route
         try:
             matched = match_profile_route(
                 routes,
@@ -25196,6 +25237,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return None
         if matched:
+            try:
+                served = {name for name, _home in _multiplex_profile_homes(config)}
+            except Exception as exc:
+                logger.warning(
+                    "Rejecting profile route %r because the served-profile set "
+                    "could not be resolved",
+                    matched.name,
+                    exc_info=True,
+                )
+                raise ProfileRouteRejected(matched.name) from exc
+            if matched.profile not in served:
+                logger.warning(
+                    "Rejecting profile route %r: target profile %r is not served",
+                    matched.name,
+                    matched.profile,
+                )
+                raise ProfileRouteRejected(matched.name)
             return matched.profile
         logger.debug(
             "No profile route matched: platform=%s chat_id=%s thread_id=%s parent_chat_id=%s",
@@ -25214,6 +25272,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
              fallback for sources that bypass ``build_source``.
           3. The active profile (the multiplexer's own home).
         """
+        from gateway.profile_routing import ProfileRouteRejected
         from hermes_cli.profiles import (
             get_active_profile_name,
             get_profile_dir,
@@ -25247,6 +25306,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return get_hermes_home()
             return profile_dir
+        except ProfileRouteRejected:
+            raise
         except Exception:
             # Catch normalization errors, path errors, etc.
             logger.warning(
@@ -27895,9 +27956,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         and getattr(runner.config, "multiplex_profiles", False)
     ):
         try:
-            from hermes_cli.profiles import profiles_to_serve
-
-            profile_homes = list(profiles_to_serve(multiplex=True))
+            profile_homes = _multiplex_profile_homes(runner.config)
             if profile_homes:
                 cron_start_kwargs["profile_homes"] = profile_homes
                 logger.info(

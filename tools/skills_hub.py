@@ -209,7 +209,13 @@ def _normalize_bundle_path(path_value: str, *, field_name: str, allow_nested: bo
         raise ValueError(f"Unsafe {field_name}: {path_value}")
     if not parts or any(part == ".." for part in parts):
         raise ValueError(f"Unsafe {field_name}: {path_value}")
-    if re.fullmatch(r"[A-Za-z]:", parts[0]):
+    # Reject a colon in any component. On Windows a colon marks either a drive
+    # (``C:`` / ``C:foo``) or an NTFS Alternate Data Stream: a bundle member
+    # named ``file.py:payload`` writes hidden, scanner-invisible bytes into the
+    # visible ``file.py`` (rglob-based review never enumerates the stream).
+    # ``/`` is the only legal separator once normalized, so no portable bundle
+    # path needs a colon in a component.
+    if any(":" in part for part in parts):
         raise ValueError(f"Unsafe {field_name}: {path_value}")
     if not allow_nested and len(parts) != 1:
         raise ValueError(f"Unsafe {field_name}: {path_value}")

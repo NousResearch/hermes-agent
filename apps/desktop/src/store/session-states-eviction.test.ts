@@ -67,7 +67,7 @@ describe('publish-time eviction', () => {
     expect($sessionStates.get()['rt-2']).toBeDefined()
   })
 
-  it('keeps the primary view\'s settled session', () => {
+  it("keeps the primary view's settled session", () => {
     $activeSessionId.set('rt-1')
     publishSessionState('rt-1', state('stored-1', { busy: true }))
     publishSessionState('rt-1', state('stored-1', { busy: false }))
@@ -83,7 +83,7 @@ describe('publish-time eviction', () => {
 })
 
 describe('closeSessionTile eviction', () => {
-  it('drops a settled session\'s state on close — no later publish may come', () => {
+  it("drops a settled session's state on close — no later publish may come", () => {
     $sessionTiles.set([{ runtimeId: 'rt-1', storedSessionId: 'stored-1' }])
     publishSessionState('rt-1', state('stored-1', { busy: false }))
 
@@ -92,7 +92,7 @@ describe('closeSessionTile eviction', () => {
     expect($sessionStates.get()['rt-1']).toBeUndefined()
   })
 
-  it('keeps a busy session\'s state on close — the background turn is still running', () => {
+  it("keeps a busy session's state on close — the background turn is still running", () => {
     $sessionTiles.set([{ runtimeId: 'rt-1', storedSessionId: 'stored-1' }])
     publishSessionState('rt-1', state('stored-1', { busy: true }))
 

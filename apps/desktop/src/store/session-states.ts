@@ -200,9 +200,9 @@ function runtimeReferenced(runtimeId: string, storedSessionId: null | string): b
     return true
   }
 
-  return $sessionTiles.get().some(
-    t => t.runtimeId === runtimeId || (storedSessionId !== null && t.storedSessionId === storedSessionId)
-  )
+  return $sessionTiles
+    .get()
+    .some(t => t.runtimeId === runtimeId || (storedSessionId !== null && t.storedSessionId === storedSessionId))
 }
 
 /** A state no surface needs anymore: its turn is over (not busy, not waiting

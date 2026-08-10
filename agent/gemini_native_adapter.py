@@ -396,6 +396,7 @@ def build_gemini_request(
     *, messages: List[Dict[str, Any]], tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None,
     max_tokens: Optional[int] = None, top_p: Optional[float] = None, stop: Any = None, thinking_config: Any = None,
     model: str = "",
+    service_tier: Optional[str] = None,
 ) -> Dict[str, Any]:
     # Gemini 3+ both requires tool-call ids and accepts multimodal functionResponse parts.
     is_gemini3 = gemini_requires_tool_call_ids(model)
@@ -405,6 +406,13 @@ def build_gemini_request(
         ("toolConfig", _translate_tool_choice_to_gemini(tool_choice)),
     )
     request: Dict[str, Any] = {"contents": contents, **{k: v for k, v in optional if v}}
+    # Gemini takes the tier as a top-level body field, a sibling of ``contents`` — NOT inside
+    # generationConfig, where it would be ignored and billed at the standard rate. Accepted
+    # values are "flex" and "priority"; omitting the field means standard.
+    #   https://ai.google.dev/gemini-api/docs/flex-inference
+    #   https://ai.google.dev/gemini-api/docs/generate-content/priority-inference
+    if service_tier:
+        request["service_tier"] = str(service_tier).strip().lower()
     # Key order is part of the wire format (prompt-cache parity): temperature, maxOutputTokens, topP, stop, thinking.
     generation = (
         ("temperature", temperature), ("maxOutputTokens", _effective_gemini_max_output_tokens(max_tokens, thinking_config)),
@@ -654,12 +662,17 @@ class GeminiNativeClient:
     def _create_chat_completion(
         self, *, model: str = "gemini-3.7-flash", messages: Optional[List[Dict[str, Any]]] = None, stream: bool = False,
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
-        top_p: Optional[float] = None, stop: Any = None, extra_body: Optional[Dict[str, Any]] = None, timeout: Any = None, **_: Any,
+        top_p: Optional[float] = None, stop: Any = None, extra_body: Optional[Dict[str, Any]] = None,
+        service_tier: Optional[str] = None, timeout: Any = None, **_: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
+        # Custom-provider configs carry the tier in extra_body; the fast-mode
+        # resolver passes it as a top-level kwarg. Accept both, preferring the
+        # explicit kwarg.
         request = build_gemini_request(
             messages=messages or [], tools=tools, tool_choice=tool_choice, temperature=temperature, max_tokens=max_tokens,
             top_p=top_p, stop=stop, thinking_config=extra.get("thinking_config") or extra.get("thinkingConfig"), model=model,
+            service_tier=service_tier or extra.get("service_tier"),
         )
         model = bare_gemini_model_id(model)
         url = f"{self.base_url}/models/{model}:"

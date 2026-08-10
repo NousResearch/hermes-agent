@@ -181,13 +181,14 @@ class GatewayTurnMixin:
                 runtime["api_mode"], runtime["command"], tuple(runtime["args"]),
             ),
         }
-        if getattr(self, "_service_tier", None) != "priority":
+        service_tier = getattr(self, "_service_tier", None)
+        if service_tier not in ("priority", "flex"):
             # None / auto / cold: the bounded window is applied per request by agent.fast_mode.
             route["request_overrides"] = base_request_overrides
             return route
         try:
             overrides = resolve_fast_mode_overrides(
-                route["model"], provider=runtime["provider"], base_url=runtime["base_url"],
+                route["model"], tier=service_tier, provider=runtime["provider"], base_url=runtime["base_url"],
             )
         except Exception:
             overrides = None

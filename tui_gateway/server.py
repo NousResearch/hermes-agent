@@ -1733,7 +1733,10 @@ def _load_reasoning_config(model: str = "") -> dict | None:
     return resolve_reasoning_config(_load_cfg(), model)
 
 
-_SERVICE_TIER_ALIASES = {"fast": "priority", "priority": "priority", "on": "priority", "auto": "auto", "cold": "cold"}
+_SERVICE_TIER_ALIASES = {
+    "fast": "priority", "priority": "priority", "on": "priority", "auto": "auto", "cold": "cold",
+    "flex": "flex",
+}
 
 
 def _load_service_tier() -> str | None:
@@ -2283,6 +2286,23 @@ def _make_agent(
     _pr = _load_provider_routing()
     platform = _resolve_agent_platform(platform_override)
     ignore_rules = is_truthy_value(os.environ.get("HERMES_IGNORE_RULES"))
+    # Resolve the tier once: the transport emits ``service_tier`` only from
+    # ``request_overrides``, so setting ``service_tier=`` alone left the
+    # configured tier stranded on the agent and never sent it. Without this,
+    # a tier only ever reached the wire via the runtime ``/fast`` toggle.
+    _effective_tier = (
+        service_tier_override if service_tier_override is not None else _load_service_tier()
+    )
+    _tier_overrides = None
+    if _effective_tier:
+        from hermes_cli.models import resolve_fast_mode_overrides
+
+        try:
+            _tier_overrides = resolve_fast_mode_overrides(
+                model, tier=_effective_tier,
+                provider=runtime.get("provider"), base_url=runtime.get("base_url"))
+        except Exception:
+            _tier_overrides = None
     agent = AIAgent(
         model=model, max_iterations=_cfg_max_turns(cfg, 500), provider=runtime.get("provider"),
         base_url=runtime.get("base_url"), api_key=runtime.get("api_key"), api_mode=runtime.get("api_mode"),
@@ -2291,7 +2311,8 @@ def _make_agent(
         verbose_logging=False,  # DEBUG agent logging; independent of tool_progress_mode
         reasoning_config=(
             reasoning_config_override if reasoning_config_override is not None else _load_reasoning_config(str(model or ""))),
-        service_tier=service_tier_override if service_tier_override is not None else _load_service_tier(),
+        service_tier=_effective_tier,
+        request_overrides=_tier_overrides or {},
         enabled_toolsets=_load_enabled_toolsets(platform),
         # OpenRouter provider_routing prefs (gateway + CLI parity).
         providers_allowed=_pr.get("only"), providers_ignored=_pr.get("ignore"), providers_order=_pr.get("order"),

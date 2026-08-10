@@ -460,6 +460,45 @@ class TestSessionContext:
         assert github_token not in output
         assert "..." in output
 
+    @pytest.mark.parametrize(
+        ("format_string", "message"),
+        [
+            ("%(token_prefix)s%(token_body)s", "ordinary message"),
+            ("%(message)s%(token_body)s", "sk-"),
+        ],
+    )
+    def test_plain_formatter_redacts_secret_assembled_across_fields(
+        self,
+        format_string,
+        message,
+    ):
+        """Final formatter output is redacted after separate fields are joined."""
+        secret = "sk-" + "s" * 32
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter(format_string))
+
+        logger = logging.getLogger("_test_plain_cross_field_redaction")
+        old_propagate = logger.propagate
+        old_level = logger.level
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+        try:
+            logger.info(
+                message,
+                extra={"token_prefix": "sk-", "token_body": "s" * 32},
+            )
+        finally:
+            logger.removeHandler(handler)
+            logger.propagate = old_propagate
+            logger.setLevel(old_level)
+            handler.close()
+
+        output = stream.getvalue()
+        assert secret not in output
+        assert "..." in output
+
     def test_plain_formatter_redacts_object_extra_fields(self):
         """Object extras are stringified and redacted before plain formatting."""
         secret = "sk-" + "i" * 32
@@ -685,6 +724,31 @@ class TestSessionContext:
         assert extra_secret not in output
         assert exception_secret not in output
         assert output.count("...") >= 3
+
+    def test_make_log_record_redacts_secret_assembled_across_extra_fields(self):
+        """Reconstructed records are redacted after formatter field assembly."""
+        secret = "sk-" + "t" * 32
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(logging.Formatter("%(token_prefix)s%(token_body)s"))
+        record = logging.makeLogRecord(
+            {
+                "name": "_test_make_log_record_cross_field_redaction",
+                "levelno": logging.INFO,
+                "levelname": "INFO",
+                "msg": "ordinary message",
+                "args": (),
+                "token_prefix": "sk-",
+                "token_body": "t" * 32,
+            }
+        )
+
+        handler.handle(record)
+        handler.close()
+
+        output = stream.getvalue()
+        assert secret not in output
+        assert "..." in output
 
 
 class TestComponentFilter:
@@ -1110,5 +1174,4 @@ class TestAsyncQueueLogging:
             "agent.log" in getattr(h, "baseFilename", "")
             for h in hermes_logging.rotating_file_handlers()
         )
-
 

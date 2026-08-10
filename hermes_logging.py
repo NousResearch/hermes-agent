@@ -427,11 +427,33 @@ def _install_make_log_record_sanitizer() -> None:
     logging.makeLogRecord = _hermes_make_log_record
 
 
+def _install_formatter_output_sanitizer() -> None:
+    """Redact secrets assembled only when a plain formatter joins fields.
+
+    Record creation sanitizes messages and ``extra`` values independently,
+    but a format such as ``%(token_prefix)s%(token_body)s`` can combine two
+    harmless fragments into a recognizable credential.  Plain stdlib
+    formatters are the final common boundary for that assembled text, so wrap
+    their output while leaving the record-level sanitizers in place for
+    handlers and filters that inspect fields directly.
+    """
+    current_format = logging.Formatter.format
+    if getattr(current_format, "_hermes_output_sanitizer", False):
+        return
+
+    def _hermes_format(self, record):
+        return _redact_log_record_text(current_format(self, record))
+
+    _hermes_format._hermes_output_sanitizer = True  # type: ignore[attr-defined]
+    logging.Formatter.format = _hermes_format
+
+
 # Install immediately on import — session_tag is available on all records
 # from this point forward, even before setup_logging() is called.
 _install_session_record_factory()
 _install_logger_make_record_sanitizer()
 _install_make_log_record_sanitizer()
+_install_formatter_output_sanitizer()
 
 
 # ---------------------------------------------------------------------------

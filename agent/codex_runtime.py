@@ -27,6 +27,68 @@ from agent.stream_single_writer import claim_stream_writer, stream_writer_is_cur
 logger = logging.getLogger(__name__)
 
 
+def _configured_mcp_elicitation_prompt_servers(
+    config: dict[str, Any] | None = None,
+) -> frozenset[str]:
+    """Return MCP names explicitly configured for Codex consent prompts.
+
+    The policy is read from each Hermes MCP entry at
+    ``elicitation.approval``. Only the literal value ``prompt`` opts a
+    server in; missing or malformed configuration fails closed.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            config = load_config_readonly() or {}
+        except Exception:
+            logger.debug(
+                "codex app-server: MCP elicitation policy lookup failed",
+                exc_info=True,
+            )
+            return frozenset()
+    if not isinstance(config, dict):
+        return frozenset()
+
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return frozenset()
+
+    prompt_servers: set[str] = set()
+    for raw_name, server in servers.items():
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            continue
+        if not isinstance(server, dict) or server.get("enabled") is False:
+            continue
+        elicitation = server.get("elicitation")
+        if not isinstance(elicitation, dict):
+            continue
+        if elicitation.get("enabled") is False:
+            continue
+        approval = elicitation.get("approval")
+        if isinstance(approval, str) and approval.strip().lower() == "prompt":
+            prompt_servers.add(raw_name.strip())
+    return frozenset(prompt_servers)
+
+
+def _make_mcp_elicitation_callback(
+    approval_callback: Callable[..., str] | None,
+) -> Callable[..., str]:
+    """Adapt the shared Hermes consent router to the Codex transport."""
+
+    def _callback(message: str, description: str, *, surface: str) -> str:
+        from tools.approval import request_elicitation_consent
+
+        return request_elicitation_consent(
+            message,
+            description,
+            surface=surface,
+            approval_callback=approval_callback,
+        )
+
+    return _callback
+
+
 def _coerce_usage_int(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -683,9 +745,15 @@ def run_codex_app_server_turn(
         agent._codex_session = CodexAppServerSession(
             cwd=cwd,
             approval_callback=approval_callback,
+            mcp_elicitation_callback=_make_mcp_elicitation_callback(
+                approval_callback
+            ),
             request_routing=_ServerRequestRouting(
                 auto_approve_exec=auto_approve_requests,
                 auto_approve_apply_patch=auto_approve_requests,
+                prompt_mcp_elicitation_servers=(
+                    _configured_mcp_elicitation_prompt_servers()
+                ),
             ),
             on_event=make_codex_app_server_event_bridge(agent),
         )

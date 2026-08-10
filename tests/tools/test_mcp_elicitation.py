@@ -22,6 +22,7 @@ from tools.mcp_tool import (  # noqa: E402
     ElicitationHandler,
     _format_elicitation_schema_summary,
 )
+from tools.approval import request_elicitation_consent  # noqa: E402
 
 
 def _form_params(message="please confirm", schema=None):
@@ -153,6 +154,32 @@ class TestElicitationHandlerFailureModes:
 
         assert result.action == "cancel"
         assert handler.metrics["errors"] == 1
+
+
+class TestElicitationConsentCliRouting:
+    def test_registered_cli_callback_reaches_shared_prompt(self):
+        callback = object()
+        with (
+            patch("tools.approval._is_gateway_approval_context", return_value=False),
+            patch(
+                "tools.approval.prompt_dangerous_approval", return_value="once"
+            ) as prompt,
+        ):
+            result = request_elicitation_consent(
+                "Allow Todoist to update a task?",
+                "Todoist write",
+                surface="mcp-elicitation/todoist",
+                approval_callback=callback,
+            )
+
+        assert result == "accept"
+        prompt.assert_called_once_with(
+            "Allow Todoist to update a task?",
+            "Todoist write",
+            timeout_seconds=None,
+            allow_permanent=False,
+            approval_callback=callback,
+        )
 
 
 class TestElicitationHandlerWiring:

@@ -506,6 +506,200 @@ class TestCompactThread:
 
 class TestServerRequestRouting:
 
+    def test_allowlisted_mcp_confirmation_uses_hermes_consent(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "mcpServer/elicitation/request",
+            request_id="elic-todoist",
+            serverName="todoist",
+            mode="form",
+            message="Allow Todoist to complete this task?",
+            requestedSchema={"type": "object", "properties": {}},
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        captured = {}
+
+        def consent(message, description, *, surface):
+            captured.update(
+                message=message,
+                description=description,
+                surface=surface,
+            )
+            return "accept"
+
+        session = make_session(
+            client,
+            mcp_elicitation_callback=consent,
+            request_routing=_ServerRequestRouting(
+                prompt_mcp_elicitation_servers=frozenset({"todoist"})
+            ),
+        )
+        session.run_turn("complete it", turn_timeout=1.0)
+
+        assert ("elic-todoist", {
+            "action": "accept", "content": None, "_meta": None,
+        }) in client.responses
+        assert captured == {
+            "message": "Allow Todoist to complete this task?",
+            "description": "Codex requests confirmation for MCP server 'todoist'.",
+            "surface": "mcp-elicitation/todoist",
+        }
+
+    @pytest.mark.parametrize(
+        "answer,expected_action",
+        [("decline", "decline"), ("cancel", "cancel"), ("invalid", "decline")],
+    )
+    def test_mcp_consent_preserves_only_known_outcomes(self, answer, expected_action):
+        client = FakeClient()
+        client.queue_server_request(
+            "mcpServer/elicitation/request",
+            request_id="elic-result",
+            serverName="todoist",
+            mode="form",
+            message="Allow Todoist to update a task?",
+            requestedSchema={"type": "object", "properties": {}},
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        session = make_session(
+            client,
+            mcp_elicitation_callback=lambda *_args, **_kwargs: answer,
+            request_routing=_ServerRequestRouting(
+                prompt_mcp_elicitation_servers=frozenset({"todoist"})
+            ),
+        )
+        session.run_turn("update it", turn_timeout=1.0)
+
+        assert ("elic-result", {
+            "action": expected_action, "content": None, "_meta": None,
+        }) in client.responses
+
+    @pytest.mark.parametrize(
+        "server_name,mode,schema",
+        [
+            ("not-allowlisted", "form", {"type": "object", "properties": {}}),
+            ("todoist", "url", None),
+            (
+                "todoist",
+                "form",
+                {
+                    "type": "object",
+                    "properties": {"name": {"type": "string"}},
+                    "required": ["name"],
+                },
+            ),
+            ("todoist", "form", {"type": "object", "properties": {}}),
+        ],
+    )
+    def test_unsupported_or_unhandled_mcp_elicitation_fails_closed(
+        self, server_name, mode, schema,
+    ):
+        client = FakeClient()
+        params = {
+            "serverName": server_name,
+            "mode": mode,
+            "message": "request",
+        }
+        if schema is not None:
+            params["requestedSchema"] = schema
+        client.queue_server_request(
+            "mcpServer/elicitation/request",
+            request_id="elic-decline",
+            **params,
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        consent = None
+        if not (
+            server_name == "todoist"
+            and mode == "form"
+            and schema == {"type": "object", "properties": {}}
+        ):
+            consent = lambda *_args, **_kwargs: pytest.fail(
+                "unsupported elicitation must not prompt"
+            )
+        session = make_session(
+            client,
+            mcp_elicitation_callback=consent,
+            request_routing=_ServerRequestRouting(
+                prompt_mcp_elicitation_servers=frozenset({"todoist"})
+            ),
+        )
+        session.run_turn("hi", turn_timeout=1.0)
+
+        assert ("elic-decline", {
+            "action": "decline", "content": None, "_meta": None,
+        }) in client.responses
+
+    def test_hermes_tools_remains_trusted_without_prompt(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "mcpServer/elicitation/request",
+            request_id="elic-hermes",
+            serverName="hermes-tools",
+            mode="form",
+            message="callback",
+            requestedSchema={"type": "object", "properties": {}},
+        )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
+        session = make_session(
+            client,
+            mcp_elicitation_callback=lambda *_args, **_kwargs: pytest.fail(
+                "hermes-tools should not prompt"
+            ),
+        )
+        session.run_turn("hi", turn_timeout=1.0)
+
+        assert ("elic-hermes", {
+            "action": "accept", "content": None, "_meta": None,
+        }) in client.responses
+
+    def test_malformed_server_name_fails_closed_without_prompt(self):
+        session = make_session(
+            FakeClient(),
+            mcp_elicitation_callback=lambda *_args, **_kwargs: pytest.fail(
+                "malformed elicitation must not prompt"
+            ),
+            request_routing=_ServerRequestRouting(
+                prompt_mcp_elicitation_servers=frozenset({"todoist"})
+            ),
+        )
+
+        assert session._decide_mcp_elicitation({
+            "serverName": {"unexpected": "object"},
+            "mode": "form",
+            "requestedSchema": {"type": "object", "properties": {}},
+        }) == {"action": "decline", "content": None, "_meta": None}
+
+    def test_mcp_consent_callback_exception_fails_closed(self):
+        def broken_consent(*_args, **_kwargs):
+            raise RuntimeError("approval surface unavailable")
+
+        session = make_session(
+            FakeClient(),
+            mcp_elicitation_callback=broken_consent,
+            request_routing=_ServerRequestRouting(
+                prompt_mcp_elicitation_servers=frozenset({"todoist"})
+            ),
+        )
+
+        assert session._decide_mcp_elicitation({
+            "serverName": "todoist",
+            "mode": "form",
+            "message": "confirm",
+            "requestedSchema": {"type": "object", "properties": {}},
+        }) == {"action": "decline", "content": None, "_meta": None}
+
 
 
     def test_unknown_server_request_replied_with_error(self):
@@ -895,4 +1089,3 @@ class TestClassifyOAuthFailure:
         assert _classify_oauth_failure() is None
         assert _classify_oauth_failure("") is None
         assert _classify_oauth_failure("", None) is None  # type: ignore[arg-type]
-

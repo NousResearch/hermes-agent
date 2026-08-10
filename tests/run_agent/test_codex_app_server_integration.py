@@ -18,6 +18,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import run_agent
+from agent.codex_runtime import (
+    _configured_mcp_elicitation_prompt_servers,
+    _make_mcp_elicitation_callback,
+)
 from agent.transports.codex_app_server_session import CodexAppServerSession, TurnResult
 
 
@@ -72,7 +76,109 @@ class TestApiModeAccepted:
         assert agent.api_mode == "codex_app_server"
 
 
+class TestConfiguredMcpElicitationPromptServers:
+    def test_reads_policy_through_hermes_config_loader(self, tmp_path, monkeypatch):
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            "mcp_servers:\n"
+            "  todoist:\n"
+            "    url: https://ai.todoist.net/mcp\n"
+            "    elicitation:\n"
+            "      approval: prompt\n",
+            encoding="utf-8",
+        )
+        from hermes_cli import config as config_mod
+
+        monkeypatch.setitem(
+            config_mod.load_config_readonly.__globals__,
+            "get_config_path",
+            lambda: config_file,
+        )
+
+        assert _configured_mcp_elicitation_prompt_servers() == frozenset(
+            {"todoist"}
+        )
+
+    def test_only_explicit_prompt_servers_are_enabled(self):
+        config = {
+            "mcp_servers": {
+                "todoist": {
+                    "enabled": True,
+                    "elicitation": {"approval": "prompt"},
+                },
+                "github": {"elicitation": {"approval": "deny"}},
+                "disabled": {
+                    "enabled": False,
+                    "elicitation": {"approval": "prompt"},
+                },
+                "elicitation-disabled": {
+                    "elicitation": {"enabled": False, "approval": "prompt"},
+                },
+                "implicit": {"url": "https://example.test/mcp"},
+            }
+        }
+
+        assert _configured_mcp_elicitation_prompt_servers(config) == frozenset(
+            {"todoist"}
+        )
+
+    @pytest.mark.parametrize(
+        "config",
+        [
+            {},
+            [],
+            {"mcp_servers": []},
+            {"mcp_servers": {"todoist": {"elicitation": "prompt"}}},
+            {"mcp_servers": {"todoist": {"elicitation": {"approval": True}}}},
+        ],
+    )
+    def test_malformed_or_missing_policy_fails_closed(self, config):
+        assert _configured_mcp_elicitation_prompt_servers(config) == frozenset()
+
+    def test_config_read_error_fails_closed(self):
+        with patch(
+            "hermes_cli.config.load_config_readonly",
+            side_effect=RuntimeError("config unavailable"),
+        ):
+            assert _configured_mcp_elicitation_prompt_servers() == frozenset()
+
+    def test_consent_adapter_reuses_shared_approval_router(self):
+        cli_callback = object()
+        callback = _make_mcp_elicitation_callback(cli_callback)
+        with patch(
+            "tools.approval.request_elicitation_consent",
+            return_value="accept",
+        ) as consent:
+            result = callback(
+                "Allow Todoist to update a task?",
+                "Todoist write",
+                surface="mcp-elicitation/todoist",
+            )
+
+        assert result == "accept"
+        consent.assert_called_once_with(
+            "Allow Todoist to update a task?",
+            "Todoist write",
+            surface="mcp-elicitation/todoist",
+            approval_callback=cli_callback,
+        )
+
+
 class TestRunConversationCodexPath:
+    def test_codex_session_receives_mcp_prompt_policy(self, fake_session, monkeypatch):
+        monkeypatch.setattr(
+            "agent.codex_runtime._configured_mcp_elicitation_prompt_servers",
+            lambda: frozenset({"todoist"}),
+        )
+        agent = _make_codex_agent()
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("hello")
+
+        assert agent._codex_session._routing.prompt_mcp_elicitation_servers == (
+            frozenset({"todoist"})
+        )
+        assert agent._codex_session._mcp_elicitation_callback is not None
+
     def test_run_conversation_returns_codex_shape(self, fake_session):
         agent = _make_codex_agent()
         # No background review fork during tests

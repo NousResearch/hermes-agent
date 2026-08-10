@@ -739,6 +739,39 @@ class CredentialPool:
         with self._lock:
             return self._current_unlocked()
 
+    def leased_entry(
+        self,
+        credential_id: str,
+        *,
+        entry_filter: Optional[Callable[[PooledCredential], bool]] = None,
+    ) -> Optional[PooledCredential]:
+        """Return the exact entry covered by an active lease.
+
+        ``current()`` is a shared rotation cursor and may be advanced by a
+        concurrent child after this caller acquires its lease. Lease consumers
+        must bind by the returned lease ID instead. Revalidate an optional
+        runtime filter under the same lock and fail closed on filter errors.
+        """
+        with self._lock:
+            if self._active_leases.get(credential_id, 0) <= 0:
+                return None
+            entry = next(
+                (candidate for candidate in self._entries if candidate.id == credential_id),
+                None,
+            )
+            if entry is None:
+                return None
+            if entry_filter is not None:
+                try:
+                    if not entry_filter(entry):
+                        return None
+                except Exception as exc:
+                    logger.warning(
+                        "credential pool: leased-entry filter failed: %s", exc
+                    )
+                    return None
+            return entry
+
     def entry_id_for_api_key(self, api_key_hint: Any = None) -> Optional[str]:
         """Return the stable id for the runtime credential in use.
 
@@ -2240,7 +2273,10 @@ class CredentialPool:
             # caller sees "no credentials available" and fails a request that
             # should have gone through.
             if chosen_id is None:
-                chosen_id, _ = self._acquire_lease_under_lock(credential_id)
+                chosen_id, _ = self._acquire_lease_under_lock(
+                    credential_id,
+                    entry_filter=entry_filter,
+                )
         return chosen_id
 
     def _acquire_lease_under_lock(

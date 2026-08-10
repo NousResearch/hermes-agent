@@ -1078,6 +1078,56 @@ class TestChildCredentialLeasing(unittest.TestCase):
         self.assertEqual(leased, "right")
         self.assertEqual(pool.current().id, "right")
 
+    def test_run_single_child_binds_exact_lease_id_when_cursor_advances(self):
+        """A concurrent rotation must not change the credential being bound."""
+        from tools.delegate_tool import _run_single_child
+
+        wrong = PooledCredential(
+            provider="openai-api", id="wrong", label="wrong", auth_type="api_key",
+            priority=0, source="manual", access_token="wrong",
+            base_url="https://api.openai.com/v1",
+        )
+        right = PooledCredential(
+            provider="openai-api", id="right", label="right", auth_type="api_key",
+            priority=1, source="manual", access_token="right",
+            base_url="https://azure.example.com/openai/v1",
+        )
+        pool = CredentialPool("openai-api", [wrong, right])
+        original_leased_entry = pool.leased_entry
+
+        def advance_cursor_before_binding(credential_id, *, entry_filter=None):
+            pool.acquire_lease("wrong")
+            return original_leased_entry(
+                credential_id,
+                entry_filter=entry_filter,
+            )
+
+        pool.leased_entry = advance_cursor_before_binding
+        child = MagicMock(
+            provider="openai-api",
+            base_url="https://azure.example.com/openai/v1",
+        )
+        child._credential_pool = pool
+        child.run_conversation.return_value = {
+            "final_response": "done",
+            "completed": True,
+            "interrupted": False,
+            "api_calls": 1,
+            "messages": [],
+        }
+
+        result = _run_single_child(
+            task_index=0,
+            goal="Bind exact credential",
+            child=child,
+            parent_agent=_make_mock_parent(),
+        )
+
+        self.assertEqual(result["status"], "completed")
+        child._swap_credential.assert_called_once_with(right)
+        self.assertIs(pool.current(), wrong)
+        pool.release_lease("wrong")
+
     def test_run_single_child_acquires_and_releases_lease(self):
         from tools.delegate_tool import _run_single_child
 

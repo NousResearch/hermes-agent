@@ -2,21 +2,50 @@ import type { HermesConnection } from '@/global'
 
 export const TITLEBAR_HEIGHT = 34
 export const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
-export const TITLEBAR_ICON_SIZE = 12
+/** Titlebar tool hit target (both axes). */
+export const TITLEBAR_CONTROL_SIZE = 24
+/** Codicon glyph box in titlebar clusters — optical match to traffic-light row. */
+export const TITLEBAR_ICON_SIZE = 13.9
+export const TITLEBAR_ICON_BADGE_SCALE = 0.65
 export const TITLEBAR_CONTROL_OFFSET_X = 74
-export const TITLEBAR_CONTROL_HEIGHT = 22
+export const TITLEBAR_CONTROL_HEIGHT = TITLEBAR_CONTROL_SIZE
 export const TITLEBAR_CONTROLS_TOP = (TITLEBAR_HEIGHT - TITLEBAR_CONTROL_HEIGHT) / 2
+
+/** Inline font-size for titlebar Codicons — beats unlayered codicon.css `font: 16px`. */
+export function titlebarIconSizeCss(scale = 1): string {
+  return `${TITLEBAR_ICON_SIZE * scale}px`
+}
 export const TITLEBAR_FALLBACK_WINDOW_BUTTON_X = 24
 // Edge inset used when no left-side native controls take up that space —
 // Windows/Linux (native overlay is on the right) and macOS fullscreen
 // (traffic lights are hidden). Matches the right-cluster's 0.75rem padding.
 export const TITLEBAR_EDGE_INSET = 14
 
+// macOS traffic-light row only: nudge the left toolbar cluster down to sit on
+// the same optical center as the native buttons. null windowButtonPosition means
+// Windows/Linux (controls on the right) or macOS fullscreen (lights hidden).
+export const TITLEBAR_MAC_TRAFFIC_LIGHTS_Y_NUDGE = 'calc(var(--spacing) * 0.9)'
+
+export function titlebarControlsYNudge(
+  windowButtonPosition: HermesConnection['windowButtonPosition'] | undefined
+): string {
+  return windowButtonPosition !== null ? TITLEBAR_MAC_TRAFFIC_LIGHTS_Y_NUDGE : '0px'
+}
+
 // Titlebar palette only. All sizing/radius/cursor/centering come from the
 // shared <Button size="icon-titlebar"> (used polymorphically via asChild) —
 // Button is the single source of button styling.
 export const titlebarButtonClass =
   'text-muted-foreground/85 hover:bg-(--ui-control-hover-background) hover:text-foreground'
+
+/** Shared flex shell for left/right/pane titlebar tool rows — no gap; 24px buttons abut. */
+export const titlebarToolClusterClass =
+  'fixed z-70 flex flex-row items-center pointer-events-auto select-none [-webkit-app-region:no-drag]'
+
+/** Width reserved for N abutting titlebar tool buttons. */
+export function titlebarToolsWidthCss(toolCount: number): string {
+  return `calc(${toolCount} * var(--titlebar-control-size))`
+}
 
 export const titlebarHeaderBaseClass =
   'pointer-events-none relative z-3 flex h-(--titlebar-height) w-full min-w-0 shrink-0 items-center justify-start gap-3 overflow-hidden border-b border-(--ui-stroke-tertiary) bg-(--ui-chat-surface-background) px-[max(0.75rem,var(--titlebar-content-inset,0rem))] pr-[calc(var(--titlebar-tools-right,0.75rem)+var(--titlebar-tools-width,0px)+0.75rem)]'

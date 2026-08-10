@@ -2,8 +2,8 @@ import { useStore } from '@nanostores/react'
 import { type CSSProperties, useCallback, useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router'
 
+import { TitlebarIcon } from '@/app/shell/titlebar-icon'
 import { Button } from '@/components/ui/button'
-import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
@@ -390,7 +390,7 @@ export function HudShell() {
           type="button"
           variant="ghost"
         >
-          <Codicon name="screen-normal" />
+          <TitlebarIcon name="screen-normal" />
         </Button>
       </Tip>
     </div>

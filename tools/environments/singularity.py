@@ -23,6 +23,28 @@ logger = logging.getLogger(__name__)
 
 _SNAPSHOT_STORE = get_hermes_home() / "singularity_snapshots.json"
 
+# Apptainer accepts these exact variables for private Docker-registry pulls.
+# Image construction gets this narrow capability set back after the common
+# sanitizer runs; it never receives the rest of the trusted Hermes env.
+_REGISTRY_AUTH_ENV_VARS = (
+    "APPTAINER_DOCKER_USERNAME",
+    "APPTAINER_DOCKER_PASSWORD",
+    "SINGULARITY_DOCKER_USERNAME",
+    "SINGULARITY_DOCKER_PASSWORD",
+    "DOCKER_USERNAME",
+    "DOCKER_PASSWORD",
+)
+
+
+def _singularity_subprocess_env(*, include_registry_auth: bool = False) -> dict[str, str]:
+    env = build_subprocess_env()
+    if include_registry_auth:
+        for key in _REGISTRY_AUTH_ENV_VARS:
+            value = os.environ.get(key)
+            if value is not None:
+                env[key] = value
+    return env
+
 
 def _find_singularity_executable() -> str:
     """Locate the apptainer or singularity CLI binary."""

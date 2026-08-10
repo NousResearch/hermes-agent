@@ -15,9 +15,6 @@ finish-args:
   - --socket=pulseaudio
   - --device=dri
   - --filesystem=home
-  - --filesystem=/run/media:ro
-  - --filesystem=host-os:ro
-  - --filesystem=host:ro
   - --talk-name=org.freedesktop.Notifications
   - --talk-name=org.freedesktop.portal.Desktop
   - --talk-name=org.freedesktop.portal.FileChooser
@@ -42,4 +39,5 @@ modules:
       - type: file
         path: com.nousresearch.Hermes.png
       - type: dir
-        path: stage
+        path: stage/hermes-desktop
+        dest: hermes-desktop

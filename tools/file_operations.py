@@ -1342,9 +1342,37 @@ class ShellFileOperations(FileOperations):
                 error="Binary file - cannot display as text. Use appropriate tools to handle this file type."
             )
         
-        # Read with pagination using sed
+        # Read with pagination using sed, clamping each line to a byte
+        # budget IN THE SHELL so a pathological single-line file (e.g. one
+        # 400MB minified line) never crosses the exec transport. The Python
+        # clamp in _add_line_numbers still runs afterwards; the shell clamp
+        # only bounds what reaches it.
+        #
+        # Why 4*max_line_length + 1 bytes (not max_line_length + 1):
+        # ``cut -c`` on GNU coreutils is byte-based despite its name, and a
+        # byte clamp can split a multibyte UTF-8 codepoint at the boundary.
+        # The transport decodes with errors="replace", so a split codepoint
+        # becomes U+FFFD rather than an exception — but a clamp of
+        # max_line_length+1 BYTES yields far fewer CHARS than
+        # max_line_length for multibyte text, so the Python clamp would
+        # never fire and truncation would be silent (no "... [truncated]"
+        # suffix). UTF-8 codepoints are at most 4 bytes, so any line whose
+        # first max_line_length chars survive occupies at most
+        # 4*max_line_length bytes; keeping one byte more guarantees that
+        # every line longer than max_line_length chars still decodes to
+        # more than max_line_length chars, which triggers the existing
+        # Python-side clamp (len(line) > max_line_length) and its
+        # "... [truncated]" suffix. Any U+FFFD from a boundary split lands
+        # beyond char max_line_length and is always removed by that clamp,
+        # so mojibake is never visible. ``cut -b`` is used explicitly to
+        # document the byte semantics.
+        from tools.tool_output_limits import get_max_line_length
+        line_clamp_bytes = 4 * get_max_line_length() + 1
         end_line = offset + limit - 1
-        read_cmd = f"sed -n '{offset},{end_line}p' {self._escape_shell_arg(path)}"
+        read_cmd = (
+            f"sed -n '{offset},{end_line}p' {self._escape_shell_arg(path)}"
+            f" | cut -b1-{line_clamp_bytes}"
+        )
         read_result = self._exec(read_cmd)
         
         if read_result.exit_code != 0:
@@ -1370,6 +1398,17 @@ class ShellFileOperations(FileOperations):
         hint = None
         if truncated:
             hint = f"Use offset={end_line + 1} to continue reading (showing {offset}-{end_line} of {total_lines} lines)"
+
+        # ``cut`` (unlike sed -n p) always newline-terminates its output,
+        # so a file whose final line has no trailing newline would grow a
+        # phantom empty last line. Only possible when this page reaches the
+        # file's final line; probe the last byte and strip the artifact.
+        if not truncated and read_output.endswith('\n'):
+            tail_cmd = f"tail -c 1 {self._escape_shell_arg(path)} | wc -l"
+            tail_result = self._exec(tail_cmd)
+            tail_output = _strip_terminal_fence_leaks(tail_result.stdout)
+            if tail_result.exit_code == 0 and tail_output.strip() == "0":
+                read_output = read_output[:-1]
 
         # Ambiguous-silence guards: an empty content string is
         # indistinguishable, from inside the model, from a broken tool —

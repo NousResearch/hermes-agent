@@ -221,7 +221,7 @@ class TestPaginationBounds:
         assert result.error is None
         assert "1|line1" in result.content
         sed_commands = [cmd for cmd in commands if cmd.startswith("sed -n")]
-        assert sed_commands == ["sed -n '1,1p' 'notes.txt'"]
+        assert sed_commands == ["sed -n '1,1p' 'notes.txt' | cut -b1-8001"]
 
     def test_search_clamps_offset_and_limit_before_building_head_pipeline(self):
         env = MagicMock()

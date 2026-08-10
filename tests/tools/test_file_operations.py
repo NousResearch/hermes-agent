@@ -331,7 +331,7 @@ class TestShellFileOpsHelpers:
             "else exit 1; fi"
         )
         assert commands[1] == "head -c 1000 '/c/Users/alice/notes.txt' 2>/dev/null | base64"
-        assert commands[2] == "sed -n '1,2000p' '/c/Users/alice/notes.txt'"
+        assert commands[2] == "sed -n '1,2000p' '/c/Users/alice/notes.txt' | cut -b1-8001"
         assert commands[3] == "wc -l < '/c/Users/alice/notes.txt'"
 
     def test_is_likely_binary_by_extension(self, file_ops):

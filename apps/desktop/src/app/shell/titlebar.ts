@@ -15,6 +15,7 @@ export const TITLEBAR_CONTROLS_TOP = (TITLEBAR_HEIGHT - TITLEBAR_CONTROL_HEIGHT)
 export function titlebarIconSizeCss(scale = 1): string {
   return `${TITLEBAR_ICON_SIZE * scale}px`
 }
+
 export const TITLEBAR_FALLBACK_WINDOW_BUTTON_X = 24
 // Edge inset used when no left-side native controls take up that space —
 // Windows/Linux (native overlay is on the right) and macOS fullscreen

@@ -980,9 +980,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const systemToolsWidth = titlebarToolsWidthCss(SYSTEM_TOOL_COUNT)
 
   const titlebarToolsWidth =
-    paneToolCount > 0
-      ? `calc(${systemToolsWidth} + ${titlebarToolsWidthCss(paneToolCount)})`
-      : systemToolsWidth
+    paneToolCount > 0 ? `calc(${systemToolsWidth} + ${titlebarToolsWidthCss(paneToolCount)})` : systemToolsWidth
 
   return (
     <ContribWiringContext.Provider value={api}>

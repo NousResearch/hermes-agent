@@ -13,13 +13,107 @@ method = _registry.method
 _profile_scoped = _registry.profile_scoped
 
 
+def _history_user_indices(history: list) -> list:
+    """Indices of model-visible user turns (excludes display_kind timeline markers)."""
+    return [
+        i
+        for i, m in enumerate(history)
+        if m.get("role") == "user" and not m.get("display_kind")
+    ]
+
+
+def _message_row_id(msg: dict):
+    """Parse durable SQLite row id from a history entry, or None."""
+    raw = msg.get("_row_id")
+    if raw is None:
+        raw = msg.get("row_id")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _find_user_turn_by_row_id(history: list, target_row_id: int):
+    """Return ``(user_ordinal, history_index)`` for ``target_row_id``, or None."""
+    for u_ord, h_idx in enumerate(_history_user_indices(history)):
+        if _message_row_id(history[h_idx]) == target_row_id:
+            return u_ord, h_idx
+    return None
+
+
+def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
+    """Resolve ``truncate_before_row_id`` to ``(user_ordinal, history_index)``.
+
+    Prefer in-memory ``_row_id`` / ``row_id`` stamps. When a live turn rewrote
+    ``session["history"]`` without stamps (provider-format messages), load the
+    session's durable transcript with ``include_row_ids=True`` and map the
+    matched user-turn ordinal onto the live list. Does **not** fall back to a
+    client-supplied ordinal — unknown row ids must refuse (#82959).
+    """
+    hit = _find_user_turn_by_row_id(history, target_row_id)
+    if hit is not None:
+        return hit
+
+    session_key = str(session.get("session_key") or "")
+    if not session_key:
+        return None
+
+    try:
+        db = _get_db()
+    except Exception:
+        db = None
+    if db is None:
+        return None
+
+    get_conv = getattr(db, "get_messages_as_conversation", None)
+    if not callable(get_conv):
+        return None
+
+    try:
+        db_history = get_conv(
+            session_key, repair_alternation=True, include_row_ids=True
+        )
+    except Exception:
+        logger.debug(
+            "prompt.submit: failed loading DB history for row_id %s session %s",
+            target_row_id,
+            session_key,
+            exc_info=True,
+        )
+        return None
+
+    if not isinstance(db_history, list):
+        return None
+
+    # Heal missing in-memory stamps when the live list still lines up 1:1 with
+    # the durable transcript (common after turn-completion rewrites).
+    if len(db_history) == len(history):
+        for mem, db_msg in zip(history, db_history):
+            db_rid = _message_row_id(db_msg) if isinstance(db_msg, dict) else None
+            if db_rid is not None and _message_row_id(mem) is None:
+                mem["_row_id"] = db_rid
+        hit = _find_user_turn_by_row_id(history, target_row_id)
+        if hit is not None:
+            return hit
+
+    db_hit = _find_user_turn_by_row_id(db_history, target_row_id)
+    if db_hit is None:
+        return None
+    db_ord, _ = db_hit
+    mem_user_indices = _history_user_indices(history)
+    if db_ord < 0 or db_ord >= len(mem_user_indices):
+        return None
+    return db_ord, mem_user_indices[db_ord]
+
+
 def _pending_reaction_notes(session: dict) -> str:
     """Note block describing reactions the user added since the last turn, or "".
 
     Applied to the MODEL INPUT only (``run_message``, beside the
     speech-interrupted note) — never to the text that gets persisted. Prefixing
-    the persisted prompt bakes scaffolding into the transcript, which every
-    surface then renders as a garbled user message on reload. Each reaction is
+    the persisted prompt bakes scaffolding into the transcript. Each reaction is
     announced once — the row is stamped ``seen`` on read.
     """
     session_key = str(session.get("session_key") or "")
@@ -118,7 +212,12 @@ def _(rid, params: dict) -> dict:
     # in turn: a stale "hud" would tell the model the user is still floating
     # over another app when they are back in Hermes.
     session["client_surface"] = "hud" if params.get("surface") == "hud" else ""
-    if truncate_user_ordinal is not None and isinstance(text, str):
+    has_truncation = (
+        truncate_user_ordinal is not None
+        or params.get("truncate_before_row_id") is not None
+        or params.get("truncate_before_message_id") is not None
+    )
+    if has_truncation and isinstance(text, str):
         # A rewind/regenerate replays a turn from what the transcript shows. A
         # skill turn shows its invocation, so re-expand it here — otherwise
         # re-running `/work fix it` sends the agent nine literal characters
@@ -162,27 +261,189 @@ def _(rid, params: dict) -> dict:
         # the upgrade resumes the child's transcript as a normal conversation.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
             return _err(rid, 4009, "subagent still running — wait for it to finish")
-        # confirm_truncate with no target is malformed: the flag is consent for
-        # a specific cut, and a client that sends it bare has leaked rewind
-        # state onto an ordinary submit (#82756). Fail fast instead of quietly
-        # ignoring the flag so the broken client state is surfaced.
-        if is_truthy_value(params.get("confirm_truncate")) and truncate_user_ordinal is None:
+        truncate_message_id = params.get("truncate_before_message_id")
+        truncate_row_id = params.get("truncate_before_row_id")
+        if (
+            is_truthy_value(params.get("confirm_truncate"))
+            and truncate_user_ordinal is None
+            and truncate_message_id is None
+            and truncate_row_id is None
+        ):
             return _err(
                 rid,
                 4004,
-                "confirm_truncate requires truncate_before_user_ordinal",
+                "confirm_truncate requires truncate_before_user_ordinal, truncate_before_message_id, or truncate_before_row_id",
             )
-        if truncate_user_ordinal is not None:
-            # bool is an int subclass: a JSON `true` would coerce via int() to
-            # ordinal 1 and aim a confirmed rewind at the second user turn.
-            if isinstance(truncate_user_ordinal, bool):
-                return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
-            try:
-                ordinal = int(truncate_user_ordinal)
-            except (TypeError, ValueError):
-                return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
+        if (
+            truncate_user_ordinal is not None
+            or truncate_message_id is not None
+            or truncate_row_id is not None
+        ):
             history = session.get("history", [])
-            # An ordinal alone is not consent. A client that carries a leftover
+            user_indices = _history_user_indices(history)
+
+            target_idx = None
+            ordinal = None
+
+            if truncate_row_id is not None:
+                if isinstance(truncate_row_id, bool):
+                    return _err(
+                        rid,
+                        4004,
+                        "truncate_before_row_id must be an integer",
+                    )
+                try:
+                    target_row_id = int(truncate_row_id)
+                except (TypeError, ValueError):
+                    return _err(
+                        rid,
+                        4004,
+                        "truncate_before_row_id must be an integer",
+                    )
+
+                # Durable address first — never degrade a missing row_id into a
+                # client ordinal cut (#82959 / #82766 review). Unknown id refuses
+                # without touching data; stale ordinal with a *resolved* row_id
+                # is a separate 4030 mismatch below.
+                found_match = _resolve_truncate_row_id(
+                    session, history, target_row_id
+                )
+                # user_indices may have been healed with _row_id stamps
+                user_indices = _history_user_indices(history)
+
+                if found_match is None:
+                    logger.warning(
+                        "prompt.submit: target row_id %d not found for session %s "
+                        "(in-memory + durable); refusing truncation without fallback",
+                        target_row_id,
+                        sid,
+                    )
+                    return _err(
+                        rid,
+                        4018,
+                        "target user message is no longer in session history",
+                    )
+
+                msg_ordinal, target_idx = found_match
+
+                if truncate_user_ordinal is not None:
+                    if isinstance(truncate_user_ordinal, bool):
+                        return _err(
+                            rid,
+                            4004,
+                            "truncate_before_user_ordinal must be an integer",
+                        )
+                    try:
+                        ordinal = int(truncate_user_ordinal)
+                    except (TypeError, ValueError):
+                        return _err(
+                            rid,
+                            4004,
+                            "truncate_before_user_ordinal must be an integer",
+                        )
+                    if ordinal != msg_ordinal:
+                        logger.warning(
+                            "prompt.submit: REFUSED truncation due to ordinal mismatch for session %s "
+                            "(ordinal=%d, row_id_ordinal=%d, row_id=%d). "
+                            "Stale truncate_before_user_ordinal detected.",
+                            sid,
+                            ordinal,
+                            msg_ordinal,
+                            target_row_id,
+                        )
+                        return _err(
+                            rid,
+                            4030,
+                            f"truncate_before_user_ordinal ({ordinal}) does not match "
+                            f"truncate_before_row_id target turn ({msg_ordinal})",
+                        )
+                else:
+                    ordinal = msg_ordinal
+            elif truncate_message_id is not None:
+                msg_id_str = str(truncate_message_id)
+                found_match = None
+                for u_ord, h_idx in enumerate(user_indices):
+                    msg = history[h_idx]
+                    if msg.get("id") == msg_id_str or msg.get("message_id") == msg_id_str:
+                        found_match = (u_ord, h_idx)
+                        break
+
+                if found_match is None:
+                    # Fail closed: a supplied message_id that does not resolve
+                    # must not fall back to a (possibly stale) ordinal. Desktop
+                    # clients should send truncate_before_row_id instead.
+                    logger.warning(
+                        "prompt.submit: target message_id %s not found in history "
+                        "for session %s; refusing truncation without fallback",
+                        msg_id_str,
+                        sid,
+                    )
+                    return _err(
+                        rid,
+                        4018,
+                        "target user message is no longer in session history",
+                    )
+
+                msg_ordinal, target_idx = found_match
+
+                if truncate_user_ordinal is not None:
+                    if isinstance(truncate_user_ordinal, bool):
+                        return _err(
+                            rid,
+                            4004,
+                            "truncate_before_user_ordinal must be an integer",
+                        )
+                    try:
+                        ordinal = int(truncate_user_ordinal)
+                    except (TypeError, ValueError):
+                        return _err(
+                            rid,
+                            4004,
+                            "truncate_before_user_ordinal must be an integer",
+                        )
+                    if ordinal != msg_ordinal:
+                        logger.warning(
+                            "prompt.submit: REFUSED truncation due to ordinal mismatch for session %s "
+                            "(ordinal=%d, message_id_ordinal=%d, message_id=%s). "
+                            "Stale truncate_before_user_ordinal detected.",
+                            sid,
+                            ordinal,
+                            msg_ordinal,
+                            msg_id_str,
+                        )
+                        return _err(
+                            rid,
+                            4030,
+                            f"truncate_before_user_ordinal ({ordinal}) does not match "
+                            f"truncate_before_message_id target turn ({msg_ordinal})",
+                        )
+                else:
+                    ordinal = msg_ordinal
+            else:
+                if isinstance(truncate_user_ordinal, bool):
+                    return _err(
+                        rid,
+                        4004,
+                        "truncate_before_user_ordinal must be an integer",
+                    )
+                try:
+                    ordinal = int(truncate_user_ordinal)
+                except (TypeError, ValueError):
+                    return _err(
+                        rid,
+                        4004,
+                        "truncate_before_user_ordinal must be an integer",
+                    )
+
+                if ordinal < 0 or ordinal >= len(user_indices):
+                    return _err(
+                        rid,
+                        4018,
+                        "target user message is no longer in session history",
+                    )
+                target_idx = user_indices[ordinal]
+
+            # An ordinal/id alone is not consent. A client that carries a leftover
             # ordinal into an ORDINARY submit sends a request that is
             # indistinguishable, field by field, from a real rewind — same
             # method, same shape, an in-range target — and the cut it asks for
@@ -194,8 +455,8 @@ def _(rid, params: dict) -> dict:
                 logger.warning(
                     "prompt.submit: REFUSED unconfirmed truncation of session %s "
                     "(%d messages held; ordinal=%d). The client attached "
-                    "truncate_before_user_ordinal without confirm_truncate — "
-                    "likely a stale ordinal on an ordinary submit.",
+                    "truncation parameter without confirm_truncate — "
+                    "likely stale truncation parameters on an ordinary submit.",
                     sid,
                     len(history),
                     ordinal,
@@ -203,7 +464,7 @@ def _(rid, params: dict) -> dict:
                 return _err(
                     rid,
                     4029,
-                    "truncate_before_user_ordinal requires confirm_truncate=true; "
+                    "truncation parameters require confirm_truncate=true; "
                     "an ordinary prompt.submit must not drop session history "
                     "(update your Hermes client if a rewind was intended)",
                 )
@@ -1019,12 +1280,24 @@ def register(server) -> None:
     """Bind this module's handlers onto ``server``'s globals and registry."""
     _registry.install(server)
     # Module-level helpers aren't @method handlers, so install() doesn't see
-    # them — but server.py's run path calls this one (run_message enrichment,
-    # beside the speech-interrupted note). Rebind and publish it the same way.
-    server._pending_reaction_notes = types.FunctionType(
-        _pending_reaction_notes.__code__,
-        vars(server),
-        _pending_reaction_notes.__name__,
-        _pending_reaction_notes.__defaults__,
-        _pending_reaction_notes.__closure__,
-    )
+    # them. Rebind onto server globals so handler bodies (and server.py call
+    # sites) resolve the same free names after the split.
+    g = vars(server)
+    for helper in (
+        _history_user_indices,
+        _message_row_id,
+        _find_user_turn_by_row_id,
+        _resolve_truncate_row_id,
+        _pending_reaction_notes,
+    ):
+        setattr(
+            server,
+            helper.__name__,
+            types.FunctionType(
+                helper.__code__,
+                g,
+                helper.__name__,
+                helper.__defaults__,
+                helper.__closure__,
+            ),
+        )

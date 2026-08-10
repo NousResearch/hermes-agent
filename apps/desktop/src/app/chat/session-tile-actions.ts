@@ -366,13 +366,28 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
   // Rewind primitive (interrupt-first for live turns, busy-retry) — shared with
   // the primary chat so the two can't diverge.
   const submitRewind = useCallback(
-    (text: string, truncateOrdinal: number | undefined, interruptFirst: boolean) =>
-      runRewindSubmit(requestGateway, runtimeIdRef.current, text, truncateOrdinal, interruptFirst, {
-        storedSessionId: storedIdRef.current,
-        onSessionRecovered: recoveredId => {
-          runtimeIdRef.current = recoveredId
-        }
-      }),
+    (
+      text: string,
+      truncateOrdinal: number | undefined,
+      interruptFirst: boolean,
+      truncateMessageId?: string,
+      truncateRowId?: number
+    ) =>
+      runRewindSubmit(
+        requestGateway,
+        runtimeIdRef.current,
+        text,
+        truncateOrdinal,
+        truncateMessageId,
+        interruptFirst,
+        {
+          storedSessionId: storedIdRef.current,
+          onSessionRecovered: recoveredId => {
+            runtimeIdRef.current = recoveredId
+          }
+        },
+        truncateRowId
+      ),
     [requestGateway]
   )
 
@@ -398,7 +413,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
           {
             session_id: runtimeIdRef.current,
             text: plan.text,
-            ...truncateSubmitParams(plan.truncateOrdinal)
+            ...truncateSubmitParams(plan.truncateOrdinal, plan.truncateMessageId, plan.truncateRowId)
           },
           PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
         )
@@ -425,7 +440,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       update(state => applyRewindOptimistic(state, plan.sourceIndex))
 
       try {
-        await submitRewind(plan.text, plan.truncateOrdinal, wasBusy)
+        await submitRewind(plan.text, plan.truncateOrdinal, wasBusy, plan.truncateMessageId, plan.truncateRowId)
       } catch (err) {
         update(state => ({ ...state, busy: false, awaitingResponse: false, messages }))
         throw err
@@ -454,7 +469,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       update(state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
 
       try {
-        await submitRewind(plan.text, plan.truncateOrdinal, wasBusy)
+        await submitRewind(plan.text, plan.truncateOrdinal, wasBusy, plan.truncateMessageId, plan.truncateRowId)
       } catch (err) {
         update(state => ({ ...state, busy: false, awaitingResponse: false, messages }))
         notifyError(err, copy.editFailed)

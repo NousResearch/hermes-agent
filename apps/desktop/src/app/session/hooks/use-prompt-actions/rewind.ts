@@ -34,38 +34,52 @@ type RequestGateway = <T = unknown>(method: string, params?: Record<string, unkn
  * transcript (restore/regenerate the first user turn), which the gateway gates
  * behind `confirm_empty_truncate` on top of that.
  */
-export function truncateSubmitParams(truncateOrdinal: number | undefined): Record<string, unknown> {
-  if (truncateOrdinal === undefined) {
+export function truncateSubmitParams(
+  truncateOrdinal: number | undefined,
+  truncateMessageId?: string,
+  truncateRowId?: number
+): Record<string, unknown> {
+  const hasOrdinal = typeof truncateOrdinal === 'number' && Number.isInteger(truncateOrdinal) && truncateOrdinal >= 0;
+  const hasRowId = typeof truncateRowId === 'number' && Number.isInteger(truncateRowId);
+  // Renderer ids are ephemeral (`${timestamp}-${index}-${role}` from
+  // chat-messages.ts, plus older `user-…` / `assistant-…` shapes). Gateway
+  // history never carries them — only durable `row_id` / platform message_id.
+  const isSyntheticId =
+    typeof truncateMessageId === 'string' &&
+    (truncateMessageId.startsWith('user-') ||
+      truncateMessageId.startsWith('assistant-') ||
+      truncateMessageId.includes('-synthetic-') ||
+      /^\d+-\d+-(user|assistant|tools)\b/.test(truncateMessageId))
+  const hasMessageId = typeof truncateMessageId === 'string' && truncateMessageId.length > 0 && !isSyntheticId;
+
+  if (!hasOrdinal && !hasMessageId && !hasRowId) {
     return {}
   }
 
   return {
     confirm_truncate: true,
-    truncate_before_user_ordinal: truncateOrdinal,
+    ...(hasOrdinal ? { truncate_before_user_ordinal: truncateOrdinal } : {}),
+    ...(hasMessageId ? { truncate_before_message_id: truncateMessageId } : {}),
+    ...(hasRowId ? { truncate_before_row_id: truncateRowId } : {}),
     ...(truncateOrdinal === 0 ? { confirm_empty_truncate: true } : {})
   }
 }
 
 /**
  * Rewind a turn: `prompt.submit` with an optional `truncate_before_user_ordinal`
- * (drops that user turn + everything after). Idle rewinds submit directly
- * (interrupting an idle agent can leave a stale interrupt flag that cancels the
- * fresh turn); live/stuck turns interrupt first, and a raced "session busy"
- * response interrupts + retries through the shared busy gate.
- *
- * A rewind runs right after `cancelRun`, and interrupting can drop the
- * gateway's in-memory session — so the follow-up submit hits a dead runtime id
- * and used to surface a bare "session not found" ("Restore checkpoint" failing
- * after a stop). Pass `recovery` so a stale id re-registers and retries like
- * every other session-scoped RPC.
+ * / `truncate_before_message_id` / `truncate_before_row_id` (drops that user turn + everything after).
+ * Idle rewinds submit directly; live/stuck turns interrupt first, and a raced
+ * "session busy" response interrupts + retries through the shared busy gate.
  */
 export async function runRewindSubmit(
   requestGateway: RequestGateway,
   sessionId: string,
   text: string,
   truncateOrdinal: number | undefined,
+  truncateMessageId: string | undefined,
   interruptFirst: boolean,
-  recovery?: { storedSessionId?: null | string; onSessionRecovered?: (sessionId: string) => void }
+  recovery?: { storedSessionId?: null | string; onSessionRecovered?: (sessionId: string) => void },
+  truncateRowId?: number
 ): Promise<void> {
   // Recovery may rebind the live id mid-flight; interrupt/submit must both
   // follow it rather than pinning the dead one.
@@ -85,7 +99,7 @@ export async function runRewindSubmit(
       {
         session_id: targetId,
         text,
-        ...truncateSubmitParams(truncateOrdinal)
+        ...truncateSubmitParams(truncateOrdinal, truncateMessageId, truncateRowId)
       },
       PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
     )
@@ -133,6 +147,8 @@ export interface ReloadPlan {
   branchGroupId: string
   text: string
   truncateOrdinal: number
+  truncateMessageId?: string
+  truncateRowId?: number
   userIndex: number
 }
 
@@ -164,6 +180,8 @@ export function planReload(messages: ChatMessage[], parentId: null | string): nu
     branchGroupId: targetAssistant?.branchGroupId ?? branchGroupForUser(userMessage),
     text,
     truncateOrdinal: visibleUserOrdinal(messages, userIndex),
+    truncateMessageId: userMessage.id,
+    truncateRowId: userMessage.rowId,
     userIndex
   }
 }
@@ -202,6 +220,8 @@ export interface RestorePlan {
   sourceIndex: number
   text: string
   truncateOrdinal: number
+  truncateMessageId?: string
+  truncateRowId?: number
 }
 
 /** Resolve the user turn to rewind to; throws with a user-facing reason. */
@@ -231,7 +251,7 @@ export function planRestore(messages: ChatMessage[], messageId: string, target?:
       ? visibleUserOrdinal(messages, sourceIndex)
       : target.userOrdinal
 
-  return { sourceIndex, text, truncateOrdinal }
+  return { sourceIndex, text, truncateOrdinal, truncateMessageId: source.id, truncateRowId: source.rowId }
 }
 
 // ---------------------------------------------------------------------------
@@ -244,6 +264,8 @@ export interface EditPlan {
   sourceIndex: number
   text: string
   truncateOrdinal: number | undefined
+  truncateMessageId?: string
+  truncateRowId?: number
 }
 
 /** Resolve the edited user turn, or null when nothing changed / invalid. */
@@ -272,7 +294,9 @@ export function planEdit(messages: ChatMessage[], edited: AppendMessage): EditPl
     isFailedTurn,
     sourceIndex,
     text,
-    truncateOrdinal: isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex)
+    truncateOrdinal: isFailedTurn ? undefined : visibleUserOrdinal(messages, sourceIndex),
+    truncateMessageId: isFailedTurn ? undefined : source.id,
+    truncateRowId: isFailedTurn ? undefined : source.rowId
   }
 }
 

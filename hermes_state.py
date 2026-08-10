@@ -8494,7 +8494,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
             api_content = msg.get("api_content")
 
-            conn.execute(
+            cur = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
@@ -8524,6 +8524,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     self._encode_display_metadata(msg.get("display_metadata")),
                 ),
             )
+            if isinstance(msg, dict) and cur.lastrowid is not None:
+                msg["_row_id"] = cur.lastrowid
             inserted += 1
             if tool_calls is not None:
                 tool_calls_total += (

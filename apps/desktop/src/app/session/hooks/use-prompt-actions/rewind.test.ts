@@ -30,4 +30,31 @@ describe('truncateSubmitParams', () => {
       expect(params.confirm_truncate).toBe(true)
     }
   })
+
+  it('includes truncate_before_row_id when passed', () => {
+    expect(truncateSubmitParams(1, 'msg-123', 456)).toEqual({
+      confirm_truncate: true,
+      truncate_before_user_ordinal: 1,
+      truncate_before_message_id: 'msg-123',
+      truncate_before_row_id: 456
+    })
+    expect(truncateSubmitParams(undefined, undefined, 456)).toEqual({
+      confirm_truncate: true,
+      truncate_before_row_id: 456
+    })
+  })
+
+  it('drops renderer-synthetic message ids but keeps durable row ids', () => {
+    // chat-messages.ts: `${timestamp}-${index}-${role}`
+    expect(truncateSubmitParams(1, '1723456789-0-user', 456)).toEqual({
+      confirm_truncate: true,
+      truncate_before_user_ordinal: 1,
+      truncate_before_row_id: 456
+    })
+    expect(truncateSubmitParams(0, 'user-1723456789-0', undefined)).toEqual({
+      confirm_truncate: true,
+      truncate_before_user_ordinal: 0,
+      confirm_empty_truncate: true
+    })
+  })
 })

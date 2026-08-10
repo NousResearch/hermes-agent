@@ -809,7 +809,7 @@ export function usePromptActions({
           {
             session_id: sessionId,
             text: plan.text,
-            ...truncateSubmitParams(plan.truncateOrdinal)
+            ...truncateSubmitParams(plan.truncateOrdinal, plan.truncateMessageId, plan.truncateRowId)
           },
           PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
         )
@@ -835,14 +835,30 @@ export function usePromptActions({
   // fresh turn. Live/stuck turns interrupt first, and a raced "session busy"
   // response interrupts + retries through the shared busy gate.
   const submitRewindPrompt = useCallback(
-    (sessionId: string, text: string, truncateOrdinal: number | undefined, interruptFirst: boolean) =>
-      runRewindSubmit(requestGateway, sessionId, text, truncateOrdinal, interruptFirst, {
-        storedSessionId: selectedStoredSessionIdRef.current,
-        onSessionRecovered: recoveredId => {
-          activeSessionIdRef.current = recoveredId
-          setActiveSessionId(recoveredId)
-        }
-      }),
+    (
+      sessionId: string,
+      text: string,
+      truncateOrdinal: number | undefined,
+      truncateMessageId: string | undefined,
+      interruptFirst: boolean,
+      truncateRowId?: number
+    ) =>
+      runRewindSubmit(
+        requestGateway,
+        sessionId,
+        text,
+        truncateOrdinal,
+        truncateMessageId,
+        interruptFirst,
+        {
+          storedSessionId: selectedStoredSessionIdRef.current,
+          onSessionRecovered: recoveredId => {
+            activeSessionIdRef.current = recoveredId
+            setActiveSessionId(recoveredId)
+          }
+        },
+        truncateRowId
+      ),
     [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
   )
 
@@ -873,7 +889,14 @@ export function usePromptActions({
       updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex))
 
       try {
-        await submitRewindPrompt(sessionId, plan.text, plan.truncateOrdinal, busyRef.current || $busy.get())
+        await submitRewindPrompt(
+          sessionId,
+          plan.text,
+          plan.truncateOrdinal,
+          plan.truncateMessageId,
+          busyRef.current || $busy.get(),
+          plan.truncateRowId
+        )
       } catch (err) {
         // The rewind never landed (e.g. the gateway stayed busy past the retry
         // deadline). Roll the optimistic truncation back to the full original
@@ -920,25 +943,16 @@ export function usePromptActions({
       setAwaitingResponse(true)
       updateSessionState(sessionId, state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
 
-      const isStaleTargetError = (err: unknown) =>
-        /no longer in session history|not in session history/i.test(err instanceof Error ? err.message : String(err))
-
       try {
-        await submitRewindPrompt(sessionId, plan.text, plan.truncateOrdinal, busyRef.current || $busy.get())
+        await submitRewindPrompt(
+          sessionId,
+          plan.text,
+          plan.truncateOrdinal,
+          plan.truncateMessageId,
+          busyRef.current || $busy.get(),
+          plan.truncateRowId
+        )
       } catch (err) {
-        let surfaced = err
-
-        if (!plan.isFailedTurn && isStaleTargetError(err)) {
-          try {
-            // Already interrupted on the first attempt — submit as a plain resend.
-            await submitRewindPrompt(sessionId, plan.text, undefined, false)
-
-            return
-          } catch (retryErr) {
-            surfaced = retryErr
-          }
-        }
-
         // Roll the optimistic edit/truncation back to the original history so the
         // UI stays in sync with what's persisted instead of stranding a partial
         // timeline.
@@ -946,7 +960,7 @@ export function usePromptActions({
         setBusy(false)
         setAwaitingResponse(false)
         updateSessionState(sessionId, state => ({ ...state, busy: false, awaitingResponse: false, messages }))
-        notifyError(surfaced, copy.editFailed)
+        notifyError(err, copy.editFailed)
       }
     },
     [activeSessionIdRef, busyRef, copy.editFailed, submitRewindPrompt, updateSessionState]

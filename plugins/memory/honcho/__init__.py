@@ -1527,13 +1527,31 @@ class HonchoMemoryProvider(MemoryProvider):
                     return tool_error("Missing required parameter: query")
                 peer = args.get("peer", "user")
                 reasoning_level = args.get("reasoning_level")
-                result = self._manager.dialectic_query(
-                    self._session_key, query,
-                    reasoning_level=reasoning_level,
-                    peer=peer,
-                    # Explicit reasoning bypasses the automatic-injection cap.
-                    apply_injection_cap=False,
-                )
+                try:
+                    result = self._manager.dialectic_query(
+                        self._session_key, query,
+                        reasoning_level=reasoning_level,
+                        peer=peer,
+                        # Explicit reasoning bypasses the automatic-injection cap.
+                        apply_injection_cap=False,
+                        # Explicit tool call: surface timeouts/server errors as
+                        # errors instead of collapsing them into "no result",
+                        # which is indistinguishable from an empty answer.
+                        raise_errors=True,
+                    )
+                except HonchoAuthError:
+                    # Let the outer dispatch's auth-specific handler render this.
+                    raise
+                except Exception as e:
+                    logger.warning("honcho_reasoning failed: %s", e)
+                    return tool_error(
+                        f"Honcho reasoning query failed ({e}). This is a backend "
+                        "error, not an empty result — the peer may still have "
+                        "relevant context. Slow dialectic calls at higher "
+                        "reasoning levels can exceed the configured timeout; "
+                        "consider a lower reasoning_level or raising the "
+                        "'timeout' value in honcho.json."
+                    )
                 # Update cadence tracker so auto-injection respects the gap after an explicit call
                 self._last_dialectic_turn = self._turn_count
                 return json.dumps({"result": result or "No result from Honcho."})

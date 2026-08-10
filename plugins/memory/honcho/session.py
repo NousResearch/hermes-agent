@@ -844,6 +844,7 @@ class HonchoSessionManager:
         reasoning_level: str | None = None,
         peer: str = "user",
         apply_injection_cap: bool = True,
+        raise_errors: bool = False,
     ) -> str:
         """
         Query Honcho's dialectic endpoint about a peer.
@@ -862,6 +863,11 @@ class HonchoSessionManager:
             apply_injection_cap: Clip automatic injections to
                 ``dialecticMaxChars``. Explicit ``honcho_reasoning`` calls pass
                 False because Honcho already bounds their output.
+            raise_errors: Re-raise backend failures instead of returning "".
+                Explicit tool calls pass True so a timeout or server error
+                surfaces as an error, not as "no result" (#36098 issue 4:
+                collapsing failures to "" made auth errors, timeouts, and
+                genuinely-empty answers indistinguishable).
 
         Returns:
             Honcho's synthesized answer, or empty string on failure.
@@ -917,6 +923,8 @@ class HonchoSessionManager:
             raise
         except Exception as e:
             logger.warning("Honcho dialectic query failed: %s", e)
+            if raise_errors:
+                raise
             return ""
 
     def prefetch_context(self, session_key: str, user_message: str | None = None) -> None:

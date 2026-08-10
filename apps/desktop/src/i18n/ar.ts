@@ -1370,6 +1370,13 @@ export const ar = defineLocale({
   },
   cron: {
     close: 'إغلاق',
+    modelImpact: {
+      title: 'تحتاج المهام المجدولة إلى المراجعة',
+      message: count => `سيتم تخطي ${count} من المهام المجدولة حتى تراجع إعدادات النموذج الخاصة بها.`,
+      detailMore: (names, remaining) => `${names} و${remaining} أخرى`,
+      review: 'مراجعة المهام المجدولة',
+      saveFailed: 'لم يحفظ Hermes تغيير النموذج هذا.'
+    },
     search: 'بحث',
     loading: 'جار التحميل...',
     states: {

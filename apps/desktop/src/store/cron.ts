@@ -17,3 +17,8 @@ export const updateCronJobs = (fn: (jobs: CronJob[]) => CronJob[]) => $cronJobs.
 // after consumption so re-opening cron normally doesn't re-focus a stale job.
 export const $cronFocusJobId = atom<null | string>(null)
 export const setCronFocusJobId = (id: null | string) => $cronFocusJobId.set(id)
+
+// Shell-owned one-shot intent for stores without router context. Do not set a
+// focus id here: the cron overlay's first fetch may not have loaded that row.
+export const $cronReviewRequest = atom(0)
+export const requestCronReview = () => $cronReviewRequest.set($cronReviewRequest.get() + 1)

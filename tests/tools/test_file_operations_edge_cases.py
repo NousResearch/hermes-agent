@@ -205,7 +205,7 @@ class TestPaginationBounds:
 
         def fake_exec(command, *args, **kwargs):
             commands.append(command)
-            if command.startswith("wc -c"):
+            if command.startswith("if [ -f ") or command.startswith("wc -c"):
                 return MagicMock(exit_code=0, stdout="12")
             if command.startswith("head -c"):
                 return MagicMock(exit_code=0, stdout="line1\nline2\n")

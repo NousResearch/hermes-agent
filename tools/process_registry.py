@@ -1847,7 +1847,7 @@ class ProcessRegistry:
             result["note"] = "Process recovered after restart -- output history unavailable"
         return result
 
-    def read_log(self, session_id: str, offset: int = 0, limit: int = 200) -> dict:
+    def read_log(self, session_id: str, offset: int | None = None, limit: int = 200) -> dict:
         """Read the full output log with optional pagination by lines."""
         from tools.ansi_strip import strip_ansi
 
@@ -1861,11 +1861,16 @@ class ProcessRegistry:
         lines = full_output.splitlines()
         total_lines = len(lines)
 
-        # Default: last N lines
-        if offset == 0 and limit > 0:
+        # Default (offset=None): last N lines. An explicit offset=0 means
+        # "start from the first line" — previously it was conflated with
+        # the default and silently returned the TAIL instead of the head
+        # (same falsy-coercion class as the wait() timeout guard; salvaged
+        # from PR #60004, credit @isheng-eqi).
+        if offset is None and limit > 0:
             selected = lines[-limit:]
             observed_completion_output = bool(selected) or total_lines == 0
         else:
+            offset = offset or 0
             selected = lines[offset:offset + limit]
             stop = slice(offset, offset + limit).indices(total_lines)[1]
             observed_completion_output = (
@@ -1906,6 +1911,17 @@ class ProcessRegistry:
         max_timeout = default_timeout
         requested_timeout = timeout
         timeout_note = None
+
+        # Reject non-positive timeouts — the schema declares minimum=1, but
+        # not every caller enforces schemas before dispatch. timeout=0 is
+        # falsy, so without this guard it silently fell through
+        # (`0 or max_timeout`) to the DEFAULT wait instead of erroring.
+        # Salvaged from PR #60004 (credit @isheng-eqi).
+        if requested_timeout is not None and requested_timeout <= 0:
+            return {
+                "status": "error",
+                "error": f"timeout must be positive (got {requested_timeout})",
+            }
 
         if requested_timeout and requested_timeout > max_timeout:
             effective_timeout = max_timeout
@@ -2927,7 +2943,7 @@ def _handle_process(args, **kw):
             return json.dumps(_redact_process_result(process_registry.poll(session_id)), ensure_ascii=False)
         elif action == "log":
             return json.dumps(_redact_process_result(process_registry.read_log(
-                session_id, offset=args.get("offset", 0), limit=args.get("limit", 200))), ensure_ascii=False)
+                session_id, offset=args.get("offset"), limit=args.get("limit", 200))), ensure_ascii=False)
         elif action == "wait":
             return json.dumps(_redact_process_result(process_registry.wait(session_id, timeout=args.get("timeout"))), ensure_ascii=False)
         elif action == "kill":

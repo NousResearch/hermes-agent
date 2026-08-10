@@ -245,6 +245,7 @@ const plTranslatedOverrides = {
       'view.toggleSidebar': 'Przełącz widoczność paska bocznego sesji',
       'view.toggleRightSidebar': 'Przełącz widoczność przeglądarki plików',
       'view.toggleReview': 'Przełącz widoczność panelu zmian',
+      'hud.snapToPointer': 'Przenieś HUD do wskaźnika (globalnie, gdy HUD jest otwarty)',
       'view.showFiles': 'Pokaż przeglądarkę plików',
       'view.showTerminal': 'Przełącz widoczność terminala',
       'view.newTerminal': 'Nowy terminal',

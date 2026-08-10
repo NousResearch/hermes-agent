@@ -29,7 +29,7 @@ def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final res
         calls.append(("save", jid))
         return f"/tmp/{jid}.txt"
 
-    def fake_deliver(job, content, adapters=None, loop=None):
+    def fake_deliver(job, content, adapters=None, loop=None, profile_adapters=None):
         calls.append(("deliver", job["id"]))
         return None
 
@@ -292,5 +292,140 @@ def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path
     assert scope_during_run["base_url"] == "https://openrouter.ai/api/v1"
     # And it was torn down after run_one_job returned (no leak).
     assert ss.current_secret_scope() is None
+
+
+def test_run_one_job_keeps_secret_scope_through_delivery(monkeypatch, tmp_path):
+    """Regression (BUG: delivery drops the profile secret scope): the profile
+    secret scope must STILL be installed when _deliver_result runs, so the
+    owning profile's credentials (e.g. TELEGRAM_BOT_TOKEN, read via
+    load_gateway_config -> _getenv) resolve at delivery time. Before the fix,
+    reset_secret_scope ran in the inner finally BEFORE _deliver_result, leaving
+    current_secret_scope() == None at delivery — multiplexed jobs delivered
+    with no profile scope (wrong/empty token, wrong bot/chat, lost thread).
+
+    Unlike test_run_one_job_installs_secret_scope_under_multiplex (which mocks
+    _deliver_result away and therefore cannot catch this), this test injects a
+    fake _deliver_result that asserts the scope is present at delivery time and
+    that the profile secret resolves.
+    """
+    from agent import secret_scope as ss
+
+    (tmp_path / ".env").write_text("TELEGRAM_BOT_TOKEN=profile_bot_token_123\n")
+    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
+
+    delivery_state = {}
+
+    def fake_run_job(job, *, defer_agent_teardown=None, extra_prompt=None):
+        return (True, "out", "final response", None)
+
+    def fake_deliver(job, content, adapters=None, loop=None, profile_adapters=None):
+        # This is the delivery-time assertion: the profile secret scope must
+        # still be installed and the profile secret must resolve.
+        delivery_state["scope_at_delivery"] = ss.current_secret_scope()
+        delivery_state["token_at_delivery"] = ss.get_secret("TELEGRAM_BOT_TOKEN")
+        return None
+
+    monkeypatch.setattr(s, "run_job", fake_run_job)
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "_deliver_result", fake_deliver)
+    monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
+
+    ss.set_multiplex_active(True)
+    try:
+        ok = s.run_one_job({"id": "j8", "name": "t"})
+    finally:
+        ss.set_multiplex_active(False)
+
+    assert ok is True
+    # The scope was still installed at delivery time (the bug dropped it).
+    assert delivery_state["scope_at_delivery"] is not None
+    # And the profile's secret resolved at delivery — the symptom that was broken.
+    assert delivery_state["token_at_delivery"] == "profile_bot_token_123"
+    # Torn down after run_one_job returned (no leak).
+    assert ss.current_secret_scope() is None
+
+
+def test_run_one_job_delivery_uses_profile_adapters(monkeypatch, tmp_path):
+    """BUG 1 PART 2: ``_deliver_adapters_for_job`` selects the owning profile's
+    live adapter map (Gateway._profile_adapters[profile]) when multiplex is
+    active and the job belongs to a secondary profile — NOT the shared
+    default-profile ``adapters`` dict."""
+    from agent import secret_scope as ss
+
+    (tmp_path / ".env").write_text("TELEGRAM_BOT_TOKEN=profile_bot_token_123\n")
+    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "home-ops"
+    )
+
+    profile_adapters = {"home-ops": {"telegram": "home-ops-telegram-adapter"}}
+    shared = {"telegram": "default-telegram-adapter"}
+
+    selected = s._deliver_adapters_for_job(
+        {"id": "j9"}, adapters=shared, profile_adapters=profile_adapters
+    )
+    assert selected == {"telegram": "home-ops-telegram-adapter"}
+
+
+def test_run_one_job_delivery_falls_back_to_shared_adapters_for_default(monkeypatch, tmp_path):
+    """BUG 1 PART 2: for the default profile / non-multiplex path, ``_deliver_adapters_for_job``
+    keeps the shared ``adapters`` dict (existing behavior unchanged)."""
+    from agent import secret_scope as ss
+
+    (tmp_path / ".env").write_text("TELEGRAM_BOT_TOKEN=x\n")
+    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.get_active_profile_name", lambda: "default"
+    )
+
+    shared = {"telegram": "default-telegram-adapter"}
+    selected = s._deliver_adapters_for_job(
+        {"id": "j10"}, adapters=shared,
+        profile_adapters={"home-ops": {"telegram": "home-ops-adapter"}},
+    )
+    assert selected == {"telegram": "default-telegram-adapter"}
+
+
+def test_run_one_job_threads_profile_adapters_to_delivery(monkeypatch, tmp_path):
+    """BUG 1 PART 2 wiring: run_one_job forwards the gateway's per-profile
+    adapter map to _deliver_result so the real delivery path can select the
+    job profile's adapter. The profile map must reach _deliver_result."""
+    from agent import secret_scope as ss
+
+    (tmp_path / ".env").write_text("TELEGRAM_BOT_TOKEN=x\n")
+    monkeypatch.setattr(s, "_get_hermes_home", lambda: tmp_path)
+
+    received = {}
+
+    def fake_run_job(job, *, defer_agent_teardown=None, extra_prompt=None):
+        return (True, "out", "final response", None)
+
+    def fake_deliver(job, content, adapters=None, loop=None, profile_adapters=None):
+        received["profile_adapters"] = profile_adapters
+        received["shared_adapters"] = adapters
+        return None
+
+    monkeypatch.setattr(s, "run_job", fake_run_job)
+    monkeypatch.setattr(s, "save_job_output", lambda jid, out: f"/tmp/{jid}.txt")
+    monkeypatch.setattr(s, "_deliver_result", fake_deliver)
+    monkeypatch.setattr(s, "mark_job_run", lambda *a, **k: None)
+
+    profile_adapters = {"home-ops": {"telegram": "home-ops-telegram-adapter"}}
+
+    ss.set_multiplex_active(True)
+    try:
+        ok = s.run_one_job(
+            {"id": "j11", "name": "t"},
+            adapters={"telegram": "default-telegram-adapter"},
+            profile_adapters=profile_adapters,
+        )
+    finally:
+        ss.set_multiplex_active(False)
+
+    assert ok is True
+    # The per-profile map reached _deliver_result (the real path uses it to
+    # select the job profile's adapter), and the shared dict is still passed.
+    assert received["profile_adapters"] == profile_adapters
+    assert received["shared_adapters"] == {"telegram": "default-telegram-adapter"}
 
 

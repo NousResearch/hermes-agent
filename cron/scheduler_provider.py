@@ -154,6 +154,7 @@ class CronScheduler(ABC):
         adapters: Any = None,
         loop: Any = None,
         force: bool = False,
+        profile_adapters: Any = None,
     ) -> bool:
         """Run a single job NOW via the shared orchestrator. Called by the
         inbound fire webhook when an external scheduler signals a job is due.
@@ -170,7 +171,10 @@ class CronScheduler(ABC):
         claimed_job = self.claim_fire(job_id, force=force)
         if claimed_job is None:
             return False
-        return self.fire_claimed(claimed_job, adapters=adapters, loop=loop)
+        return self.fire_claimed(
+            claimed_job, adapters=adapters, loop=loop,
+            profile_adapters=profile_adapters,
+        )
 
     def claim_fire(self, job_id: str, *, force: bool = False) -> dict | None:
         """Durably claim one fire and create its audit attempt before dispatch.
@@ -212,6 +216,7 @@ class CronScheduler(ABC):
         adapters: Any = None,
         loop: Any = None,
         cancel_event: Any = None,
+        profile_adapters: Any = None,
     ) -> bool:
         """Run an exact snapshot returned by ``claim_fire``.
 
@@ -227,6 +232,7 @@ class CronScheduler(ABC):
             adapters=adapters,
             loop=loop,
             cancel_event=cancel_event,
+            profile_adapters=profile_adapters,
         )
         return True
 
@@ -511,6 +517,7 @@ class InProcessCronScheduler(CronScheduler):
         interval=60,
         can_dispatch=None,
         profile_homes=None,
+        profile_adapters=None,
     ):
         import logging
         from cron.scheduler import tick as cron_tick
@@ -538,6 +545,7 @@ class InProcessCronScheduler(CronScheduler):
                 loop=loop,
                 interval=interval,
                 can_dispatch=can_dispatch,
+                profile_adapters=profile_adapters,
             )
             return
 
@@ -569,6 +577,7 @@ class InProcessCronScheduler(CronScheduler):
                         loop=loop,
                         sync=False,
                         can_dispatch=can_dispatch,
+                        profile_adapters=profile_adapters,
                     )
                 ok = True
             except BaseException as e:
@@ -609,6 +618,7 @@ class InProcessCronScheduler(CronScheduler):
         loop=None,
         interval=60,
         can_dispatch=None,
+        profile_adapters=None,
     ):
         """Tick every served profile's cron store when multiplex_profiles is on.
 
@@ -671,6 +681,7 @@ class InProcessCronScheduler(CronScheduler):
                                     loop=loop,
                                     sync=False,
                                     can_dispatch=can_dispatch,
+                                    profile_adapters=profile_adapters,
                                 )
                         finally:
                             reset_hermes_home_override(home_token)

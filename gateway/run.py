@@ -30657,6 +30657,15 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     )
     cron_start_kwargs: Dict[str, Any] = {"adapters": runner.adapters, "loop": asyncio.get_running_loop()}
 
+    # Multiplex profiles: expose the gateway's per-profile live-adapter map so
+    # cron delivery for a secondary-profile job routes through THAT profile's
+    # bot/chat (not the default profile's shared ``runner.adapters`` dict).
+    # Without this, a secondary-profile cron delivery picked the wrong adapter
+    # (or none) even when the owning profile's token resolved correctly.
+    _profile_adapters = getattr(runner, "_profile_adapters", None)
+    if _profile_adapters:
+        cron_start_kwargs["profile_adapters"] = _profile_adapters
+
     # Multiplex profiles: tell the built-in ticker which profile homes to
     # tick so secondary-profile cron jobs actually fire (#69377).
     # Without this, only the process-global HERMES_HOME (default profile)

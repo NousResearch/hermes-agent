@@ -249,18 +249,14 @@ def test_format_footer_unknown_field_silently_ignored():
 
 def test_resolve_defaults_off_empty_config():
     cfg = resolve_footer_config({}, "telegram")
-    assert cfg == {
-        "enabled": False,
-        "fields": ["model", "reasoning", "context_pct", "cwd"],
-        "underline": False,
-    }
+    assert cfg == {"enabled": False, "fields": ["model", "context_pct", "cwd"], "underline": False}
 
 
 def test_resolve_global_enable():
     user = {"display": {"runtime_footer": {"enabled": True}}}
     cfg = resolve_footer_config(user, "telegram")
     assert cfg["enabled"] is True
-    assert cfg["fields"] == ["model", "reasoning", "context_pct", "cwd"]
+    assert cfg["fields"] == ["model", "context_pct", "cwd"]
 
 
 
@@ -296,7 +292,7 @@ def test_resolve_platform_can_add_fields_only():
     }
     tg = resolve_footer_config(user, "telegram")
     assert tg["enabled"] is True
-    assert tg["fields"] == ["model", "reasoning", "context_pct", "cwd"]
+    assert tg["fields"] == ["model", "context_pct", "cwd"]
     dc = resolve_footer_config(user, "discord")
     assert dc["enabled"] is True
     assert dc["fields"] == ["context_pct"]
@@ -572,28 +568,29 @@ def test_build_footer_line_threads_turn_seconds(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Default behavior: reasoning is visible when available; latency stays opt-in.
+# Byte-stability: `latency` is opt-in, so the DEFAULT footer is unchanged.
 #
 # Upstream doctrine: a system prompt / rendered surface must be byte-stable for
-# the life of a conversation. These tests pin the intended default field set
-# and prove that unavailable optional data is still skipped without artifacts.
+# the life of a conversation.  Adding a field to _DEFAULT_FIELDS would silently
+# change the footer text of every user who already enabled it.  These tests pin
+# the default set and the exact default-config output strings.
 # ---------------------------------------------------------------------------
 
-_EXPECTED_DEFAULT_FIELDS = ["model", "reasoning", "context_pct", "cwd"]
+_LEGACY_DEFAULT_FIELDS = ["model", "context_pct", "cwd"]
 
 
 def test_latency_not_in_default_fields():
     from gateway.runtime_footer import _DEFAULT_FIELDS
 
     assert "latency" not in _DEFAULT_FIELDS
-    assert list(_DEFAULT_FIELDS) == _EXPECTED_DEFAULT_FIELDS
+    assert list(_DEFAULT_FIELDS) == _LEGACY_DEFAULT_FIELDS
 
 
 def test_resolve_footer_config_default_fields_exclude_latency():
-    assert resolve_footer_config({}, "telegram")["fields"] == _EXPECTED_DEFAULT_FIELDS
+    assert resolve_footer_config({}, "telegram")["fields"] == _LEGACY_DEFAULT_FIELDS
     assert resolve_footer_config(
         {"display": {"runtime_footer": {"enabled": True}}}, "discord"
-    )["fields"] == _EXPECTED_DEFAULT_FIELDS
+    )["fields"] == _LEGACY_DEFAULT_FIELDS
 
 
 @pytest.mark.parametrize(

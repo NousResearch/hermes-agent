@@ -1700,7 +1700,7 @@ display:
   spinner_token_flow: true # CLI only: append live cumulative turn tokens to the spinner timer
   runtime_footer:         # Gateway: append a runtime-context footer to final replies
     enabled: false
-    fields: ["model", "reasoning", "context_pct", "cwd"]  # also: provider, account, context, quota; optional underline: true
+    fields: ["model", "context_pct", "cwd"]  # also: provider, account, context, quota, reasoning; optional underline: true
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
@@ -1828,7 +1828,7 @@ Supported `fields` (order is preserved; omit any field to hide it):
 
 Notes:
 
-- Default fields are `["model", "reasoning", "context_pct", "cwd"]` when `fields` is unset. `reasoning` is skipped silently when the active effort is unavailable.
+- Default fields remain `["model", "context_pct", "cwd"]` when `fields` is unset.
 - `latency` is opt-in; fields whose data is unavailable are skipped silently.
 - `underline: true` prepends a short separator line before the footer.
 - `quota` only renders windows a provider actually returns; providers without usage APIs stay silent for that field.

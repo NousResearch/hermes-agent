@@ -68,8 +68,18 @@ def _read_browser_cfg() -> dict:
 
 
 def get_browser_backend() -> str:
-    """Return the configured browser backend key ("" = legacy stack)."""
-    return str(_read_browser_cfg().get("backend") or "").strip().lower()
+    """Return the configured browser backend key ("" = unset → default).
+
+    YAML 1.1 parses an unquoted ``off`` as boolean False — a hand-edited
+    ``backend: off`` must mean BACKEND_DISABLED, not "unset". (True has no
+    sensible backend meaning; normalize it to unset.)
+    """
+    raw = _read_browser_cfg().get("backend")
+    if raw is False:
+        return BACKEND_DISABLED
+    if raw is True:
+        return ""
+    return str(raw or "").strip().lower()
 
 
 def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
@@ -98,6 +108,11 @@ def is_legacy_browser_use_cloud_config(browser_cfg: dict) -> bool:
 def is_browser_use_cli_mode() -> bool:
     """True when the Browser Use CLI replaces the built-in browser stack.
 
+    Browser Use mode is the DEFAULT: an unset ``browser.backend`` ("") enables
+    it whenever the browser-use CLI is runnable (installed binary or uvx).
+    Set ``browser.backend: off`` (or ``/browser use off``) for the built-in
+    browser_* tools.
+
     Camofox always falls back to the built-in tools regardless of
     ``browser.backend`` — it is Firefox-based with a custom HTTP API and no
     CDP surface, so the CDP-only browser-use harness cannot drive it.
@@ -112,7 +127,11 @@ def is_browser_use_cli_mode() -> bool:
     backend = get_browser_backend()
     if backend:
         return backend == _BACKEND_KEY
-    return is_legacy_browser_use_cloud_config(_read_browser_cfg())
+    if is_legacy_browser_use_cloud_config(_read_browser_cfg()):
+        return True
+    # Default (backend unset): Browser Use mode when the CLI can run at all;
+    # otherwise keep the built-in tools so browsing never silently breaks.
+    return _find_cli() is not None
 
 
 def _find_cli() -> Optional[List[str]]:

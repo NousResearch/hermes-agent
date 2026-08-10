@@ -404,10 +404,15 @@ DEFAULT_CONFIG = {
 
     "browser": {
         # Browser tool implementation.
-        # ""            — built-in browser tools (browser_navigate, browser_click, …)
-        # "browser-use" — Browser Use mode: one browser_exec tool driving the
-        #                 Browser Use CLI 3.0 (local Chrome over CDP or Browser
-        #                 Use cloud browsers)
+        # ""            — DEFAULT: Browser Use mode when the browser-use CLI
+        #                 (or uvx) is available; otherwise the built-in
+        #                 browser tools. Camofox setups always keep the
+        #                 built-in tools (no CDP surface).
+        # "browser-use" — force Browser Use mode: one browser_exec tool
+        #                 driving the Browser Use CLI 3.0 over any CDP
+        #                 backend (local Chrome, cloud browsers)
+        # "off"         — force the built-in browser tools
+        #                 (browser_navigate, browser_click, …)
         "backend": "",
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)

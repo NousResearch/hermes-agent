@@ -38,8 +38,33 @@ def _fake_cli(tmp_path, body):
 
 
 class TestModeDetection:
-    def test_off_by_default(self, monkeypatch):
+    def test_default_on_when_cli_available(self, monkeypatch):
+        """Backend unset: Browser Use mode is the default when the CLI runs."""
         monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+        assert bu_cli.is_browser_use_cli_mode() is True
+
+    def test_default_off_when_cli_unavailable(self, monkeypatch):
+        """Backend unset + no runnable CLI: keep the built-in browser tools."""
+        monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
+        assert bu_cli.is_browser_use_cli_mode() is False
+
+    def test_explicit_off_wins_over_default(self, monkeypatch):
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: {"browser": {"backend": bu_cli.BACKEND_DISABLED}},
+        )
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+        assert bu_cli.is_browser_use_cli_mode() is False
+
+    def test_yaml_bool_off_means_disabled(self, monkeypatch):
+        """YAML 1.1 parses unquoted `off` as False — must mean disabled."""
+        monkeypatch.setattr(
+            "hermes_cli.config.read_raw_config",
+            lambda: {"browser": {"backend": False}},
+        )
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
         assert bu_cli.is_browser_use_cli_mode() is False
 
     def test_config_opt_in(self, monkeypatch):
@@ -56,11 +81,12 @@ class TestModeDetection:
         )
         assert bu_cli.is_browser_use_cli_mode() is False
 
-    def test_config_read_failure_fails_safe(self, monkeypatch):
+    def test_config_read_failure_uses_default(self, monkeypatch):
         def boom():
             raise RuntimeError("config unreadable")
 
         monkeypatch.setattr("hermes_cli.config.read_raw_config", boom)
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
         assert bu_cli.is_browser_use_cli_mode() is False
 
 
@@ -119,23 +145,26 @@ class TestToolSurfaceSwap:
 
 
 class TestFindCli:
+    """The tests/tools conftest pins _find_cli to None (host isolation);
+    exercise the real function via the preserved _find_cli_unpatched."""
+
     def test_prefers_installed_binary(self, monkeypatch):
         monkeypatch.setattr(
             bu_cli.shutil, "which",
             lambda name: "/usr/local/bin/browser-use" if name == "browser-use" else "/usr/local/bin/uvx",
         )
-        assert bu_cli._find_cli() == ["/usr/local/bin/browser-use"]
+        assert bu_cli._find_cli_unpatched() == ["/usr/local/bin/browser-use"]
 
     def test_falls_back_to_uvx(self, monkeypatch):
         monkeypatch.setattr(
             bu_cli.shutil, "which",
             lambda name: "/usr/local/bin/uvx" if name == "uvx" else None,
         )
-        assert bu_cli._find_cli() == ["/usr/local/bin/uvx", "browser-use"]
+        assert bu_cli._find_cli_unpatched() == ["/usr/local/bin/uvx", "browser-use"]
 
     def test_none_when_neither_available(self, monkeypatch):
         monkeypatch.setattr(bu_cli.shutil, "which", lambda name: None)
-        assert bu_cli._find_cli() is None
+        assert bu_cli._find_cli_unpatched() is None
 
 
 class TestLegacyCloudMigration:
@@ -156,10 +185,12 @@ class TestLegacyCloudMigration:
             lambda: {"browser": {"cloud_provider": "browser-use", "use_gateway": True}},
         )
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
         assert bu_cli.is_browser_use_cli_mode() is False
 
     def test_no_api_key_stays_on_legacy_path(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: self._LEGACY)
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
         assert bu_cli.is_browser_use_cli_mode() is False
 
     def test_camofox_user_does_not_migrate(self, monkeypatch):
@@ -201,6 +232,7 @@ class TestLegacyCloudMigration:
             lambda: {"browser": {"cloud_provider": "browserbase"}},
         )
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
         assert bu_cli.is_browser_use_cli_mode() is False
 
     def test_explicit_local_does_not_migrate(self, monkeypatch):
@@ -209,6 +241,7 @@ class TestLegacyCloudMigration:
             lambda: {"browser": {"cloud_provider": "local"}},
         )
         monkeypatch.setenv("BROWSER_USE_API_KEY", "bu-key")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
         assert bu_cli.is_browser_use_cli_mode() is False
 
     def test_auto_detect_with_key_migrates(self, monkeypatch):
@@ -222,7 +255,9 @@ class TestLegacyCloudMigration:
         assert bu_cli.is_browser_use_cli_mode() is True
 
     def test_auto_detect_without_key_does_not_migrate(self, monkeypatch):
+        """No key, no CLI: nothing to migrate and no default flip."""
         monkeypatch.setattr("hermes_cli.config.read_raw_config", lambda: {})
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
         assert bu_cli.is_browser_use_cli_mode() is False
 
     def test_migrated_config_gets_bu_autospawn(self, tmp_path, monkeypatch):
@@ -388,7 +423,7 @@ class TestProviderPickerIntegration:
         assert config["browser"]["backend"] == "browser-use"
         assert config["browser"]["cloud_provider"] == "local"
 
-    def test_provider_row_stays_active_alongside_cli_mode(self):
+    def test_provider_row_stays_active_alongside_cli_mode(self, monkeypatch):
         from hermes_cli.tools_config import _is_provider_active
 
         cli_row = next(r for r in self._rows() if r.get("browser_backend"))
@@ -401,9 +436,20 @@ class TestProviderPickerIntegration:
         # driver attaches to.
         assert _is_provider_active(local_row, cli_config) is True
 
-        local_config = {"browser": {"cloud_provider": "local"}}
-        assert _is_provider_active(cli_row, local_config) is False
-        assert _is_provider_active(local_row, local_config) is True
+        # Explicit off: the CLI row must not highlight even with the CLI
+        # installed (default-on only applies while backend is unset).
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: ["/usr/bin/browser-use"])
+        off_config = {"browser": {"cloud_provider": "local", "backend": "off"}}
+        assert _is_provider_active(cli_row, off_config) is False
+        assert _is_provider_active(local_row, off_config) is True
+
+        # Backend unset: default-on — the CLI row highlights when the CLI
+        # is runnable, and not when it isn't.
+        default_config = {"browser": {"cloud_provider": "local"}}
+        assert _is_provider_active(cli_row, default_config) is True
+        assert _is_provider_active(local_row, default_config) is True
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: None)
+        assert _is_provider_active(cli_row, default_config) is False
 
 
 class TestBrowserUseSlashCommand:

@@ -3666,17 +3666,35 @@ def _is_provider_active(
         current = cfg_get(config, "browser", "cloud_provider")
         return provider["browser_provider"] == current
     if provider.get("browser_backend"):
-        if cfg_get(config, "browser", "backend") == provider["browser_backend"]:
+        backend = cfg_get(config, "browser", "backend")
+        if backend is False:
+            backend = "off"  # YAML 1.1: unquoted `off` parses as boolean False
+        if backend == provider["browser_backend"]:
             return True
-        # Legacy direct-API Browser Use cloud auto-routes to CLI
+        if backend:
+            return False  # explicit other choice ("off", …) wins
+        if provider["browser_backend"] != "browser-use":
+            return False
+        # Backend unset: Browser Use mode is the default — the row is active
+        # whenever the effective mode resolves on (legacy direct-API cloud
+        # config, or CLI runnable and no Camofox).
+        browser_cfg = config.get("browser") if isinstance(config, dict) else None
         try:
-            from tools.browser_use_cli import is_legacy_browser_use_cloud_config
-
-            browser_cfg = config.get("browser") if isinstance(config, dict) else None
-            return (
-                provider["browser_backend"] == "browser-use"
-                and is_legacy_browser_use_cloud_config(browser_cfg or {})
+            from tools.browser_use_cli import (
+                _find_cli,
+                is_legacy_browser_use_cloud_config,
             )
+
+            if is_legacy_browser_use_cloud_config(browser_cfg or {}):
+                return True
+            try:
+                from tools.browser_camofox import is_camofox_mode
+
+                if is_camofox_mode():
+                    return False
+            except Exception:
+                pass
+            return _find_cli() is not None
         except Exception:
             return False
     if provider.get("web_backend"):

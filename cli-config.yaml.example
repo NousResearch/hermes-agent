@@ -1327,6 +1327,10 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  #                                           # Cost tip: keep the parent on a frontier model and pin
+  #                                           # delegation.model to an inexpensive one — children carry the
+  #                                           # vast majority of tokens, so this is where spend is cut while
+  #                                           # planning quality stays with the frontier parent.
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

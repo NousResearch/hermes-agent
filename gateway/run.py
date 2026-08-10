@@ -14841,7 +14841,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if (
             getattr(getattr(self, "config", None), "multiplex_profiles", False)
             and not getattr(source, "profile", None)
-            and not getattr(source, "profile_route_rejected", False)
+            and getattr(source, "profile_route_rejected", False) is not True
         ):
             from gateway.profile_routing import ProfileRouteRejected
 
@@ -14850,7 +14850,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except ProfileRouteRejected:
                 source.profile_route_rejected = True
 
-        if getattr(source, "profile_route_rejected", False):
+        # SessionSource owns a strict boolean marker. Require the literal value
+        # so duck-typed test/internal sources with dynamic attributes are not
+        # mistaken for an explicit matched-route rejection.
+        if getattr(source, "profile_route_rejected", False) is True:
             logger.warning(
                 "Dropping inbound message because its explicit profile route "
                 "targets an unserved profile"

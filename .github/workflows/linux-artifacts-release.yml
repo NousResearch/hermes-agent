@@ -1,0 +1,187 @@
+name: Build & Publish Linux Artifacts
+
+# Triggered on every new GitHub Release. Builds all Linux distribution formats:
+# - Flatpak (Flathub-ready)
+# - Snap (Snap Store-ready)
+# - AppImage (portable)
+# - deb/rpm (native packages)
+# All uploaded as Release assets.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag to build (e.g. v0.17.0). Defaults to latest release."
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: linux-artifacts-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-linux:
+    name: Build All Linux Artifacts
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      # ── System deps ──────────────────────────────────────────────────────
+      - name: Install Flatpak tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq flatpak flatpak-builder
+
+      - name: Add Flathub remote
+        run: flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      - name: Install Flatpak runtimes
+        run: |
+          flatpak install --user --noninteractive \
+            org.freedesktop.Platform//25.08 \
+            org.freedesktop.Sdk//25.08 \
+            org.freedesktop.Sdk.Extension.node22//25.08 \
+            org.electronjs.Electron2.BaseApp//25.08
+
+      - name: Install Snapcraft
+        uses: snapcore/action-install@b2ff61d1c7f3a9a3a5e3f0e8d8b3e5c7d1f2e4b6 # v1
+        with:
+          channel: latest/stable
+
+      # ── Node / npm for Electron build ──────────────────────────────────
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: Upgrade npm
+        run: npm i -g npm@12
+
+      - name: Install npm dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      # ── Build the Electron app (linux-unpacked) ────────────────────────
+      - name: Build Electron app
+        working-directory: apps/desktop
+        run: npm run build
+
+      # ── Build all Linux artifacts ──────────────────────────────────────
+      - name: Build Flatpak
+        working-directory: apps/desktop
+        run: |
+          node scripts/stage-flatpak.mjs
+          flatpak-builder --force-clean \
+            --repo flatpak/repo \
+            flatpak/build-dir \
+            flatpak/com.nousresearch.Hermes.yml
+          flatpak build-bundle \
+            flatpak/repo \
+            release/com.nousresearch.Hermes.flatpak \
+            com.nousresearch.Hermes
+
+      - name: Build Snap
+        working-directory: apps/desktop
+        run: |
+          node scripts/stage-snap.mjs
+          snapcraft --destructive-mode
+
+      - name: Build AppImage + deb + rpm
+        working-directory: apps/desktop
+        run: npm run dist:linux
+
+      # ── Verify artifacts ───────────────────────────────────────────────
+      - name: Verify Flatpak
+        run: |
+          flatpak run --command=sh com.nousresearch.Hermes -c '
+            test -x /app/bin/hermes-desktop && echo "OK: Flatpak" || exit 1
+          ' || exit 1
+
+      - name: Verify Snap
+        run: |
+          snap info hermes-desktop_*.snap || true
+          snap run --shell hermes-desktop_*.snap -c '
+            test -x /snap/hermes-desktop/current/bin/hermes-desktop && echo "OK: Snap" || exit 1
+          ' || exit 1
+
+      - name: Verify AppImage
+        run: |
+          ls -la apps/desktop/release/*.AppImage
+          chmod +x apps/desktop/release/*.AppImage
+          apps/desktop/release/*.AppImage --help | head -5 || true
+
+      # ── Upload all artifacts to Release ────────────────────────────────
+      - name: Upload Flatpak to Release
+        uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
+        if: github.event_name == 'release'
+        with:
+          files: apps/desktop/release/com.nousresearch.Hermes.flatpak
+          name: Hermes Desktop Flatpak (Linux)
+          body: |
+            Official Hermes Desktop Flatpak for Linux.
+            Install: `flatpak install --user com.nousresearch.Hermes.flatpak`
+
+      - name: Upload Snap to Release
+        uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
+        if: github.event_name == 'release'
+        with:
+          files: apps/desktop/hermes-desktop_*.snap
+          name: Hermes Desktop Snap (Linux)
+          body: |
+            Official Hermes Desktop Snap for Linux.
+            Install: `snap install --dangerous hermes-desktop_*.snap`
+
+      - name: Upload AppImage to Release
+        uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
+        if: github.event_name == 'release'
+        with:
+          files: apps/desktop/release/*.AppImage
+          name: Hermes Desktop AppImage (Linux)
+          body: |
+            Official Hermes Desktop AppImage for Linux.
+            Install: `chmod +x Hermes-*.AppImage && ./Hermes-*.AppImage`
+
+      - name: Upload deb to Release
+        uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
+        if: github.event_name == 'release'
+        with:
+          files: apps/desktop/release/*.deb
+          name: Hermes Desktop deb (Debian/Ubuntu)
+          body: |
+            Official Hermes Desktop .deb package.
+            Install: `sudo apt install ./Hermes_*.deb`
+
+      - name: Upload rpm to Release
+        uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
+        if: github.event_name == 'release'
+        with:
+          files: apps/desktop/release/*.rpm
+          name: Hermes Desktop rpm (Fedora/RHEL)
+          body: |
+            Official Hermes Desktop .rpm package.
+            Install: `sudo dnf install ./Hermes-*.rpm`
+
+      # ── Also upload as workflow artifacts ──────────────────────────────
+      - name: Upload all artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: linux-artifacts-${{ github.ref_name }}
+          path: |
+            apps/desktop/release/com.nousresearch.Hermes.flatpak
+            apps/desktop/hermes-desktop_*.snap
+            apps/desktop/release/*.AppImage
+            apps/desktop/release/*.deb
+            apps/desktop/release/*.rpm
+          retention-days: 30
+          overwrite: true

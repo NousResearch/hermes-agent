@@ -7060,7 +7060,28 @@ def _register_linux_desktop_entry() -> None:
 
 
 def cmd_gui(args: argparse.Namespace):
-    """Build and launch the native Electron desktop GUI."""
+    """Launch Hermes Desktop.
+
+    Linux production installs use the official Flathub Flatpak.  The native
+    Hermes CLI, gateway, and ``~/.hermes`` state remain outside that package.
+    ``--source`` retains the local Electron developer workflow.
+    """
+    if sys.platform.startswith("linux") and not getattr(args, "source", False):
+        from hermes_cli.flatpak_desktop import ensure_installed, launch_with_native_backend
+
+        if getattr(args, "build_only", False):
+            sys.exit(0 if ensure_installed() else 1)
+
+        # The Flatpak is Electron-only. Start the normal native CLI backend and
+        # pass its loopback URL/token to the sandboxed client; it never executes
+        # or updates a second Hermes runtime inside /app.
+        sys.exit(
+            launch_with_native_backend(
+                [sys.executable, "-m", "hermes_cli.main"],
+                cwd=getattr(args, "cwd", None) or os.getcwd(),
+            )
+        )
+
     desktop_dir = PROJECT_ROOT / "apps" / "desktop"
     if not (desktop_dir / "package.json").exists():
         print(f"Desktop GUI source not found at: {desktop_dir}")

@@ -95,6 +95,16 @@ apps/shared/src/**/*.d.ts
 apps/desktop/release/
 *.tsbuildinfo
 
+# Flatpak build artifacts (large Electron binaries, OSTree repo)
+apps/desktop/flatpak/stage/
+apps/desktop/flatpak/repo/
+apps/desktop/flatpak/build-dir/
+
+# Snapcraft build artifacts
+apps/desktop/snap/prime/
+apps/desktop/snap/stage/
+apps/desktop/snap/parts/
+
 # Web UI assets — synced from @nous-research/ui at build time via
 # `npm run sync-assets` (see web/package.json).
 web/public/fonts/

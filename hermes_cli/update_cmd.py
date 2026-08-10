@@ -4502,7 +4502,12 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Electron build by ``hermes update``.
         desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
         has_desktop_app = _m()._desktop_packaged_executable(desktop_dir) is not None or _m()._desktop_dist_exists(desktop_dir)
-        if (desktop_dir / "package.json").exists() and _m()._resolve_node_runtime_npm() and has_desktop_app:
+        if (
+            not sys.platform.startswith("linux")
+            and (desktop_dir / "package.json").exists()
+            and _m()._resolve_node_runtime_npm()
+            and has_desktop_app
+        ):
             print("→ Checking if desktop app needs rebuilding...")
             # Consult the content-hash stamp IN-PROCESS first. The spawned
             # `hermes desktop --build-only` subprocess re-imports the whole
@@ -4919,6 +4924,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print("  be in a mixed state until the Node deps are rebuilt.")
         else:
             _print_update_completion("✓ Update complete!")
+
+        # Linux Desktop is distributed separately through Flathub.  Keep the
+        # native agent update authoritative, then refresh the already-installed
+        # user Flatpak without creating one for CLI-only users.
+        if sys.platform.startswith("linux"):
+            try:
+                from hermes_cli.flatpak_desktop import update_if_installed
+
+                update_if_installed()
+            except Exception as exc:
+                logger.debug("Hermes Desktop Flatpak refresh failed: %s", exc)
 
         # Search-index optimization notice (v23). Existing installs keep their
         # working search index untouched on update; the compact v23 layout —

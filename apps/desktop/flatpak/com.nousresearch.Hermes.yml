@@ -1,0 +1,45 @@
+app-id: com.nousresearch.Hermes
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+base: org.electronjs.Electron2.BaseApp
+base-version: '25.08'
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.node22
+command: hermes-desktop
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  - --device=dri
+  - --filesystem=home
+  - --filesystem=/run/media:ro
+  - --filesystem=host-os:ro
+  - --filesystem=host:ro
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.freedesktop.portal.Desktop
+  - --talk-name=org.freedesktop.portal.FileChooser
+  - --env=PATH=/app/bin:/usr/bin:/bin:/usr/local/bin
+modules:
+  - name: hermes-desktop
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 hermes-flatpak-wrapper.sh /app/bin/hermes-desktop
+      - install -Dm644 com.nousresearch.Hermes.desktop /app/share/applications/com.nousresearch.Hermes.desktop
+      - install -Dm644 com.nousresearch.Hermes.metainfo.xml /app/share/metainfo/com.nousresearch.Hermes.metainfo.xml
+      - install -Dm644 com.nousresearch.Hermes.png /app/share/icons/hicolor/512x512/apps/com.nousresearch.Hermes.png
+      - install -d /app/share/hermes-desktop
+      - cp -a hermes-desktop/. /app/share/hermes-desktop/
+    sources:
+      - type: file
+        path: hermes-flatpak-wrapper.sh
+      - type: file
+        path: com.nousresearch.Hermes.desktop
+      - type: file
+        path: com.nousresearch.Hermes.metainfo.xml
+      - type: file
+        path: com.nousresearch.Hermes.png
+      - type: dir
+        path: stage

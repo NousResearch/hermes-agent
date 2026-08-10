@@ -61,6 +61,21 @@ _CI_REVIEW_FILES = {
 }
 _CI_REVIEW_PATHS = (".github/workflows/", ".github/actions/")
 
+# Flatpak-related paths that should trigger a Flatpak build test
+_FLATPAK_PATHS = (
+    "apps/desktop/flatpak/",
+    "apps/desktop/scripts/stage-flatpak.mjs",
+    "apps/desktop/flatpak/",
+    "hermes_cli/flatpak_desktop.py",
+)
+
+# Snapcraft-related paths that should trigger a Snapcraft build test
+_SNAPCRAFT_PATHS = (
+    "apps/desktop/snap/",
+    "apps/desktop/scripts/stage-snap.mjs",
+    "apps/desktop/snap/",
+)
+
 # Supply-chain scan: files that can execute code at install/import time.
 _SCAN_EXTS = (".py", ".pth")
 _SCAN_FILES = {"setup.cfg", "pyproject.toml"}
@@ -136,6 +151,8 @@ def classify(files: list[str]) -> dict[str, bool]:
         "installer": any(_is_installer(f) for f in files),
         "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
         "ci_review": any(_is_ci_review(f) for f in files),
+        "flatpak": any(f.startswith(_FLATPAK_PATHS) for f in files),
+        "snapcraft": any(f.startswith(_SNAPCRAFT_PATHS) for f in files),
     }
     if not files or any(f.startswith(".github/") for f in files):
         ret["python"] = True

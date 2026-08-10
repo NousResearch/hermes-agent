@@ -42,6 +42,12 @@ outputs:
   mcp_catalog:
     description: Require MCP catalog security review label.
     value: ${{ steps.classify.outputs.mcp_catalog }}
+  flatpak:
+    description: Run Flatpak build validation.
+    value: ${{ steps.classify.outputs.flatpak }}
+  snapcraft:
+    description: Run Snapcraft build validation.
+    value: ${{ steps.classify.outputs.snapcraft }}
   ci_review:
     description: Require CI-sensitive file review label.
     value: ${{ steps.classify.outputs.ci_review }}

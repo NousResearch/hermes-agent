@@ -1,0 +1,141 @@
+name: Build & Publish Flatpak
+
+# Triggered on every new GitHub Release (tag push or manual release draft).
+# Produces the official `com.nousresearch.Hermes` Flatpak bundle and publishes it
+# as a Release asset so users can `flatpak install` it directly or we can submit
+# it to Flathub.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag to build (e.g. v0.17.0). Defaults to latest release."
+        required: false
+        type: string
+
+permissions:
+  contents: write    # to upload release assets
+  packages: write    # if we later push to a container registry
+
+concurrency:
+  group: flatpak-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-flatpak:
+    name: Build Flatpak (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0   # needed for `git describe` and version detection
+
+      # ── System deps for flatpak-builder ────────────────────────────────
+      - name: Install Flatpak tooling
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq flatpak flatpak-builder
+
+      # Add the Flathub remote (required for base runtime / Electron BaseApp)
+      - name: Add Flathub remote
+        run: |
+          flatpak remote-add --if-not-exists --user flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+
+      # Install the required runtimes / SDK extensions
+      - name: Install Freedesktop + Electron BaseApp + Node 22 extension
+        run: |
+          flatpak install --user --noninteractive \
+            org.freedesktop.Platform//25.08 \
+            org.freedesktop.Sdk//25.08 \
+            org.freedesktop.Sdk.Extension.node22//25.08 \
+            org.electronjs.Electron2.BaseApp//25.08
+
+      # ── Node / npm for Electron build ──────────────────────────────────
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 26
+          cache: npm
+
+      - name: Upgrade npm
+        run: npm i -g npm@12
+
+      - name: Install npm dependencies
+        working-directory: apps/desktop
+        run: npm ci
+
+      # ── Build the Electron app (linux-unpacked) ────────────────────────
+      - name: Build Electron app
+        working-directory: apps/desktop
+        run: npm run build
+
+      # ── Stage Flatpak payload (Electron app only) ──────────────────────
+      - name: Stage Flatpak payload
+        working-directory: apps/desktop
+        run: node scripts/stage-flatpak.mjs
+
+      # ── Build Flatpak bundle ───────────────────────────────────────────
+      - name: Build Flatpak bundle
+        working-directory: apps/desktop
+        run: |
+          flatpak-builder --force-clean \
+            --repo flatpak/repo \
+            flatpak/build-dir \
+            flatpak/com.nousresearch.Hermes.yml
+          flatpak build-bundle \
+            flatpak/repo \
+            release/com.nousresearch.Hermes.flatpak \
+            com.nousresearch.Hermes
+
+      # ── Verify the bundle ──────────────────────────────────────────────
+      - name: Verify Flatpak bundle
+        run: |
+          flatpak info --show-runtime /home/runner/work/_temp/com.nousresearch.Hermes.flatpak 2>/dev/null || true
+          flatpak run --command=sh /home/runner/work/_temp/com.nousresearch.Hermes.flatpak -c '
+            echo "=== Flatpak metadata ===";
+            flatpak info com.nousresearch.Hermes;
+            echo "=== Executable present ===";
+            test -x /app/bin/hermes-desktop && echo "OK: /app/bin/hermes-desktop exists" || exit 1;
+            echo "=== Wrapper present ===";
+            test -x /app/bin/zypak-wrapper.sh && echo "OK: zypak-wrapper.sh exists" || exit 1;
+            echo "=== Electron binary present ===";
+            test -x /app/share/hermes-desktop/Hermes && echo "OK: Hermes binary exists" || exit 1;
+          ' || exit 1
+
+      # ── Upload as Release asset ────────────────────────────────────────
+      - name: Upload Flatpak to Release
+        uses: softprops/action-gh-release@de6c8c82b0c67c1c7d4b1f04a9a7b0f4c6e8e5c1 # v2
+        if: github.event_name == 'release'
+        with:
+          files: apps/desktop/release/com.nousresearch.Hermes.flatpak
+          name: Hermes Desktop Flatpak (Linux)
+          body: |
+            Official Hermes Desktop Flatpak for Linux.
+            
+            Install with:
+            ```bash
+            flatpak install --user com.nousresearch.Hermes.flatpak
+            # or from Flathub (once published):
+            flatpak install --user flathub com.nousresearch.Hermes
+            ```
+            
+            This Flatpak contains **only the Electron UI**. The Hermes CLI,
+            gateway, plugins, and your `~/.hermes` configuration remain on your
+            host system and are shared with the Flatpak automatically.
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── Also upload as workflow artifact (for manual inspection) ────────
+      - name: Upload Flatpak artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hermes-desktop-flatpak-${{ github.ref_name }}
+          path: apps/desktop/release/com.nousresearch.Hermes.flatpak
+          retention-days: 30
+          overwrite: true

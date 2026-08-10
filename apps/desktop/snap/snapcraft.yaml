@@ -1,0 +1,100 @@
+name: hermes-desktop
+title: Hermes Desktop
+version: '0.17.0'
+summary: Native desktop shell for Hermes Agent
+description: |
+  Hermes Desktop is the native Electron-based desktop application for Hermes Agent.
+  It provides a native chat interface with streaming responses, session management,
+  file attachments, and integrated terminal/shell capabilities.
+
+  The Hermes CLI, gateway, plugins, and configuration remain in your native
+  ~/.hermes installation and are shared with the snap automatically.
+
+base: core24
+confinement: strict
+grade: stable
+
+architectures:
+  - build-on: amd64
+    run-on: amd64
+
+license: MIT
+
+apps:
+  hermes-desktop:
+    command: bin/hermes-desktop
+    plugs:
+      - home
+      - network
+      - network-bind
+      - wayland
+      - x11
+      - pulseaudio
+      - audio-playback
+      - audio-record
+      - gsettings
+      - desktop
+      - desktop-legacy
+      - removable-media
+      - system-files
+      - browser-support
+    environment:
+      HERMES_HOME: "$HOME/.hermes"
+      TMPDIR: "$XDG_RUNTIME_DIR"
+    extensions:
+      - gnome-3-48
+
+parts:
+  hermes-desktop:
+    plugin: dump
+    source: release/linux-unpacked
+    stage-packages:
+      - libgtk-3-0
+      - libnotify4
+      - libnss3
+      - libxss1
+      - libxtst6
+      - xdg-utils
+      - libatspi2.0-0
+      - libdrm2
+      - libgbm1
+      - libasound2t64
+      - libvulkan1
+      - libva2
+      - libva-drm2
+      - libva-x11-2
+    prime:
+      - -usr/share/doc
+      - -usr/share/man
+      - -usr/share/locale/*
+      - usr/share/locale/en*
+    override-prime: |
+      craftctl default
+      # Create the wrapper script
+      mkdir -p $CRAFT_PRIME/bin
+      cat > $CRAFT_PRIME/bin/hermes-desktop << 'EOF'
+      #!/bin/sh
+      set -eu
+      export HERMES_HOME="${HOME}/.hermes"
+      # Ensure the native backend can find system tools
+      export PATH="/usr/bin:/bin:/usr/local/bin:${PATH}"
+      cd "$HOME"
+      exec /app/share/hermes-desktop/Hermes "$@"
+      EOF
+      chmod +x $CRAFT_PRIME/bin/hermes-desktop
+
+  # Add desktop integration
+  desktop-integration:
+    plugin: dump
+    source: snap/gui
+    organize:
+      'hermes-desktop.desktop': 'usr/share/applications/com.nousresearch.Hermes.desktop'
+      'hermes-desktop.png': 'usr/share/icons/hicolor/512x512/apps/com.nousresearch.Hermes.png'
+      'hermes-desktop.metainfo.xml': 'usr/share/metainfo/com.nousresearch.Hermes.metainfo.xml'
+
+# Layout to make Hermes binary accessible
+layout:
+  /app/share/hermes-desktop:
+    bind: $SNAP/share/hermes-desktop
+  /app/bin/zypak-wrapper.sh:
+    bind-file: $SNAP/share/hermes-desktop/zypak-wrapper.sh

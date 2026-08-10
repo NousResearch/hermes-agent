@@ -889,6 +889,33 @@ _client_slot_timeouts: dict[tuple, float] = {}
 _client_slots_lock = _threading.Lock()
 
 
+def spawn_context_thread(
+    target,
+    *,
+    name: str,
+    daemon: bool = True,
+    args: tuple = (),
+) -> "_threading.Thread":
+    """Spawn a thread that inherits the caller's contextvars.
+
+    Profile isolation in multi-profile processes is a ContextVar
+    (set_hermes_home_override); plain threading.Thread targets start with an
+    EMPTY context, so any ambient resolution on the thread
+    (resolve_config_path, resolve_active_host, get_hermes_home) silently
+    lands on the default profile. Copying the caller's context at spawn time
+    makes the thread see the profile scope it was created under.
+    """
+    import contextvars
+
+    ctx = contextvars.copy_context()
+    t = _threading.Thread(
+        target=lambda: ctx.run(target, *args),
+        name=name,
+        daemon=daemon,
+    )
+    return t
+
+
 def _credential_fingerprint(config: HonchoClientConfig | None) -> str:
     """Stable identity for the credential a client will be built with.
 

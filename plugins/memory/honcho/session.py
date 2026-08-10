@@ -12,7 +12,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, TYPE_CHECKING
 
-from plugins.memory.honcho.client import get_honcho_client
+from plugins.memory.honcho.client import get_honcho_client, spawn_context_thread
 from plugins.memory.honcho.oauth import redact_tokens as _redact_tokens
 
 if TYPE_CHECKING:
@@ -779,10 +779,9 @@ class HonchoSessionManager:
             return
         with self._async_thread_lock:
             if self._async_thread is None or not self._async_thread.is_alive():
-                self._async_thread = threading.Thread(
-                    target=self._async_writer_loop,
+                self._async_thread = spawn_context_thread(
+                    self._async_writer_loop,
                     name="honcho-async-writer",
-                    daemon=True,
                 )
                 self._async_thread.start()
 
@@ -932,7 +931,7 @@ class HonchoSessionManager:
             if result:
                 self.set_context_result(session_key, result)
 
-        t = threading.Thread(target=_run, name="honcho-context-prefetch", daemon=True)
+        t = spawn_context_thread(_run, name="honcho-context-prefetch")
         t.start()
 
     def set_context_result(self, session_key: str, result: dict[str, str]) -> None:

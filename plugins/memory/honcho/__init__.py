@@ -24,6 +24,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
 from agent.memory_provider import TRIVIAL_PROMPT_RE, MemoryProvider, is_trivial_prompt
+from plugins.memory.honcho.client import spawn_context_thread
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -467,9 +468,8 @@ class HonchoMemoryProvider(MemoryProvider):
                     self._manager = None
                     logger.warning("Honcho background session init failed: %s", e)
 
-            self._init_thread = threading.Thread(
-                target=_run,
-                daemon=True,
+            self._init_thread = spawn_context_thread(
+                _run,
                 name="honcho-session-init",
             )
             self._init_thread.start()
@@ -546,9 +546,8 @@ class HonchoMemoryProvider(MemoryProvider):
                         self._dialectic_empty_streak += 1
 
                 self._prefetch_thread_started_at = time.monotonic()
-                prewarm_thread = threading.Thread(
-                    target=_prewarm_dialectic,
-                    daemon=True,
+                prewarm_thread = spawn_context_thread(
+                    _prewarm_dialectic,
                     name="honcho-prewarm-dialectic",
                 )
                 prewarm_thread.start()
@@ -776,9 +775,7 @@ class HonchoMemoryProvider(MemoryProvider):
                     except Exception as e:
                         logger.debug("Honcho first-turn base context failed: %s", e)
 
-                _bt = threading.Thread(
-                    target=_fetch_base, daemon=True, name="honcho-base-first"
-                )
+                _bt = spawn_context_thread(_fetch_base, name="honcho-base-first")
                 _bt.start()
                 _base_wait = (
                     max(0.0, first_turn_base_deadline - time.monotonic())
@@ -853,8 +850,8 @@ class HonchoMemoryProvider(MemoryProvider):
                         self._dialectic_empty_streak += 1
 
                 self._prefetch_thread_started_at = time.monotonic()
-                first_turn_thread = threading.Thread(
-                    target=_run_first_turn, daemon=True, name="honcho-prefetch-first"
+                first_turn_thread = spawn_context_thread(
+                    _run_first_turn, name="honcho-prefetch-first"
                 )
                 first_turn_thread.start()
                 self._prefetch_thread = first_turn_thread
@@ -1009,9 +1006,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 self._dialectic_empty_streak += 1
 
         self._prefetch_thread_started_at = time.monotonic()
-        prefetch_thread = threading.Thread(
-            target=_run, daemon=True, name="honcho-prefetch"
-        )
+        prefetch_thread = spawn_context_thread(_run, name="honcho-prefetch")
         prefetch_thread.start()
         self._prefetch_thread = prefetch_thread
 
@@ -1416,9 +1411,7 @@ class HonchoMemoryProvider(MemoryProvider):
 
         if self._sync_thread and self._sync_thread.is_alive():
             self._sync_thread.join(timeout=5.0)
-        self._sync_thread = threading.Thread(
-            target=_sync, daemon=True, name="honcho-sync"
-        )
+        self._sync_thread = spawn_context_thread(_sync, name="honcho-sync")
         self._sync_thread.start()
 
     def on_memory_write(
@@ -1451,7 +1444,7 @@ class HonchoMemoryProvider(MemoryProvider):
             except Exception as e:
                 logger.debug("Honcho memory mirror failed: %s", e)
 
-        t = threading.Thread(target=_write, daemon=True, name="honcho-memwrite")
+        t = spawn_context_thread(_write, name="honcho-memwrite")
         t.start()
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:

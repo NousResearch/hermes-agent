@@ -26,6 +26,7 @@ import {
   $currentModel,
   $currentProvider,
   $currentReasoningEffort,
+  $freshDraftReady,
   $messages,
   $newChatWorkspaceTarget,
   $resumeFailedSessionId,
@@ -41,6 +42,7 @@ import {
   setCurrentModel,
   setCurrentProvider,
   setCurrentReasoningEffort,
+  setFreshDraftReady,
   setMessages,
   setNewChatWorkspaceTarget,
   setResumeFailedSessionId,
@@ -48,7 +50,7 @@ import {
   setSessions,
   setTurnStartedAt
 } from '@/store/session'
-import { $sessionTiles } from '@/store/session-states'
+import { $sessionTiles, closeSessionTile } from '@/store/session-states'
 
 import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 import { deferred } from '../../../test/deferred'
@@ -1275,9 +1277,7 @@ function BranchHarness({
   busy?: boolean
   gatewayRef?: MutableRefObject<HermesGateway | null>
   navigate?: ReturnType<typeof vi.fn>
-  onCurrentReady?: (
-    branchCurrentSession: (messageId?: string, targetSessionId?: string) => Promise<boolean>
-  ) => void
+  onCurrentReady?: (branchCurrentSession: (messageId?: string, targetSessionId?: string) => Promise<boolean>) => void
   onReady: (branchStoredSession: (storedSessionId: string, sessionProfile?: string | null) => Promise<boolean>) => void
   onRefs?: (refs: {
     activeSessionIdRef: MutableRefObject<string | null>
@@ -1608,9 +1608,7 @@ describe('branchStoredSession desktop source tagging', () => {
 
     const sourceGatewayRequest = vi.fn(async (_method: string, _params?: Record<string, unknown>) => branchResponse)
 
-    const switchedGatewayRequest = vi.fn(
-      async (_method: string, _params?: Record<string, unknown>) => branchResponse
-    )
+    const switchedGatewayRequest = vi.fn(async (_method: string, _params?: Record<string, unknown>) => branchResponse)
 
     let activeGatewayRequest = sourceGatewayRequest
 

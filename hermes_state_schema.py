@@ -451,7 +451,39 @@ class SessionSchemaMixin:
 
         Adding a column to SCHEMA_SQL is all that's needed; the
         reconciliation loop picks it up automatically.
+
+        The parse result is memoized on disk keyed by a hash of the DDL:
+        executing SCHEMA_SQL (FTS5 virtual tables included) in the scratch
+        DB costs ~85ms on every startup, but the output is a pure function
+        of the DDL text, which only changes when the shipped code changes.
+        Reconciliation itself (diffing the LIVE database) still runs every
+        startup — only the reference-side parse is cached. A corrupt or
+        stale cache degrades to recomputation.
         """
+        import hashlib as _hashlib
+        import json as _json
+
+        cache_path = None
+        schema_hash = _hashlib.sha256(schema_sql.encode("utf-8")).hexdigest()
+        try:
+            from hermes_constants import get_hermes_home
+            cache_path = get_hermes_home() / "cache" / "schema_columns.json"
+            blob = _json.loads(cache_path.read_text(encoding="utf-8"))
+            if (
+                isinstance(blob, dict)
+                and blob.get("schema_hash") == schema_hash
+                and isinstance(blob.get("tables"), dict)
+            ):
+                tables = blob["tables"]
+                if all(
+                    isinstance(cols, dict)
+                    and all(isinstance(v, str) for v in cols.values())
+                    for cols in tables.values()
+                ):
+                    return tables
+        except Exception:
+            pass  # missing/corrupt cache → recompute below
+
         ref = sqlite3.connect(":memory:")
         try:
             ref.executescript(schema_sql)
@@ -478,9 +510,25 @@ class SessionSchemaMixin:
                         parts.append(f"DEFAULT {default}")
                     cols[col_name] = " ".join(parts)
                 table_columns[tbl] = cols
-            return table_columns
         finally:
             ref.close()
+
+        if cache_path is not None:
+            try:
+                import os as _os
+                import tempfile as _tempfile
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                fd, tmp = _tempfile.mkstemp(
+                    dir=str(cache_path.parent), prefix=".schema_columns."
+                )
+                with _os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    _json.dump(
+                        {"schema_hash": schema_hash, "tables": table_columns}, fh
+                    )
+                _os.replace(tmp, cache_path)
+            except Exception:
+                pass  # cache write is best-effort
+        return table_columns
 
     def _reconcile_columns(self, cursor: sqlite3.Cursor) -> None:
         """Ensure live tables have every column declared in SCHEMA_SQL.

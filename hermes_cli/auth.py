@@ -33,6 +33,46 @@ import threading
 import time
 import uuid
 import webbrowser
+
+# httpx is imported lazily: it costs ~30ms at import time and hermes_cli.auth
+# is on the interactive-CLI startup path via credential_pool → auxiliary_client
+# → cli_commands_mixin, where no HTTP request is ever made before first use.
+# The proxy resolves to the real module on first attribute access; every
+# consumer in this file uses `httpx.<attr>` so the swap is transparent.
+# Annotations like ``httpx.Client`` stay valid: `from __future__ import
+# annotations` (above) keeps them unevaluated at runtime, and the
+# TYPE_CHECKING import gives static checkers the real module.
+import importlib as _importlib
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import httpx
+else:
+    class _LazyHttpx:
+        __slots__ = ("_mod",)
+
+        def __init__(self) -> None:
+            object.__setattr__(self, "_mod", None)
+
+        def _resolve(self):
+            mod = object.__getattribute__(self, "_mod")
+            if mod is None:
+                mod = _importlib.import_module("httpx")
+                object.__setattr__(self, "_mod", mod)
+            return mod
+
+        def __getattr__(self, name):
+            return getattr(self._resolve(), name)
+
+        # Forward set/del to the real module so monkeypatch.setattr
+        # ("hermes_cli.auth.httpx.Client", ...) keeps working in tests.
+        def __setattr__(self, name, value):
+            setattr(self._resolve(), name, value)
+
+        def __delattr__(self, name):
+            delattr(self._resolve(), name)
+
+    httpx = _LazyHttpx()
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -40,8 +80,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, urlencode, urlparse
-
-import httpx
 
 from hermes_cli.config import (
     get_hermes_home,

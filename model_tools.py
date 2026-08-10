@@ -657,6 +657,24 @@ def _resolve_active_context_length() -> int:
                     "context gate (provider=%s): %s — using config values only",
                     provider, rt_exc,
                 )
+        # Fast path: a previously discovered on-disk cache entry is plenty
+        # for SIZING the tool-search gate — unlike compression budgeting, a
+        # slightly stale window can't corrupt anything (should_activate only
+        # picks a disclosure tier). The full resolver below deliberately
+        # bypasses the persistent cache for some providers (Nous portal,
+        # Codex OAuth) so IT can reconcile against the authoritative live
+        # /models endpoint — correct for compression sizing, but it costs a
+        # ~200ms network probe on EVERY CLI startup. When any prior session
+        # already learned the window, use it for the gate and let the full
+        # resolver (called later on the compression path) do reconciliation.
+        if config_ctx is None and base_url:
+            try:
+                from agent.model_metadata import get_cached_context_length
+                cached_ctx = get_cached_context_length(model_id, base_url)
+                if isinstance(cached_ctx, int) and cached_ctx > 0:
+                    return cached_ctx
+            except Exception:
+                pass
         return int(get_model_context_length(
             model_id,
             base_url=base_url,

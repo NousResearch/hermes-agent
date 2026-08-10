@@ -271,9 +271,12 @@ def _get_effective_configurable_toolsets():
 def _get_plugin_toolset_keys() -> set:
     """Return the set of toolset keys provided by plugins."""
     try:
-        from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
-        discover_plugins()  # idempotent — ensures plugins are loaded
-        return {ts_key for ts_key, _, _ in get_plugin_toolsets()}
+        from hermes_cli.plugins import get_plugin_toolset_keys_nowait
+        # Non-blocking on the CLI startup path: while background plugin
+        # discovery is still importing modules, this serves last launch's
+        # persisted key set (used only to exclude plugin toolsets from
+        # composite expansion) instead of joining the discovery thread.
+        return get_plugin_toolset_keys_nowait()
     except Exception:
         return set()
 
@@ -2146,10 +2149,12 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
         and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
     }
     try:
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from hermes_cli.plugins import (
+            get_plugin_manager,
+            get_portable_mcp_server_names_nowait,
+        )
 
-        discover_plugins()
-        portable = set(get_plugin_manager().get_portable_mcp_servers())
+        portable = get_portable_mcp_server_names_nowait()
         # Native config wins on a name collision (mirrors _load_mcp_config).
         names |= portable - set(mcp_servers)
     except Exception:

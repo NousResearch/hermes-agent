@@ -2684,17 +2684,31 @@ def cmd_chat(args):
     # competes for CPU on single-core devices, so keep it opt-in there.
     if _termux_should_prefetch_update_check():
         try:
-            from hermes_cli.banner import prefetch_update_check
+            from hermes_cli.banner import prefetch_banner_data, prefetch_update_check
 
             prefetch_update_check()
+            # Warm git banner state + skills index off-thread too — their
+            # subprocess/file-I/O waits overlap the CPU-bound cli import.
+            prefetch_banner_data()
         except Exception:
             pass
 
-    # Sync bundled skills on every CLI launch (fast -- skips unchanged skills)
-    try:
-        _sync_bundled_skills_for_startup()
-    except Exception:
-        pass
+    # Sync bundled skills on every CLI launch. Runs in a background daemon
+    # thread: the sync is idempotent, hash-gated (unchanged skills are
+    # skipped), and nothing on the banner path depends on it, yet the scan
+    # alone costs ~120-170ms of rglob/hashing on the startup path. Skill
+    # loading happens at agent init (first message), by which point the
+    # sync has long finished; a same-instant race would only matter in the
+    # rare launch right after `hermes update` changed a bundled skill.
+    def _skills_sync_bg() -> None:
+        try:
+            _sync_bundled_skills_for_startup()
+        except Exception:
+            pass
+
+    threading.Thread(
+        target=_skills_sync_bg, name="bundled-skills-sync", daemon=True
+    ).start()
 
     # --yolo: bypass all dangerous command approvals.
     # Also set in main() before _prepare_agent_startup() — that is the
@@ -10835,9 +10849,16 @@ def _prepare_agent_startup(args) -> None:
 
     _accept_hooks = bool(getattr(args, "accept_hooks", False))
     try:
-        from hermes_cli.plugins import discover_plugins
+        from hermes_cli.plugins import start_background_plugin_discovery
 
-        discover_plugins()
+        # Discovery runs in a daemon thread so its ~150ms of manifest
+        # scanning + plugin imports overlaps the rest of startup (cli /
+        # prompt_toolkit imports, worktree git calls). Correctness is
+        # unchanged: every synchronous reader goes through
+        # discover_plugins(), which joins this thread first — including
+        # the discover_plugins() call model_tools makes at import time,
+        # which happens before any tool list is built.
+        start_background_plugin_discovery()
     except Exception:
         logger.warning(
             "plugin discovery failed at CLI startup",
@@ -10919,6 +10940,79 @@ def _set_chat_arg_defaults(args) -> None:
     ]:
         if not hasattr(args, attr):
             setattr(args, attr, default)
+
+
+def _try_fast_chat_launch() -> bool:
+    """Fast path for unambiguous interactive chat launches (all hosts).
+
+    ``hermes`` / ``hermes -w -s foo --yolo`` / ``hermes chat`` don't need the
+    full argparse tree: building all ~40 subcommand parsers costs ~140ms of
+    pure-Python argparse setup plus their module imports, none of which the
+    chat path uses. Parse the lightweight top-level/chat parser instead and
+    dispatch straight to ``cmd_chat``.
+
+    Bails out (returns False) whenever the invocation is not certainly a
+    chat launch — a subcommand positional, ``--help``, unknown flags — so
+    every other path still goes through the full parser unchanged. Mirrors
+    ``_try_termux_fast_cli_launch`` minus the Termux-specific deferred
+    startup; kept separate so phone-tuned behavior doesn't leak to desktops.
+    """
+    if os.environ.get("HERMES_DISABLE_FAST_CHAT_LAUNCH") == "1":
+        return False
+    argv = sys.argv[1:]
+    if "-h" in argv or "--help" in argv:
+        return False
+    # Container-aware routing must win: when NixOS container mode is
+    # active, EVERY invocation is forwarded into the managed container.
+    try:
+        from hermes_cli.config import get_container_exec_info
+        if get_container_exec_info():
+            return False
+    except Exception:
+        return False
+    # TUI launches have their own startup path (bounded MCP joins etc.) —
+    # keep them on full dispatch outside Termux.
+    if _wants_tui_early(argv):
+        return False
+    if _first_positional_argv() not in {None, "chat"}:
+        return False
+
+    from hermes_cli._parser import build_top_level_parser
+
+    parser, _subparsers, chat_parser = build_top_level_parser()
+    chat_parser.set_defaults(func=cmd_chat)
+    try:
+        args, unknown = parser.parse_known_args(_coalesce_session_name_args(argv))
+    except SystemExit:
+        return False
+    if unknown:
+        # Flags the light parser doesn't know — could belong to a plugin
+        # subcommand or a newer full-parser flag. Fall back to full dispatch.
+        return False
+    if getattr(args, "version", False):
+        return False
+    if getattr(args, "command", None) not in {None, "chat"}:
+        return False
+
+    if getattr(args, "yolo", False):
+        os.environ["HERMES_YOLO_MODE"] = "1"
+    _prepare_agent_startup(args)
+
+    if getattr(args, "oneshot", None):
+        _run_and_exit_oneshot(
+            args.oneshot,
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
+            toolsets=getattr(args, "toolsets", None),
+            usage_file=getattr(args, "usage_file", None),
+        )
+
+    if (args.resume or args.continue_last) and args.command is None:
+        args.command = "chat"
+
+    _set_chat_arg_defaults(args)
+    cmd_chat(args)
+    return True
 
 
 def _try_termux_fast_cli_launch() -> bool:
@@ -11277,6 +11371,8 @@ def main():
     if _try_termux_fast_tui_launch():
         return
     if _try_termux_fast_cli_launch():
+        return
+    if _try_fast_chat_launch():
         return
 
     from hermes_cli._parser import build_top_level_parser

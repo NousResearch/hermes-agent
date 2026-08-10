@@ -1634,17 +1634,21 @@ def check_vision_requirements() -> bool:
     when the auto chain would have served the request (issue #31179).
     """
     try:
-        from agent.auxiliary_client import resolve_vision_provider_client
+        from agent.auxiliary_client import aux_probe_mode, resolve_vision_provider_client
     except ImportError:
         return False
     try:
-        _provider, client, _model = resolve_vision_provider_client()
-        if client is not None:
-            return True
-        # Same fallback to "auto" that call_llm performs when the configured
-        # provider can't be resolved.
-        _provider, client, _model = resolve_vision_provider_client(provider="auto")
-        return client is not None
+        # Probe mode answers "is a vision client resolvable?" without paying
+        # for real SDK client construction (openai import + httpx/SSL setup)
+        # on the tool-gating path — resolution policy is identical.
+        with aux_probe_mode():
+            _provider, client, _model = resolve_vision_provider_client()
+            if client is not None:
+                return True
+            # Same fallback to "auto" that call_llm performs when the configured
+            # provider can't be resolved.
+            _provider, client, _model = resolve_vision_provider_client(provider="auto")
+            return client is not None
     except Exception:
         return False
 

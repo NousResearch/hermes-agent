@@ -877,7 +877,123 @@ class HonchoClientConfig:
 
 
 _honcho_client_slot: SingletonSlot = SingletonSlot()
-_cached_timeout: float | None = None
+# --- per-identity client cache -------------------------------------------
+# One slot per client identity, replacing the single process-wide slot that
+# pinned the first profile's workspace and bearer for every later profile in
+# multi-profile processes (#69123 multiplexed gateway, #74065 dashboard).
+# The legacy names above are retained only for reset bookkeeping.
+import threading as _threading
+
+_client_slots: dict[tuple, SingletonSlot] = {}
+_client_slot_timeouts: dict[tuple, float] = {}
+_client_slots_lock = _threading.Lock()
+
+
+def _credential_fingerprint(config: HonchoClientConfig | None) -> str:
+    """Stable identity for the credential a client will be built with.
+
+    OAuth grants rotate their access token in place (apply_token_to_client),
+    so the fingerprint must NOT change on rotation — it hashes the REFRESH
+    token, which is stable across access-token rotation but changes on
+    re-auth or account switch. Static keys hash the key itself. This is what
+    makes 'hermes honcho setup' account switches produce a NEW cache identity
+    instead of silently reusing the old account's client (a first-config-wins
+    hole that per-path keys alone cannot close).
+    """
+    try:
+        if config is not None:
+            block = _host_block(config.raw or {}, config.host)
+            oauth_block = block.get("oauth")
+            if isinstance(oauth_block, dict) and oauth_block.get("refreshToken"):
+                basis = f"oauth:{oauth_block['refreshToken']}"
+            elif config.api_key:
+                basis = f"key:{config.api_key}"
+            else:
+                return ""
+            return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+        # Ambient: read the active file so legacy no-config callers still get
+        # a credential-aware key (correct on main threads; bound configs are
+        # the supported path for background threads).
+        path = resolve_config_path()
+        if path.exists():
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            block = _host_block(raw, resolve_active_host())
+            oauth_block = block.get("oauth")
+            if isinstance(oauth_block, dict) and oauth_block.get("refreshToken"):
+                basis = f"oauth:{oauth_block['refreshToken']}"
+            else:
+                key = block.get("apiKey") or raw.get("apiKey") or get_secret("HONCHO_API_KEY") or ""
+                if not key:
+                    return ""
+                basis = f"key:{key}"
+            return hashlib.sha256(basis.encode("utf-8")).hexdigest()[:16]
+    except Exception:
+        pass
+    return ""
+
+
+def _client_cache_key(config: HonchoClientConfig | None) -> tuple:
+    """Cache identity for a Honcho client build.
+
+    Explicit configs key on the connection identity ``_build`` embeds in the
+    client (host, workspace, base_url, environment), the provenance paths the
+    config was resolved from, the effective timeout, and a credential
+    fingerprint that is stable across OAuth access-token rotation but changes
+    on re-auth/account switch. The access token itself is deliberately NOT in
+    the key — in-place rotation must stay within one slot.
+
+    Ambient callers (config=None: CLI one-shots, tests) key on what
+    from_global_config() would resolve. Ambient resolution reads the profile
+    ContextVar and is therefore only correct on threads that can see it;
+    bound configs are the supported path everywhere else.
+    """
+    if config is not None:
+        return (
+            "explicit",
+            config.host,
+            config.workspace_id,
+            config.base_url or "",
+            config.environment,
+            str(config.config_path) if config.config_path is not None else "",
+            str(config.hermes_home) if config.hermes_home is not None else "",
+            _resolve_timeout_from_sources(config),
+            _credential_fingerprint(config),
+        )
+    return (
+        "ambient",
+        str(resolve_config_path()),
+        resolve_active_host(),
+        _resolve_timeout_from_sources(None),
+        _credential_fingerprint(None),
+    )
+
+
+def _slot_for(key: tuple) -> SingletonSlot:
+    """Return the slot for ``key``, evicting stale same-identity slots.
+
+    When a (kind, host, config_path/hermes_home) identity reappears with a
+    DIFFERENT credential fingerprint or timeout, the old slot is dropped so
+    the replaced client stops being served and its pools can close once the
+    last holder releases it. Without eviction, credential churn leaks one
+    pinned client per change — the gap that made #81401's retirement
+    machinery inert.
+    """
+    identity = key[:3] if key[0] == "ambient" else (key[0], key[1], key[5], key[6])
+    with _client_slots_lock:
+        slot = _client_slots.get(key)
+        if slot is None:
+            stale = [
+                k for k in _client_slots
+                if k != key and (
+                    (k[:3] if k[0] == "ambient" else (k[0], k[1], k[5], k[6])) == identity
+                )
+            ]
+            for k in stale:
+                _client_slots.pop(k, None)
+                _client_slot_timeouts.pop(k, None)
+            slot = SingletonSlot()
+            _client_slots[key] = slot
+        return slot
 # Memo for the honcho.json-derived timeout, keyed PER CONFIG PATH on the
 # file's mtime_ns so the staleness check on every get_honcho_client() call
 # costs one stat() instead of a JSON parse. Path-keyed because multi-profile
@@ -977,11 +1093,16 @@ def _apply_fresh_oauth_token(config: HonchoClientConfig) -> None:
         logger.warning("Honcho OAuth pre-build refresh failed", exc_info=True)
 
 
-def _refresh_cached_oauth(client: "Honcho", config: HonchoClientConfig | None) -> None:
+def _refresh_cached_oauth(
+    client: "Honcho",
+    config: HonchoClientConfig | None,
+    slot: SingletonSlot | None = None,
+) -> None:
     """Rotate the cached client's Bearer in place when its OAuth token is stale.
 
-    If the SDK shape changed and the in-place rotation can't apply, the slot is
-    reset so the next acquisition rebuilds with the fresh token.
+    If the SDK shape changed and the in-place rotation can't apply, the
+    client's own slot is reset so the next acquisition rebuilds with the
+    fresh token.
     """
     try:
         from plugins.memory.honcho import oauth
@@ -994,35 +1115,39 @@ def _refresh_cached_oauth(client: "Honcho", config: HonchoClientConfig | None) -
             path = resolve_config_path()
         token, refreshed = oauth.ensure_fresh_token(path, host)
         if refreshed and token and not oauth.apply_token_to_client(client, token):
-            _honcho_client_slot.reset()
+            if slot is not None:
+                slot.reset()
     except Exception:
         logger.warning("Honcho OAuth cached refresh failed", exc_info=True)
 
 
 def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
-    """Get or create the Honcho client singleton.
+    """Get or create the Honcho client for this config's identity.
 
-    When no config is provided, attempts to load ~/.honcho/config.json
-    first, falling back to environment variables.
+    Clients are cached PER IDENTITY (host, workspace, provenance paths,
+    credential fingerprint, timeout), not per process: multi-profile
+    processes (gateway multiplexer, dashboard, cron) previously shared one
+    first-config-wins client, so every profile's memory landed in whichever
+    workspace initialized first (#69123, #74065).
 
-    Thread-safe: the client is built exactly once even under concurrent
-    first calls (double-checked locking via ``SingletonSlot``), so racing
-    threads can't each construct a client and leak the loser's connection.
+    When no config is provided, resolves the active honcho.json — correct
+    only on threads that can see the profile ContextVar; pass a bound config
+    everywhere else (HonchoSessionManager does).
+
+    Thread-safe: each identity's client is built exactly once even under
+    concurrent first calls (double-checked locking via SingletonSlot), so
+    racing threads can't each construct a client and leak the loser's
+    connection.
     """
-    global _cached_timeout
-    cached = _honcho_client_slot.peek()
+    key = _client_cache_key(config)
+    slot = _slot_for(key)
+    cached = slot.peek()
     if cached is not None:
-        # Detect timeout config changes in long-lived processes (gateway,
-        # dashboard).  If the user changed the timeout after the client was
-        # built, rebuild with the new value.
-        new_timeout = _resolve_timeout_from_sources(config)
-        if new_timeout != _cached_timeout:
-            _honcho_client_slot.reset()
-            _cached_timeout = None
-            cached = None
-        else:
-            _refresh_cached_oauth(cached, config)
-            return cached
+        _refresh_cached_oauth(cached, config, slot)
+        refreshed = slot.peek()
+        if refreshed is not None:
+            return refreshed
+        # Slot was reset by a failed in-place rotation — rebuild below.
 
     if config is None:
         config = HonchoClientConfig.from_global_config()
@@ -1133,16 +1258,17 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         if resolved_timeout is not None:
             kwargs["timeout"] = resolved_timeout
 
-        global _cached_timeout
-        _cached_timeout = resolved_timeout
+        with _client_slots_lock:
+            _client_slot_timeouts[key] = resolved_timeout
         return Honcho(**kwargs)
 
-    return _honcho_client_slot.get(_build)
+    return slot.get(_build)
 
 
 def reset_honcho_client() -> None:
-    """Reset the Honcho client singleton (useful for testing)."""
-    global _cached_timeout
+    """Reset all cached Honcho clients (tests, OAuth re-login)."""
+    with _client_slots_lock:
+        _client_slots.clear()
+        _client_slot_timeouts.clear()
     _honcho_client_slot.reset()
-    _cached_timeout = None
     _honcho_json_timeout_memo.clear()

@@ -439,6 +439,7 @@ def restore_undelivered_completions(target_queue) -> int:
                 continue
             evt = json.loads(payload)
             if isinstance(evt, dict):
+                evt.update(_internal_event_envelope(delegation_id))
                 evt["restored"] = True
             target_queue.put(evt)
             restored += 1
@@ -702,7 +703,7 @@ def has_live_for_session(
 
 
 def _new_delegation_id() -> str:
-    return f"deleg_{uuid.uuid4().hex[:8]}"
+    return f"deleg_{uuid.uuid4().hex}"
 
 
 def _internal_event_envelope(delegation_id: Any) -> Dict[str, Any]:
@@ -714,6 +715,8 @@ def _internal_event_envelope(delegation_id: Any) -> Dict[str, Any]:
     from prompt text such as ``[ASYNC DELEGATION ...]``.
     """
     delegation_key = str(delegation_id or "").strip()
+    if not delegation_key:
+        raise ValueError("delegation_id is required for an internal event envelope")
     return {
         "event_schema": "hermes.internal_event.v1",
         "event_id": f"async_delegation:{delegation_key}:terminal",
@@ -1227,6 +1230,7 @@ def _push_batch_completion_event(
     for _k in ("scope_id", "user_id", "user_name"):
         if event_record.get(_k):
             evt[_k] = event_record[_k]
+    evt.update(_internal_event_envelope(event_record.get("delegation_id")))
     # Structured stall metadata (#51690) — additive, present only on
     # stall-monitor finalizations.
     for _k in (

@@ -24058,6 +24058,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             parent_session_id = str(evt.get("parent_session_id") or "").strip()
             if parent_session_id:
                 metadata["gateway_session_id"] = parent_session_id
+            for key in (
+                "event_schema",
+                "event_id",
+                "event_kind",
+                "workflow_id",
+                "display_kind",
+                "user_originated",
+                "terminal",
+            ):
+                if key in evt:
+                    metadata[key] = evt[key]
             synth_event = MessageEvent(
                 text=synth_text,
                 message_type=MessageType.TEXT,

@@ -199,6 +199,13 @@ async def test_inject_watch_notification_routes_from_session_store_origin(monkey
     evt = {
         "session_id": "proc_watch",
         "session_key": "agent:main:telegram:group:-100:42",
+        "event_schema": "hermes.internal_event.v1",
+        "event_id": "async_delegation:deleg_full:terminal",
+        "event_kind": "workflow.async_delegation.terminal",
+        "workflow_id": "delegation:deleg_full",
+        "display_kind": "internal_event",
+        "user_originated": False,
+        "terminal": True,
     }
 
     await runner._inject_watch_notification("[SYSTEM: Background process matched]", evt)
@@ -212,6 +219,10 @@ async def test_inject_watch_notification_routes_from_session_store_origin(monkey
     assert synth_event.source.thread_id == "42"
     assert synth_event.source.user_id == "123"
     assert synth_event.source.user_name == "Emiliyan"
+    assert synth_event.metadata["event_id"] == evt["event_id"]
+    assert synth_event.metadata["workflow_id"] == evt["workflow_id"]
+    assert synth_event.metadata["user_originated"] is False
+    assert synth_event.metadata["terminal"] is True
 
 
 @pytest.mark.asyncio

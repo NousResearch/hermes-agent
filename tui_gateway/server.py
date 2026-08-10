@@ -9706,6 +9706,17 @@ def _async_delegation_display_metadata(evt: dict) -> dict:
         "completed_count": completed_count or task_count - failed_count,
         "failed_count": failed_count,
     }
+    for key in (
+        "event_schema",
+        "event_id",
+        "event_kind",
+        "workflow_id",
+        "display_kind",
+        "user_originated",
+        "terminal",
+    ):
+        if key in evt:
+            metadata[key] = evt[key]
     duration = evt.get("total_duration_seconds") or evt.get("duration_seconds")
     if isinstance(duration, (int, float)):
         metadata["duration_seconds"] = duration

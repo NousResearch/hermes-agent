@@ -1073,25 +1073,47 @@ _MAX_VISION_DIM = 1456
 
 
 def _shrink_capture_for_vision(raw: bytes, ext: str,
-                               max_dim: int = _MAX_VISION_DIM) -> bytes:
+                               max_dim: int = _MAX_VISION_DIM,
+                               ) -> tuple[bytes, Optional[str]]:
     """Downscale encoded image bytes so the longest side is <= max_dim.
 
-    Returns the original bytes unchanged when the image already fits or when
-    Pillow is unavailable/fails — no worse than the pre-shrink behavior.
+    Returns ``(bytes, scale_note)``. ``scale_note`` is ``None`` when the image
+    was returned unchanged (already fits, or Pillow unavailable/failed — no
+    worse than the pre-shrink behavior). When a downscale happened, the note
+    tells the vision model the scale factor so any coordinates it reports can
+    be mapped back to the real screen instead of being silently wrong.
     """
     try:
         from io import BytesIO
         from PIL import Image
         img = Image.open(BytesIO(raw))
         if max(img.size) <= max_dim:
-            return raw
+            return raw, None
+        orig_w, orig_h = img.size
         img.thumbnail((max_dim, max_dim))
+        new_w, new_h = img.size
         out = BytesIO()
         img.save(out, format="JPEG" if ext == ".jpg" else "PNG")
-        return out.getvalue()
+        fx = orig_w / new_w if new_w else 1.0
+        fy = orig_h / new_h if new_h else 1.0
+        if f"{fx:.2f}" == f"{fy:.2f}":
+            factor_clause = (
+                f"multiply any coordinates you report by {fx:.2f} "
+                f"to map back to the real screen."
+            )
+        else:
+            factor_clause = (
+                f"multiply any x coordinates you report by {fx:.2f} and "
+                f"any y coordinates by {fy:.2f} to map back to the real screen."
+            )
+        scale_note = (
+            f"Screenshot downscaled from {orig_w}x{orig_h} to "
+            f"{new_w}x{new_h} for vision; {factor_clause}"
+        )
+        return out.getvalue(), scale_note
     except Exception as exc:
         logger.debug("computer_use: vision downscale skipped: %s", exc)
-        return raw
+        return raw, None
 
 def _should_route_through_aux_vision() -> bool:
     """Return True when ``_capture_response`` should hand the PNG to aux vision.
@@ -1195,7 +1217,7 @@ def _route_capture_through_aux_vision(
         cache_dir = get_hermes_dir("cache/vision", "temp_vision_images")
         cache_dir.mkdir(parents=True, exist_ok=True)
         temp_image_path = cache_dir / f"computer_use_{_uuid.uuid4().hex}{ext}"
-        raw = _shrink_capture_for_vision(raw, ext)
+        raw, scale_note = _shrink_capture_for_vision(raw, ext)
         temp_image_path.write_bytes(raw)
 
         prompt = (
@@ -1207,6 +1229,8 @@ def _route_capture_through_aux_vision(
             "actually visible.\n\n"
             f"AX/SOM index for cross-reference:\n{summary}"
         )
+        if scale_note:
+            prompt += f"\n\nNote: {scale_note}"
 
         result_json = _run_async(
             vision_analyze_tool(str(temp_image_path), prompt)

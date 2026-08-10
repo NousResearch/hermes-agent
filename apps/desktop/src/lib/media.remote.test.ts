@@ -9,6 +9,7 @@ import {
   isInlineMediaSrc,
   isRemoteGateway,
   mediaExternalUrl,
+  mediaGatewayStreamUrl,
   resolveMediaDisplaySrc,
   resolveMediaPlaybackSrc
 } from './media'
@@ -73,6 +74,24 @@ describe('mediaExternalUrl', () => {
   it('falls back to file:// when remote connection lacks a token', () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://gw' } as never)
     expect(mediaExternalUrl('/tmp/a.png')).toBe('file:///tmp/a.png')
+  })
+})
+
+describe('mediaGatewayStreamUrl', () => {
+  afterEach(() => {
+    $connection.set(null)
+  })
+
+  it('rewrites gateway-local media to the main-process remote stream proxy', () => {
+    $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 's e/cret' } as never)
+    expect(mediaGatewayStreamUrl('file:///tmp/a b.mp4')).toBe('hermes-media://remote/%2Ftmp%2Fa%20b.mp4')
+  })
+
+  it('supports OAuth remotes with no renderer-visible token and scopes pool profiles', () => {
+    $connection.set({ authMode: 'oauth', mode: 'remote', profile: 'voice reviewer', token: null } as never)
+    expect(mediaGatewayStreamUrl('/tmp/a.mp4')).toBe(
+      'hermes-media://remote/%2Ftmp%2Fa.mp4?profile=voice%20reviewer'
+    )
   })
 })
 
@@ -153,12 +172,12 @@ describe('resolveMediaPlaybackSrc', () => {
     )
   })
 
-  it('routes gateway-local video through the authenticated download endpoint', async () => {
+  it('routes OAuth gateway-local video through the authenticated main-process proxy', async () => {
     vi.stubGlobal('window', { hermesDesktop: { api: vi.fn() } })
-    $connection.set({ mode: 'remote', baseUrl: 'https://gateway.test', token: 's e/cret' } as never)
+    $connection.set({ authMode: 'oauth', mode: 'remote', profile: 'default', token: null } as never)
 
     await expect(resolveMediaPlaybackSrc('/root/outputs/render.mp4')).resolves.toBe(
-      'https://gateway.test/api/files/download?path=%2Froot%2Foutputs%2Frender.mp4&token=s%20e%2Fcret'
+      'hermes-media://remote/%2Froot%2Foutputs%2Frender.mp4?profile=default'
     )
   })
 

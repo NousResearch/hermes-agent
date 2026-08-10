@@ -10559,8 +10559,14 @@ function spawnHudWindow(sessionId, profile) {
       hudWindow = null
     }
 
-    // Closed from its own side (⌘W) — put the app back so the user is never
-    // left with no surface, and correct every window's toggle.
+    // Closed from its own side (⌘W) — closeHudWindow()'s dispose() never ran,
+    // so the global snap shortcut would otherwise stay registered (and stuck
+    // taken) with no HUD left to apply it to. dispose() is idempotent, so
+    // this is safe even if closeHudWindow() already released it.
+    hudSnapShortcut.dispose()
+
+    // Put the app back so the user is never left with no surface, and
+    // correct every window's toggle.
     restoreMainWindowFromHud()
     broadcastHudState(false)
   })

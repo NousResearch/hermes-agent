@@ -3,11 +3,21 @@
 // "5 tabs doing PR review" workload. Measures frame pacing + longtasks while
 // the whole stack streams, which is where multitab renderers crawl.
 //
-// Drives the real pipeline synthetically (no backend, no credits):
-// publishSessionState per session per flush — exactly what the gateway's
-// delta flush does — via the __HERMES_SESSION_TILES__ hook.
+// --zones M splits the tiles across M VISIBLE split zones (a 2×2 grid for 4)
+// instead of one tab stack — the "4 tiles with 4 sessions each" workload,
+// where M transcripts stream on screen at once and the rest are mounted
+// keep-alive tabs behind them. --streaming S caps how many sessions are
+// actually mid-turn (zone leaders first, so S=zones means "every visible
+// transcript streams, every hidden tab idles"); the rest sit settled.
+// --sessions N seeds a populated recents list (a lived-in sessions DB).
+//
+// Drives the real pipeline synthetically (no backend, no credits): each tick
+// routes one delta per streaming session through `hook.update` — the same
+// wiring-cache write (journal + publish + view sync) the gateway's delta
+// flush performs — via the __HERMES_SESSION_TILES__ hook.
 //
 //   node scripts/perf/run.mjs multitab --spawn [--tiles 5] [--tokens 240]
+//   node scripts/perf/run.mjs multitab --spawn --tiles 16 --zones 4 --sessions 300
 
 import { sleep } from '../lib/cdp.mjs'
 import { frameHistogram, percentile } from '../lib/stats.mjs'
@@ -50,12 +60,19 @@ const COLLECT = `
   })()
 `
 
-/** Page-side setup: open `tiles` session tiles stacked into the main zone,
- *  bind fake runtime ids, and seed each with a realistic transcript. */
-const setup = (tiles, seedTurns, streamSeed) => `
+/** Page-side setup: open `tiles` session tiles — one tab stack in the main
+ *  zone (zones=1), or spread across `zones` visible splits (a 2×2 grid for 4)
+ *  — bind fake runtime ids, and seed each with a realistic transcript.
+ *
+ *  States are written through `hook.update` — the REAL gateway write path
+ *  (wiring cache + in-flight journal + publish + view sync). Driving
+ *  `hook.publish` alone under-models a stream: it skips the journal and the
+ *  cache, which is exactly where multi-session cost used to hide. */
+const setup = (tiles, seedTurns, streamSeed, zones, seedSessions, streaming, dead) => `
   (() => {
     const hook = window.__HERMES_SESSION_TILES__
     if (!hook) return 'no-hook'
+    if (!hook.update) return 'no-update-hook'
 
     const turn = (sid, i) => ([
       { id: sid + '-u' + i, role: 'user', timestamp: Date.now(),
@@ -75,29 +92,89 @@ const setup = (tiles, seedTurns, streamSeed) => `
         ].join('\\n') }] }
     ])
 
-    const state = (sid, rid) => {
+    const state = (sid, rid, isStreaming) => {
       const messages = []
       for (let i = 0; i < ${seedTurns}; i++) messages.push(...turn(sid, i))
-      // Streaming tail the driver grows (--code seeds an open fence).
-      messages.push({ id: sid + '-stream', role: 'assistant', timestamp: Date.now(), pending: true,
-        parts: [{ type: 'text', text: ${JSON.stringify(streamSeed)} }] })
+      // Streaming tail the driver grows (--code seeds an open fence); a
+      // non-streaming session sits settled — open, mounted, mid-nothing.
+      if (isStreaming) {
+        messages.push({ id: sid + '-stream', role: 'assistant', timestamp: Date.now(), pending: true,
+          parts: [{ type: 'text', text: ${JSON.stringify(streamSeed)} }] })
+      }
       return {
         storedSessionId: sid, messages, branch: '', cwd: '', model: '', provider: '',
         reasoningEffort: '', serviceTier: '', fast: false, yolo: false, personality: '',
-        busy: true, awaitingResponse: false, streamId: sid + '-stream', sawAssistantPayload: true,
+        busy: isStreaming, awaitingResponse: false,
+        streamId: isStreaming ? sid + '-stream' : null, sawAssistantPayload: true,
         pendingBranchGroup: null, interrupted: false, interimBoundaryPending: false,
-        needsInput: false, turnStartedAt: Date.now(), usage: null
+        needsInput: false, turnStartedAt: isStreaming ? Date.now() : null, usage: null
       }
     }
 
-    window.__MT__ = { ids: [], timer: null }
+    // A populated recents list (--sessions): every store publish re-runs the
+    // busy/attention/draft projections against it, so an empty list hides
+    // that scaling. Restored by CLEANUP.
+    if (${seedSessions} > 0) {
+      window.__MT_SAVED_SESSIONS__ = hook.sessions()
+      const rows = []
+      for (let i = 0; i < ${seedSessions}; i++) {
+        rows.push({
+          id: 'perf-row-' + i, title: 'Seeded session ' + i, ended_at: null,
+          input_tokens: 1200, output_tokens: 800, is_active: false,
+          last_active: Date.now() - i * 60000, message_count: 12,
+          model: 'hermes-4', preview: 'seeded row', cwd: '/tmp/proj-' + (i % 7)
+        })
+      }
+      hook.seedSessions(rows)
+    }
+
+    // Leaked residue (--dead): sessions that ran with no surface referencing
+    // them and then settled — what a day of opening and closing tiles
+    // accumulates. Modeled on the real path (insert while busy, then the
+    // settle publish) so publish-time eviction, where present, engages.
+    // CLEANUP drops whatever survives, for builds without eviction.
+    window.__MT_DEAD__ = []
+    for (let d = 0; d < ${dead}; d++) {
+      const sid = 'perf-dead-' + d
+      const rid = 'perf-dead-rt-' + d
+      window.__MT_DEAD__.push(rid)
+      const settled = state(sid, rid, false)
+      hook.publish(rid, { ...settled, busy: true })
+      hook.publish(rid, settled)
+    }
+
+    // Zone leaders open as visible splits (right of the workspace, then
+    // subdividing that column into a grid); followers stack as tabs into
+    // their zone. zones=1 keeps the classic one-stack workload.
+    const perZone = Math.ceil(${tiles} / ${zones})
+    const leaders = []
+
+    // Streaming slots go to zone LEADERS first (rank orders round-robin across
+    // zones), so --streaming ${'$'}{zones} means "every VISIBLE transcript streams,
+    // every hidden tab idles" — the split the all-vs-visible snapshots diff.
+    window.__MT__ = { ids: [], leaders, streaming: [], timer: null }
     for (let n = 1; n <= ${tiles}; n++) {
       const sid = 'perf-tile-' + n
       const rid = 'perf-rt-' + n
       window.__MT__.ids.push({ sid, rid })
-      hook.open(sid, 'center')
+      const zone = ${zones} > 1 ? Math.floor((n - 1) / perZone) : 0
+      const posInZone = ${zones} > 1 ? (n - 1) % perZone : n - 1
+      const rank = posInZone * ${zones} + zone
+      const isStreaming = rank < ${streaming}
+      if (isStreaming) window.__MT__.streaming.push(rid)
+      const leader = leaders[zone]
+      if (leader) {
+        hook.open(sid, 'center', 'session-tile:' + leader)
+      } else if (${zones} === 1) {
+        hook.open(sid, 'center')
+      } else {
+        leaders[zone] = sid
+        if (zone === 0) hook.open(sid, 'right')
+        else if (zone === 1) hook.open(sid, 'bottom', 'session-tile:' + leaders[0])
+        else hook.open(sid, 'right', 'session-tile:' + leaders[zone - 2])
+      }
       hook.patch(sid, { runtimeId: rid })
-      hook.publish(rid, state(sid, rid))
+      hook.update(rid, () => state(sid, rid, isStreaming))
     }
     return 'ok'
   })()
@@ -108,23 +185,23 @@ const setup = (tiles, seedTurns, streamSeed) => `
 const reveal = sid => `window.__HERMES_LAYOUT_TREE__.reveal(${JSON.stringify(`session-tile:${sid}`)})`
 
 /** Page-side driver: grow every tile's streaming tail by `chunk` each
- *  `intervalMs`, through the same publish path the gateway flush uses. */
+ *  `intervalMs`, through the same write path the gateway flush uses. */
 const drive = (chunk, intervalMs, totalTokens) => `
   (() => {
     const hook = window.__HERMES_SESSION_TILES__
     let pushed = 0
     const tick = () => {
-      const states = hook.states()
-      for (const { rid } of window.__MT__.ids) {
-        const prev = states[rid]
-        if (!prev) continue
-        const messages = prev.messages.map(m => {
-          if (m.id !== prev.streamId) return m
-          const head = m.parts.slice(0, -1)
-          const last = m.parts[m.parts.length - 1]
-          return { ...m, parts: [...head, { type: 'text', text: last.text + ${JSON.stringify(chunk)} }] }
+      for (const rid of window.__MT__.streaming) {
+        hook.update(rid, prev => {
+          if (!prev.streamId) return prev
+          const messages = prev.messages.map(m => {
+            if (m.id !== prev.streamId) return m
+            const head = m.parts.slice(0, -1)
+            const last = m.parts[m.parts.length - 1]
+            return { ...m, parts: [...head, { type: 'text', text: last.text + ${JSON.stringify(chunk)} }] }
+          })
+          return { ...prev, messages }
         })
-        hook.publish(rid, { ...prev, messages })
       }
       pushed += 1
       if (pushed < ${totalTokens}) window.__MT__.timer = setTimeout(tick, ${intervalMs})
@@ -137,15 +214,23 @@ const drive = (chunk, intervalMs, totalTokens) => `
 
 const CLEANUP = `
   (() => {
+    const hook = window.__HERMES_SESSION_TILES__
+    if (window.__MT_DEAD__) {
+      for (const rid of window.__MT_DEAD__) hook.drop?.(rid)
+      window.__MT_DEAD__ = null
+    }
     if (window.__MT__) {
       clearTimeout(window.__MT__.timer)
       for (const { sid, rid } of window.__MT__.ids) {
-        window.__HERMES_SESSION_TILES__.publish(rid, {
-          ...window.__HERMES_SESSION_TILES__.states()[rid], busy: false, streamId: null
-        })
-        window.__HERMES_SESSION_TILES__.close(sid)
+        // Settle through the real path so the in-flight journal entry clears.
+        hook.update(rid, prev => ({ ...prev, busy: false, streamId: null }))
+        hook.close(sid)
       }
       window.__MT__ = null
+    }
+    if (window.__MT_SAVED_SESSIONS__) {
+      hook.seedSessions(window.__MT_SAVED_SESSIONS__)
+      window.__MT_SAVED_SESSIONS__ = null
     }
     return 'cleaned'
   })()
@@ -157,7 +242,11 @@ export default {
   description: 'N mounted session-tile tabs all streaming: frame pacing + longtasks.',
   async run(cdp, opts = {}) {
     const tiles = Number(opts.tiles ?? 5)
+    const zones = Number(opts.zones ?? 1)
     const seedTurns = Number(opts.turns ?? 20)
+    const seedSessions = Number(opts.sessions ?? 0)
+    const streaming = Math.min(Number(opts.streaming ?? tiles), tiles)
+    const dead = Number(opts.dead ?? 0)
     const tokens = Number(opts.tokens ?? 240)
     // Matches STREAM_DELTA_FLUSH_MS — one publish per session per real flush.
     const intervalMs = Number(opts.intervalMs ?? 33)
@@ -172,7 +261,7 @@ export default {
 
     await cdp.send('Runtime.enable')
 
-    const ok = await cdp.eval(setup(tiles, seedTurns, streamSeed))
+    const ok = await cdp.eval(setup(tiles, seedTurns, streamSeed, zones, seedSessions, streaming, dead))
 
     if (ok !== 'ok') {
       throw new Error(`multitab setup failed (${ok}) — dev hooks missing? (needs a dev/probe renderer)`)
@@ -182,6 +271,17 @@ export default {
     for (let n = 1; n <= tiles; n++) {
       await cdp.eval(reveal(`perf-tile-${n}`))
       await sleep(350)
+    }
+
+    // Front each zone's leader so the visible set is one transcript per zone
+    // (the reveal loop above leaves each zone on its LAST tab).
+    if (zones > 1) {
+      const leaders = JSON.parse(await cdp.eval('JSON.stringify(window.__MT__.leaders)'))
+
+      for (const sid of leaders) {
+        await cdp.eval(reveal(sid))
+        await sleep(150)
+      }
     }
 
     await sleep(1000)
@@ -235,6 +335,10 @@ export default {
       },
       detail: {
         tiles,
+        zones,
+        streaming,
+        dead,
+        sessions: seedSessions,
         code: Boolean(opts.code),
         windowS: Math.round(windowS * 10) / 10,
         avgFps: Math.round(avgFps * 10) / 10,

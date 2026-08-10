@@ -16,8 +16,13 @@ import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/c
  * Best-effort by design: storage failures must never break chat streaming.
  */
 
-const STORAGE_KEY = 'hermes.desktop.inflightTurnJournal.v1'
-const STORE_VERSION = 1
+/** One localStorage key PER SESSION. The v1 single-key store meant every
+ *  throttled write re-parsed and re-stringified EVERY busy session's tail —
+ *  with a grid of concurrent streams that was a whole-store JSON round-trip
+ *  dozens of times a second, all on the main thread. Per-session keys make a
+ *  write O(own tail) regardless of how many other sessions are streaming. */
+const STORAGE_PREFIX = 'hermes.desktop.inflightTurnJournal.v2:'
+const LEGACY_STORAGE_KEY = 'hermes.desktop.inflightTurnJournal.v1'
 const MAX_ENTRIES = 24
 const MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000
 /** Streaming repaints arrive every ~33ms; localStorage writes are synchronous.
@@ -41,11 +46,6 @@ export interface JournalableSessionState {
   turnStartedAt: null | number
 }
 
-interface JournalStore {
-  entries: Record<string, InFlightTurnSnapshot>
-  version: typeof STORE_VERSION
-}
-
 export interface InFlightRecoveryResult {
   applied: boolean
   /** The base transcript already contains the journaled turn's completed
@@ -64,73 +64,131 @@ function storage(): Storage | null {
   }
 }
 
-function emptyStore(): JournalStore {
-  return { entries: {}, version: STORE_VERSION }
+const entryKey = (storedSessionId: string) => `${STORAGE_PREFIX}${storedSessionId}`
+
+function isExpired(entry: InFlightTurnSnapshot, now = Date.now()): boolean {
+  return now - entry.updatedAt > MAX_AGE_MS
 }
 
-function loadStore(): JournalStore {
+function loadEntry(storedSessionId: string): InFlightTurnSnapshot | null {
   const store = storage()
 
   if (!store) {
-    return emptyStore()
+    return null
   }
 
   try {
-    const raw = store.getItem(STORAGE_KEY)
+    const raw = store.getItem(entryKey(storedSessionId))
+    const parsed = raw ? (JSON.parse(raw) as InFlightTurnSnapshot) : null
 
-    if (!raw) {
-      return emptyStore()
-    }
-
-    const parsed = JSON.parse(raw)
-
-    if (
-      !parsed ||
-      parsed.version !== STORE_VERSION ||
-      typeof parsed.entries !== 'object' ||
-      Array.isArray(parsed.entries)
-    ) {
-      return emptyStore()
-    }
-
-    return {
-      entries: parsed.entries as Record<string, InFlightTurnSnapshot>,
-      version: STORE_VERSION
-    }
+    return parsed && typeof parsed.updatedAt === 'number' && Array.isArray(parsed.messages) ? parsed : null
   } catch {
-    return emptyStore()
+    return null
   }
 }
 
-function saveStore(journal: JournalStore): void {
+function saveEntry(storedSessionId: string, entry: InFlightTurnSnapshot): void {
+  try {
+    storage()?.setItem(entryKey(storedSessionId), JSON.stringify(entry))
+  } catch {
+    // Quota/private-mode failures: the journal is a recovery aid, not truth.
+  }
+}
+
+function removeEntry(storedSessionId: string): void {
+  try {
+    storage()?.removeItem(entryKey(storedSessionId))
+  } catch {
+    // Same best-effort stance as saveEntry.
+  }
+}
+
+// Split a v1 single-key store into per-session entries. Checked on every
+// journal touch (a null getItem is free); a populated v1 store exists at most
+// once, right after the upgrade.
+function migrateLegacyStore(store: Storage): void {
+  try {
+    const legacy = store.getItem(LEGACY_STORAGE_KEY)
+
+    if (!legacy) {
+      return
+    }
+
+    const parsed = JSON.parse(legacy)
+
+    if (parsed && typeof parsed.entries === 'object' && !Array.isArray(parsed.entries)) {
+      for (const [id, entry] of Object.entries(parsed.entries as Record<string, InFlightTurnSnapshot>)) {
+        saveEntry(id, entry)
+      }
+    }
+  } catch {
+    // A corrupt v1 store has nothing worth carrying over.
+  }
+
+  try {
+    store.removeItem(LEGACY_STORAGE_KEY)
+  } catch {
+    // Best-effort, like every other journal write.
+  }
+}
+
+// One-time prune per renderer: drop expired/overflow entries. Startup-only on
+// purpose — entries clear on settle, so anything left over is crash residue,
+// and enumerating localStorage on the write path would defeat the point.
+let housekeepingDone = false
+
+function ensureHousekeeping(): void {
   const store = storage()
 
   if (!store) {
     return
   }
 
+  migrateLegacyStore(store)
+
+  if (housekeepingDone) {
+    return
+  }
+
+  housekeepingDone = true
+
   try {
-    const entries = Object.fromEntries(
-      Object.entries(journal.entries)
-        .filter(([, entry]) => !isExpired(entry))
-        .sort((a, b) => b[1].updatedAt - a[1].updatedAt)
-        .slice(0, MAX_ENTRIES)
-    )
+    const keys: string[] = []
 
-    if (Object.keys(entries).length === 0) {
-      store.removeItem(STORAGE_KEY)
+    for (let index = 0; index < store.length; index += 1) {
+      const key = store.key(index)
 
-      return
+      if (key?.startsWith(STORAGE_PREFIX)) {
+        keys.push(key)
+      }
     }
 
-    store.setItem(STORAGE_KEY, JSON.stringify({ entries, version: STORE_VERSION }))
-  } catch {
-    // Quota/private-mode failures: the journal is a recovery aid, not truth.
-  }
-}
+    const live: { key: string; updatedAt: number }[] = []
 
-function isExpired(entry: InFlightTurnSnapshot, now = Date.now()): boolean {
-  return now - entry.updatedAt > MAX_AGE_MS
+    for (const key of keys) {
+      let entry: InFlightTurnSnapshot | null = null
+
+      try {
+        entry = JSON.parse(store.getItem(key) ?? '') as InFlightTurnSnapshot
+      } catch {
+        // Unparseable — prune below.
+      }
+
+      if (!entry || typeof entry.updatedAt !== 'number' || isExpired(entry)) {
+        store.removeItem(key)
+      } else {
+        live.push({ key, updatedAt: entry.updatedAt })
+      }
+    }
+
+    live.sort((a, b) => b.updatedAt - a.updatedAt)
+
+    for (const { key } of live.slice(MAX_ENTRIES)) {
+      store.removeItem(key)
+    }
+  } catch {
+    // Best-effort, like every other journal write.
+  }
 }
 
 function cloneMessages(messages: ChatMessage[]): ChatMessage[] {
@@ -419,15 +477,13 @@ function writeSnapshot(storedSessionId: string, state: JournalableSessionState):
     return
   }
 
-  const journal = loadStore()
-
-  journal.entries[storedSessionId] = {
+  ensureHousekeeping()
+  saveEntry(storedSessionId, {
     messages: tail,
     streamId: state.streamId,
     turnStartedAt: state.turnStartedAt,
     updatedAt: Date.now()
-  }
-  saveStore(journal)
+  })
 }
 
 /** Persist the running turn's visible tail (throttled), or clear the entry the
@@ -471,16 +527,15 @@ export function readInFlightTurnJournal(storedSessionId: null | string): InFligh
     return null
   }
 
-  const journal = loadStore()
-  const entry = journal.entries[storedSessionId]
+  ensureHousekeeping()
+  const entry = loadEntry(storedSessionId)
 
   if (!entry) {
     return null
   }
 
   if (isExpired(entry)) {
-    delete journal.entries[storedSessionId]
-    saveStore(journal)
+    removeEntry(storedSessionId)
 
     return null
   }
@@ -533,13 +588,6 @@ export function clearInFlightTurnJournal(storedSessionId: null | string): void {
   }
 
   persistLatest.delete(storedSessionId)
-
-  const journal = loadStore()
-
-  if (!(storedSessionId in journal.entries)) {
-    return
-  }
-
-  delete journal.entries[storedSessionId]
-  saveStore(journal)
+  ensureHousekeeping()
+  removeEntry(storedSessionId)
 }

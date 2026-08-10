@@ -774,6 +774,29 @@ The buttons disable themselves once a choice is made so duplicate clicks don't d
 
 Interactive prompts (command approvals, `clarify` questions, and slash-command confirmations) share one layout: the **plain message** carries the full payload — the command and why it was flagged plus the approval deadline, or the question and reply hint — the **embed card** underneath is a header only, and the buttons sit below the card. Everything you need to decide is in the plain text, so the prompt reads correctly on clients that hide or detach embeds, and nothing is shown twice on clients that render them.
 
+### Notify owners when input is waiting
+
+Discord does not notify channel members for an ordinary bot message. To ping the
+numeric users in `discord.allow_from` whenever Hermes is blocked on input, enable:
+
+```yaml
+discord:
+  approval_mentions: true
+```
+
+This covers dangerous-command approvals, slash-command confirmations, `clarify`
+questions, and update prompts. `DISCORD_APPROVAL_MENTIONS=true` is the equivalent
+environment override. Mentions are opt-in to avoid surprise notifications; only
+numeric allowlisted users are pinged, while role, `@everyone`, and reply-reference
+notifications remain disabled. A very large allowlist is cut to the first owners
+(by ID) that fit a quarter of Discord's 2,000-character message, so the prompt
+itself always fits.
+
+A nonempty environment setting overrides YAML, as with the other Discord flags.
+Each profile's gateway bot follows only its own profile's `.env` and
+`config.yaml`: one profile opting in never pings owners for another profile's
+prompts.
+
 ## Home Channel
 
 You can designate a "home channel" where the bot sends proactive messages (such as cron job output, reminders, and notifications). There are two ways to set it:

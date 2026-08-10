@@ -267,7 +267,11 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     #   true  — always inject (all models)
     #   false — never inject
     #   list  — custom model-name substrings to match
-    if agent.valid_tool_names:
+    if agent.valid_tool_names and not getattr(agent, "_suppress_tools", False):
+        # When model.tools: false suppresses the tools payload, the request
+        # carries no tool definitions — telling the model it "must call tools"
+        # would only provoke hallucinated tool_calls that can't be dispatched
+        # (#79639). Skip the enforcement guidance in that case.
         _enforce = agent._tool_use_enforcement
         _inject = False
         if _enforce is True or (isinstance(_enforce, str) and _enforce.lower() in {"true", "always", "yes", "on"}):

@@ -339,3 +339,33 @@ class TestSkillsInVolatileBand:
         full = _build(build_system_prompt)
         assert full.index(_CONTEXT) < full.index(_SKILLS)
         assert full.index(_SKILLS) < full.index("Conversation started:")
+
+
+class TestToolUseEnforcementSuppress:
+    """#79639: when ``model.tools: false`` suppresses the tools payload, the
+    tool-use enforcement guidance must not be injected — the request carries no
+    tool definitions, so telling the model it "must call tools" would provoke
+    hallucinated tool_calls."""
+
+    def test_enforcement_injected_when_tools_active(self):
+        agent = _make_agent(
+            valid_tool_names=["search"],
+            _tool_use_enforcement=True,
+        )
+        assert "Tool-use enforcement" in _stable_prompt(agent)
+
+    def test_enforcement_suppressed_when_tools_disabled(self):
+        agent = _make_agent(
+            valid_tool_names=["search"],
+            _tool_use_enforcement=True,
+            _suppress_tools=True,
+        )
+        assert "Tool-use enforcement" not in _stable_prompt(agent)
+
+    def test_enforcement_still_injected_when_suppress_false(self):
+        agent = _make_agent(
+            valid_tool_names=["search"],
+            _tool_use_enforcement=True,
+            _suppress_tools=False,
+        )
+        assert "Tool-use enforcement" in _stable_prompt(agent)

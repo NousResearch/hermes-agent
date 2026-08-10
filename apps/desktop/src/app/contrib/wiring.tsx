@@ -251,7 +251,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const {
     loadMoreMessagingForPlatform,
     loadMoreSessions,
-    loadMoreSessionsForProfile,
     refreshCronJobs,
     refreshMessagingSessions,
     refreshSessions
@@ -879,7 +878,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onDismissError: dismissError,
     onEdit: editMessage,
     onLoadMoreMessaging: loadMoreMessagingForPlatform,
-    onLoadMoreProfileSessions: loadMoreSessionsForProfile,
     onLoadMoreSessions: loadMoreSessions,
     onManageCronJob: jobId => {
       setCronFocusJobId(jobId)

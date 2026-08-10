@@ -2231,11 +2231,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
             if result and result.get("error"):
                 # Include target context (platform/chat) so a bare error string
-                # like "Discord send failed: TimeoutError: " is attributable;
-                # no active exception here (error comes from the send result),
-                # so exc_info is only attached when one is in flight.
+                # like "Discord send failed: TimeoutError: " is attributable.
+                # Not inside an except block — the error comes from the send
+                # result dict, so there is no traceback to attach.
                 msg = f"delivery error: {result['error']} (target {platform_name}:{chat_id})"
-                logger.error("Job '%s': %s", job["id"], msg, exc_info=sys.exc_info()[0] is not None)
+                logger.error("Job '%s': %s", job["id"], msg)
                 target_errors.extend([msg])
                 delivery_errors.extend(target_errors)
                 continue

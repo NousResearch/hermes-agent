@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type * as React from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { openSession } from '@/app/open-session'
 import type { SessionInfo } from '@/hermes'
@@ -22,6 +22,7 @@ import type * as WindowsStore from '@/store/windows'
 import { SidebarSessionRow } from './session-row'
 
 afterEach(cleanup)
+beforeEach(() => vi.clearAllMocks())
 
 vi.mock('@/i18n', () => ({
   useI18n: () => ({
@@ -376,6 +377,8 @@ describe('SidebarSessionRow', () => {
 
   it('keeps Cmd+Shift-click as the standalone-window gesture', () => {
     const onArchive = vi.fn()
+    const onPin = vi.fn()
+    const onResume = vi.fn()
 
     render(
       <SidebarSessionRow
@@ -383,8 +386,8 @@ describe('SidebarSessionRow', () => {
         isSelected={false}
         onArchive={onArchive}
         onDelete={noop}
-        onPin={noop}
-        onResume={noop}
+        onPin={onPin}
+        onResume={onResume}
         session={makeSession({ title: 'Open in a window' })}
       />
     )
@@ -392,6 +395,9 @@ describe('SidebarSessionRow', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Open in a window' }), { metaKey: true, shiftKey: true })
 
     expect(onArchive).not.toHaveBeenCalled()
+    expect(onPin).not.toHaveBeenCalled()
+    expect(onResume).not.toHaveBeenCalled()
+    expect(openSession).toHaveBeenCalledOnce()
     expect(openSession).toHaveBeenCalledWith('s1', expect.any(Function), 'window')
   })
 
@@ -437,6 +443,7 @@ describe('SidebarSessionRow', () => {
       expect(onArchive).not.toHaveBeenCalled()
       expect(onPin).not.toHaveBeenCalled()
       expect(onResume).not.toHaveBeenCalled()
+      expect(openSession).toHaveBeenCalledOnce()
       expect(openSession).toHaveBeenCalledWith('s1', expect.any(Function), 'window')
     }
   )

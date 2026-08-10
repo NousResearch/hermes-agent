@@ -75,7 +75,7 @@ Browser Use mode uses the [Browser Use CLI 3.0](https://github.com/browser-use/b
 
 **This is the default browser mode**: when `browser.backend` is unset and the `browser-use` CLI is runnable (installed, or available through `uvx`), the agent gets the single `browser_exec` tool. If the CLI can't run, Hermes falls back to the built-in browser tools automatically.
 
-The mode is a **driver** that composes with your configured browser backend: it drives your local Chrome, a Nous-subscription cloud browser, Browserbase, Firecrawl, or Browser Use cloud browsers — whichever browser source is selected in `hermes tools` → Browser Automation. The one exception is Camofox, which has no CDP endpoint for the harness to attach to; Camofox setups automatically keep the built-in browser tools.
+The mode is a **driver** that composes with your configured browser backend: it drives your local Chrome, a Nous-subscription cloud browser, Browserbase, Firecrawl, or Browser Use cloud browsers — whichever browser source is selected in `hermes tools` → Browser Automation. The one exception is Camofox, which has no CDP endpoint for the harness to attach to; Camofox setups automatically keep the built-in browser tools — unless you select **Camofox (exec mode)**, which gives Camofox the same script-per-call surface over its REST API (see below).
 
 **Concurrent sessions:** `browser_exec` accepts a `session=<name>` argument that isolates browser work per name on every backend. Each name gets its own harness daemon (its own IPC socket, log, and state), and on cloud backends its own browser — so parallel subagents or simultaneous chats no longer clobber a single shared connection. Omitting `session` uses the shared default daemon, which is fine for one-at-a-time browsing.
 
@@ -97,6 +97,28 @@ Because Browser Use mode executes model-written Python on your machine, the
 access. Platforms configured without the terminal toolset (e.g. a locked-down
 messaging surface) keep the default browser tools instead.
 :::
+
+### Camofox exec mode
+
+The Camofox backend gets the same script-per-call surface as Browser Use mode — one `browser_exec` call per task step instead of one tool call per click — while keeping everything Camofox is for: the Camoufox anti-detection engine, persistent profiles (`browser.camofox.managed_persistence`), macros, and the VNC live view.
+
+The model's code runs in a fresh Python subprocess with pre-imported helpers that map 1:1 onto the Camofox REST API. No browser-use CLI install is needed.
+
+To enable it, pick **Camofox (exec mode)** in `hermes tools` → Browser Automation (this sets `browser.backend: "camofox"`), or configure manually:
+
+```yaml
+# ~/.hermes/config.yaml
+browser:
+  backend: "camofox"
+```
+
+You still need a running Camofox server with `CAMOFOX_URL` set (see [Camofox local mode](#camofox-local-mode) below).
+
+Available helpers: `new_tab(url)`, `goto_url(url)`, `wait_for_load()`, `page_info()` (URL + accessibility snapshot with element refs), `js(expr)`, `fill_input(selector, text)`, `type_into_ref(ref, text)`, `click_ref(ref)` (preferred — refs are stable), `click_selector(selector)`, `click_at_xy(x, y)`, `press_key(key)`, `scroll_page(direction, amount)`, `capture_screenshot()` (PNG attached for vision models), `get_links(limit)`, and a limited `cdp(method, **kwargs)` compatibility shim (`Page.navigate`, `Runtime.evaluate`, `Accessibility.getFullAXTree`, `DOM.getBoxModel`) — prefer the typed helpers over raw CDP.
+
+Tabs live on the Camofox server and survive across calls under the same profile identity; a garbage-collected tab is recreated automatically with cookies intact.
+
+To go back to the built-in per-click Camofox tools, use `/browser use off` or set `browser.backend: "off"`.
 
 ### Firecrawl cloud mode
 

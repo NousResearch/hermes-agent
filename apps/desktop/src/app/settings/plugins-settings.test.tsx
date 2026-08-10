@@ -74,6 +74,7 @@ describe('PluginsSettings', () => {
       ...legacyRow,
       description: 'A second plugin category with the same legacy name'
     }
+
     const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined)
 
     $agentPlugins.set([legacyRow, sibling])

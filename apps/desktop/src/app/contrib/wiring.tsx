@@ -248,13 +248,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
 
   const { connectionRef, gateway, gatewayRef, requestGateway } = useGatewayRequest()
 
-  const {
-    loadMoreMessagingForPlatform,
-    loadMoreSessions,
-    refreshCronJobs,
-    refreshMessagingSessions,
-    refreshSessions
-  } = useSessionListActions({ profileScope })
+  const { loadMoreMessagingForPlatform, loadMoreSessions, refreshCronJobs, refreshMessagingSessions, refreshSessions } =
+    useSessionListActions({ profileScope })
 
   const updateActiveSessionRuntimeInfo = useCallback(
     (info: { branch?: string; cwd?: string }) => {

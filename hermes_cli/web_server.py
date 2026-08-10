@@ -48,7 +48,7 @@ import zipfile
 from hermes_cli._subprocess_compat import windows_detach_flags, windows_hide_flags
 import urllib.request
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, cast, Dict, List, Literal, Optional, Tuple
 
 import yaml
 
@@ -2834,6 +2834,7 @@ _PORT_BINDING_PLATFORM_PORTS: Dict[str, Tuple[str, int]] = {
     "sms": ("webhook_port", 8080),
     "whatsapp_cloud": ("webhook_port", 8090),
     "line": ("port", 8646),
+    "zalo": ("webhook_port", 8790),
 }
 
 # Platform states that mean the adapter is NOT serving its port right now.
@@ -2847,8 +2848,9 @@ def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> Dict
     ``gateway_state.json`` and resolves each port-binding platform's port from
     the profile's ``config.yaml`` (top-level ``platforms:`` wins over
     ``gateway.platforms:``, matching ``load_gateway_config`` precedence),
-    falling back to the adapter default.  Display-only: env-var port overrides
-    (e.g. ``WEBHOOK_PORT`` in that profile's .env) are not resolved here.
+    falling back to the adapter default. Zalo's env-first connection mode is
+    honored so polling is not shown as a listener. Display-only: env-var port
+    overrides (e.g. ``WEBHOOK_PORT`` in that profile's .env) are not resolved.
     """
     platforms = (runtime or {}).get("platforms") or {}
     active = [
@@ -2878,11 +2880,37 @@ def _profile_platform_ports(profile_home: Path, runtime: Optional[dict]) -> Dict
     except Exception:
         blocks = {}
 
+    profile_env: Dict[str, str] = {}
+    if "zalo" in active:
+        try:
+            from hermes_constants import (
+                reset_hermes_home_override,
+                set_hermes_home_override,
+            )
+
+            home_token = set_hermes_home_override(profile_home)
+            try:
+                profile_env = load_env()
+            finally:
+                reset_hermes_home_override(home_token)
+        except Exception:
+            profile_env = {}
+
     ports: Dict[str, int] = {}
+    from gateway.config import platform_binds_port
+
     for name in active:
         port_key, default_port = _PORT_BINDING_PLATFORM_PORTS[name]
         block = blocks.get(name) or {}
-        extra = block.get("extra") if isinstance(block.get("extra"), dict) else {}
+        raw_extra = block.get("extra")
+        extra = cast(Dict[str, Any], raw_extra) if isinstance(raw_extra, dict) else {}
+        if name == "zalo":
+            effective_extra: Dict[str, Any] = dict(extra)
+            env_mode = profile_env.get("ZALO_CONNECTION_MODE", "").strip()
+            if env_mode:
+                effective_extra["connection_mode"] = env_mode
+            if not platform_binds_port(name, effective_extra):
+                continue
         raw = block.get(port_key, (extra or {}).get(port_key, default_port))
         try:
             ports[name] = int(raw)
@@ -9398,7 +9426,9 @@ async def get_messaging_platforms(profile: Optional[str] = None):
 
 
 def _multiplex_port_binding_conflict(
-    platform_id: str, requested_profile: Optional[str]
+    platform_id: str,
+    requested_profile: Optional[str],
+    requested_env: Optional[Dict[str, str]] = None,
 ) -> Optional[str]:
     """Reason enabling ``platform_id`` on the target profile would break a
     multiplexed gateway, or ``None`` when the change is allowed.
@@ -9413,7 +9443,11 @@ def _multiplex_port_binding_conflict(
     *enabling* is blocked; disabling/clearing stays allowed so users can
     repair an already-invalid profile.
     """
-    from gateway.config import PORT_BINDING_PLATFORM_VALUES, load_gateway_config
+    from gateway.config import (
+        PORT_BINDING_PLATFORM_VALUES,
+        load_gateway_config,
+        platform_binds_port,
+    )
 
     if platform_id not in PORT_BINDING_PLATFORM_VALUES:
         return None
@@ -9431,6 +9465,30 @@ def _multiplex_port_binding_conflict(
         target = requested
     if target in ("default", "custom"):
         return None
+
+    # Zalo defaults to long polling, which does not own a listener. Its env
+    # setting takes precedence over config.yaml, so evaluate the prospective
+    # value from this request before rejecting a secondary-profile enable.
+    if platform_id == "zalo":
+        from hermes_cli.config import load_env
+
+        with _config_profile_scope(target):
+            target_cfg = load_gateway_config()
+            current_env = load_env()
+
+        extra: Dict[str, Any] = {}
+        for platform, platform_cfg in target_cfg.platforms.items():
+            if getattr(platform, "value", str(platform)) == platform_id:
+                extra = dict(platform_cfg.extra or {})
+                break
+        extra["connection_mode"] = str(
+            (requested_env or {}).get("ZALO_CONNECTION_MODE")
+            or current_env.get("ZALO_CONNECTION_MODE")
+            or extra.get("connection_mode")
+            or "polling"
+        ).strip().lower()
+        if not platform_binds_port(platform_id, extra):
+            return None
 
     # The multiplex flag that matters is the one the shared gateway reads at
     # startup: the DEFAULT profile's gateway config (plus the process-wide
@@ -9460,7 +9518,11 @@ async def update_messaging_platform(
 
     target_profile = body.profile or profile
     if body.enabled:
-        conflict = _multiplex_port_binding_conflict(platform_id, target_profile)
+        conflict = _multiplex_port_binding_conflict(
+            platform_id,
+            target_profile,
+            body.env,
+        )
         if conflict:
             # Reject BEFORE any .env/config.yaml write so the profile stays
             # loadable by the multiplexed gateway.

@@ -391,6 +391,7 @@ PORT_BINDING_PLATFORM_VALUES = frozenset({
     "sms",
     "whatsapp_cloud",
     "line",
+    "zalo",
 })
 
 # Platforms whose port-binding status depends on connection mode. Feishu in
@@ -399,8 +400,8 @@ PORT_BINDING_PLATFORM_VALUES = frozenset({
 # value that actually binds (#52563).
 PORT_BINDING_CONDITIONAL_MODES: dict[str, str] = {
     "feishu": "webhook",
+    "zalo": "webhook",
 }
-
 
 def platform_binds_port(platform_value: str, extra: Optional[dict] = None) -> bool:
     """Return True when *platform_value* actually binds a port for *extra* config.

@@ -621,6 +621,26 @@ Used by the bundled LINE platform plugin (`plugins/platforms/line/`). See [Messa
 | `LINE_DELIVERED_TEXT` | Reply when an already-delivered postback is tapped again (default: `Already replied ✅`). |
 | `LINE_INTERRUPTED_TEXT` | Reply when a `/stop`-orphaned postback button is tapped (default: `Run was interrupted before completion.`). |
 
+### Zalo Bot Platform
+
+Used by the bundled Zalo plugin (`plugins/platforms/zalo/`). This is the Bot Creator API, not the Zalo Official Account API. See [Messaging Gateway → Zalo Bot](/user-guide/messaging/zalo).
+
+| Variable | Description |
+|----------|-------------|
+| `ZALO_BOT_TOKEN` | Bot token from Zalo Bot Creator. Required. |
+| `ZALO_ALLOWED_USERS` | Comma-separated Zalo user IDs allowed to message the bot. |
+| `ZALO_ALLOW_ALL_USERS` | Allow every Zalo user (development only). |
+| `ZALO_HOME_CHANNEL` | Default chat ID for `deliver: zalo`, cron, and proactive delivery. |
+| `ZALO_HOME_CHANNEL_NAME` | Display name for the home chat (default: `Home`). |
+| `ZALO_CONNECTION_MODE` | `polling` (default) or `webhook`. |
+| `ZALO_POLL_TIMEOUT` | `getUpdates` long-poll timeout in seconds (default: `30`, clamped to 1–50). |
+| `ZALO_API_BASE` | Optional Bot API base override (default: `https://bot-api.zaloplatforms.com/bot`). |
+| `ZALO_WEBHOOK_PUBLIC_URL` | Public HTTPS URL registered with `setWebhook`. Required in webhook mode. |
+| `ZALO_WEBHOOK_SECRET` | 8–256 character secret validated from `X-Bot-Api-Secret-Token`. Required in webhook mode. |
+| `ZALO_WEBHOOK_HOST` | Local webhook bind host (default: `0.0.0.0`). |
+| `ZALO_WEBHOOK_PORT` | Local webhook port (default: `8790`). |
+| `ZALO_WEBHOOK_PATH` | Local POST path (defaults to the path in `ZALO_WEBHOOK_PUBLIC_URL`, or `/zalo/webhook`). |
+
 ### ntfy (push notifications)
 
 [ntfy](https://ntfy.sh/) is a lightweight HTTP-based push notification service. Subscribe to a topic from the [ntfy mobile app](https://ntfy.sh/docs/subscribe/phone/), publish to that topic to talk to the agent.

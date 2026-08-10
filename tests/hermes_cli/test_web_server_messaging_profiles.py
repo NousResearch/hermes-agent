@@ -216,14 +216,14 @@ class TestMultiplexPortBindingGuard:
         # multiplex flag under test comes from the default profile's config.
         monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
 
-    def test_rejects_every_port_binding_platform_on_secondary(
+    def test_rejects_port_binding_platforms_other_than_polling_zalo_on_secondary(
         self, client, isolated_profiles
     ):
         from gateway.config import PORT_BINDING_PLATFORM_VALUES
 
         _enable_multiplex(isolated_profiles["default"])
         assert PORT_BINDING_PLATFORM_VALUES  # guard set must not be empty
-        for platform_id in sorted(PORT_BINDING_PLATFORM_VALUES):
+        for platform_id in sorted(PORT_BINDING_PLATFORM_VALUES - {"zalo"}):
             resp = client.put(
                 f"/api/messaging/platforms/{platform_id}",
                 params={"profile": "worker_alpha"},
@@ -231,6 +231,35 @@ class TestMultiplexPortBindingGuard:
             )
             assert resp.status_code == 409, platform_id
             assert "default profile" in resp.json()["detail"]
+
+    def test_allows_zalo_polling_on_secondary(self, client, isolated_profiles):
+        _enable_multiplex(isolated_profiles["default"])
+
+        resp = client.put(
+            "/api/messaging/platforms/zalo",
+            params={"profile": "worker_alpha"},
+            json={
+                "enabled": True,
+                "env": {"ZALO_CONNECTION_MODE": "polling"},
+            },
+        )
+
+        assert resp.status_code == 200
+
+    def test_rejects_zalo_webhook_on_secondary(self, client, isolated_profiles):
+        _enable_multiplex(isolated_profiles["default"])
+
+        resp = client.put(
+            "/api/messaging/platforms/zalo",
+            params={"profile": "worker_alpha"},
+            json={
+                "enabled": True,
+                "env": {"ZALO_CONNECTION_MODE": "webhook"},
+            },
+        )
+
+        assert resp.status_code == 409
+        assert "default profile" in resp.json()["detail"]
 
 
 

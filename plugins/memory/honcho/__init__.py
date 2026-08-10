@@ -1449,7 +1449,10 @@ class HonchoMemoryProvider(MemoryProvider):
                 if clean_assistant_content:
                     for chunk in self._chunk_message(clean_assistant_content, msg_limit):
                         session.add_message("assistant", chunk)
-                self._manager._flush_session(session)
+                # Route through save() so writeFrequency is honored —
+                # _flush_session() directly bypassed "session"/N batching
+                # and flushed every turn regardless of config.
+                self._manager.save(session)
             except Exception as e:
                 logger.debug("Honcho sync_turn failed: %s", e)
 

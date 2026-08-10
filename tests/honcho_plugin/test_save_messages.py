@@ -26,7 +26,16 @@ class TestSyncTurn:
         p = _provider(save_messages=False)
         p.sync_turn('user says', 'assistant says')
         p._manager.get_or_create.assert_not_called()
-        p._manager._flush_session.assert_not_called()
+        p._manager.save.assert_not_called()
+
+    def test_enabled_routes_through_save(self):
+        p = _provider(save_messages=True)
+        p.sync_turn('user says', 'assistant says')
+        if p._sync_thread is not None:
+            p._sync_thread.join(timeout=5)
+        p._manager.get_or_create.assert_called_once()
+        # save() (not _flush_session) so writeFrequency batching is honored
+        p._manager.save.assert_called_once()
 
     def test_enabled_writes(self):
         p = _provider(save_messages=True)

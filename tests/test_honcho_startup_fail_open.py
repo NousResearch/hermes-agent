@@ -483,7 +483,7 @@ def test_honcho_sync_turn_same_instance_config_flip_gates_writes():
             manager_calls.append(session_key)
             return SimpleNamespace(add_message=lambda role, content: None)
 
-        def _flush_session(self, session):
+        def save(self, session):
             write_done.set()
 
     provider._config = cfg

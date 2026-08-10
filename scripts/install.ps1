@@ -2460,15 +2460,23 @@ function Install-Venv {
         }
         # Move the old venv aside before creating its replacement. A directory
         # rename is atomic on the same volume and does not require deleting
-        # files mapped as DLLs. Never fall back to deleting the live venv:
-        # Windows can remove unlocked files first, then fail on one locked
-        # file, leaving no usable interpreter and no rollback source.
+        # files mapped as DLLs. NEVER fall back to deleting the live venv
+        # (#83149): Remove-Item -Recurse can delete most of site-packages and
+        # then fail on one locked .pyd, leaving a gutted venv with no usable
+        # interpreter and no rollback source. Abort with the previous install
+        # intact so the user can close holders and retry.
         $venvBackupName = "venv.stale.{0}-{1}" -f (Get-Date -Format "yyyyMMddHHmmss"), ([Guid]::NewGuid().ToString("N"))
         try {
             Rename-Item -LiteralPath "venv" -NewName $venvBackupName -ErrorAction Stop
             $venvParked = $true
         } catch {
-            throw "Could not move existing venv aside without deleting it. Close running Hermes processes and retry. $($_.Exception.Message)"
+            $renameErr = $_.Exception.Message
+            throw (
+                "Could not move the existing venv aside ($renameErr). " +
+                "A process still has the install directory open (often a non-Hermes " +
+                "python.exe that resolved into this venv via PATH). Close those " +
+                "processes and retry - the previous install was left intact."
+            )
         }
     }
     

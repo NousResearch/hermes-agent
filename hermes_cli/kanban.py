@@ -1671,6 +1671,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    graph = None
     with kb.connect_closing() as conn:
         task = kb.get_task(conn, args.task_id)
         if not task:
@@ -1685,6 +1686,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
         # ``result=``. Surfacing the latest summary here keeps ``show`` from
         # looking like a no-op when the worker actually did real work.
         latest_summary = kb.latest_summary(conn, args.task_id)
+        if not getattr(args, "json", False):
+            graph = kb.task_graph_context(conn, task.id)
 
     if getattr(args, "json", False):
         payload = {
@@ -1762,9 +1765,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
     # of show output so CLI users see them before scrolling through
     # comments / runs.
     from hermes_cli import kanban_diagnostics as kd
-    diags = kd.compute_task_diagnostics(
-        task, events, runs, graph=kb.task_graph_context(conn, task.id)
-    )
+    diags = kd.compute_task_diagnostics(task, events, runs, graph=graph)
     if diags:
         sev_marker = {"warning": "⚠", "error": "!!", "critical": "!!!"}
         print(f"\n  Diagnostics ({len(diags)}):")

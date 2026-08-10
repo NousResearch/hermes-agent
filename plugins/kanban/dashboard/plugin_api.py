@@ -1087,62 +1087,21 @@ def _invalidate_descendants_for_parent_reopen(
     parent_id: str,
     terminations: list[tuple[Optional[int], Optional[str]]],
 ) -> None:
-    """Retract every dispatchable/completed descendant of a reopened parent."""
-    rows = conn.execute(
-        """
-        WITH RECURSIVE descendants(id) AS (
-            SELECT child_id FROM task_links WHERE parent_id = ?
-            UNION
-            SELECT l.child_id
-            FROM task_links l
-            JOIN descendants d ON d.id = l.parent_id
-        )
-        SELECT t.id, t.status, t.current_run_id, t.worker_pid, t.claim_lock
-        FROM descendants d
-        JOIN tasks t ON t.id = d.id
-        ORDER BY t.id
-        """,
-        (parent_id,),
-    ).fetchall()
-    for row in rows:
-        previous_status = row["status"]
-        if previous_status not in {"ready", "review", "running", "done"}:
-            continue
-        resume_status = "ready"
-        run_id = None
-        if previous_status == "review":
-            resume_status = "review"
-        elif previous_status == "running":
-            resume_status = kanban_db._retry_status_for_run(
-                conn, row["id"], row["current_run_id"]
-            )
-            terminations.append((row["worker_pid"], row["claim_lock"]))
-            run_id = kanban_db._end_run(
-                conn,
-                row["id"],
-                outcome="reclaimed",
-                status="todo",
-                summary=f"ancestor {parent_id} reopened",
-            )
-        conn.execute(
-            "UPDATE tasks SET status = 'todo', completed_at = NULL, "
-            "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
-            "current_run_id = NULL WHERE id = ?",
-            (row["id"],),
-        )
-        kanban_db._append_event(
-            conn,
-            row["id"],
-            "status",
-            {
-                "status": "todo",
-                "reason": "ancestor_reopened",
-                "parent": parent_id,
-                "previous_status": previous_status,
-                "resume_status": resume_status,
-            },
-            run_id=run_id,
-        )
+    """Delegate to the domain-layer implementation in :mod:`kanban_db`.
+
+    Kept as a thin shim so ``_set_status_direct`` stays readable; the actual
+    invalidation (recursive-CTE discovery, per-descendant events + comments,
+    run closing, failure-counter reset) lives in
+    :func:`kanban_db.invalidate_descendants_for_parent_reopen` so every
+    reopen surface shares one implementation. We run inside the caller's
+    open transaction, so the domain function composes via a savepoint and
+    returns the worker terminations for us to perform post-commit (events
+    must be durable BEFORE the kill).
+    """
+    result = kanban_db.invalidate_descendants_for_parent_reopen(
+        conn, parent_id, author="dashboard",
+    )
+    terminations.extend(result["terminations"])
 
 
 def _set_status_direct(

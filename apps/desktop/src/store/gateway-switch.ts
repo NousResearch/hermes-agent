@@ -4,17 +4,16 @@ import { resetLiveRuntimeTracking } from '@/app/contrib/hooks/use-background-syn
 import { resetSidebarBatchCapability } from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { clearArtifactRegistry } from '@/store/artifacts'
+import { invalidateCronCache } from '@/store/cron'
 import { resetSessionsLimit } from '@/store/layout'
 import { resetLiveSync } from '@/store/live-sync'
 import {
   $unreadFinishedSessionIds,
+  invalidateMessagingCache,
   setActiveSessionId,
   setCronSessions,
   setFreshDraftReady,
   setMessages,
-  setMessagingPlatformTotals,
-  setMessagingSessions,
-  setMessagingTruncated,
   setSelectedStoredSessionId,
   setSessionProfilesTruncated,
   setSessions,
@@ -51,9 +50,8 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setSessions([])
   setSessionProfilesTruncated({})
   setCronSessions([])
-  setMessagingSessions([])
-  setMessagingPlatformTotals({})
-  setMessagingTruncated(false)
+  invalidateCronCache()
+  invalidateMessagingCache()
   // Clearing $sessionStates automatically clears $workingSessionIds and
   // $attentionSessionIds (computed) and $stalledSessionIds (owned beside it).
   // $unreadFinishedSessionIds is separate, so wipe it explicitly.

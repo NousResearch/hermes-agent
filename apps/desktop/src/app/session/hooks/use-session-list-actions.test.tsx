@@ -4,11 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionInfo, SidebarSessionsResponse } from '@/hermes'
 import {
   $cronSessions,
-  $messagingSessions,
+  $messagingCache,
   $sessions,
   $sessionsLoading,
+  messagingCacheForScope,
   setCronSessions,
-  setMessagingSessions,
+  setMessagingCache,
   setSessions,
   setSessionsLoading
 } from '@/store/session'
@@ -76,14 +77,14 @@ beforeEach(() => {
   removed.ids = new Set()
   setSessions([])
   setCronSessions([])
-  setMessagingSessions([])
+  setMessagingCache({})
   setSessionsLoading(false)
 })
 
 afterEach(() => {
   setSessions([])
   setCronSessions([])
-  setMessagingSessions([])
+  setMessagingCache({})
   setSessionsLoading(false)
 })
 
@@ -208,7 +209,7 @@ describe('refreshSessions batches slices into one request', () => {
     // Each slice landed in its own store.
     expect($sessions.get().map(s => s.id)).toEqual(['a', 'b'])
     expect($cronSessions.get().map(s => s.id)).toEqual(['c1'])
-    expect($messagingSessions.get().map(s => s.id)).toEqual(['m1'])
+    expect(messagingCacheForScope('default', $messagingCache.get()).sessions.map(s => s.id)).toEqual(['m1'])
   })
 
   it('forwards the active profile scope + section limits to the batched call', async () => {
@@ -247,5 +248,64 @@ describe('refreshSessions batches slices into one request', () => {
     })
 
     expect(getCronJobs).toHaveBeenLastCalledWith('all')
+  })
+
+  it('keeps delayed messaging responses isolated by profile scope', async () => {
+    let resolveMacmini!: (value: { sessions: SessionInfo[] }) => void
+    let resolveMacbook!: (value: { sessions: SessionInfo[] }) => void
+    listAllProfileSessions
+      .mockImplementationOnce(() => new Promise<{ sessions: SessionInfo[] }>(resolve => (resolveMacmini = resolve)))
+      .mockImplementationOnce(() => new Promise<{ sessions: SessionInfo[] }>(resolve => (resolveMacbook = resolve)))
+
+    const { result, rerender } = renderHook(({ profileScope }) => useSessionListActions({ profileScope }), {
+      initialProps: { profileScope: 'macmini' }
+    })
+
+    const oldRefresh = result.current.refreshMessagingSessions()
+    rerender({ profileScope: 'macbook' })
+    const currentRefresh = result.current.refreshMessagingSessions()
+
+    await act(async () => {
+      resolveMacbook({ sessions: [row('macbook-discord', { profile: 'macbook', source: 'discord' })] })
+      await currentRefresh
+      resolveMacmini({ sessions: [row('macmini-discord', { profile: 'macmini', source: 'discord' })] })
+      await oldRefresh
+    })
+
+    expect(messagingCacheForScope('macbook', $messagingCache.get()).sessions.map(s => s.id)).toEqual([
+      'macbook-discord'
+    ])
+    expect(messagingCacheForScope('macmini', $messagingCache.get()).sessions.map(s => s.id)).toEqual([
+      'macmini-discord'
+    ])
+  })
+
+  it('keeps newer same-scope pagination when an older batched refresh resolves last', async () => {
+    let resolveBatched!: (value: SidebarSessionsResponse) => void
+    let resolvePagination!: (value: { sessions: SessionInfo[]; total: number }) => void
+    listSidebarSessions.mockImplementationOnce(
+      () => new Promise<SidebarSessionsResponse>(resolve => (resolveBatched = resolve))
+    )
+    listAllProfileSessions.mockImplementationOnce(
+      () => new Promise<{ sessions: SessionInfo[]; total: number }>(resolve => (resolvePagination = resolve))
+    )
+
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'default' }))
+    const batchedRefresh = result.current.refreshSessions()
+    const pagination = result.current.loadMoreMessagingForPlatform('telegram')
+
+    await act(async () => {
+      resolvePagination({
+        sessions: [row('telegram-1', { source: 'telegram' }), row('telegram-2', { source: 'telegram' })],
+        total: 2
+      })
+      await pagination
+      resolveBatched(sidebar({ sessions: [] }, [], [row('telegram-1', { source: 'telegram' })]))
+      await batchedRefresh
+    })
+
+    const cache = messagingCacheForScope('default', $messagingCache.get())
+    expect(cache.sessions.map(s => s.id)).toEqual(['telegram-1', 'telegram-2'])
+    expect(cache.platformTotals).toEqual({ telegram: 2 })
   })
 })

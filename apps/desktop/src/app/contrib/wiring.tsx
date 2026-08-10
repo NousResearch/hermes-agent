@@ -34,7 +34,7 @@ import { playWakeSound } from '@/lib/wake-sound'
 import { $billingSettingsRequest } from '@/store/billing-block'
 import { $desktopBoot } from '@/store/boot'
 import { requestVoiceConversationStart } from '@/store/composer'
-import { setCronFocusJobId } from '@/store/cron'
+import { cronCacheRequestForScope, cronCacheRequestIsCurrent, setCronFocusJobId } from '@/store/cron'
 import { $pinnedSessionIds, pinSession, restoreWorktree, unpinSession } from '@/store/layout'
 import { $previewTarget } from '@/store/preview'
 import {
@@ -54,11 +54,12 @@ import {
   $freshDraftReady,
   $gatewayState,
   $messages,
-  $messagingSessions,
+  $messagingCache,
   $resumeExhaustedSessionId,
   $resumeFailedSessionId,
   $selectedStoredSessionId,
   $sessions,
+  messagingCacheForScope,
   sessionMatchesStoredId,
   sessionPinId,
   setAwaitingResponse,
@@ -179,10 +180,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   const resumeFailedSessionId = useStore($resumeFailedSessionId)
   const resumeExhaustedSessionId = useStore($resumeExhaustedSessionId)
   const selectedStoredSessionId = useStore($selectedStoredSessionId)
-  const messagingSessions = useStore($messagingSessions)
+  const messagingCache = useStore($messagingCache)
   const sessions = useStore($sessions)
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const profileScope = useStore($profileScope)
+  const messagingSessions = messagingCacheForScope(profileScope, messagingCache).sessions
   const boot = useStore($desktopBoot)
 
   const routedSessionId = routeSessionId(location.pathname)
@@ -371,7 +373,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
       return
     }
 
-    const stored = $messagingSessions.get().find(s => sessionMatchesStoredId(s, storedSessionId))
+    const stored = messagingCacheForScope($profileScope.get()).sessions.find(s =>
+      sessionMatchesStoredId(s, storedSessionId)
+    )
 
     if (!stored || !isMessagingSource(stored.source)) {
       return
@@ -905,8 +909,10 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onToggleSelectedPin: toggleSelectedPin,
     onTranscribeAudio: transcribeVoiceAudio,
     onTriggerCronJob: jobId => {
+      const request = cronCacheRequestForScope(profileScope)
+
       void triggerCronJob(jobId)
-        .then(() => refreshCronJobs())
+        .then(() => (cronCacheRequestIsCurrent(request) ? refreshCronJobs() : undefined))
         .catch(() => undefined)
     },
     getGateway: () => gatewayRef.current,

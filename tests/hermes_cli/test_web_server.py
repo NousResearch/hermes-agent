@@ -476,6 +476,61 @@ class TestWebServerEndpoints:
             "sidebar-stale"
         ]
 
+    def test_profiles_sidebar_scopes_messaging_and_cron_to_requested_profile(
+        self, monkeypatch, tmp_path
+    ):
+        """A concrete sidebar scope never exposes another profile's rows."""
+        from types import SimpleNamespace
+
+        from hermes_cli import profiles as profiles_mod
+        from hermes_state import SessionDB
+
+        macbook_home = tmp_path / "macbook"
+        macmini_home = tmp_path / "macmini"
+        macbook_db = SessionDB(db_path=macbook_home / "state.db")
+        macmini_db = SessionDB(db_path=macmini_home / "state.db")
+        try:
+            macbook_db.create_session("macbook-discord", source="discord")
+            macbook_db.append_message(
+                "macbook-discord", role="user", content="macbook message"
+            )
+            macbook_db.create_session("macbook-cron", source="cron")
+            macbook_db.append_message(
+                "macbook-cron", role="user", content="macbook cron"
+            )
+            macmini_db.create_session("macmini-discord", source="discord")
+            macmini_db.append_message(
+                "macmini-discord", role="user", content="macmini message"
+            )
+            macmini_db.create_session("macmini-cron", source="cron")
+            macmini_db.append_message(
+                "macmini-cron", role="user", content="macmini cron"
+            )
+        finally:
+            macbook_db.close()
+            macmini_db.close()
+
+        monkeypatch.setattr(
+            profiles_mod,
+            "list_profiles",
+            lambda: [
+                SimpleNamespace(name="macbook", path=macbook_home),
+                SimpleNamespace(name="macmini", path=macmini_home),
+            ],
+        )
+
+        response = self.client.get(
+            "/api/profiles/sessions/sidebar?recents_profile=macbook"
+            "&recents_exclude=cron&messaging_exclude=cron"
+        )
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert [row["id"] for row in payload["messaging"]["sessions"]] == [
+            "macbook-discord"
+        ]
+        assert [row["id"] for row in payload["cron"]["sessions"]] == ["macbook-cron"]
+
     def test_heal_gives_up_when_reconcile_cannot_fix_the_store(self, monkeypatch):
         """A probe failure reconciliation can't cure must not retry forever.
 

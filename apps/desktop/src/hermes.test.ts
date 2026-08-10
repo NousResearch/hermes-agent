@@ -150,8 +150,8 @@ describe('Hermes REST helpers', () => {
       messagingExclude: ['cron', 'desktop']
     })
 
-    // Slices reassembled from the legacy per-slice route with the same
-    // scoping: recents on the caller's profile, cron + messaging cross-profile.
+    // Compatibility fallback must preserve the active profile boundary for all
+    // sidebar slices; only an explicit all-profiles view can request `all`.
     expect(result.recents.sessions.map(s => s.id)).toEqual(['recent-1'])
     // One row back against a 30-row window: the profile is fully loaded, so
     // the legacy path must not claim there's another page.
@@ -162,8 +162,11 @@ describe('Hermes REST helpers', () => {
     const paths = api.mock.calls.map(call => (call[0] as { path: string }).path)
     expect(paths.filter(p => p.startsWith('/api/profiles/sessions/sidebar'))).toHaveLength(1)
     expect(paths.filter(p => p.startsWith('/api/profiles/sessions?'))).toHaveLength(3)
+    const cronPath = paths.find(path => path.includes('source=cron'))
+    const messagingPath = paths.find(path => path.includes('exclude_sources=cron%2Cdesktop'))
     expect(paths).toContainEqual(expect.stringContaining('profile=work'))
-    expect(paths).toContainEqual(expect.stringContaining('source=cron'))
+    expect(cronPath).toContain('profile=work')
+    expect(messagingPath).toContain('profile=work')
     expect(paths).toContainEqual(expect.stringContaining('exclude_sources=cron%2Ctool'))
   })
 

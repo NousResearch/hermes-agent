@@ -718,6 +718,22 @@ Click a numbered button to answer, or click **Other** to type a free-form respon
 
 The buttons disable themselves once a choice is made so duplicate clicks don't double-resolve the prompt. Configure the response timeout via `agent.clarify_timeout` in `~/.hermes/config.yaml` (default `600` seconds). If you don't respond within the timeout, the agent unblocks with a sentinel message and adapts rather than hanging.
 
+### Notify owners when input is waiting
+
+Discord does not notify channel members for an ordinary bot message. To ping the
+numeric users in `discord.allow_from` whenever Hermes is blocked on input, enable:
+
+```yaml
+discord:
+  approval_mentions: true
+```
+
+This covers dangerous-command approvals, slash-command confirmations, `clarify`
+questions, and update prompts. `DISCORD_APPROVAL_MENTIONS=true` is the equivalent
+environment override. Mentions are opt-in to avoid surprise notifications; only
+numeric allowlisted users are pinged, while role, `@everyone`, and reply-reference
+notifications remain disabled.
+
 ## Home Channel
 
 You can designate a "home channel" where the bot sends proactive messages (such as cron job output, reminders, and notifications). There are two ways to set it:

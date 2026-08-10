@@ -5472,14 +5472,74 @@ class DiscordAdapter(BasePlatformAdapter):
         return f"{prefix}{body}{suffix}"
 
     def _approval_mention_content(self) -> Optional[str]:
-        """User mentions for approval prompts, gated on ``discord.approval_mentions``
-        (``DISCORD_APPROVAL_MENTIONS``). Only numeric allowlist entries; default off."""
-        if not _env_bool("DISCORD_APPROVAL_MENTIONS", False):
+        """Owner mentions for blocking prompts, gated on ``discord.approval_mentions``
+        (``DISCORD_APPROVAL_MENTIONS``). Multiplexed adapters resolve the active profile's scoped env
+        first, then ``PlatformConfig.extra`` — never another profile's process-global value;
+        single-profile keeps env-over-config precedence. Only numeric allowlist entries; default off."""
+        extra = getattr(getattr(self, "config", None), "extra", None)
+        config_value = extra.get("approval_mentions") if isinstance(extra, dict) else None
+        raw_enabled = None
+        if _multiplex_active():
+            try:
+                from agent.secret_scope import current_secret_scope
+
+                scope = current_secret_scope()
+                if scope is not None:
+                    raw_enabled = scope.get("DISCORD_APPROVAL_MENTIONS")
+            except Exception:
+                pass
+            if raw_enabled is None:
+                raw_enabled = config_value
+        else:
+            raw_enabled = os.getenv("DISCORD_APPROVAL_MENTIONS")
+            if raw_enabled is None or not str(raw_enabled).strip():
+                raw_enabled = config_value
+        enabled = (
+            raw_enabled
+            if isinstance(raw_enabled, bool)
+            else str(raw_enabled or "").strip().lower() in {"true", "1", "yes", "on"}
+        )
+        if not enabled:
             return None
         user_ids = sorted(uid for uid in self._allowed_user_ids if str(uid).isdigit())
         if not user_ids:
             return None
-        return " ".join(f"<@{uid}>" for uid in user_ids)
+        # Keep enough room for the actual blocking prompt. Large enterprise
+        # allowlists can otherwise make the mention line exceed Discord's
+        # 2,000-character message limit before the prompt body is added.
+        mention_budget = self.MAX_MESSAGE_LENGTH // 4
+        mentions: list[str] = []
+        used = 0
+        for uid in user_ids:
+            token = f"<@{uid}>"
+            added = len(token) + (1 if mentions else 0)
+            if used + added > mention_budget:
+                break
+            mentions.append(token)
+            used += added
+        return " ".join(mentions) or None
+
+    @staticmethod
+    def _interactive_prompt_send_kwargs(
+        *, content: str, embed: Any, view: Any = None,
+        mention_content: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Build safe Discord kwargs for a blocking interactive prompt."""
+        send_kwargs: Dict[str, Any] = {"content": content, "embed": embed}
+        if view is not None:
+            send_kwargs["view"] = view
+        if mention_content:
+            allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
+            object_cls = getattr(discord, "Object", None)
+            if allowed_mentions_cls is not None and object_cls is not None:
+                owner_ids = [int(uid) for uid in re.findall(r"<@(\d+)>", mention_content)]
+                send_kwargs["allowed_mentions"] = allowed_mentions_cls(
+                    users=[object_cls(id=uid) for uid in owner_ids],
+                    roles=False,
+                    everyone=False,
+                    replied_user=False,
+                )
+        return send_kwargs
 
     async def _send_prompt(
         self, chat_id: str, metadata: Optional[dict], build, *, fail_log: Optional[str] = None,
@@ -5547,13 +5607,9 @@ class DiscordAdapter(BasePlatformAdapter):
                 admin_user_ids=admin_user_ids, allow_permanent=allow_permanent,
                 allow_session=allow_session, smart_denied=smart_denied,
             )
-            send_kwargs: Dict[str, Any] = {"content": content, "embed": embed, "view": view}
-            if mention_content:
-                allowed_mentions_cls = getattr(discord, "AllowedMentions", None)
-                if allowed_mentions_cls is not None:
-                    send_kwargs["allowed_mentions"] = allowed_mentions_cls(
-                        users=True, roles=False, everyone=False, replied_user=False,
-                    )
+            send_kwargs = self._interactive_prompt_send_kwargs(
+                content=content, embed=embed, view=view, mention_content=mention_content,
+            )
             return send_kwargs, view
         return await self._send_prompt(chat_id, metadata, _build)
 
@@ -5566,12 +5622,19 @@ class DiscordAdapter(BasePlatformAdapter):
             embed = discord.Embed(
                 title=title or "Confirm", description=self._embed_body(message), color=discord.Color.orange(),
             )
-            content = self._self_contained_prompt_content(f"**{title or 'Confirm'}**", message)
+            mention_content = self._approval_mention_content()
+            prompt_header = f"**{title or 'Confirm'}**"
+            if mention_content:
+                prompt_header = f"{mention_content}\n{prompt_header}"
+            content = self._self_contained_prompt_content(prompt_header, message)
             view = SlashConfirmView(
                 session_key=session_key, confirm_id=confirm_id,
                 allowed_user_ids=self._allowed_user_ids, allowed_role_ids=self._allowed_role_ids,
             )
-            return {"content": content, "embed": embed, "view": view}, view
+            send_kwargs = self._interactive_prompt_send_kwargs(
+                content=content, embed=embed, view=view, mention_content=mention_content,
+            )
+            return send_kwargs, view
         return await self._send_prompt(chat_id, metadata, _build)
 
     async def send_clarify(
@@ -5617,12 +5680,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 hint = "Reply in this channel with your answer."
                 embed.add_field(name="Reply", value=hint, inline=False)
                 view = None
+            mention_content = self._approval_mention_content()
+            prompt_header = "❓ **Hermes needs your input**"
+            if mention_content:
+                prompt_header = f"{mention_content}\n{prompt_header}"
             content = self._self_contained_prompt_content(
-                "❓ **Hermes needs your input**", str(question or "").strip(), tail=f"\n\n{hint}",
+                prompt_header, str(question or "").strip(), tail=f"\n\n{hint}",
             )
-            send_kwargs = {"content": content, "embed": embed}
-            if view:
-                send_kwargs["view"] = view
+            send_kwargs = self._interactive_prompt_send_kwargs(
+                content=content, embed=embed, view=view, mention_content=mention_content,
+            )
             return send_kwargs, view
         return await self._send_prompt(chat_id, metadata, _build, fail_log="send_clarify")
 
@@ -5640,8 +5707,15 @@ class DiscordAdapter(BasePlatformAdapter):
                 session_key=session_key, allowed_user_ids=self._allowed_user_ids,
                 allowed_role_ids=self._allowed_role_ids,
             )
-            content = self._self_contained_prompt_content("⚕ **Update Needs Your Input**", f"{prompt}{default_hint}")
-            return {"content": content, "embed": embed, "view": view}, view
+            mention_content = self._approval_mention_content()
+            prompt_header = "⚕ **Update Needs Your Input**"
+            if mention_content:
+                prompt_header = f"{mention_content}\n{prompt_header}"
+            content = self._self_contained_prompt_content(prompt_header, f"{prompt}{default_hint}")
+            send_kwargs = self._interactive_prompt_send_kwargs(
+                content=content, embed=embed, view=view, mention_content=mention_content,
+            )
+            return send_kwargs, view
         result = await self._send_prompt(chat_id, metadata, _build)
         if result.success and _metadata_marks_nonconversational(metadata):
             await self._nonconversational_messages.mark_many([result.message_id])
@@ -7265,12 +7339,9 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     _gate("allow_from", "DISCORD_ALLOWED_USERS", from_platform_extra=True)
     _gate("allowed_roles", "DISCORD_ALLOWED_ROLES", from_platform_extra=True)
     _gate("allow_all_users", "DISCORD_ALLOW_ALL_USERS", from_platform_extra=True, lower=True)
-    approval_mentions_cfg = (
-        discord_cfg["approval_mentions"] if "approval_mentions" in discord_cfg
-        else platform_extra_cfg.get("approval_mentions")
-    )
-    if approval_mentions_cfg is not None:
-        _env_default("DISCORD_APPROVAL_MENTIONS", str(approval_mentions_cfg).lower())
+    # approval_mentions is a per-profile gate too: seed extra so multiplexed adapters read their own
+    # profile's value rather than another profile's process-global env.
+    _gate("approval_mentions", "DISCORD_APPROVAL_MENTIONS", from_platform_extra=True, lower=True)
     _gate("free_response_channels", "DISCORD_FREE_RESPONSE_CHANNELS", from_platform_extra=False)
     for key, env_key in (("auto_thread", "DISCORD_AUTO_THREAD"), ("reactions", "DISCORD_REACTIONS")):
         if key in discord_cfg:

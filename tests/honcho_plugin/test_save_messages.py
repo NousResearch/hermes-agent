@@ -66,8 +66,10 @@ class TestOnSessionEnd:
 
 
 class TestShutdown:
-    """shutdown() joins worker threads then flushes; saveMessages=false must
-    skip the flush (persistence) while still running the joins (cleanup)."""
+    """shutdown() joins worker threads then delegates to the session manager:
+    manager.shutdown() (flush + join async writer) when persistence is on,
+    manager.stop_async_writer() (join only, no flush) when saveMessages=false.
+    Cleanup runs in both cases; only persistence is gated."""
 
     def _provider_for_shutdown(self, save_messages: bool) -> HonchoMemoryProvider:
         p = _provider(save_messages=save_messages)
@@ -78,12 +80,16 @@ class TestShutdown:
         p._sync_thread = None
         return p
 
-    def test_disabled_skips_flush(self):
+    def test_disabled_skips_flush_but_stops_writer(self):
         p = self._provider_for_shutdown(save_messages=False)
         p.shutdown()
         p._manager.flush_all.assert_not_called()
+        p._manager.shutdown.assert_not_called()
+        p._manager.stop_async_writer.assert_called_once()
 
-    def test_enabled_flushes(self):
+    def test_enabled_shuts_down_manager(self):
         p = self._provider_for_shutdown(save_messages=True)
         p.shutdown()
-        p._manager.flush_all.assert_called_once()
+        # manager.shutdown() flushes AND joins the async-writer thread;
+        # calling flush_all() alone left the writer thread alive at exit.
+        p._manager.shutdown.assert_called_once()

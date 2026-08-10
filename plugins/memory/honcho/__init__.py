@@ -1672,15 +1672,26 @@ class HonchoMemoryProvider(MemoryProvider):
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():
                 t.join(timeout=5.0)
-        # Flush any remaining messages. Honors saveMessages: false — skip
-        # persistence, but the worker-thread joins above still run (cleanup
-        # is independent of persistence; placing the guard here rather than
-        # at the top avoids leaking _prefetch_thread/_sync_thread).
+        manager = self._manager
+        if manager and self._init_thread and self._init_thread.is_alive() and not self._session_initialized:
+            manager = None
+        # Honors saveMessages: false — skip persistence, but thread cleanup
+        # still runs: the session manager's async-writer thread must be
+        # joined either way so daemon threads aren't left blocked in httpx
+        # I/O during interpreter finalization.
         if not getattr(self._config, "save_messages", True):
+            if manager:
+                try:
+                    manager.stop_async_writer()
+                except Exception:
+                    pass
             return
-        if self._manager and not (self._init_thread and self._init_thread.is_alive() and not self._session_initialized):
+        if manager:
             try:
-                self._manager.flush_all()
+                # manager.shutdown() = flush_all() + join the async-writer
+                # thread. Previously only flush_all() ran here, leaving the
+                # writer thread alive at exit.
+                manager.shutdown()
             except Exception:
                 pass
 

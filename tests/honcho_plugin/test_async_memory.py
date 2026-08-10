@@ -316,6 +316,28 @@ class TestAsyncWriterThread:
         mgr.shutdown()
         assert mgr._async_thread is None
 
+    def test_stop_async_writer_joins_thread_without_flushing(self, make_manager):
+        mgr = make_manager(write_frequency="async")
+        mgr._ensure_async_writer()
+        sess = _make_session()
+        sess.add_message("user", "must not be written")
+        with mgr._cache_lock:
+            mgr._cache[sess.key] = sess
+
+        flushed = []
+        mgr._flush_session = lambda session: flushed.append(session) or True
+
+        thread = mgr._async_thread
+        mgr.stop_async_writer()
+        thread.join(timeout=10)
+        assert not thread.is_alive()
+        assert flushed == []
+
+    def test_stop_async_writer_without_started_thread_is_noop(self, make_manager):
+        mgr = make_manager(write_frequency="async")
+        mgr.stop_async_writer()
+        assert mgr._async_thread is None
+
 
 # ---------------------------------------------------------------------------
 # async retry on failure

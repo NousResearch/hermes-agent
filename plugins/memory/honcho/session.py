@@ -785,6 +785,18 @@ class HonchoSessionManager:
                 )
                 self._async_thread.start()
 
+    def stop_async_writer(self) -> None:
+        """Stop the async writer thread WITHOUT flushing pending messages.
+
+        Used on shutdown when persistence is disabled (saveMessages: false):
+        the thread must still be joined so process exit is clean, but nothing
+        may be written.
+        """
+        if self._async_queue is not None:
+            if self._async_thread is not None and self._async_thread.is_alive():
+                self._async_queue.put(_ASYNC_SHUTDOWN)
+                self._async_thread.join(timeout=10)
+
     def shutdown(self) -> None:
         """Gracefully shut down the async writer thread."""
         if self._async_queue is not None:

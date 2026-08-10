@@ -1,5 +1,4 @@
-import { readDesktopFileDataUrl } from '@/lib/desktop-fs'
-import { filePathFromMediaPath, isRemoteGateway, mediaExternalUrl } from '@/lib/media'
+import { mediaExternalUrl, resolveMediaDisplaySrc } from '@/lib/media'
 import type { SessionInfo, SessionMessage } from '@/types/hermes'
 
 export type ArtifactKind = 'image' | 'file' | 'link'
@@ -185,16 +184,14 @@ function artifactHref(value: string): string {
   return value
 }
 
-export async function artifactImageSrc(value: string, href = artifactHref(value)): Promise<string> {
-  if (/^(?:https?|data):/i.test(value)) {
-    return href
-  }
-
-  if (typeof window !== 'undefined' && window.hermesDesktop && isRemoteGateway()) {
-    return readDesktopFileDataUrl(filePathFromMediaPath(value))
-  }
-
-  return href
+export async function artifactImageSrc(value: string): Promise<string> {
+  // Delegate the whole local/remote ladder to the shared media resolver:
+  // inline (http/data) stays as-is, remote gateway goes through the
+  // authenticated fs bridge, local desktop through the Electron
+  // readFileDataUrl, and bare non-path link values fall through untouched.
+  // Reimplementing that ladder here would drift from resolveMediaDisplaySrc
+  // and regress one of its legs (#83380).
+  return resolveMediaDisplaySrc(value)
 }
 
 function artifactLabel(value: string): string {

@@ -126,7 +126,12 @@ def _authorization_gate_lock_timeout() -> float:
     try:
         from tools.approval import human_wait_ceiling
 
-        return human_wait_ceiling()
+        # Clamp to _AUTHORIZATION_GATE_LOCK_TIMEOUT_S: the gate serializes
+        # parallel dispatch — it should never wait longer than a wedged-holder
+        # timeout even when approvals.timeout is set very large (or infinite).
+        # On macOS, unbounded values overflow threading.Lock.acquire's timespec
+        # and raise OverflowError (#83220).
+        return min(human_wait_ceiling(), _AUTHORIZATION_GATE_LOCK_TIMEOUT_S)
     except Exception:
         return _AUTHORIZATION_GATE_LOCK_TIMEOUT_S
 

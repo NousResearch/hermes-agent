@@ -644,6 +644,80 @@ def _migrate_to_33(results: Dict[str, Any], quiet: bool) -> None:
             )
 
 
+def _migrate_to_34(results: Dict[str, Any], quiet: bool) -> None:
+    # ── Version 33 → 34: one-time personality reset (post-#81946 unification) ──
+    # Personality persistence used to be split per surface: the TUI/desktop
+    # wrote the NAME to display.personality while the CLI/gateway wrote the
+    # rendered TEXT into agent.system_prompt (and their "/personality none"
+    # only blanked the text, leaving the name behind). When #81946 made
+    # display.personality authoritative everywhere, stale names written years
+    # ago resurrected personalities users had already turned off ("kawaii
+    # defaults on after updating"). There is no way to know which of the two
+    # divergent fields reflects the user's intent, so reset the selection to
+    # none once and tell the user how to re-enable it. Two scrubs:
+    #
+    # 1. display.personality → "" (announce the old name).
+    # 2. agent.system_prompt → "" ONLY when it verbatim-equals the rendered
+    #    text of a known personality — that shape was written by the old
+    #    CLI/gateway /personality, never typed by hand. Any other text is a
+    #    user-owned manual prompt and is never touched.
+    _c = _cfg()
+    read_raw_config = _c.read_raw_config
+    _persist_migration = _c._persist_migration
+
+    from hermes_cli.personality import (
+        available_personalities,
+        normalize_personality_name,
+        prompt_text,
+        render_personality_prompt,
+    )
+
+    config = read_raw_config()
+    touched = False
+
+    raw_display = config.get("display")
+    old_name = ""
+    if isinstance(raw_display, dict):
+        old_name = normalize_personality_name(raw_display.get("personality", ""))
+        if old_name:
+            raw_display["personality"] = ""
+            config["display"] = raw_display
+            touched = True
+
+    raw_agent = config.get("agent")
+    scrubbed_text = False
+    if isinstance(raw_agent, dict):
+        manual = prompt_text(raw_agent.get("system_prompt", ""))
+        if manual:
+            rendered = {
+                render_personality_prompt(defn)
+                for defn in available_personalities(config).values()
+            }
+            if manual in rendered:
+                raw_agent["system_prompt"] = ""
+                config["agent"] = raw_agent
+                touched = True
+                scrubbed_text = True
+
+    if touched:
+        _persist_migration(config)
+        results["config_added"].append("display.personality=none (one-time reset)")
+        if not quiet:
+            if old_name:
+                print(
+                    f"  ✓ Personality reset to none (was '{old_name}'). Personality "
+                    "state was previously saved inconsistently across surfaces and "
+                    "could re-enable a personality you had turned off. "
+                    f"Run /personality {old_name} to turn it back on."
+                )
+            if scrubbed_text:
+                print(
+                    "  ✓ Removed personality text from agent.system_prompt (written "
+                    "by an older /personality). That field is now reserved for "
+                    "manual system prompts; personalities live in display.personality."
+                )
+
+
 #: Registry of (target_version, migration_fn), strictly ascending. The driver
 #: applies every entry whose target version is greater than the on-disk
 #: version captured before the ladder started. Order matters: later steps may
@@ -665,6 +739,7 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
     (31, _migrate_to_31),
     (32, _migrate_to_32),
     (33, _migrate_to_33),
+    (34, _migrate_to_34),
 )
 
 

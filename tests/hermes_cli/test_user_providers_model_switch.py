@@ -158,7 +158,13 @@ def test_list_authenticated_providers_uses_live_models_for_user_provider(monkeyp
     )
 
     assert user_prov is not None
-    assert calls == [("sk-test", "http://127.0.0.1:3000/api/v1", {"timeout": 5.0, "headers": None})]
+    assert calls == [
+        (
+            "sk-test",
+            "http://127.0.0.1:3000/api/v1",
+            {"timeout": 5.0, "api_mode": None, "headers": None},
+        )
+    ]
     assert user_prov["models"] == ["old-configured-model", "new-live-model"]
     assert user_prov["total_models"] == 2
 
@@ -497,7 +503,7 @@ def test_section3_probes_no_key_endpoint_without_explicit_models(monkeypatch):
 
     assert probed.get("called") is True, "no-key bare endpoint should be probed"
     assert probed["api_key"] == ""
-    assert probed["kwargs"] == {"timeout": 5.0, "headers": None}
+    assert probed["kwargs"] == {"timeout": 5.0, "api_mode": None, "headers": None}
     row = next(p for p in providers if p["slug"] == "local-llamacpp")
     assert row["models"] == ["live-model-1", "live-model-2", "live-model-3"]
     assert row["total_models"] == 3

@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,21 +20,24 @@ from hermes_cli.auth import AuthError, get_provider_auth_state, resolve_nous_run
 
 
 class TestResolveVerifyFallback:
-    """Verify _resolve_verify falls back to True when CA bundle path doesn't exist."""
-
-    @pytest.fixture(autouse=True)
-    def _pin_platform_to_linux(self, monkeypatch):
-        """Pin sys.platform so the macOS certifi fallback doesn't alter the
-        generic "default trust" return value asserted by these tests."""
-        monkeypatch.setattr("sys.platform", "linux")
+    """Verify _resolve_verify falls back to default trust when the CA bundle
+    path doesn't exist."""
 
     def test_missing_ca_bundle_in_auth_state_falls_back(self):
+        import ssl
         from hermes_cli.auth import _resolve_verify
 
         result = _resolve_verify(auth_state={
             "tls": {"insecure": False, "ca_bundle": "/nonexistent/ca-bundle.pem"},
         })
-        assert result is True
+        # The subject is "falls back to _default_verify()", not the literal
+        # True. Deriving the expectation from the real host keeps the
+        # regression covered on the macOS lane too, where _default_verify
+        # pins certifi's bundle and returns a context instead.
+        if sys.platform == "darwin":
+            assert isinstance(result, ssl.SSLContext)
+        else:
+            assert result is True
 
     def test_valid_ca_bundle_in_auth_state_is_returned(self, tmp_path, monkeypatch):
         import ssl

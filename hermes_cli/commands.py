@@ -139,6 +139,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, args_hint="<archive.tar.gz> [--name <name>]"),
     CommandDef("stop", "Kill all running background processes", "Session",
                busy_policy="interrupt_then_dispatch", busy_handler="stop"),
+    CommandDef("pause", "Pause new work globally (emergency stop); '/pause off' resumes", "Session",
+               gateway_only=True, args_hint="[reason | off]",
+               busy_policy="dispatch"),
     CommandDef("approve", "Approve a pending dangerous command", "Session",
                gateway_only=True, args_hint="[session|always]", busy_policy="dispatch"),
     CommandDef("deny", "Deny a pending dangerous command (optionally with a reason)", "Session",
@@ -1272,7 +1275,9 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - refine: on-demand memory/skill review; reached via /hermes refine on
 #     Slack. Added at the 50-cap — a native slot would clamp an existing
 #     native slash.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine"})
+#   - pause: global emergency stop; reached via /hermes pause [off] on
+#     Slack. Added at the 50-cap — a native slot would clamp /platform.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause"})
 
 
 def _sanitize_slack_name(raw: str) -> str:
@@ -2017,15 +2022,16 @@ class SlashCommandCompleter(Completer):
 
     @staticmethod
     def _personality_completions(sub_text: str, sub_lower: str):
-        """Yield completions for /personality from configured personalities."""
+        """Yield completions for /personality via hermes_cli.personality."""
         try:
-            # Resolve from the same source the runtime applies personalities —
-            # agent.personalities via the CLI config (which ships the built-ins).
-            # load_config()'s schema has no agent.personalities, so the completer
-            # used to come back empty even with personalities available.
+            # Single owner: built-ins + user overrides from agent.personalities.
             from cli import load_cli_config
+            from hermes_cli.personality import (
+                available_personalities,
+                describe_personality,
+            )
 
-            personalities = (load_cli_config().get("agent") or {}).get("personalities", {}) or {}
+            personalities = available_personalities(load_cli_config())
             if "none".startswith(sub_lower) and "none" != sub_lower:
                 yield Completion(
                     "none",
@@ -2035,15 +2041,11 @@ class SlashCommandCompleter(Completer):
                 )
             for name, prompt in personalities.items():
                 if name.startswith(sub_lower) and name != sub_lower:
-                    if isinstance(prompt, dict):
-                        meta = prompt.get("description") or prompt.get("system_prompt", "")[:50]
-                    else:
-                        meta = str(prompt)[:50]
                     yield Completion(
                         name,
                         start_position=-len(sub_text),
                         display=name,
-                        display_meta=meta,
+                        display_meta=describe_personality(prompt),
                     )
         except Exception:
             pass

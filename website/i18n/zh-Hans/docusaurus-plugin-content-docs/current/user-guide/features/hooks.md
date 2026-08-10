@@ -6,15 +6,16 @@ description: "在关键生命周期节点运行自定义代码——记录活动
 
 # Event Hooks
 
-Hermes 有三套 hook 系统，可在关键生命周期节点运行自定义代码：
+Hermes 有四套 hook 系统，可在关键生命周期节点运行自定义代码：
 
 | 系统 | 注册方式 | 运行环境 | 使用场景 |
 |------|---------|---------|---------|
 | **[Gateway hooks](#gateway-event-hooks)** | `~/.hermes/hooks/` 下的 `HOOK.yaml` + `handler.py` | 仅 Gateway | 日志、告警、webhook |
 | **[Plugin hooks](#plugin-hooks)** | [插件](/user-guide/features/plugins)中的 `ctx.register_hook()` | CLI + Gateway | 工具拦截、指标采集、护栏 |
 | **[Shell hooks](#shell-hooks)** | `~/.hermes/config.yaml` 中 `hooks:` 块指向的 shell 脚本 | CLI + Gateway | 用于阻断、自动格式化、上下文注入的即插即用脚本 |
+| **[Outbound webhooks](#outbound-webhooks)** | `~/.hermes/config.yaml` 中的 `hooks.outbound:` 列表 | CLI + Gateway | 将签名后的生命周期事件推送到外部 HTTP endpoint |
 
-三套系统均为非阻塞式——任何 hook 中的错误都会被捕获并记录，不会导致 agent 崩溃。
+Hook 回调错误会被隔离并记录，不会导致 agent 崩溃。但 hook 并非全是被动观察者：指令/控制类 hook 可改变流程，transform 可替换内容，shell `pre_tool_call` 还能阻断或在失败时关闭执行。
 
 ## Gateway Event Hooks
 
@@ -365,29 +366,42 @@ def register(ctx):
 
 **所有 hook 的通用规则：**
 
-- 回调接收**关键字参数**。始终接受 `**kwargs` 以保持向前兼容性——未来版本可能会在不破坏插件的情况下添加新参数。
-- 如果回调**崩溃**，会被记录并跳过。其他 hook 和 agent 继续正常运行。行为异常的插件永远不会破坏 agent。
-- 两个 hook 的返回值会影响行为：[`pre_tool_call`](#pre_tool_call) 可以**阻断**工具，[`pre_llm_call`](#pre_llm_call) 可以**注入上下文**到 LLM 调用中。其他所有 hook 均为即发即忘的观察者。
+- 回调接收**关键字参数**；为保持向前兼容，请始终接受 `**kwargs`。
+- 回调异常会被记录并跳过，后续回调仍会继续。
+- 下表分类仅描述当前行为：**观察者**忽略返回值，**Transform** 接受第一个有效字符串替换，**指令/控制**消费已说明的返回结构。Plugin middleware 是独立的 registry/surface，不属于另一类 hook。
+- `turn_id`、`api_request_id`、`task_id`、`session_id`、`api_call_count` 等关联字段因 hook 而异，可能不存在；应将这些 ID 视为 opaque 值。
+- 运行时事件名以 `hermes_cli.plugins.VALID_HOOKS` 为准。`hermes hooks list` 只列出已配置的 shell/outbound hook，并非可用事件目录；只有 `hermes hooks test <event>` 收到无效事件时才会打印有效集合。
 
-### 快速参考
+### 已发布的 plugin-hook 目录
 
-| Hook | 触发时机 | 返回值 |
-|------|---------|-------|
-| [`pre_tool_call`](#pre_tool_call) | 任意工具执行前 | `{"action": "block", "message": str}` 用于否决调用 |
-| [`post_tool_call`](#post_tool_call) | 任意工具返回后 | 忽略 |
-| [`pre_llm_call`](#pre_llm_call) | 每轮一次，工具调用循环前 | `{"context": str}` 用于在用户消息前追加上下文 |
-| [`post_llm_call`](#post_llm_call) | 每轮一次，工具调用循环后 | 忽略 |
-| [`on_session_start`](#on_session_start) | 新会话创建（仅第一轮） | 忽略 |
-| [`on_session_end`](#on_session_end) | 会话结束 | 忽略 |
-| [`on_session_finalize`](#on_session_finalize) | CLI/gateway 销毁活跃会话（刷新、保存、统计） | 忽略 |
-| [`on_session_reset`](#on_session_reset) | Gateway 换入新会话 key（如 `/new`、`/reset`） | 忽略 |
-| [`subagent_stop`](#subagent_stop) | `delegate_task` 子 agent 退出 | 忽略 |
-| [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway 收到用户消息，认证和分发前 | `{"action": "skip" \| "rewrite" \| "allow", ...}` 用于影响流程 |
-| [`pre_approval_request`](#pre_approval_request) | 危险命令需要用户审批，提示/通知发送前 | 忽略 |
-| [`post_approval_response`](#post_approval_response) | 用户响应审批提示（或超时） | 忽略 |
-| [`transform_tool_result`](#transform_tool_result) | 任意工具返回后，结果交还给模型前 | `str` 替换结果，`None` 保持不变 |
-| [`transform_terminal_output`](#transform_terminal_output) | `terminal` 工具内部，截断/ANSI 剥离/脱敏前 | `str` 替换原始输出，`None` 保持不变 |
-| [`transform_llm_output`](#transform_llm_output) | 工具调用循环完成后，最终响应交付前 | `str` 替换响应文本，`None`/空值保持不变 |
+下表列出每个 call site 实际传入的事件专属字段。为保持向后兼容，`PluginManager` 还会向每个 plugin-hook 回调加入 `telemetry_schema_version="hermes.observer.v1"`。这个旧版 envelope 标记并不表示所有 hook payload 共用同一套语义 schema；新的版本化 contract 应归属于具体事件或 capability family。
+
+| Hook | 类别 | 精确时机与返回行为 | 显式 payload 字段 | 隐私/敏感性 |
+|---|---|---|---|---|
+| `pre_tool_call` | 指令/控制 | 执行前一次；第一个有效 `block` 或 `approve` 指令生效。 | `tool_name`, `args`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `middleware_trace` | 原始参数可能含用户内容、路径、命令或 secret。 |
+| `post_tool_call` | 观察者 | 阻断、错误或成功结果产生后；忽略返回值。 | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message`, `middleware_trace` | 结果/错误文本可能含任意工具或用户内容及 secret。 |
+| `transform_tool_result` | Transform | `post_tool_call` 后、写入会话前；第一个字符串替换结果。 | `tool_name`, `args`, `result`, `task_id`, `session_id`, `tool_call_id`, `turn_id`, `api_request_id`, `duration_ms`, `status`, `error_type`, `error_message` | 暴露完整的 model-bound 结果和参数。 |
+| `transform_terminal_output` | Transform | 前台进程输出完成有界捕获后、最终 output limit 前；第一个字符串替换输出。 | `command`, `output`, `returncode`, `task_id`, `env_type` | 命令/输出可能含凭据。 |
+| `pre_llm_call` | 指令/控制 | 每轮 loop 前一次；所有有效字符串或 `{"context": ...}` 会拼接并注入用户消息。 | `session_id`, `task_id`, `turn_id`, `user_message`, `conversation_history`, `is_first_turn`, `model`, `platform`, `parent_session_id`, `sender_id` | 完整用户消息和会话历史。 |
+| `post_llm_call` | 观察者 | 成功且未中断的轮次 finalize 时；忽略返回值。 | `session_id`, `task_id`, `turn_id`, `user_message`, `assistant_response`, `conversation_history`, `model`, `platform` | 完整 prompt、response 和 history。 |
+| `transform_llm_output` | Transform | `post_llm_call` 和最终交付前；第一个非空字符串替换 response。 | `response_text`, `session_id`, `model`, `platform` | 完整最终 assistant 文本。 |
+| `pre_verify` | 指令/控制 | 有界的代码编辑 verify gate；第一个有效 continue/block-stop 指令让轮次继续。 | `session_id`, `platform`, `model`, `coding`, `attempt`, `final_response`, `changed_paths` | 草稿 response 和变更路径。 |
+| `pre_api_request` | 观察者 | 每次 provider attempt 发请求前；忽略返回值。 | `task_id`, `turn_id`, `api_request_id`, `session_id`, `user_message`, `conversation_history`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `retry_count`, `request_messages`, `message_count`, `tool_count`, `approx_input_tokens`, `request_char_count`, `max_tokens`, `started_at`, `middleware_trace`, `request` | 高敏感：兼容字段 `user_message`、`conversation_history`、`request_messages` 故意保留原始值；新 consumer 应优先用已清理的 `request`。 |
+| `post_api_request` | 观察者 | Provider success 归一化后；忽略返回值。 | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `finish_reason`, `message_count`, `response_model`, `response`, `usage`, `assistant_message`, `assistant_content_chars`, `assistant_tool_call_count` | 可用已清理的 `response`，但原始归一化 `assistant_message` 可能含模型/用户内容；`usage` 是计费数据。 |
+| `api_request_error` | 观察者 | 每次失败的 provider attempt；忽略返回值。 | `task_id`, `turn_id`, `api_request_id`, `session_id`, `platform`, `model`, `provider`, `base_url`, `api_mode`, `api_call_count`, `api_duration`, `started_at`, `ended_at`, `status_code`, `retry_count`, `max_retries`, `retryable`, `reason`, `error`, `request` | Error 文本可能含 provider/用户数据；`request` 设计为已清理。 |
+| `on_session_start` | 观察者 | 新 session 第一轮；忽略返回值。 | `session_id`, `model`, `platform` | 仅标识符和 routing metadata。 |
+| `on_session_end` | 观察者 | Canonical 路径在每轮 finalize；CLI/TUI 退出还有精简 legacy shape。 | Canonical：`session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`；退出路径可能增加 `reason`/`api_request_id` 并省略字段。 | ID、model/platform 和结果；canonical payload 无消息正文。 |
+| `on_session_finalize` | 观察者 | CLI/TUI/gateway 通过 `finalize_session` teardown；gateway 关闭或过期时可只 finalize 而不 reset。忽略返回值。 | 按 surface：`session_id`, `platform`，可选 `reason`, `old_session_id`, `new_session_id` | Session 和 routing 标识。 |
+| `on_session_reset` | 观察者 | CLI/TUI session boundary，或 gateway 创建替代 session 后；忽略返回值。 | CLI：`session_id`, `platform`, `reason`；TUI：`session_id`, `platform`；gateway：另有 `reason`, `old_session_id`, `new_session_id` | Session 和 routing 标识。 |
+| `on_skill_lifecycle` | 观察者 | 权威 skill 使用状态变更后；忽略返回值。 | `action`, `skill_name`, `provenance`, `task_id`, `session_id`, `use_count`, `reused`, `reuse_after_patch` | 暴露本地 skill 名和 provenance。 |
+| `subagent_start` | 观察者 | 子 agent 已构造、即将运行；忽略返回值。 | `parent_session_id`, `parent_turn_id`, `parent_subagent_id`, `child_session_id`, `child_subagent_id`, `child_role`, `child_goal` | Child goal 可能含用户/项目内容。 |
+| `subagent_stop` | 观察者 | 子 agent 退出；忽略返回值。 | `parent_session_id`, `parent_turn_id`, `child_session_id`, `child_role`, `child_summary`, `child_status`, `tool_call_history`, `duration_ms` | Summary 和已脱敏 tool-history metadata 仍可能暴露项目结构。 |
+| `pre_gateway_dispatch` | 指令/控制 | 非 internal 入站消息在 auth/pairing/dispatch 前；第一个有效 `skip`、`rewrite` 或 `allow` 控制流程。 | `event`, `gateway`, `session_store` | 极高权限的进程内对象会暴露入站用户/routing 数据和 host handle。 |
+| `pre_approval_request` | 观察者 | Prompted 或 smart approval 前；忽略返回值。 | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id` | 命令可能含 secret；smart observer preparation 会强制脱敏，但各 surface 并非完全相同。 |
+| `post_approval_response` | 观察者 | 决策、timeout 或 gateway 通知失败后；忽略返回值。 | `command`, `description`, `pattern_key`, `pattern_keys`, `session_key`, `surface`, `turn_id`, `tool_call_id`, `choice`；smart 路径可增加 `decided_by` | 同样的命令敏感性，加决策 metadata。 |
+| `kanban_task_claimed` | 观察者 | Claim commit 后，在 dispatcher 进程 spawn worker 前；忽略返回值。 | `task_id`, `profile_name`, `board`, `assignee`, `run_id` | Board/task/profile/assignee 标识。 |
+| `kanban_task_completed` | 观察者 | Completion 和 cleanup 后，通常在 worker 进程；忽略返回值。 | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `summary` | Summary 可能含项目/用户内容。 |
+| `kanban_task_blocked` | 观察者 | Blocked transition 后；dependency-wait 路径在 transaction 退出前触发。忽略返回值。 | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `reason` | Reason 可能含项目/用户内容。 |
 
 ---
 
@@ -409,13 +423,15 @@ def my_callback(tool_name: str, args: dict, task_id: str, **kwargs):
 
 **触发位置：** `model_tools.py` 中的 `handle_function_call()` 内，工具处理器运行前。每次工具调用触发一次——若模型并行调用 3 个工具，则触发 3 次。
 
-**返回值——否决调用：**
+**返回值——阻断或要求审批：**
 
 ```python
 return {"action": "block", "message": "Reason the tool call was blocked"}
+# 或
+return {"action": "approve", "message": "Why approval is required", "rule_key": "optional:scope"}
 ```
 
-Agent 以 `message` 作为返回给模型的错误短路该工具调用。第一个匹配的 block 指令生效（Python 插件优先，然后是 shell hooks）。任何其他返回值均被忽略，因此仅作观察用途的现有回调无需修改。
+第一个有效指令生效。`block` 要求非空 `message`，并用该文本作为返回给模型的错误来短路工具。`approve` 将调用升级到现有的人类审批 gate；`message` 和 `rule_key` 可选，拒绝、timeout 或 gate error 都会 fail closed。其他返回值会被忽略。
 
 **使用场景：** 日志记录、审计追踪、工具调用计数、阻断危险操作、速率限制、按用户策略执行。
 
@@ -503,7 +519,7 @@ def register(ctx):
 
 ### `pre_llm_call`
 
-**每轮触发一次**，在工具调用循环开始前。这是**唯一一个返回值会被使用的 hook**——它可以将上下文注入当前轮次的用户消息。
+**每轮触发一次**，在工具调用循环开始前。所有有效回调返回值会按插件顺序聚合，并注入当前轮次的用户消息。
 
 **回调签名：**
 
@@ -538,7 +554,7 @@ return None
 
 **上下文注入位置：** 始终注入到**用户消息**，而非系统 prompt。这保留了 prompt 缓存——系统 prompt 在各轮次间保持不变，已缓存的 token 得以复用。系统 prompt 是 Hermes 的领域（模型指导、工具执行、个性、技能）。插件在用户输入旁边贡献上下文。
 
-所有注入的上下文均为**临时性的**——仅在 API 调用时添加。对话历史中的原始用户消息不会被修改，也不会持久化到会话数据库。
+干净的用户消息 `content` 保持不变。为保证 replay 和 prompt cache 稳定，Hermes 可能把实际发送给 API 的消息（包括插件注入上下文）持久化到该行的 `api_content` sidecar。
 
 当**多个插件**返回上下文时，其输出按插件发现顺序（按目录名字母顺序）以双换行符连接。
 
@@ -757,7 +773,7 @@ def register(ctx):
 
 ### `on_session_finalize`
 
-当 CLI 或 gateway **销毁**活跃会话时触发——例如用户执行 `/new`、gateway GC 了空闲会话，或 CLI 在 agent 活跃时退出。这是在会话身份消失前刷新与该会话绑定状态的最后机会。
+当 CLI 或 gateway **销毁**活跃会话时触发——例如用户执行 `/new`、gateway GC 了空闲会话，或 CLI 在 agent 活跃时退出。可用它刷新与旧 session ID 绑定的状态。Gateway reset 时，替代会话会先创建并持久化，然后才调用此回调。
 
 **回调签名：**
 
@@ -770,7 +786,7 @@ def my_callback(session_id: str | None, platform: str, **kwargs):
 | `session_id` | `str` 或 `None` | 即将销毁的会话 ID。若无活跃会话则可能为 `None`。 |
 | `platform` | `str` | `"cli"` 或消息平台名称（`"telegram"`、`"discord"` 等）。 |
 
-**触发位置：** `cli.py`（`/new` / CLI 退出时）和 `gateway/run.py`（会话重置或 GC 时）。在 gateway 侧始终与 `on_session_reset` 配对。
+**触发位置：** CLI/TUI teardown，以及 gateway reset、关闭或空闲过期路径。Gateway 关闭和过期可只触发 finalize，而不触发对应的 `on_session_reset`。
 
 **返回值：** 忽略。
 
@@ -780,7 +796,7 @@ def my_callback(session_id: str | None, platform: str, **kwargs):
 
 ### `on_session_reset`
 
-当 gateway 为活跃聊天**换入新会话 key** 时触发——用户调用了 `/new`、`/reset`、`/clear`，或适配器在空闲窗口后选择了新会话。这让插件能在不等待下一个 `on_session_start` 的情况下响应对话状态已被清除这一事实。
+在 CLI 或 TUI session boundary，或 gateway 为活跃聊天**换入新会话 key** 时触发。这让插件无需等待下一个 `on_session_start` 即可响应会话状态已被清除。
 
 **回调签名：**
 
@@ -791,9 +807,12 @@ def my_callback(session_id: str, platform: str, **kwargs):
 | 参数 | 类型 | 描述 |
 |-----|------|------|
 | `session_id` | `str` | 新会话的 ID（已轮换为新值）。 |
-| `platform` | `str` | 消息平台名称。 |
+| `platform` | `str` | `"cli"`、`"tui"` 或消息平台名称。 |
+| `reason` | `str`，可选 | CLI 和 gateway reset 路径提供。 |
+| `old_session_id` | `str`，可选 | 仅 gateway，旧 session ID。 |
+| `new_session_id` | `str`，可选 | 仅 gateway，新 session ID。 |
 
-**触发位置：** `gateway/run.py` 中，新会话 key 分配后、下一条入站消息处理前立即触发。在 gateway 侧，顺序为：`on_session_finalize(old_id)` → 切换 → `on_session_reset(new_id)` → 第一条入站消息时的 `on_session_start(new_id)`。
+**触发位置：** CLI 提供 `session_id`、`platform`、`reason`；TUI 提供 `session_id`、`platform`；gateway 在分配新 key 后另加 `reason`、`old_session_id`、`new_session_id`。Gateway reset 顺序为：创建并持久化替代会话 → `on_session_finalize(old_id)` → `on_session_reset(new_id)` → 第一条入站消息时的 `on_session_start(new_id)`。
 
 **返回值：** 忽略。
 
@@ -969,7 +988,7 @@ def register(ctx):
 
 ### `post_approval_response`
 
-在用户响应审批提示（或提示超时）**之后**触发。
+在用户响应审批提示、提示超时，或 gateway 无法发送审批通知**之后**触发。通知失败会在尚无审批决定时以 `choice="notify_failed"` 触发。
 
 **回调签名：**
 
@@ -990,7 +1009,8 @@ def my_callback(
 
 | 参数 | 类型 | 描述 |
 |-----|------|------|
-| `choice` | `str` | `"once"`、`"session"`、`"always"`、`"deny"` 或 `"timeout"` 之一 |
+| `choice` | `str` | Prompted 路径使用 `"once"`、`"session"`、`"always"`、`"deny"`、`"timeout"` 或 `"notify_failed"`；smart 路径使用 `"smart_approve"` 或 `"smart_deny"` |
+| `decided_by` | `str` | Smart 决策为 `"aux_llm"`；prompted 路径不存在。 |
 
 **返回值：** 忽略。
 
@@ -1013,23 +1033,12 @@ def register(ctx):
 **回调签名：**
 
 ```python
-def my_callback(
-    tool_name: str,
-    arguments: dict,
-    result: str,
-    task_id: str | None,
-    **kwargs,
-) -> str | None:
+def my_callback(tool_name: str, args: dict, result: str, task_id: str, **kwargs) -> str | None:
 ```
 
-| 参数 | 类型 | 描述 |
-|-----|------|------|
-| `tool_name` | `str` | 产生结果的工具（`read_file`、`web_extract`、`delegate_task` 等）。 |
-| `arguments` | `dict` | 模型调用工具时传入的参数。 |
-| `result` | `str` | 工具的原始结果字符串，截断和 ANSI 剥离后。 |
-| `task_id` | `str \| None` | 在 RL/基准测试环境中运行时的任务/会话 ID。 |
+完整 payload 还包括 `session_id`、`tool_call_id`、`turn_id`、`api_request_id`、`duration_ms`、`status`、`error_type`、`error_message`。`result` 是 tool dispatch 返回的最终结果；它和 `args` 都可能包含任意用户/工具内容及 secret。
 
-**返回值：** `str` 替换结果（返回的字符串即模型看到的内容），`None` 保持不变。
+**返回值：** 第一个 `str`（包括空字符串）替换结果，`None` 保持不变。
 
 **使用场景：** 从 `web_extract` 输出中脱敏组织特定的 PII、为长 JSON 工具响应添加摘要头、向 `read_file` 结果注入检索增强提示、将 `delegate_task` 子 agent 报告重写为项目特定 schema。
 
@@ -1046,13 +1055,13 @@ def register(ctx):
     ctx.register_hook("transform_tool_result", redact_secrets)
 ```
 
-适用于所有工具。仅针对终端输出的重写请参见下方的 `transform_terminal_output`——它范围更窄，在管道中运行更早（截断前、脱敏前）。
+适用于所有工具。仅针对 terminal 的重写请参见下方 `transform_terminal_output`——它范围更窄，在 `transform_tool_result` 前运行，且替换内容仍受 terminal 工具的最终 output limit 限制。
 
 ---
 
 ### `transform_terminal_output`
 
-在 `terminal` 工具的前台输出管道内触发，在默认的 50 KB 截断、ANSI 剥离和密钥脱敏**之前**。允许插件在任何下游处理之前重写 shell 命令的原始 stdout/stderr。
+在 `terminal` 工具完成前台进程的有界输出捕获后、最终 output limit 前触发。插件可替换已捕获的 stdout/stderr；替换内容仍会受最终 output limit 限制。
 
 **回调签名：**
 
@@ -1060,9 +1069,9 @@ def register(ctx):
 def my_callback(
     command: str,
     output: str,
-    exit_code: int,
-    cwd: str,
-    task_id: str | None,
+    returncode: int,
+    task_id: str,
+    env_type: str,
     **kwargs,
 ) -> str | None:
 ```
@@ -1070,13 +1079,12 @@ def my_callback(
 | 参数 | 类型 | 描述 |
 |-----|------|------|
 | `command` | `str` | 产生输出的 shell 命令。 |
-| `output` | `str` | 原始合并的 stdout/stderr（可能非常大——截断在 hook 之后发生）。 |
-| `exit_code` | `int` | 进程退出码。 |
-| `cwd` | `str` | 命令运行的工作目录。 |
+| `output` | `str` | 有界进程捕获后的合并 stdout/stderr。 |
+| `returncode` | `int` | 进程返回码。 |
+| `task_id` | `str` | 有效 task ID，未设置时为空字符串。 |
+| `env_type` | `str` | 执行环境类型。 |
 
-**返回值：** `str` 替换输出，`None` 保持不变。
-
-**使用场景：** 为产生大量输出的命令注入摘要（`du -ah`、`find`、`tree`）、用项目特定标记标注输出以便下游 hook 处理、剥离在运行间抖动并破坏 prompt 缓存的计时噪声。
+**返回值：** 第一个 `str` 替换输出，`None` 保持不变。命令和输出可能包含凭据或其他敏感数据。
 
 ```python
 def summarize_find(command, output, **kwargs):
@@ -1090,7 +1098,7 @@ def register(ctx):
     ctx.register_hook("transform_terminal_output", summarize_find)
 ```
 
-与 `transform_tool_result`（覆盖所有其他工具）配合使用效果更佳。
+与随后运行的 `transform_tool_result` 配合使用；后者覆盖所有工具，包括 `terminal`。
 
 ---
 
@@ -1117,7 +1125,7 @@ def my_callback(
 | `model` | `str` | 产生响应的模型名称（如 `anthropic/claude-sonnet-4.6`）。 |
 | `platform` | `str` | 交付平台（`cli`、`telegram`、`discord` 等；未设置时为空）。 |
 
-**返回值：** 非空 `str` 替换响应文本，`None` 或空字符串保持不变。当多个插件注册时，**第一个非空字符串生效**——与 `transform_tool_result` 保持一致。
+**返回值：** 非空 `str` 替换响应文本，`None` 或空字符串保持不变。当多个插件注册时，**第一个非空字符串生效**。与 tool/terminal transform 不同，空字符串不会作为替换值。
 
 **使用场景：** 应用个性/词汇转换（海盗腔、海绵宝宝体）、从最终文本中脱敏用户特定标识符、追加项目特定签名页脚、在不消耗 SOUL 指令 token 的情况下执行内部风格指南。
 
@@ -1134,6 +1142,40 @@ def register(ctx):
 ```
 
 此 hook 受非空、非中断响应保护——不会在停止按钮中断或空轮次时触发。异常会被记录为警告，不会中断 agent 执行。
+
+### API request 观察者 hook
+
+#### `pre_api_request`
+
+每次 provider attempt 发出前触发，仅观察。兼容字段 `user_message`、`conversation_history`、`request_messages` 是原始且故意未清理的数据；新 consumer 应优先使用已清理的 `request` envelope。
+
+#### `post_api_request`
+
+Provider response 成功归一化后触发，仅观察。优先使用已清理的 `response`；`assistant_message` 是原始归一化消息，`usage` 是计费数据。
+
+#### `api_request_error`
+
+Provider attempt 失败时触发，包含 status/retry timing、`error` 对象和已清理的 `request`，仅观察。Error message 仍可能包含 provider 或用户数据。
+
+### `on_skill_lifecycle`
+
+权威 skill 使用状态变更后触发，仅观察；会暴露本地 `skill_name`、provenance、关联 ID、use count 和 reuse flag。
+
+### Kanban 生命周期观察者
+
+#### `kanban_task_claimed`
+
+Claim commit 后，在 dispatcher 进程 spawn worker 前触发。
+
+#### `kanban_task_completed`
+
+Completion 和 cleanup 后触发，通常位于 worker 进程；`summary` 可能包含项目或用户内容。
+
+#### `kanban_task_blocked`
+
+普通 blocked transition 后触发；dependency-wait 路径在该 write transaction 退出前调用。`reason` 可能包含项目或用户内容。
+
+三个 kanban hook 均仅观察，并携带 `task_id`、`profile_name`、`board`、`assignee`、`run_id`；completed 增加 `summary`，blocked 增加 `reason`。
 
 ---
 
@@ -1330,3 +1372,17 @@ Shell hooks 以**你的完整用户凭据**运行——与 cron 条目或 shell 
 ### 顺序与优先级
 
 Python 插件 hook 和 shell hook 都流经同一个 `invoke_hook()` 分发器。Python 插件先注册（`discover_and_load()`），shell hook 后注册（`register_from_config()`），因此在平局情况下 Python `pre_tool_call` 的 block 决定优先。第一个有效的 block 生效——聚合器在任何回调产生带非空 message 的 `{"action": "block", "message": str}` 时立即返回。
+
+## Outbound Webhooks
+
+在 `config.yaml` 的 `hooks.outbound:` 中为一个或多个已发布事件配置外部 HTTP endpoint。Outbound webhook 是**仅通知**的 consumer：回调会序列化事件并放入有界队列，由 daemon worker 发送，因此 endpoint 的返回值不能阻断、转换或引导 agent。可使用环境变量提供 HMAC secret；接收方应校验签名，并将 payload 视为与上表相同敏感度的数据。
+
+```yaml
+hooks:
+  outbound:
+    - url: "https://example.com/hermes-events"
+      events: [post_tool_call, on_session_end]
+      secret_env: HERMES_WEBHOOK_SECRET
+```
+
+配置中的事件名同样以 `hermes_cli.plugins.VALID_HOOKS` 为准。`hermes hooks list` 会列出这些已配置 target，但不会输出完整的可用事件目录。

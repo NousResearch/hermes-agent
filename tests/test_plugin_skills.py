@@ -139,6 +139,31 @@ class TestPluginContextRegisterSkill:
         with pytest.raises(FileNotFoundError):
             ctx.register_skill("foo", tmp_path / "nonexistent.md")
 
+    def test_duplicate_qualified_name_is_rejected(self, ctx, tmp_path):
+        ctx.manifest.portable = True
+        first = tmp_path / "first" / "SKILL.md"
+        second = tmp_path / "second" / "SKILL.md"
+        first.parent.mkdir()
+        second.parent.mkdir()
+        first.write_text("test")
+        second.write_text("test")
+        ctx.register_skill("foo", first)
+        with pytest.raises(ValueError, match="already registered"):
+            ctx.register_skill("foo", second)
+
+    def test_native_duplicate_preserves_overwrite_semantics(self, ctx, tmp_path):
+        first = tmp_path / "first" / "SKILL.md"
+        second = tmp_path / "second" / "SKILL.md"
+        first.parent.mkdir()
+        second.parent.mkdir()
+        first.write_text("first")
+        second.write_text("second")
+
+        ctx.register_skill("foo", first)
+        ctx.register_skill("foo", second)
+
+        assert ctx._manager.find_plugin_skill("testplugin:foo") == second
+
 
 # ── skill_view qualified name dispatch ────────────────────────────────────
 
@@ -177,6 +202,53 @@ class TestSkillViewQualifiedName:
         assert result["success"] is True
         assert result["name"] == "superpowers:writing-plans"
         assert "writing-plans body." in result["content"]
+
+    def test_reads_supporting_file_with_containment(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        md = self._register_skill(tmp_path)
+        reference = md.parent / "references" / "api.md"
+        reference.parent.mkdir()
+        reference.write_text("API details.")
+
+        main = json.loads(skill_view("superpowers:writing-plans"))
+        assert main["linked_files"] == {"references": ["references/api.md"]}
+        result = json.loads(
+            skill_view("superpowers:writing-plans", file_path="references/api.md")
+        )
+        assert result["success"] is True
+        assert result["content"] == "API details."
+
+    def test_platform_gate_applies_before_supporting_file(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        md = self._register_skill(
+            tmp_path,
+            content=(
+                "---\nname: writing-plans\ndescription: desc\n"
+                "platforms: [windows]\n---\nBody.\n"
+            ),
+        )
+        reference = md.parent / "references" / "guide.md"
+        reference.parent.mkdir()
+        reference.write_text("Windows only.")
+
+        result = json.loads(
+            skill_view("superpowers:writing-plans", file_path="references/guide.md")
+        )
+
+        assert result["success"] is False
+        assert result["readiness_status"] == "unsupported"
+
+    def test_rejects_supporting_file_escape(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        self._register_skill(tmp_path)
+        result = json.loads(
+            skill_view("superpowers:writing-plans", file_path="../outside.md")
+        )
+        assert result["success"] is False
+        assert "traversal" in result["error"].lower()
 
     def test_plugin_skill_usage_reports_installed_provenance(
         self,

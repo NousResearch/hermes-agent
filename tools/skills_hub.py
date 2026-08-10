@@ -209,7 +209,13 @@ def _normalize_bundle_path(path_value: str, *, field_name: str, allow_nested: bo
         raise ValueError(f"Unsafe {field_name}: {path_value}")
     if not parts or any(part == ".." for part in parts):
         raise ValueError(f"Unsafe {field_name}: {path_value}")
-    if re.fullmatch(r"[A-Za-z]:", parts[0]):
+    # Reject a colon in any component. On Windows a colon marks either a drive
+    # (``C:`` / ``C:foo``) or an NTFS Alternate Data Stream: a bundle member
+    # named ``file.py:payload`` writes hidden, scanner-invisible bytes into the
+    # visible ``file.py`` (rglob-based review never enumerates the stream).
+    # ``/`` is the only legal separator once normalized, so no portable bundle
+    # path needs a colon in a component.
+    if any(":" in part for part in parts):
         raise ValueError(f"Unsafe {field_name}: {path_value}")
     if not allow_nested and len(parts) != 1:
         raise ValueError(f"Unsafe {field_name}: {path_value}")
@@ -3274,13 +3280,21 @@ class OptionalSkillSource(SkillSource):
     """
 
     OFFICIAL_REPO = "NousResearch/hermes-agent"
+    OPTIONAL_SKILLS_PREFIX = "optional-skills"
 
-    def __init__(self):
+    def __init__(self, auth: Optional[GitHubAuth] = None):
         from hermes_constants import get_optional_skills_dir
 
         self._optional_dir = get_optional_skills_dir(
             Path(__file__).parent.parent / "optional-skills"
         )
+        self._auth = auth
+        # Lazily created GitHubSource for the live-repo fallback — only
+        # instantiated when a skill is missing from the local checkout.
+        self._github: Optional[GitHubSource] = None
+        # rel_path ("category/skill") -> True, from the live repo tree.
+        # None = not fetched yet this process.
+        self._remote_dirs: Optional[Dict[str, bool]] = None
 
     def source_id(self) -> str:
         return "official"
@@ -3294,12 +3308,37 @@ class OptionalSkillSource(SkillSource):
         results: List[SkillMeta] = []
         query_lower = query.lower()
 
+        local_rels: set = set()
         for meta in self._scan_all():
+            rel = meta.identifier.split("/", 1)[-1] if meta.identifier else ""
+            local_rels.add(rel)
             searchable = f"{meta.name} {meta.description} {' '.join(meta.tags)}".lower()
             if query_lower in searchable:
                 results.append(meta)
             if len(results) >= limit:
                 break
+
+        # Also surface skills that landed on live main after this install was
+        # cut (missing from the local optional-skills/ checkout).
+        if len(results) < limit:
+            for rel_dir in sorted(self._list_remote_skill_dirs()):
+                if rel_dir in local_rels:
+                    continue
+                name = rel_dir.rsplit("/", 1)[-1]
+                if query_lower and query_lower not in rel_dir.lower():
+                    continue
+                results.append(SkillMeta(
+                    name=name,
+                    description="Official optional skill (from live repo; run install to fetch)",
+                    source="official",
+                    identifier=f"official/{rel_dir}",
+                    trust_level="builtin",
+                    repo=self.OFFICIAL_REPO,
+                    path=f"{self.OPTIONAL_SKILLS_PREFIX}/{rel_dir}",
+                    tags=[],
+                ))
+                if len(results) >= limit:
+                    break
 
         return results
 
@@ -3324,7 +3363,9 @@ class OptionalSkillSource(SkillSource):
             skill_name = rel.rsplit("/", 1)[-1]
             skill_dir = self._find_skill_dir(skill_name)
             if not skill_dir:
-                return None
+                # Not in the local checkout — the skill may have landed on
+                # main after this install was cut. Fall back to the live repo.
+                return self._fetch_from_live_repo(rel)
         else:
             skill_dir = resolved
 
@@ -3365,9 +3406,143 @@ class OptionalSkillSource(SkillSource):
         for meta in self._scan_all():
             if meta.name == skill_name:
                 return meta
+
+        # Not in the local checkout — check live main.
+        remote_dirs = self._list_remote_skill_dirs()
+        matches = [d for d in remote_dirs if d.rsplit("/", 1)[-1] == skill_name]
+        if len(matches) == 1:
+            rel_dir = matches[0]
+            return SkillMeta(
+                name=skill_name,
+                description="Official optional skill (from live repo; run install to fetch)",
+                source="official",
+                identifier=f"official/{rel_dir}",
+                trust_level="builtin",
+                repo=self.OFFICIAL_REPO,
+                path=f"{self.OPTIONAL_SKILLS_PREFIX}/{rel_dir}",
+                tags=[],
+            )
         return None
 
     # -- internal helpers -------------------------------------------------
+
+    def _get_github(self) -> "GitHubSource":
+        if self._github is None:
+            self._github = GitHubSource(auth=self._auth or GitHubAuth())
+        return self._github
+
+    def _fetch_from_live_repo(self, rel: str) -> Optional[SkillBundle]:
+        """Fetch an optional skill straight from the live repo on GitHub.
+
+        Local installs lag `main` — a freshly merged optional skill isn't in
+        the user's `optional-skills/` checkout until they run
+        ``hermes update``. Rather than telling them to update first, resolve
+        the skill against the live default branch.
+
+        ``rel`` is the identifier without the ``official/`` prefix — either
+        ``category/skill`` (used verbatim) or a bare skill name (located via
+        the repo tree).
+        """
+        rel = rel.strip("/")
+        if not rel:
+            return None
+        # Reject traversal before it ever becomes a GitHub path.
+        parts = [p for p in rel.split("/") if p not in ("", ".")]
+        if not parts or any(p == ".." for p in parts):
+            return None
+        rel = "/".join(parts)
+
+        github = self._get_github()
+        remote_dirs = self._list_remote_skill_dirs()
+
+        if rel in remote_dirs:
+            repo_path = f"{self.OPTIONAL_SKILLS_PREFIX}/{rel}"
+        else:
+            # Bare name (or stale category) — locate by final path segment.
+            name = parts[-1]
+            matches = [d for d in remote_dirs if d.rsplit("/", 1)[-1] == name]
+            if len(matches) != 1:
+                return None
+            repo_path = f"{self.OPTIONAL_SKILLS_PREFIX}/{matches[0]}"
+            rel = matches[0]
+
+        # Download the FULL skill directory (byte-exact, including root-level
+        # install scripts, LICENSE, tests/). GitHubSource.fetch() would only
+        # pull SKILL.md + referenced support dirs, silently dropping files the
+        # local-checkout path preserves.
+        tree = github._get_repo_tree(self.OFFICIAL_REPO)
+        if tree is None:
+            return None
+        _branch, entries = tree
+        prefix = f"{repo_path}/"
+        files: Dict[str, Union[str, bytes]] = {}
+        for item in entries:
+            if item.get("type") != "blob" or item.get("mode") == "120000":
+                continue
+            item_path = item.get("path", "")
+            if not item_path.startswith(prefix):
+                continue
+            rel_file = item_path[len(prefix):]
+            base = rel_file.rsplit("/", 1)[-1]
+            if base.startswith(".") or base.endswith(".pyc") or "__pycache__" in rel_file.split("/"):
+                continue
+            content = github._fetch_file_bytes(self.OFFICIAL_REPO, item_path)
+            if content is None:
+                logger.warning("Live-repo optional skill fetch failed for %s", item_path)
+                return None
+            files[rel_file] = content
+
+        if "SKILL.md" not in files:
+            return None
+
+        logger.info("Optional skill '%s' fetched from live repo (not in local checkout)", rel)
+        return SkillBundle(
+            name=rel.rsplit("/", 1)[-1],
+            files=files,
+            source="official",
+            identifier=f"official/{rel}",
+            trust_level="builtin",
+        )
+
+    def _list_remote_skill_dirs(self) -> Dict[str, bool]:
+        """Map of ``category/skill`` dirs under optional-skills/ on live main.
+
+        Derived from the repo tree (single API call, cached per-process by
+        GitHubSource, plus the shared on-disk index cache). Returns {} when
+        the network/API is unavailable — callers degrade to local-only.
+        """
+        if self._remote_dirs is not None:
+            return self._remote_dirs
+
+        cache_key = "official_optional_dirs"
+        cached = _read_index_cache(cache_key)
+        if isinstance(cached, dict) and cached:
+            self._remote_dirs = cached
+            return cached
+
+        dirs: Dict[str, bool] = {}
+        tree = self._get_github()._get_repo_tree(self.OFFICIAL_REPO)
+        if tree is not None:
+            _branch, entries = tree
+            prefix = f"{self.OPTIONAL_SKILLS_PREFIX}/"
+            suffix = "/SKILL.md"
+            for item in entries:
+                path = item.get("path", "")
+                if (
+                    item.get("type") == "blob"
+                    and path.startswith(prefix)
+                    and path.endswith(suffix)
+                ):
+                    rel_dir = path[len(prefix):-len(suffix)]
+                    if rel_dir and not is_excluded_skill_path(
+                        PurePosixPath(rel_dir + suffix)
+                    ):
+                        dirs[rel_dir] = True
+            if dirs:
+                _write_index_cache(cache_key, dirs)
+
+        self._remote_dirs = dirs
+        return dirs
 
     def _find_skill_dir(self, name: str) -> Optional[Path]:
         """Find a skill directory by name anywhere in optional-skills/."""
@@ -4272,7 +4447,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
     extra_taps = taps_mgr.list_taps()
 
     sources: List[SkillSource] = [
-        OptionalSkillSource(),        # Official optional skills (highest priority)
+        OptionalSkillSource(auth=auth),  # Official optional skills (highest priority)
         HermesIndexSource(auth=auth), # Centralized index (search + resolved install paths)
         SkillsShSource(auth=auth),
         WellKnownSkillSource(),

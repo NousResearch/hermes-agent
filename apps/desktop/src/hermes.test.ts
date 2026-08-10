@@ -7,6 +7,7 @@ import {
   AUDIO_TRANSCRIBE_MIN_REQUEST_TIMEOUT_MS,
   audioSpeakRequestTimeoutMs,
   audioTranscribeRequestTimeoutMs,
+  getAllSessionMessages,
   getCronJobs,
   getGlobalModelInfo,
   getGlobalModelOptions,
@@ -331,6 +332,59 @@ describe('Hermes REST helpers', () => {
       path: '/api/sessions/session-1/messages?profile=xiaoxuxu',
       profile: 'xiaoxuxu'
     })
+  })
+
+  it('passes bounded transcript pagination through to the backend', async () => {
+    api.mockResolvedValue({ messages: [], session_id: 'session-1' })
+
+    await getSessionMessages('session-1', 'xiaoxuxu', {
+      limit: 500,
+      offset: 1000,
+      order: 'latest'
+    })
+
+    expect(api).toHaveBeenCalledWith({
+      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=500&offset=1000&order=latest',
+      profile: 'xiaoxuxu'
+    })
+  })
+
+  it('loads complete transcripts through bounded oldest-first pages', async () => {
+    api
+      .mockResolvedValueOnce({
+        messages: [{ id: 1 }, { id: 2 }],
+        session_id: 'session-1',
+        pagination: { limit: 2, offset: 0, order: 'oldest', returned: 2 }
+      })
+      .mockResolvedValueOnce({
+        messages: [{ id: 3 }],
+        session_id: 'session-1',
+        pagination: { limit: 2, offset: 2, order: 'oldest', returned: 1 }
+      })
+
+    const result = await getAllSessionMessages('session-1', 'xiaoxuxu')
+
+    expect(result.messages).toEqual([{ id: 1 }, { id: 2 }, { id: 3 }])
+    expect(api).toHaveBeenNthCalledWith(1, {
+      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=500&offset=0&order=oldest',
+      profile: 'xiaoxuxu'
+    })
+    expect(api).toHaveBeenNthCalledWith(2, {
+      path: '/api/sessions/session-1/messages?profile=xiaoxuxu&limit=500&offset=2&order=oldest',
+      profile: 'xiaoxuxu'
+    })
+  })
+
+  it('stops complete transcript loads before Desktop memory becomes unbounded', async () => {
+    api.mockResolvedValueOnce({
+      messages: [{ id: 1, content: 'large transcript page' }],
+      session_id: 'session-1',
+      pagination: { limit: 1, offset: 0, order: 'oldest', returned: 1 }
+    })
+
+    await expect(getAllSessionMessages('session-1', null, { maxJsonChars: 1 })).rejects.toThrow(
+      'Desktop safe-load limit'
+    )
   })
 
   it('bounds blocking TTS synthesis timeouts by text length', () => {

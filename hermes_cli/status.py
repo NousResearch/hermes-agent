@@ -112,6 +112,23 @@ def _effective_provider_label() -> str:
 from hermes_constants import is_termux as _is_termux
 
 
+def _estop_status_line():
+    """One-line pause banner for `hermes status`, or None when not paused.
+
+    Cheap: a single stat on $HERMES_HOME/ESTOP via agent.estop.
+    """
+    try:
+        from agent.estop import get_state
+    except ImportError:
+        return None
+    state = get_state()
+    if state is None:
+        return None
+    reason = state.get("reason")
+    suffix = f" — reason: {reason}" if reason else ""
+    return f"⏸️  PAUSED (global emergency stop{suffix}; `hermes resume` to lift)"
+
+
 def show_status(args):
     """Show status of all Hermes Agent components."""
     deep = getattr(args, 'deep', False)
@@ -120,6 +137,11 @@ def show_status(args):
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│                 ⚕ Hermes Agent Status                  │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
+
+    _paused_line = _estop_status_line()
+    if _paused_line:
+        print()
+        print(color(_paused_line, Colors.YELLOW, Colors.BOLD))
 
     # =========================================================================
     # Environment

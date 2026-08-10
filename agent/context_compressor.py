@@ -106,6 +106,13 @@ SUMMARY_PREFIX = (
     "Respond ONLY to the latest user message that appears AFTER this "
     "summary — that message is the single source of truth for what to do "
     "right now. "
+    "If no user message appears AFTER this summary, do nothing: do not "
+    "resume, wrap up, or continue work from "
+    f"'{HISTORICAL_TASK_HEADING}' or any other section, do not call tools, "
+    "and wait for a new user message. This handoff must never become the "
+    "active turn by itself. (Exception: if tool results or your own "
+    "tool calls appear after this summary, you are mid-way through an "
+    "in-flight exchange — continue that exchange normally.) "
     "Topic overlap with the summary does NOT mean you should resume its "
     "task: even on similar topics, the latest user message WINS. Treat ONLY "
     "the latest message as the active task and discard stale items from "
@@ -160,6 +167,15 @@ _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT = (
     "Continue from the compressed conversation context above. "
     "This marker exists because the compacted transcript contained "
     "no preserved user turn."
+)
+# Runtime nudge appended by ``handle_max_iterations`` as a ``role="user"`` row.
+# SessionDB projection strips underscore-prefixed metadata, so a synthetic flag
+# would not survive persistence; the stable content string is the authoritative
+# marker for compaction recognizers (mirrors the continuation/todo markers).
+MAX_ITERATIONS_SUMMARY_REQUEST = (
+    "You've reached the maximum number of tool-calling iterations allowed. "
+    "Please provide a final response summarizing what you've found and accomplished so far, "
+    "without calling any more tools."
 )
 
 
@@ -230,6 +246,76 @@ def _strip_persistence_markers(messages: List[Dict[str, Any]]) -> None:
             msg.pop(_DB_PERSISTED_MARKER, None)
 
 
+def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
+    """Strip stale per-turn replay items (``codex_reasoning_items``) from
+    assistant messages that belong to turns older than the active one.
+
+    During Codex/Responses sessions, every retained assistant message carries
+    encrypted reasoning blobs (``codex_reasoning_items``) that are only needed
+    for replaying the *current* turn's reasoning chain.  Prior-turn items are
+    pure re-billed weight: the compaction boundary has already invalidated the
+    prompt-cache prefix, and ``conversation_loop.py`` already drops these
+    wholesale when ``api_mode != "codex_responses"``.
+
+    Operates in place on the fully assembled compacted message list.  Returns
+    the number of messages that were pruned (for diagnostics).  #71058.
+
+    Two safety rules define the prune:
+
+    * **Turn boundary is the last user message, not the last assistant
+      message.** A single Codex turn spans several assistant messages
+      (assistant+tool_calls -> tool -> assistant+tool_calls -> ... -> final
+      assistant), and the Responses API requires the reasoning items that
+      bridge those function calls to be replayed together.  Everything after
+      the last user message is the active turn and keeps its items; only
+      messages at or before that boundary are stale.  (An earlier draft used
+      the last assistant message and would have stripped reasoning mid-chain
+      from the in-flight turn.)
+
+    * **Native compaction checkpoints are exempt.** ``type: "compaction"``
+      items in the same sidecar are the server-side stand-in for already
+      pruned history (see ``agent/native_compaction.py``) — cumulative
+      context carriers, not per-turn reasoning.  They must survive on every
+      retained message, so pruning filters items instead of popping the key.
+    """
+    # Find the last real user message — everything after it is the active
+    # turn.  Synthetic continuation rows and tool results never mark a turn
+    # boundary.
+    last_user_idx = -1
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            last_user_idx = i
+            break
+    if last_user_idx < 0:
+        # No user boundary found — cannot distinguish the active turn, so
+        # prune nothing (fail open toward correctness, not size).
+        return 0
+
+    pruned = 0
+    for i in range(last_user_idx):
+        msg = messages[i]
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for key in _STALE_REPLAY_PRUNE_KEYS:
+            items = msg.get(key)
+            if not isinstance(items, list) or not items:
+                continue
+            kept = [
+                item
+                for item in items
+                if isinstance(item, dict) and item.get("type") == "compaction"
+            ]
+            if len(kept) == len(items):
+                continue  # nothing stale in this sidecar
+            if kept:
+                msg[key] = kept
+            else:
+                msg.pop(key, None)
+            pruned += 1
+    return pruned
+
+
 # Appended to every standalone summary message (and to the merged-into-tail
 # prefix) so the model has an unambiguous "summary ends here" boundary.
 # Without it, weak models read the verbatim "## Active Task" quote as fresh
@@ -260,7 +346,38 @@ _MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]
 # written by that build generation; prepend only. tests/agent/
 # test_summary_prefix_semantics.py byte-pins every entry to enforce this.
 _HISTORICAL_SUMMARY_PREFIXES = (
-    # Pre-#69619: identical to the current prefix except the stale-item
+    # Pre-#80622: identical to the current prefix except it lacked the
+    # explicit "if no user message appears AFTER this summary, do nothing"
+    # clause. Standalone reference handoffs persisted by that build could
+    # occupy the active user slot after a completed assistant stop and
+    # resume stale Historical Task Snapshot work.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do "
+    "right now. "
+    "Topic overlap with the summary does NOT mean you should resume its "
+    "task: even on similar topics, the latest user message WINS. Treat ONLY "
+    "the latest message as the active task and discard stale items from "
+    "'## Historical Task Snapshot' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly "
+    "asks for it. "
+    "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
+    "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+    "topic) must immediately end any in-flight work described in the "
+    "summary; do not re-surface it in later turns. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "None of the above restricts HOW you work: your tools remain fully "
+    "active — keep calling them normally for the active task (edit files, "
+    "run commands, search) instead of merely narrating what you would do. "
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:",
+    # Pre-#69619: identical to the then-current prefix except the stale-item
     # discard clause named all four historical headings (the three
     # section headers removed by #69619 were still in the template).
     # Summaries persisted by builds immediately before #69619 carry this
@@ -397,6 +514,44 @@ _SUMMARY_INPUT_MAX_CHARS = 160_000
 
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
+
+# Floor shared by _prune_old_tool_results' ``min_prune_chars`` default, the
+# constructor clamp on ``proactive_prune_min_result_chars``, and the clarify
+# summary cap (which must stay strictly BELOW this so a preserved user answer
+# is never re-summarized away on a later prune pass).
+_PRUNE_MIN_CHARS = 200
+
+# Non-response sentinels the clarify callbacks embed as ``user_response`` when
+# the user never actually answered (timeout / no-user contexts). These must
+# not be quoted as a user answer during compaction. Sources:
+#   cli.py timeout callback, gateway/run.py timeout + delivery-failure paths,
+#   hermes_cli/oneshot.py no-user callback.
+_CLARIFY_NON_RESPONSE_PREFIXES = (
+    "The user did not provide a response",
+    "[user did not respond",
+    "[clarify prompt could not be delivered",
+    "[oneshot mode:",
+)
+
+
+def _is_clarify_non_response_sentinel(response: Any) -> bool:
+    """Return True when a clarify ``user_response`` is runtime sentinel prose
+    (timeout / no-user), not an actual user answer.
+
+    For lists, ANY sentinel item poisons the whole response: every real
+    producer returns a scalar sentinel, so a mixed list means forged or
+    corrupt tool content — fall back to the generic path (may lose info,
+    never misattributes).
+    """
+    if isinstance(response, str):
+        return response.lstrip().startswith(_CLARIFY_NON_RESPONSE_PREFIXES)
+    if isinstance(response, list):
+        return any(
+            isinstance(item, str)
+            and item.lstrip().startswith(_CLARIFY_NON_RESPONSE_PREFIXES)
+            for item in response
+        )
+    return False
 
 # Ghost-skill defense (#32106): when compaction reduces an old ``skill_view``
 # result to a 1-line metadata summary, the model still believes the skill is
@@ -788,6 +943,37 @@ _REPLAY_BUDGET_KEYS = (
     "codex_message_items",
 )
 
+# Subset of ``_REPLAY_BUDGET_KEYS`` that every transport replays on EVERY
+# retained assistant turn (Codex Responses items ride the wire each request;
+# message items are required for prefix-cache continuity).  The remaining
+# generic thinking-text keys (``reasoning`` / ``reasoning_content``) are
+# replayed for at most the NEWEST assistant turn on non-Codex transports —
+# Anthropic strips all-but-newest at convert time, Bedrock Converse never
+# replays thinking at all, and strict chat-completions providers either
+# reject the field or receive a one-space echo pad (#73624).  Charging them
+# on every message spent 19-24% of the tail budget on bytes that provably
+# never reach the wire, so the tail cut landed early and each compaction
+# discarded more real transcript than configured.
+_ALWAYS_REPLAYED_BUDGET_KEYS = (
+    "codex_reasoning_items",
+    "codex_message_items",
+)
+_NEWEST_TURN_ONLY_BUDGET_KEYS = (
+    "reasoning",
+    "reasoning_content",
+)
+
+# Replay keys that can be safely pruned from stale assistant messages during
+# compaction.  ``codex_reasoning_items`` carries encrypted reasoning blobs that
+# are only needed for the current turn's replay — prior-turn items are pure
+# re-billed weight.  Stripping stale items at compaction time is a safe, cheap
+# pre-pass: the compaction boundary has already invalidated the prompt-cache
+# prefix, and the conversation_loop already drops these wholesale when
+# ``api_mode != "codex_responses"`` (#71058).
+_STALE_REPLAY_PRUNE_KEYS = (
+    "codex_reasoning_items",
+)
+
 
 def _reasoning_details_text_chars(value: Any) -> int:
     """Textual thinking chars inside a ``reasoning_details`` envelope.
@@ -822,7 +1008,7 @@ def _reasoning_details_text_chars(value: Any) -> int:
     return total
 
 
-def _estimate_msg_budget_tokens(msg: dict) -> int:
+def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -> int:
     """Token estimate for one message in the tail-protection budget walks.
 
     Counts the message content plus the **full** ``tool_call`` envelope —
@@ -833,14 +1019,26 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
     tail overshot ``tail_token_budget`` and compression became ineffective.
     See issue #28053.
 
-    Also counts provider replay fields (``codex_reasoning_items`` etc. —
-    see ``_REPLAY_BUDGET_KEYS``).  The preflight "should I compress?"
-    estimator sees the full message shape, so the tail walk must use the
-    same size class; otherwise an assistant message with tiny visible
-    content but large hidden replay blobs is protected as if it were small,
-    the post-compression session stays near the context limit, and
-    compaction re-fires continuously (#55572).  Accounting-only: replay
-    fields are never mutated or pruned here.
+    Also counts provider replay fields.  Wire-replayed-every-turn fields
+    (``_ALWAYS_REPLAYED_BUDGET_KEYS``) are charged unconditionally: the
+    preflight "should I compress?" estimator sees the full message shape, so
+    the tail walk must use the same size class; otherwise an assistant
+    message with tiny visible content but large hidden replay blobs is
+    protected as if it were small and compaction re-fires continuously
+    (#55572).  Stale replay fields from prior assistant turns are stripped
+    during the compaction assembly pass (``_prune_stale_reasoning_replay``,
+    #71058).  Accounting-only here: this budget walk does not mutate or
+    prune.
+
+    ``charge_stale_thinking`` controls the generic thinking-text keys
+    (``_NEWEST_TURN_ONLY_BUDGET_KEYS`` + the ``reasoning_details`` text
+    charge).  Callers that know the message is NOT the newest assistant turn
+    on a transport that only replays newest-turn thinking pass ``False`` so
+    the tail budget is not spent on bytes that never reach the wire (#73624:
+    19-24% of the budget went to provably-stripped blocks, making the tail
+    cut land early and discard more real transcript than configured).
+    Default ``True`` preserves the conservative full charge for callers
+    without turn-position context.
     """
     content = msg.get("content") or ""
     if isinstance(content, str):
@@ -851,7 +1049,11 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
     for tc in msg.get("tool_calls") or []:
         if isinstance(tc, dict):
             tokens += estimate_tokens_rough(str(tc))
-    for key in _REPLAY_BUDGET_KEYS:
+    for key in _ALWAYS_REPLAYED_BUDGET_KEYS:
+        tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
+    if not charge_stale_thinking:
+        return tokens
+    for key in _NEWEST_TURN_ONLY_BUDGET_KEYS:
         tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
     # reasoning_details: charge only the thinking TEXT, never the signed /
     # base64 envelope (#73298 second site; mirrors the preflight estimator's
@@ -865,6 +1067,19 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
             // _CHARS_PER_TOKEN
         )
     return tokens
+
+
+def _last_assistant_index(messages: "List[Dict[str, Any]]") -> int:
+    """Index of the newest assistant message, or -1.
+
+    The one turn whose thinking fields every transport may still replay —
+    see ``_NEWEST_TURN_ONLY_BUDGET_KEYS``.
+    """
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            return i
+    return -1
 
 
 def _content_text_for_contains(content: Any) -> str:
@@ -1267,6 +1482,50 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
         return "[todo] updated task list"
 
     if tool_name == "clarify":
+        response_prefix = "[clarify] user responded: "
+        # One char under _PRUNE_MIN_CHARS: the summary survives later
+        # _prune_old_tool_results passes only via the ``len(content) <=
+        # min_prune_chars`` guard (the "already summarized" guard keys on
+        # " chars)" which this shape never contains), and staying strictly
+        # below the floor also keeps it out of the >=200-char dedup pass.
+        max_summary_chars = _PRUNE_MIN_CHARS - 1
+        truncation_marker = "...[truncated]"
+
+        try:
+            result = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            result = {}
+        response = result.get("user_response") if isinstance(result, dict) else None
+        is_answer_shaped = (
+            isinstance(response, str) and bool(response)
+        ) or (
+            isinstance(response, list)
+            and bool(response)
+            and all(isinstance(item, str) and item for item in response)
+        )
+        # Timeout / no-user paths embed sentinel prose as user_response
+        # (gateway "[user did not respond within Nm]", oneshot
+        # "[oneshot mode: ...]", CLI "The user did not provide a
+        # response..."). Quoting those as a user answer would be false
+        # attribution — keep them on the generic path.
+        resolved = is_answer_shaped and not _is_clarify_non_response_sentinel(
+            response
+        )
+        if resolved:
+            # Keep ordinary Unicode intact while escaping lone UTF-16
+            # surrogates so the compacted message remains UTF-8/SQLite safe.
+            serialized_response = (
+                json.dumps(response, ensure_ascii=False)
+                .encode("utf-8", errors="backslashreplace")
+                .decode("utf-8")
+            )
+            summary = response_prefix + serialized_response
+            if len(summary) > max_summary_chars:
+                summary = (
+                    summary[: max_summary_chars - len(truncation_marker)].rstrip()
+                    + truncation_marker
+                )
+            return summary
         return "[clarify] asked user a question"
 
     if tool_name == "text_to_speech":
@@ -1358,6 +1617,7 @@ class ContextCompressor(ContextEngine):
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
+        self._pending_request_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self._last_compression_telemetry = None
         self._active_compression_telemetry = None
@@ -1629,6 +1889,7 @@ class ContextCompressor(ContextEngine):
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
+        self._pending_request_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self._last_compression_telemetry = None
         self._active_compression_telemetry = None
@@ -2106,6 +2367,7 @@ class ContextCompressor(ContextEngine):
         self.last_real_prompt_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.last_compression_rough_tokens = 0
+        self._pending_request_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         # Strikes were judged against the PREVIOUS threshold; a recomputed
         # trigger invalidates them. Keep the durable copy in sync so a
@@ -2310,7 +2572,7 @@ class ContextCompressor(ContextEngine):
         # configured 0 keeps the 8000 default via `or`. Keep the floor well above
         # typical summary length (default 8000) to stay idempotent.
         self.proactive_prune_min_result_chars = max(
-            200, int(proactive_prune_min_result_chars or 8000)
+            _PRUNE_MIN_CHARS, int(proactive_prune_min_result_chars or 8000)
         )
         # Minimum estimated token reclaim before a proactive prune COMMITS.
         # Every commit rewrites messages the provider has already seen, which
@@ -2397,6 +2659,7 @@ class ContextCompressor(ContextEngine):
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
+        self._pending_request_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
 
         self.summary_model = summary_model_override or ""
@@ -2485,6 +2748,17 @@ class ContextCompressor(ContextEngine):
             if self.last_prompt_tokens < self.threshold_tokens:
                 if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
                     self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
+                elif self._pending_request_rough_tokens > 0:
+                    # Pair the provider's real prompt count with the rough
+                    # estimate of the request that produced it (recorded via
+                    # note_request_rough_estimate just before the call). This
+                    # keeps the defer baseline synchronized with real usage on
+                    # EVERY fitting response, not only right after a
+                    # compaction — without it, sessions that never compressed
+                    # have no baseline and preflight fires on the raw rough
+                    # estimate alone, which overcounts CJK text and provider
+                    # replay blobs severalfold.
+                    self.last_rough_tokens_when_real_prompt_fit = self._pending_request_rough_tokens
                 # Any real provider reading below the trigger proves the prompt
                 # fits again. Clear the real-usage effectiveness latch even
                 # when this response was not immediately after compaction. The
@@ -2493,6 +2767,7 @@ class ContextCompressor(ContextEngine):
                 self._record_ineffective_compression_verdict(0)
             else:
                 self.last_rough_tokens_when_real_prompt_fit = 0
+            self._pending_request_rough_tokens = 0
 
             # Anti-thrashing verdict, judged HERE because this is the only place
             # that sees the provider's real prompt count for the just-compacted
@@ -2543,16 +2818,59 @@ class ContextCompressor(ContextEngine):
             return
         self.last_prompt_tokens = snapshot
 
+    def note_request_rough_estimate(self, rough_tokens: int) -> None:
+        """Record the rough estimate of the request about to be sent.
+
+        ``update_from_response()`` pairs this with the provider's real
+        ``prompt_tokens`` for the same request, giving
+        ``should_defer_preflight_to_real_usage()`` a synchronized
+        (rough, real) anchor to project real usage from rough growth.
+        Usage-less responses do not consume the pending value, so a
+        transport that reports usage separately still pairs correctly.
+        """
+        try:
+            self._pending_request_rough_tokens = max(0, int(rough_tokens))
+        except (TypeError, ValueError):
+            self._pending_request_rough_tokens = 0
+
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
         """Return True when a high rough preflight estimate is known-noisy.
 
         ``estimate_request_tokens_rough(..., tools=...)`` intentionally
-        overestimates schema-heavy requests so Hermes compresses before a
-        provider rejects the payload. After a successful compressed API call,
-        though, provider ``prompt_tokens`` are a better signal than repeating
-        compaction from the same rough schema overhead. Defer only while the
-        rough estimate has grown modestly since a request the provider proved
-        fit under the threshold.
+        overestimates so Hermes compresses before a provider rejects the
+        payload — but the margin is not a fixed percentage: CJK text is
+        counted at ~1.7x its o200k cost and Responses-mode reasoning replay
+        blobs at several times their billed cost, so heavy sessions can show
+        a rough estimate 2-3x real usage and compact at 35-55% of the real
+        window (churn: each pass stalls the turn for minutes and discards
+        detail).
+
+        Instead of tolerating a fixed rough-growth allowance, project real
+        usage from the last synchronized (rough, real) pair::
+
+            projected_real = last_real + (rough_now - rough_at_last_real)
+
+        For ASCII and CJK-dense scripts rough growth over-counts real growth,
+        making the projection an upper bound. Other non-ASCII scripts
+        (Cyrillic, Greek, Thai, Arabic — chars/4 but ~2-3 chars/token on
+        o200k-family tokenizers) can under-count growth by up to ~2x
+        (#62605's direction), so the projection is NOT a strict upper bound
+        there. That residual risk is bounded by two backstops: any real
+        provider reading at/over the threshold clears the baseline (the
+        post-response should_compress gate then fires on real usage within
+        one API call), and the provider's context-overflow error handler
+        compacts reactively with the authoritative signal, as before.
+        Compression fires when the projection — not the raw estimate —
+        crosses the threshold.
+
+        Callers pass two different measurement bases: the turn prologue
+        estimates RAW messages (turn_context.py) while the baseline recorded
+        by note_request_rough_estimate covers the fully assembled request
+        (api_content/plugin injections, prefills, MoA context). The prologue's
+        smaller basis understates growth and can only OVER-defer there — and
+        the loop's own pre-API pressure check re-runs this projection with
+        the aligned basis before every provider call, so a prologue
+        over-defer never skips a needed compaction.
         """
         if rough_tokens < self.threshold_tokens:
             return False
@@ -2577,13 +2895,13 @@ class ContextCompressor(ContextEngine):
         if baseline <= 0:
             return False
 
+        # No baseline ratchet here: the (rough, real) pair is refreshed by
+        # update_from_response() on every fitting response. Advancing the
+        # rough baseline without a matching real reading would shrink
+        # apparent growth and defer on stale data — the unsafe direction.
         growth = max(0, rough_tokens - baseline)
-        tolerated_growth = max(4096, int(self.threshold_tokens * 0.05))
-        if growth > tolerated_growth:
-            return False
-
-        self.last_rough_tokens_when_real_prompt_fit = max(baseline, rough_tokens)
-        return True
+        projected_real = self.last_real_prompt_tokens + growth
+        return projected_real < self.threshold_tokens
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.
@@ -2781,7 +3099,7 @@ class ContextCompressor(ContextEngine):
     def _prune_old_tool_results(
         self, messages: List[Dict[str, Any]], protect_tail_count: int,
         protect_tail_tokens: int | None = None,
-        min_prune_chars: int = 200,
+        min_prune_chars: int = _PRUNE_MIN_CHARS,
     ) -> tuple[List[Dict[str, Any]], int]:
         """Replace old tool result contents with informative 1-line summaries.
 
@@ -2844,9 +3162,15 @@ class ContextCompressor(ContextEngine):
                 len(result),
                 _MAX_TAIL_MESSAGE_FLOOR,
             )
+            # Same newest-turn-only thinking charge as the tail-cut walk
+            # (#73624) — this boundary decides which tool results stay
+            # prunable, and overcharging stale thinking shrinks that window.
+            _newest_asst_idx = _last_assistant_index(result)
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
-                msg_tokens = _estimate_msg_budget_tokens(msg)
+                msg_tokens = _estimate_msg_budget_tokens(
+                    msg, charge_stale_thinking=(i == _newest_asst_idx)
+                )
                 if accumulated + msg_tokens > protect_tail_tokens and (len(result) - i) >= min_protect:
                     boundary = i
                     break
@@ -2881,7 +3205,7 @@ class ContextCompressor(ContextEngine):
                 # Multimodal dict envelopes ({_multimodal: True, content: [...]}) and
                 # other non-string tool-result shapes can't be hashed/deduped by text.
                 continue
-            if len(content) < 200:
+            if len(content) < _PRUNE_MIN_CHARS:
                 continue
             h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
             if h in content_hashes:
@@ -4268,11 +4592,35 @@ This compaction should PRIORITISE preserving all information related to the focu
         if cls._is_context_summary_content(content):
             return True
         text = _content_text_for_contains(content).strip()
+        # Sibling recovery nudges from agent.conversation_loop's retry loop:
+        # same "ephemeral scaffolding, not a real human turn" class as the
+        # markers above (see _CODEX_INCOMPLETE_NUDGE's own docstring there),
+        # imported lazily to avoid a module-load-order cycle (conversation_loop
+        # already imports FROM this module at call time for the same reason).
+        from agent.conversation_loop import (
+            _CODEX_ACK_CONTINUATION_NUDGE,
+            _CODEX_INCOMPLETE_NUDGE,
+            _DROPPED_TOOLCALL_NUDGE_CONTENT,
+            _EMPTY_TOOL_RESPONSE_NUDGE,
+            _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX,
+            _LENGTH_CONTINUATION_NETWORK_STUB,
+            _LENGTH_CONTINUATION_OUTPUT_LIMIT,
+        )
+
         return text in {
             COMPRESSION_CONTINUATION_USER_CONTENT,
             _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
+            MAX_ITERATIONS_SUMMARY_REQUEST,
+            _CODEX_INCOMPLETE_NUDGE,
+            _CODEX_ACK_CONTINUATION_NUDGE,
+            _DROPPED_TOOLCALL_NUDGE_CONTENT,
+            _EMPTY_TOOL_RESPONSE_NUDGE,
+            _LENGTH_CONTINUATION_NETWORK_STUB,
+            _LENGTH_CONTINUATION_OUTPUT_LIMIT,
         } or text.startswith(
             TODO_INJECTION_HEADER + "\n"
+        ) or text.startswith(
+            _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX
         )
 
     @staticmethod
@@ -5195,9 +5543,17 @@ This compaction should PRIORITISE preserving all information related to the focu
         accumulated = 0
         cut_idx = n  # start from beyond the end
 
+        # Newest assistant turn: the only message whose generic thinking
+        # fields any transport still replays (#73624) — every older turn's
+        # reasoning/reasoning_content is stripped or padded at send time,
+        # so charging it here spends tail budget on bytes that never ship.
+        _newest_asst_idx = _last_assistant_index(messages)
+
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
-            msg_tokens = _estimate_msg_budget_tokens(msg)
+            msg_tokens = _estimate_msg_budget_tokens(
+                msg, charge_stale_thinking=(i == _newest_asst_idx)
+            )
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
                 break
@@ -5223,7 +5579,9 @@ This compaction should PRIORITISE preserving all information related to the focu
             raw_accumulated = 0
             for j in range(n - 1, head_end - 1, -1):
                 raw_msg = messages[j]
-                raw_tok = _estimate_msg_budget_tokens(raw_msg)
+                raw_tok = _estimate_msg_budget_tokens(
+                    raw_msg, charge_stale_thinking=(j == _newest_asst_idx)
+                )
                 if raw_accumulated + raw_tok > raw_budget and (n - j) >= min_tail:
                     cut_idx = j
                     break
@@ -6859,6 +7217,21 @@ This compaction should PRIORITISE preserving all information related to the focu
         # are positional; this single terminal sweep makes it structural so a
         # future copy site cannot re-leak the marker into the child-session flush.
         _strip_persistence_markers(compressed)
+        # Prune stale codex_reasoning_items from retained assistant messages
+        # older than the most recent assistant turn (#71058).  These encrypted
+        # reasoning blobs are only needed for the *current* turn's replay;
+        # prior-turn items are pure re-billed weight that keeps compaction from
+        # reaching its target ratio.  The compaction boundary has already
+        # invalidated the prompt-cache prefix, so stripping them here costs
+        # nothing extra cache-wise.  conversation_loop.py already drops these
+        # wholesale when api_mode != "codex_responses", so this is a scoped
+        # strip consistent with existing semantics.
+        _pruned_replay = _prune_stale_reasoning_replay(compressed)
+        if _pruned_replay and not self.quiet_mode:
+            logger.info(
+                "Pruned stale replay items from %d assistant message(s) during compaction",
+                _pruned_replay,
+            )
         self._last_compression_made_progress = True
 
         # A successful compaction just freed the largest allocation a long
@@ -6919,3 +7292,95 @@ def is_compaction_summary_message(message: Any) -> bool:
     else:
         content = message
     return ContextCompressor._is_context_summary_content(content)
+
+
+def _handoff_carries_live_user_content(message: Any) -> bool:
+    """Return True when a summary-bearing row still carries a live user ask.
+
+    Merge-into-tail carriers preserve prior turn content before the summary.
+    Force-user-leading merges prepend the handoff + end marker to the real
+    ask, leaving a non-empty remainder after ``_SUMMARY_END_MARKER``. Either
+    shape must remain actionable (#80622 must not treat them as sole-handoff).
+
+    Delegates to ``_strip_context_summary_handoff_message`` — the canonical
+    "does anything survive once the handoff is removed" logic (it also
+    handles multimodal list content and returns ``None`` for a merged-shaped
+    row whose preserved prior tail is EMPTY, which a bare
+    ``classify_summary_content(...) == "merged"`` check would wrongly treat
+    as live). Callers must pre-filter with ``is_compaction_summary_message``:
+    for non-summary rows the strip helper returns the message unchanged,
+    which would read as "carries live content" here.
+    """
+    if not isinstance(message, dict):
+        return False
+    return (
+        ContextCompressor._strip_context_summary_handoff_message(message)
+        is not None
+    )
+
+
+def reference_handoff_would_drive_next_model_call(
+    messages: Optional[List[Dict[str, Any]]],
+) -> bool:
+    """Return True when the next model call would be driven only by a handoff.
+
+    A reference-only compaction handoff must never become the active user turn
+    by itself after an assistant response has already completed (#80622). Mid
+    tool-loop compression remains allowed: tool results / assistant tool_calls
+    after the handoff mean the loop is continuing an in-flight exchange, not
+    starting a fresh turn from the synthetic summary.
+    """
+    if not messages:
+        return False
+
+    last_driving_handoff = -1
+    for index, message in enumerate(messages):
+        if not is_compaction_summary_message(message):
+            continue
+        if _handoff_carries_live_user_content(message):
+            # Embedded live ask — this row is not a sole-handoff driver.
+            continue
+        last_driving_handoff = index
+
+    if last_driving_handoff < 0:
+        return False
+
+    for message in messages[last_driving_handoff + 1 :]:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role == "tool":
+            return False
+        if role == "assistant" and message.get("tool_calls"):
+            return False
+        if (
+            ContextCompressor._is_actionable_user_turn(message)
+            and not ContextCompressor._is_synthetic_compression_user_turn(message)
+        ):
+            return False
+        if is_compaction_summary_message(message) and _handoff_carries_live_user_content(
+            message
+        ):
+            return False
+    return True
+
+
+def is_user_originated_turn(message: Any) -> bool:
+    """Return True for human-authored user turns (not compaction scaffolding).
+
+    Gateway/session dispatchers (retry, undo, active-turn selection) must use
+    this instead of ``role == "user" and not display_kind`` — standalone
+    handoffs with ``_compressed_summary_has_user_turn`` were previously left
+    without ``display_kind=hidden`` and could be mistaken for real asks (#80622).
+    Summary-bearing rows are never user-originated, even when they embed a
+    live ask after the end marker (callers that need that text should unwrap).
+    """
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return False
+    if message.get("display_kind"):
+        return False
+    if is_compaction_summary_message(message):
+        return False
+    if ContextCompressor._is_synthetic_compression_user_turn(message):
+        return False
+    return ContextCompressor._is_actionable_user_turn(message)

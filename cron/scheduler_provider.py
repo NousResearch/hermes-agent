@@ -82,6 +82,16 @@ class CronScheduler(ABC):
         Built-in: no-op (it re-reads jobs.json on every tick)."""
         return None
 
+    def register_job(self, job: dict[str, Any]) -> None:
+        """Register the first external trigger for one newly persisted job.
+
+        The built-in provider reads the local store on every tick, so its
+        default is a no-op. External providers override this when creating a
+        job requires a remote registration before callers can honestly report
+        that the job is scheduled.
+        """
+        return None
+
     def recover_interrupted(self) -> int:
         """Run profile-local attempt recovery for every provider lifecycle."""
         from cron.executions import recover_interrupted_executions

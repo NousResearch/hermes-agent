@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useRef, useState } from 'react'
+import { createContext, memo, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
 import { AssistantMessage } from '@/components/assistant-ui/thread/assistant-message'
 import { ThreadMessageList } from '@/components/assistant-ui/thread/list'
@@ -15,6 +15,22 @@ import { useI18n } from '@/i18n'
 import { notifyError } from '@/store/notifications'
 
 type ThreadLoadingState = 'response' | 'session'
+
+interface ThreadEditContextValue {
+  cwd: string | null
+  gateway: HermesGateway | null
+  sessionId: string | null
+}
+
+// Edit-composer context. The composer only exists while a message is being
+// edited, and it mounts deep inside the memo'd ThreadMessageList, so the
+// edit context can neither ride the component-map memo deps (that remints
+// the component types on every session switch and remounts the outgoing
+// transcript) nor sit in a render-time ref (a mounted composer never
+// re-reads it when a same-session change leaves every list prop
+// referentially equal). Context solves both: the component type stays
+// stable, and a changed value propagates straight to the mounted consumer.
+const ThreadEditContext = createContext<ThreadEditContextValue>({ cwd: null, gateway: null, sessionId: null })
 
 interface ThreadProps {
   clampToComposer?: boolean
@@ -87,19 +103,18 @@ export const Thread = memo(function Thread({
   // Stop button, the restore-confirm affordance). Assigned during render
   // (the useStoreSelector pattern) so the ref never lags a render.
   //
-  // cwd / gateway / sessionId ride the same ref for the same reason, and it
-  // is load-bearing on the hot path: all three change on EVERY session
-  // switch, so listing them as deps re-minted these types mid-switch and
-  // remounted the entire OUTGOING transcript — thousands of renders of a
-  // thread that was about to be replaced, all of it before the resume RPC
-  // had even been sent. They are read inside the edit composer (which only
-  // exists while a message is being edited), never during a plain render,
-  // so a ref read is always current by the time it matters.
+  // cwd / gateway / sessionId stay OUT of the memo deps for the same
+  // reason: all three change on EVERY session switch, so listing them
+  // re-minted these types mid-switch and remounted the entire OUTGOING
+  // transcript — thousands of renders of a thread that was about to be
+  // replaced, all of it before the resume RPC had even been sent. They
+  // reach the edit composer through ThreadEditContext instead (see above).
   const callbacksRef = useRef({ onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage })
   callbacksRef.current = { onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage }
 
-  const editContextRef = useRef({ cwd, gateway, sessionId })
-  editContextRef.current = { cwd, gateway, sessionId }
+  // Only changes identity when one of the three values does, so Thread
+  // re-renders for unrelated reasons never re-render the composer.
+  const editContext = useMemo(() => ({ cwd, gateway, sessionId }), [cwd, gateway, sessionId])
 
   const hasBranchInNewChat = Boolean(onBranchInNewChat)
   const hasCancel = Boolean(onCancel)
@@ -118,7 +133,7 @@ export const Thread = memo(function Thread({
       ),
       SystemMessage,
       UserEditComposer: () => {
-        const { cwd: editCwd, gateway: editGateway, sessionId: editSessionId } = editContextRef.current
+        const { cwd: editCwd, gateway: editGateway, sessionId: editSessionId } = useContext(ThreadEditContext)
 
         return <UserEditComposer cwd={editCwd} gateway={editGateway} sessionId={editSessionId} />
       },
@@ -146,25 +161,27 @@ export const Thread = memo(function Thread({
   const loadingIndicator = useMemo(() => <BackgroundResumeNotice />, [])
 
   return (
-    <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]">
-      <ThreadMessageList
-        clampToComposer={clampToComposer}
-        components={messageComponents}
-        emptyPlaceholder={emptyPlaceholder}
-        loadingIndicator={loadingIndicator}
-        sessionKey={sessionKey}
-      />
-      {loading === 'session' && <CenteredThreadSpinner />}
-      <ThreadTimeline />
-      <ConfirmDialog
-        confirmLabel={copy.restoreConfirm}
-        description={copy.restoreBody}
-        destructive
-        onClose={closeRestoreConfirm}
-        onConfirm={confirmRestore}
-        open={Boolean(restoreConfirmTarget)}
-        title={copy.restoreTitle}
-      />
-    </div>
+    <ThreadEditContext.Provider value={editContext}>
+      <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]">
+        <ThreadMessageList
+          clampToComposer={clampToComposer}
+          components={messageComponents}
+          emptyPlaceholder={emptyPlaceholder}
+          loadingIndicator={loadingIndicator}
+          sessionKey={sessionKey}
+        />
+        {loading === 'session' && <CenteredThreadSpinner />}
+        <ThreadTimeline />
+        <ConfirmDialog
+          confirmLabel={copy.restoreConfirm}
+          description={copy.restoreBody}
+          destructive
+          onClose={closeRestoreConfirm}
+          onConfirm={confirmRestore}
+          open={Boolean(restoreConfirmTarget)}
+          title={copy.restoreTitle}
+        />
+      </div>
+    </ThreadEditContext.Provider>
   )
 })

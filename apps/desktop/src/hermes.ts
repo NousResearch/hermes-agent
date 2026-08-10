@@ -52,6 +52,7 @@ import type {
   ProfileSoul,
   ProfilesResponse,
   SessionInfo,
+  SessionMessage,
   SessionMessagesResponse,
   SessionSearchResponse,
   SkillHubPreview,
@@ -560,6 +561,23 @@ async function listSidebarSessionsLegacy(req: SidebarSessionsRequest): Promise<S
   }
 }
 
+/** The PR each of these sessions opened, recovered from its own transcript —
+ *  for sessions whose recorded branch can't answer (they started on trunk and
+ *  did the work in a worktree). Also returns every id it looked at, so the
+ *  caller can remember a miss and never ask again. */
+export function scanSessionPullRequests(
+  ids: string[]
+): Promise<{ pull_requests: Record<string, { number: number; url: string }>; scanned: string[] }> {
+  return window.hermesDesktop.api<{
+    pull_requests: Record<string, { number: number; url: string }>
+    scanned: string[]
+  }>({
+    path: '/api/profiles/sessions/pull-requests',
+    method: 'POST',
+    body: { ids }
+  })
+}
+
 export async function listSidebarSessions(req: SidebarSessionsRequest): Promise<SidebarSessionsResponse> {
   if (sidebarBatchEndpointMissing) {
     return listSidebarSessionsLegacy(req)
@@ -655,13 +673,80 @@ export function getSession(id: string, profile?: string | null): Promise<Session
 // this GET to the remote backend (which serves its own state.db); for a local
 // profile the primary opens that profile's state.db via ?profile=. Omit for
 // the current/default profile.
-export function getSessionMessages(id: string, profile?: string | null): Promise<SessionMessagesResponse> {
-  const suffix = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+export function getSessionMessages(
+  id: string,
+  profile?: string | null,
+  page: { limit?: number; offset?: number; order?: 'latest' | 'oldest' } = {}
+): Promise<SessionMessagesResponse> {
+  const query = new URLSearchParams()
+
+  if (profile) {
+    query.set('profile', profile)
+  }
+
+  if (page.limit !== undefined) {
+    query.set('limit', String(page.limit))
+  }
+
+  if (page.offset !== undefined) {
+    query.set('offset', String(page.offset))
+  }
+
+  if (page.order) {
+    query.set('order', page.order)
+  }
+
+  const suffix = query.size ? `?${query.toString()}` : ''
 
   return window.hermesDesktop.api<SessionMessagesResponse>({
     ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}/messages${suffix}`
   })
+}
+
+export function getLatestSessionMessages(id: string, profile?: string | null): Promise<SessionMessagesResponse> {
+  return getSessionMessages(id, profile, { limit: 500, order: 'latest' })
+}
+
+export async function getAllSessionMessages(
+  id: string,
+  profile?: string | null,
+  options: { maxJsonChars?: number } = {}
+): Promise<SessionMessagesResponse> {
+  const messages: SessionMessage[] = []
+  const pageSize = 500
+  const maxJsonChars = options.maxJsonChars ?? 32_000_000
+  let jsonChars = 0
+  let offset = 0
+  let resolvedSessionId = id
+
+  while (true) {
+    const page = await getSessionMessages(id, profile, {
+      limit: pageSize,
+      offset,
+      order: 'oldest'
+    })
+
+    resolvedSessionId = page.session_id
+    jsonChars += (JSON.stringify(page.messages) ?? '').length
+
+    if (jsonChars > maxJsonChars) {
+      throw new Error(
+        'Session transcript exceeds the Desktop safe-load limit; use the Web Dashboard export for this session.'
+      )
+    }
+
+    messages.push(...page.messages)
+
+    // Legacy backends ignore pagination and return the full transcript.
+    if (!page.pagination || page.messages.length === 0 || page.messages.length < page.pagination.limit) {
+      break
+    }
+
+    offset += page.messages.length
+  }
+
+  return { session_id: resolvedSessionId, messages }
 }
 
 export function deleteSession(id: string, profile?: string | null): Promise<{ ok: boolean }> {

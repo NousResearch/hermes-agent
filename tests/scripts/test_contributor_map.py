@@ -100,7 +100,12 @@ def test_cli_entrypoint_end_to_end(tmp_path):
     scripts = tmp_path / "scripts"
     scripts.mkdir()
     for name in ("add_contributor.py",):
-        (scripts / name).write_text((SCRIPTS_DIR / name).read_text())
+        # Explicit encoding: add_contributor.py contains UTF-8 multi-byte
+        # characters (an em dash), so the locale-default read_text() raises
+        # UnicodeDecodeError on non-UTF-8 Windows locales (e.g. cp950).
+        (scripts / name).write_text(
+            (SCRIPTS_DIR / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
     # Minimal stub release.py so the legacy lookup import works
     (scripts / "release.py").write_text("LEGACY_AUTHOR_MAP = {}\n")
     proc = subprocess.run(
@@ -109,5 +114,5 @@ def test_cli_entrypoint_end_to_end(tmp_path):
         cwd=tmp_path, capture_output=True, text=True,
     )
     assert proc.returncode == 0, proc.stderr
-    out = (tmp_path / "contributors" / "emails" / "cli@example.com").read_text()
+    out = (tmp_path / "contributors" / "emails" / "cli@example.com").read_text(encoding="utf-8")
     assert out.splitlines()[0] == "cliperson"

@@ -585,6 +585,7 @@ export interface AppLayoutStatusProps {
   goodVibesTick: number
   lastTurnEndedAt: null | number
   sessionStartedAt: null | number
+  sessionTitle: string
   showStickyPrompt: boolean
   statusColor: string
   stickyPrompt: string

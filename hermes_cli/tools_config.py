@@ -1341,6 +1341,8 @@ def _repair_cua_driver_autostart_windows(driver_cmd: str, *, verbose: bool) -> b
             [ps, "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=300,
             env=_cua_driver_env(),
         )
@@ -2121,21 +2123,38 @@ def _parse_enabled_flag(value, default: bool = True) -> bool:
 
 
 def enabled_mcp_server_names(config: dict) -> Set[str]:
-    """Names of MCP servers globally enabled in config.yaml.
+    """Names of MCP servers globally enabled in config.yaml or by a plugin.
 
     Shared by the gateway/CLI platform resolver (``_get_platform_tools``) and
     the cron per-job toolset resolver (``cron.scheduler``) so every path agrees
     on MCP membership. A server is enabled unless its config sets an explicitly
     falsey ``enabled`` (per ``_parse_enabled_flag``: false/0/no/off) — a missing
     flag or an unrecognized value is treated as enabled.
+
+    Portable Agent Plugins contribute MCP servers in-memory rather than via
+    ``config.yaml`` (see ``PluginManager.get_portable_mcp_servers``). Those are
+    included here so their tools fold into platform toolsets like native
+    servers do — the user's opt-in is enabling the plugin itself. Without this,
+    a portable server registers with the MCP runtime but its tools never reach
+    the model's schema.
     """
     mcp_servers = (config or {}).get("mcp_servers") or {}
-    return {
+    names = {
         str(name)
         for name, server_cfg in mcp_servers.items()
         if isinstance(server_cfg, dict)
         and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
     }
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+
+        discover_plugins()
+        portable = set(get_plugin_manager().get_portable_mcp_servers())
+        # Native config wins on a name collision (mirrors _load_mcp_config).
+        names |= portable - set(mcp_servers)
+    except Exception:
+        logger.debug("Failed to include portable MCP servers", exc_info=True)
+    return names
 
 
 def _exempt_explicit_platform_native(

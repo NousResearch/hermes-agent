@@ -19,6 +19,7 @@ import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
 import {
+  $threadScrolledUp,
   onScrollToBottomRequest,
   onThreadEditClose,
   onThreadEditOpen,
@@ -409,6 +410,23 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
   // Floating jump button (outside this subtree) → return to the bottom.
   useEffect(() => onScrollToBottomRequest(() => void scrollToBottom()), [scrollToBottom])
+
+  // Waking from display: hidden (HUD mode hides the main window; OS hide does
+  // the same to any window): rAF and ResizeObserver were frozen the whole
+  // time, so the virtualizer's measurements — and scrollTop itself — are
+  // stale. If the user was following the bottom, re-anchor once visible;
+  // leave a scrolled-up reader exactly where they were.
+  useEffect(() => {
+    const onVisible = () => {
+      if (document.visibilityState === 'visible' && !$threadScrolledUp.get()) {
+        requestAnimationFrame(() => void scrollToBottom())
+      }
+    }
+
+    document.addEventListener('visibilitychange', onVisible)
+
+    return () => document.removeEventListener('visibilitychange', onVisible)
+  }, [scrollToBottom])
 
   const endEditHold = useCallback(() => {
     scrollRef.current?.removeAttribute('data-editing')

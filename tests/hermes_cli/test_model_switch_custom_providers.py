@@ -5,9 +5,16 @@ shared slash-command pipeline (`/model` in CLI/gateway/Telegram) historically
 only looked at `providers:`.
 """
 
+import time
+
 import hermes_cli.providers as providers_mod
 import pytest
-from hermes_cli.model_switch import list_authenticated_providers, switch_model
+import yaml
+from hermes_cli.model_switch import (
+    _save_discovered_models_to_config,
+    list_authenticated_providers,
+    switch_model,
+)
 from hermes_cli.providers import resolve_provider_full
 
 
@@ -640,7 +647,11 @@ def test_custom_providers_uses_live_models_for_multi_model_endpoint(monkeypatch)
 
     assert gateway_prov is not None, "Custom provider group not found in results"
     assert calls == [
-        ("sk-gateway-key", "https://gateway.example.com/v1", {"timeout": 5.0, "headers": None})
+        (
+            "sk-gateway-key",
+            "https://gateway.example.com/v1",
+            {"timeout": 5.0, "api_mode": None, "headers": None},
+        )
     ], "fetch_api_models must be called with the custom provider's credentials"
     assert gateway_prov["models"] == [
         "gateway-model-a",
@@ -826,6 +837,74 @@ def test_save_discovered_models_preserves_dict_form(monkeypatch):
     )
 
 
+def test_model_flow_named_custom_persists_discovered_models(monkeypatch):
+    """The ``hermes model`` named-custom-provider flow persists the discovered
+    catalog back to the entry's ``models:`` list.
+
+    No-probe surfaces (dashboard, desktop, ACP) call
+    ``build_models_payload(..., probe_custom_providers=False)`` and only show
+    the configured ``models:`` list. The CLI flow probes and shows the full
+    catalog but (before this fix) never saved it, so a provider added via
+    ``hermes model`` collapsed to the single ``model:`` default everywhere but
+    the CLI. It must persist discovered models the same way the picker path in
+    ``_save_discovered_models_to_config`` does.
+    """
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_api_models",
+        lambda api_key, base_url, **kw: [
+            "discovered-a",
+            "discovered-b",
+            "discovered-c",
+        ],
+    )
+    # Non-interactive model selection.
+    monkeypatch.setattr(
+        "hermes_cli.curses_ui.curses_radiolist", lambda *a, **k: 0
+    )
+    # No-op downstream writes so the test never touches a real config.
+    monkeypatch.setattr("hermes_cli.main._save_custom_provider", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda *a, **k: None)
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda *a, **k: None)
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {}, "providers": {}, "custom_providers": []},
+    )
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+
+    save_calls = []
+    monkeypatch.setattr(
+        "hermes_cli.model_switch._save_discovered_models_to_config",
+        lambda api_url, model_ids: save_calls.append((api_url, model_ids)),
+    )
+
+    from hermes_cli.model_setup_flows import _model_flow_named_custom
+
+    _model_flow_named_custom(
+        {},
+        {
+            "name": "Dragomes",
+            "base_url": "http://example.com/v1",
+            "api_mode": "anthropic_messages",
+            "api_key": "sk-test",
+            "key_env": "",
+            "model": "MiniMax-M3",
+            "provider_key": "",
+            "discover_models": True,
+            "models": {},
+        },
+    )
+
+    assert save_calls == [
+        (
+            "http://example.com/v1",
+            ["discovered-a", "discovered-b", "discovered-c"],
+        )
+    ], (
+        "_model_flow_named_custom must persist discovered models "
+        "(base_url, model_ids) after a successful probe"
+    )
+
+
 def test_shared_url_different_display_names_are_separate_rows(monkeypatch):
     """Multiple custom_providers entries sharing base_url + api_key + api_mode
     but with *different* display-name prefixes (e.g. a proxy fronting
@@ -968,3 +1047,399 @@ def test_custom_provider_dict_models_pin_requires_discover_false(monkeypatch):
     row = next(p for p in providers if p["name"] == "Local Ollama")
     assert calls == []
     assert row["models"] == ["llama3"]
+
+
+# ─── No-probe picker opens still serve the cached catalog ───────────────
+#
+# #58183 stopped GUI picker opens from live-probing saved custom endpoints so
+# a stopped local server could not stall the picker. It skipped the cached
+# read along with the network one, so a non-current endpoint collapsed to the
+# one model named in config even with a full catalog already on disk. These
+# pin both halves: the cache is served, the network is not touched.
+
+
+_LOCAL_ENDPOINT = "http://127.0.0.1:8000/v1"
+_LOCAL_CATALOG = [f"omlx-model-{i}" for i in range(1, 9)]
+_SHARED_PROXY_URL = "https://proxy.example.com/v1"
+
+
+def _seed_custom_model_cache(monkeypatch, models, *, age_seconds=10):
+    """Put *models* on disk for ``_LOCAL_ENDPOINT`` under the no-credential
+    fingerprint the picker probes local endpoints with."""
+    import hermes_cli.models as models_mod
+
+    fp = models_mod._custom_endpoint_fingerprint("", None, None)
+    cache = {
+        f"custom:{_LOCAL_ENDPOINT}": {
+            "fp": fp,
+            "at": time.time() - age_seconds,
+            "models": list(models),
+        }
+    }
+    monkeypatch.setattr(models_mod, "_load_provider_models_cache", lambda: cache)
+
+
+def _no_probe_local_row(monkeypatch, *, custom_providers=None, user_providers=None,
+                        current_provider="nous", **kwargs):
+    """Run the GUI picker path (no live probing) and return the local row
+    plus every base_url a live fetch was attempted against."""
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    fetched = []
+
+    def fetch(_api_key, base_url, **_kwargs):
+        fetched.append(base_url)
+        return ["should-not-be-reached"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+
+    providers = list_authenticated_providers(
+        current_provider=current_provider,
+        user_providers=user_providers or {},
+        custom_providers=custom_providers or [],
+        for_picker=True,
+        refresh=False,
+        probe_custom_providers=False,
+        probe_current_custom_provider=True,
+        **kwargs,
+    )
+    row = next(
+        (p for p in providers if _LOCAL_ENDPOINT in str(p.get("api_url", ""))), None
+    )
+    return row, fetched
+
+
+def test_no_probe_open_serves_cached_catalog_for_custom_provider(monkeypatch):
+    """A ``custom_providers`` endpoint that is not the current provider still
+    shows its full discovered catalog, from cache, with no network call."""
+    _seed_custom_model_cache(monkeypatch, _LOCAL_CATALOG)
+
+    row, fetched = _no_probe_local_row(
+        monkeypatch,
+        custom_providers=[
+            {
+                "name": "Local (127.0.0.1:8000)",
+                "base_url": _LOCAL_ENDPOINT,
+                "model": "omlx-model-1",
+            }
+        ],
+    )
+
+    assert row is not None
+    assert row["is_current"] is False
+    assert row["models"] == _LOCAL_CATALOG
+    assert row["total_models"] == len(_LOCAL_CATALOG)
+    assert fetched == []
+
+
+def test_no_probe_open_serves_cached_catalog_for_user_provider(monkeypatch):
+    """Same contract for a ``providers:`` entry (section 3)."""
+    _seed_custom_model_cache(monkeypatch, _LOCAL_CATALOG)
+
+    row, fetched = _no_probe_local_row(
+        monkeypatch,
+        user_providers={
+            "local-8000": {
+                "name": "Local (127.0.0.1:8000)",
+                "base_url": _LOCAL_ENDPOINT,
+                "default_model": "omlx-model-1",
+            }
+        },
+    )
+
+    assert row is not None
+    assert row["models"] == _LOCAL_CATALOG
+    assert fetched == []
+
+
+def test_no_probe_open_serves_cached_catalog_for_bare_custom_endpoint(monkeypatch):
+    """Same contract for the bare ``provider: custom`` shape (section 3b),
+    where the fallback would otherwise be the single active model."""
+    _seed_custom_model_cache(monkeypatch, _LOCAL_CATALOG)
+
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    fetched = []
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_api_models",
+        lambda _k, base_url, **_kw: (fetched.append(base_url), None)[1],
+    )
+
+    providers = list_authenticated_providers(
+        current_provider="custom",
+        current_base_url=_LOCAL_ENDPOINT,
+        current_model="omlx-model-1",
+        user_providers={},
+        custom_providers=[],
+        for_picker=True,
+        refresh=False,
+        probe_custom_providers=False,
+        probe_current_custom_provider=False,
+    )
+
+    row = next(p for p in providers if p["slug"] == "custom")
+    assert row["models"] == _LOCAL_CATALOG
+    assert fetched == []
+
+
+def test_no_probe_open_without_cache_keeps_configured_models_and_stays_offline(
+    monkeypatch,
+):
+    """The #58183 guarantee: a cold cache must not trigger a live probe. The
+    row degrades to its configured list rather than stalling on a dead port."""
+    _seed_custom_model_cache(monkeypatch, [], age_seconds=10)
+
+    row, fetched = _no_probe_local_row(
+        monkeypatch,
+        custom_providers=[
+            {
+                "name": "Local (127.0.0.1:8000)",
+                "base_url": _LOCAL_ENDPOINT,
+                "model": "omlx-model-1",
+            }
+        ],
+    )
+
+    assert row is not None
+    assert row["models"] == ["omlx-model-1"]
+    assert fetched == []
+
+
+def test_no_probe_open_respects_discover_models_false(monkeypatch):
+    """A user who pinned their catalog must not have it replaced from cache."""
+    _seed_custom_model_cache(monkeypatch, _LOCAL_CATALOG)
+
+    row, fetched = _no_probe_local_row(
+        monkeypatch,
+        custom_providers=[
+            {
+                "name": "Local (127.0.0.1:8000)",
+                "base_url": _LOCAL_ENDPOINT,
+                "model": "pinned-model",
+                "models": ["pinned-model"],
+                "discover_models": False,
+            }
+        ],
+    )
+
+    assert row is not None
+    assert row["models"] == ["pinned-model"]
+    assert fetched == []
+
+
+def test_cached_catalog_is_not_written_back_to_config(monkeypatch):
+    """Only a real probe persists discovered models; a cache hit is already
+    the product of the probe that saved it."""
+    _seed_custom_model_cache(monkeypatch, _LOCAL_CATALOG)
+    saves = []
+    monkeypatch.setattr(
+        "hermes_cli.model_switch._save_discovered_models_to_config",
+        lambda api_url, model_ids: saves.append((api_url, model_ids)),
+    )
+
+    row, _ = _no_probe_local_row(
+        monkeypatch,
+        custom_providers=[
+            {
+                "name": "Local (127.0.0.1:8000)",
+                "base_url": _LOCAL_ENDPOINT,
+                "model": "omlx-model-1",
+            }
+        ],
+    )
+
+    assert row["models"] == _LOCAL_CATALOG
+    assert saves == []
+
+
+def test_keyless_endpoint_with_saved_catalog_still_reads_cache(monkeypatch):
+    """A keyless local server must not be pinned by Hermes' own auto-save.
+
+    ``_save_discovered_models_to_config()`` writes a plain list into
+    ``models:``, which ``_models_config_is_allowlist()`` reads back as an
+    explicit allowlist. Combined with the no-key discovery gate, a keyless
+    endpoint (the common local-model-server shape) froze on the catalog of
+    its first probe and could never widen again — the exact "lineup changes
+    after config was written" case. The cache read must not be subject to the
+    probe's network-cost gate.
+    """
+    _seed_custom_model_cache(monkeypatch, _LOCAL_CATALOG)
+
+    row, fetched = _no_probe_local_row(
+        monkeypatch,
+        custom_providers=[
+            {
+                "name": "Local (127.0.0.1:8000)",
+                "base_url": _LOCAL_ENDPOINT,
+                "model": "omlx-model-1",
+                # No api_key, and a models: list of the shape our own
+                # auto-save writes after a successful probe.
+                "models": ["omlx-model-1"],
+            }
+        ],
+    )
+
+    assert row is not None
+    assert row["models"] == _LOCAL_CATALOG
+    assert fetched == []
+
+
+def test_keyless_endpoint_with_saved_catalog_is_still_not_probed(monkeypatch):
+    """...but the network-cost gate it rides on must survive intact.
+
+    The no-key + declared-catalog combination exists to keep Hermes from
+    probing an endpoint it cannot authenticate to. Serving that endpoint from
+    a warm cache is free; hitting the network is not. With a cold cache and
+    live probing fully enabled, this row must still make zero fetches.
+    """
+    _seed_custom_model_cache(monkeypatch, [])  # cold: only a probe could answer
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    fetched = []
+
+    def fetch(_api_key, base_url, **_kwargs):
+        fetched.append(base_url)
+        return ["should-not-be-reached"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+
+    providers = list_authenticated_providers(
+        current_provider="nous",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "Local (127.0.0.1:8000)",
+                "base_url": _LOCAL_ENDPOINT,
+                "model": "omlx-model-1",
+                "models": ["omlx-model-1"],
+            }
+        ],
+        for_picker=True,
+        refresh=False,
+        probe_custom_providers=True,  # live probing fully enabled
+    )
+    row = next(
+        (p for p in providers if _LOCAL_ENDPOINT in str(p.get("api_url", ""))), None
+    )
+
+    assert row is not None
+    assert row["models"] == ["omlx-model-1"]
+    assert fetched == []
+
+
+def test_api_mode_rows_do_not_share_a_cached_catalog(monkeypatch):
+    """Two rows differing only by ``api_mode`` must not share a cache entry.
+
+    ``api_mode`` selects the wire protocol — ``x-api-key`` +
+    ``anthropic-version`` versus ``Authorization: Bearer`` — so it is part of
+    both the picker's group identity and
+    ``_custom_endpoint_fingerprint()``. The cache read has to pass it through
+    or an ``anthropic_messages`` row renders whatever the OpenAI-mode row
+    cached against the same base_url.
+    """
+    import hermes_cli.models as models_mod
+
+    openai_catalog = ["gpt-oss-a", "gpt-oss-b"]
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+
+    fetched = []
+
+    def fetch(_api_key, base_url, **_kwargs):
+        fetched.append(base_url)
+        return ["should-not-be-reached"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fetch)
+
+    # Only the OpenAI-mode probe (api_mode=None) is on disk.
+    fp = models_mod._custom_endpoint_fingerprint("sk-shared", None, None)
+    cache = {
+        f"custom:{_SHARED_PROXY_URL}": {
+            "fp": fp,
+            "at": time.time() - 10,
+            "models": list(openai_catalog),
+        }
+    }
+    monkeypatch.setattr(models_mod, "_load_provider_models_cache", lambda: cache)
+
+    def _row(entry):
+        providers = list_authenticated_providers(
+            current_provider="nous",
+            user_providers={},
+            custom_providers=[entry],
+            for_picker=True,
+            refresh=False,
+            probe_custom_providers=False,
+            probe_current_custom_provider=True,
+        )
+        return next(
+            (p for p in providers if _SHARED_PROXY_URL in str(p.get("api_url", ""))),
+            None,
+        )
+
+    anthropic_row = _row(
+        {
+            "name": "Proxy Anthropic",
+            "base_url": _SHARED_PROXY_URL,
+            "api_key": "sk-shared",
+            "api_mode": "anthropic_messages",
+            "model": "claude-via-proxy",
+        }
+    )
+    openai_row = _row(
+        {
+            "name": "Proxy OpenAI",
+            "base_url": _SHARED_PROXY_URL,
+            "api_key": "sk-shared",
+            "model": "gpt-via-proxy",
+        }
+    )
+
+    assert anthropic_row is not None and openai_row is not None
+    assert anthropic_row["models"] == ["claude-via-proxy"], (
+        "an anthropic_messages row must not render the OpenAI-mode catalog "
+        "cached against the same base_url"
+    )
+    # ...while the row the entry actually belongs to still resolves.
+    assert openai_row["models"] == openai_catalog
+    assert fetched == []
+
+
+def test_auto_saved_catalog_round_trips_without_pinning(tmp_path, monkeypatch):
+    """End-to-end: the shape we persist must not read back as a user pin.
+
+    Guards the whole chain rather than one branch — probe saves a catalog,
+    config is reloaded, and the endpoint must still be discoverable. If a
+    future change makes the saved shape look like an intentional allowlist
+    again, this fails even if the gate logic above is refactored away.
+    """
+    import hermes_cli.config as config_mod
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    cfg_path = tmp_path / "config.yaml"
+    cfg_path.write_text(
+        "custom_providers:\n"
+        f"  - name: Local MLX\n    base_url: {_LOCAL_ENDPOINT}\n"
+        "    model: omlx-model-1\n"
+    )
+    monkeypatch.setattr(config_mod, "CONFIG_PATH", str(cfg_path), raising=False)
+
+    _save_discovered_models_to_config(_LOCAL_ENDPOINT, list(_LOCAL_CATALOG))
+
+    saved = yaml.safe_load(cfg_path.read_text())["custom_providers"][0]
+    assert saved["models"] == _LOCAL_CATALOG, "probe result should be persisted"
+
+    # The persisted shape is what the picker will read on the next open. It
+    # must not, on a keyless entry, suppress discovery of a wider catalog.
+    _seed_custom_model_cache(monkeypatch, [*_LOCAL_CATALOG, "omlx-model-9"])
+    row, fetched = _no_probe_local_row(
+        monkeypatch, custom_providers=[saved]
+    )
+
+    assert row is not None
+    assert row["models"] == [*_LOCAL_CATALOG, "omlx-model-9"], (
+        "an auto-saved catalog must not pin the endpoint against a newer "
+        "cached lineup"
+    )
+    assert fetched == []

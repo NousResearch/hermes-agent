@@ -9805,7 +9805,10 @@ async def _standalone_send(
             result["warnings"] = warnings
         return result
     except Exception as e:
-        return {"error": _standalone_sanitize_error(f"Discord send failed: {e}")}
+        # Include the exception type: TimeoutError().str() is empty, so
+        # "Discord send failed: " alone gave no diagnostic signal.
+        logger.error("Discord standalone send failed", exc_info=True)
+        return {"error": _standalone_sanitize_error(f"Discord send failed: {type(e).__name__}: {e}")}
 
 
 # ── Plugin entry point ────────────────────────────────────────────────────────

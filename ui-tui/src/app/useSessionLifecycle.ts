@@ -276,6 +276,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
 
             const nextTitle = (result.title ?? requestedTitle).trim()
             const suffix = result.pending ? ' (queued while session initializes)' : ''
+            patchUiState({ sessionTitle: nextTitle })
             sys(`session title set: ${nextTitle}${suffix}`)
           })
           .catch((err: unknown) => {

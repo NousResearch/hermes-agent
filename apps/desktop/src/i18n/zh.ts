@@ -197,7 +197,8 @@ export const zh: Translations = {
     unmuteHaptics: '开启触感反馈',
     openSettings: '打开设置',
     openStarmap: '打开记忆图谱',
-    openKeybinds: '键盘快捷键',
+    enterHud: 'HUD 模式',
+    exitHud: '退出 HUD 模式',
     layoutEditor: '布局编辑器',
     layoutEditorTitle: '布局编辑器 — ⌘ 点击重置布局'
   },
@@ -355,7 +356,20 @@ export const zh: Translations = {
       disable: '禁用',
       failed: '失败',
       empty: '尚未安装桌面插件。',
-      kinds: { bundled: '内置', disk: '磁盘', runtime: '运行时' }
+      kinds: { bundled: '内置', disk: '磁盘', runtime: '运行时' },
+      agent: {
+        title: '智能体插件',
+        blurb:
+          '运行在 Hermes 后端——工具、技能、MCP 服务器、钩子和斜杠命令。「便携」插件是 Agent Plugins 标准包（技能 + MCP 组合，也可在其他智能体中使用）。开关在新会话中生效。',
+        empty: '尚未安装智能体插件。',
+        loadFailed: '无法加载智能体插件',
+        portable: '便携',
+        search: '搜索插件…',
+        noMatches: '没有匹配的插件。',
+        toggleFailed: (name: string) => `无法切换 ${name}`,
+        updateBackendToManage: '请更新 Hermes 后端以便在桌面端管理此插件。',
+        sources: { bundled: '内置', user: '用户', git: 'git', project: '项目', entrypoint: 'pip' }
+      }
     },
     notifications: {
       title: '通知',
@@ -2049,6 +2063,7 @@ export const zh: Translations = {
     noWorkspace: '无工作区',
     projectEmpty: '暂无会话',
     noSessions: '暂无会话',
+    noFilterMatches: '没有会话符合这些筛选条件',
     projects: {
       sectionLabel: '项目',
       home: '主页',
@@ -2145,6 +2160,7 @@ export const zh: Translations = {
       waitingForAnswer: '正在等待你的回答',
       finishedUnread: '已完成 — 未读',
       backgroundRunning: '后台任务运行中',
+      draftSession: '草稿 — 尚未发送',
       handoffOrigin: platform => `从 ${platform} 转接`,
       ownedByProfile: profile => `配置档：${profile}`,
       renamed: '已重命名',
@@ -2164,6 +2180,10 @@ export const zh: Translations = {
       thisWeek: '本周',
       lastWeek: '上周',
       thisMonth: '本月'
+    },
+    statusDivider: {
+      working: '进行中',
+      done: '已完成'
     }
   },
 

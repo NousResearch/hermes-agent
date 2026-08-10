@@ -21,6 +21,7 @@ import enum
 import contextvars
 import json
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 import os
@@ -2277,9 +2278,18 @@ def _run_single_child(
         # isolated in its own record (a child's cd no longer bleeds back into
         # the parent once readers flip to the record store).
         try:
-            from tools.terminal_tool import get_session_cwd, record_session_cwd
+            from tools.terminal_tool import (
+                get_session_cwd,
+                record_session_cwd,
+                register_container_alias,
+            )
 
             record_session_cwd(child_task_id, get_session_cwd(parent_task_id))
+            # Per-session container isolation (docker + container_persistent:
+            # false) keys containers by session task_id. The child must share
+            # the PARENT's container — register the alias so the child's
+            # task_id resolves to the parent's container key.
+            register_container_alias(child_task_id, parent_task_id)
         except Exception as e:
             logger.debug("Child cwd seed failed: %s", e)
         wall_start = time.time()
@@ -2457,6 +2467,67 @@ def _run_single_child(
             # is stuck on blocking I/O, wait=True would hang forever.
             _timeout_executor.shutdown(wait=False)
 
+        # T1-24: structured-output contract validation + ONE bounded retry.
+        # Runs only when a schema was attached at dispatch; schema-less
+        # delegations take none of these branches and their result entry
+        # stays byte-identical (wire-shape pinning).
+        # Pattern from: github/copilot-cli ctx.agent(prompt, {schema}) —
+        # PATTERN ONLY, no code copied.
+        _output_schema = getattr(child, "_delegate_output_schema", None)
+        _schema_valid: Optional[bool] = None
+        _schema_errors: List[str] = []
+        _schema_retries = 0
+        if isinstance(_output_schema, dict):
+            from tools.delegation_output_schema import (
+                build_retry_message,
+                validate_output,
+            )
+
+            _first_text = result.get("final_response") or ""
+            _schema_valid, _schema_errors = validate_output(
+                _first_text, _output_schema
+            )
+            if (
+                not _schema_valid
+                and _first_text.strip()
+                and not result.get("interrupted", False)
+            ):
+                # Exactly one retry turn, carrying the validation errors
+                # verbatim (no schema re-paste — the child already holds
+                # the contract in its context).
+                _schema_retries = 1
+                _retry_result = None
+                try:
+                    _retry_result = child.run_conversation(
+                        user_message=build_retry_message(_schema_errors),
+                        task_id=child_task_id,
+                        stream_callback=_relay_child_text,
+                    )
+                except Exception as _retry_exc:
+                    logger.warning(
+                        "Subagent %d schema-retry turn failed: %s",
+                        task_index,
+                        _retry_exc,
+                    )
+                if isinstance(_retry_result, dict):
+                    _retry_text = _retry_result.get("final_response") or ""
+                    if _retry_text.strip():
+                        result["final_response"] = _retry_text
+                    try:
+                        result["api_calls"] = int(
+                            result.get("api_calls", 0) or 0
+                        ) + int(_retry_result.get("api_calls", 0) or 0)
+                    except (TypeError, ValueError):
+                        pass
+                    _retry_messages = _retry_result.get("messages")
+                    if isinstance(_retry_messages, list) and isinstance(
+                        result.get("messages"), list
+                    ):
+                        result["messages"] = result["messages"] + _retry_messages
+                    _schema_valid, _schema_errors = validate_output(
+                        _retry_text, _output_schema
+                    )
+
         # Linearization boundary for registry steering. From this point on the
         # child cannot consume another steer. Closing under the registry lock
         # either rejects a concurrent caller or drains every previously accepted
@@ -2589,8 +2660,28 @@ def _run_single_child(
                 else 0.0
             ),
         }
+        # Per-delegation spend, serialized back to the model alongside
+        # tokens/api_calls so the parent can see what each delegation cost.
+        # Mirrors _child_cost_usd (which is stripped pre-serialization and
+        # only feeds the parent session rollup).
+        # Inspired by: Perplexity Agent API result shape (idea-level).
+        entry["cost_usd"] = round(entry["_child_cost_usd"], 6)
+        _cost_status = getattr(child, "session_cost_status", None)
+        entry["cost_status"] = (
+            _cost_status if isinstance(_cost_status, str) and _cost_status
+            else "unknown"
+        )
         if status == "failed":
             entry["error"] = result.get("error", "Subagent did not produce a response.")
+
+        # T1-24: schema-validation outcome — emitted ONLY when a schema was
+        # requested, so legacy (schema-less) payloads keep their exact shape.
+        if isinstance(_output_schema, dict):
+            entry["schema_valid"] = bool(_schema_valid)
+            if _schema_retries:
+                entry["schema_retries"] = _schema_retries
+            if not _schema_valid and _schema_errors:
+                entry["schema_errors"] = _schema_errors
 
         # A steer that queued after the child's final assistant turn had no
         # tool batch left to drain into.  The finalizer hands the undelivered
@@ -2974,6 +3065,70 @@ def _recover_tasks_from_json_string(
     return parsed, None
 
 
+# Placeholder shapes for batch goal validation: bare 'TODO', bare 'task N'
+# labels, or goals still carrying unexpanded template markers.
+#
+# The marker regex is deliberately NARROW: it only fires on snake_case /
+# space-separated placeholder identifiers (`<feature_name>`, `{file path}`,
+# `<FEATURE-NAME>`) — the shape LLM templates actually leave behind. Bare
+# single-word brackets are left alone because legitimate coding goals are
+# full of them: generics (`Vec<T>`, `Result<String>`), HTML tags (`<div>`),
+# JSON/dict snippets (`{"key": 1}`), glob braces (`{a,b}`), and f-string
+# style (`{i}`) must never be rejected (post-merge audit of #81141).
+_PLACEHOLDER_GOAL_RE = re.compile(r"^(todo|task\s*\d+)$", re.IGNORECASE)
+_TEMPLATE_MARKER_RE = re.compile(
+    r"<[A-Za-z][A-Za-z0-9]*(?:[ _-][A-Za-z0-9]+)+>"
+    r"|\{[A-Za-z][A-Za-z0-9]*(?:[ _-][A-Za-z0-9]+)+\}"
+)
+_MIN_BATCH_GOAL_LEN = 10
+
+
+def _validate_batch_tasks(task_list: List[Dict[str, Any]]) -> Optional[str]:
+    """Validate a tasks=[...] batch beyond per-task goal presence.
+
+    Returns an actionable error string, or None when the batch is valid.
+    Batch-only by design: the single-`goal` form legitimately uses short
+    goals, so these checks must never run on it.
+
+    Duplicate goals are deliberately NOT rejected: identical-goal fan-outs
+    are a legitimate pattern (best-of-N / ensemble sampling), and blocking
+    them broke real workflows (post-merge audit of #81141).
+    """
+    if len(task_list) < 2:
+        return (
+            "Batch mode requires at least 2 tasks. For a single task, use "
+            "the `goal` parameter instead of `tasks`: "
+            'delegate_task(goal="...", context="...").'
+        )
+
+    for i, task in enumerate(task_list):
+        goal = str(task.get("goal", "")).strip()
+        normalized = " ".join(goal.lower().split())
+
+        if _PLACEHOLDER_GOAL_RE.match(normalized):
+            return (
+                f"Task {i} has a placeholder goal ({goal!r}). Replace it "
+                "with a specific, self-contained description of what the "
+                "subagent should accomplish."
+            )
+        marker = _TEMPLATE_MARKER_RE.search(goal)
+        if marker:
+            return (
+                f"Task {i} goal contains an unexpanded template marker "
+                f"({marker.group(0)!r}). Substitute the real value before "
+                "calling delegate_task — subagents cannot resolve "
+                "placeholders."
+            )
+        if len(goal) < _MIN_BATCH_GOAL_LEN:
+            return (
+                f"Task {i} goal is too short ({goal!r}). Write a specific, "
+                "self-contained goal of at least "
+                f"{_MIN_BATCH_GOAL_LEN} characters so the subagent knows "
+                "exactly what to do."
+            )
+    return None
+
+
 def delegate_task(
     goal: Optional[str] = None,
     context: Optional[str] = None,
@@ -2981,6 +3136,7 @@ def delegate_task(
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
     background: Optional[bool] = None,
+    output_schema: Optional[Dict[str, Any]] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -3079,7 +3235,10 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "role": top_role}]
+        single_task: Dict[str, Any] = {"goal": goal, "context": context, "role": top_role}
+        if output_schema is not None:
+            single_task["output_schema"] = output_schema
+        task_list = [single_task]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -3094,6 +3253,33 @@ def delegate_task(
             )
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    # Batch-only quality gate: catch malformed fan-outs (placeholder goals,
+    # unexpanded multi-word template markers, 1-task batches) before any
+    # child is spawned.  The single-`goal` form is deliberately exempt —
+    # short goals are valid there.  Duplicate goals are allowed (best-of-N).
+    # Inspired by: MoonshotAI/kimi-code agent-swarm.md validation rules (MIT).
+    if tasks is not None and isinstance(tasks, list):
+        batch_error = _validate_batch_tasks(task_list)
+        if batch_error:
+            return tool_error(batch_error)
+
+    # T1-24: coerce/validate optional per-task output_schema up front so a
+    # malformed schema fails the whole call loudly instead of spawning
+    # children that can never satisfy their contract. Runs AFTER the
+    # existing goal checks; schema-less tasks resolve to None and take no
+    # new code paths downstream.
+    from tools.delegation_output_schema import coerce_output_schema
+
+    task_schemas: List[Optional[Dict[str, Any]]] = []
+    for i, task in enumerate(task_list):
+        raw_schema = task.get("output_schema")
+        if raw_schema is None and len(task_list) == 1 and output_schema is not None:
+            raw_schema = output_schema
+        coerced_schema, schema_err = coerce_output_schema(raw_schema)
+        if schema_err:
+            return tool_error(f"Task {i} output_schema invalid: {schema_err}")
+        task_schemas.append(coerced_schema)
 
     overall_start = time.monotonic()
     results = []
@@ -3148,10 +3334,18 @@ def delegate_task(
         # Per-task role beats top-level; normalise again so unknown
         # per-task values warn and degrade to leaf uniformly.
         effective_role = _normalize_role(t.get("role") or top_role)
+        # T1-24: schema'd tasks get the contract appended to their context
+        # so the child knows the expected output shape before it starts.
+        _task_schema = task_schemas[i] if i < len(task_schemas) else None
+        _child_context = t.get("context")
+        if _task_schema is not None:
+            from tools.delegation_output_schema import append_output_contract
+
+            _child_context = append_output_contract(_child_context, _task_schema)
         child = _build_child_preserving_parent_tools(
             task_index=i,
             goal=t["goal"],
-            context=t.get("context"),
+            context=_child_context,
             # Subagents always inherit the parent's toolsets; the model
             # cannot choose or narrow them (no model-facing toolsets arg).
             toolsets=None,
@@ -3169,6 +3363,13 @@ def delegate_task(
             override_acp_args=creds.get("args"),
             role=effective_role,
         )
+        # Attach the validated schema for the completion-side validation
+        # hook in _run_single_child. Absent (None) on schema-less tasks.
+        if _task_schema is not None:
+            try:
+                child._delegate_output_schema = _task_schema
+            except Exception:
+                logger.debug("Could not attach output schema to child %d", i)
         # Tee the child's progress events into its live transcript log.
         # wrap_progress_callback preserves the inner callback contract
         # (including the _flush attribute) and never lets writer failures
@@ -4040,6 +4241,19 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "output_schema": {
+                            "type": "object",
+                            "description": (
+                                "Optional JSON Schema the subagent's final "
+                                "answer must validate against. The child is "
+                                "told the contract up front; the parent "
+                                "validates the final answer and allows one "
+                                "bounded correction retry. The result entry "
+                                "gains schema_valid (and schema_errors on "
+                                "final failure). Keep schemas forgiving: "
+                                "require only fields you will actually read."
+                            ),
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -4052,6 +4266,14 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "enum": ["leaf", "orchestrator"],
                 "description": "(rebuilt at get_definitions() time)",
+            },
+            "output_schema": {
+                "type": "object",
+                "description": (
+                    "Optional JSON Schema for the single-goal form — the "
+                    "subagent's final answer must validate against it "
+                    "(same semantics as tasks[].output_schema)."
+                ),
             },
             "background": {
                 "type": "boolean",
@@ -4125,6 +4347,7 @@ registry.register(
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
         background=_model_background_value(args, kw.get("parent_agent")),
+        output_schema=args.get("output_schema"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

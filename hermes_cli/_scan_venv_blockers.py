@@ -144,7 +144,10 @@ def main() -> None:
         {
             "pid": pid,
             "name": name,
-            "cmdline": _redact_sensitive_cmdline(cmdline),
+            # Truncate for display AFTER the gateway exemption has seen the
+            # full cmdline (long managed-runtime interpreter paths would
+            # otherwise swallow the `gateway run` argv).
+            "cmdline": _redact_sensitive_cmdline(cmdline)[:120],
         }
         for pid, name, cmdline in matches
         if not _is_pausable_gateway(cmdline)

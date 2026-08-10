@@ -36,6 +36,7 @@ import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 import { api, buildWsUrl } from "@/lib/api";
 import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload";
 import {
+  EVENTS_CONNECT_TIMEOUT_MS,
   EVENTS_DISCONNECTED_MESSAGE,
   EVENTS_MAX_RECONNECT_ATTEMPTS,
   eventsGaveUpMessage,
@@ -256,7 +257,16 @@ export function ChatSidebar({
     let unmounting = false;
     let ws: WebSocket | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let connectTimer: ReturnType<typeof setTimeout> | null = null;
+    let connectGeneration = 0;
     let attempt = 0;
+
+    const clearConnectTimer = () => {
+      if (connectTimer) {
+        clearTimeout(connectTimer);
+        connectTimer = null;
+      }
+    };
 
     // The banner is shared with `info.credential_warning` and the JSON-RPC
     // sidecar, and `error` is those messages' only home — the sidecar does
@@ -298,14 +308,49 @@ export function ChatSidebar({
       if (unmounting) {
         return;
       }
-      // Re-minted every attempt: tickets are single-use with a short TTL,
-      // so a reconnect cannot replay the URL from the first connection.
-      const url = await buildWsUrl("/api/events", { channel });
-      if (unmounting) {
+
+      const generation = ++connectGeneration;
+      let socket: WebSocket | null = null;
+
+      // Cover the whole connection attempt, including gated-mode ticket
+      // minting. A failed or hanging pre-socket request otherwise emits no
+      // WebSocket close event and permanently strands the retry loop at its
+      // last "reconnecting in ..." banner.
+      clearConnectTimer();
+      connectTimer = setTimeout(() => {
+        connectTimer = null;
+        if (unmounting || generation !== connectGeneration) {
+          return;
+        }
+
+        // Invalidate any late ticket result or socket event from this attempt
+        // before scheduling its replacement.
+        connectGeneration += 1;
+        if (socket && ws === socket) {
+          ws = null;
+          socket.close();
+        }
+        scheduleReconnect();
+      }, EVENTS_CONNECT_TIMEOUT_MS);
+
+      try {
+        // Re-minted every attempt: tickets are single-use with a short TTL,
+        // so a reconnect cannot replay the URL from the first connection.
+        const url = await buildWsUrl("/api/events", { channel });
+        if (unmounting || generation !== connectGeneration) {
+          return;
+        }
+        socket = new WebSocket(url);
+        ws = socket;
+      } catch {
+        if (unmounting || generation !== connectGeneration) {
+          return;
+        }
+        clearConnectTimer();
+        connectGeneration += 1;
+        scheduleReconnect();
         return;
       }
-      const socket = new WebSocket(url);
-      ws = socket;
 
       // A superseded socket's late close must not schedule a retry on top
       // of the one that replaced it.
@@ -315,6 +360,7 @@ export function ChatSidebar({
         if (!isCurrent()) {
           return;
         }
+        clearConnectTimer();
         attempt = 0;
         clearEventsBanner();
       });
@@ -332,6 +378,7 @@ export function ChatSidebar({
         if (!isCurrent()) {
           return;
         }
+        clearConnectTimer();
         if (maybeReloadForLoopbackWsAuthFailure(ev.code)) {
           return;
         }
@@ -374,6 +421,8 @@ export function ChatSidebar({
 
     return () => {
       unmounting = true;
+      connectGeneration += 1;
+      clearConnectTimer();
       if (reconnectTimer) {
         clearTimeout(reconnectTimer);
         reconnectTimer = null;

@@ -19,7 +19,10 @@ import urllib.error
 import time
 from difflib import get_close_matches
 from pathlib import Path
-from typing import Any, NamedTuple, Optional
+from typing import Any, NamedTuple, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import TypeGuard
 
 from hermes_cli import __version__ as _HERMES_VERSION
 from hermes_cli.urllib_security import open_credentialed_url
@@ -1692,6 +1695,43 @@ def ai_gateway_model_ids(*, force_refresh: bool = False) -> list[str]:
 # Cache: maps model_id → {"prompt": str, "completion": str} per endpoint
 _pricing_cache: dict[str, dict[str, dict[str, str]]] = {}
 
+# A failed fetch caches its empty result too, so an unreachable endpoint isn't
+# re-dialed on every call — but only until this deadline. Cached forever, one
+# bad moment (a blip during startup, a key that hadn't been written yet) turns
+# into no live model discovery for the life of the process, and the processes
+# that read this most are the ones that run for weeks: the gateway, the desktop
+# backend. Every caller falls back to a curated list meanwhile, so the cost of
+# the stale entry is silent and invisible.
+_FAILED_CATALOG_TTL_SECONDS = 120.0
+_pricing_cache_retry_after: dict[str, float] = {}
+
+
+def _cached_catalog(cache_key: str) -> Optional[dict[str, dict[str, Any]]]:
+    """The cached catalog for *cache_key*, or None to go fetch it."""
+    cached = _pricing_cache.get(cache_key)
+    if cached is None:
+        return None
+    retry_after = _pricing_cache_retry_after.get(cache_key)
+    if retry_after is not None and time.monotonic() >= retry_after:
+        _pricing_cache.pop(cache_key, None)
+        _pricing_cache_retry_after.pop(cache_key, None)
+        return None
+    return cached
+
+
+def _cache_catalog(
+    cache_key: str, result: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
+    """Cache a catalog result, giving an empty one an expiry."""
+    _pricing_cache[cache_key] = result
+    if result:
+        _pricing_cache_retry_after.pop(cache_key, None)
+    else:
+        _pricing_cache_retry_after[cache_key] = (
+            time.monotonic() + _FAILED_CATALOG_TTL_SECONDS
+        )
+    return result
+
 
 def _format_price_per_mtok(per_token_str: str) -> str:
     """Convert a per-token price string to a human-friendly $/Mtok string.
@@ -1828,8 +1868,10 @@ def fetch_models_with_pricing(
     ``original``.
     """
     cache_key = (base_url or "").rstrip("/")
-    if not force_refresh and cache_key in _pricing_cache:
-        return _pricing_cache[cache_key]
+    if not force_refresh:
+        cached = _cached_catalog(cache_key)
+        if cached is not None:
+            return cached
 
     url = cache_key + "/v1/models"
     headers: dict[str, str] = {
@@ -1844,8 +1886,7 @@ def fetch_models_with_pricing(
         with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
-        _pricing_cache[cache_key] = {}
-        return {}
+        return _cache_catalog(cache_key, {})
 
     result: dict[str, dict[str, Any]] = {}
     for item in payload.get("data", []):
@@ -1878,8 +1919,7 @@ def fetch_models_with_pricing(
                         entry["original"] = orig_entry
             result[mid] = entry
 
-    _pricing_cache[cache_key] = result
-    return result
+    return _cache_catalog(cache_key, result)
 
 
 def fetch_ai_gateway_pricing(
@@ -1896,8 +1936,10 @@ def fetch_ai_gateway_pricing(
     from hermes_constants import AI_GATEWAY_BASE_URL
 
     cache_key = AI_GATEWAY_BASE_URL.rstrip("/")
-    if not force_refresh and cache_key in _pricing_cache:
-        return _pricing_cache[cache_key]
+    if not force_refresh:
+        cached = _cached_catalog(cache_key)
+        if cached is not None:
+            return cached
 
     try:
         req = urllib.request.Request(
@@ -1907,8 +1949,7 @@ def fetch_ai_gateway_pricing(
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
-        _pricing_cache[cache_key] = {}
-        return {}
+        return _cache_catalog(cache_key, {})
 
     result: dict[str, dict[str, str]] = {}
     for item in payload.get("data", []):
@@ -1928,8 +1969,7 @@ def fetch_ai_gateway_pricing(
             entry["input_cache_write"] = str(pricing["input_cache_write"])
         result[mid] = entry
 
-    _pricing_cache[cache_key] = result
-    return result
+    return _cache_catalog(cache_key, result)
 
 
 def _resolve_openrouter_api_key() -> str:
@@ -2036,8 +2076,10 @@ def _fireworks_pricing_from_models_dev(
     pricing formatter expects per-token strings, so divide by 1M.
     """
     cache_key = "models.dev/fireworks"
-    if not force_refresh and cache_key in _pricing_cache:
-        return _pricing_cache[cache_key]
+    if not force_refresh:
+        cached = _cached_catalog(cache_key)
+        if cached is not None:
+            return cached
 
     result: dict[str, dict[str, str]] = {}
     try:
@@ -2065,8 +2107,7 @@ def _fireworks_pricing_from_models_dev(
     except Exception:
         result = {}
 
-    _pricing_cache[cache_key] = result
-    return result
+    return _cache_catalog(cache_key, result)
 
 
 def _fetch_novita_pricing(
@@ -2090,8 +2131,10 @@ def _fetch_novita_pricing(
 
     base_url = os.getenv("NOVITA_BASE_URL", "").strip() or "https://api.novita.ai/openai/v1"
     cache_key = base_url.rstrip("/")
-    if not force_refresh and cache_key in _pricing_cache:
-        return _pricing_cache[cache_key]
+    if not force_refresh:
+        cached = _cached_catalog(cache_key)
+        if cached is not None:
+            return cached
 
     url = cache_key + "/models"
     headers = {
@@ -2105,8 +2148,7 @@ def _fetch_novita_pricing(
         with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
             payload = json.loads(resp.read().decode())
     except Exception:
-        _pricing_cache[cache_key] = {}
-        return {}
+        return _cache_catalog(cache_key, {})
 
     result: dict[str, dict[str, str]] = {}
     for item in payload.get("data", []):
@@ -2124,8 +2166,7 @@ def _fetch_novita_pricing(
             "completion": str(float(out or 0) / 10_000 / 1_000_000),
         }
 
-    _pricing_cache[cache_key] = result
-    return result
+    return _cache_catalog(cache_key, result)
 
 
 # All provider IDs and aliases that are valid for the provider:model syntax.
@@ -3106,37 +3147,50 @@ _swr_refresh_inflight: set = set()
 _swr_refresh_lock = threading.Lock()
 
 
-def _spawn_swr_refresh(provider: str) -> None:
-    """Kick a background refresh of *provider*'s model-id cache entry.
+def _spawn_swr_refresh(cache_key: str, refresh_fn=None) -> None:
+    """Kick a background refresh of *cache_key*'s model-id cache entry.
 
-    Fire-and-forget daemon thread; at most one in flight per provider.
+    Fire-and-forget daemon thread; at most one in flight per cache key.
     Failures are swallowed — the stale entry stays served until a later
     refresh succeeds (same degradation the blocking path already had).
+
+    ``refresh_fn`` (no-args, returns the fresh cache-entry dict or ``None``)
+    lets non-slug keys (``custom:<base_url>`` entries from
+    :func:`cached_fetch_api_models`) reuse the same inflight-dedupe and
+    thread scaffolding. When omitted, *cache_key* is treated as a
+    ``PROVIDER_REGISTRY`` slug and refreshed via :func:`provider_model_ids`
+    (the original behavior).
     """
     with _swr_refresh_lock:
-        if provider in _swr_refresh_inflight:
+        if cache_key in _swr_refresh_inflight:
             return
-        _swr_refresh_inflight.add(provider)
+        _swr_refresh_inflight.add(cache_key)
+
+    def _default_refresh():
+        live = provider_model_ids(cache_key, force_refresh=True)
+        if not live:
+            return None
+        return {
+            "fp": _credential_fingerprint(cache_key),
+            "at": time.time(),
+            "models": list(live),
+        }
 
     def _refresh() -> None:
         try:
-            live = provider_model_ids(provider, force_refresh=True)
-            if live:
+            entry = (refresh_fn or _default_refresh)()
+            if entry:
                 cache = _load_provider_models_cache()
-                cache[provider] = {
-                    "fp": _credential_fingerprint(provider),
-                    "at": time.time(),
-                    "models": list(live),
-                }
+                cache[cache_key] = entry
                 _save_provider_models_cache(cache)
         except Exception:
-            logger.debug("SWR refresh failed for %s", provider, exc_info=True)
+            logger.debug("SWR refresh failed for %s", cache_key, exc_info=True)
         finally:
             with _swr_refresh_lock:
-                _swr_refresh_inflight.discard(provider)
+                _swr_refresh_inflight.discard(cache_key)
 
     threading.Thread(
-        target=_refresh, daemon=True, name=f"model-cache-swr-{provider}"
+        target=_refresh, daemon=True, name=f"model-cache-swr-{cache_key}"
     ).start()
 
 
@@ -3271,14 +3325,8 @@ def cached_provider_model_ids(
     entry = cache.get(normalized)
     now = time.time()
 
-    if (
-        not force_refresh
-        and isinstance(entry, dict)
-        and entry.get("fp") == fp
-        and isinstance(entry.get("models"), list)
-        and entry["models"]
-    ):
-        age = now - float(entry.get("at", 0))
+    if not force_refresh and _cache_entry_valid(entry, fp):
+        age = now - entry["at"]
         if age < ttl_seconds:
             return list(entry["models"])
         if age < _PROVIDER_MODELS_STALE_SERVE_MAX:
@@ -3302,12 +3350,7 @@ def cached_provider_model_ids(
     # Live fetch returned nothing. If we have a stale entry with the
     # SAME fingerprint, prefer it over an empty result — stale data
     # beats no data when the network is flaky.
-    if (
-        isinstance(entry, dict)
-        and entry.get("fp") == fp
-        and isinstance(entry.get("models"), list)
-        and entry["models"]
-    ):
+    if _cache_entry_valid(entry, fp):
         return list(entry["models"])
     return list(live or [])
 
@@ -4156,6 +4199,7 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
     OpenCode routes different models behind different API surfaces:
 
     - GPT-5 / Codex models on Zen use ``/v1/responses``
+    - GPT models on Go (gpt-5.6-luna) use ``/v1/responses``
     - Claude models on Zen use ``/v1/messages``
     - MiniMax and Qwen models on Go use ``/v1/messages``
     - GLM / Kimi / DeepSeek / MiMo on Go use ``/v1/chat/completions``
@@ -4172,6 +4216,11 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
         return "chat_completions"
 
     if provider == "opencode-go":
+        if normalized.startswith("gpt-"):
+            # GPT models on Go (gpt-5.6-luna) are served via /v1/responses
+            # per the published Go endpoint table, same as GPT on Zen:
+            # https://opencode.ai/docs/go/#endpoints
+            return "codex_responses"
         if normalized.startswith("minimax-"):
             return "anthropic_messages"
         if normalized.startswith("qwen"):
@@ -4641,6 +4690,141 @@ def fetch_api_models(
         api_mode=api_mode,
         request_headers=headers,
     ).get("models")
+
+
+def _custom_endpoint_fingerprint(
+    api_key: Optional[str],
+    api_mode: Optional[str],
+    headers: Optional[dict[str, str]],
+) -> str:
+    """Fingerprint the credentials/wire-shape used to probe a custom endpoint.
+
+    Custom OpenAI-compatible endpoints have no ``PROVIDER_REGISTRY`` slug to
+    key off (unlike ``_credential_fingerprint``), so this hashes exactly the
+    values callers pass to :func:`fetch_api_models`: a rotated ``api_key``, a
+    changed ``api_mode``, or an edited ``extra_headers`` block each bust the
+    cache entry on their own.
+    """
+    import hashlib
+
+    blob = "|".join((
+        api_key or "",
+        api_mode or "",
+        json.dumps(headers or {}, sort_keys=True),
+    )).encode("utf-8", errors="replace")
+    # blake2b for cache-key fingerprinting only, same rationale as
+    # _credential_fingerprint (avoids CodeQL's sha256-over-secrets rule).
+    return hashlib.blake2b(blob, digest_size=8).hexdigest()
+
+
+def _cache_entry_valid(entry: Any, fp: str) -> "TypeGuard[dict[str, Any]]":
+    """True when *entry* is a well-formed cache row for fingerprint *fp*.
+
+    Requires a numeric ``at`` so corrupt disk state (hand-edited JSON with
+    ``"at": "yesterday"`` or ``null``) degrades to a cache miss / live fetch
+    instead of raising out of the wrapper.
+    """
+    return (
+        isinstance(entry, dict)
+        and entry.get("fp") == fp
+        and isinstance(entry.get("models"), list)
+        and bool(entry["models"])
+        and isinstance(entry.get("at"), (int, float))
+        and not isinstance(entry.get("at"), bool)
+    )
+
+
+def cached_fetch_api_models(
+    api_key: Optional[str],
+    base_url: Optional[str],
+    *,
+    timeout: float = 5.0,
+    api_mode: Optional[str] = None,
+    headers: Optional[dict[str, str]] = None,
+    force_refresh: bool = False,
+    cache_only: bool = False,
+    ttl_seconds: int = _PROVIDER_MODELS_CACHE_TTL,
+) -> Optional[list[str]]:
+    """Disk-cached wrapper around :func:`fetch_api_models` for custom endpoints.
+
+    Mirrors :func:`cached_provider_model_ids` — including its
+    stale-while-revalidate tier — but keys ``provider_models_cache.json``
+    off ``custom:<base_url>`` instead of a ``PROVIDER_REGISTRY`` slug, since
+    custom endpoints (named ``custom_providers`` rows, bare
+    ``provider: custom``, and per-endpoint-map entries) have none. Same
+    stale-beats-nothing fallback policy: a live-fetch failure serves the
+    last same-fingerprint result rather than an empty list. Returns whatever
+    :func:`fetch_api_models` would (a list or ``None``); corrupt cache rows
+    degrade to a live fetch instead of raising.
+
+    ``cache_only`` serves a previously-discovered catalog without touching
+    the network at all — no live fetch, no background revalidation — and
+    returns ``None`` when nothing usable is cached. Callers that deliberately
+    skip live probing for latency reasons (GUI picker opens, which must not
+    block on a stopped local endpoint) use this so a warm catalog still
+    reaches the picker instead of collapsing to the config-declared subset.
+    """
+    normalized_url = str(base_url or "").strip().rstrip("/").lower()
+    if not normalized_url:
+        if cache_only:
+            return None
+        # No base_url means nothing to key the cache on — fall through to a
+        # live call so callers keep getting fetch_api_models' own behavior.
+        return fetch_api_models(
+            api_key, base_url, timeout=timeout, api_mode=api_mode, headers=headers
+        )
+
+    cache_key = f"custom:{normalized_url}"
+    fp = _custom_endpoint_fingerprint(api_key, api_mode, headers)
+    cache = _load_provider_models_cache()
+    entry = cache.get(cache_key)
+    now = time.time()
+
+    if cache_only:
+        # Same trust window as the stale-while-revalidate tier below, minus
+        # the revalidation: an entry this side of the bound is good enough to
+        # render, and anything older is treated as a miss so the caller falls
+        # back to its configured list rather than showing a stale catalog.
+        if force_refresh or not _cache_entry_valid(entry, fp):
+            return None
+        if now - entry["at"] >= _PROVIDER_MODELS_STALE_SERVE_MAX:
+            return None
+        return list(entry["models"])
+
+    if not force_refresh and _cache_entry_valid(entry, fp):
+        age = now - entry["at"]
+        if age < ttl_seconds:
+            return list(entry["models"])
+        if age < _PROVIDER_MODELS_STALE_SERVE_MAX:
+            # Stale-while-revalidate: serve the expired entry immediately so
+            # picker opens never block on a live /v1/models round-trip
+            # (#72762's stall class, which a plain TTL would reintroduce an
+            # hour into the session); refresh off-thread for the next open.
+            def _refresh_custom():
+                live = fetch_api_models(
+                    api_key, base_url,
+                    timeout=timeout, api_mode=api_mode, headers=headers,
+                )
+                if not live:
+                    return None
+                return {"fp": fp, "at": time.time(), "models": list(live)}
+
+            _spawn_swr_refresh(cache_key, _refresh_custom)
+            return list(entry["models"])
+
+    live = fetch_api_models(
+        api_key, base_url, timeout=timeout, api_mode=api_mode, headers=headers
+    )
+    if live:
+        cache[cache_key] = {"fp": fp, "at": now, "models": list(live)}
+        _save_provider_models_cache(cache)
+        return list(live)
+
+    # Live fetch returned nothing (offline endpoint, timeout, auth hiccup).
+    # A stale same-fingerprint entry beats an empty result.
+    if _cache_entry_valid(entry, fp):
+        return list(entry["models"])
+    return live
 
 
 # ---------------------------------------------------------------------------

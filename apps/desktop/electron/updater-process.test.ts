@@ -7,8 +7,10 @@ import { test } from 'vitest'
 import {
   MARKER_SELF_ADOPT_EPOCH_MS,
   resolveStagedUpdaterBinary,
+  resolveUpdateScriptHandoff,
   spawnUpdaterProcess,
-  stagedUpdaterSupportsPrewrittenMarker
+  stagedUpdaterSupportsPrewrittenMarker,
+  wrapHandoffForDetachedConsole
 } from './updater-process'
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -164,4 +166,70 @@ test('resolveStagedUpdaterBinary returns null on Windows when nothing is staged'
   })
 
   assert.equal(resolved, null)
+})
+
+test('resolveUpdateScriptHandoff prefers the repo script on Windows when present', () => {
+  const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
+  const expected = path.join(root, 'scripts', 'desktop-update.ps1')
+
+  const handoff = resolveUpdateScriptHandoff(root, {
+    isWindows: true,
+    fileExists: candidate => candidate === expected
+  })
+
+  assert.ok(handoff)
+  assert.equal(handoff.command, 'powershell')
+  assert.equal(handoff.scriptPath, expected)
+  assert.deepEqual(handoff.args, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', expected])
+})
+
+test('resolveUpdateScriptHandoff returns null when the checkout predates the script', () => {
+  const handoff = resolveUpdateScriptHandoff(String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`, {
+    isWindows: true,
+    fileExists: () => false
+  })
+
+  assert.equal(handoff, null)
+})
+
+test('resolveUpdateScriptHandoff is Windows-only (POSIX updates in place)', () => {
+  const handoff = resolveUpdateScriptHandoff('/home/hermes/.hermes/hermes-agent', {
+    isWindows: false,
+    fileExists: () => true
+  })
+
+  assert.equal(handoff, null)
+})
+
+test('wrapHandoffForDetachedConsole routes through cmd start with own console', () => {
+  const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
+  const expected = path.join(root, 'scripts', 'desktop-update.ps1')
+
+  const handoff = resolveUpdateScriptHandoff(root, {
+    isWindows: true,
+    fileExists: candidate => candidate === expected
+  })
+
+  assert.ok(handoff)
+  const wrapped = wrapHandoffForDetachedConsole(handoff, ['-InstallRoot', root, '-Branch', 'main'])
+
+  assert.equal(wrapped.command, 'cmd.exe')
+  assert.deepEqual(wrapped.args, [
+    '/d',
+    '/s',
+    '/c',
+    'start',
+    '',
+    '/min',
+    'powershell',
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    expected,
+    '-InstallRoot',
+    root,
+    '-Branch',
+    'main'
+  ])
 })

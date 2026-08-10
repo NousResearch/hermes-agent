@@ -112,6 +112,43 @@ class TestLeavesNonEnvStateAlone:
         assert agent._try_refresh_env_client_credentials() is False
         assert agent.api_key == "sk-rotated-pool-entry"
 
+    def test_first_look_does_not_stomp_rotated_pool_key(self, env):
+        """#79156: first look with a pool-rotated key must seed the baseline,
+        not rewrite api_key back to the env primary."""
+        agent = _make_agent(api_key="sk-backup")
+        agent._credential_pool = object()  # any non-None pool binding
+        agent._credential_pool_entry_id = "entry-backup"
+        env["OPENAI_API_KEY"] = "sk-primary"
+
+        assert agent._try_refresh_env_client_credentials() is False
+        assert agent.api_key == "sk-backup"
+        assert agent._credential_pool_entry_id == "entry-backup"
+
+    def test_adopted_key_rebinds_pool_entry_id(self, env, monkeypatch):
+        """#79156: adopting a new env key must rebind _credential_pool_entry_id
+        so the next 429 is attributed to the key that actually ran."""
+        agent = _make_agent()
+        env["OPENAI_API_KEY"] = "sk-old"
+        assert agent._try_refresh_env_client_credentials() is False
+        agent._credential_pool_entry_id = "stale-rotated-id"
+
+        called = {}
+
+        def fake_sync(a):
+            called["agent"] = a
+            a._credential_pool_entry_id = "entry-for-sk-new"
+
+        monkeypatch.setattr(
+            "agent.agent_runtime_helpers.sync_credential_pool_entry_id",
+            fake_sync,
+        )
+
+        env["OPENAI_API_KEY"] = "sk-new"
+        assert agent._try_refresh_env_client_credentials() is True
+        assert agent.api_key == "sk-new"
+        assert called.get("agent") is agent
+        assert agent._credential_pool_entry_id == "entry-for-sk-new"
+
     def test_custom_endpoint_wins_over_env_edit(self, env):
         """A session running on a config/pool custom endpoint (not the
         registry default, not a previously-seen env value) keeps it."""

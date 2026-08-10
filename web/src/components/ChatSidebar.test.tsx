@@ -3,6 +3,8 @@ import { act, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { EVENTS_CONNECT_TIMEOUT_MS } from "@/lib/events-reconnect";
+
 const apiMocks = vi.hoisted(() => ({
   buildWsUrl: vi.fn(async () => "ws://localhost/api/events?channel=chat-1"),
   getModelInfo: vi.fn(async () => ({
@@ -113,6 +115,10 @@ async function render(ui: ReactNode) {
 beforeEach(() => {
   FakeWebSocket.instances = [];
   vi.clearAllMocks();
+  apiMocks.buildWsUrl.mockReset();
+  apiMocks.buildWsUrl.mockResolvedValue(
+    "ws://localhost/api/events?channel=chat-1",
+  );
   reloadMocks.maybeReloadForLoopbackWsAuthFailure.mockReturnValue(true);
   vi.stubGlobal("WebSocket", FakeWebSocket);
 });
@@ -180,6 +186,75 @@ describe("ChatSidebar event socket reconnect", () => {
     expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps retrying when reconnect URL construction fails", async () => {
+    await renderSidebar();
+    apiMocks.buildWsUrl
+      .mockRejectedValueOnce(new Error("ticket endpoint unavailable"))
+      .mockResolvedValue("ws://localhost/api/events?channel=chat-1");
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("close", { code: 1006 });
+    });
+
+    await advance(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(container.textContent).toContain("reconnecting in 2s");
+
+    await advance(2_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(3);
+  });
+
+  it("times out a stalled URL request and retries", async () => {
+    let resolveStalledRequest!: (url: string) => void;
+    await renderSidebar();
+    apiMocks.buildWsUrl
+      .mockImplementationOnce(
+        () =>
+          new Promise<string>((resolve) => {
+            resolveStalledRequest = resolve;
+          }),
+      )
+      .mockResolvedValue("ws://localhost/api/events?channel=chat-1");
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("close", { code: 1006 });
+    });
+
+    await advance(1_000 + EVENTS_CONNECT_TIMEOUT_MS);
+    expect(FakeWebSocket.instances).toHaveLength(1);
+    expect(container.textContent).toContain("reconnecting in 2s");
+
+    // A late ticket response from the timed-out attempt must not create a
+    // superseded socket alongside the scheduled replacement.
+    await act(async () => {
+      resolveStalledRequest("ws://localhost/api/events?channel=stale");
+      await Promise.resolve();
+    });
+    expect(FakeWebSocket.instances).toHaveLength(1);
+
+    await advance(2_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+    expect(apiMocks.buildWsUrl).toHaveBeenCalledTimes(3);
+  });
+
+  it("times out a stalled WebSocket handshake and retries", async () => {
+    await renderSidebar();
+
+    await act(async () => {
+      FakeWebSocket.instances[0].emit("close", { code: 1006 });
+    });
+    await advance(1_000);
+    expect(FakeWebSocket.instances).toHaveLength(2);
+
+    await advance(EVENTS_CONNECT_TIMEOUT_MS);
+    expect(FakeWebSocket.instances[1].closed).toBe(true);
+    expect(container.textContent).toContain("reconnecting in 2s");
+
+    await advance(2_000);
+    expect(FakeWebSocket.instances).toHaveLength(3);
+  });
+
   it("backs off exponentially across repeated failures", async () => {
     await renderSidebar();
 
@@ -210,7 +285,11 @@ describe("ChatSidebar event socket reconnect", () => {
       FakeWebSocket.instances[0].emit("close", { code: 1006 });
     });
 
-    await advance(30_000);
+    await advance(1_000);
+    await act(async () => {
+      FakeWebSocket.instances[1].emit("open", {});
+    });
+    await advance(29_000);
     expect(FakeWebSocket.instances).toHaveLength(2);
   });
 

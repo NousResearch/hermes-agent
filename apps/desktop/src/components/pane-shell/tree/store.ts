@@ -1380,11 +1380,22 @@ export function setPaneCollapsed(paneId: string, collapsed: boolean) {
   if (group.panes.length > 1) {
     if (collapsed && group.active === paneId) {
       if (group.panes.some(isUncloseablePane)) {
-        // Workspace can't minimize (strands the app) → tab-switch to a sibling
-        // (guaranteed to exist by length > 1).
+        // Workspace can't minimize (strands the app) → hand the active slot to
+        // the uncloseable (workspace) pane rather than an arbitrary adjacent
+        // sibling. [workspace, files, review, terminal] with the terminal
+        // active must land on workspace (New Session semantics), not on review
+        // via `panes[at - 1]` — which left the user stranded on a tool pane
+        // and (before the overlay fix) the terminal visually foreground.
+        const anchor = group.panes.find(isUncloseablePane)
         const at = group.panes.indexOf(paneId)
 
-        activateTreePane(group.id, group.panes[at - 1] ?? group.panes[at + 1])
+        if (anchor && anchor !== paneId) {
+          activateTreePane(group.id, anchor)
+        } else {
+          // Defensive: collapsing the uncloseable pane itself (never bound to
+          // a tool toggle store) — fall back to the sibling.
+          activateTreePane(group.id, group.panes[at - 1] ?? group.panes[at + 1])
+        }
       } else {
         setTreeGroupMinimized(group.id, true) // pure tool zone folds as a unit
       }

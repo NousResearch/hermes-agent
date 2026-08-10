@@ -445,14 +445,22 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
             pass
 
     # For Telegram: append the rich-messages extension only when the user has
-    # opted in to ``platforms.telegram.extra.rich_messages: true``.  The base
-    # hint covers MarkdownV2-compatible constructs; the extension adds Bot API
-    # 10.1 guidance (tables, task lists, math, collapsible details, etc.).
+    # opted in to ``gateway.platforms.telegram.extra.rich_messages: true``
+    # (the canonical location the adapter reads from).  Merge with the
+    # top-level ``platforms.telegram.extra`` so config-wizard writes and
+    # dashboard-setup keys are also visible — same precedence the adapter
+    # uses: top-level platform overrides gateway.platforms at the leaf.
     if platform_key == "telegram" and _default_hint:
         try:
             from hermes_cli.config import load_config_readonly
             _cfg = load_config_readonly()
-            _tg_extra = ((_cfg.get("platforms") or {}).get("telegram") or {}).get("extra") or {}
+            _gw_tg_extra = (((_cfg.get("gateway") or {}).get("platforms") or {}).get("telegram") or {}).get("extra")
+            _top_tg_extra = ((_cfg.get("platforms") or {}).get("telegram") or {}).get("extra")
+            if not isinstance(_gw_tg_extra, dict):
+                _gw_tg_extra = {}
+            if not isinstance(_top_tg_extra, dict):
+                _top_tg_extra = {}
+            _tg_extra = {**_gw_tg_extra, **_top_tg_extra}
             if _tg_extra.get("rich_messages"):
                 _default_hint = _default_hint.rstrip() + " " + TELEGRAM_RICH_MESSAGES_HINT
         except Exception:

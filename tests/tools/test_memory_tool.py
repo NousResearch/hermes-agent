@@ -627,3 +627,41 @@ class TestLoadTimeSnapshotSanitization:
         # Block marker appears exactly once, not nested
         assert snapshot.count("[BLOCKED:") == 1
         assert "Clean fact" in snapshot
+
+
+class TestBomToleranceInMemoryFiles:
+    """A Notepad-edited MEMORY.md carries a UTF-8 BOM (issue #10878 / PR #10888).
+
+    Reads go through utf-8-sig so the BOM never glues U+FEFF onto the first
+    entry. Decode errors stay strict — invalid bytes must still surface as
+    unreadable (read_ok=False) rather than silently degrade via replacement
+    characters (which a read-modify-write would then persist over the real
+    file contents).
+    """
+
+    def test_bom_is_stripped_from_first_entry(self, store, tmp_path):
+        path = store._path_for("memory")
+        path.write_bytes("\ufeffFirst fact.".encode("utf-8"))
+        raw, read_ok = MemoryStore._read_raw_checked(path)
+        assert read_ok is True
+        assert not raw.startswith("\ufeff")
+        entries, ok = MemoryStore._read_entries_checked(path)
+        assert ok is True
+        assert entries == ["First fact."]
+
+    def test_bom_file_add_keeps_existing_entry_intact(self, store):
+        path = store._path_for("memory")
+        path.write_bytes("\ufeffExisting BOM fact.".encode("utf-8"))
+        result = store.add("memory", "A second fact.")
+        assert result["success"] is True
+        text = path.read_text(encoding="utf-8")
+        assert "\ufeff" not in text
+        assert "Existing BOM fact." in text
+        assert "A second fact." in text
+
+    def test_invalid_utf8_still_reports_unreadable(self, store):
+        path = store._path_for("memory")
+        path.write_bytes(b"\xff\xfe\x80\x81 not utf-8")
+        raw, read_ok = MemoryStore._read_raw_checked(path)
+        assert read_ok is False
+        assert raw == ""

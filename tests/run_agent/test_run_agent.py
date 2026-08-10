@@ -2284,6 +2284,7 @@ class TestAgentRuntimePostHookOwnershipSync:
         ("clarify", {"question": "Continue?"}),
         ("read_terminal", {}),
         ("read_preview", {}),
+        ("read_window_below", {}),
         ("delegate_task", {"goal": "Check the child path"}),
     )
 
@@ -2325,6 +2326,10 @@ class TestAgentRuntimePostHookOwnershipSync:
         )
         monkeypatch.setattr(
             "tools.read_preview_tool.read_preview_tool",
+            lambda **kwargs: '{"ok":true}',
+        )
+        monkeypatch.setattr(
+            "tools.read_window_tool.read_window_below_tool",
             lambda **kwargs: '{"ok":true}',
         )
         monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: None)
@@ -3537,14 +3542,18 @@ class TestRunConversation:
             "assistant",
             "user",
         ]
-        checkpoint = replay[-2]["content"]
-        assert "interrupted by a user correction" in checkpoint
+        # Scaffold rides on the user correction (api_content → content), never
+        # as the assistant placeholder's own reply (#81841).
+        placeholder = replay[-2]["content"]
+        correction = replay[-1]["content"]
+        assert "interrupted by a user correction" not in (placeholder or "")
+        assert "interrupted by a user correction" in correction
+        assert correction.endswith("No, use Postgres instead.")
         # Displayed chain-of-thought must NOT be replayed: an assistant turn
         # inlining its own reasoning trips Anthropic's output classifier and
         # bricks the session with deterministic empty responses (July 2026).
-        assert "I should implement this with SQLite." not in checkpoint
-        assert "Reasoning shown before the interruption" not in checkpoint
-        assert replay[-1]["content"] == "No, use Postgres instead."
+        assert "I should implement this with SQLite." not in correction
+        assert "Reasoning shown before the interruption" not in correction
         assert agent._pending_redirect is None
         assert any(
             snapshot[-1].get("content") == "No, use Postgres instead."
@@ -3624,15 +3633,76 @@ class TestRunConversation:
         assert calls == 2
         assert results["result"]["completed"] is True
         assert results["result"]["final_response"] == "Corrected answer."
-        checkpoint = results["result"]["messages"][-3]
-        assert "interrupted by a user correction" in checkpoint["content"]
+        placeholder = results["result"]["messages"][-3]
+        correction = results["result"]["messages"][-2]
+        assert placeholder["role"] == "assistant"
+        assert "interrupted by a user correction" not in (
+            placeholder.get("content") or ""
+        )
+        assert "interrupted by a user correction" in (
+            correction.get("api_content") or ""
+        )
         # Displayed reasoning is display-only — replaying it as assistant
         # content trips Anthropic's output classifier (July 2026 brickings).
-        assert "Following the original approach." not in checkpoint["content"]
-        assert results["result"]["messages"][-2]["content"] == (
-            "Use the corrected approach."
+        assert "Following the original approach." not in (
+            correction.get("api_content") or ""
         )
+        assert correction["content"] == "Use the corrected approach."
 
+    def test_legacy_interrupt_scaffold_ghost_dropped_from_api_replay(self, agent):
+        """Pre-#81841 hidden assistant rows with the interrupt scaffold must
+        not be replayed to the provider — that is what made the model echo
+        them into a self-replicating ghost loop."""
+        self._setup_agent(agent)
+        scaffold = "[This response was interrupted by a user correction.]"
+        history = [
+            {"role": "user", "content": "first"},
+            {
+                "role": "assistant",
+                "content": scaffold,
+                "api_content": scaffold,
+                "display_kind": "hidden",
+            },
+            {"role": "user", "content": "real follow-up"},
+            {"role": "assistant", "content": "ok"},
+        ]
+        requests = []
+
+        def _fake_api_call(api_kwargs):
+            requests.append(api_kwargs)
+            return _mock_response(content="done", finish_reason="stop")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "next turn", conversation_history=history
+            )
+
+        assert result["completed"] is True
+        assert len(requests) == 1
+        replayed = requests[0]["messages"]
+        assert not any(
+            isinstance(m.get("content"), str) and m["content"].strip() == scaffold
+            for m in replayed
+            if m.get("role") == "assistant"
+        )
+        # Real history around the ghost still reaches the provider.
+        # The two consecutive user messages ("first" + "real follow-up")
+        # may be merged by repair_message_sequence, so check for the
+        # content as a substring rather than exact match.
+        assert any(
+            m.get("role") == "user"
+            and "real follow-up" in str(m.get("content", ""))
+            for m in replayed
+        )
+        assert any(
+            m.get("role") == "assistant" and m.get("content") == "ok"
+            for m in replayed
+        )
 
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)
@@ -4027,6 +4097,47 @@ class TestRunConversation:
             result = agent.run_conversation("write the report")
 
         # Recovered on the 3rd attempt instead of refusing after the 1st.
+        mock_hfc.assert_called_once()
+        assert result["final_response"] == "Done!"
+
+    def test_zero_byte_tool_args_stub_recovers_within_retries(self, agent):
+        """#80498: a stream that dies before a single argument byte arrives
+        (name-only tool call) produces a stub with tool_calls=None and
+        _dropped_tool_names set — the real shape _build_partial_stream_stub
+        returns, distinct from the truncated-JSON stub above (which still
+        carries a tool_calls list). Confirms the zero-byte trigger is wired
+        end-to-end through the retry loop, not just detected at the
+        chat_completion_helpers unit level."""
+        from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+        self._setup_agent(agent)
+        agent.valid_tool_names.add("write_file")
+
+        stall = _mock_response(content="", finish_reason="length", tool_calls=None)
+        stall.id = PARTIAL_STREAM_STUB_ID
+        stall._dropped_tool_names = ["write_file"]
+
+        good_tc = _mock_tool_call(
+            name="write_file",
+            arguments='{"path":"report.md","content":"full content"}',
+            call_id="c2",
+        )
+        good_resp = _mock_response(content="", finish_reason="stop", tool_calls=[good_tc])
+        final_resp = _mock_response(content="Done!", finish_reason="stop")
+
+        with (
+            patch("run_agent.handle_function_call", return_value='{"success":true}') as mock_hfc,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            agent.client.chat.completions.create.side_effect = [
+                stall, good_resp, final_resp,
+            ]
+            result = agent.run_conversation("write the report")
+
+        # The zero-byte stub must trigger a retry, not silently execute
+        # write_file with coerced empty arguments (the #80498 regression).
         mock_hfc.assert_called_once()
         assert result["final_response"] == "Done!"
 

@@ -6794,6 +6794,10 @@ class DispatchResult:
 
     reclaimed: int = 0
     promoted: int = 0
+    reconciled_orphans: list[str] = field(default_factory=list)
+    """Task ids requeued by :func:`reconcile_orphaned_running` this tick —
+    ``running`` cards whose claim bookkeeping was broken (no valid claim,
+    dead/gone worker). See the reconciliation pass for details."""
     spawned: list[tuple[str, str, str]] = field(default_factory=list)
     """List of ``(task_id, assignee, workspace_path)`` triples."""
     skipped_unassigned: list[str] = field(default_factory=list)
@@ -7431,6 +7435,96 @@ def detect_stale_running(
         # spawn_failed / timed_out / crashed counters.
 
     return reclaimed
+
+
+def reconcile_orphaned_running(
+    conn: sqlite3.Connection,
+) -> list[str]:
+    """Reconcile ``running`` cards whose claim bookkeeping is broken.
+
+    Tracked-state vs. reality divergence: a task can sit in
+    ``status='running'`` with ``claim_lock IS NULL`` or ``claim_expires IS
+    NULL`` (crash mid-claim, manual SQL, DB restore). None of the other
+    recovery paths ever touch such a card — ``release_stale_claims``
+    requires a non-NULL ``claim_expires``, ``detect_crashed_workers``
+    requires a host-local claim_lock + worker_pid, and
+    ``detect_stale_running`` is disabled by default — so the card shows
+    Running forever (a zombie).
+
+    This pass finds those orphans, requeues them to ``ready`` with an
+    explanatory comment, closes any leaked run, and appends a
+    ``reconciled`` event. If the orphan row still records a live PID on
+    this host, requeueing is deferred to a later tick so we never spawn a
+    duplicate beside a possibly-alive worker.
+
+    Returns the list of reconciled task ids. Safe to call every tick.
+
+    Idea from openai/symphony's tracker reconciliation (Apache-2.0).
+    """
+    now = int(time.time())
+    reconciled: list[str] = []
+    rows = conn.execute(
+        "SELECT id, claim_lock, claim_expires, worker_pid FROM tasks "
+        "WHERE status = 'running' "
+        "  AND (claim_lock IS NULL OR claim_expires IS NULL)"
+    ).fetchall()
+    for row in rows:
+        tid = row["id"]
+        pid = row["worker_pid"]
+        if pid and _pid_alive(pid):
+            # The recorded worker may still be doing real work — never
+            # requeue beside a live process. Retry next tick.
+            _log.debug(
+                "kanban reconcile: task %s has broken claim bookkeeping but "
+                "pid %s is alive on this host — deferring", tid, pid,
+            )
+            continue
+        with write_txn(conn):
+            cur = conn.execute(
+                "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
+                "claim_expires = NULL, worker_pid = NULL, "
+                "last_heartbeat_at = NULL "
+                "WHERE id = ? AND status = 'running' "
+                "  AND claim_lock IS ? AND claim_expires IS ?",
+                (tid, row["claim_lock"], row["claim_expires"]),
+            )
+            if cur.rowcount != 1:
+                continue
+            payload = {
+                "reason": "orphaned_running",
+                "claim_lock": row["claim_lock"],
+                "claim_expires": (
+                    int(row["claim_expires"])
+                    if row["claim_expires"] is not None else None
+                ),
+                "worker_pid": int(pid) if pid else None,
+                "now": now,
+            }
+            run_id = _end_run(
+                conn, tid,
+                outcome="reclaimed", status="reclaimed",
+                error="orphaned running card (broken claim bookkeeping)",
+                metadata=payload,
+            )
+            # Inline comment INSERT — add_comment opens its own write_txn
+            # and would raise on nesting (see write_txn pitfalls).
+            conn.execute(
+                "INSERT INTO task_comments (task_id, author, body, created_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    tid, "dispatcher",
+                    "reconciliation: card was 'running' with no valid claim "
+                    "(dead/gone worker) — requeued to ready",
+                    now,
+                ),
+            )
+            _append_event(conn, tid, "reconciled", payload, run_id=run_id)
+            reconciled.append(tid)
+        _log.info(
+            "kanban reconcile: requeued orphaned running task %s "
+            "(claim_lock=%r, worker_pid=%r)", tid, row["claim_lock"], pid,
+        )
+    return reconciled
 
 
 def _error_fingerprint(error_text: str) -> str:
@@ -8214,6 +8308,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -8248,6 +8343,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            reconcile_orphans=reconcile_orphans,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -8264,6 +8360,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            reconcile_orphans=reconcile_orphans,
         )
         # Still under the dispatch lock: opportunistically truncate the WAL
         # at a coarse interval so it cannot grow unbounded between restarts.
@@ -8284,6 +8381,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -8319,6 +8417,11 @@ def _dispatch_once_locked(
 
     result = DispatchResult()
     result.reclaimed = release_stale_claims(conn)
+    if reconcile_orphans:
+        # Orphaned-card reconciliation: requeue 'running' cards whose claim
+        # bookkeeping is broken (no valid claim, dead/gone worker) that the
+        # TTL/crash/stale paths can never see. See reconcile_orphaned_running.
+        result.reconciled_orphans = reconcile_orphaned_running(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )

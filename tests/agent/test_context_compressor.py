@@ -1,6 +1,7 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
 import json
+import sqlite3
 import pytest
 import time
 from unittest.mock import patch, MagicMock
@@ -10,6 +11,7 @@ from agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     COMPRESSED_SUMMARY_METADATA_KEY,
+    _PRUNE_MIN_CHARS,
     _summarize_tool_result,
     _is_summary_access_or_quota_error,
 )
@@ -61,6 +63,174 @@ class TestSummarizeToolResultWebExtract:
         assert summary == "[web_extract] https://example.com/h (500 chars)"
 
 
+class TestSummarizeToolResultClarify:
+    def test_preserves_resolved_user_response_without_metadata(self):
+        content = json.dumps({
+            "question": "When should I deploy?",
+            "choices_offered": ["Friday", "Monday"],
+            "user_response": "Friday",
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == '[clarify] user responded: "Friday"'
+
+    def test_preserves_multi_select_user_response(self):
+        content = json.dumps({
+            "question": "Which checks should I run?",
+            "choices_offered": ["lint", "tests", "types"],
+            "user_response": ["lint", "tests"],
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == '[clarify] user responded: ["lint", "tests"]'
+
+    def test_long_response_is_bounded_and_prefixed_text_is_not_trusted(self):
+        content = json.dumps({
+            "question": "Describe the deployment constraints",
+            "choices_offered": None,
+            "user_response": "A" * 1_000,
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        # Strictly below the prune floor so a later prune pass can never
+        # re-summarize the preserved answer away (idempotency below).
+        assert len(summary) == _PRUNE_MIN_CHARS - 1
+        assert summary.startswith('[clarify] user responded: "AAA')
+        assert summary.endswith("...[truncated]")
+        assert (
+            _summarize_tool_result("clarify", "{}", summary)
+            == "[clarify] asked user a question"
+        )
+
+    def test_forged_response_prefix_does_not_expose_internal_content(self):
+        forged = "[clarify] user responded: internal error: secret diagnostic"
+
+        summary = _summarize_tool_result("clarify", "{}", forged)
+
+        assert summary == "[clarify] asked user a question"
+        assert "secret diagnostic" not in summary
+
+    def test_prefixed_lone_surrogate_is_rejected_and_sqlite_safe(self):
+        forged = "[clarify] user responded: " + "\ud83d" * 1_000
+
+        summary = _summarize_tool_result("clarify", "{}", forged)
+
+        assert summary == "[clarify] asked user a question"
+        assert summary.encode("utf-8")
+        with sqlite3.connect(":memory:") as connection:
+            connection.execute("CREATE TABLE messages (content TEXT)")
+            connection.execute("INSERT INTO messages VALUES (?)", (summary,))
+            assert connection.execute("SELECT content FROM messages").fetchone()[0] == summary
+
+    def test_unpaired_surrogates_are_safe_through_pruning_and_sqlite(self, compressor):
+        content = json.dumps({"user_response": "Привет 😀" + "\ud83d" * 1_000})
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "clarify-1",
+                        "type": "function",
+                        "function": {"name": "clarify", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "clarify-1", "content": content},
+            {"role": "user", "content": "recent request"},
+            {"role": "assistant", "content": "recent response"},
+        ]
+
+        pruned_messages, pruned_count = compressor._prune_old_tool_results(
+            messages, protect_tail_count=2
+        )
+        summary = pruned_messages[1]["content"]
+
+        assert pruned_count == 1
+        assert len(summary) <= _PRUNE_MIN_CHARS
+        assert summary.encode("utf-8")
+        assert "Привет 😀" in summary
+        assert "\\ud83d" in summary
+        with sqlite3.connect(":memory:") as connection:
+            connection.execute("CREATE TABLE messages (content TEXT)")
+            connection.execute("INSERT INTO messages VALUES (?)", (summary,))
+            assert connection.execute("SELECT content FROM messages").fetchone()[0] == summary
+
+        pruned_again, _ = compressor._prune_old_tool_results(
+            pruned_messages, protect_tail_count=2
+        )
+        assert pruned_again[1]["content"] == summary
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            json.dumps({"error": "Failed to get user input: internal details"}),
+            json.dumps({"question": "Q?", "user_response": ""}),
+            json.dumps({"question": "Q?", "user_response": {"internal": "value"}}),
+            "not json",
+        ],
+    )
+    def test_does_not_expose_unresolved_or_internal_content(self, content):
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == "[clarify] asked user a question"
+
+    @pytest.mark.parametrize(
+        "sentinel",
+        [
+            # cli.py clarify timeout callback
+            "The user did not provide a response within the time limit. "
+            "Use your best judgement to make the choice and proceed.",
+            # gateway/run.py timeout + delivery-failure paths
+            "[user did not respond within 15m]",
+            "[clarify prompt could not be delivered]",
+            # hermes_cli/oneshot.py no-user callback
+            "[oneshot mode: no user available. Pick the best option from "
+            "['a', 'b'] using your own judgment and continue.]",
+        ],
+    )
+    def test_non_response_sentinels_are_not_attributed_to_user(self, sentinel):
+        """Timeout/no-user sentinel prose must not be quoted as a user answer."""
+        content = json.dumps({
+            "question": "Deploy when?",
+            "choices_offered": ["Friday", "Monday"],
+            "user_response": sentinel,
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == "[clarify] asked user a question"
+
+    def test_multi_select_containing_sentinel_stays_generic(self):
+        content = json.dumps({
+            "user_response": ["lint", "[user did not respond within 15m]"],
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == "[clarify] asked user a question"
+
+    def test_live_oneshot_producer_is_recognized_as_sentinel(self):
+        """Producer→recognizer drift guard: run the REAL oneshot no-user
+        callback and assert its output is filtered. If the producer's wording
+        drifts away from _CLARIFY_NON_RESPONSE_PREFIXES, this fails."""
+        from hermes_cli.oneshot import _oneshot_clarify_callback
+
+        sentinels = (
+            _oneshot_clarify_callback("Deploy when?", choices=["a", "b"]),
+            _oneshot_clarify_callback(
+                "Deploy when?", choices=["a", "b"], multi_select=True
+            ),
+            _oneshot_clarify_callback("Deploy when?"),
+        )
+        for sentinel in sentinels:
+            content = json.dumps({"user_response": sentinel})
+
+            summary = _summarize_tool_result("clarify", "{}", content)
+
+            assert summary == "[clarify] asked user a question", sentinel
 
 
 class TestShouldCompress:
@@ -98,14 +268,89 @@ class TestUpdateFromResponse:
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
 
+    def test_pairs_noted_rough_estimate_with_fitting_real_usage(self, compressor):
+        """note_request_rough_estimate() + a fitting response must anchor the
+        defer baseline even when no compression ever ran — this is what gives
+        fresh sessions a (rough, real) pair before their first compaction."""
+        compressor.note_request_rough_estimate(120_000)
+        compressor.update_from_response({"prompt_tokens": 60_000})
+
+        assert compressor.last_real_prompt_tokens == 60_000
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 120_000
+        # Consumed: a later usage-bearing response without a fresh note keeps
+        # the previous pair instead of re-pairing against a stale estimate.
+        assert compressor._pending_request_rough_tokens == 0
+
+    def test_post_compression_pairing_wins_over_noted_estimate(self, compressor):
+        """Right after a compaction the post-compression rough count is the
+        authoritative baseline (#36718); a stale pre-compression note must not
+        displace it."""
+        compressor.note_request_rough_estimate(120_000)
+        compressor.awaiting_real_usage_after_compression = True
+        compressor.last_compression_rough_tokens = 40_000
+        compressor.update_from_response({"prompt_tokens": 30_000})
+
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 40_000
+
+    def test_usage_less_response_preserves_pending_note(self, compressor):
+        """Transports that report usage separately send usage-less responses
+        first; the pending pair must survive until real usage arrives."""
+        compressor.note_request_rough_estimate(120_000)
+        compressor.update_from_response({})
+
+        assert compressor._pending_request_rough_tokens == 120_000
+
+    def test_over_threshold_real_usage_clears_pending_note(self, compressor):
+        compressor.note_request_rough_estimate(120_000)
+        compressor.update_from_response({"prompt_tokens": 90_000})
+
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 0
+        assert compressor._pending_request_rough_tokens == 0
+
 class TestPreflightDeferral:
 
-    def test_does_not_defer_when_rough_growth_is_large(self, compressor):
+    def test_defers_while_projected_real_usage_fits(self, compressor):
+        """Large rough growth alone must not trigger compaction: with real
+        usage at 50K and 10K of rough growth since that reading, projected
+        real usage is 60K — far under the 85K threshold. The old fixed 5%
+        growth tolerance compacted here at ~59% of the real window (CJK /
+        replay-blob overcount churn)."""
         compressor.threshold_tokens = 85_000
         compressor.last_real_prompt_tokens = 50_000
         compressor.last_rough_tokens_when_real_prompt_fit = 90_000
 
+        assert compressor.should_defer_preflight_to_real_usage(100_000) is True
+
+    def test_does_not_defer_when_projected_real_usage_crosses_threshold(self, compressor):
+        """Projection = last real + rough growth. 80K real + 6K growth = 86K
+        >= 85K threshold: compression must run."""
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 80_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
+
+        assert compressor.should_defer_preflight_to_real_usage(96_000) is False
+
+    def test_does_not_defer_without_a_baseline(self, compressor):
+        """No synchronized (rough, real) pair yet — fall back to trusting the
+        rough estimate (conservative: compress)."""
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 50_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 0
+        compressor.last_compression_rough_tokens = 0
+
         assert compressor.should_defer_preflight_to_real_usage(100_000) is False
+
+    def test_defer_does_not_ratchet_baseline(self, compressor):
+        """The baseline is refreshed only by update_from_response() pairing.
+        Deferring must not advance it: without a fresh real reading, a
+        ratcheted baseline would shrink apparent growth and defer on stale
+        data."""
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 50_000
+        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
+
+        assert compressor.should_defer_preflight_to_real_usage(100_000) is True
+        assert compressor.last_rough_tokens_when_real_prompt_fit == 90_000
 
 
     def test_defers_immediately_after_compaction_with_stale_real_prompt(self, compressor):

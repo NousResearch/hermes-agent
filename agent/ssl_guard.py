@@ -55,7 +55,13 @@ def _validate_bundle_path(label: str, value: str, *, require_substantial: bool =
         ctx = ssl.create_default_context(cafile=str(path))
     except Exception as exc:
         raise _ssl_err(f"{label} CA bundle at {value} cannot be loaded: {exc}") from exc
-    if not ctx.get_ca_certs():
+    try:
+        loaded_certs = ctx.get_ca_certs()
+    except NotImplementedError:
+        # truststore-backed SSLContext (Windows OS trust store) doesn't
+        # implement get_ca_certs(); bundle was already validated above.
+        return
+    if not loaded_certs:
         raise _ssl_err(f"{label} CA bundle at {value} did not load any certificates")
 
 

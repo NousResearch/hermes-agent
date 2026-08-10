@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import display_hermes_home
+from agent.prompt_cache_boundary import register_stable_prefix
 from agent.skill_preprocessing import (
     expand_inline_shell as _expand_inline_shell,
     load_skills_config as _load_skills_config,
@@ -68,6 +69,23 @@ SKILL_SCAFFOLD_SQL_LIKE = _SKILL_INVOCATION_PREFIX + "%"
 # the joint (a bundle instruction cut off by the head window); callers cut the
 # description there rather than show the skill body on the far side.
 SKILL_EXCERPT_JOINT = "\x1e"
+
+
+def append_user_instruction(parts: list, instruction: str) -> str:
+    """Append the instruction line to ``parts``; return the stable prefix.
+
+    Shared by every builder that ends a static skill scaffold with the
+    caller-supplied volatile instruction (single-skill invocations, cron job
+    prompts). The returned prefix ends exactly at the instruction marker, so
+    registering it with ``agent.prompt_cache_boundary`` lets the Anthropic
+    cache planner put a breakpoint on the scaffold instead of caching the
+    whole message as one atomic block (#81867). Keeping construction in one
+    place guarantees the registered prefix stays a byte-prefix of the built
+    message — the invariant the request-time split depends on.
+    """
+    stable_prefix = "\n".join(parts) + "\n" + _SINGLE_SKILL_INSTRUCTION
+    parts.append(f"{_SINGLE_SKILL_INSTRUCTION}{instruction}")
+    return stable_prefix
 
 
 def extract_user_instruction_from_skill_message(content: Any) -> Optional[str]:
@@ -360,15 +378,25 @@ def _build_skill_message(
             f"(e.g. `node {skill_dir}/scripts/foo.js`)."
         )
 
+    stable_prefix = None
     if user_instruction:
         parts.append("")
-        parts.append(f"The user has provided the following instruction alongside the skill invocation: {user_instruction}")
+        # Everything before the caller-supplied instruction is a stable
+        # scaffold; declare the exact boundary so the Anthropic cache planner
+        # can put a breakpoint on it instead of caching the whole message as
+        # one atomic block (#81867). The static instruction prose stays on
+        # the stable side; the volatile instruction (webhook payload, ticket
+        # IDs, timestamps) and any runtime note ride in the tail.
+        stable_prefix = append_user_instruction(parts, user_instruction)
 
     if runtime_note:
         parts.append("")
         parts.append(f"[Runtime note: {runtime_note}]")
 
-    return "\n".join(parts)
+    message = "\n".join(parts)
+    if stable_prefix is not None and message.startswith(stable_prefix) and len(message) > len(stable_prefix):
+        register_stable_prefix(stable_prefix)
+    return message
 
 
 def scan_skill_commands() -> Dict[str, Dict[str, Any]]:

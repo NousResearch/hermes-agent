@@ -1391,6 +1391,17 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
         is_xai_responses = agent.provider in {"xai", "xai-oauth"} or agent._base_url_hostname == "api.x.ai"
         _msgs_for_codex = agent._prepare_messages_for_non_vision_model(api_messages)
 
+        # Native server-side compaction (gpt-5.6 on direct OpenAI API /
+        # ChatGPT Codex routes only) — None on every other route/model, in
+        # which case the request is unchanged from pre-feature behavior.
+        from agent.native_compaction import native_compaction_context_management
+        _context_management = native_compaction_context_management(
+            agent,
+            is_codex_backend=is_codex_backend,
+            is_xai_responses=is_xai_responses,
+            is_github_responses=is_github_responses,
+        )
+
         # xAI's /responses endpoint rejects ``pattern`` and ``format`` keywords
         # in tool schemas (HTTP 400 "Invalid arguments passed to the model").
         # Most commonly hit when MCP-derived tools carry JSON Schema validation
@@ -1441,6 +1452,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             replay_encrypted_reasoning=bool(
                 getattr(agent, "_codex_reasoning_replay_enabled", True)
             ),
+            context_management=_context_management,
         )
 
     # ── chat_completions (default) ─────────────────────────────────────
@@ -1743,7 +1755,12 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             elif hasattr(d, "__dict__"):
                 preserved.append(d.__dict__)
             elif hasattr(d, "model_dump"):
-                preserved.append(d.model_dump())
+                try:
+                    # warnings=False: avoid pydantic serializer UserWarnings
+                    # on generic-union SDK models leaking to the terminal.
+                    preserved.append(d.model_dump(warnings=False))
+                except TypeError:
+                    preserved.append(d.model_dump())
         if preserved:
             msg["reasoning_details"] = preserved
 
@@ -1833,7 +1850,10 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             extra = getattr(tool_call, "extra_content", None)
             if extra is not None:
                 if hasattr(extra, "model_dump"):
-                    extra = extra.model_dump()
+                    try:
+                        extra = extra.model_dump(warnings=False)
+                    except TypeError:
+                        extra = extra.model_dump()
                 tc_dict["extra_content"] = extra
             tool_calls.append(tc_dict)
         msg["tool_calls"] = tool_calls
@@ -2317,11 +2337,12 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             defer_logical_completion=True,
         )
 
-    summary_request = (
-        "You've reached the maximum number of tool-calling iterations allowed. "
-        "Please provide a final response summarizing what you've found and accomplished so far, "
-        "without calling any more tools."
-    )
+    # Shared constant so compaction recognizers can identify this runtime nudge
+    # by its stable content after SessionDB projection strips metadata flags
+    # (see MAX_ITERATIONS_SUMMARY_REQUEST / _is_synthetic_compression_user_turn).
+    from agent.context_compressor import MAX_ITERATIONS_SUMMARY_REQUEST
+
+    summary_request = MAX_ITERATIONS_SUMMARY_REQUEST
     messages.append({"role": "user", "content": summary_request})
 
     try:
@@ -2332,7 +2353,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         for msg in messages:
             api_msg = msg.copy()
             agent._copy_reasoning_content_for_api(msg, api_msg)
-            for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
+            for internal_field in ("reasoning", "finish_reason"):
                 api_msg.pop(internal_field, None)
             # Strict OpenAI-compatible gateways (Fireworks-backed OpenCode Go,
             # Mistral, Moonshot/Kimi) reject any message key outside the Chat
@@ -2355,8 +2376,6 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # sidecar-carrying message and re-prefilling the whole transcript
             # at exactly the moment the context is largest.
             substitute_api_content(api_msg)
-            for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
-                api_msg.pop(internal_key, None)
             if _needs_sanitize:
                 # In MoA mode, agent.model is the virtual preset name,
                 # not the actual aggregator model.  Resolve the real
@@ -2390,7 +2409,17 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
         # Same safety net as the main loop: drop thinking-only assistant
         # turns so Anthropic-family providers don't 400 the summary call.
+        # _thinking_prefill must survive until here so the drop pass can
+        # recognize stubs after reasoning fields are stripped.
         api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
+
+        # Strip all remaining underscore-prefixed scaffolding keys before the
+        # wire. The summary path calls chat.completions.create() directly,
+        # bypassing the transport's universal underscore-key sweeper.
+        for api_msg in api_messages:
+            if isinstance(api_msg, dict):
+                for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
+                    api_msg.pop(internal_key, None)
 
         summary_extra_body = {}
         try:
@@ -3525,7 +3554,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
                     if extra is not None:
                         if hasattr(extra, "model_dump"):
-                            extra = extra.model_dump()
+                            try:
+                                extra = extra.model_dump(warnings=False)
+                            except TypeError:
+                                extra = extra.model_dump()
                         entry["extra_content"] = extra
                     # Fire once per tool when the full name is available
                     name = entry["function"]["name"]
@@ -3617,6 +3649,19 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         else:
                             # Unrepairable — flag for truncation handling
                             has_truncated_tool_args = True
+                elif finish_reason is None:
+                    # Stream ended with no finish_reason AND this tool call's
+                    # arguments never received a single byte (name arrived,
+                    # argument generation never started before the connection
+                    # died). Left unflagged, this fell through to
+                    # `effective_finish_reason = finish_reason or "stop"`
+                    # below — a normal "stop" turn carrying a tool call whose
+                    # empty arguments string later gets silently coerced to
+                    # "{}" at the dispatch boundary and executed with no
+                    # arguments and no retry (#80498). Route it through the
+                    # same dropped-mid-tool-call stub path already used for a
+                    # truncated-but-nonempty JSON string.
+                    has_truncated_tool_args = True
                 mock_tool_calls.append(SimpleNamespace(
                     id=tc["id"],
                     type=tc["type"],
@@ -3884,6 +3929,34 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
 
         if agent._interrupt_requested:
             return None
+
+        def _tool_use_dropped_mid_stream(message) -> bool:
+            """True when the stream died mid tool call (#80498 sibling).
+
+            Mirror of the chat_completions zero-byte/truncated-args gate: a
+            legitimate completion always carries a ``stop_reason``
+            (``tool_use``/``end_turn``/...), so a message that contains a
+            ``tool_use`` block but NO stop_reason means the SSE closed after
+            ``content_block_start`` and before ``message_delta`` — the
+            block's ``input`` is whatever partial state the SDK snapshot
+            accumulated (typically ``{}`` when no ``input_json_delta`` ever
+            arrived). Without this gate the empty-input call passed the
+            empty-stream guards (content is non-empty) and executed the tool
+            with no arguments and no retry. Raising EmptyStreamError blocks
+            that execution on every path; when no assistant text streamed
+            before the drop it additionally rides the bounded stream-retry
+            the eventless case uses (probe-verified recovery), while a
+            drop after streamed preamble text degrades to the
+            partial-stream-stub/continuation path instead — still never an
+            empty-args execution.
+            """
+            if getattr(message, "stop_reason", None) is not None:
+                return False
+            for block in getattr(message, "content", None) or []:
+                if getattr(block, "type", None) == "tool_use":
+                    return True
+            return False
+
         if (
             base_final_message is not None
             and not getattr(base_final_message, "content", None)
@@ -3894,6 +3967,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                 "(possible upstream error or malformed event stream)."
             )
         if base_final_message is not None and not stream.output_modified:
+            if _tool_use_dropped_mid_stream(base_final_message):
+                raise EmptyStreamError(
+                    "Stream ended with no stop_reason while a tool_use "
+                    "block was still incomplete; treating as a "
+                    "mid-tool-call stream drop (#80498)."
+                )
             return base_final_message
         final_message = accumulator.response(base_final_message)
         if (
@@ -3903,6 +3982,12 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             raise EmptyStreamError(
                 "Provider returned an empty stream with no stop_reason "
                 "(possible upstream error or malformed event stream)."
+            )
+        if _tool_use_dropped_mid_stream(final_message):
+            raise EmptyStreamError(
+                "Stream ended with no stop_reason while a tool_use "
+                "block was still incomplete; treating as a "
+                "mid-tool-call stream drop (#80498)."
             )
         return final_message
 

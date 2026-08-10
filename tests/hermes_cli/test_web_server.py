@@ -1826,6 +1826,89 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["pagination"]["limit"] == 500
 
+    def test_get_session_messages_omitted_limit_defaults_to_500(self):
+        """The dashboard must never load an entire unbounded transcript."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="default-limit-messages", source="cli")
+            db.append_messages_batch(
+                "default-limit-messages",
+                [
+                    {"role": "user", "content": f"msg {i}"}
+                    for i in range(501)
+                ],
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/default-limit-messages/messages")
+        assert resp.status_code == 200
+        payload = resp.json()
+        assert payload["pagination"] == {
+            "limit": 500,
+            "offset": 0,
+            "order": "latest",
+            "returned": 500,
+        }
+        assert len(payload["messages"]) == 500
+        assert payload["messages"][0]["content"] == "msg 1"
+        assert payload["messages"][-1]["content"] == "msg 500"
+
+        explicit = self.client.get(
+            "/api/sessions/default-limit-messages/messages?limit=2&offset=1"
+        ).json()
+        assert explicit["pagination"]["order"] == "oldest"
+        assert [message["content"] for message in explicit["messages"]] == [
+            "msg 1",
+            "msg 2",
+        ]
+
+        latest = self.client.get(
+            "/api/sessions/default-limit-messages/messages"
+            "?limit=2&offset=1&order=latest"
+        ).json()
+        assert latest["pagination"]["order"] == "latest"
+        assert [message["content"] for message in latest["messages"]] == [
+            "msg 498",
+            "msg 499",
+        ]
+
+    def test_export_session_streams_bounded_message_pages(self, monkeypatch):
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="stream-export", source="cli")
+            db.append_messages_batch(
+                "stream-export",
+                [
+                    {"role": "user", "content": f"msg {i}"}
+                    for i in range(501)
+                ],
+            )
+        finally:
+            db.close()
+
+        calls = []
+        original_get_messages = SessionDB.get_messages
+
+        def tracked_get_messages(self, session_id, *args, **kwargs):
+            calls.append((kwargs.get("limit"), kwargs.get("after_id")))
+            return original_get_messages(self, session_id, *args, **kwargs)
+
+        monkeypatch.setattr(SessionDB, "get_messages", tracked_get_messages)
+        response = self.client.get("/api/sessions/stream-export/export")
+
+        assert response.status_code == 200
+        payload = response.json()
+        assert payload["id"] == "stream-export"
+        assert len(payload["messages"]) == 501
+        assert payload["messages"][0]["content"] == "msg 0"
+        assert payload["messages"][-1]["content"] == "msg 500"
+        assert calls == [(500, 0), (500, 500)]
+
 
 
 

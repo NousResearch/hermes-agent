@@ -502,6 +502,7 @@ const StatusRulePane = memo(function StatusRulePane({
         notice={ui.notice}
         onSessionCountClick={() => patchOverlayState({ sessions: true })}
         sessionStartedAt={status.sessionStartedAt}
+        sessionTitle={status.sessionTitle}
         status={ui.status}
         statusColor={status.statusColor}
         t={ui.theme}

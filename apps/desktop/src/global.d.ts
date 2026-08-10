@@ -62,6 +62,21 @@ declare global {
         onState: (callback: (payload: PetOverlayStatePayload) => void) => () => void
         onControl: (callback: (payload: PetOverlayControl) => void) => () => void
       }
+      // HUD mode: the chrome-free floating chat. A FULL app renderer with its
+      // own gateway (like an instance window), sized and skinned as a floating
+      // bar — so it mounts the real composer rather than a lookalike. Main
+      // owns the window; `onChanged` keeps every window's toggle truthful.
+      hud?: {
+        open: (request?: { sessionId?: null | string; profile?: null | string }) => Promise<{ ok: boolean }>
+        close: () => Promise<{ ok: boolean }>
+        setIgnoreMouse: (ignore: boolean) => void
+        moveBy: (delta: { x: number; y: number }) => void
+        setVibrancy: (on: boolean) => Promise<{ ok: boolean }>
+        setSession: (sessionId: null | string) => void
+        onGoto: (callback: (sessionId: string) => void) => () => void
+        onChanged: (callback: (state: { open: boolean; sessionId: null | string }) => void) => () => void
+        onCursor: (callback: (point: { x: number; y: number } | null) => void) => () => void
+      }
       // Quick Entry: a global-hotkey mini composer window. Main owns the OS
       // shortcut registration + the persisted preference (it must restore the
       // shortcut on a cold launch without the renderer visiting Settings), so
@@ -119,6 +134,18 @@ declare global {
       api: <T>(request: HermesApiRequest) => Promise<T>
       notify: (payload: HermesNotification) => Promise<boolean>
       requestMicrophoneAccess: () => Promise<boolean>
+      /** read_window_below tool: metadata for the OS window directly underneath this one (never pixels). */
+      readWindowBelow?: () => Promise<{
+        frontmost: { app: string; title: string } | null
+        note?: string
+        platform: string
+        window: {
+          app: string
+          bounds: { height: number; width: number; x: number; y: number }
+          id: number
+          title: string
+        } | null
+      } | null>
       readFileDataUrl: (filePath: string) => Promise<string>
       /** Remote non-image attach: higher dedicated cap than preview/Settings default. */
       readFileDataUrlForAttach?: (filePath: string) => Promise<string>
@@ -233,6 +260,10 @@ declare global {
           commitContext: (repoPath: string) => Promise<{ diff: string; recent: string }>
           push: (repoPath: string) => Promise<{ ok: boolean }>
           shipInfo: (repoPath: string) => Promise<HermesReviewShipInfo>
+          // The PR on each of the given branches — plus any known only by
+          // number — for badging a list of sessions in one request instead of
+          // one `pr view` per checkout.
+          prList: (repoPath: string, branches: string[], numbers?: number[]) => Promise<HermesRepoPullRequests>
           createPr: (repoPath: string) => Promise<{ url: string }>
         }
         // Repo-first discovery: scan bounded roots for git repos (depth-capped).
@@ -906,6 +937,23 @@ export interface HermesReviewPr {
   url: string
   state: string
   number: number
+}
+
+// One repo's PRs as reported by `gh pr list`, each tied to the branch it was
+// opened from — how a session row finds its own PR.
+export interface HermesBranchPullRequest {
+  branch: string
+  draft: boolean
+  number: number
+  /** `open` | `closed` | `merged`, lowercased from gh. */
+  state: string
+  title: string
+  url: string
+}
+
+export interface HermesRepoPullRequests {
+  ghReady: boolean
+  prs: HermesBranchPullRequest[]
 }
 
 // gh availability/auth + the current branch's PR — drives the review pane's PR

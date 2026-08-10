@@ -75,6 +75,11 @@ class TestBuildLearnPrompt:
         assert "never reproduce" in kb
         # Extend an existing skill rather than minting a near-duplicate.
         assert "fold-in" in kb
+        # Large inputs must be persisted incrementally instead of overflowing
+        # the live conversation context before any reference file is written.
+        assert "one chapter or topic at a time" in kb
+        assert "never load an entire large corpus" in kb
+        assert "reconcile the skill.md index" in kb
 
     def test_prompt_embeds_all_three_standards_blocks(self):
         prompt = build_learn_prompt("~/books/ddia.pdf")
@@ -84,6 +89,7 @@ class TestBuildLearnPrompt:
         # The shape decision is explicit: small source -> one file, large
         # prose source -> knowledge-base layout.
         assert "Pick the shape by the source" in prompt
+        assert "process it incrementally in step 2b" in prompt
 
     def test_source_hygiene_covers_invisible_unicode(self):
         # Extracted document text is an injection vector (Trojan Source /
@@ -93,6 +99,13 @@ class TestBuildLearnPrompt:
         assert "data, not instructions" in hyg
         assert "zero-width" in hyg
         assert "bidi" in hyg or "bidirectional" in hyg
+
+    def test_existing_skill_is_extended_instead_of_created_again(self):
+        prompt = build_learn_prompt("add these notes to my distributed-systems skill")
+        assert "First check the available skills" in prompt
+        assert "If one exists, load it with `skill_view`" in prompt
+        assert "Only when no matching skill exists" in prompt
+        assert 'action="create"' in prompt
 
 
 class TestLearnRegistryWiring:

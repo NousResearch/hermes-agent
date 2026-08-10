@@ -36,7 +36,7 @@ export function SidebarRowStack({ className, ...props }: React.ComponentProps<'d
 
 /** Nested rows (session previews, worktree bodies). */
 export function SidebarRowNest({ className, ...props }: React.ComponentProps<'div'>) {
-  return <SidebarRowStack className={cn('pb-1 pl-4', className)} {...props} />
+  return <SidebarRowStack className={cn('pb-1 pl-2', className)} {...props} />
 }
 
 /**
@@ -44,18 +44,28 @@ export function SidebarRowNest({ className, ...props }: React.ComponentProps<'di
  * the session list. One flat row — a small caption plus a hairline rule — so it
  * groups sessions by recency without adding a level of indentation.
  */
-export function SidebarDateDivider({ className, label, ...props }: React.ComponentProps<'div'> & { label: string }) {
+export function SidebarDateDivider({
+  action,
+  className,
+  label,
+  ...props
+}: React.ComponentProps<'div'> & { action?: React.ReactNode; label: string }) {
   return (
-    <div className={cn('flex select-none items-center gap-2 px-2 pb-0.5 pt-2', className)} {...props}>
+    // group/workspace: a divider heads a group the same way a repo header does,
+    // so it borrows the header's hover-revealed "+" verbatim.
+    <div className={cn('group/workspace flex select-none items-center gap-2 px-2 pb-0.5 pt-2', className)} {...props}>
       <span className="shrink-0 text-[0.64rem] font-semibold uppercase tracking-[0.12em] text-(--ui-text-quaternary)">
         {label}
       </span>
       <span aria-hidden="true" className="h-px flex-1 bg-(--ui-stroke-tertiary)" />
+      {action}
     </div>
   )
 }
 
-/** Outer grid — sole owner of row height. */
+/** Outer grid — sole owner of row height. The trailing `actions` slot is
+ *  marked `data-row-actions` so a row-wide drag gesture can exclude it with
+ *  one selector: it holds real controls, never grab surface. */
 export function SidebarRowShell({
   actions,
   children,
@@ -65,7 +75,11 @@ export function SidebarRowShell({
   return (
     <div className={cn(rowMinH, 'grid grid-cols-[minmax(0,1fr)_auto] items-stretch rounded-md', className)} {...props}>
       {children}
-      {actions ? <div className="flex shrink-0 items-center self-center">{actions}</div> : null}
+      {actions ? (
+        <div className="flex shrink-0 items-center self-center" data-row-actions>
+          {actions}
+        </div>
+      ) : null}
     </div>
   )
 }

@@ -18,11 +18,13 @@ import {
   type ComposerAttachment,
   terminalContextBlocksFromDraft
 } from '@/store/composer'
+import { $hudMode } from '@/store/hud'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import {
   $sessions,
   resolveComposerSessionKey,
+  setActiveSessionId,
   setAwaitingResponse,
   setBusy,
   setMessages,
@@ -39,13 +41,13 @@ import {
   _submitInFlight,
   type GatewayRequest,
   inlineErrorMessage,
-  isGatewayTimeoutError,
   isProviderSetupError,
   isSessionBusyError,
-  isSessionNotFoundError,
   isTargetSessionBusy,
+  SessionRecoveryAborted,
   type SubmitTextOptions,
-  withSessionBusyRetry
+  withSessionBusyRetry,
+  withSessionNotFoundResume
 } from './utils'
 
 interface SubmitPromptDeps {
@@ -63,7 +65,7 @@ interface SubmitPromptDeps {
     sessionId: string,
     attachments: ComposerAttachment[],
     options?: { updateComposerAttachments?: boolean }
-  ) => Promise<ComposerAttachment[]>
+  ) => Promise<{ attachments: ComposerAttachment[]; sessionId: string }>
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
@@ -584,29 +586,44 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       }
 
       try {
-        const syncedAttachments = await syncAttachmentsForSubmit(sessionId, attachments, {
+        // Attach runs BEFORE prompt.submit, so a stale runtime id fails there
+        // first and submit's own recovery never runs — that asymmetry is why
+        // plain text survived sleep/wake but images reported "session not
+        // found". The attach path recovers and reports the live id back here.
+        const attachResult = await syncAttachmentsForSubmit(sessionId, attachments, {
           updateComposerAttachments: usingComposerAttachments
         })
+
+        const syncedAttachments = attachResult.attachments
+        // Always a live string; pin it so TS narrows past the outer
+        // `string | null` sessionId binding for prompt.submit.
+        const liveSessionId = attachResult.sessionId
+
+        sessionId = liveSessionId
 
         const attachmentsDrift = sessionDriftReason()
 
         if (attachmentsDrift) {
           console.warn('[submit-drift-abort]', attachmentsDrift, { phase: 'post-attachments' })
 
-          return abortForSessionSwitch(sessionId)
+          return abortForSessionSwitch(liveSessionId)
         }
 
         // Rewrite the optimistic message + prompt text with the synced refs so
         // the gateway receives @file: paths that resolve in its workspace.
         // (Images keep their inline base64 preview — see optimisticAttachmentRef.)
         attachmentRefs = syncedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
-        rewriteOptimistic(sessionId)
+        rewriteOptimistic(liveSessionId)
         const text = buildContextText(syncedAttachments)
 
         const submitParams = (targetId: string) => ({
           session_id: targetId,
           text,
           ...(interrupted && { interrupted }),
+          // Typed into the floating HUD, so the user is looking at another app
+          // rather than at Hermes. The gateway turns this into a per-turn hint
+          // to read the window underneath and work in it.
+          ...($hudMode.get() && { surface: 'hud' }),
           // A queue drain is a "run after" message, never a live-turn
           // correction. The flag tells the gateway's busy path to hold it for
           // the next turn untouched — without it, losing the settle race
@@ -616,56 +633,45 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         })
 
         // On sleep/wake the gateway's in-memory session may have been cleared
-        // while the desktop app still holds the old session ID. Detect this,
-        // resume the stored session to re-register it, and retry once.
+        // while the desktop app still holds the old session ID. The shared
+        // resolver re-registers the stored session and retries once; every
+        // other session-scoped RPC (attach, /compress, rewind, interrupt) goes
+        // through the same helper so one policy covers the whole bug class.
         let submitErr: unknown = null
 
         try {
-          await withSessionBusyRetry(() =>
-            requestGateway('prompt.submit', submitParams(sessionId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
-          )
-        } catch (firstErr) {
           const recoverStoredSessionId = targetStoredSessionId ?? selectedStoredSessionIdRef.current
 
-          if ((isSessionNotFoundError(firstErr) || isGatewayTimeoutError(firstErr)) && recoverStoredSessionId) {
-            // Re-register the session in the gateway and get a fresh live ID.
-            // Timeouts recover the same way as "session not found": a starved
-            // backend loop (#55578 symptom d) rejects the submit even though
-            // the stored session is fine — resume + retry instead of erroring
-            // out and losing the session binding.
-            const resumeProfile = await resolveSessionProfile(recoverStoredSessionId)
-
-            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: recoverStoredSessionId,
-              source: 'desktop',
-              omit_messages: true,
-              ...(resumeProfile ? { profile: resumeProfile } : {})
-            })
-
-            const resumeRetryDrift = sessionDriftReason()
-
-            if (resumeRetryDrift) {
-              console.warn('[submit-drift-abort]', resumeRetryDrift, { phase: 'post-resume-retry' })
-
-              return abortForSessionSwitch(sessionId)
-            }
-
-            const recoveredId = resumed?.session_id
-
-            if (recoveredId) {
-              if (targetIsCurrentView()) {
-                activeSessionIdRef.current = recoveredId
+          await withSessionNotFoundResume(
+            sessionId,
+            recoverStoredSessionId,
+            liveId =>
+              withSessionBusyRetry(() =>
+                requestGateway('prompt.submit', submitParams(liveId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
+              ),
+            {
+              requestGateway,
+              driftReason: sessionDriftReason,
+              onRecovered: recoveredId => {
+                if (targetIsCurrentView()) {
+                  activeSessionIdRef.current = recoveredId
+                  setActiveSessionId(recoveredId)
+                }
               }
+            },
+            // A starved backend loop (#55578 symptom d) rejects the submit even
+            // though the stored session is fine — recover it like a dead id
+            // instead of erroring out and losing the session binding.
+            { alsoTimeout: true }
+          )
+        } catch (firstErr) {
+          if (firstErr instanceof SessionRecoveryAborted) {
+            console.warn('[submit-drift-abort]', firstErr.reason, { phase: 'post-resume-retry' })
 
-              await withSessionBusyRetry(() =>
-                requestGateway('prompt.submit', submitParams(recoveredId), PROMPT_SUBMIT_REQUEST_TIMEOUT_MS)
-              )
-            } else {
-              submitErr = firstErr
-            }
-          } else {
-            submitErr = firstErr
+            return abortForSessionSwitch(sessionId)
           }
+
+          submitErr = firstErr
         }
 
         if (submitErr !== null) {

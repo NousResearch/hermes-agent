@@ -3037,6 +3037,120 @@ class TestFTSExternalContentMigration:
         finally:
             db.close()
 
+    def test_fts_teardown_single_key_high_water_drains_and_drops(self, tmp_path):
+        """#79324: single-column-key trash tables drain via a high-water
+        marker so each chunk only scans rows after the previous chunk.
+
+        Builds a large trash table with a rowid-like integer PK, then drives
+        ``_fts_teardown_trash_step`` to completion. Verifies every row is
+        removed, the marker advances monotonically, the marker is cleared,
+        and the table is dropped at the end.
+        """
+        db = SessionDB(db_path=tmp_path / "trash.db")
+        try:
+            conn = db._conn
+            # A plain trash table shaped like a demoted FTS shadow table
+            # (single integer PK — the common, large-table shape).
+            conn.execute(
+                "CREATE TABLE fts_v22_trash_messages_fts_data "
+                "(docid INTEGER PRIMARY KEY, block BLOB)"
+            )
+            conn.executemany(
+                "INSERT INTO fts_v22_trash_messages_fts_data "
+                "(docid, block) VALUES (?, ?)",
+                [(i, b"x" * 64) for i in range(1, 2501)],
+            )
+            conn.commit()
+
+            assert db._has_fts_trash(conn) is True
+
+            steps = 0
+            while db._fts_teardown_trash_step():
+                steps += 1
+                assert steps < 100, "teardown never finished"
+
+            # All rows gone, table dropped, marker cleaned up.
+            assert db._has_fts_trash(conn) is False
+            assert conn.execute(
+                "SELECT name FROM sqlite_master WHERE name = "
+                "'fts_v22_trash_messages_fts_data'"
+            ).fetchone() is None
+            assert db.get_meta("fts_teardown_fts_v22_trash_messages_fts_data_progress") is None
+            # Multiple chunks were needed (2500 rows / 500 chunk).
+            assert steps >= 5
+        finally:
+            db.close()
+
+    def test_fts_teardown_high_water_resumes_after_interruption(self, tmp_path):
+        """#79324: the high-water marker survives an interrupted teardown,
+        so the next call resumes from the marker instead of the table start."""
+        db = SessionDB(db_path=tmp_path / "trash.db")
+        try:
+            conn = db._conn
+            conn.execute(
+                "CREATE TABLE fts_v22_trash_messages_fts_data "
+                "(docid INTEGER PRIMARY KEY, block BLOB)"
+            )
+            conn.executemany(
+                "INSERT INTO fts_v22_trash_messages_fts_data "
+                "(docid, block) VALUES (?, ?)",
+                [(i, b"x" * 64) for i in range(1, 1201)],
+            )
+            conn.commit()
+
+            # Drain two chunks, then simulate a crash: the marker stays at
+            # the last drained key and the remaining rows are intact.
+            assert db._fts_teardown_trash_step() is True
+            assert db._fts_teardown_trash_step() is True
+            marker = db.get_meta("fts_teardown_fts_v22_trash_messages_fts_data_progress")
+            assert marker is not None
+            assert int(marker) == 1000  # 2 chunks x 500 rows
+
+            remaining = conn.execute(
+                "SELECT COUNT(*) FROM fts_v22_trash_messages_fts_data"
+            ).fetchone()[0]
+            assert remaining == 200
+
+            # Resume: drains the rest, drops the table.
+            while db._fts_teardown_trash_step():
+                pass
+            assert db._has_fts_trash(conn) is False
+            assert db.get_meta("fts_teardown_fts_v22_trash_messages_fts_data_progress") is None
+        finally:
+            db.close()
+
+    def test_fts_teardown_compound_key_keeps_legacy_path(self, tmp_path):
+        """#79324: multi-column-PK trash tables (small by construction) keep
+        the legacy chunked delete — the high-water path only applies to
+        single-column keys."""
+        db = SessionDB(db_path=tmp_path / "trash.db")
+        try:
+            conn = db._conn
+            conn.execute(
+                "CREATE TABLE fts_v22_trash_messages_fts_idx "
+                "(segid INTEGER, term TEXT, pgno INTEGER, "
+                "PRIMARY KEY (segid, term, pgno)) WITHOUT ROWID"
+            )
+            conn.executemany(
+                "INSERT INTO fts_v22_trash_messages_fts_idx "
+                "(segid, term, pgno) VALUES (?, ?, ?)",
+                [(i % 3, f"term-{i}", i) for i in range(20)],
+            )
+            conn.commit()
+
+            steps = 0
+            while db._fts_teardown_trash_step():
+                steps += 1
+                assert steps < 10
+
+            assert db._has_fts_trash(conn) is False
+            assert conn.execute(
+                "SELECT name FROM sqlite_master WHERE name = "
+                "'fts_v22_trash_messages_fts_idx'"
+            ).fetchone() is None
+        finally:
+            db.close()
+
 
 
 # ---------------------------------------------------------------------------
@@ -3382,6 +3496,41 @@ def test_gateway_session_peer_round_trip_and_recovery(db):
     assert recovered["id"] == "gw-session"
 
 
+@pytest.mark.parametrize(
+    "persisted_session_key",
+    ["agent:main:telegram:dm:chat-1", None],
+    ids=["exact-key", "peer-fallback"],
+)
+def test_gateway_session_recovery_does_not_cross_newer_reset_boundary(
+    db, persisted_session_key
+):
+    """A newer session_reset row fences recovery for the peer (#68539).
+
+    Recovery must never reach *behind* an intentional /new boundary and
+    resurrect an older still-open row — if the newest boundary row for the
+    peer is reset-ended, recovery returns nothing.
+    """
+    peer = {
+        "user_id": "user-1",
+        "session_key": persisted_session_key,
+        "chat_id": "chat-1",
+        "chat_type": "dm",
+    }
+    db.create_session("gw-before-reset", "telegram", **peer)
+    db.append_message("gw-before-reset", "user", "old context")
+    db.create_session("gw-reset", "telegram", **peer)
+    db.append_message("gw-reset", "user", "/new")
+    db.end_session("gw-reset", "session_reset")
+
+    assert db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    ) is None
+
+
 
 
 
@@ -3651,6 +3800,114 @@ class TestGetMessagesPagination:
         assert [m["content"] for m in page1] == ["msg-0", "msg-1", "msg-2", "msg-3"]
         assert [m["content"] for m in page2] == ["msg-4", "msg-5", "msg-6", "msg-7"]
         assert [m["content"] for m in page3] == ["msg-8", "msg-9"]
+
+    def test_latest_pages_count_back_from_newest_but_remain_chronological(self, db):
+        self._seed(db)
+        page1 = db.get_messages("s1", limit=4, offset=0, latest=True)
+        page2 = db.get_messages("s1", limit=4, offset=4, latest=True)
+        page3 = db.get_messages("s1", limit=4, offset=8, latest=True)
+        assert [m["content"] for m in page1] == ["msg-6", "msg-7", "msg-8", "msg-9"]
+        assert [m["content"] for m in page2] == ["msg-2", "msg-3", "msg-4", "msg-5"]
+        assert [m["content"] for m in page3] == ["msg-0", "msg-1"]
+
+    def test_after_id_keyset_pages_forward_in_insertion_order(self, db):
+        self._seed(db)
+        page1 = db.get_messages("s1", limit=4, after_id=0)
+        assert [m["content"] for m in page1] == ["msg-0", "msg-1", "msg-2", "msg-3"]
+        page2 = db.get_messages("s1", limit=4, after_id=page1[-1]["id"])
+        assert [m["content"] for m in page2] == ["msg-4", "msg-5", "msg-6", "msg-7"]
+        page3 = db.get_messages("s1", limit=4, after_id=page2[-1]["id"])
+        assert [m["content"] for m in page3] == ["msg-8", "msg-9"]
+        with pytest.raises(ValueError):
+            db.get_messages("s1", limit=4, after_id=0, latest=True)
+        with pytest.raises(ValueError):
+            db.get_messages("s1", limit=4, after_id=0, offset=2)
+
+    def test_resume_safety_counts_active_rows_across_lineage(self, db):
+        db.create_session(session_id="root", source="cli")
+        db.append_messages_batch(
+            "root",
+            [{"role": "user", "content": f"root-{i}"} for i in range(3)],
+        )
+        db.create_session(
+            session_id="tip",
+            source="compression",
+            parent_session_id="root",
+        )
+        db.append_messages_batch(
+            "tip",
+            [{"role": "assistant", "content": f"tip-{i}"} for i in range(2)],
+        )
+
+        assert db.get_resume_message_count("tip") == 5
+        with pytest.raises(hermes_state.SessionResumeTooLargeError) as exc_info:
+            db.assert_resume_safe("tip", max_messages=4)
+        assert exc_info.value.message_count == 5
+        assert exc_info.value.limit == 4
+
+    def test_export_safety_is_bounded_to_the_requested_active_segment(self, db):
+        db.create_session(session_id="root", source="cli")
+        db.append_messages_batch(
+            "root",
+            [{"role": "user", "content": f"root-{i}"} for i in range(3)],
+        )
+        db.create_session(
+            session_id="tip",
+            source="compression",
+            parent_session_id="root",
+        )
+        db.append_messages_batch(
+            "tip",
+            [{"role": "assistant", "content": f"tip-{i}"} for i in range(2)],
+        )
+
+        assert db.assert_export_safe("tip", max_messages=2) == 2
+        with pytest.raises(hermes_state.SessionExportTooLargeError) as exc_info:
+            db.assert_export_safe("root", max_messages=2)
+        assert exc_info.value.session_id == "root"
+        assert exc_info.value.message_count == 3
+        assert exc_info.value.limit == 2
+
+    def test_zero_limit_disables_resume_and_export_guards(self, db, monkeypatch):
+        """sessions.max_*_messages: 0 disables the guard entirely."""
+        db.create_session(session_id="big", source="cli")
+        db.append_messages_batch(
+            "big",
+            [{"role": "user", "content": f"msg-{i}"} for i in range(5)],
+        )
+
+        # A small explicit limit rejects...
+        with pytest.raises(hermes_state.SessionResumeTooLargeError):
+            db.assert_resume_safe("big", max_messages=2)
+        with pytest.raises(hermes_state.SessionExportTooLargeError):
+            db.assert_export_safe("big", max_messages=2)
+
+        # ...but a config-resolved limit of 0 disables both guards: no raise,
+        # and no counting work at all (returns 0 — callers use the raise side
+        # effect only).
+        monkeypatch.setattr(hermes_state, "resolved_max_resume_messages", lambda: 0)
+        monkeypatch.setattr(hermes_state, "resolved_max_export_messages", lambda: 0)
+        assert db.assert_resume_safe("big") == 0
+        assert db.assert_export_safe("big") == 0
+        # An explicit 0 disables too, independent of config.
+        assert db.assert_resume_safe("big", max_messages=0) == 0
+        assert db.assert_export_safe("big", max_messages=0) == 0
+
+    def test_guard_limits_resolve_from_config_at_call_time(self, db, monkeypatch):
+        db.create_session(session_id="cfg", source="cli")
+        db.append_messages_batch(
+            "cfg",
+            [{"role": "user", "content": f"msg-{i}"} for i in range(4)],
+        )
+
+        monkeypatch.setattr(hermes_state, "resolved_max_resume_messages", lambda: 3)
+        monkeypatch.setattr(hermes_state, "resolved_max_export_messages", lambda: 3)
+        with pytest.raises(hermes_state.SessionResumeTooLargeError) as resume_exc:
+            db.assert_resume_safe("cfg")
+        assert resume_exc.value.limit == 3
+        with pytest.raises(hermes_state.SessionExportTooLargeError) as export_exc:
+            db.assert_export_safe("cfg")
+        assert export_exc.value.limit == 3
 
 
 
@@ -4281,3 +4538,86 @@ class TestPerformancePragmasEndToEnd:
             assert self._read(ro._conn) == defaults
         finally:
             ro.close()
+
+
+class TestFts5SanitizerCharacterClass:
+    """Every character FTS5 rejects outside a quoted phrase must be stripped.
+
+    A survivor reaches MATCH raw and raises, which the execute site swallows
+    into zero results — so the search silently finds nothing rather than
+    erroring. Assertions run the sanitized text against a real FTS5 table.
+    """
+
+    @staticmethod
+    def _fts_table():
+        import sqlite3
+
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE VIRTUAL TABLE t USING fts5(content)")
+        conn.execute(
+            "INSERT INTO t (content) VALUES "
+            "('meet me at user host about gateway run py it s 50 a b')"
+        )
+        return conn
+
+    @staticmethod
+    def _sanitize(query):
+        from hermes_state_search import SessionSearchMixin
+
+        return SessionSearchMixin._sanitize_fts5_query(query)
+
+    @pytest.mark.parametrize(
+        "query",
+        [
+            "it's",                 # apostrophe — ordinary prose
+            "gateway/run.py",       # path separator
+            "user@host",            # email / handle
+            "a,b",                  # comma
+            "why?",                 # question mark
+            "e=mc2",                # equals
+            "a;b", "a!b", "a&b", "a|b", "x~y",
+            "#tag", "$dollar", "[bracket]", "<tag>",
+            r"C:\path\file",        # backslash
+        ],
+    )
+    def test_query_stays_parsable(self, query):
+        conn = self._fts_table()
+        sanitized = self._sanitize(query)
+        if not sanitized.strip():
+            return
+        # Raises sqlite3.OperationalError if a special character survived.
+        conn.execute("SELECT count(*) FROM t WHERE t MATCH ?", (sanitized,)).fetchone()
+
+    def test_plain_terms_are_untouched(self):
+        assert self._sanitize("hello world").split() == ["hello", "world"]
+
+    def test_quoted_phrase_survives(self):
+        assert '"exact phrase"' in self._sanitize('"exact phrase"')
+
+    def test_hyphen_dotted_term_still_quoted(self):
+        # Step 5's behaviour must not regress: my-app.config.ts stays one term.
+        assert '"my-app.config.ts"' in self._sanitize("my-app.config.ts")
+
+    def test_prefix_star_still_works(self):
+        conn = self._fts_table()
+        sanitized = self._sanitize("gate*")
+        rows = conn.execute(
+            "SELECT count(*) FROM t WHERE t MATCH ?", (sanitized,)
+        ).fetchone()
+        assert rows[0] == 1
+
+    def test_percent_stripped_for_non_cjk_query(self):
+        # % is kept only for the CJK LIKE fallback; a non-CJK query never
+        # reaches that fallback, so % must be stripped before MATCH.
+        conn = self._fts_table()
+        sanitized = self._sanitize("50%")
+        assert "%" not in sanitized
+        conn.execute(
+            "SELECT count(*) FROM t WHERE t MATCH ?", (sanitized,)
+        ).fetchone()
+
+    def test_percent_preserved_for_cjk_query(self):
+        # The CJK LIKE fallback builds its own pattern from the sanitized
+        # text; keep % intact there (pre-existing contract).
+        sanitized = self._sanitize("完成50%")
+        assert "%" in sanitized

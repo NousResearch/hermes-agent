@@ -21,6 +21,8 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
+from datetime import datetime, timezone
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -554,11 +556,52 @@ class _ReadWriteLock:
 # running cron job.  See _ReadWriteLock and run_job for the usage contract.
 _terminal_cwd_lock = _ReadWriteLock()
 
-# Maximum time a cron job waits for the TERMINAL_CWD lock before proceeding
-# in degraded mode (without the lock, risking a leaked cwd override).  This
-# prevents a wedged or extremely long-running workdir job from silently
-# parking every concurrently-firing job behind the unbounded acquire (#79768).
-_CWD_LOCK_TIMEOUT_SECONDS = 120.0
+# Ceiling on how long a cron job waits for the TERMINAL_CWD lock before
+# FAILING (fail-closed, #79768). Derived from the cron inactivity limit
+# (HERMES_CRON_TIMEOUT, default 600s): a wedged lock holder stops touching
+# its activity clock, so the inactivity monitor usually reaps it and the
+# lock is released within roughly that limit. The bound is measured from
+# the WAITER's arrival, so a holder that wedges late (or hangs in pre-agent
+# setup before the monitor arms) can still outlive it — waiters then fail
+# loudly rather than run: proceeding without the lock lets the holder's
+# process-global TERMINAL_CWD override leak into this job's shell/file/
+# code-exec commands (wrong-directory execution — the exact corruption
+# _ReadWriteLock exists to prevent, see
+# test_reader_never_observes_writer_override). A healthy long-running
+# workdir job past the bound also fails its waiters loudly rather than
+# corrupting them silently; the failure names the holder pattern so the fix
+# (stagger schedules / drop the workdir) is actionable.
+_CWD_LOCK_TIMEOUT_FLOOR_SECONDS = 120.0
+_CWD_LOCK_TIMEOUT_MARGIN_SECONDS = 60.0
+
+
+def _cron_inactivity_seconds() -> float:
+    """Parse HERMES_CRON_TIMEOUT (seconds). 0 = unlimited; bad input = 600.
+
+    Shared by run_job's inactivity monitor (which maps 0 to "no limit") and
+    the cwd-lock bound below (which keeps the wait bounded regardless) so
+    the two sites cannot drift apart — the lock bound must stay at or above
+    the inactivity limit or waiters would fail while a healthy holder runs.
+    """
+    raw = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
+    if not raw:
+        return 600.0
+    try:
+        return float(raw)
+    except (ValueError, TypeError):
+        logger.warning("Invalid HERMES_CRON_TIMEOUT=%r; using default 600s", raw)
+        return 600.0
+
+
+def _cwd_lock_timeout_seconds() -> float:
+    """Bound for the TERMINAL_CWD lock wait: inactivity limit + margin."""
+    inactivity = _cron_inactivity_seconds()
+    if inactivity <= 0:  # 0 = unlimited job runtime; keep the wait bounded.
+        inactivity = 600.0
+    return (
+        max(inactivity, _CWD_LOCK_TIMEOUT_FLOOR_SECONDS)
+        + _CWD_LOCK_TIMEOUT_MARGIN_SECONDS
+    )
 
 
 def _get_parallel_pool(max_workers: Optional[int]) -> concurrent.futures.ThreadPoolExecutor:
@@ -605,6 +648,33 @@ def _shutdown_parallel_pool() -> None:
 
 
 atexit.register(_shutdown_parallel_pool)
+# Per-fire usage audit log for cron token spend instrumentation.
+# Resolves through _get_hermes_home() so profile-scoped paths work correctly.
+def _usage_audit_path() -> Path:
+    return _get_hermes_home() / "cron" / "usage_audit.jsonl"
+
+
+def _utcnow_iso_ms() -> str:
+    """RFC3339 UTC timestamp with millisecond precision and 'Z' suffix."""
+    now = datetime.now(timezone.utc)
+    # %f gives microseconds; trim to milliseconds.
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+
+
+def _write_usage_audit(record: dict) -> None:
+    """Append a single JSONL line to ~/.hermes/cron/usage_audit.jsonl.
+
+    NEVER raises — a logger bug must not break cron jobs. Wraps the entire
+    write (path resolve, mkdir, json.dumps, file append) in a single try.
+    """
+    try:
+        path = _usage_audit_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        line = json.dumps(record, ensure_ascii=False)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except Exception as e:
+        logger.warning("usage_audit write failed: %s", e)
 
 
 def _interpreter_shutting_down(exc: Optional[BaseException] = None) -> bool:
@@ -2160,7 +2230,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 continue
 
             if result and result.get("error"):
-                msg = f"delivery error: {result['error']}"
+                # Include target context (platform/chat) so a bare error string
+                # like "Discord send failed: TimeoutError: " is attributable.
+                # Not inside an except block — the error comes from the send
+                # result dict, so there is no traceback to attach.
+                msg = f"delivery error: {result['error']} (target {platform_name}:{chat_id})"
                 logger.error("Job '%s': %s", job["id"], msg)
                 target_errors.extend([msg])
                 delivery_errors.extend(target_errors)
@@ -2632,6 +2706,16 @@ def _build_job_prompt(
                 logger.warning("context_from: failed to read output for job %r: %s", source_job_id, e)
                 # silent skip — do not pollute the prompt with error messages
 
+    # Inject the job's durable notepad (per-job KV scratchpad surviving
+    # scheduled wake-ups). Empty notepad renders as "" so jobs that never
+    # use the feature get a byte-identical prompt.
+    from cron import notepad as cron_notepad
+
+    notepad_section = cron_notepad.render_notepad_section(str(job.get("id") or ""))
+    if notepad_section:
+        prompt = f"{notepad_section}{prompt}"
+        has_injected_data = True
+
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
     cron_hint = (
@@ -2733,9 +2817,25 @@ def _build_job_prompt(
         )
         parts.insert(0, notice)
 
+    stable_prefix = None
     if prompt:
-        parts.extend(["", f"The user has provided the following instruction alongside the skill invocation: {prompt}"])
-    return _scan_assembled_cron_prompt("\n".join(parts), job, has_skills=True)
+        from agent.skill_commands import append_user_instruction
+
+        parts.append("")
+        # The skill blocks (and any skipped-skill notice) above are stable per
+        # job config; the appended instruction carries the volatile per-run
+        # data (cron hint + prompt + script output + run context). Declare
+        # that boundary for the Anthropic cache planner (#81867).
+        stable_prefix = append_user_instruction(parts, prompt)
+    assembled = _scan_assembled_cron_prompt("\n".join(parts), job, has_skills=True)
+    if stable_prefix and len(assembled) > len(stable_prefix) and assembled.startswith(stable_prefix):
+        # Guarded because the injection scanner may sanitize (mutate) the
+        # assembled bytes; a mismatch simply falls back to whole-message
+        # caching.
+        from agent.prompt_cache_boundary import register_stable_prefix
+
+        register_stable_prefix(stable_prefix)
+    return assembled
 
 
 def _scan_assembled_cron_prompt(
@@ -2854,6 +2954,217 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
+# Marker prefix stamped into the error string returned by ``run_job`` when the
+# pre-dispatch configuration validation (T1-26) refuses to run the agent.
+# ``run_one_job`` keys off it to record ``last_status='blocked_config'`` and to
+# apply the alert-once dedup. The ``:silent`` variant means "already alerted on
+# a previous tick — do not deliver again".
+BLOCKED_CONFIG_MARKER = "[blocked_config]"
+BLOCKED_CONFIG_SILENT_MARKER = "[blocked_config:silent]"
+
+
+def _cron_preflight_enabled(cfg: dict) -> bool:
+    """Whether cron pre-dispatch configuration validation is enabled.
+
+    Default ON; only the literal boolean ``false`` under ``cron.preflight``
+    opts out (mirrors ``cron_model_drift_guard_enabled`` semantics).
+    """
+    cron_cfg = (cfg or {}).get("cron")
+    if not isinstance(cron_cfg, dict):
+        return True
+    return cron_cfg.get("preflight", True) is not False
+
+
+def _preflight_check_provider_key(job: dict, cfg: dict) -> Optional[str]:
+    """READ-ONLY probe: would provider resolution fail for lack of a key?
+
+    Mirrors the effective requested-provider computation from run_job's
+    resolution block without any side effects on the run. When a fallback
+    chain is configured the check is skipped entirely — the existing
+    auth-fallback path may legitimately rescue a missing primary key, so
+    blocking here would break that contract (and burning zero LLM calls is
+    already guaranteed by the fallback resolution being config-local).
+    """
+    try:
+        if get_fallback_chain(cfg):
+            return None
+    except Exception:
+        return None  # fail-open: never block on a preflight-internal error
+
+    _cron_cfg = cfg.get("cron") if isinstance(cfg.get("cron"), dict) else {}
+    requested = (
+        job.get("provider")
+        or str((_cron_cfg or {}).get("model_provider") or "").strip()
+        or None
+    )
+    model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+
+    from hermes_cli.auth import AuthError
+
+    try:
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        kwargs = {"requested": requested, "target_model": model}
+        if job.get("base_url"):
+            kwargs["explicit_base_url"] = job.get("base_url")
+        resolve_runtime_provider(**kwargs)
+    except AuthError as exc:
+        return (
+            f"provider credential missing: {exc}. "
+            "Set the provider API key in .env (or `hermes setup`), or pin a "
+            "working provider via `cronjob action=update job_id="
+            f"{job.get('id')} provider=<p>`."
+        )
+    except Exception:
+        # Non-auth resolution errors (bad config shapes, network probes,
+        # import issues) are NOT a missing-credential condition — let the
+        # real resolution path handle and report them as before.
+        return None
+    return None
+
+
+def _preflight_check_delivery(job: dict) -> Optional[str]:
+    """Check the job's delivery target(s) resolve to configured platforms.
+
+    ``local``/``origin`` (and the ``all`` routing token) need no gateway
+    credentials and are never checked — a deliver=local job must not pay a
+    gateway-config load. For concrete platform targets, an unknown platform
+    always blocks; a known platform additionally blocks when the gateway
+    config is loadable and reports it unconnected (enabled + credentials —
+    the same source `cron_delivery_targets` uses). Gateway-config load
+    failures fail OPEN so a transient config hiccup never wedges delivery
+    that would have worked.
+    """
+    deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
+    platform_parts: list[str] = []
+    for part in deliver_value.split(","):
+        part = part.strip()
+        if not part or part.lower() in {"local", "origin", "all"}:
+            continue
+        platform_parts.append(part.split(":", 1)[0].strip())
+    if not platform_parts:
+        return None
+
+    connected: Optional[set] = None
+    for platform_name in platform_parts:
+        if not _is_known_delivery_platform(platform_name):
+            return (
+                f"delivery platform '{platform_name}' is not a known cron "
+                "delivery target. Fix the job's `deliver` value or configure "
+                "the platform's gateway credentials."
+            )
+        if connected is None:
+            try:
+                from gateway.config import load_gateway_config
+
+                gateway_config = load_gateway_config()
+                connected = {
+                    p.value for p in gateway_config.get_connected_platforms()
+                }
+            except Exception:
+                logger.debug(
+                    "preflight: gateway config unavailable — skipping "
+                    "delivery credential check", exc_info=True,
+                )
+                return None  # fail-open
+        if platform_name.lower() not in connected:
+            return (
+                f"delivery platform '{platform_name}' has no gateway "
+                "credentials configured (not connected). Configure it via "
+                "`hermes setup` or change the job's `deliver` target."
+            )
+    return None
+
+
+def _preflight_check_skills(job: dict) -> Optional[str]:
+    """Check attached skills report ready (no missing required env/commands).
+
+    Consults the same ``readiness_status`` payload ``skill_view`` computes
+    for interactive use. Skills that fail to load at all are left to the
+    existing skipped-skill handling in ``_build_job_prompt`` (fail-open):
+    this check only blocks on an affirmative "setup needed" verdict, i.e.
+    the skill exists but its required environment is missing — a run that
+    is guaranteed to misfire.
+    """
+    skills = job.get("skills")
+    if skills is None:
+        legacy = job.get("skill")
+        skills = [legacy] if legacy else []
+    elif isinstance(skills, str):
+        skills = [skills]
+    skill_names = [str(name).strip() for name in skills if str(name).strip()]
+    if not skill_names:
+        return None
+
+    from tools.skills_tool import skill_view
+
+    for skill_name in skill_names:
+        try:
+            payload = json.loads(skill_view(skill_name))
+        except Exception:
+            continue  # unreadable/missing skill → existing skip handling
+        if not isinstance(payload, dict) or not payload.get("success"):
+            continue
+        if (
+            payload.get("setup_needed")
+            or payload.get("readiness_status") == "setup_needed"
+        ):
+            missing = [
+                f"env ${name}"
+                for name in payload.get(
+                    "missing_required_environment_variables"
+                ) or []
+            ]
+            missing += [
+                f"command '{name}'"
+                for name in payload.get("missing_required_commands") or []
+            ]
+            missing += [
+                f"credential file {name}"
+                for name in payload.get("missing_credential_files") or []
+            ]
+            detail = ", ".join(missing) or "required setup incomplete"
+            return (
+                f"attached skill '{skill_name}' is not ready: missing "
+                f"{detail}. Provide the missing prerequisites or detach the "
+                "skill from this job."
+            )
+    return None
+
+
+def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
+    """Pre-dispatch configuration validation (T1-26).
+
+    Returns a human-readable reason when the job's configuration cannot
+    produce a successful run — missing provider API key, unconfigured
+    delivery platform, or an attached skill with missing required env —
+    so the caller can refuse the run BEFORE any agent machinery is
+    constructed and no LLM call is burned. Returns ``None`` when the
+    configuration validates (or when a check cannot be evaluated: every
+    check fails open, so preflight can only ever block on an affirmative
+    misconfiguration verdict).
+
+    Same fail-before-spend spirit as the #44585 drift guard and the
+    fail-loud-on-hidden-tools direction in #27948; alert dedup follows the
+    alert-once pattern from the dead-pin auto-pause (#73506).
+    """
+    for name, check in (
+        ("provider_key", lambda: _preflight_check_provider_key(job, cfg)),
+        ("skills", lambda: _preflight_check_skills(job)),
+        ("delivery", lambda: _preflight_check_delivery(job)),
+    ):
+        try:
+            reason = check()
+        except Exception:
+            logger.debug(
+                "preflight check %s raised — failing open", name, exc_info=True
+            )
+            continue
+        if reason:
+            return reason
+    return None
+
+
 def run_job(
     job: dict, *, defer_agent_teardown: Optional[list] = None,
     extra_prompt: Optional[str] = None,
@@ -2900,6 +3211,22 @@ def run_job(
     #                               the whole point of no_agent is that there
     #                               is no agent to wake
     if job.get("no_agent"):
+        # Load .env before the script runs so auto-delivery can resolve home
+        # channels. A standalone cron tick process typically starts WITHOUT
+        # TELEGRAM_HOME_CHANNEL/DISCORD_HOME_CHANNEL in its environment, and
+        # the agent path's per-run dotenv reload below never executes for
+        # no_agent jobs — every deliver=telegram/all script job failed with
+        # "no delivery target resolved". load_hermes_dotenv does not override
+        # already-set vars, so the gateway's in-process tick is unaffected.
+        try:
+            from hermes_cli.env_loader import load_hermes_dotenv
+
+            load_hermes_dotenv(hermes_home=_get_hermes_home())
+        except Exception:
+            logger.debug(
+                "Job '%s': no_agent .env reload failed", job_id, exc_info=True
+            )
+
         script_path = job.get("script")
         if not script_path:
             err = "no_agent=True but no script is set for this job"
@@ -2984,6 +3311,61 @@ def run_job(
             f"{output}\n"
         )
         return True, doc, output, None
+
+    # ---------------------------------------------------------------
+    # Monitor gate — hash-suppressed change detection (see cron/monitor.py).
+    # Runs BEFORE any agent machinery is constructed so an unchanged tick
+    # costs one cheap source run + one hash, no LLM, no delivery.
+    # ---------------------------------------------------------------
+    from cron.monitor import check_monitor, job_has_monitor
+
+    _monitor_context: Optional[str] = None
+    if job_has_monitor(job):
+        _mon = check_monitor(job)
+        _mon_now = _hermes_now().strftime("%Y-%m-%d %H:%M:%S")
+        if not _mon.ok:
+            # Source failure is an ERROR, never a change: alert the user so
+            # a broken monitor can't silently stop watching. Stored hash is
+            # untouched (check_monitor persists nothing on failure).
+            logger.error("Job '%s': monitor source failed: %s", job_id, _mon.error)
+            _mon_doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {_mon_now}\n"
+                f"**Mode:** monitor\n"
+                f"**Status:** monitor source failed\n\n"
+                f"{_mon.error}\n"
+            )
+            _mon_alert = (
+                f"⚠ Cron monitor '{job_name}' source failed\n\n"
+                f"{_mon.error}\n\n"
+                f"Time: {_mon_now}"
+            )
+            return False, _mon_doc, _mon_alert, _mon.error
+        if not _mon.changed:
+            # Unchanged output — suppress the agent run entirely. Recorded
+            # as a silent no_change tick (visible in the executions ledger
+            # via this doc; SILENT_MARKER blocks delivery).
+            logger.info(
+                "Job '%s': monitor output unchanged — suppressing agent run",
+                job_id,
+            )
+            _mon_doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {_mon_now}\n"
+                f"**Mode:** monitor\n"
+                f"**Status:** no_change (agent run suppressed)\n"
+            )
+            return True, _mon_doc, SILENT_MARKER, None
+        # Changed (or first run): inject the monitor context into the prompt
+        # through the existing per-run context seam and fall through to a
+        # normal agent run.
+        _monitor_context = _mon.context_block
+        if _monitor_context:
+            extra_prompt = (
+                f"{_monitor_context}\n\n{extra_prompt}" if extra_prompt else _monitor_context
+            )
 
     # ---------------------------------------------------------------
     # Default (LLM) path — import and construct the agent machinery now
@@ -3211,26 +3593,14 @@ def run_job(
     _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
 
     _holds_cwd_write = _job_workdir is not None
+    _cwd_lock_timeout = _cwd_lock_timeout_seconds()
     _cwd_lock_acquired = True
     if _holds_cwd_write:
-        if not _terminal_cwd_lock.acquire_write(timeout=_CWD_LOCK_TIMEOUT_SECONDS):
+        if not _terminal_cwd_lock.acquire_write(timeout=_cwd_lock_timeout):
             _cwd_lock_acquired = False
-            logger.warning(
-                "Job '%s': TERMINAL_CWD write-lock timed out after "
-                "%.0fs — proceeding without serialization (another "
-                "workdir job may be stuck). The job's cwd override "
-                "may leak into concurrent jobs (#79768).",
-                job_name, _CWD_LOCK_TIMEOUT_SECONDS,
-            )
     else:
-        if not _terminal_cwd_lock.acquire_read(timeout=_CWD_LOCK_TIMEOUT_SECONDS):
+        if not _terminal_cwd_lock.acquire_read(timeout=_cwd_lock_timeout):
             _cwd_lock_acquired = False
-            logger.warning(
-                "Job '%s': TERMINAL_CWD read-lock timed out after "
-                "%.0fs — a workdir job is likely stuck. Proceeding "
-                "without serialization (#79768).",
-                job_name, _CWD_LOCK_TIMEOUT_SECONDS,
-            )
 
     # Everything after the acquire MUST live inside this try, so the finally
     # below always releases the lock even if the env override or any later
@@ -3241,6 +3611,22 @@ def run_job(
     _cron_session_token = None
     _non_dispatcher_token = None
     try:
+        if not _cwd_lock_acquired:
+            # Fail closed (#79768): running without the lock would let a
+            # concurrent workdir job's process-global TERMINAL_CWD override
+            # leak into this job's shell/file/code-exec commands — silent
+            # wrong-directory execution, the exact corruption the lock
+            # exists to prevent. A loud failure is recoverable (next tick /
+            # manual rerun); a job that ran in the wrong directory is not.
+            raise TimeoutError(
+                f"Timed out waiting for the TERMINAL_CWD "
+                f"{'write' if _holds_cwd_write else 'read'} lock after "
+                f"{_cwd_lock_timeout:.0f}s — another cron job (a workdir "
+                f"writer, or long-running readers) has held it for longer "
+                f"than the cron inactivity limit. If a workdir job is the "
+                f"holder, stagger its schedule or remove its workdir to "
+                f"unblock this job (#79768)."
+            )
         # Scope cron approval policy to this job. Keep the token so the finally
         # restores the pre-job state instead of pinning an explicit empty value,
         # which would suppress the legacy os.environ fallback used by standalone
@@ -3428,6 +3814,75 @@ def run_job(
         # — reaches this sink unchecked. Fail closed before resolution so no
         # off-host call is ever made with a stored key.
         _guard_job_credential_exfil(job)
+
+        # ---------------------------------------------------------------
+        # Pre-dispatch configuration validation (T1-26).
+        #
+        # A job whose configuration cannot possibly produce a successful
+        # run — missing provider API key (no fallback chain), unready
+        # attached skill, unconfigured delivery platform — is refused HERE,
+        # before AIAgent is constructed and before the resolution below can
+        # feed a doomed runtime into it, so a misconfigured job never burns
+        # an LLM call. run_one_job keys off the BLOCKED_CONFIG_MARKER in
+        # the returned error to record last_status='blocked_config' and
+        # alert exactly once (dedup persisted via the job's
+        # `preflight_alerted` bit — the #73506 alert-once shape).
+        # Runs after the wake-gate/prompt build so silent script ticks stay
+        # silent. Opt-out: `cron.preflight: false` in config.yaml.
+        # ---------------------------------------------------------------
+        _pf_reason = None
+        try:
+            if _cron_preflight_enabled(_cfg):
+                _pf_reason = _preflight_job_config(job, _cfg)
+                if not _pf_reason and job.get("preflight_alerted"):
+                    # Configuration validates again — clear the alert-once
+                    # marker so a FUTURE config break re-alerts.
+                    try:
+                        from cron.jobs import clear_preflight_alerted
+                        clear_preflight_alerted(job_id)
+                    except Exception:
+                        pass
+        except Exception:
+            # The validator must never take down a runnable job — fail open.
+            logger.debug(
+                "Job '%s': preflight validation errored — failing open",
+                job_id, exc_info=True,
+            )
+            _pf_reason = None
+
+        if _pf_reason:
+            logger.warning(
+                "Job '%s' (ID: %s): BLOCKED by pre-dispatch config "
+                "validation — %s (no LLM call was made)",
+                job_name, job_id, _pf_reason,
+            )
+            already_alerted = False
+            try:
+                from cron.jobs import mark_preflight_alerted
+                already_alerted = mark_preflight_alerted(job_id)
+            except Exception:
+                logger.debug(
+                    "Job '%s': could not persist preflight alert marker",
+                    job_id, exc_info=True,
+                )
+            marker = (
+                BLOCKED_CONFIG_SILENT_MARKER if already_alerted
+                else BLOCKED_CONFIG_MARKER
+            )
+            blocked_doc = (
+                f"# Cron Job: {job_name}\n\n"
+                f"**Job ID:** {job_id}\n"
+                f"**Run Time:** {_hermes_now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"**Status:** BLOCKED (configuration)\n\n"
+                "Pre-dispatch validation found a configuration problem and "
+                "the agent was NOT run (no tokens spent).\n\n"
+                f"**Reason:** {_pf_reason}\n\n"
+                "The job will stay blocked (without re-alerting) until the "
+                "configuration is fixed; the next healthy run clears this "
+                "state. Set `cron.preflight: false` in config.yaml to "
+                "disable this validation."
+            )
+            return False, blocked_doc, "", f"{marker} {_pf_reason}"
 
         primary_model_for_drift = model
         configured_provider_for_drift = (
@@ -3652,6 +4107,7 @@ def run_job(
             skip_context_files=not bool(_job_workdir),
             load_soul_identity=True,
             skip_memory=True,  # Cron system prompts would corrupt user representations
+            skip_background_review=True,  # Cron has no human-in-the-loop need for skill/memory review forks (~30K tok/event)
             platform="cron",
             session_id=_cron_session_id,
             session_db=_session_db,
@@ -3665,18 +4121,7 @@ def run_job(
         #
         # Uses the agent's built-in activity tracker (updated by
         # _touch_activity() on every tool call, API call, and stream delta).
-        _raw_cron_timeout = os.getenv("HERMES_CRON_TIMEOUT", "").strip()
-        if _raw_cron_timeout:
-            try:
-                _cron_timeout = float(_raw_cron_timeout)
-            except (ValueError, TypeError):
-                logger.warning(
-                    "Invalid HERMES_CRON_TIMEOUT=%r; using default 600s",
-                    _raw_cron_timeout,
-                )
-                _cron_timeout = 600.0
-        else:
-            _cron_timeout = 600.0
+        _cron_timeout = _cron_inactivity_seconds()
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         _POLL_INTERVAL = 5.0
         # Keep the one-shot run_claim fresh while the run is alive (#62002):
@@ -3716,6 +4161,9 @@ def run_job(
         # env passthrough registrations) when the cron run hops into the worker
         # thread used for inactivity timeout monitoring.
         _cron_context = contextvars.copy_context()
+        # Tag this fire and time the run_conversation call for the usage_audit.jsonl entry.
+        _audit_fire_id = uuid.uuid4().hex
+        _audit_t_start = time.monotonic()
         _cron_future = _cron_pool.submit(_cron_context.run, agent.run_conversation, prompt)
         _inactivity_timeout = False
         try:
@@ -3838,11 +4286,33 @@ def run_job(
         # and soft-failure marking below apply — restoring pre-#34452 silence
         # for scheduled jobs without disabling the explainer everywhere.
         if final_response.strip() and turn_exit_reason:
+            # The formatter's wording varies by persistence cause (locked /
+            # disk / unknown), so render every variant — matching only the
+            # one-argument render would let cause-refined explainer text slip
+            # through and be delivered as a cron warning.
+            _explainer_variants = []
             try:
-                _explainer_text = AIAgent._format_turn_completion_explanation(turn_exit_reason)
+                from hermes_state import PERSISTENCE_ERROR_CAUSES as _causes
             except Exception:
-                _explainer_text = ""
-            if _explainer_text and final_response.strip() == _explainer_text.strip():
+                _causes = ("locked", "disk", "unknown")
+            for _cause in (None, *_causes):
+                try:
+                    _variant = AIAgent._format_turn_completion_explanation(
+                        turn_exit_reason, _cause
+                    )
+                except TypeError:
+                    # Older single-argument formatter (or a test double).
+                    try:
+                        _variant = AIAgent._format_turn_completion_explanation(
+                            turn_exit_reason
+                        )
+                    except Exception:
+                        _variant = ""
+                except Exception:
+                    _variant = ""
+                if _variant:
+                    _explainer_variants.append(_variant.strip())
+            if final_response.strip() in _explainer_variants:
                 logger.info(
                     "Job '%s': abnormal empty turn (%s) — suppressing explainer for cron delivery",
                     job_id,
@@ -3869,11 +4339,46 @@ def run_job(
 """
         
         logger.info("Job '%s' completed successfully", job_name)
+
+        # Emit one JSONL line per fire for usage audit.
+        _audit_duration_ms = int((time.monotonic() - _audit_t_start) * 1000)
+        _audit_response_silent = _is_cron_silence_response(final_response or "")
+        _write_usage_audit({
+            "ts": _utcnow_iso_ms(),
+            "job_id": job_id,
+            "fire_id": _audit_fire_id,
+            "prompt_tokens": result.get("prompt_tokens"),
+            "completion_tokens": result.get("completion_tokens"),
+            "total_tokens": result.get("total_tokens"),
+            "response_silent": _audit_response_silent,
+            "deliver_target": job.get("deliver"),
+            "model": model or None,
+            "duration_ms": _audit_duration_ms,
+            "error": None,
+        })
         return True, output, final_response, None
-        
+
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
+        # Best-effort audit write on failure path. _audit_fire_id
+        # may be unset if the exception fired before submit() — guard
+        # with a None check so the audit write itself never raises.
+        if "_audit_fire_id" in locals():
+            _audit_duration_ms = int((time.monotonic() - _audit_t_start) * 1000)
+            _write_usage_audit({
+                "ts": _utcnow_iso_ms(),
+                "job_id": job_id,
+                "fire_id": _audit_fire_id,
+                "prompt_tokens": None,
+                "completion_tokens": None,
+                "total_tokens": None,
+                "response_silent": False,
+                "deliver_target": job.get("deliver"),
+                "model": model or None,
+                "duration_ms": _audit_duration_ms,
+                "error": error_msg,
+            })
         
         output = f"""# Cron Job: {job_name} (FAILED)
 
@@ -3895,9 +4400,11 @@ def run_job(
 
     finally:
         # Restore TERMINAL_CWD to whatever it was before this job ran.  We
-        # only ever mutate it when the job has a workdir; see the setup block
-        # at the top of run_job for the serialization guarantee.
-        if _job_workdir:
+        # only ever mutate it when the job has a workdir AND actually held
+        # the write lock — a fail-closed timeout raised before the env-set,
+        # so restoring there would replay a pre-wait snapshot over the
+        # ACTIVE holder's live override.
+        if _job_workdir and _cwd_lock_acquired:
             if _prior_terminal_cwd == "_UNSET_":
                 os.environ.pop("TERMINAL_CWD", None)
             else:
@@ -4122,6 +4629,7 @@ def run_one_job(
         # deferred agent is still torn down. Otherwise the outer `except` would
         # swallow the error and leak the agent's subprocesses/clients (#10200).
         delivery_error = None
+        blocked_config = False
         try:
             output_file = save_job_output(job["id"], output)
             if verbose:
@@ -4144,11 +4652,41 @@ def run_one_job(
             # Deliver the final response to the origin/target chat.
             # If the agent responded with [SILENT], skip delivery (but
             # output is already saved above).  Failed jobs always deliver.
-            deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+            #
+            # Exception: a run blocked by pre-dispatch config validation
+            # (T1-26) alerts exactly ONCE — the silent marker means the
+            # operator was already told on a previous tick, so re-delivering
+            # the same alert every tick would be spam (#73506 alert-once
+            # shape).
+            blocked_config_silent = (
+                bool(error) and BLOCKED_CONFIG_SILENT_MARKER in str(error)
+            )
+            blocked_config = blocked_config_silent or (
+                bool(error) and BLOCKED_CONFIG_MARKER in str(error)
+            )
+            if blocked_config and not success:
+                # Blocked-config alert: bypass the generic failure summarizer
+                # (whose auth/timeout heuristics would mislabel this as a
+                # provider runtime failure) — say plainly that config
+                # validation blocked the run and nothing was spent.
+                _pf_text = re.sub(
+                    r"\[blocked_config[^\]]*\]\s*", "", str(error)
+                ).strip()
+                deliver_content = (
+                    f"⛔ Cron '{job.get('name') or job['id']}' blocked by "
+                    f"configuration validation (no LLM call was made): "
+                    f"{_pf_text} "
+                    "This alert is sent once; the job stays blocked until "
+                    "the configuration is fixed."
+                )
+            else:
+                deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
             should_deliver = bool(deliver_content.strip())
+            if blocked_config_silent:
+                should_deliver = False
             unresolved_origin = False
             # Cron silence suppression — see _is_cron_silence_response.  Replaces the
             # old `SILENT_MARKER in ...upper()` substring check, which both leaked
@@ -4185,7 +4723,13 @@ def run_one_job(
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
         if not _consume_interrupted_flag(job["id"]):
-            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+            if blocked_config:
+                mark_job_run(
+                    job["id"], success, error, delivery_error=delivery_error,
+                    status="blocked_config",
+                )
+            else:
+                mark_job_run(job["id"], success, error, delivery_error=delivery_error)
         normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
         if delivery_error:
             delivery_outcome = "failed"
@@ -4254,6 +4798,51 @@ def _notify_provider_jobs_changed() -> None:
         logger.debug("on_jobs_changed notify failed: %s", e)
 
 
+class CronSchedulerRegistrationError(RuntimeError):
+    """A job was persisted but its first external trigger was not registered."""
+
+    def __init__(self, job: dict, cause: Exception) -> None:
+        self.job = job
+        self.cause = cause
+        super().__init__(
+            f"Cron job '{job['id']}' was saved, but its first scheduler "
+            f"registration failed ({type(cause).__name__}). Do not create a "
+            "duplicate. Pause/resume or update the job to retry registration."
+        )
+
+    def user_message(self) -> str:
+        """Human-facing variant for chat/CLI surfaces (no exception class name)."""
+        label = self.job.get("name") or self.job["id"]
+        return (
+            f"Saved cron job '{label}', but couldn't register it with the "
+            "external scheduler yet. The job is kept — don't re-create it; "
+            "pause/resume or edit it (e.g. via /cron) to retry registration."
+        )
+
+    def to_dict(self) -> dict:
+        """Return the public partial-failure contract without provider details."""
+        return {
+            "error": str(self),
+            "job_id": self.job["id"],
+            "job_saved": True,
+            "scheduler_registered": False,
+            "retry_create": False,
+        }
+
+
+def create_job_with_scheduler_registration(**kwargs) -> dict:
+    """Persist one job and register its first trigger with the active provider."""
+    from cron.jobs import create_job
+    from cron.scheduler_provider import resolve_cron_scheduler
+
+    job = create_job(**kwargs)
+    try:
+        resolve_cron_scheduler().register_job(job)
+    except Exception as exc:
+        raise CronSchedulerRegistrationError(job, exc) from exc
+    return job
+
+
 def tick(
     verbose: bool = True,
     adapters=None,
@@ -4296,6 +4885,17 @@ def tick(
         return 0
 
     try:
+        # Global emergency stop (`hermes pause`): skip dispatch entirely while
+        # the ESTOP sentinel exists. Never touches in-flight runs — due jobs
+        # simply wait for the next tick after `hermes resume`. Logged once per
+        # engagement (not every tick) by check_paused.
+        try:
+            from agent.estop import check_paused as _estop_check_paused
+            if _estop_check_paused("cron", logger):
+                return 0
+        except ImportError:
+            pass
+
         if can_dispatch is not None and not can_dispatch():
             logger.debug("Cron dispatch paused while gateway drains existing work")
             return 0

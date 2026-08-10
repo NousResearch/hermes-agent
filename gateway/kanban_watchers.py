@@ -57,6 +57,22 @@ def _resolve_auto_decompose_settings(
     return enabled, per_tick
 
 
+def _kanban_dispatch_allowed() -> bool:
+    """Return False while the global emergency stop (`hermes pause`) is engaged.
+
+    Checked every dispatcher tick BEFORE spawning new workers so a pause takes
+    effect on the next tick without a gateway restart. In-flight workers are
+    never touched — this only stops NEW spawns. Fails open: if the estop
+    module is unimportable, dispatch proceeds (the sentinel gate must not
+    become a new crash surface for the dispatcher).
+    """
+    try:
+        from agent.estop import check_paused
+    except ImportError:
+        return True
+    return not check_paused("kanban", logger)
+
+
 def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
     """Take an exclusive, non-blocking advisory lock for the sole dispatcher.
 
@@ -1095,6 +1111,12 @@ class GatewayKanbanWatchersMixin:
             )
             stale_timeout_seconds = 0
 
+        # kanban.reconcile_orphans (config.yaml, default true): each tick,
+        # requeue 'running' cards whose claim bookkeeping is broken (no
+        # valid claim, dead/gone worker) — the zombie-card reconciliation
+        # pass. Set false to keep orphans frozen for manual forensics.
+        reconcile_orphans = bool(kanban_cfg.get("reconcile_orphans", True))
+
         # Read kanban.default_assignee — fallback profile for tasks
         # created without an explicit assignee (e.g. via the dashboard).
         # When set, the dispatcher applies it to unassigned ready tasks
@@ -1231,6 +1253,7 @@ class GatewayKanbanWatchersMixin:
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
+                    reconcile_orphans=reconcile_orphans,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):
@@ -1435,36 +1458,43 @@ class GatewayKanbanWatchersMixin:
                 logger.exception("kanban dispatcher: zombie reaper failed")
 
             try:
-                # Re-read the auto-decompose toggle live each tick so a user
-                # flipping kanban.auto_decompose=false to STOP runaway fan-out
-                # takes effect on the next tick, not on gateway restart (#49638).
-                _ad_enabled, _ad_per_tick = _read_auto_decompose_settings()
-                if _ad_enabled:
-                    await asyncio.to_thread(_auto_decompose_tick, _ad_per_tick)
-                results = await asyncio.to_thread(_tick_once)
-                any_spawned = False
-                for slug, res in (results or []):
-                    if res is not None and getattr(res, "spawned", None):
-                        any_spawned = True
-                        # Quiet by default — only log when something actually
-                        # happened, so an idle gateway stays silent.
-                        logger.info(
-                            "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
-                            "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
-                            slug,
-                            len(res.spawned),
-                            res.reclaimed,
-                            len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
-                            len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
-                            res.promoted,
-                            len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
-                        )
-                # Health telemetry (aggregate across boards)
-                ready_pending = await asyncio.to_thread(_ready_nonempty)
-                if ready_pending and not any_spawned:
-                    bad_ticks += 1
-                else:
+                # Global emergency stop (`hermes pause`): skip auto-decompose
+                # and dispatch entirely — no new workers while paused. Running
+                # workers finish naturally; zombie reaping above still runs.
+                if not _kanban_dispatch_allowed():
+                    ready_pending = False
                     bad_ticks = 0
+                else:
+                    # Re-read the auto-decompose toggle live each tick so a user
+                    # flipping kanban.auto_decompose=false to STOP runaway fan-out
+                    # takes effect on the next tick, not on gateway restart (#49638).
+                    _ad_enabled, _ad_per_tick = _read_auto_decompose_settings()
+                    if _ad_enabled:
+                        await asyncio.to_thread(_auto_decompose_tick, _ad_per_tick)
+                    results = await asyncio.to_thread(_tick_once)
+                    any_spawned = False
+                    for slug, res in (results or []):
+                        if res is not None and getattr(res, "spawned", None):
+                            any_spawned = True
+                            # Quiet by default — only log when something actually
+                            # happened, so an idle gateway stays silent.
+                            logger.info(
+                                "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
+                                "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
+                                slug,
+                                len(res.spawned),
+                                res.reclaimed,
+                                len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
+                                len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
+                                res.promoted,
+                                len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                            )
+                    # Health telemetry (aggregate across boards)
+                    ready_pending = await asyncio.to_thread(_ready_nonempty)
+                    if ready_pending and not any_spawned:
+                        bad_ticks += 1
+                    else:
+                        bad_ticks = 0
                 if bad_ticks >= HEALTH_WINDOW:
                     now = int(time.time())
                     if now - last_warn_at >= 300:

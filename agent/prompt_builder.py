@@ -14,7 +14,7 @@ from collections import OrderedDict
 from pathlib import Path
 
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
-from typing import Optional
+from typing import List, Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
 from agent.skill_utils import (
@@ -696,6 +696,67 @@ STEER_CHANNEL_NOTE += (
     "because it remains in the conversation history."
 )
 
+
+def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
+    """Per-turn note for a message typed into the desktop's floating HUD.
+
+    HUD mode is a strip of Hermes floating over another application, so the
+    user is rarely asking about Hermes — they are asking about the thing behind
+    it, and the work they want done usually belongs in that app rather than in
+    a surface of our own. Left to itself the model answers from its own
+    browser and panes, which is the wrong half of the screen.
+
+    It is a per-turn fact, not a platform — one desktop session can be driven
+    from the app window on one turn and the HUD on the next — so it rides the
+    model-bound message beside the reaction / speech-interrupted notes rather
+    than the system prompt, which has to stay byte-stable for a conversation's
+    whole life.
+
+    The same is true one level down: the app underneath changes as the user
+    drags the strip around, and they carry a thought across the move ("pause
+    that and play X here"). Earlier windows are already in context as
+    read_window_below results, so the note only has to say they still count —
+    without that, the latest window reads as the only one and half of a
+    two-app request is silently dropped.
+
+    Each sentence is gated on the tool it names — naming a tool outside this
+    agent's schema invites a hallucinated call — and the note as a whole is
+    withheld without the one it rests on.
+    """
+    names = valid_tool_names or set()
+    if "read_window_below" not in names:
+        return ""
+
+    sentences = [
+        "[Note: this message came from HUD mode — a small floating Hermes "
+        "window sitting over whatever the user is actually working in, so an "
+        'unqualified "this" or "here" usually means the app behind the HUD '
+        "rather than anything inside Hermes. read_window_below identifies "
+        "that app.",
+        "They move the HUD from app to app mid-conversation, so one you "
+        "identified on an earlier turn is still a live target: a reference "
+        "that does not fit the window below may name one from a turn or two "
+        "ago, and a single message can span both.",
+    ]
+    if "computer_use" in names:
+        sentences.append(
+            "Prefer carrying the work out in that same app — computer_use "
+            "takes its name in `app` — over pulling the task into a surface "
+            "of your own."
+        )
+        if "browser_navigate" in names:
+            sentences.append(
+                "When the app underneath is a browser, that means driving the "
+                "user's browser rather than opening yours with "
+                "browser_navigate."
+            )
+    sentences.append(
+        "This is a prior, not a rule: when the request names its own target, "
+        "follow the request.]"
+    )
+    return " ".join(sentences)
+
+
 # Model name substrings that should use the 'developer' role instead of
 # 'system' for the system prompt.  OpenAI's newer models (GPT-5, Codex)
 # give stronger instruction-following weight to the 'developer' role.
@@ -954,7 +1015,8 @@ PLATFORM_HINTS = {
 }
 
 # Telegram rich-messages extension — only injected when the user has opted in
-# to ``platforms.telegram.extra.rich_messages: true``.  The base
+# to ``gateway.platforms.telegram.extra.rich_messages: true`` (or the
+# top-level ``platforms.telegram.extra.rich_messages``).  The base
 # PLATFORM_HINTS["telegram"] covers MarkdownV2-compatible constructs; this
 # extension adds the Bot API 10.1 rich-Markdown guidance (tables, task lists,
 # collapsible details, math, etc.).
@@ -2058,23 +2120,86 @@ def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str
         return ""
 
 
+def _agents_md_directory_chain(cwd_path: Path) -> List[Path]:
+    """Directories to check for AGENTS.md: git root first, cwd last.
+
+    Ported from superagent-ai/grok-cli ``src/utils/instructions.ts``
+    (``directoryChain``): the chain runs from the git repository root down
+    through every intermediate directory to *cwd*, so deeper directories can
+    add more specific guidance that appears later (and therefore takes
+    precedence) in the merged prompt.  Without a git root — or when *cwd*
+    sits outside it — only *cwd* itself is checked, matching the historical
+    single-directory behavior.
+    """
+    current = cwd_path.resolve()
+    root = _find_git_root(current)
+    if root is None or root == current:
+        return [current]
+    try:
+        rel = current.relative_to(root)
+    except ValueError:
+        return [current]
+    chain = [root]
+    acc = root
+    for part in rel.parts:
+        acc = acc / part
+        chain.append(acc)
+    return chain
+
+
 def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
-    """AGENTS.md — top-level only (no recursive walk)."""
-    for name in ["AGENTS.md", "agents.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
+    """AGENTS.md — merged directory chain from git root down to cwd.
+
+    Each directory on the chain (see ``_agents_md_directory_chain``)
+    contributes its ``AGENTS.md`` / ``agents.md`` (first name wins per
+    directory) as its own provenance-labelled section.  Identical content
+    encountered again further down the chain (copied or symlinked files) is
+    deduplicated.  With a single match — the common case, and always the
+    case outside a git repo — output is identical to the historical
+    single-file behavior.
+    """
+    cwd_resolved = cwd_path.resolve()
+    sections: List[str] = []
+    seen_content: set = set()
+    for directory in _agents_md_directory_chain(cwd_resolved):
+        for name in ["AGENTS.md", "agents.md"]:
+            candidate = directory / name
+            if not candidate.exists():
+                continue
             try:
                 content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(
-                        result, "AGENTS.md", context_length=context_length,
-                        read_path=str(candidate),
-                    )
             except Exception as e:
                 logger.debug("Could not read %s: %s", candidate, e)
-    return ""
+                continue
+            if not content:
+                continue
+            if content in seen_content:
+                break  # identical copy along the chain — skip duplicate
+            seen_content.add(content)
+            if directory == cwd_resolved:
+                label = name
+            else:
+                label = os.path.relpath(candidate, cwd_resolved)
+            scanned = _scan_context_content(content, label)
+            section = f"## {label}\n\n{scanned}"
+            section = _truncate_content(
+                section, label, context_length=context_length,
+                read_path=str(candidate),
+            )
+            sections.append(section)
+            break  # first name match wins per directory
+    if not sections:
+        return ""
+    if len(sections) == 1:
+        return sections[0]
+    # Per-file budgets were already applied above; also cap the merged chain
+    # so a deep monorepo cannot multiply the context-file budget unbounded.
+    merged = "\n\n".join(sections)
+    return _truncate_content(
+        merged, "AGENTS.md (directory chain)",
+        context_length=context_length,
+        read_path=str(cwd_resolved / "AGENTS.md"),
+    )
 
 
 def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
@@ -2139,7 +2264,7 @@ def build_context_files_prompt(
 
     Priority (first found wins — only ONE project context type is loaded):
       1. .hermes.md / HERMES.md  (walk to git root)
-      2. AGENTS.md / agents.md   (cwd only)
+      2. AGENTS.md / agents.md   (merged chain: git root → cwd)
       3. CLAUDE.md / claude.md   (cwd only)
       4. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 

@@ -479,13 +479,15 @@ def workspace_fingerprint(cwd: Optional[str] = None) -> str:
     try:
         head = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            capture_output=True, text=True, timeout=10, cwd=workdir,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=10, cwd=workdir,
         )
         if head.returncode != 0:
             return ""
         status = subprocess.run(
             ["git", "status", "--porcelain"],
-            capture_output=True, text=True, timeout=30, cwd=workdir,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=30, cwd=workdir,
         )
         if status.returncode != 0:
             return ""
@@ -509,6 +511,14 @@ def run_gate(gate: GoalGate, *, cwd: Optional[str] = None) -> Tuple[bool, int, s
             shell=True,
             capture_output=True,
             text=True,
+            # A gate runs whatever the operator configured, so its output is
+            # arbitrary bytes. The default text mode decodes with the process
+            # codepage under errors="strict": one byte the codepage can't map
+            # (emoji or CJK from a test runner on a non-UTF-8 Windows console,
+            # or stray binary) kills the reader thread, leaves stdout as None,
+            # and the tail the agent needs to fix the failure arrives empty.
+            encoding="utf-8",
+            errors="replace",
             timeout=max(1, int(gate.timeout_seconds)),
             cwd=cwd or None,
         )

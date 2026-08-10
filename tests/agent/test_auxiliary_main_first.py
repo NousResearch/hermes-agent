@@ -126,8 +126,8 @@ class TestResolveAutoMainFirst:
             "agent.auxiliary_client._read_main_model",
             return_value="claude-opus-4-8",
         ) as mock_read_main_model, patch(
-            "agent.auxiliary_client._resolve_auto",
-            return_value=(runtime_client, "gpt-5.5"),
+            "agent.auxiliary_client._resolve_auto_route",
+            return_value=(runtime_client, "gpt-5.5", "openai-codex"),
         ) as mock_resolve_auto:
             from agent.auxiliary_client import resolve_provider_client
 

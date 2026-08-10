@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { type ComponentProps, type MouseEvent, type ReactNode, useEffect, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 
+import { hudTargetSessionId } from '@/app/hud/handoff'
 import { toggleLayoutEditMode } from '@/components/pane-shell/edit-mode'
 import { resetLayoutTree } from '@/components/pane-shell/tree/store'
 import { Button } from '@/components/ui/button'
@@ -11,6 +12,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { cn } from '@/lib/utils'
 import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
+import { toggleHud } from '@/store/hud'
 import {
   $fileBrowserOpen,
   $sidebarOpen,
@@ -19,7 +21,7 @@ import {
   toggleSidebarOpen
 } from '@/store/layout'
 
-import { appViewForPath, isOverlayView, SETTINGS_ROUTE } from '../routes'
+import { appViewForPath, isOverlayView } from '../routes'
 
 import { titlebarButtonClass } from './titlebar'
 
@@ -181,21 +183,25 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
       title: t.titlebar.layoutEditorTitle
     },
     {
+      // No `title`: TitlebarToolButton passes `title` to TipKeybindLabel as a
+      // text OVERRIDE, so a long sentence there replaces the short label and
+      // crowds the ⌘⇧H hint off the tooltip. Label only — the hint is appended
+      // from the action registry, same as every other tool here.
+      actionId: 'view.toggleHud',
+      icon: <Codicon name="comment-discussion" />,
+      id: 'hud',
+      label: t.titlebar.enterHud,
+      onSelect: () => {
+        triggerHaptic('open')
+        toggleHud(hudTargetSessionId())
+      }
+    },
+    {
       active: hapticsMuted,
       icon: <Codicon name={hapticsMuted ? 'mute' : 'unmute'} />,
       id: 'haptics',
       label: hapticsMuted ? t.titlebar.unmuteHaptics : t.titlebar.muteHaptics,
       onSelect: toggleHaptics
-    },
-    {
-      actionId: 'keybinds.openPanel',
-      icon: <Codicon name="keyboard" />,
-      id: 'keybinds',
-      label: t.titlebar.openKeybinds,
-      onSelect: () => {
-        triggerHaptic('open')
-        navigate(`${SETTINGS_ROUTE}?tab=keybinds`)
-      }
     },
     {
       actionId: 'nav.settings',

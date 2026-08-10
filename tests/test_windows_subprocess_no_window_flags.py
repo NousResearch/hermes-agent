@@ -4,6 +4,8 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 _CREATE_NO_WINDOW = 0x08000000
 
@@ -66,13 +68,20 @@ def _make_fake_popen(spawns, *, stdout="ok\n", returncode=0):
     return _FakePopen
 
 
+@pytest.mark.windows_only
 def test_bounded_git_probe_fast_path_spawn_contract_windows(monkeypatch):
     """The normal-path spawn contract survives the run()->Popen rewrite:
-    PIPE/PIPE/DEVNULL, text + utf-8/replace, hidden-window flags on Windows."""
+    PIPE/PIPE/DEVNULL, text + utf-8/replace, hidden-window flags on Windows.
+
+    ``windows_only``: the ``creationflags`` assertion is the point, and
+    ``bounded_git_probe`` only sets that key when ``IS_WINDOWS`` — which the
+    helper caches from the real platform at import. ``windows_hide_flags`` is
+    still stubbed so the expected value is a fixed constant rather than
+    whatever bundle the helper currently returns.
+    """
     from hermes_cli import _subprocess_compat
 
     spawns = []
-    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
     monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
     monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", _make_fake_popen(spawns, stdout="main\n"))
 
@@ -98,7 +107,6 @@ def test_bounded_git_probe_nonzero_returncode_returns_empty(monkeypatch):
     from hermes_cli import _subprocess_compat
 
     spawns = []
-    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", False)
     monkeypatch.setattr(
         _subprocess_compat.subprocess,
         "Popen",
@@ -125,7 +133,6 @@ def test_bounded_git_probe_spawn_failure_returns_empty(monkeypatch):
     def boom(cmd, **kwargs):
         raise FileNotFoundError("git not found")
 
-    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", False)
     monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", boom)
 
     assert _subprocess_compat.bounded_git_probe(["git", "-C", "/repo", "status"], timeout=1.5) == ""
@@ -149,7 +156,11 @@ def test_bounded_git_probe_spawn_failure_returns_empty(monkeypatch):
 
 
 
+@pytest.mark.windows_only
 def test_shell_hooks_hide_hook_command_windows(monkeypatch):
+    """``windows_only``: ``shell_hooks._spawn`` only adds ``creationflags``
+    under its module-level ``IS_WINDOWS``, so on Linux the flag patch was
+    what created the thing being asserted."""
     from agent import shell_hooks
 
     captured = []
@@ -158,7 +169,6 @@ def test_shell_hooks_hide_hook_command_windows(monkeypatch):
         captured.append((cmd, kwargs))
         return SimpleNamespace(returncode=0, stdout="{}", stderr="")
 
-    monkeypatch.setattr(shell_hooks, "IS_WINDOWS", True)
     monkeypatch.setattr(shell_hooks, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
     monkeypatch.setattr(shell_hooks.subprocess, "run", fake_run)
 
@@ -192,9 +202,16 @@ def test_shell_hooks_hide_hook_command_windows(monkeypatch):
 
 
 def _patch_hide_flags(monkeypatch):
+    """Pin ``windows_hide_flags()`` to a known constant.
+
+    The spawn sites these tests cover call ``windows_hide_flags()``
+    unconditionally and pass the result straight through, so what is under
+    test is the WIRING — that the site threads the helper's value into
+    ``creationflags`` — not the platform. Stubbing only the helper keeps that
+    coverage on the Linux lane; no ``IS_WINDOWS`` fake is needed or wanted.
+    """
     import hermes_cli._subprocess_compat as subprocess_compat
 
-    monkeypatch.setattr(subprocess_compat, "IS_WINDOWS", True)
     monkeypatch.setattr(subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
 
 
@@ -352,14 +369,20 @@ def test_lazy_deps_uv_install_hides_console_window(monkeypatch):
 
 
 
+@pytest.mark.windows_only
 def test_suppress_platform_ver_console_stubs_syscmd_ver(monkeypatch):
-    """Simulated Windows: _syscmd_ver is replaced by an in-process echo stub
-    so win32_ver() takes its ValueError fallback instead of `cmd /c ver`."""
+    """``_syscmd_ver`` is replaced by an in-process echo stub so win32_ver()
+    takes its ValueError fallback instead of shelling out to `cmd /c ver`.
+
+    ``windows_only``: ``suppress_platform_ver_console()`` is a no-op unless
+    ``IS_WINDOWS``, and the console flash it prevents (``cmd /c ver``) only
+    exists on Windows — the old flag patch installed the stub on a host where
+    ``win32_ver`` is never consulted at all.
+    """
     import platform
 
     from hermes_cli import _subprocess_compat
 
-    monkeypatch.setattr(_subprocess_compat, "IS_WINDOWS", True)
     # Register the original with monkeypatch so it gets restored after.
     monkeypatch.setattr(platform, "_syscmd_ver", platform._syscmd_ver)
 

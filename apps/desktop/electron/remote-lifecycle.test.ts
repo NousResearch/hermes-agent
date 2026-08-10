@@ -112,14 +112,38 @@ test('locateHermes falls back to the login-shell command -v probe', async () => 
   assert.equal(await locateHermes(ssh, ''), '/home/u/.local/bin/hermes')
 })
 
-test('locateHermes canonicalizes an installer wrapper to its executable target', async () => {
+test('locateHermes preserves an installer wrapper instead of resolving its interpreter', async () => {
+  // install.sh venv mode writes: exec "$HERMES_BIN" "$HERMES_ENTRYPOINT" "$@",
+  // where $HERMES_BIN is the venv python. The old canonicalization returned
+  // that interpreter, so `<python> --version` printed "Python x.y.z" and
+  // `<python> serve --help` failed outright (#74411). The wrapper itself is
+  // executable and forwards args correctly — return it untouched.
   const ssh = fakeSsh([
     [/command -v hermes/, '/home/u/.local/bin/hermes\n'],
     [/\[ -x .*\.local\/bin\/hermes/, 'OK'],
-    [/python3 -c/, '/home/u/.hermes/hermes-agent/venv/bin/hermes\n']
+    // If the removed python3 wrapper-parser were ever reintroduced, this rule
+    // would reward it with an interpreter path and the assertions below fail.
+    [/python3 -c/, '/home/u/.hermes/hermes-agent/venv/bin/python\n']
   ])
 
-  assert.equal(await locateHermes(ssh, ''), '/home/u/.hermes/hermes-agent/venv/bin/hermes')
+  assert.equal(await locateHermes(ssh, ''), '/home/u/.local/bin/hermes')
+  assert.ok(
+    !ssh.calls.some(cmd => cmd.includes('python3 -c')),
+    'locateHermes must not shell out to a python3 parser to rewrite the launcher'
+  )
+})
+
+test('locateHermes returns an explicit remoteHermesPath unchanged', async () => {
+  // The override half of #74411: an explicit remoteHermesPath pointing at a
+  // wrapper was also canonicalized to its interpreter, so overriding to
+  // ~/.local/bin/hermes changed nothing for affected users.
+  const ssh = fakeSsh([
+    [/\[ -x .*\.local\/bin\/hermes/, 'OK'],
+    [/python3 -c/, '/home/u/.hermes/hermes-agent/venv/bin/python\n']
+  ])
+
+  assert.equal(await locateHermes(ssh, '~/.local/bin/hermes'), '~/.local/bin/hermes')
+  assert.ok(!ssh.calls.some(cmd => cmd.includes('python3 -c')), 'an explicit remoteHermesPath must never be rewritten')
 })
 
 test('locateHermes falls back to ~/.local/bin/hermes when the login-shell probe misses', async () => {

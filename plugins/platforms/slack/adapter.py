@@ -3922,7 +3922,17 @@ class SlackAdapter(BasePlatformAdapter):
             # (keeps the message intact rather than emptying a mention).
             display = (name or uid).strip() or uid
             # Replace both the bare and labelled forms of this exact ID.
-            text = re.sub(rf"<@{uid}(?:\|[^>]*)?>", f"@{display}", text)
+            # The replacement goes in as a *function* so the resolved name is
+            # inserted verbatim: as a template string, ``re`` parses backslash
+            # escapes in it, and a display name is arbitrary user-set text.
+            # ``dev\ops`` raises ``re.error: bad escape \o``, ``a\1b`` raises
+            # on the group reference, and ``\g<0>`` silently re-injects the
+            # raw ``<@UID>`` this method exists to remove.
+            text = re.sub(
+                rf"<@{uid}(?:\|[^>]*)?>",
+                lambda _m, _name=f"@{display}": _name,
+                text,
+            )
         return text
 
     def _build_identity_prompt(self, team_id: str = "") -> str:

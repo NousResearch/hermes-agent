@@ -17,22 +17,29 @@ from agent.anthropic_adapter import (
 pytestmark = pytest.mark.allow_macos_keychain
 
 
+@pytest.mark.macos_only
 class TestReadClaudeCodeCredentialsFromKeychain:
-    """Bug 4: macOS Keychain support for Claude Code >=2.1.114."""
+    """Bug 4: macOS Keychain support for Claude Code >=2.1.114.
+
+    ``macos_only``: the reader is gated on ``platform.system() == "Darwin"``
+    and shells out to the ``security`` CLI. Faking Darwin on Linux selected
+    the branch but proved nothing about the host it exists for; on the real
+    macOS runner only ``subprocess.run`` is mocked (via the
+    ``allow_macos_keychain`` opt-out of the suite-wide guard), so no real
+    Keychain is ever touched.
+    """
 
 
 
     def test_returns_none_when_security_command_not_found(self):
         """OSError from missing security binary must be handled gracefully."""
-        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
-             patch("agent.anthropic_adapter.subprocess.run",
+        with patch("agent.anthropic_adapter.subprocess.run",
                    side_effect=OSError("security not found")):
             assert _read_claude_code_credentials_from_keychain() is None
 
     def test_returns_none_on_nonzero_exit_code(self):
         """security returns non-zero when the Keychain entry doesn't exist."""
-        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
-             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+        with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
             assert _read_claude_code_credentials_from_keychain() is None
 
@@ -42,6 +49,7 @@ class TestReadClaudeCodeCredentialsFromKeychain:
 
 
 
+@pytest.mark.macos_only
 class TestReadClaudeCodeCredentialsPriority:
     """Bug 4: Keychain must be checked before the JSON file."""
 
@@ -60,8 +68,7 @@ class TestReadClaudeCodeCredentialsPriority:
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
         # Mock Keychain to return a "newer" token
-        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
-             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+        with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout=json.dumps({
@@ -93,8 +100,7 @@ class TestReadClaudeCodeCredentialsPriority:
         }))
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
-        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
-             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+        with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
             # Simulate Keychain entry not found
             mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
             creds = read_claude_code_credentials()
@@ -107,14 +113,14 @@ class TestReadClaudeCodeCredentialsPriority:
         """No credentials anywhere — must return None cleanly."""
         monkeypatch.setattr("agent.anthropic_adapter.Path.home", lambda: tmp_path)
 
-        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
-             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+        with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
             creds = read_claude_code_credentials()
 
         assert creds is None
 
 
+@pytest.mark.macos_only
 class TestReadClaudeCodeCredentialsDesync:
     """Reconciliation when Keychain and JSON file disagree.
 
@@ -162,8 +168,7 @@ class TestReadClaudeCodeCredentialsDesync:
         ``No Anthropic credentials found`` error.)
         """
         self._setup(tmp_path, monkeypatch, file_expires_at=self._FRESH, file_token="fresh-file-token")
-        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
-             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+        with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
             mock_run.return_value = self._keychain_payload(
                 access_token="stale-keychain-token", expires_at=self._EXPIRED,
             )
@@ -181,8 +186,7 @@ class TestReadClaudeCodeCredentialsDesync:
         succeed at the OAuth refresh endpoint.
         """
         self._setup(tmp_path, monkeypatch, file_expires_at=self._EXPIRED + 5, file_token="newer-expired-file")
-        with patch("agent.anthropic_adapter.platform.system", return_value="Darwin"), \
-             patch("agent.anthropic_adapter.subprocess.run") as mock_run:
+        with patch("agent.anthropic_adapter.subprocess.run") as mock_run:
             mock_run.return_value = self._keychain_payload(
                 access_token="older-expired-keychain", expires_at=self._EXPIRED,
             )

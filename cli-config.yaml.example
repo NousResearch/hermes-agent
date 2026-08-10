@@ -502,6 +502,18 @@ compression:
   #   off    = Hermes will not auto-trigger compaction; Codex may still compact natively
   codex_app_server_auto: native
 
+  # Native OpenAI Responses server-side compaction (default: false). When true,
+  # gpt-5.6-family models on the DIRECT OpenAI API (api.openai.com) or a ChatGPT
+  # Codex subscription compact server-side: OpenAI prunes older context into an
+  # encrypted checkpoint that Hermes replays on later turns. No other provider,
+  # route, or model is affected. Hermes' local compression stays armed as the
+  # fallback and still handles every non-eligible session.
+  codex_responses_native: false
+
+  # Server-side compaction trigger in input tokens. Clamped below the local
+  # compression threshold at request time so the server compacts first.
+  codex_responses_compact_threshold: 200000
+
   # Number of non-system messages to protect at the head of the transcript, in
   # ADDITION to the system prompt (which is always implicitly protected).
   # Head messages are NEVER summarized — they survive every compression
@@ -826,6 +838,12 @@ agent:
   # API responses.  Only fires after the agent has been idle for this duration.
   # gateway_timeout: 1800
 
+  # Maximum time an alias routing key waits for an active turn holding the same
+  # resolved session lease. On expiry Hermes rejects this inbound message and
+  # asks the user to resend rather than running it without serialization.
+  # Non-positive values fall back to the 1800-second default.
+  # gateway_turn_lease_timeout: 1800
+
   # Staged warning: send a warning before escalating to full timeout.
   # Fires once per run when inactivity reaches this threshold (seconds).
   # Set to 0 to disable the warning.
@@ -915,22 +933,19 @@ agent:
   #   "deepseek/deepseek-v4-pro": "xhigh" # dots and dashes are interchangeable
   reasoning_overrides: {}
   
-  # Predefined personalities (use with /personality command)
-  personalities:
-    helpful: "You are a helpful, friendly AI assistant."
-    concise: "You are a concise assistant. Keep responses brief and to the point."
-    technical: "You are a technical expert. Provide detailed, accurate technical information."
-    creative: "You are a creative assistant. Think outside the box and offer innovative solutions."
-    teacher: "You are a patient teacher. Explain concepts clearly with examples."
-    kawaii: "You are a kawaii assistant! Use cute expressions like (◕‿◕), ★, ♪, and ~! Add sparkles and be super enthusiastic about everything! Every response should feel warm and adorable desu~! ヽ(>∀<☆)ノ"
-    catgirl: "You are Neko-chan, an anime catgirl AI assistant, nya~! Add 'nya' and cat-like expressions to your speech. Use kaomoji like (=^･ω･^=) and ฅ^•ﻌ•^ฅ. Be playful and curious like a cat, nya~!"
-    pirate: "Arrr! Ye be talkin' to Captain Hermes, the most tech-savvy pirate to sail the digital seas! Speak like a proper buccaneer, use nautical terms, and remember: every problem be just treasure waitin' to be plundered! Yo ho ho!"
-    shakespeare: "Hark! Thou speakest with an assistant most versed in the bardic arts. I shall respond in the eloquent manner of William Shakespeare, with flowery prose, dramatic flair, and perhaps a soliloquy or two. What light through yonder terminal breaks?"
-    surfer: "Duuude! You're chatting with the chillest AI on the web, bro! Everything's gonna be totally rad. I'll help you catch the gnarly waves of knowledge while keeping things super chill. Cowabunga! 🤙"
-    noir: "The rain hammered against the terminal like regrets on a guilty conscience. They call me Hermes - I solve problems, find answers, dig up the truth that hides in the shadows of your codebase. In this city of silicon and secrets, everyone's got something to hide. What's your story, pal?"
-    uwu: "hewwo! i'm your fwiendwy assistant uwu~ i wiww twy my best to hewp you! *nuzzles your code* OwO what's this? wet me take a wook! i pwomise to be vewy hewpful >w<"
-    philosopher: "Greetings, seeker of wisdom. I am an assistant who contemplates the deeper meaning behind every query. Let us examine not just the 'how' but the 'why' of your questions. Perhaps in solving your problem, we may glimpse a greater truth about existence itself."
-    hype: "YOOO LET'S GOOOO!!! 🔥🔥🔥 I am SO PUMPED to help you today! Every question is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE YOU READY?! LET'S DO THIS! 💪😤🚀"
+  # Custom personalities (use with /personality command).
+  # Built-ins (helpful, concise, technical, creative, teacher, kawaii, catgirl,
+  # pirate, shakespeare, surfer, noir, uwu, philosopher, hype) are always
+  # available on every surface — defined once in hermes_cli/personality.py.
+  # Entries here ADD new personalities or OVERRIDE a built-in by name.
+  # The active selection is stored in display.personality (never here, and
+  # never in agent.system_prompt — that field is your manual system prompt).
+  personalities: {}
+  #   mentor: "You are a supportive mentor. Guide, don't lecture."
+  #   reviewer:
+  #     system_prompt: "You are a meticulous code reviewer."
+  #     tone: "direct"
+  #     style: "terse"
 
 # =============================================================================
 # Toolsets
@@ -1187,6 +1202,14 @@ platform_toolsets:
 stt:
   enabled: true
   # provider: "local"          # auto-detected if omitted
+  # --- Cloud pre-upload silence trim (groq/openai/mistral/xai/elevenlabs/deepinfra) ---
+  # Local whisper gets Silero VAD; cloud endpoints otherwise receive raw audio —
+  # silence inflates upload time, per-audio-minute billing, and hallucination risk.
+  # Collapses pauses with ffmpeg client-side; clips under 12s skip the trim, and
+  # on any failure the original uploads untouched.
+  # cloud_trim_silence: true   # set false to always upload the original audio
+  # cloud_trim_threshold_db: -40  # audio quieter than this counts as silence
+  # cloud_trim_keep_ms: 300    # how much of each pause survives (keeps natural pacing)
   local:
     model: "base"              # tiny | base | small | medium | large-v3 | turbo
     # language: ""             # auto-detect; set to "en", "es", "fr", etc. to force
@@ -1196,7 +1219,8 @@ stt:
     #                          # Set false to restore raw behavior (e.g. transcribing music/ambient audio).
     # vad_min_silence_ms: 500  # min silence (ms) that splits speech chunks when vad is on
     # no_speech_prob_threshold: 0.6  # drop a segment only if no_speech_prob > this...
-    # logprob_threshold: -1.0        # ...AND avg_logprob < this (both must hit — quiet real speech survives)
+    # logprob_threshold: -1.0       # ...AND avg_logprob < this (both must hit — quiet real speech survives)
+    # unload_after_idle_seconds: 0  # 0=never unload (default); e.g. 300 releases the model after 5min idle (frees VRAM on GPU; next voice message reloads it)
   language: "en"               # GLOBAL language hint for every STT provider (per-provider language wins). Set "" for auto-detect.
   # groq:
   #   model: "whisper-large-v3-turbo"

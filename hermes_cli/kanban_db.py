@@ -2798,17 +2798,23 @@ def _execute_boundary_with_retry(conn: sqlite3.Connection, sql: str) -> None:
 
 
 @contextlib.contextmanager
-def write_txn(conn: sqlite3.Connection):
+def write_txn(conn: sqlite3.Connection, *, allow_nested: bool = False):
     """Context manager for an IMMEDIATE write transaction.
 
     Use for any multi-statement write (creating a task + link, claiming a
     task + recording an event, etc.). A claim CAS inside this context is
     atomic -- at most one concurrent writer can succeed.
 
-    Nested callers use SQLite savepoints rather than opening a second
-    ``BEGIN IMMEDIATE``. This lets graph builders compose the existing atomic
-    task operations under one outer commit, so the dispatcher can never
-    observe a partially constructed multi-card graph.
+    Nesting is an explicit opt-in: a caller already inside a transaction
+    gets a loud ``RuntimeError`` unless it passes ``allow_nested=True``,
+    in which case a SQLite savepoint is used instead of a second
+    ``BEGIN IMMEDIATE``. Only composition primitives that graph builders
+    deliberately run under one outer commit (``create_task``,
+    ``add_comment``) opt in — helpers with post-commit side effects
+    (``complete_task`` & co.) must never run under an open outer
+    transaction, because their side effects (workspace cleanup, ready
+    recomputation, failure-counter clears) would fire while the outer
+    transaction can still roll back.
 
     The explicit ROLLBACK on exception is wrapped in try/except so that
     a SQLite auto-rollback (which leaves no active transaction) does not
@@ -2816,6 +2822,13 @@ def write_txn(conn: sqlite3.Connection):
     """
     _assert_not_delegated_child_mutation()
     if getattr(conn, "in_transaction", False):
+        if not allow_nested:
+            raise RuntimeError(
+                "write_txn: already inside a transaction. Nested composition "
+                "must opt in explicitly with write_txn(conn, allow_nested=True) "
+                "(savepoint semantics; the inner RELEASE is not durable until "
+                "the outer transaction commits)."
+            )
         savepoint = f"hermes_nested_{secrets.token_hex(8)}"
         conn.execute(f"SAVEPOINT {savepoint}")
         try:
@@ -3178,7 +3191,10 @@ def create_task(
     for attempt in range(2):
         task_id = _new_task_id()
         try:
-            with write_txn(conn):
+            # ``allow_nested=True``: graph builders (kanban_swarm.create_swarm)
+            # compose create_task calls under one outer commit so the
+            # dispatcher can never observe a partially constructed graph.
+            with write_txn(conn, allow_nested=True):
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -3707,7 +3723,9 @@ def add_comment(
     if not author or not author.strip():
         raise ValueError("comment author is required")
     now = int(time.time())
-    with write_txn(conn):
+    # ``allow_nested=True``: graph builders (kanban_swarm blackboard seeding)
+    # compose comment writes under one outer commit.
+    with write_txn(conn, allow_nested=True):
         if not conn.execute(
             "SELECT 1 FROM tasks WHERE id = ?", (task_id,)
         ).fetchone():
@@ -4230,8 +4248,9 @@ def recompute_ready(
 ) -> int:
     """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
 
-    Returns the number of tasks promoted.  Safe to call inside or outside
-    an existing transaction; it opens its own IMMEDIATE txn.
+    Returns the number of tasks promoted.  Opens its own IMMEDIATE txn, so it
+    MUST be called OUTSIDE any open write transaction (plain ``write_txn``
+    raises on nesting); call it after the enclosing txn commits.
 
     ``blocked`` tasks are also considered for promotion (so a task
     blocked purely by a parent dependency unblocks itself when the

@@ -88,7 +88,12 @@ def test_create_swarm_graph_is_atomic_and_rolls_back_partial_build(
         assert reader.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
 
         monkeypatch.setattr(kb, "create_task", original_create)
-        monkeypatch.setattr(kb, "complete_task", lambda *args, **kwargs: False)
+        import hermes_cli.kanban_swarm as ks
+
+        original_activate = ks._activate_root_inline
+        monkeypatch.setattr(
+            ks, "_activate_root_inline", lambda *args, **kwargs: False
+        )
         with pytest.raises(RuntimeError, match="could not activate"):
             create_swarm(
                 writer,
@@ -103,7 +108,7 @@ def test_create_swarm_graph_is_atomic_and_rolls_back_partial_build(
         assert reader.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 0
 
         hooks: list[tuple[str, bool]] = []
-        monkeypatch.setattr(kb, "complete_task", original_complete)
+        monkeypatch.setattr(ks, "_activate_root_inline", original_activate)
         monkeypatch.setattr(
             kb,
             "_fire_kanban_lifecycle_hook",
@@ -122,6 +127,54 @@ def test_create_swarm_graph_is_atomic_and_rolls_back_partial_build(
     finally:
         reader.close()
         writer.close()
+
+
+def test_plain_write_txn_nesting_raises_and_allow_nested_composes(tmp_path):
+    """B1 regression: nesting is explicit opt-in, never silent.
+
+    Plain ``write_txn`` inside an open transaction must raise loudly (the
+    historical invariant). ``allow_nested=True`` composes via a savepoint,
+    and an outer rollback discards the inner work without any post-commit
+    side effects having fired (the workspace directory survives).
+    """
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        workspace = tmp_path / "scratch-ws"
+        workspace.mkdir()
+        tid = kb.create_task(conn, title="ws task", assignee="worker")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET workspace_path = ? WHERE id = ?",
+                (str(workspace), tid),
+            )
+
+        # 1) Plain nesting raises loudly.
+        with pytest.raises(RuntimeError, match="already inside a transaction"):
+            with kb.write_txn(conn):
+                with kb.write_txn(conn):
+                    pass
+        assert not conn.in_transaction
+
+        # 2) allow_nested composes; outer rollback discards inner work
+        #    and no side effects (workspace cleanup) fired meanwhile.
+        with pytest.raises(RuntimeError, match="outer failure"):
+            with kb.write_txn(conn):
+                with kb.write_txn(conn, allow_nested=True):
+                    conn.execute(
+                        "UPDATE tasks SET status = 'done' WHERE id = ?", (tid,)
+                    )
+                    kb._append_event(conn, tid, "completed", {"result_len": 0})
+                # Inner savepoint released, but the outer txn now fails.
+                raise RuntimeError("outer failure")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        assert task.status == "ready"  # inner 'done' flip was discarded
+        assert not any(
+            e.kind == "completed" for e in kb.list_events(conn, tid)
+        )
+        assert workspace.is_dir()  # no _cleanup_workspace side effect fired
+    finally:
+        conn.close()
 
 
 def test_swarm_blackboard_merges_structured_updates(tmp_path):

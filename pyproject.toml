@@ -424,6 +424,10 @@ hermes_cli = ["observability/schemas/*.json", "data/*.json"]
 # topic-setup image disappears. Loaded via Path(__file__).parent / "assets"
 # in gateway/status_phrases.py and gateway/run.py.
 gateway = ["assets/**/*"]
+# Bundled plugin discovery reads these manifests at runtime. Keep them in
+# sealed wheels with the plugin Python modules; without this declaration the
+# wheel contains adapters but discovery finds zero bundled plugins.
+plugins = ["**/plugin.yaml", "**/plugin.yml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

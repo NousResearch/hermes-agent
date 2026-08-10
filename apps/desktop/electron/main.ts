@@ -2633,13 +2633,17 @@ async function checkUpdates() {
     hasMergeBase
   })
 
-  const commits = behind > 0 ? await readCommitLog(updateRoot, branch) : []
+  // behind === null means "update available, exact count unknown" (shallow
+  // clone without a merge-base): still list what origin offers (the log read
+  // is capped at 40 entries), so "See what's new" stays useful and honest.
+  const commits = behind !== 0 ? await readCommitLog(updateRoot, branch) : []
 
   return {
     supported: true,
     branch,
     currentBranch,
     behind,
+    updateAvailable: behind === null || behind > 0,
     currentSha,
     targetSha,
     commits,

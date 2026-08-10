@@ -170,6 +170,7 @@ export interface Translations {
     updateHermes: string
     updateReadyTitle: string
     updateReadyMessage: (count: number) => string
+    updateReadyMessageUnknown: string
     seeWhatsNew: string
     errors: {
       elevenLabsNeedsKey: string
@@ -450,6 +451,7 @@ export interface Translations {
       cantReach: string
       tapCheck: string
       updateReady: (count: number) => string
+      updateReadyUnknown: string
       lastChecked: (age: string) => string
       justNowSuffix: string
       automaticUpdates: string

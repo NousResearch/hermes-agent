@@ -4,10 +4,11 @@ import { test } from 'vitest'
 
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 
-// FAIL-BEFORE: pre-fix the function did `Number.parseInt(countStr) || 0`
-// unconditionally, so a shallow checkout with no merge-base surfaced the bogus
-// rev-list count (e.g. 12104). This asserts the new shallow/no-merge-base branch.
-test('shallow checkout with no merge-base does NOT trust the bogus rev-list count', () => {
+// FAIL-BEFORE: the shallow/no-merge-base branch returned the sentinel `1`,
+// which the UI rendered as a literal "1 change included" even when the true
+// count was far higher (e.g. 90). An update IS available here, but its exact
+// size is unknown — the only honest value is `null`.
+test('shallow checkout with no merge-base reports null (unknown count), not a fake 1', () => {
   assert.equal(
     resolveBehindCount({
       countStr: '12104',
@@ -16,7 +17,7 @@ test('shallow checkout with no merge-base does NOT trust the bogus rev-list coun
       isShallow: true,
       hasMergeBase: false
     }),
-    1
+    null
   )
 })
 
@@ -113,7 +114,7 @@ test('skipped-count path resolves via SHA compare, never via empty countStr', ()
       isShallow: true,
       hasMergeBase: false
     }),
-    1
+    null
   )
   assert.equal(
     resolveBehindCount({

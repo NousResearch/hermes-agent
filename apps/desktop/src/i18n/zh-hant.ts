@@ -125,6 +125,7 @@ export const zhHant = defineLocale({
     updateHermes: '更新 Hermes',
     updateReadyTitle: '有可用更新',
     updateReadyMessage: count => `有 ${count} 項新變更可用。`,
+    updateReadyMessageUnknown: '有新更新可用。',
     seeWhatsNew: '查看新增內容',
     errors: {
       elevenLabsNeedsKey: 'ElevenLabs STT 需要 ELEVENLABS_API_KEY。',
@@ -624,6 +625,7 @@ export const zhHant = defineLocale({
       cantReach: '無法連線到更新伺服器。',
       tapCheck: '點選「立即檢查」以尋找更新。',
       updateReady: count => `新更新已就緒（包含 ${count} 項變更）。`,
+      updateReadyUnknown: '新更新已就緒。',
       lastChecked: age => `上次檢查：${age}`,
       justNowSuffix: ' · 剛剛',
       automaticUpdates: '自動更新',

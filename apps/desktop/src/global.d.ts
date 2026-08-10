@@ -439,7 +439,10 @@ export interface DesktopUpdateStatus {
   reason?: string
   message?: string
   error?: string
-  behind?: number
+  /** Exact commits behind. null = update available, but the count is
+   *  unknowable (shallow clone without a merge-base) — never render it as a
+   *  literal number. */
+  behind?: number | null
   currentSha?: string
   /** Backend only: the version string the backend reports for itself. */
   currentVersion?: string

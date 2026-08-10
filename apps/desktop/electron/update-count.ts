@@ -21,7 +21,11 @@ function resolveBehindCount({ countStr, currentSha, targetSha, isShallow, hasMer
       return 0
     }
 
-    return 1 // behind by an unknown amount — show a generic "update available"
+    // An update IS available, but its size is unknowable without a merge-base.
+    // Return null — never a numeric sentinel: the UI used to render the old
+    // `1` as a literal "1 change included" even when the true distance was
+    // far larger. null lets every surface say "update available" honestly.
+    return null
   }
 
   return Number.parseInt(countStr, 10) || 0

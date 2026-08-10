@@ -232,34 +232,51 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             result = self._exec(f"python -c {self._escape_shell_arg(snippet)}")
         return result
 
-    def _sample_file_bytes(self, path: str, length: int = 1000):
-        """First ``length`` raw bytes, base64-wrapped so they survive the terminal
-        transport (which decodes stdout with ``errors="replace"`` and manufactures
-        U+FFFD for every undecodable byte, including a multibyte char cut in half
-        by ``head -c``). None when no clean base64 came back (no ``base64`` binary);
-        callers then fall back to the text heuristic.
+    def _sample_file_bytes(self, path: str, length: int = 1000) -> Optional[bytes]:
+        """Return a lossless byte sample through base64 or the ``od`` fallback.
 
-        Wrapping the sample in base64 lets the original bytes survive the transport, so binary detection can
-        happen at the byte layer where it is well-defined (#80308 and friends).
+        Terminal backends decode stdout as text, so raw file bytes cannot cross
+        the transport safely. Prefer base64, then use POSIX ``od`` hexadecimal
+        output if base64 is missing or returns an untrustworthy payload.
         """
-        result = self._exec(f"head -c {length} {self._escape_shell_arg(path)} 2>/dev/null | base64")
+        escaped = self._escape_shell_arg(path)
+        result = self._exec(f"head -c {length} {escaped} 2>/dev/null | base64")
+        if result.exit_code == 0:
+            sample = self._decode_base64_sample(result.stdout)
+            if sample is not None:
+                return sample
+
+        result = self._exec(
+            f"head -c {length} {escaped} 2>/dev/null | od -An -v -t x1"
+        )
         if result.exit_code != 0:
             return None
-        return self._decode_base64_sample(result.stdout)
+        return self._decode_od_sample(result.stdout)
 
     @staticmethod
     def _decode_base64_sample(text: str) -> Optional[bytes]:
-        """Decode one ``head -c N | base64`` sample. Whitespace-joins the whole text
-        first (``base64`` wraps at 76 columns), so callers hand over exactly one
-        segment; anything else fails validation → None (legacy text heuristic)."""
+        """Decode a clean ``head -c N | base64`` sample, else return ``None``."""
         encoded = "".join(_strip_terminal_fence_leaks(text).split())
         if not encoded:
-            return b""
+            return None
         if not re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", encoded):
             return None
         try:
             return base64.b64decode(encoded, validate=True)
         except (binascii.Error, ValueError):
+            return None
+
+    @staticmethod
+    def _decode_od_sample(text: str) -> Optional[bytes]:
+        """Decode strictly validated ``od -An -v -t x1`` output."""
+        tokens = _strip_terminal_fence_leaks(text).split()
+        if not tokens:
+            return b""
+        if not all(re.fullmatch(r"[0-9a-fA-F]{2}", token) for token in tokens):
+            return None
+        try:
+            return bytes(int(token, 16) for token in tokens)
+        except ValueError:
             return None
 
     @staticmethod

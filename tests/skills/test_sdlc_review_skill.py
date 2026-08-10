@@ -19,6 +19,7 @@ REQUIRED_SECTIONS = [
     "## Prerequisites",
     "## How to Run",
     "## Quick Reference",
+    "## Review Lenses",
     "## Procedure",
     "## Pitfalls",
     "## Verification",
@@ -72,9 +73,23 @@ def test_skill_documents_native_review_actions(
 
 def test_verdicts_route_through_distinct_terminal_actions(skill_text: str) -> None:
     quick_reference = skill_text.split("## Quick Reference", 1)[1].split(
-        "## Procedure", 1
+        "## Review Lenses", 1
     )[0]
     assert "Approve" in quick_reference and "`kanban_complete`" in quick_reference
     assert "Request changes" in quick_reference
     assert "`kanban_request_changes`" in quick_reference
     assert "Escalate" in quick_reference and "`kanban_block`" in quick_reference
+
+
+def test_review_lenses_vary_per_round(skill_text: str) -> None:
+    lenses = skill_text.split("## Review Lenses", 1)[1].split("## Procedure", 1)[0]
+    # Round derivation must key off history the reviewer actually sees.
+    assert "`changes_requested`" in lenses
+    assert "Prior attempts on this task" in lenses
+    # One distinct lens per round.
+    for lens in ("Artifact", "Execution", "Contract"):
+        assert lens in lenses
+    # Execution lens must direct empirical verification via the terminal.
+    assert "`terminal`" in lenses
+    # Fan-out note: parallel reviewers get different briefs.
+    assert "`delegate_task`" in lenses

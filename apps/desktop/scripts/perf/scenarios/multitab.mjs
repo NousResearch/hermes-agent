@@ -10,6 +10,9 @@
 // actually mid-turn (zone leaders first, so S=zones means "every visible
 // transcript streams, every hidden tab idles"); the rest sit settled.
 // --sessions N seeds a populated recents list (a lived-in sessions DB).
+// --turns N sets transcript depth per tile (long sessions), and --tools makes
+// every transcript an AGENT session: seeded turns carry settled tool rounds,
+// and the live stream opens/completes tool calls between text chunks.
 //
 // Drives the real pipeline synthetically (no backend, no credits): each tick
 // routes one delta per streaming session through `hook.update` — the same
@@ -68,16 +71,27 @@ const COLLECT = `
  *  (wiring cache + in-flight journal + publish + view sync). Driving
  *  `hook.publish` alone under-models a stream: it skips the journal and the
  *  cache, which is exactly where multi-session cost used to hide. */
-const setup = (tiles, seedTurns, streamSeed, zones, seedSessions, streaming, dead) => `
+const setup = (tiles, seedTurns, streamSeed, zones, seedSessions, streaming, dead, tools) => `
   (() => {
     const hook = window.__HERMES_SESSION_TILES__
     if (!hook) return 'no-hook'
     if (!hook.update) return 'no-update-hook'
 
-    const turn = (sid, i) => ([
-      { id: sid + '-u' + i, role: 'user', timestamp: Date.now(),
-        parts: [{ type: 'text', text: 'Review question ' + i + ': does the diff in module ' + i + ' handle the error path?' }] },
-      { id: sid + '-a' + i, role: 'assistant', timestamp: Date.now(), pending: false,
+    // A settled tool call the way the gateway stores one: streamed args (kept
+    // as argsText too) and a result blob. Real agent transcripts are MOSTLY
+    // these — a long session is hundreds of terminal/read_file/patch rounds.
+    const toolPart = (sid, i, k) => {
+      const args = { command: 'rg -n "handler" src/module-' + i + ' | head -40', background: false }
+      return {
+        type: 'tool-call', toolCallId: sid + '-t' + i + '-' + k, toolName: k % 2 ? 'read_file' : 'terminal',
+        args, argsText: JSON.stringify(args),
+        result: JSON.stringify({ success: true, output: Array.from({ length: 18 },
+          (_, l) => 'src/module-' + i + '.ts:' + (l * 7 + 3) + ':  const handler = wrap(ctx, retry)').join('\\n') })
+      }
+    }
+
+    const turn = (sid, i) => {
+      const answer = { id: sid + '-a' + i, role: 'assistant', timestamp: Date.now(), pending: false,
         parts: [{ type: 'text', text: [
           '## Finding ' + i, '',
           'The handler swallows the rejection. Key points for hunk \\\`' + i + '\\\`:', '',
@@ -90,7 +104,19 @@ const setup = (tiles, seedTurns, streamSeed, zones, seedSessions, streaming, dea
           '\\\`\\\`\\\`', '',
           '| path | covered |', '|---|---|', '| happy | yes |', '| error | no |', ''
         ].join('\\n') }] }
-    ])
+      const rows = [
+        { id: sid + '-u' + i, role: 'user', timestamp: Date.now(),
+          parts: [{ type: 'text', text: 'Review question ' + i + ': does the diff in module ' + i + ' handle the error path?' }] }
+      ]
+      // Agent work turn (--tools): two tool rounds before the answer, the
+      // shape run_conversation actually produces.
+      if (${tools}) {
+        rows.push({ id: sid + '-w' + i, role: 'assistant', timestamp: Date.now(), pending: false,
+          parts: [{ type: 'text', text: 'Checking module ' + i + '.' }, toolPart(sid, i, 0), toolPart(sid, i, 1)] })
+      }
+      rows.push(answer)
+      return rows
+    }
 
     const state = (sid, rid, isStreaming) => {
       const messages = []
@@ -185,8 +211,16 @@ const setup = (tiles, seedTurns, streamSeed, zones, seedSessions, streaming, dea
 const reveal = sid => `window.__HERMES_LAYOUT_TREE__.reveal(${JSON.stringify(`session-tile:${sid}`)})`
 
 /** Page-side driver: grow every tile's streaming tail by `chunk` each
- *  `intervalMs`, through the same write path the gateway flush uses. */
-const drive = (chunk, intervalMs, totalTokens) => `
+ *  `intervalMs`, through the same write path the gateway flush uses.
+ *
+ *  With `tools`, the stream is a working AGENT turn, not a monologue: every
+ *  12th tick opens a live tool call on the streaming message (args, no
+ *  result — the running spinner), every 12th+6 completes it with a result
+ *  blob, and text keeps flowing between rounds. That exercises the tool-part
+ *  update path (find + replace inside the parts array) and the ToolCall
+ *  renderer's pending→complete transitions, which text-only streaming never
+ *  touches. */
+const drive = (chunk, intervalMs, totalTokens, tools) => `
   (() => {
     const hook = window.__HERMES_SESSION_TILES__
     let pushed = 0
@@ -196,9 +230,30 @@ const drive = (chunk, intervalMs, totalTokens) => `
           if (!prev.streamId) return prev
           const messages = prev.messages.map(m => {
             if (m.id !== prev.streamId) return m
-            const head = m.parts.slice(0, -1)
-            const last = m.parts[m.parts.length - 1]
-            return { ...m, parts: [...head, { type: 'text', text: last.text + ${JSON.stringify(chunk)} }] }
+            const parts = m.parts.slice()
+            if (${tools} && pushed % 12 === 0) {
+              const args = { command: 'npm test -- --run suite-' + pushed, background: false }
+              parts.push({ type: 'tool-call', toolCallId: rid + '-live-' + pushed, toolName: 'terminal',
+                args, argsText: JSON.stringify(args) })
+            } else if (${tools} && pushed % 12 === 6) {
+              for (let p = parts.length - 1; p >= 0; p--) {
+                const part = parts[p]
+                if (part.type === 'tool-call' && part.result === undefined) {
+                  parts[p] = { ...part, result: JSON.stringify({ success: true,
+                    output: 'suite-' + pushed + ': 214 passed, 0 failed\\n'.repeat(12) }) }
+                  break
+                }
+              }
+              parts.push({ type: 'text', text: '' })
+            } else {
+              const last = parts[parts.length - 1]
+              if (last && last.type === 'text') {
+                parts[parts.length - 1] = { type: 'text', text: last.text + ${JSON.stringify(chunk)} }
+              } else {
+                parts.push({ type: 'text', text: ${JSON.stringify(chunk)} })
+              }
+            }
+            return { ...m, parts }
           })
           return { ...prev, messages }
         })
@@ -247,6 +302,9 @@ export default {
     const seedSessions = Number(opts.sessions ?? 0)
     const streaming = Math.min(Number(opts.streaming ?? tiles), tiles)
     const dead = Number(opts.dead ?? 0)
+    // --tools: seeded turns carry settled tool rounds and the live stream
+    // opens/completes tool calls between text — an agent working, not talking.
+    const tools = Boolean(opts.tools)
     const tokens = Number(opts.tokens ?? 240)
     // Matches STREAM_DELTA_FLUSH_MS — one publish per session per real flush.
     const intervalMs = Number(opts.intervalMs ?? 33)
@@ -261,15 +319,29 @@ export default {
 
     await cdp.send('Runtime.enable')
 
-    const ok = await cdp.eval(setup(tiles, seedTurns, streamSeed, zones, seedSessions, streaming, dead))
+    const ok = await cdp.eval(setup(tiles, seedTurns, streamSeed, zones, seedSessions, streaming, dead, tools))
 
     if (ok !== 'ok') {
       throw new Error(`multitab setup failed (${ok}) — dev hooks missing? (needs a dev/probe renderer)`)
     }
 
     // Mount every tab (keep-alive mounts on first activation), then settle.
+    // Each reveal is timed to the next paint — with deep transcripts the
+    // first mount is the "why does switching tabs hang" number.
+    const revealMs = []
+
     for (let n = 1; n <= tiles; n++) {
-      await cdp.eval(reveal(`perf-tile-${n}`))
+      const ms = Number(
+        await cdp.eval(`
+          new Promise(resolve => {
+            const t0 = performance.now()
+            ${reveal(`perf-tile-${n}`)}
+            requestAnimationFrame(() => requestAnimationFrame(() => resolve(performance.now() - t0)))
+          })
+        `)
+      )
+
+      revealMs.push(ms)
       await sleep(350)
     }
 
@@ -286,7 +358,7 @@ export default {
 
     await sleep(1000)
     await cdp.eval(RECORDERS)
-    await cdp.eval(drive(chunk, intervalMs, tokens))
+    await cdp.eval(drive(chunk, intervalMs, tokens, tools))
     await sleep(tokens * intervalMs + 1500)
 
     const data = JSON.parse(await cdp.eval(COLLECT))
@@ -331,7 +403,8 @@ export default {
         longtask_max_ms: Math.round((ltDurations.length ? Math.max(...ltDurations) : 0) * 10) / 10,
         frame_p95_ms: Math.round(percentile(frames, 0.95) * 10) / 10,
         frame_p99_ms: Math.round(percentile(frames, 0.99) * 10) / 10,
-        slow_frames_33: frames.filter(f => f > 33).length
+        slow_frames_33: frames.filter(f => f > 33).length,
+        reveal_max_ms: Math.round(Math.max(...revealMs) * 10) / 10
       },
       detail: {
         tiles,
@@ -339,10 +412,13 @@ export default {
         streaming,
         dead,
         sessions: seedSessions,
+        tools,
+        turns: seedTurns,
         code: Boolean(opts.code),
         windowS: Math.round(windowS * 10) / 10,
         avgFps: Math.round(avgFps * 10) / 10,
         worstSecondFps: Math.round(worstFps * 10) / 10,
+        revealMs: revealMs.map(v => Math.round(v)),
         frameHistogram: frameHistogram(frames)
       }
     }

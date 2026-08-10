@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import type { ReadableAtom } from 'nanostores'
 import type * as React from 'react'
-import { memo, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import { memo, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
@@ -64,7 +64,7 @@ import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
 import { threadLoadingState } from './thread-loading'
-import { selectTranscriptWindow } from './transcript-window'
+import { advanceTranscriptWindow, type TranscriptWindowState } from './transcript-window'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   gateway: HermesGateway | null
@@ -229,18 +229,25 @@ function ChatRuntimeBoundary({
 
   const [windowPages, setWindowPages] = useState(1)
   const [windowSessionKey, setWindowSessionKey] = useState(runtimeId)
+  // Sticky-cut continuity across flushes (advanceTranscriptWindow). A ref, not
+  // state: it is derived from `messages` and must never trigger a render.
+  const windowStateRef = useRef<null | TranscriptWindowState>(null)
 
   // Reset the window on session swap during RENDER, so a large expand from the
   // previous chat can't leak into the next one's first paint (#55191).
   if (windowSessionKey !== runtimeId) {
     setWindowSessionKey(runtimeId)
     setWindowPages(1)
+    windowStateRef.current = null
   }
 
-  const { messages: windowedMessages, windowed } = useMemo(
-    () => selectTranscriptWindow(messages, windowPages),
-    [messages, windowPages]
-  )
+  const { messages: windowedMessages, windowed } = useMemo(() => {
+    const next = advanceTranscriptWindow(windowStateRef.current, messages, windowPages)
+
+    windowStateRef.current = next
+
+    return next.window
+  }, [messages, windowPages])
 
   const runtimeMessageRepository = useRuntimeMessageRepository(windowedMessages)
 

@@ -340,13 +340,22 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
         if is_shallow:
             fetch_args += ["--depth", "1"]
         fetch_args.append("--quiet")
-        subprocess.run(
+        fetch_proc = subprocess.run(
             fetch_args,
             capture_output=True, timeout=10,
             cwd=str(repo_dir),
         )
+        fetch_ok = fetch_proc.returncode == 0
     except Exception:
-        pass  # Offline or timeout — use stale refs, that's fine
+        fetch_ok = False  # Offline or timeout — don't use stale refs
+
+    # When the fetch fails, the local origin/main tracking ref is stale.
+    # Comparing HEAD against it can report "0 behind" (up to date) even when
+    # upstream has moved forward — the exact stale-cache symptom in #82166.
+    # Return None so the caller knows the check was inconclusive and doesn't
+    # cache a false "up to date".
+    if not fetch_ok:
+        return None
 
     if is_shallow:
         # No history to count across the shallow boundary. `origin/main` may not
@@ -444,10 +453,16 @@ def check_for_updates() -> Optional[int]:
             behind = _check_via_local_git(repo_dir)
 
     try:
-        cache_file.write_text(
-            json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}),
-            encoding="utf-8",
-        )
+        # Don't cache inconclusive results (None). A None means the check
+        # could not run — typically a failed git fetch. Caching None would
+        # suppress retries for the full 6-hour cache window, leaving the
+        # user with a stale "up to date" or no information for hours after
+        # connectivity is restored (#82166).
+        if behind is not None:
+            cache_file.write_text(
+                json.dumps({"ts": now, "behind": behind, "rev": embedded_rev, "ver": VERSION}),
+                encoding="utf-8",
+            )
     except Exception:
         pass
 

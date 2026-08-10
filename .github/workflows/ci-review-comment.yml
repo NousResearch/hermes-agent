@@ -17,7 +17,13 @@ name: CI review comment
 on:
   workflow_run:
     workflows: [CI]
-    types: [requested]
+    # ``in_progress``, not ``requested``: a first-time contributor's run
+    # sits in ``action_required`` until a maintainer approves it, and
+    # ``requested`` fires at creation — the poller would wait out its
+    # whole timeout on a run that never starts. ``in_progress`` fires
+    # when the run actually starts, and it also fires on re-runs, which
+    # ``requested`` does not.
+    types: [in_progress]
 
 permissions:
   contents: read
@@ -25,9 +31,11 @@ permissions:
   pull-requests: write
 
 # One poller per CI run. A new push starts a new CI run, and its poller
-# cancels the poller of the run that GitHub superseded.
+# cancels the poller of the run that GitHub superseded. The group keys
+# on the head repository too: fork PRs often share a branch name
+# (``main``, ``patch-1``), and two PRs must not cancel each other.
 concurrency:
-  group: ci-review-comment-${{ github.event.workflow_run.head_branch }}
+  group: ci-review-comment-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: true
 
 jobs:

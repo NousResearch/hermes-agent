@@ -369,3 +369,22 @@ class TestToolUseEnforcementSuppress:
             _suppress_tools=False,
         )
         assert "Tool-use enforcement" in _stable_prompt(agent)
+
+    def test_no_tool_prompt_blocks_when_suppressed(self):
+        """#79639 (review-agent follow-up): when model.tools: false suppresses
+        the tools payload, ALL tool-related prompt blocks must be gated off as
+        a class — not just enforcement. A prompt that still commands the model
+        to call tools it cannot dispatch would provoke hallucinated tool_calls."""
+        agent = _make_agent(
+            valid_tool_names=["memory", "session_search", "skill_manage", "search"],
+            _tool_use_enforcement=True,
+            _suppress_tools=True,
+        )
+        prompt = _stable_prompt(agent)
+        assert "Tool-use enforcement" not in prompt
+        assert "You have persistent memory across sessions" not in prompt
+        assert "use session_search to recall it" not in prompt
+        assert "save the approach as a" not in prompt
+        assert "batch independent tool calls" not in prompt
+        assert "# Parallel tool calls" not in prompt
+        assert "do not describe what you would do" not in prompt

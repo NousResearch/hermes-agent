@@ -80,7 +80,6 @@ def test_substantive_tool_only_turn_invalidates_older_housekeeping_fallback():
 
     agent._cached_system_prompt = "You are helpful."
     agent._use_prompt_caching = False
-    agent.tool_delay = 0
     agent.compression_enabled = False
     agent.save_trajectories = False
     agent.valid_tool_names = {"todo", "web_search"}
@@ -126,14 +125,37 @@ def test_substantive_tool_only_turn_invalidates_older_housekeeping_fallback():
     )
 
 
-def test_housekeeping_only_turn_still_sets_fallback():
-    """Regression: pure housekeeping turns (content + only housekeeping tools)
-    must still set the fallback so the post-response mute path works.  This
-    verifies the fix doesn't break the original use case the fallback was
-    designed for.
+def test_bare_tool_marker_is_not_reused_as_final_response():
+    """
+    Regression test for #78148.
+
+    A provider/local template can emit a bare bracketed token (e.g. "[memory]")
+    as assistant content alongside a tool call. That token is protocol
+    scaffolding, not an answer. If it gets cached as `_last_content_with_tools`
+    and the following turn is empty, the post-tool fallback replays it as the
+    final response — and because it then enters the persisted transcript,
+    later context compaction preserves it, letting the model repeat the
+    marker in subsequent turns.
+
+    Test sequence:
+    1. Content "[memory]" + skill_manage (housekeeping) tool call → the bare
+       marker must be discarded, not cached as a fallback.
+    2. Empty content, no tool calls → enters the post-tool nudge path since
+       no fallback is available.
+    3. Content "Recovered after nudge." → returned as the final response.
+
+    Before the fix:
+    - Step 1 cached "[memory]" as `_last_content_with_tools`.
+    - Step 2 reused it via the empty-response fallback, so the conversation
+      never reached step 3 and "[memory]" leaked into the persisted history.
+
+    After the fix:
+    - Step 1 strips the bare marker before it is cached or persisted.
+    - Step 2 has no fallback available and enters the nudge path instead.
+    - Step 3 returns the nudge response as the final answer.
     """
     with (
-        patch("run_agent.get_tool_definitions", return_value=_tool_defs("memory")),
+        patch("run_agent.get_tool_definitions", return_value=_tool_defs("skill_manage")),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
     ):
@@ -147,20 +169,21 @@ def test_housekeeping_only_turn_still_sets_fallback():
 
     agent._cached_system_prompt = "You are helpful."
     agent._use_prompt_caching = False
-    agent.tool_delay = 0
     agent.compression_enabled = False
     agent.save_trajectories = False
-    agent.valid_tool_names = {"memory"}
+    agent.valid_tool_names = {"skill_manage"}
     agent.client = MagicMock()
     agent.client.chat.completions.create.side_effect = [
-        # Turn 1: Content + housekeeping tool (should set fallback)
+        # Turn 1: Bare "[memory]" marker + housekeeping tool call.
         _response(
-            content="You're welcome!",
+            content="[memory]",
             finish_reason="tool_calls",
-            tool_calls=[_tool_call("memory", "mem1")],
+            tool_calls=[_tool_call("skill_manage", "skill1")],
         ),
-        # Turn 2: Empty response (should use the housekeeping fallback)
+        # Turn 2: Empty response (should enter nudge path, not reuse "[memory]").
         _response(content="", finish_reason="stop"),
+        # Turn 3: Nudge response
+        _response(content="Recovered after nudge.", finish_reason="stop"),
     ]
 
     with (
@@ -169,12 +192,16 @@ def test_housekeeping_only_turn_still_sets_fallback():
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
     ):
-        result = agent.run_conversation("save this")
+        result = agent.run_conversation("do the full task")
 
-    assert result["final_response"] == "You're welcome!", (
-        f"Expected housekeeping fallback content, got: {result['final_response']}. "
-        f"Pure housekeeping turns should still set the fallback."
+    assert result["final_response"] != "[memory]", (
+        "The bare tool-call marker leaked through as the final response — "
+        "it should have been discarded before caching/persistence."
     )
-    assert "fallback_prior_turn_content" in result.get("turn_exit_reason", ""), (
-        f"Expected fallback_prior_turn_content exit, got: {result['turn_exit_reason']}."
+    assert result["final_response"] == "Recovered after nudge.", (
+        f"Expected nudge recovery response, got: {result['final_response']}."
     )
+    assert result["api_calls"] == 3, (
+        f"Expected 3 API calls (including nudge), got: {result['api_calls']}."
+    )
+

@@ -124,6 +124,148 @@ describe('ModelMenuPanel MoA presets', () => {
   })
 })
 
+describe('ModelMenuPanel current selection', () => {
+  it('keeps the checkmark on the live SessionView model when a stale options response disagrees', async () => {
+    $currentProvider.set('google')
+    $currentModel.set('gemini-3.1-pro')
+    getGlobalModelOptions.mockResolvedValue({
+      model: 'deepseek-chat',
+      provider: 'deepseek',
+      providers: MOCK_PROVIDERS
+    })
+
+    const { content } = renderPanel()
+
+    const currentRow = (await content.findByText(/Gemini 3\.1 Pro/i)).closest('[role="menuitem"]')
+    const staleRow = content.getByText('Deepseek Chat').closest('[role="menuitem"]')
+
+    expect(currentRow?.querySelector('.codicon-check')).not.toBeNull()
+    expect(staleRow?.querySelector('.codicon-check')).toBeNull()
+  })
+})
+
+describe('ModelMenuPanel search', () => {
+  // The pinned current model must NOT ride along on a query it doesn't match:
+  // it reads like the top result, so Enter/click picks the wrong model (the
+  // "type grok, get fable" bug). Every surveyed picker (VS Code, Zed, Open
+  // WebUI, Cherry Studio) drops the pin while filtering.
+  // Highlighted labels are split across <mark> nodes, so single-text-node
+  // queries miss them — match on the row span's composed textContent.
+  const rowWithText = (content: ReturnType<typeof renderPanel>['content'], pattern: RegExp) =>
+    content.queryByText((_, element) => element?.tagName === 'SPAN' && pattern.test(element.textContent ?? ''))
+
+  it('hides the non-matching current model while a query is active', async () => {
+    $currentProvider.set('deepseek')
+    $currentModel.set('deepseek-v4-pro')
+    const { content } = renderPanel()
+
+    await content.findByText(/Deepseek V4 Pro/i)
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.change(input, { target: { value: 'gemini' } })
+
+    await vi.waitFor(() => {
+      expect(rowWithText(content, /Gemini 3\.1 Pro/i)).not.toBeNull()
+    })
+    expect(rowWithText(content, /Deepseek V4 Pro/i)).toBeNull()
+  })
+
+  it('Enter in the search field commits the first match', async () => {
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findByText('DeepSeek')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.change(input, { target: { value: 'gemini' } })
+
+    await vi.waitFor(() => {
+      expect(rowWithText(content, /Gemini 3\.1 Pro/i)).not.toBeNull()
+    })
+
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    // First matching family of the first (alphabetical) matching provider.
+    await vi.waitFor(() => {
+      expect(onSelectModel).toHaveBeenCalledWith({
+        model: 'gemini-3.1-pro',
+        provider: 'google',
+        sessionId: 'runtime-1'
+      })
+    })
+  })
+
+  it('Enter with no matches is a no-op (menu stays put, nothing selected)', async () => {
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findByText('DeepSeek')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.change(input, { target: { value: 'zzz-no-such-model' } })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(onSelectModel).not.toHaveBeenCalled()
+  })
+
+  it('arrows move the selection without leaving the input; Enter commits the stepped row', async () => {
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findByText('DeepSeek')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.change(input, { target: { value: 'gemini' } })
+
+    await vi.waitFor(() => {
+      expect(rowWithText(content, /Gemini 3\.1 Pro/i)).not.toBeNull()
+    })
+
+    // First match auto-selected; ↓ steps to the second match.
+    fireEvent.keyDown(input, { key: 'ArrowDown' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await vi.waitFor(() => {
+      expect(onSelectModel).toHaveBeenCalledWith({
+        model: 'gemini-2.5-flash',
+        provider: 'google',
+        sessionId: 'runtime-1'
+      })
+    })
+  })
+
+  it('with no query the selection sits on the current model, so Enter closes without switching', async () => {
+    $currentProvider.set('google')
+    $currentModel.set('gemini-3.1-pro')
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findByText('DeepSeek')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    expect(onSelectModel).not.toHaveBeenCalled()
+  })
+
+  it('filters MoA presets by the query instead of leaving them as phantom first matches', async () => {
+    const { content, onSelectModel } = renderPanel()
+
+    await content.findByText('MoA: BeastMode')
+
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    fireEvent.change(input, { target: { value: 'beast' } })
+
+    await vi.waitFor(() => {
+      expect(rowWithText(content, /MoA: BeastMode/)).not.toBeNull()
+    })
+    expect(rowWithText(content, /MoA: default/)).toBeNull()
+
+    // The surviving preset IS the first row, so Enter commits it.
+    fireEvent.keyDown(input, { key: 'Enter' })
+
+    await vi.waitFor(() => {
+      expect(onSelectModel).toHaveBeenCalledWith({ model: 'BeastMode', provider: 'moa', sessionId: 'runtime-1' })
+    })
+  })
+})
+
 describe('ModelMenuPanel provider collapse', () => {
   it('shows all provider models by default (none collapsed)', async () => {
     const { content } = renderPanel()
@@ -158,7 +300,7 @@ describe('ModelMenuPanel provider collapse', () => {
     })
   })
 
-  it('auto-expands the active provider even when collapsed', async () => {
+  it('collapses the active provider too (no forced auto-expand)', async () => {
     $currentProvider.set('deepseek')
     $currentModel.set('deepseek-v4-pro')
     const { content } = renderPanel()
@@ -166,8 +308,11 @@ describe('ModelMenuPanel provider collapse', () => {
     const header = await content.findByText('DeepSeek')
     fireEvent.click(header)
 
-    // Should still show models because it's the active provider
-    expect(content.queryByText('Deepseek V4 Pro')).not.toBeNull()
+    // The current provider is collapsible like any other — clicking its header
+    // hides its models rather than forcing them to stay open.
+    await vi.waitFor(() => {
+      expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+    })
   })
 
   it('bypasses collapse when search is active', async () => {
@@ -182,9 +327,15 @@ describe('ModelMenuPanel provider collapse', () => {
     expect(input).not.toBeNull()
     fireEvent.change(input, { target: { value: 'deepseek' } })
 
-    // Should show models — search bypasses collapse
+    // Should show models — search bypasses collapse. The matched letters render
+    // inside a <mark>, splitting the label across nodes, so match on the row
+    // span's composed textContent instead of a single text node.
     await vi.waitFor(() => {
-      expect(content.queryByText('Deepseek V4 Pro')).not.toBeNull()
+      expect(
+        content.queryByText(
+          (_, element) => element?.tagName === 'SPAN' && (element.textContent ?? '').startsWith('Deepseek V4 Pro')
+        )
+      ).not.toBeNull()
     })
   })
 

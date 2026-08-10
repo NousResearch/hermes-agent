@@ -5,6 +5,7 @@ Covers wire-up from tools.delegate_tool.delegate_task:
   * runs on the parent thread (no re-entrancy for hook authors)
   * carries child_role when the agent exposes _delegate_role
   * carries child_role=None when _delegate_role is not set (pre-M3)
+  * exposes a detached, metadata-only tool_call_history
 """
 
 from __future__ import annotations
@@ -15,7 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from tools.delegate_tool import delegate_task
+from tools.delegate_tool import _summarize_tool_arguments, delegate_task
 from hermes_cli import plugins
 
 
@@ -158,7 +159,9 @@ class TestBatchMode:
             ]
             delegate_task(
                 tasks=[
-                    {"goal": "A"}, {"goal": "B"}, {"goal": "C"},
+                    {"goal": "Investigate module A"},
+                    {"goal": "Investigate module B"},
+                    {"goal": "Investigate module C"},
                 ],
                 parent_agent=_make_parent(),
             )
@@ -181,7 +184,10 @@ class TestBatchMode:
                  "_child_role": None},
             ]
             delegate_task(
-                tasks=[{"goal": "A"}, {"goal": "B"}],
+                tasks=[
+                    {"goal": "Investigate module A"},
+                    {"goal": "Investigate module B"},
+                ],
                 parent_agent=_make_parent(),
             )
 
@@ -193,18 +199,51 @@ class TestBatchMode:
 
 
 class TestPayloadShape:
-    def test_role_absent_becomes_none(self):
+    def test_includes_redacted_tool_call_history(self):
         captured = _register_capturing_hook()
 
         with patch("tools.delegate_tool._run_single_child") as mock_run:
             mock_run.return_value = {
-                "task_index": 0, "status": "completed",
-                "summary": "x", "api_calls": 1, "duration_seconds": 0.1,
-                # Deliberately omit _child_role — pre-M3 shape.
+                "task_index": 0,
+                "status": "completed",
+                "summary": "wrote the report",
+                "api_calls": 1,
+                "duration_seconds": 0.1,
+                "tool_trace": [{
+                    "tool": "write_file",
+                    "args_bytes": 128,
+                    "result_bytes": 32,
+                    "status": "ok",
+                    "input_summary": {
+                        "argument_keys": ["content", "path", "token"],
+                        "targets": {
+                            "path": "/private/report.json",
+                            "url": "https://user:password@example.test:8443/upload?token=secret",
+                            "token": "must-not-leak",
+                        },
+                    },
+                    "args": {"path": "/private/report.json"},
+                    "result": "secret output",
+                }],
             }
             delegate_task(goal="do X", parent_agent=_make_parent())
 
-        assert captured[0]["child_role"] is None
+        assert captured[0]["tool_call_history"] == [{
+            "tool_name": "write_file",
+            "tool_input": {
+                "argument_keys": ["content", "path", "token"],
+                "targets": {
+                    "path": "/private/report.json",
+                    "url": "https://example.test:8443/upload",
+                },
+            },
+            "input_bytes": 128,
+            "output_bytes": 32,
+            "status": "ok",
+        }]
+
+
+
 
     def test_result_does_not_leak_child_role_field(self):
         """The internal _child_role key must be stripped before the

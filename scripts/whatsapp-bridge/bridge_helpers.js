@@ -483,6 +483,12 @@ export async function extractBridgeEvent({
     quotedText,
     hasQuotedMessage,
     botIds,
+    readReceiptKey: {
+      remoteJid: msg.key.remoteJid || chatId,
+      id: msg.key.id,
+      participant: msg.key.participant || senderId,
+      fromMe: Boolean(msg.key.fromMe),
+    },
     timestamp: msg.messageTimestamp,
   };
 }
@@ -492,6 +498,12 @@ export function inferMediaType(ext) {
   if (['mp4', 'mov', 'avi', 'mkv', '3gp'].includes(ext)) return 'video';
   if (['ogg', 'opus', 'mp3', 'wav', 'm4a'].includes(ext)) return 'audio';
   return 'document';
+}
+
+export function inboundReadReceiptKeys({ key, enabled }) {
+  if (!enabled || !key || key.fromMe || !key.id || !key.remoteJid) return [];
+  // Preserve participant for group messages: Baileys needs the original key.
+  return [key];
 }
 
 export function mediaPayloadForFile({ buffer, filePath, mediaType, caption, fileName }) {
@@ -554,4 +566,61 @@ export function pollCreationMessageFromPayload(payload) {
     selectableOptionsCount,
   };
   return message;
+}
+
+/**
+ * Reconnect scheduling guard. startSocket() awaits network I/O before it
+ * creates a socket or registers event handlers, so a bare
+ * `setTimeout(startSocket, ...)` has two unrecoverable failure modes: a
+ * rejection is unhandled (crashes the process on modern Node), and a hang
+ * leaves the bridge permanently disconnected with nothing left to retry.
+ * Every (re)connect must go through the scheduler this returns.
+ */
+export function createReconnectScheduler(startFn, {
+  retryDelayMs = 5000,
+  log = console.log,
+  setTimeoutFn = setTimeout,
+} = {}) {
+  function scheduleReconnect(delayMs) {
+    setTimeoutFn(() => {
+      Promise.resolve()
+        .then(startFn)
+        .catch((err) => {
+          log(`⚠️  Reconnect failed (${err?.message || err}). Retrying in ${Math.round(retryDelayMs / 1000)}s...`);
+          scheduleReconnect(retryDelayMs);
+        });
+    }, delayMs);
+  }
+  return scheduleReconnect;
+}
+
+/**
+ * Version resolution guard. fetchLatestBaileysVersion() is a plain fetch to
+ * raw.githubusercontent.com with no AbortSignal; a stalled connection can
+ * pend forever and wedge the reconnect path (the scheduler above cannot
+ * retry past an await that never settles). Bound the fetch and fall back to
+ * the last known-good version, or the Baileys default before first success.
+ */
+export function createVersionResolver(fetchVersionFn, {
+  timeoutMs = 15000,
+  log = console.log,
+} = {}) {
+  let cachedVersion = null;
+  return async function resolveVersion() {
+    let timer = null;
+    try {
+      const { version } = await Promise.race([
+        fetchVersionFn(),
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error('version fetch timed out')), timeoutMs);
+        }),
+      ]);
+      cachedVersion = version;
+    } catch (err) {
+      log(`⚠️  Baileys version fetch failed (${err?.message || err}); using ${cachedVersion ? 'cached version' : 'library default'}.`);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    return cachedVersion;
+  };
 }

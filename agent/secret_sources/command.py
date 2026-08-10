@@ -44,6 +44,7 @@ from typing import Dict, Optional
 # Reuse the exact result shape the bitwarden source returns so
 # hermes_cli.env_loader can consume both providers identically.
 from agent.secret_sources.base import ErrorKind, SecretSource
+from agent.secret_sources.base import get_source_environment
 from agent.secret_sources.bitwarden import FetchResult
 
 __all__ = [
@@ -179,7 +180,19 @@ def _run_helper(
         )
         return None
 
-    env = os.environ.copy()
+    # User-configured secret-helper command: runs with the user's full shell
+    # env by design (it may need any credential to resolve the secret).
+    source_env = get_source_environment()
+    if source_env is os.environ:
+        # Legacy single-profile startup intentionally preserves the existing
+        # helper contract, which may rely on the user's full environment.
+        from tools.environments.local import build_subprocess_env
+        env = build_subprocess_env(scrub_secrets=False, inherit_profile_home=False)
+    else:
+        # A multiplex profile must never inherit sibling secrets from the
+        # process-global environment.  hydrate_profile_secret_sources seeds
+        # only global-safe values plus this profile's own .env.
+        env = dict(source_env)
     env["HERMES_SECRET_KEY"] = secret_key
 
     try:

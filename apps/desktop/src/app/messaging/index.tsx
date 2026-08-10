@@ -1,18 +1,24 @@
+import { useStore } from '@nanostores/react'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 
 import { PageLoader } from '@/components/page-loader'
 import { StatusDot, type StatusTone } from '@/components/status-dot'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { ErrorBanner } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import {
+  approvePairing,
   getMessagingPlatforms,
+  getPairing,
   type MessagingEnvVarInfo,
   type MessagingPlatformInfo,
+  type PairingUser,
+  revokePairing,
   updateMessagingPlatform
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
@@ -20,6 +26,7 @@ import { openExternalLink } from '@/lib/external-link'
 import { ExternalLink, Save, Trash2 } from '@/lib/icons'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
+import { $changeEventsAvailable, $pairingChangeTick, $platformsChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { runGatewayRestart } from '@/store/system-actions'
 
@@ -72,6 +79,22 @@ const trimEdits = (edits: Record<string, string>): Record<string, string> =>
       .filter(([, v]) => v)
   )
 
+/** Stable row identity: a user id is only unique within its platform. */
+const pairingKey = (user: PairingUser) => `${user.platform}:${user.user_id}`
+
+const pairingLabel = (user: PairingUser) => user.user_name || user.user_id
+
+/** Group pairing rows by platform id so a detail pane can slice its own. */
+function byPlatform(rows: PairingUser[]): Record<string, PairingUser[]> {
+  const grouped: Record<string, PairingUser[]> = {}
+
+  for (const row of rows) {
+    ;(grouped[row.platform] ||= []).push(row)
+  }
+
+  return grouped
+}
+
 const FIELD_COPY: Record<string, { advanced?: boolean }> = {
   TELEGRAM_PROXY: { advanced: true },
   DISCORD_REPLY_TO_MODE: { advanced: true },
@@ -106,6 +129,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
   // Both save/toggle toasts offer the same one-click restart.
   const restartGatewayAction = { label: t.commandCenter.restartGateway, onClick: () => void runGatewayRestart() }
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
+
+  const [pairing, setPairing] = useState<{ approved: PairingUser[]; pending: PairingUser[] }>({
+    approved: [],
+    pending: []
+  })
+
+  const [approving, setApproving] = useState<null | string>(null)
+  const [pendingRevoke, setPendingRevoke] = useState<null | PairingUser>(null)
   const [edits, setEdits] = useState<EditMap>({})
   const [query, setQuery] = useState('')
   const [refreshing, setRefreshing] = useState(false)
@@ -135,15 +166,64 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     [m]
   )
 
-  useRefreshHotkey(() => void refreshPlatforms())
+  // Pairing has its own signal. platforms.changed tracks connect/disconnect
+  // health via gateway_state.json, which a new pairing request never moves —
+  // riding it would leave a pending row invisible until something unrelated
+  // reconnected. Failures stay silent: an older backend without the endpoint
+  // should show no rows, not an error banner over a working page.
+  const refreshPairing = useCallback(async () => {
+    try {
+      const result = await getPairing()
+      setPairing({ approved: result.approved ?? [], pending: result.pending ?? [] })
+    } catch {
+      // Leave the last known rows in place rather than blanking them.
+    }
+  }, [])
+
+  const refreshAll = useCallback(
+    async (silent = false) => {
+      await Promise.all([refreshPlatforms(silent), refreshPairing()])
+    },
+    [refreshPairing, refreshPlatforms]
+  )
+
+  useRefreshHotkey(() => void refreshAll())
 
   useEffect(() => {
-    void refreshPlatforms()
-  }, [refreshPlatforms])
+    void refreshAll()
+  }, [refreshAll])
 
-  // Auto-poll while the user is on the messaging page so connection status
-  // updates without a manual "check" click. Pause when the tab is hidden.
+  const changeEventsAvailable = useStore($changeEventsAvailable)
+  const platformsChangeTick = useStore($platformsChangeTick)
+  const pairingChangeTick = useStore($pairingChangeTick)
+
+  // A new pending request (or a grant from another surface) moves the pairing
+  // store on disk; the change watcher turns that into pairing.changed.
   useEffect(() => {
+    if (!changeEventsAvailable || pairingChangeTick === 0 || document.hidden) {
+      return
+    }
+
+    void refreshPairing()
+  }, [changeEventsAvailable, pairingChangeTick, refreshPairing])
+
+  // Connection status updates without a manual "check" click. platforms.changed
+  // (the gateway persisting connect/disconnect/health to gateway_state.json)
+  // drives the refresh on event-capable backends — no timer; older backends
+  // keep the legacy visible-tab poll.
+  useEffect(() => {
+    if (!changeEventsAvailable || platformsChangeTick === 0 || document.hidden) {
+      return
+    }
+
+    void refreshPlatforms(true)
+  }, [changeEventsAvailable, platformsChangeTick, refreshPlatforms])
+
+  useEffect(() => {
+    if (changeEventsAvailable) {
+      return
+    }
+
     let cancelled = false
 
     function tick() {
@@ -151,7 +231,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
         return
       }
 
-      void refreshPlatforms(true)
+      void refreshAll(true)
     }
 
     const id = window.setInterval(tick, 6000)
@@ -160,7 +240,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       cancelled = true
       window.clearInterval(id)
     }
-  }, [refreshPlatforms])
+  }, [changeEventsAvailable, refreshAll])
 
   const selected = useMemo(() => {
     if (!platforms) {
@@ -169,6 +249,9 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 
     return platforms.find(platform => platform.id === selectedId) || platforms[0] || null
   }, [platforms, selectedId])
+
+  const pendingByPlatform = useMemo(() => byPlatform(pairing.pending), [pairing.pending])
+  const approvedByPlatform = useMemo(() => byPlatform(pairing.approved), [pairing.approved])
 
   const visiblePlatforms = useMemo(() => {
     if (!platforms) {
@@ -265,6 +348,57 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
     }
   }
 
+  // Approve/revoke paint from a snapshot immediately, then let the
+  // authoritative refresh have the last word. A failed write restores the
+  // snapshot so the row never silently disappears on an error.
+  async function handleApprove(user: PairingUser) {
+    if (!user.request_id) {
+      return
+    }
+
+    const key = pairingKey(user)
+    const snapshot = pairing
+    setApproving(key)
+    setPairing(current => ({
+      approved: current.approved,
+      pending: current.pending.filter(row => pairingKey(row) !== key)
+    }))
+
+    try {
+      await approvePairing(user.platform, user.request_id)
+      notify({ kind: 'success', title: m.approvedUser(pairingLabel(user)), message: m.approvedHint })
+      await refreshPairing()
+    } catch (err) {
+      setPairing(snapshot)
+      // 429 is the code path's brute-force lockout — a distinct condition the
+      // operator can only wait out, so it gets its own message.
+      const lockedOut = err instanceof Error && err.message.includes('429')
+      notifyError(err, lockedOut ? m.pairingLockedOut : m.failedApprove(pairingLabel(user)))
+    } finally {
+      setApproving(null)
+    }
+  }
+
+  // ConfirmDialog owns the pending → done → close beat and shows an inline
+  // error when onConfirm throws, so this rethrows instead of swallowing.
+  async function handleRevoke(user: PairingUser) {
+    const key = pairingKey(user)
+    const snapshot = pairing
+    setPairing(current => ({
+      approved: current.approved.filter(row => pairingKey(row) !== key),
+      pending: current.pending
+    }))
+
+    try {
+      await revokePairing(user.platform, user.user_id)
+      notify({ kind: 'success', title: m.revokedUser(pairingLabel(user)), message: user.platform })
+      await refreshPairing()
+    } catch (err) {
+      setPairing(snapshot)
+      throw err
+    }
+  }
+
   return (
     <PageSearchShell
       {...props}
@@ -285,6 +419,7 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                   <PlatformRow
                     active={selected?.id === platform.id}
                     onSelect={() => setSelectedId(platform.id)}
+                    pendingCount={pendingByPlatform[platform.id]?.length ?? 0}
                     platform={platform}
                   />
                 </li>
@@ -307,7 +442,10 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           >
             {selected && (
               <PlatformDetail
+                approved={approvedByPlatform[selected.id] ?? []}
+                approving={approving}
                 edits={edits[selected.id] || {}}
+                onApprove={user => void handleApprove(user)}
                 onClear={key => void handleClear(selected, key)}
                 onEdit={(key, value) =>
                   setEdits(current => ({
@@ -318,6 +456,8 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
                     }
                   }))
                 }
+                onRevoke={setPendingRevoke}
+                pending={pendingByPlatform[selected.id] ?? []}
                 platform={selected}
                 saving={saving}
               />
@@ -325,6 +465,18 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
           </DetailColumn>
         </MasterDetail>
       )}
+
+      <ConfirmDialog
+        busyLabel={m.revoking}
+        cancelLabel={t.common.cancel}
+        confirmLabel={m.revoke}
+        description={pendingRevoke ? m.revokeDesc(pairingLabel(pendingRevoke)) : null}
+        destructive
+        onClose={() => setPendingRevoke(null)}
+        onConfirm={() => (pendingRevoke ? handleRevoke(pendingRevoke) : undefined)}
+        open={Boolean(pendingRevoke)}
+        title={m.revokeTitle}
+      />
     </PageSearchShell>
   )
 }
@@ -332,12 +484,16 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
 function PlatformRow({
   active,
   onSelect,
+  pendingCount,
   platform
 }: {
   active: boolean
   onSelect: () => void
+  pendingCount: number
   platform: MessagingPlatformInfo
 }) {
+  const { t } = useI18n()
+
   return (
     <button
       className={cn(
@@ -350,22 +506,47 @@ function PlatformRow({
       <PlatformAvatar platformId={platform.id} platformName={platform.name} />
       <span className="flex min-w-0 flex-1 items-center justify-between gap-2">
         <span className="truncate text-[length:var(--conversation-text-font-size)] font-normal">{platform.name}</span>
-        <StatusDot tone={stateTone(platform)} />
+        <span className="flex shrink-0 items-center gap-1.5">
+          {/* Someone is waiting to be let in — the only way this page tells
+              you so before you open the platform. */}
+          {pendingCount > 0 && (
+            <span
+              aria-label={t.messaging.pendingAria(pendingCount)}
+              className={cn(
+                'inline-flex min-w-4 items-center justify-center rounded-full px-1 text-[0.66rem] font-medium tabular-nums',
+                PILL_TONE.warn
+              )}
+            >
+              {pendingCount}
+            </span>
+          )}
+          <StatusDot tone={stateTone(platform)} />
+        </span>
       </span>
     </button>
   )
 }
 
 function PlatformDetail({
+  approved,
+  approving,
   edits,
+  onApprove,
   onClear,
   onEdit,
+  onRevoke,
+  pending,
   platform,
   saving
 }: {
+  approved: PairingUser[]
+  approving: null | string
   edits: Record<string, string>
+  onApprove: (user: PairingUser) => void
   onClear: (key: string) => void
   onEdit: (key: string, value: string) => void
+  onRevoke: (user: PairingUser) => void
+  pending: PairingUser[]
   platform: MessagingPlatformInfo
   saving: string | null
 }) {
@@ -398,6 +579,66 @@ function PlatformDetail({
       </header>
 
       {platform.error_message && <ErrorBanner>{platform.error_message}</ErrorBanner>}
+
+      {/* Pending pairing requests. Rendered only when someone is actually
+          waiting — an empty-state card here would be permanent chrome on a
+          page that is usually about credentials, not approvals. */}
+      {pending.length > 0 && (
+        <section>
+          <SectionTitle>{m.pendingRequests(pending.length)}</SectionTitle>
+          <div className="mt-1 grid gap-1">
+            {pending.map(user => {
+              const busy = approving === pairingKey(user)
+              const waited = typeof user.age_minutes === 'number' ? m.waitingSince(user.age_minutes) : null
+
+              return (
+                <ListRow
+                  action={
+                    <Button
+                      disabled={busy || !user.request_id}
+                      onClick={() => onApprove(user)}
+                      size="sm"
+                      variant="secondary"
+                    >
+                      {busy ? m.approving : m.approve}
+                    </Button>
+                  }
+                  // An unnamed requester is only a user id — showing it as
+                  // both title and description just repeats itself.
+                  description={[user.user_name ? user.user_id : null, waited].filter(Boolean).join(' · ')}
+                  key={pairingKey(user)}
+                  title={pairingLabel(user)}
+                />
+              )
+            })}
+          </div>
+        </section>
+      )}
+
+      {approved.length > 0 && (
+        <section>
+          <SectionTitle>{m.approvedUsers(approved.length)}</SectionTitle>
+          <div className="mt-1 grid gap-1">
+            {approved.map(user => (
+              <ListRow
+                action={
+                  <Button
+                    aria-label={m.revokeAria(pairingLabel(user))}
+                    onClick={() => onRevoke(user)}
+                    size="sm"
+                    variant="ghost"
+                  >
+                    {m.revoke}
+                  </Button>
+                }
+                description={user.user_name ? user.user_id : undefined}
+                key={pairingKey(user)}
+                title={pairingLabel(user)}
+              />
+            ))}
+          </div>
+        </section>
+      )}
 
       <section>
         <SectionTitle>{m.getCredentials}</SectionTitle>

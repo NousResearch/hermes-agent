@@ -15,7 +15,6 @@ export type SidebarActions = Pick<
   | 'onBranchSession'
   | 'onDeleteSession'
   | 'onLoadMoreMessaging'
-  | 'onLoadMoreProfileSessions'
   | 'onLoadMoreSessions'
   | 'onManageCronJob'
   | 'onNavigate'

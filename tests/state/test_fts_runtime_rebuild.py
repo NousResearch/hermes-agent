@@ -7,16 +7,24 @@ intact. Before this fix the gateway swallowed the failure at debug level and
 the in-memory session advanced while disk silently fell behind — surfacing
 later as "Persisted transcript lagged live cached history" amnesia.
 
-The fix: ``_execute_write`` detects the malformed-image class, performs a
-one-shot in-place FTS rebuild (FTS5 ``'rebuild'`` command — index rewritten
-from canonical rows, no messages touched), and retries the failed write.
+The fix: ``_execute_write`` first attempts a one-shot in-place FTS rebuild.
+If corruption persists, it records a durable stale marker, detaches the FTS
+sync triggers, and retries the canonical write. Search degrades to ``LIKE``
+until a later open atomically rebuilds the index and restores the triggers.
 """
 
 import sqlite3
 
 import pytest
 
-from hermes_state import SessionDB
+from hermes_state import (
+    FTS_STALE_KEY,
+    LEGACY_FTS_SQL,
+    LEGACY_FTS_TRIGRAM_SQL,
+    SCHEMA_SQL,
+    SessionDB,
+    _FTS_TRIGGERS,
+)
 
 
 @pytest.fixture
@@ -53,6 +61,26 @@ def _message_contents(db_path):
     rows = raw.execute("SELECT content FROM messages ORDER BY id").fetchall()
     raw.close()
     return [r[0] for r in rows]
+
+
+def _meta_value(db_path, key):
+    raw = sqlite3.connect(str(db_path))
+    row = raw.execute(
+        "SELECT value FROM state_meta WHERE key = ?", (key,)
+    ).fetchone()
+    raw.close()
+    return None if row is None else row[0]
+
+
+def _base_fts_triggers(db_path):
+    raw = sqlite3.connect(str(db_path))
+    rows = raw.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+        f"AND name IN ({','.join('?' for _ in _FTS_TRIGGERS)})",
+        _FTS_TRIGGERS,
+    ).fetchall()
+    raw.close()
+    return {row[0] for row in rows}
 
 
 class TestRuntimeFtsRebuild:
@@ -152,67 +180,186 @@ class TestRuntimeFtsRebuild:
         # i.e. we did not silently degrade to the LIKE fallback.
         assert any(">>>" in (r.get("snippet") or "") for r in results)
 
-    def test_trigram_search_falls_back_to_like_when_rebuild_consumed(
+
+    def test_second_corruption_fails_open_and_rebuilds_on_reopen(
         self, db, tmp_path
     ):
-        """When the one-shot rebuild was already consumed, a corrupt trigram
-        index must NOT crash search_messages — it degrades to the LIKE
-        substring fallback, which reads only the canonical messages table.
-        """
         if not db._fts_enabled:
             pytest.skip("FTS5 unavailable in this build")
-        if not db._trigram_available:
-            pytest.skip("trigram tokenizer unavailable in this build")
-        db.create_session("s1", source="test")
-        db.append_message("s1", "user", "关于大别山项目的进展报告")
-
-        # Consume the one-shot guard, then corrupt again.
-        _corrupt_trigram_fts(tmp_path / "state.db")
-        db.append_message("s1", "user", "seed to trigger write-path heal")
-        assert db._fts_runtime_rebuild_attempted is True
-        _corrupt_trigram_fts(tmp_path / "state.db")
-
-        # Before the fix this raised sqlite3.DatabaseError.
-        results = db.search_messages("大别山项目")
-        assert results  # LIKE fallback found the canonical row
-        assert any("大别山项目" in (r.get("snippet") or "") for r in results)
-
-    def test_rebuild_is_one_shot_per_instance(self, db, tmp_path):
-        if not db._fts_enabled:
-            pytest.skip("FTS5 unavailable in this build")
+        db_path = tmp_path / "state.db"
         db.create_session("s1", source="test")
         db.append_message("s1", "user", "seed")
-        _corrupt_fts(tmp_path / "state.db")
+        _corrupt_fts(db_path)
         db.append_message("s1", "user", "first heal")  # consumes the one shot
         assert db._fts_runtime_rebuild_attempted is True
 
-        # Corrupt again: the guard must NOT loop — the write now propagates.
-        _corrupt_fts(tmp_path / "state.db")
-        with pytest.raises(sqlite3.DatabaseError):
-            db.append_message("s1", "user", "second corruption")
+        # A second corruption must not strand the canonical transcript. The
+        # derived indexes are detached and marked stale instead of looping.
+        _corrupt_fts(db_path)
+        db.append_message("s1", "user", "second corruption")
+        assert _message_contents(db_path) == [
+            "seed",
+            "first heal",
+            "second corruption",
+        ]
+        assert db._fts_stale is True
+        assert _meta_value(db_path, FTS_STALE_KEY) == "1"
+        assert _base_fts_triggers(db_path) == set()
 
-    def test_non_fts_errors_still_propagate(self, db):
+        # Search remains available from canonical rows while FTS is stale.
+        results = db.search_messages("second corruption")
+        assert results
+        assert any("second corruption" in row["snippet"] for row in results)
+
+        # A later open atomically rebuilds all canonical rows before triggers
+        # return, then clears the durable breadcrumb.
+        db.close()
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened._fts_stale is False
+            assert _meta_value(db_path, FTS_STALE_KEY) is None
+            assert _base_fts_triggers(db_path) == set(_FTS_TRIGGERS)
+            results = reopened.search_messages("second corruption")
+            assert results
+        finally:
+            reopened.close()
+
+    def test_failed_in_place_rebuild_fails_open(self, db, tmp_path, monkeypatch):
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        db_path = tmp_path / "state.db"
         db.create_session("s1", source="test")
+        db.append_message("s1", "user", "seed")
+        _corrupt_fts(db_path)
 
-        def _bad(conn):
-            raise sqlite3.IntegrityError("NOT NULL constraint failed: x.y")
+        def _failed_rebuild():
+            raise sqlite3.DatabaseError("rebuild could not read corrupt FTS")
 
-        with pytest.raises(sqlite3.IntegrityError):
-            db._execute_write(_bad)
-        # The guard must not have been consumed by an unrelated error class.
-        assert db._fts_runtime_rebuild_attempted is False
+        monkeypatch.setattr(db, "rebuild_fts", _failed_rebuild)
+        db.append_message("s1", "user", "canonical survives")
 
-    def test_lock_retry_path_unchanged(self, db):
-        """A locked error still follows the jitter-retry path, untouched by
-        the DatabaseError handler (OperationalError is caught first)."""
-        calls = {"n": 0}
+        assert _message_contents(db_path)[-1] == "canonical survives"
+        assert _meta_value(db_path, FTS_STALE_KEY) == "1"
+        assert _base_fts_triggers(db_path) == set()
 
-        def _flaky(conn):
-            calls["n"] += 1
-            if calls["n"] < 3:
-                raise sqlite3.OperationalError("database is locked")
-            return "ok"
+    def test_stale_search_preserves_not_semantics(self, db, tmp_path, monkeypatch):
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        db_path = tmp_path / "state.db"
+        db.create_session("s1", source="test")
+        db.append_message("s1", "user", "python language guide")
+        db.append_message("s1", "user", "python java interoperability")
+        _corrupt_fts(db_path)
 
-        assert db._execute_write(_flaky) == "ok"
-        assert calls["n"] == 3
-        assert db._fts_runtime_rebuild_attempted is False
+        monkeypatch.setattr(
+            db,
+            "rebuild_fts",
+            lambda: (_ for _ in ()).throw(
+                sqlite3.DatabaseError("rebuild could not read corrupt FTS")
+            ),
+        )
+        db.append_message("s1", "user", "canonical write survives")
+        assert db._fts_stale is True
+
+        results = db.search_messages("python NOT java")
+        snippets = [row["snippet"] for row in results]
+        assert any("python language guide" in snippet for snippet in snippets)
+        assert all("java" not in snippet for snippet in snippets)
+
+    def test_existing_peer_observes_fail_open_marker(
+        self, db, tmp_path, monkeypatch
+    ):
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        db_path = tmp_path / "state.db"
+        db.create_session("s1", source="test")
+        db.append_message("s1", "user", "seed")
+        peer = SessionDB(db_path=db_path)
+        try:
+            _corrupt_fts(db_path)
+
+            def _failed_rebuild():
+                raise sqlite3.DatabaseError("rebuild failed")
+
+            monkeypatch.setattr(db, "rebuild_fts", _failed_rebuild)
+            db.append_message("s1", "user", "visible through canonical search")
+
+            assert peer._fts_stale is False
+            results = peer.search_messages("canonical search")
+            assert peer._fts_stale is True
+            assert results
+        finally:
+            peer.close()
+
+    def test_failed_startup_rebuild_keeps_fts_detached(
+        self, db, tmp_path, monkeypatch
+    ):
+        if not db._fts_enabled:
+            pytest.skip("FTS5 unavailable in this build")
+        db_path = tmp_path / "state.db"
+        db.create_session("s1", source="test")
+        db.append_message("s1", "user", "seed")
+        _corrupt_fts(db_path)
+        monkeypatch.setattr(
+            db,
+            "rebuild_fts",
+            lambda: (_ for _ in ()).throw(sqlite3.DatabaseError("still corrupt")),
+        )
+        db.append_message("s1", "user", "before restart")
+        db.close()
+
+        monkeypatch.setattr(
+            SessionDB,
+            "_recover_stale_fts",
+            lambda self, cursor, legacy: False,
+        )
+        reopened = SessionDB(db_path=db_path)
+        try:
+            assert reopened._fts_stale is True
+            assert _meta_value(db_path, FTS_STALE_KEY) == "1"
+            assert _base_fts_triggers(db_path) == set()
+            reopened.append_message("s1", "user", "after failed recovery")
+            assert _message_contents(db_path)[-1] == "after failed recovery"
+            assert reopened.search_messages("failed recovery")
+        finally:
+            reopened.close()
+
+    def test_legacy_inline_fts_fails_open_and_recovers(self, tmp_path, monkeypatch):
+        db_path = tmp_path / "legacy-state.db"
+        raw = sqlite3.connect(str(db_path))
+        raw.executescript(SCHEMA_SQL)
+        try:
+            raw.executescript(LEGACY_FTS_SQL + LEGACY_FTS_TRIGRAM_SQL)
+        except sqlite3.OperationalError as exc:
+            raw.close()
+            pytest.skip(f"required FTS tokenizer unavailable: {exc}")
+        raw.commit()
+        raw.close()
+
+        legacy = SessionDB(db_path=db_path)
+        try:
+            assert legacy._db_has_legacy_inline_fts(legacy._conn.cursor())
+            legacy.create_session("s1", source="test")
+            legacy.append_message("s1", "user", "legacy seed")
+            _corrupt_fts(db_path)
+            monkeypatch.setattr(
+                legacy,
+                "rebuild_fts",
+                lambda: (_ for _ in ()).throw(
+                    sqlite3.DatabaseError("legacy rebuild failed")
+                ),
+            )
+            legacy.append_message("s1", "user", "legacy canonical survives")
+            assert _message_contents(db_path)[-1] == "legacy canonical survives"
+            assert _meta_value(db_path, FTS_STALE_KEY) == "1"
+        finally:
+            legacy.close()
+
+        recovered = SessionDB(db_path=db_path)
+        try:
+            assert recovered._fts_stale is False
+            assert _meta_value(db_path, FTS_STALE_KEY) is None
+            assert recovered.search_messages("canonical survives")
+        finally:
+            recovered.close()
+

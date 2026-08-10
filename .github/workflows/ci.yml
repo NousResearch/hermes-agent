@@ -24,7 +24,6 @@ permissions:
   pull-requests: write # needed by lint (PR comment) + supply-chain review_status
   actions: read # needed by osv-scanner (SARIF upload)
   security-events: write # needed by osv-scanner (SARIF upload)
-  packages: write # needed by docker build
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -42,11 +41,13 @@ jobs:
     timeout-minutes: 10
     outputs:
       python: ${{ steps.classify.outputs.python }}
+      python_prod: ${{ steps.classify.outputs.python_prod }}
       frontend: ${{ steps.classify.outputs.frontend }}
       site: ${{ steps.classify.outputs.site }}
       scan: ${{ steps.classify.outputs.scan }}
       deps: ${{ steps.classify.outputs.deps }}
       npm_lock: ${{ steps.classify.outputs.npm_lock }}
+      installer: ${{ steps.classify.outputs.installer }}
       docker_meta: ${{ steps.classify.outputs.docker_meta }}
       mcp_catalog: ${{ steps.classify.outputs.mcp_catalog }}
       ci_review: ${{ steps.classify.outputs.ci_review }}
@@ -70,7 +71,17 @@ jobs:
     if: needs.detect.outputs.python == 'true'
     uses: ./.github/workflows/tests.yml
     with:
-      slice_count: 8
+      slice_count: 12
+
+  # macOS + Windows lanes. The main `tests` lane above is Linux-only, and
+  # the OS-marked tests it collects are skipped there by design (see the
+  # `_OS_MARKS` comment in tests/conftest.py) — this is where they run.
+  # Same `python` lane gate: if no Python changed, neither runs.
+  tests-os:
+    name: OS-specific tests
+    needs: detect
+    if: needs.detect.outputs.python == 'true'
+    uses: ./.github/workflows/tests-os.yml
 
   lint:
     name: Python lints
@@ -86,10 +97,29 @@ jobs:
     if: needs.detect.outputs.frontend == 'true'
     uses: ./.github/workflows/js-tests.yml
 
+  installer-tests:
+    name: Installer tests
+    needs: detect
+    # Windows-only, and only for PRs that touch install.ps1 or its tests.
+    if: needs.detect.outputs.installer == 'true'
+    uses: ./.github/workflows/installer-tests.yml
+
   e2e-desktop:
     name: Desktop E2E
     needs: detect
-    if: needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true'
+    # python_prod (not python): the Playwright suite exercises the built app
+    # + `hermes serve` backend, which never import anything under tests/.
+    # Tests-only PRs (~17% of commits) skip this 5-minute job — the longest
+    # single job in the workflow — while still running the full pytest lanes.
+    #
+    # ⛔ TEMPORARILY DISABLED (Aug 2, 2026, Teknium) — the suite is red on
+    # every PR and on main itself since the Aug 1 night engines/npm churn
+    # (#76499 → #76562 → #76575): the mock-backend Electron window never
+    # gets a title, so boot/chat/setup/interim specs all fail identically
+    # regardless of the PR's diff (verified on #76573 and the docs-only
+    # #76582). Tracking issue: #76627 (assigned: Ari). To re-enable,
+    # delete the `false &&` below — nothing else changed.
+    if: ${{ false && (needs.detect.outputs.python_prod == 'true' || needs.detect.outputs.frontend == 'true') }}
     uses: ./.github/workflows/e2e-desktop.yml
 
   docs-site:
@@ -115,6 +145,11 @@ jobs:
     needs: detect
     uses: ./.github/workflows/uv-lockfile-check.yml
 
+  infographic-check:
+    name: Check no committed infographics
+    needs: detect
+    uses: ./.github/workflows/infographic-check.yml
+
   lockfile-diff:
     name: package-lock.json diff
     needs: detect
@@ -126,15 +161,6 @@ jobs:
     needs: detect
     if: needs.detect.outputs.docker_meta == 'true'
     uses: ./.github/workflows/docker-lint.yml
-
-  docker:
-    name: Build&Test Docker image
-    needs: detect
-    # Trusted main pushes run docker.yml directly so its container-publish
-    # environment secrets never cross this reusable-workflow call. PR runs
-    # remain build/test-only and secret-free.
-    if: needs.detect.outputs.event_name == 'pull_request' && (needs.detect.outputs.python == 'true' || needs.detect.outputs.frontend == 'true' || needs.detect.outputs.docker_meta == 'true')
-    uses: ./.github/workflows/docker.yml
 
   supply-chain:
     name: Supply-chain scan
@@ -162,83 +188,6 @@ jobs:
     uses: ./.github/workflows/osv-scanner.yml
 
   # ─────────────────────────────────────────────────────────────────────
-  # Live-updating PR review comment.
-  #
-  # A single ``comment-live`` job polls the GitHub Actions API every 15s
-  # for job statuses in this run, re-assembles the review comment from
-  # whatever results are available, and upserts it via the
-  # ``<!-- hermes-ci-review-bot -->`` marker.
-  #
-  # When the visible job set goes quiet, the poller waits 10 seconds and polls
-  # once more so downstream jobs created by an aggregate gate get included.
-  # ─────────────────────────────────────────────────────────────────────
-  comment-live:
-    name: CI review comment (live)
-    needs: [detect, review-labels, lockfile-diff, supply-chain, osv-scanner, uv-lockfile, history-check, contributor-check, e2e-desktop]
-    if: always() && github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork != true
-    runs-on: ubuntu-latest
-    timeout-minutes: 40
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          ref: ${{ github.event.repository.default_branch }}
-          persist-credentials: false
-
-      - name: Run live comment poller
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_RUN_ID: ${{ github.run_id }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          # Commit info for the review comment header.
-          COMMIT_SHA: ${{ github.event.pull_request.head.sha }}
-          COMMIT_MESSAGE: ${{ github.event.pull_request.head.commit.message }}
-          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.pull_request.number }}/commits/${{ github.event.pull_request.head.sha }}
-          # Structured review statuses from workflow_call jobs.
-          # Each job outputs a JSON array of {source, results: [...]} objects
-          # that the assembler renders directly — no hardcoded job-name
-          # matching. We merge all available outputs into one array.
-          REVIEW_STATUSES: ${{ toJSON(needs.*.outputs.review_status) }}
-        run: |
-          set -uo pipefail
-
-          # REVIEW_STATUSES is a JSON array of strings (some may be empty
-          # when a job was skipped). Parse each string and merge into one
-          # flat array for the assembler.
-          python3 - <<'PYEOF'
-          import json, os, sys
-
-          raw = os.environ.get("REVIEW_STATUSES", "")
-          merged = []
-          if raw:
-              try:
-                  arr = json.loads(raw)
-              except (json.JSONDecodeError, TypeError):
-                  arr = []
-              for item in arr:
-                  if not item:
-                      continue
-                  try:
-                      statuses = json.loads(item)
-                  except (json.JSONDecodeError, TypeError):
-                      continue
-                  if isinstance(statuses, list):
-                      merged.extend(statuses)
-
-          # Write merged array to a temp file the poller reads.
-          with open("/tmp/review_statuses.json", "w") as f:
-              json.dump(merged, f)
-          print(f"Merged {len(merged)} review status entries")
-          PYEOF
-
-          python3 scripts/ci/live_comment.py \
-            --interval 15 \
-            --timeout 2100 \
-            --review-statuses-file /tmp/review_statuses.json
-
-  # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
   # status even when some deps were skipped. Only actual ``failure``
   # results cause it to fail; ``skipped`` is treated as success.
@@ -253,8 +202,10 @@ jobs:
     needs:
       - detect
       - tests
+      - tests-os
       - lint
       - js-tests
+      - installer-tests
       - e2e-desktop
       - docs-site
       - history-check
@@ -265,9 +216,10 @@ jobs:
       - supply-chain
       - review-labels
       - osv-scanner
-      # comment-live is a polling job — it doesn't block the gate.
-      # we don't require docker to pass rn because it's so slow lol
-      # - docker
+      # The image build runs in its own workflow (docker.yml) and reports
+      # its own check. It was never required here, because it is too slow
+      # to block a merge. A separate run also stops it from holding this
+      # run open. That is what blocked ``gh run rerun``.
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -304,12 +256,13 @@ jobs:
   # report with a gantt chart + per-step breakdown. The report is uploaded
   # as an artifact and a markdown summary is written to $GITHUB_STEP_SUMMARY.
   #
-  # The live comment poller can read the standalone review-status artifact
-  # after the HTML report is uploaded, so its link points straight at that report.
+  # The live comment poller dynamically fetches all review-status-* artifacts
+  # across the orchestrator and sub-workflow runs every cycle, so its link
+  # points straight at that report.
   # ─────────────────────────────────────────────────────────────────────
   ci-timings:
     name: CI timing report
-    needs: [all-checks-pass, docker]
+    needs: [all-checks-pass]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -364,7 +317,7 @@ jobs:
         continue-on-error: true
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ci-timings-review-status
+          name: review-status-ci-timings
           path: review-status.json
           retention-days: 14
 

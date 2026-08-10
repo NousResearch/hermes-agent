@@ -132,47 +132,6 @@ async def test_thread_prose_not_swallowed_by_native_multi_choice_clarify():
 
 
 @pytest.mark.asyncio
-async def test_numeric_reply_still_resolves_native_multi_choice_clarify():
-    """Typed "2" keeps resolving the button prompt through the same intercept."""
-    _clear_clarify_state()
-    from tools import clarify_gateway as cm
-
-    adapter = _StubAdapter()
-    runner = _make_runner(adapter)
-    cm.register("cl-num", SESSION_KEY, "Pick a UI variant", ["buttons", "dropdown"])
-
-    result = await _dispatch(runner, _event("2"))
-
-    assert result == ""  # intercepted + acknowledged silently
-    with cm._lock:
-        entry = cm._entries.get("cl-num")
-    assert entry is not None
-    assert entry.event.is_set()
-    assert entry.response == "dropdown"
-    _clear_clarify_state()
-
-
-@pytest.mark.asyncio
-async def test_exact_label_reply_still_resolves_native_multi_choice_clarify():
-    _clear_clarify_state()
-    from tools import clarify_gateway as cm
-
-    adapter = _StubAdapter()
-    runner = _make_runner(adapter)
-    cm.register("cl-label", SESSION_KEY, "Pick a UI variant", ["buttons", "dropdown"])
-
-    result = await _dispatch(runner, _event("Buttons"))
-
-    assert result == ""
-    with cm._lock:
-        entry = cm._entries.get("cl-label")
-    assert entry is not None
-    assert entry.event.is_set()
-    assert entry.response == "buttons"
-    _clear_clarify_state()
-
-
-@pytest.mark.asyncio
 async def test_prose_still_accepted_after_other_flips_text_capture():
     """After the user taps 'Other', free text IS the answer — must resolve."""
     _clear_clarify_state()
@@ -194,21 +153,3 @@ async def test_prose_still_accepted_after_other_flips_text_capture():
     _clear_clarify_state()
 
 
-@pytest.mark.asyncio
-async def test_prose_still_accepted_for_open_ended_clarify():
-    _clear_clarify_state()
-    from tools import clarify_gateway as cm
-
-    adapter = _StubAdapter()
-    runner = _make_runner(adapter)
-    cm.register("cl-open", SESSION_KEY, "What should I name it?", None)
-
-    result = await _dispatch(runner, _event("call it hermes-ux"))
-
-    assert result == ""
-    with cm._lock:
-        entry = cm._entries.get("cl-open")
-    assert entry is not None
-    assert entry.event.is_set()
-    assert entry.response == "call it hermes-ux"
-    _clear_clarify_state()

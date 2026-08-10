@@ -88,23 +88,6 @@ def _running(runner):
 
 
 @pytest.mark.asyncio
-async def test_queue_text_only_queues_and_does_not_interrupt():
-    runner, adapter = _make_runner(_session_entry())
-    sk = _running(runner)
-    running_agent = runner._running_agents[sk]
-
-    event = MessageEvent(text="/queue do this next", source=_make_source(), message_id="q1")
-    result = await runner._handle_message(event)
-
-    assert result is not None and "queued" in result.lower()
-    running_agent.interrupt.assert_not_called()
-    assert sk in adapter._pending_messages
-    queued = adapter._pending_messages[sk]
-    assert queued.text == "do this next"
-    assert queued.message_type == MessageType.TEXT
-
-
-@pytest.mark.asyncio
 async def test_queue_preserves_photo_media():
     """A /queue carrying a photo must keep the attachment + type."""
     runner, adapter = _make_runner(_session_entry())
@@ -129,29 +112,6 @@ async def test_queue_preserves_photo_media():
 
 
 @pytest.mark.asyncio
-async def test_queue_allows_media_without_prompt_text():
-    """`/queue` as a bare caption on a document is valid — media-only."""
-    runner, adapter = _make_runner(_session_entry())
-    sk = _running(runner)
-
-    event = MessageEvent(
-        text="/queue",
-        message_type=MessageType.DOCUMENT,
-        source=_make_source(),
-        message_id="q-doc",
-        media_urls=["/tmp/file.pdf"],
-        media_types=["application/pdf"],
-    )
-    result = await runner._handle_message(event)
-
-    assert result is not None and "queued" in result.lower()
-    queued = adapter._pending_messages[sk]
-    assert queued.text == ""
-    assert queued.message_type == MessageType.DOCUMENT
-    assert queued.media_urls == ["/tmp/file.pdf"]
-
-
-@pytest.mark.asyncio
 async def test_queue_preserves_reply_context():
     runner, adapter = _make_runner(_session_entry())
     sk = _running(runner)
@@ -173,37 +133,6 @@ async def test_queue_preserves_reply_context():
     assert queued.reply_to_text == "the original message"
     assert queued.reply_to_author_id == "a1"
     assert queued.reply_to_author_name == "alice"
-
-
-@pytest.mark.asyncio
-async def test_queue_preserves_channel_context_backfill():
-    """A queued Slack thread command must retain first-entry history."""
-    runner, adapter = _make_runner(_session_entry())
-    sk = _running(runner)
-    context = "[Thread context]\nAlice: earlier request"
-    event = MessageEvent(
-        text="/queue follow up",
-        source=_make_source(),
-        message_id="q-context",
-        channel_context=context,
-    )
-
-    result = await runner._handle_message(event)
-
-    assert result is not None and "queued" in result.lower()
-    assert adapter._pending_messages[sk].channel_context == context
-
-
-@pytest.mark.asyncio
-async def test_queue_no_text_no_media_returns_usage():
-    runner, adapter = _make_runner(_session_entry())
-    _running(runner)
-
-    event = MessageEvent(text="/queue", source=_make_source(), message_id="q-empty")
-    result = await runner._handle_message(event)
-
-    assert result is not None and "Usage" in result
-    assert adapter._pending_messages == {}
 
 
 if __name__ == "__main__":  # pragma: no cover

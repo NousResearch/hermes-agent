@@ -3,6 +3,13 @@
 @import 'tw-shimmer';
 @import 'katex/dist/katex.min.css';
 @import '@vscode/codicons/dist/codicon.css';
+
+/* Titlebar clusters: 24×24 hit targets, 13.9px glyphs. codicon.css is
+   unlayered (`font: 16px/1`); Tailwind utilities in @layer lose that fight. */
+.titlebar-icon-button .codicon[class*='codicon-'] {
+  font-size: var(--titlebar-icon-size);
+}
+
 @custom-variant dark (&:is(.dark *));
 
 /* Blanket reduced-motion override: kill ALL CSS animations and transitions
@@ -188,6 +195,45 @@
     --context-usage-subagents: color-mix(in srgb, var(--ui-blue) 70%, var(--ui-cyan));
     --context-usage-memory: color-mix(in srgb, var(--ui-orange) 80%, var(--ui-yellow));
     --context-usage-conversation: var(--ui-cyan);
+    /* Landed memory-write tool row — gold → purple, never amber warning. */
+    --tool-memory-legendary-from: color-mix(in srgb, var(--ui-yellow) 72%, #f5d08a);
+    --tool-memory-legendary-mid: color-mix(in srgb, var(--ui-orange) 55%, var(--ui-purple));
+    --tool-memory-legendary-to: color-mix(in srgb, var(--ui-purple) 82%, #c4b5fd);
+    --tool-memory-legendary-icon: color-mix(in srgb, var(--ui-yellow) 55%, var(--ui-purple));
+    --tool-memory-legendary-meta: color-mix(in srgb, var(--ui-purple) 58%, var(--ui-text-tertiary));
+    --tool-memory-legendary-glow: color-mix(in srgb, var(--ui-purple) 38%, transparent);
+    /* Diff add/remove, derived from the semantic palette so every diff surface
+       (tool cards, preview, review pane) tracks the theme's green/red. Only the
+       foregrounds need a dark override — they mix toward the page instead of
+       away from it. */
+    --ui-diff-add-border: var(--ui-green);
+    --ui-diff-add-background: color-mix(in srgb, var(--ui-green) 12%, transparent);
+    --ui-diff-add-foreground: color-mix(in srgb, var(--ui-green) 70%, #000);
+    --ui-diff-remove-border: var(--ui-red);
+    --ui-diff-remove-background: color-mix(in srgb, var(--ui-red) 12%, transparent);
+    --ui-diff-remove-foreground: color-mix(in srgb, var(--ui-red) 70%, #000);
+
+    /* Overlay ladder. DESIGN.md: app-wide surfaces must not compete through
+       ad-hoc z-index literals — pick the rung that describes the surface.
+       Values are deliberately sparse so a one-off can slot between two rungs
+       without a renumber. Local stacking inside a component (a sticky header
+       over its own scroll area) stays on plain `z-10`/`z-20`; these rungs are
+       only for surfaces that float over the app. */
+    --z-modal-backdrop: 120;
+    --z-modal: 130;
+    /* A select/dropdown/popover opened from inside a modal, portaled to body. */
+    --z-modal-popover: 140;
+    /* Must clear any open modal: toasts, tooltips, command-surface backdrops. */
+    --z-over-modal: 200;
+    --z-over-modal-content: 210;
+    --z-switcher-backdrop: 219;
+    --z-switcher: 220;
+    /* Boot and blocking states, in the order they can stack. */
+    --z-connecting: 1200;
+    --z-onboarding: 1300;
+    --z-onboarding-popover: 1310;
+    --z-setup: 1400;
+    --z-crash: 1500;
     --ui-bg-chrome: color-mix(
       in srgb,
       var(--theme-background-seed) var(--theme-mix-chrome),
@@ -255,6 +301,13 @@
     --ui-text-secondary: color-mix(in srgb, var(--ui-base) 74%, transparent);
     --ui-text-tertiary: color-mix(in srgb, var(--ui-base) 54%, transparent);
     --ui-text-quaternary: color-mix(in srgb, var(--ui-base) 36%, transparent);
+    /* Transcript scaffolding — thinking headers, settled tool runs, the live
+       activity ticker. One colour for all of them (see `ScaffoldRow`), pitched
+       between the secondary and tertiary greys those lines used to pick
+       individually, and dimmed once more by the fade rule below so the prose
+       reading column stays primary. */
+    --conversation-scaffold-text: color-mix(in srgb, var(--ui-base) 64%, transparent);
+    --conversation-scaffold-meta: color-mix(in srgb, var(--ui-base) 44%, transparent);
     --ui-stroke-primary: color-mix(
       in srgb,
       var(--ui-accent) var(--theme-stroke-primary-accent-mix),
@@ -281,6 +334,16 @@
     --ui-sidebar-surface-background: var(--ui-bg-sidebar);
     --ui-chat-surface-background: var(--ui-bg-chrome);
     --ui-editor-surface-background: var(--ui-bg-chrome);
+    /* The integrated terminal wears the transcript's background, not the
+       editor's — it reads as part of the conversation surface. Its own token so
+       the two can diverge without dragging the terminal along, and so a skin
+       gets one knob for it. xterm's canvas can't use a var, so the probe in
+       terminal/selection.ts resolves this same name to a concrete rgb. */
+    --ui-terminal-surface-background: var(--ui-chat-surface-background);
+    /* Inline chat widgets (clarify, artifact card) — the card fill in light
+       mode, nudged down in dark so a widget settles into the transcript
+       instead of glowing above it (see the `.dark` override). */
+    --ui-widget-surface-background: var(--ui-bg-editor);
     --ui-chat-bubble-background: color-mix(
       in srgb,
       var(--theme-bubble-seed) var(--theme-mix-bubble),
@@ -317,6 +380,10 @@
        :root.dark bumps the alpha since a dark card swallows shadow. Removed on
        focus (the focus border carries the state). */
     --dt-input-inset: inset 0 1px 1px color-mix(in srgb, #000 10%, transparent);
+    /* Hovered inactive tab: deepen it AWAY from the lighter active surface, so
+       hover can never be mistaken for selected. Dark mode needs more — black
+       over a dark gutter shows less. */
+    --ui-tab-hover-darken: 2.5%;
     --dt-ring: var(--ui-stroke-primary);
     --dt-midground: var(--theme-midground);
     --dt-composer-ring: var(--ui-base);
@@ -332,24 +399,29 @@
       'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
     /* Key caps always use the native UI face — never theme typography overrides. */
     --dt-font-kbd: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', system-ui, sans-serif;
-    /* JetBrains Mono first — the face we bundle (@font-face above) and the
-       terminal's primary — so code/diff match the terminal on every platform
-       instead of drifting to a system Cascadia Code where it's installed. */
+    /* Menlo/Monaco first — Apple's native monospace faces — so code/diff read
+       in the system mono on macOS, with SF Mono and bundled Courier Prime as
+       fallbacks. */
     --dt-font-mono:
-      'JetBrains Mono', 'Cascadia Code', 'SF Mono', ui-monospace, Menlo, Consolas, monospace, 'Apple Color Emoji',
-      'Segoe UI Emoji', 'Segoe UI Symbol', 'Noto Color Emoji', emoji;
+      Menlo, Monaco, 'SF Mono', 'Courier Prime', monospace, 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol',
+      'Noto Color Emoji', emoji;
     --dt-base-size: 1rem;
     --dt-line-height: 1.5;
     --dt-letter-spacing: 0;
     --dt-spacing-mul: 1;
 
     --radius: 0.75rem;
-    --radius-scalar: 0.6;
+    /* Effective value everywhere: the chat backdrop used to force 0.2 onto the
+       root element at runtime (an ungated leva slider default), so this 0.6
+       only ever applied to the windows that don't mount the backdrop. Pinned
+       to the value the app actually renders at. */
+    --radius-scalar: 0.2;
 
-    /* Space under last message vs overlay composer — driven by the measured composer height (see composer/index.tsx)
-       plus the out-of-flow status stack's measured height (see status-stack/index.tsx) when one is showing. */
-    --status-stack-measured-height: 0px;
-    --thread-last-message-clearance: calc(var(--composer-measured-height) + var(--status-stack-measured-height) + 2rem);
+    /* Space under last message vs overlay composer — driven by the measured composer DOCK height (see
+       composer/index.tsx), which covers the micro-action strip, the status stack, the composer, and the
+       underside strip in one number.
+       This is the default; each chat surface re-declares the calc against its own measurement (see below). */
+    --thread-last-message-clearance: calc(var(--composer-measured-height) + 2rem);
 
     --composer-shell-pad-block-end: 0.625rem;
     --message-text-indent: 0.75rem;
@@ -362,13 +434,16 @@
     /* Gap between top-level turn blocks (prose ↔ tools ↔ thinking) — enough air
        that scaffolding reads as separate from the reply, not crammed into it. */
     --turn-block-gap: 0.75rem;
+    /* Between adjacent scaffolding, though: a back-to-back run of thinking
+       headers and tool rows is one sequence, not blocks to hold apart. Derived
+       so retuning the block gap carries it along. */
+    --scaffold-block-gap: calc(var(--turn-block-gap) / 3);
     /* Tight gap between tool rows inside a single action group, so a back-to-back
        run still reads as one cohesive sequence. */
     --tool-row-gap: 0.375rem;
-    /* Height of the bounded, auto-scrolling window a long adjacent tool-call run
-       collapses into (see `.tool-group-scroll`). Sized to show a few rows before
-       the scroll + top fade kick in. */
-    --tool-group-scroll-max-h: 6.75rem;
+    /* Resting opacity of a disclosure caret — invisible until hover, except
+       where a surface opts into a faint hint of the affordance. */
+    --disclosure-caret-rest: 0;
     /* Paragraph spacing — vertical gap between prose paragraphs, both inside a
        markdown block and between consecutive prose parts. Single knob; tweak
        freely. */
@@ -400,8 +475,9 @@
 
     --sidebar-width: 14.8125rem;
     --chat-min-width: 28rem;
-    --titlebar-control-size: 1.25rem;
-    --titlebar-control-height: 1.375rem;
+    --titlebar-control-size: 24px;
+    --titlebar-control-height: 24px;
+    --titlebar-icon-size: 13.9px;
     --sidebar-content-inline-padding: 1rem;
 
     --sidebar: var(--dt-sidebar-bg);
@@ -439,18 +515,26 @@
     --ui-red: #e75e78;
     --ui-green: #55a583;
     --ui-cyan: #6f9ba6;
+    --ui-diff-add-foreground: color-mix(in srgb, var(--ui-green) 62%, #fff);
+    --ui-diff-remove-foreground: color-mix(in srgb, var(--ui-red) 62%, #fff);
 
     --sidebar-edge-border: color-mix(in srgb, var(--ui-base) 12%, transparent);
     --composer-ring-strength: 1.3;
     --backdrop-invert-mul: 0;
     /* Dark mode: a dark card needs a stronger black inset to show the recess. */
     --dt-input-inset: inset 0 1px 1px color-mix(in srgb, #000 38%, transparent);
+    --ui-tab-hover-darken: 6%;
     /* Dark needs a lighter resting border than light mode. */
     --dt-input-border: 4%;
 
     --ui-inline-code-background: color-mix(in srgb, #ffffff 7%, transparent);
     --ui-inline-code-foreground: color-mix(in srgb, #ffffff 88%, transparent);
     --ui-selection-background: color-mix(in srgb, #ffd24a 38%, transparent);
+    /* A dark card sits ABOVE the chrome (#161618 over #0d0d0e), so an inline
+       widget wearing the raw card fill reads as a lit panel. Take it down a
+       touch — still clearly a surface, no longer the brightest thing in the
+       transcript. Derived from the card so every skin follows its own seed. */
+    --ui-widget-surface-background: color-mix(in srgb, var(--ui-bg-editor) 88%, #000);
   }
 
   * {
@@ -513,6 +597,109 @@
   background: repeating-conic-gradient(currentColor 0% 25%, transparent 0% 50%) 0 0 / 0.125rem 0.125rem;
 }
 
+/* ─────────────────────────────────────────────────────────────────────────
+   INLINE REFERENCES — the one system for anything that points at something
+   from inside a run of text.
+
+   A pasted link, an `@file:` the user picked, a `/skill`, a `@session:` the
+   agent wrote: all the same species. They render the same way in the composer
+   and in a sent message, because they're the same thing before and after send.
+
+   A reference is TEXT, not a badge — colour and an optional icon, no fill, no
+   padding, no border. A pill turns every mention into a widget the eye has to
+   step over, and mid-sentence that's most of the sentence.
+
+   Usage: `class="ref"` plus `data-ref="<kind>"` for the accent. Kinds live in
+   `components/assistant-ui/reference-kinds.ts` (icon + label); their colour
+   lives here, so a theme restyles every reference at once and TS never ships a
+   hex. No `data-ref` = an ordinary link, which keeps the primary link colour.
+   ───────────────────────────────────────────────────────────────────────── */
+/* Kind → accent. Keyed on the attribute ALONE so anything can adopt a
+   reference's colour without also taking its inline-text layout (a completion
+   row's icon column wants the hue, not the margin). Grouped by what a
+   reference DOES, so the palette reads as meaning rather than decoration:
+     · things you point at (paths)          → neutral, they're the common case
+     · things you fetch (links, media)      → secondary
+     · things that act (commands, tools)    → accent
+     · things that change code (skills, git)→ warm */
+[data-ref] {
+  --ref-color: var(--dt-primary);
+}
+
+[data-ref='file'],
+[data-ref='folder'],
+[data-ref='line'],
+[data-ref='terminal'] {
+  --ref-color: var(--ui-text-secondary);
+}
+
+[data-ref='url'],
+[data-ref='image'],
+[data-ref='session'],
+[data-ref='theme'] {
+  --ref-color: color-mix(in srgb, var(--ui-accent-secondary) 82%, var(--foreground));
+}
+
+[data-ref='command'],
+[data-ref='tool'] {
+  --ref-color: color-mix(in srgb, var(--ui-accent) 82%, var(--foreground));
+}
+
+[data-ref='skill'],
+[data-ref='git'],
+[data-ref='diff'],
+[data-ref='staged'] {
+  --ref-color: color-mix(in srgb, var(--ui-warm) 82%, var(--foreground));
+}
+
+.ref {
+  --ref-color: var(--dt-primary);
+
+  /* Prose links inherit the surrounding text's weight. `@tailwindcss/typography`
+     sets `prose a { font-weight: 500 }`, which outranks a utility class on the
+     anchor — so the override belongs here, on the shared class. */
+  font-weight: inherit;
+  color: var(--ref-color);
+  /* Explicit: the base layer underlines every `a` (see the :where(a, …) reset). */
+  text-decoration: none;
+  /* A wrapped reference breaks per line fragment, not as one ragged box. */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* Affordance without chrome: only the ones you can actually activate respond,
+   and they do it with an underline rather than a background. */
+:where(a, button).ref:hover {
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+/* The leading glyph. Sized in `em` so it tracks the text at any scale, and
+   spaced with `margin` — not flex `gap` — so `.ref` stays an inline box whose
+   label can wrap mid-word (a long URL has to break across lines like the prose
+   around it, which a flex container would prevent).
+
+   The margin is unconditional. A `:not(:only-child)` guard looks right and is
+   silently wrong: CSS counts ELEMENT siblings, so an icon followed by a bare
+   text-node label still matches `:only-child` — which is exactly how every
+   chip lost its spacer. Icon-only users take the hue via `[data-ref]` instead
+   of this class. */
+.ref > :where(svg, i.codicon) {
+  margin-inline-end: 0.25em;
+  opacity: 0.8;
+}
+
+.ref > svg {
+  display: inline-block;
+  width: 0.875em;
+  height: 0.875em;
+  vertical-align: -0.1em;
+}
+
+.ref > i.codicon {
+  font-size: 0.875em;
+}
+
 /* Hover-reveal suppression — the shared, declarative escape hatch.
    A collapsed pane slides in when the pointer dwells on its thin edge trigger.
    Controls that sit over that edge gutter would drag the panel in by accident.
@@ -551,6 +738,40 @@
 
 :root[style*='--theme-asset-bg:'] .theme-default-filler {
   display: none;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+   Composer placeholder.
+
+   The prompt is a PAINTED HINT, never content. Rendering `::before` inline —
+   the obvious way — puts a box in the contenteditable's text flow, and the
+   caret sits after it: click an empty composer and the insertion point lands
+   at the right edge of the hint rather than the left edge of the field, and a
+   hint that wraps makes the empty composer two lines tall. Taking it out of
+   flow is what makes it a hint: the caret keeps the field's real origin, the
+   box keeps its real height, and no pointer or selection can reach the text.
+
+   `data-empty` carries emptiness because `:empty` can't: a cleared editor
+   keeps a scaffolding <br>. See markEditorEmptiness in rich-editor.ts.
+   ───────────────────────────────────────────────────────────────────────── */
+[data-slot='composer-rich-input'] {
+  position: relative;
+}
+
+[data-slot='composer-rich-input']:is(:empty, [data-empty])::before {
+  content: attr(data-placeholder);
+  position: absolute;
+  inset: 0;
+  padding: inherit;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--muted-foreground) 60%, transparent);
+  /* One line, clipped — the hint states the field's purpose; it never reflows
+     the box it sits in. A narrow composer or a long locale string would
+     otherwise wrap and double the empty composer's height. */
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  pointer-events: none;
+  user-select: none;
 }
 
 /* Primitive-level pointer cursor for every interactive control (buttons,
@@ -609,14 +830,19 @@
   --arc-c2: var(--dt-background);
   --arc-angle: 160deg;
   --arc-width: 0.078125rem;
-  --arc-inset: -0.125rem;
+  /* How far the ring stands off its host, per side. */
+  --arc-standoff: 0.125rem;
+  /* An outset ring is only concentric when its radius grows by the standoff
+     (r = r_host + gap); `border-radius: inherit` leaves the corner pinched.
+     Defaults to the shared `rounded-md`; a host on another radius sets it. */
+  --arc-radius: var(--radius-md);
   --arc-duration: 2.23s;
 
   pointer-events: none;
   position: absolute;
   overflow: hidden;
-  border-radius: inherit;
-  inset: var(--arc-inset);
+  border-radius: calc(var(--arc-radius) + var(--arc-standoff));
+  inset: calc(var(--arc-standoff) * -1);
   padding: var(--arc-width);
   mask:
     linear-gradient(#000 0 0) content-box,
@@ -629,35 +855,27 @@
   --arc-c1: var(--dt-foreground);
 }
 
-/* Quest-style "needs you" pulse for a clarify-blocked session's dot —
-   a soft amber glow that breathes so the row draws the eye without a toast. */
-@keyframes quest-glow {
-  0%,
-  100% {
-    transform: scale(1);
-    box-shadow:
-      0 0 0.1875rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 70%, transparent),
-      0 0 0.5rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 45%, transparent);
-  }
-  50% {
-    transform: scale(1.18);
-    box-shadow:
-      0 0 0.3125rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 90%, transparent),
-      0 0 0.875rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 65%, transparent);
-  }
+/* Landed `memory` tool row — gold → purple on the brain glyph + title.
+   Pair with `text-transparent` so the scaffold label color can't win. */
+.tool-memory-legendary-title {
+  background-image: linear-gradient(
+    105deg,
+    var(--tool-memory-legendary-from) 0%,
+    var(--tool-memory-legendary-mid) 48%,
+    var(--tool-memory-legendary-to) 100%
+  );
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent !important;
+  font-weight: 600;
 }
 
-.quest-glow {
-  animation: quest-glow 1.8s ease-in-out infinite;
+.tool-memory-legendary-glyph {
+  filter: drop-shadow(0 0 0.28rem var(--tool-memory-legendary-glow));
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .quest-glow {
-    animation: none;
-    box-shadow:
-      0 0 0.25rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 80%, transparent),
-      0 0 0.625rem color-mix(in srgb, var(--color-amber-500, #f59e0b) 55%, transparent);
-  }
+.tool-memory-legendary-meta {
+  color: var(--tool-memory-legendary-meta);
 }
 
 /* Command-palette deep-link: briefly flash the targeted settings row. */
@@ -716,6 +934,34 @@
   --arc-c1: #4f8cff;
   --arc-c2: #ff8c42;
   --arc-duration: 3.27s;
+}
+
+/* Sidebar session row — a thin, clipped, single-line host, so it differs twice
+   from the default ring:
+
+   1. Flush, not outset. The sidebar scroller is `overflow-x-hidden` and rows sit
+      `gap-px` apart, so an outset ring loses its left/right runs to the clip.
+
+   2. A visible tail. `--arc-c2` defaults to `--dt-background` — invisible
+      against the sidebar. With c0 a transparent sentinel and c2 invisible, only
+      the bright c1 stop survives each pass, and the gradient has three of them:
+      three moving dots instead of an arc. Tying c2 to c1 gives each spike a
+      falloff. (`arc-nous` already overrides c2, so the hero is unaffected.) */
+.arc-border.arc-row,
+:root.dark .arc-border.arc-row {
+  --arc-standoff: 0rem;
+  --arc-c2: color-mix(in srgb, var(--arc-c1) 45%, transparent);
+}
+
+/* HUD composer — same travelling arc as a working sidebar row, 2px and pill-
+   rounded to match the bar. */
+.arc-border.arc-composer,
+:root.dark .arc-border.arc-composer {
+  --arc-width: 2px;
+  --arc-standoff: 0rem;
+  --arc-radius: 0.75rem;
+  --arc-c2: color-mix(in srgb, var(--arc-c1) 45%, transparent);
+  z-index: 6;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -784,6 +1030,15 @@ button,
   user-select: none;
 }
 
+/* User bubbles are <button>s (click → edit), so the rule above would kill
+   drag-to-select and leave ⌘C with nothing to grab. Message text stays
+   selectable; chrome controls outside the bubble keep user-select: none. */
+[data-slot='aui_user-message-root'] button,
+[data-slot='aui_user-message-root'] [role='button'] {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
 img,
 picture,
 video,
@@ -809,8 +1064,9 @@ code {
 }
 
 /* Arc-style multicolor action surface (static, not animated). Reusable on any
-   Button via className. Unlayered so it beats Tailwind's bg-*/
-text-* variant utilities. */ .btn-arc {
+   Button via className. Unlayered so it beats Tailwind's bg- and text- variant
+   utilities. */
+.btn-arc {
   background-image: linear-gradient(110deg, #5b6cff 0%, #8b5cf6 28%, #d946ef 58%, #fb7185 82%, #fb923c 100%);
   color: #fff;
   border-color: transparent;
@@ -851,57 +1107,85 @@ text-* variant utilities. */ .btn-arc {
   border-color: var(--dt-destructive);
 }
 
+/* Drag in progress (sash resize, console resize, tab drag): webview/iframe
+   guests hit-test in their own process and swallow the gesture the moment the
+   pointer crosses them — see lib/guest-pointer-guard.ts. */
+body.guest-pointer-lock :is(webview, iframe) {
+  pointer-events: none;
+}
+
 @layer components {
-  .scrollbar-dt,
-  .scrollbar-dt * {
-    scrollbar-width: thin;
-    scrollbar-color: color-mix(in srgb, var(--dt-midground) 18%, transparent) transparent;
-  }
+  /* Chromium 121+ (Electron) prefers standard scrollbar-* over
+     ::-webkit-scrollbar and ignores the latter when both are set — platform
+     thin on mac still looks chunky. Use webkit for real thin thumbs; gate the
+     standard props so only non-webkit engines (Firefox) take that path.
+     https://developer.chrome.com/docs/css-ui/scrollbar-styling
+     https://syntackle.com/blog/changes-to-scrollbar-styling-in-chrome-121/
+
+     Any author rule on ::-webkit-scrollbar switches that scroller from
+     platform overlay (fade in on scroll, zero gutter) to classic always-on
+     gutters. `.scrollbar-overlay` opts a surface out of the themed rules so
+     Electron keeps native overlay — used by conversation code blocks where a
+     permanent 4px track eats the card and always draws a bar. */
 
   .scrollbar-dt::-webkit-scrollbar,
-  .scrollbar-dt *::-webkit-scrollbar {
-    width: 0.5rem;
-    height: 0.5rem;
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar {
+    width: 0.25rem;
+    height: 0.25rem;
   }
 
   .scrollbar-dt::-webkit-scrollbar-track,
   .scrollbar-dt::-webkit-scrollbar-corner,
-  .scrollbar-dt *::-webkit-scrollbar-track,
-  .scrollbar-dt *::-webkit-scrollbar-corner {
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-track,
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-corner {
     background: transparent;
   }
 
   .scrollbar-dt::-webkit-scrollbar-thumb,
-  .scrollbar-dt *::-webkit-scrollbar-thumb {
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-thumb {
     background: color-mix(in srgb, var(--dt-midground) 18%, transparent);
     border-radius: 9999rem;
-    border: 0.125rem solid transparent;
     background-clip: padding-box;
   }
 
   .scrollbar-dt::-webkit-scrollbar-thumb:hover,
-  .scrollbar-dt *::-webkit-scrollbar-thumb:hover {
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-thumb:hover {
     background: color-mix(in srgb, var(--dt-midground) 40%, transparent);
     background-clip: padding-box;
   }
 
   .scrollbar-dt::-webkit-scrollbar-button,
-  .scrollbar-dt *::-webkit-scrollbar-button {
+  .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-button {
     display: none;
+  }
+
+  /* Hover-only bars. A thumb sitting on a list you aren't touching is chrome,
+     not information — the gutter is reserved either way, so fading it in and
+     out costs no reflow. Opt-in per surface: the sidebar wants it, a document
+     you're reading down wants its bar where you can see it. */
+  .scrollbar-fade::-webkit-scrollbar-thumb,
+  .scrollbar-dt .scrollbar-fade::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    transition: background-color 150ms ease-out;
+  }
+
+  .scrollbar-fade:hover::-webkit-scrollbar-thumb,
+  .scrollbar-dt .scrollbar-fade:hover::-webkit-scrollbar-thumb {
+    background-color: color-mix(in srgb, var(--dt-midground) 18%, transparent);
+  }
+
+  .scrollbar-fade:hover::-webkit-scrollbar-thumb:hover,
+  .scrollbar-dt .scrollbar-fade:hover::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in srgb, var(--dt-midground) 40%, transparent);
   }
 
   /* Variant for portaled overlays (Radix DropdownMenu, Popover, etc.) that
      render under document.body, outside the `.scrollbar-dt` scope on
      #root. Same visual treatment, applied directly to the overlay
      container so its (and only its) internal scrollbar is themed. */
-  .dt-portal-scrollbar {
-    scrollbar-width: thin;
-    scrollbar-color: color-mix(in srgb, var(--dt-midground) 28%, transparent) transparent;
-  }
-
   .dt-portal-scrollbar::-webkit-scrollbar {
-    width: 0.375rem;
-    height: 0.375rem;
+    width: 0.25rem;
+    height: 0.25rem;
   }
 
   .dt-portal-scrollbar::-webkit-scrollbar-track,
@@ -912,7 +1196,6 @@ text-* variant utilities. */ .btn-arc {
   .dt-portal-scrollbar::-webkit-scrollbar-thumb {
     background: color-mix(in srgb, var(--dt-midground) 28%, transparent);
     border-radius: 9999rem;
-    border: 0.0625rem solid transparent;
     background-clip: padding-box;
   }
 
@@ -923,6 +1206,35 @@ text-* variant utilities. */ .btn-arc {
 
   .dt-portal-scrollbar::-webkit-scrollbar-button {
     display: none;
+  }
+
+  @supports not selector(::-webkit-scrollbar) {
+    .scrollbar-dt,
+    .scrollbar-dt *:not(.scrollbar-overlay) {
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--dt-midground) 18%, transparent) transparent;
+    }
+
+    .dt-portal-scrollbar {
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--dt-midground) 28%, transparent) transparent;
+    }
+
+    /* Firefox has no real overlay mode; thin + transparent track is the closest
+       match to the Chromium overlay opt-out above. */
+    .scrollbar-overlay {
+      scrollbar-width: thin;
+      scrollbar-color: color-mix(in srgb, var(--dt-midground) 28%, transparent) transparent;
+    }
+
+    /* No transition — Firefox doesn't animate scrollbar-color. */
+    .scrollbar-fade {
+      scrollbar-color: transparent transparent;
+    }
+
+    .scrollbar-fade:hover {
+      scrollbar-color: color-mix(in srgb, var(--dt-midground) 18%, transparent) transparent;
+    }
   }
 }
 
@@ -1119,21 +1431,29 @@ text-* variant utilities. */ .btn-arc {
   inherits: true;
 }
 
-[data-slot='composer-root'] {
-  /* +10px width compensates the 5px side padding so the visible surface keeps
-     its exact width/position — the inline padding is just transparent grab space
-     for the peel-out drag, matching the floating composer's 5px platform. */
+/* The dock column owns the composer's width; the composer keeps the 5px
+   transparent grab margin that the peel-out drag needs. +10px width compensates
+   that padding so the visible surface keeps its exact width/position. */
+[data-slot='composer-dock'] {
   width: calc(min(var(--composer-width), calc(100% - 2rem)) + 10px);
-  padding-inline: 5px;
   padding-bottom: var(--composer-shell-pad-block-end);
+}
+
+[data-slot='composer-root'] {
+  width: 100%;
+  padding-inline: 5px;
 }
 
 /* Popped-out (floating) composer: compact width + an even 5px transparent grab
    platform. The higher-specificity selector resets the base rule's padding-bottom
    so the inset is equal on all four sides (not 5px sides / shell-pad bottom). */
-[data-slot='composer-root'][data-popped-out] {
+[data-slot='composer-dock'][data-popped-out] {
   width: var(--composer-popout-width, 24rem);
   max-width: calc(100vw - 1.5rem);
+  padding-bottom: 0;
+}
+
+[data-slot='composer-root'][data-popped-out] {
   padding: 5px;
 }
 
@@ -1190,7 +1510,7 @@ text-* variant utilities. */ .btn-arc {
   font-size: 0.8125rem;
 }
 
-[data-slot='composer-rich-input']:empty::before {
+[data-slot='composer-rich-input']:is(:empty, [data-empty])::before {
   color: var(--ui-text-tertiary) !important;
 }
 
@@ -1221,6 +1541,14 @@ text-* variant utilities. */ .btn-arc {
 [data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure'] {
   width: 100%;
   max-width: 100%;
+}
+
+/* A delegation is a list of short rows — goal, model, timer — not prose, so it
+   reads better narrow than stretched across the full reading column. Scoped
+   here rather than as a utility on the element: the rule above sets width on
+   every tool block and would win over it. */
+[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-delegate-card] {
+  max-width: 75%;
 }
 
 [data-slot='aui_assistant-message-content'] .aui-md [data-streamdown='code-block'] code {
@@ -1265,7 +1593,6 @@ text-* variant utilities. */ .btn-arc {
   margin-block: var(--paragraph-gap) 0;
   position: relative;
   transition:
-    border-color 180ms ease-out,
     box-shadow 180ms ease-out,
     background-color 180ms ease-out;
 }
@@ -1274,7 +1601,6 @@ text-* variant utilities. */ .btn-arc {
   animation:
     code-card-stream-enter 180ms cubic-bezier(0.16, 1, 0.3, 1) both,
     code-card-stream-glow 1.8s ease-in-out 180ms infinite alternate;
-  border-color: color-mix(in srgb, var(--dt-ring) 24%, var(--ui-stroke-tertiary));
   box-shadow:
     0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 10%, transparent),
     0 0.625rem 1.75rem color-mix(in srgb, var(--dt-ring) 8%, transparent);
@@ -1297,6 +1623,13 @@ text-* variant utilities. */ .btn-arc {
   margin: 0 !important;
 }
 
+/* react-shiki nests its own `pre.shiki` inside our `.aui-shiki` Pre, so the
+   code card's `[&_pre]` padding lands on both and doubles the inset. The outer
+   Pre already carries the card's padding — zero the inner one. */
+[data-slot='aui_assistant-message-content'] .aui-md .aui-shiki .shiki {
+  padding: 0 !important;
+}
+
 [data-slot='aui_assistant-message-content'] .aui-md .aui-md-table {
   border-spacing: 0;
 }
@@ -1313,7 +1646,7 @@ text-* variant utilities. */ .btn-arc {
 }
 
 [data-slot='aui_assistant-message-content'] .aui-md .aui-md-table thead {
-  border-bottom-color: var(--dt-border) !important;
+  border-bottom-color: var(--ui-stroke-tertiary) !important;
 }
 
 /* Tool / thinking blocks are scaffolding around the model's reply, so we
@@ -1325,15 +1658,18 @@ text-* variant utilities. */ .btn-arc {
   background: transparent !important;
 }
 
-/* Fade scaffolding so the prose reading column stays primary. Two targets:
-   a thinking disclosure fades as one block, and each *individual* tool row
-   (`[data-tool-row]`) fades on its own. We deliberately do NOT fade the tool
-   group wrapper (`[data-tool-group]`): opacity on a parent opens a stacking
-   context, so a child row can never be more opaque than the group — that made
-   it impossible to keep one row lit (an open diff) while its siblings faded.
-   With the fade per-row, each row hovers/focuses independently. */
-[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure'],
-[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row] {
+/* Fade scaffolding so the prose reading column stays primary. Each surface
+   opts in with `data-conversation-scaffold` — thinking header, tool row, run
+   summary, live status line — instead of being named by its own selector here.
+   Spelling them out individually is how the status line came to sit a shade
+   brighter than the rows either side of it.
+
+   Marked per surface and never on a container: opacity opens a stacking
+   context, so nothing inside a faded parent can be more opaque than it, and
+   one row (an open diff) could not stay lit while its siblings dimmed. Hence
+   the tool group wrapper carries no mark and each row inside it carries its
+   own — no two marked elements nest, so the fade never compounds. */
+[data-slot='aui_assistant-message-content'] [data-conversation-scaffold] {
   opacity: 0.67;
   transition: opacity 120ms ease-out;
 }
@@ -1341,8 +1677,7 @@ text-* variant utilities. */ .btn-arc {
 /* Lift on hover or *keyboard* focus only. `:focus-within` also matches the
    focus a mouse click leaves on the disclosure toggle, which kept a row lit
    after you clicked to collapse it; `:has(:focus-visible)` excludes that. */
-[data-slot='aui_assistant-message-content'] > [data-slot='aui_thinking-disclosure']:is(:hover, :has(:focus-visible)),
-[data-slot='aui_assistant-message-content'] [data-slot='tool-block'][data-tool-row]:is(:hover, :has(:focus-visible)) {
+[data-slot='aui_assistant-message-content'] [data-conversation-scaffold]:is(:hover, :has(:focus-visible)) {
   opacity: 1;
 }
 
@@ -1408,26 +1743,85 @@ text-* variant utilities. */ .btn-arc {
 /* Conversation block rhythm. assistant-ui renders each range as a direct child
    of the message content with no per-part wrapper, so adjacency rules cover
    every pairing — first block needs no reset, nested tool rows are untouched.
-   Two tiers: scaffolding (tool / thinking) gets a roomy block gap so it reads
-   as separate from the reply; consecutive prose collapses to a tight paragraph
-   rhythm so split-out text parts don't look like a big gap. */
-/* Scaffolding adjacent to anything → roomy block gap. */
+
+   One gap between top-level blocks, whatever they are. Spelling out which
+   *pairs* qualified meant the live status line (not tool, thinking or prose)
+   fell through every branch and carried its own half-size margin instead. */
 [data-slot='aui_assistant-message-content']
-  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'])
-  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], .aui-md),
-[data-slot='aui_assistant-message-content']
-  > .aui-md
-  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure']) {
+  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall'], .aui-md)
+  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall'], .aui-md) {
   margin-top: var(--turn-block-gap);
 }
 
-/* Prose ↔ prose → tight paragraph rhythm, matching in-block paragraph spacing. */
+/* Except prose ↔ prose: one reading column that happens to arrive as several
+   parts, so it keeps the in-block paragraph rhythm. Same specificity as the
+   rule above and deliberately after it. */
 [data-slot='aui_assistant-message-content'] > .aui-md + .aui-md {
   margin-top: var(--paragraph-gap);
 }
 
-/* Message action bars — flat icon hits with default dim; only the hovered/focused control is full-strength. */
-[data-slot='aui_msg-actions'] button {
+/* And except scaffolding ↔ scaffolding: the full gap is the space between the
+   reply and the work around it, so a back-to-back run of thinking headers,
+   tool rows and status lines spent it between every line and read as stacked
+   cards. Same list as the rule above minus prose — `data-conversation-scaffold`
+   is the wrong hook here: it's absent on a multi-call tool GROUP, which is most
+   of a real run, and present on rows nested inside one. */
+[data-slot='aui_assistant-message-content']
+  > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall'])
+  + :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall']) {
+  margin-top: var(--scaffold-block-gap);
+}
+
+/* Except a file edit, which is the deliverable rather than another line in the
+   run — a diff you read like a PR, so it keeps the full block gap on both
+   sides while the scaffolding around it stays tight. `data-file-edit` is only
+   on the row while it's open, so a collapsed edit rejoins the run. Margins on
+   the block itself, not adjacency pairs: it needs the clearance whatever sits
+   next to it, and adjacent margins collapse rather than stacking. */
+[data-slot='aui_assistant-message-content'] > [data-tool-row][data-file-edit] {
+  margin-block: var(--turn-block-gap);
+}
+
+/* Thinking headers carry a faint resting caret. A run of them is the one place
+   the affordance isn't otherwise discoverable — every other disclosure sits in
+   a row you're already reaching for. The scaffold fade multiplies this, so the
+   painted value lands well under the number here. */
+[data-slot='aui_thinking-disclosure'] {
+  --disclosure-caret-rest: 0.4;
+}
+
+/* A streaming turn is sealed into several assistant bubbles as it goes
+   (`message.interim`) and rehydrates into fewer, so the same two blocks are
+   sometimes siblings inside one bubble and sometimes split across two. The
+   flex gap between bubbles is the turn gap — half the block gap — which made
+   the rhythm visibly tighten and then relax as a turn settled. Top it up so
+   the column ticks at one interval either way. */
+[data-slot='aui_turn-pair'] > [data-slot='aui_assistant-message-root'] + [data-slot='aui_assistant-message-root'] {
+  margin-top: calc(var(--turn-block-gap) - var(--conversation-turn-gap));
+}
+
+/* Unless the blocks either side of that seal are both scaffolding, in which
+   case the scaffold gap is the target and the flex gap already overshoots it.
+   Topping up to the full block gap here is what made a live run relax between
+   rows and then tighten once it rehydrated into one bubble. A bubble carrying
+   an open diff is excluded — it keeps the full gap, same as in-flow. */
+[data-slot='aui_turn-pair']
+  > [data-slot='aui_assistant-message-root']:has(
+    > [data-slot='aui_assistant-message-content']
+      > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall']):last-child
+  ):not(:has([data-file-edit]))
+  + [data-slot='aui_assistant-message-root']:has(
+    > [data-slot='aui_assistant-message-content']
+      > :is([data-slot='tool-block'], [data-slot='aui_thinking-disclosure'], [data-slot='aui_stream-stall']):first-child
+  ):not(:has([data-file-edit])) {
+  margin-top: calc(var(--scaffold-block-gap) - var(--conversation-turn-gap));
+}
+
+/* Message action bars — flat icon hits with default dim; only the hovered/focused control is full-strength.
+   The reaction slot lives OUTSIDE the bar (a landed emoji must not ride the
+   bar's hover fade) but is still one of these controls visually. */
+[data-slot='aui_msg-actions'] button,
+button[data-slot='aui_msg-reactions'] {
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -1444,63 +1838,106 @@ text-* variant utilities. */ .btn-arc {
   opacity: 0.5;
 }
 
+/* A landed reaction is content, not a dimmed affordance — emoji render at
+   full strength everywhere, always (color dim would gray them anyway; they're
+   glyphs, not icons). */
+button[data-slot='aui_msg-reactions'][data-reacted] {
+  opacity: 1;
+  color: inherit;
+}
+
+/* The EMPTY slot is an affordance and follows its action-bar neighbors
+   exactly: hidden until the message is hovered, then the same 0.5 dim, full
+   strength under the pointer. Stylesheet-owned because the base rule above
+   outweighs Tailwind's opacity utilities (0,1,1 vs 0,1,0). */
+button[data-slot='aui_msg-reactions']:not([data-reacted]) {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.group:hover button[data-slot='aui_msg-reactions']:not([data-reacted]),
+button[data-slot='aui_msg-reactions']:not([data-reacted]):focus-visible,
+button[data-slot='aui_msg-reactions']:not([data-reacted])[data-state='open'] {
+  opacity: 0.5;
+  pointer-events: auto;
+}
+
+.group:hover button[data-slot='aui_msg-reactions']:not([data-reacted]):hover,
+button[data-slot='aui_msg-reactions']:not([data-reacted])[data-state='open'] {
+  opacity: 1;
+}
+
+/* Emoji in ANY reaction surface (badge under a user bubble, footer slot,
+   picker rows) never inherit a translucent treatment from their container. */
+[data-slot='aui_msg-reactions'] .reaction-pop,
+span[data-slot='aui_msg-reactions'] {
+  opacity: 1;
+}
+
 [data-slot='aui_msg-actions'] button:disabled {
   cursor: default;
 }
 
-[data-slot='aui_msg-actions'] button:hover {
+[data-slot='aui_msg-actions'] button:hover,
+button[data-slot='aui_msg-reactions']:hover {
   background: transparent;
   color: var(--color-foreground);
   opacity: 1;
 }
 
-[data-slot='aui_msg-actions'] button:active {
+[data-slot='aui_msg-actions'] button:active,
+button[data-slot='aui_msg-reactions']:active {
   background: transparent;
 }
 
-[data-slot='aui_msg-actions'] button:focus-visible {
+[data-slot='aui_msg-actions'] button:focus-visible,
+button[data-slot='aui_msg-reactions']:focus-visible {
   opacity: 1;
 }
 
-[data-slot='aui_msg-actions'] button svg {
+[data-slot='aui_msg-actions'] button svg,
+button[data-slot='aui_msg-reactions'] svg {
   width: 0.875rem;
   height: 0.875rem;
 }
 
-/* Live thinking preview window. Pairs with the ResizeObserver in
-   ThinkingDisclosure that pins scrollTop to the bottom — older lines fade
-   into the top mask while the latest tokens settle in below. */
-.thinking-preview {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 28%, black 100%);
-  mask-image: linear-gradient(to bottom, transparent 0%, black 28%, black 100%);
+/* Re-declare the clearance calc on every chat surface. `:root` computes it
+   once against the ROOT measurement, so scoping only the input would leave
+   every thread reading the same substituted value. Redeclaring here makes each
+   surface resolve the calc against its own dock height, falling back to the
+   root default until this surface publishes its first measurement. See
+   surface-vars.ts. */
+[data-chat-surface] {
+  --thread-last-message-clearance: calc(var(--composer-measured-height) + 2rem);
 }
 
-/* Long adjacent tool-call run collapsed into a fixed, auto-scrolling window.
-   ToolGroupSlot pins the newest call to the bottom (unless the user scrolls
-   up), so a back-to-back run stays compact instead of pushing the reply off
-   screen. A thin scrollbar keeps the affordance discoverable. */
-.tool-group-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: var(--ui-stroke-tertiary) transparent;
+/* A live tool run, shown as one line. `ToolRunTicker` stacks the run's rows
+   into a reel and offsets it by the newest row's index, so each new action
+   slides the one before it up and out of a single-line window — the run reads
+   as one line ticking over in place rather than a list growing down the page.
+   Rows are clipped to a uniform line box so the offset stays exact whatever a
+   row contains. */
+.tool-ticker {
+  height: var(--conversation-line-height);
+  overflow: hidden;
 }
 
-/* Break out of the fixed window the moment any row inside is expanded: the
-   user is now reading a diff/output, so let it grow to full height instead of
-   peering at it through a ~2-row viewport. Collapsing the row drops it back
-   into the compact, auto-scrolling window. Beats a larger fixed cap since an
-   open row already bounds its own payload with an inner scroll. */
-.tool-group-scroll:has([data-tool-row][data-tool-open]) {
-  max-height: none;
-  -webkit-mask-image: none;
-  mask-image: none;
+.tool-ticker__reel {
+  transform: translateY(calc(var(--tool-ticker-index, 0) * var(--conversation-line-height) * -1));
+  transition: transform 240ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-/* Top gradient — only applied once the user is scrolled down off the top, so
-   the oldest visible call fades up under the fade while the first row stays
-   fully legible when scrolled all the way up. */
-.tool-group-scroll--faded {
-  -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 2rem, black 100%);
-  mask-image: linear-gradient(to bottom, transparent 0, black 2rem, black 100%);
+.tool-ticker__row {
+  display: flex;
+  height: var(--conversation-line-height);
+  align-items: center;
+  overflow: hidden;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tool-ticker__reel {
+    transition: none;
+  }
 }
 
 @keyframes code-card-stream-enter {
@@ -1573,14 +2010,12 @@ text-* variant utilities. */ .btn-arc {
 
 @keyframes code-card-stream-glow {
   from {
-    border-color: color-mix(in srgb, var(--dt-ring) 18%, var(--ui-stroke-tertiary));
     box-shadow:
       0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 6%, transparent),
       0 0.5rem 1.5rem color-mix(in srgb, var(--dt-ring) 5%, transparent);
   }
 
   to {
-    border-color: color-mix(in srgb, var(--dt-ring) 32%, var(--ui-stroke-tertiary));
     box-shadow:
       0 0 0 0.0625rem color-mix(in srgb, var(--dt-ring) 12%, transparent),
       0 0.75rem 2rem color-mix(in srgb, var(--dt-ring) 10%, transparent);
@@ -1791,11 +2226,34 @@ text-* variant utilities. */ .btn-arc {
   }
 }
 
+@keyframes reaction-pop {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  60% {
+    opacity: 1;
+    transform: scale(1.18);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* Landing a reaction should feel like something — same pop shape as
+   pet-reveal-pop, scaled down for an inline glyph. */
+.reaction-pop {
+  animation: reaction-pop 260ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .pet-egg,
   .pet-egg__glow,
   .pet-egg-shadow,
   .pet-reveal {
+    animation: none;
+  }
+  .reaction-pop {
     animation: none;
   }
   .pet-reveal {
@@ -1829,4 +2287,668 @@ text-* variant utilities. */ .btn-arc {
     width: 100%;
     opacity: 0.4;
   }
+}
+
+/* ── HUD mode ────────────────────────────────────────────────────────────────
+   The chrome-free floating chat (`?win=hud`). Same renderer, same components,
+   same transcript as any other window — this block only removes the frame and
+   makes the window see-through. It deliberately does NOT restyle how messages
+   render: the transcript is the app's transcript, and a HUD that reinvents
+   bubbles is a second design to keep in sync. Layout and surface only. */
+
+/* The HOST LAYERS are made transparent at mount, not here: index.html's
+   pre-paint script sets an opaque themed background on <html> as an INLINE
+   style (the anti-white-flash trick), and an inline style beats a stylesheet
+   rule. Against that opaque wall every translucent panel below is just glass
+   over white — which is exactly how this shipped: a plain opaque slab. The
+   pet overlay and quick entry inject a style tag at mount for the same
+   reason; HudShell does it too. See `hud-shell.tsx`. */
+
+[data-hud-shell] {
+  background: transparent;
+  /* Arrive decisively and settle; leave gently and get out of the way. Linear
+     both directions is what made this feel mechanical. */
+  --hud-ease-enter: cubic-bezier(0.16, 1, 0.3, 1);
+  --hud-ease-exit: cubic-bezier(0.4, 0, 0.7, 0.2);
+  /* The band is narrower than the bar, centred under it, so the bar's corner
+     controls sit clear of the sheet's edge instead of on top of it. */
+  --hud-band-inset: 0.5rem;
+  /* Clear space above the composer for the exit chip. */
+  --hud-chip-strip: 1.625rem;
+}
+
+/* Chat surface carries nothing in HUD mode — the visual is the BAND below. */
+[data-hud-shell] [data-chat-surface] {
+  background: transparent !important;
+  overflow: hidden !important;
+}
+
+/* The scrollback — the chat BAND, straight from the nous-viz2d chat (which is
+   the reference for this whole surface): a fixed-height smoked strip hugging
+   the input, tinted from the theme, with the text simply sitting in it.
+
+     - viz2d: `bg-black/20` at rest → `bg-black/60` on hover / focus-within /
+       pending. Same mechanism here, theme-aware: the tint is the theme's own
+       background colour, so it reads correctly on dark and light themes alike
+       and text keeps its normal contrast against it.
+     - VISIBILITY keeps the WoW fade: shown while a turn is recent/streaming
+       (`data-hud-recent`) or the composer is focused, melted away otherwise.
+       viz2d's band never hides — ours does, because idle HUD mode is just the
+       Spotlight bar.
+     - Focus steps the tint to fully solid: typing means reading conditions.
+
+   Reveal is fast, fade-out is slow — the reveal is an answer to the user, the
+   fade is furniture leaving the room. */
+[data-hud-shell] [data-slot='composer-bounds'] {
+  position: absolute !important;
+  /* THE BAND IS THIS BOX. It sits against the bar and is exactly as tall as the
+     transcript is allowed to be — same geometry as the sheet behind it, same
+     clock — so the text is clipped away as the panel rolls rather than fading
+     in place, and the box that scrolls is the box you can see.
+
+     It ran the full window for a long time, clipped down to the band for paint
+     and hit-testing. That works right up until the band is CAPPED: the scroll
+     container was still window-tall, so content shorter than the window never
+     overflowed it and never scrolled, while the clip hid everything past the
+     cap. A capped band has to be a real box or half the transcript is
+     unreachable.
+
+     No fill of its own — the sheet is its own layer ([data-hud-glass]) so it
+     can animate independently of the text. */
+  inset: auto var(--hud-band-inset) var(--hud-bar-height, var(--composer-fallback-height))
+    var(--hud-band-inset) !important;
+  height: var(--hud-band-height, 0px) !important;
+  width: auto !important;
+  max-width: none !important;
+  flex: none !important;
+  border: 0 !important;
+  /* Rounded away from the bar, square where it meets it. */
+  border-radius: 0.75rem 0.75rem 0 0;
+  background: transparent !important;
+  /* Three opacity states: gone at rest, half strength when a turn is recent or
+     you've just let go of the composer (there to glance at, not to demand
+     attention), full while you're actually reading it. */
+  opacity: 0;
+  translate: 0 var(--hud-exit-shift, 2.5rem);
+  transition:
+    opacity var(--hud-fade) var(--hud-ease-exit),
+    translate var(--hud-collapse) var(--hud-ease-exit),
+    scale var(--hud-dim) var(--hud-ease-enter),
+    filter var(--hud-dim) var(--hud-ease-enter);
+  transform-origin: bottom center;
+}
+
+/* Shown: recent turn / streaming, or a focused composer.
+
+   POINTER EVENTS ARE THE GATE: unfocused, the band is a ghost you can't touch
+   — clicks in that region fall through to the shell's drag region (so the
+   whole upper window is a drag handle at rest) and the band can't eat a
+   scroll or a stray click while you're aiming at the app behind it. Focus the
+   composer and it becomes a real scrollable surface. This also means hover
+   alone can't reveal the band anymore — hover is not engagement. */
+/* The band's sheet, behind the transcript: a tint wearing the same gradient
+   mask as the text, so the whole surface ramps out together and the band has no
+   top edge at all.
+ 
+   No desktop blur under it, and that is a limit rather than an omission. CSS
+   backdrop-filter reaches nothing here — a transparent window's backdrop root
+   is the document, and the desktop was never in it (verified on the real
+   window, not assumed). macOS vibrancy does see the desktop, but WindowServer
+   composites it below the web contents after this process has finished drawing,
+   so no mask, clip or stacking order can shape it; left on under a fading tint
+   it stays a flat slab and the top of the band goes pale exactly where it
+   should be disappearing. The way through is NSVisualEffectView.maskImage
+   behind a small native addon, which is its own change. */
+[data-hud-shell] [data-hud-glass] {
+  position: absolute;
+  right: var(--hud-band-inset);
+  bottom: var(--hud-bar-height, var(--composer-fallback-height));
+  left: var(--hud-band-inset);
+  z-index: 0;
+  pointer-events: none;
+  border-radius: 0.75rem 0.75rem 0 0;
+  /* Heavier than the text in front of it, deliberately: with no blur to
+     separate the band from what it lies over, the sheet is the only thing
+     keeping half-opacity text off someone else's UI. Fade the words, keep the
+     paper. */
+  background: color-mix(in srgb, var(--dt-card) 80%, transparent);
+  /* Slides down behind the bar as it fades. A TRANSFORM, not height: it is
+     composited, so it stays smooth where animating height re-lays-out the panel
+     every frame and looked coarse — and it leaves the box alone, which matters
+     because the one time the transcript's own container was collapsed the
+     messages spilled out of a zero-height box. Translate rather than scale: the
+     panel keeps its proportions on the way out instead of being squashed.
+ 
+     The height below still tracks the transcript; only the offset animates on
+     exit, and it finishes ahead of the fade so the panel has left while the last
+     of the text is still going. */
+  height: var(--hud-band-height, 0px);
+  translate: 0 var(--hud-exit-shift, 2.5rem);
+  opacity: 0;
+  transform-origin: bottom center;
+  transition:
+    opacity var(--hud-fade) var(--hud-ease-exit),
+    translate var(--hud-collapse) var(--hud-ease-exit),
+    scale var(--hud-dim) var(--hud-ease-enter),
+    filter var(--hud-dim) var(--hud-ease-enter),
+    height var(--hud-reveal) var(--hud-ease-enter),
+    background-color var(--hud-dim) var(--hud-ease-enter);
+}
+
+/* Engaged: as tall as the transcript needs, capped at the window. An empty
+   session measures 0, so it stays rolled up. */
+[data-hud-shell][data-hud-recent] [data-hud-glass],
+[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
+  translate: none;
+  opacity: 1;
+  transition-duration: var(--hud-reveal);
+}
+
+/* Engaged means the caret is in the composer, not merely that the window holds
+   focus somewhere. Activating a window restores focus to whatever had it last,
+   so `:focus-within` counted grabbing the bar to DRAG the HUD as sitting down
+   to use it, and the transcript flew open every time it was moved. Hit-testing
+   below stays on :focus-within — being permissive about what can be clicked is
+   harmless, being permissive about what lights up is not. */
+[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-glass] {
+  background: color-mix(in srgb, var(--dt-card) 92%, transparent);
+}
+
+/* Flipped, the sheet hangs from the bar instead of standing on it. */
+[data-hud-shell][data-hud-edge='top'] [data-hud-glass] {
+  top: var(--hud-bar-height, var(--composer-fallback-height));
+  bottom: auto;
+  --hud-exit-shift: -2.5rem;
+  border-radius: 0 0 0.75rem 0.75rem;
+}
+
+/* WHAT ANSWERS THE CURSOR — and, because `useHudClickThrough` hands the window
+   to the desktop wherever the document reports nothing under the mouse, what
+   the HUD occupies as far as the rest of the screen is concerned.
+
+   Default to none and let surfaces opt in. The HUD is mostly scaffolding — the
+   shell, the chat surface, the routes wrapper — all full-window, all invisible,
+   and all hit-testable, so the window came back "something is here" for every
+   point in its rectangle and ate clicks meant for the app behind it. Written
+   this way round because that scaffolding is not a list anyone maintains: one
+   more wrapper between the shell and the bar would quietly restore the dead
+   rectangle, whereas a control that forgets to opt in is visibly dead. */
+[data-hud-shell] {
+  pointer-events: none;
+}
+
+/* Clickable whenever it's actually on screen, not only while the caret is in
+   the composer — a link in the transcript is worth clicking the moment you can
+   see it. Faded out it goes back to `none`, which is what lets clicks over the
+   HUD reach whatever you're really working in. */
+[data-hud-shell][data-hud-recent] [data-slot='composer-bounds'],
+[data-hud-shell]:focus-within [data-slot='composer-bounds'] {
+  pointer-events: auto;
+}
+
+/* Three states, not two. A turn landing brings the transcript up, but only part
+   way — it is there to be glanced at over whatever you are actually doing, and
+   full-strength text over another app reads as the HUD demanding attention it
+   hasn't earned. Focus is what promotes it to properly readable; the hold and
+   fade then take it away from wherever it was. */
+[data-hud-shell][data-hud-recent] [data-slot='composer-bounds'] {
+  opacity: 0.5;
+  translate: none;
+  /* Same duration AND curve as the sheet's tint step, or the two visibly ease
+     apart on the way down. */
+  transition-duration: var(--hud-dim);
+  transition-timing-function: var(--hud-ease-enter);
+}
+
+[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-slot='composer-bounds'] {
+  opacity: 1;
+  translate: none;
+  transition-duration: var(--hud-reveal);
+  transition-delay: 0s;
+}
+
+/* A completion list is the whole interface for as long as it is open, and it
+   hangs over the band. Two half-lit surfaces stacked on a third thing — the
+   app underneath — is unreadable however the numbers are tuned, so the list
+   goes fully opaque and the band falls back behind it: dimmer, fractionally
+   smaller, slightly out of focus. Scaled from the bar's edge, so it reads as
+   depth rather than as the panel shrinking. */
+[data-hud-shell]:has([data-slot='composer-completion-drawer'])
+  :is([data-slot='composer-bounds'], [data-hud-glass]) {
+  opacity: 0.25 !important;
+  scale: 0.97;
+  filter: blur(1.5px);
+}
+
+[data-hud-shell] [data-slot='composer-completion-drawer'] {
+  background: var(--dt-card) !important;
+}
+
+/* User messages ride the band like every other line. In the app each sticky
+   user row paints an OPAQUE chat-surface slab behind it (so a stuck bubble can
+   slide over scrolled text) and the bubble is solid --dt-user-bubble — inside
+   the smoked band both read as fully opaque cards that ignore every fade. The
+   slab goes unconditionally; the bubble smokes at rest and returns solid when
+   engaged. ONE variable carries the fill so there is no specificity fight
+   between rest/engaged rules — the states just move the var. */
+[data-hud-shell] {
+  --hud-bubble-fill: color-mix(in srgb, var(--dt-user-bubble) 65%, transparent);
+}
+
+/* ONE opacity law for the whole band: solid on focus, material otherwise.
+   Bubbles going solid on `recent` too made them opaque cards floating on the
+   62% band mid-stream — the band only steps solid on focus, so nothing inside
+   it may step earlier. */
+[data-hud-shell]:has([data-slot='composer-rich-input']:focus) {
+  --hud-bubble-fill: var(--dt-user-bubble);
+}
+
+[data-hud-shell] [data-slot='aui_user-message-root'] {
+  background: transparent !important;
+  /* Not sticky in HUD mode: the band is a short log, and a pinned bubble
+     spends a third of it on a line you already read. Static rows scroll away
+     like everything else (the app keeps its sticky behavior — this is the
+     HUD's call, not a global one). */
+  position: static !important;
+}
+
+/* User bubbles: the ONE thing in the band that paints its own opaque fill
+   (bg-(--dt-user-bubble) on USER_BUBBLE_BASE_CLASS), so it survives every
+   fade the band applies to its own background and reads as a solid card
+   floating on glass. Two things are needed, and only doing one of them is
+   why this kept coming back:
+     - the FILL follows the band's state (--hud-bubble-fill), and
+     - the BORDER does too; an opaque hairline outlines the card even when
+       the fill is right.
+   Fill and border both ride the same variable, so they cannot desync. */
+[data-hud-shell] .composer-human-message {
+  background: var(--hud-bubble-fill) !important;
+  border-color: color-mix(in srgb, var(--ui-stroke-secondary) 45%, transparent) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  transition:
+    background-color var(--hud-reveal) var(--hud-ease-enter),
+    border-color 350ms ease;
+}
+
+/* The bubble's own container also paints the chat surface behind it. */
+[data-hud-shell] .composer-human-message-container {
+  background: transparent !important;
+}
+
+/* ONE glass element in HUD mode: [data-hud-glass]. Everything else drops its
+   backdrop-filter — the composer tree ships several Tailwind backdrop-blur
+   utilities (surface glass, fallback surface, attachment spinners, voice
+   pills) that are invisible inside the opaque app but paint as smeared halos
+   around the pill's rounded corners on a transparent window.
+
+   Keep this exemption in step with whatever carries the glass: pointing it at
+   the wrong element silently deletes the blur, which looks exactly like
+   backdrop-filter not working at all. */
+[data-hud-shell] *:not([data-hud-glass], [data-hud-glass] *) {
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+/* No session header, no jump-to-bottom pill, no timeline rail. */
+[data-hud-shell] header,
+[data-hud-shell] [data-slot='thread-timeline'],
+[data-hud-shell] .thread-jump-button {
+  display: none !important;
+}
+
+/* The band is three lines of conversation over someone else's window, not a
+   transcript. Tool rows, file diffs, and background notices ("Self-improvement
+   review: patched …") are the docked app's job — here they push the actual
+   answer out of view and read as junk pinned over the app below. */
+[data-hud-shell] [data-slot='tool-block'],
+[data-hud-shell] [data-slot='file-diff-panel'],
+[data-hud-shell] [data-slot='aui_system-message-root'] {
+  display: none !important;
+}
+
+/* ── Edge flip ───────────────────────────────────────────────────────────────
+   Parked in the top half of the screen (data-hud-edge='top', broadcast by
+   main on move/resize), the whole HUD mirrors vertically: composer hugs the
+   window's top edge, the band hangs BELOW it, and text melts at the bottom.
+   Same surfaces, same variables — only the anchors swap.
+
+   The bar would sit flush against the window's top edge, leaving no "above the
+   composer" to put anything in — which is where the exit chip belongs. Reserve
+   the strip as dock padding rather than moving the bar: --hud-bar-height is
+   measured from the dock's box, so the band's offset picks the gap up on its
+   own instead of needing a second variable kept in sync. */
+[data-hud-shell][data-hud-edge='top'] [data-slot='composer-dock'] {
+  top: 0 !important;
+  bottom: auto !important;
+  padding-top: var(--hud-chip-strip) !important;
+}
+
+/* Flipped, the band hangs from the bar instead of standing on it. */
+[data-hud-shell][data-hud-edge='top'] [data-slot='composer-bounds'] {
+  top: var(--hud-bar-height, var(--composer-fallback-height)) !important;
+  bottom: auto !important;
+  border-radius: 0 0 0.75rem 0.75rem;
+}
+
+/* …so the edge it falls back from is the bar's, which is now above it. */
+[data-hud-shell][data-hud-edge='top'] :is([data-slot='composer-bounds'], [data-hud-glass]) {
+  transform-origin: top center;
+}
+
+/* The completion list — `/`, `@`, `:`, and the help hint — hangs off the bar's
+   outer edge, the same side the band is on. It grows UP by default, which is
+   right everywhere the composer has a window above it; parked at the top edge
+   there is nothing up there, so the list rendered off screen and `/` looked
+   dead. Capped to the room below the bar, since the app's own cap assumes a
+   full window. */
+[data-hud-shell][data-hud-edge='top'] [data-slot='composer-completion-drawer'] {
+  top: 100%;
+  bottom: auto;
+  margin-top: 0.25rem;
+  margin-bottom: 0;
+  max-height: calc(100dvh - var(--hud-bar-height, var(--composer-fallback-height)) - 0.75rem);
+}
+
+/* Tighten the thread on every side. The docked chat's gutters (px-6 py-8 plus
+   a 1.5rem inline pad) are sized for a full window column; in a bar a few
+   lines tall they're most of the surface. Bottom pad drops to a hairline —
+   the band already ends at the bar, so any block-end padding here reads as a
+   gap between the last message and the composer. */
+[data-hud-shell] [data-slot='aui_thread-content'] {
+  padding-inline: 0.6rem !important;
+  padding-block: 0.35rem 0.25rem !important;
+  /* A chat frame fills from the bottom. The docked thread hangs from the top
+     because it is always taller than its content is short; the band is a few
+     lines tall, so a two-message conversation left a dead gap between the last
+     reply and the composer. Filling the viewport and packing to the end puts
+     that slack ABOVE the text, where it's just more transparent window. */
+  min-height: 100%;
+  justify-content: flex-end;
+}
+
+/* Parked at the top the band hangs below the bar, so it fills downward. */
+[data-hud-shell][data-hud-edge='top'] [data-slot='aui_thread-content'] {
+  justify-content: flex-start;
+}
+
+/* The band's box already ends at the bar, so the app's dock clearance — sized
+   to hold text out from under a composer it overlaps — would only open a hole
+   the height of the bar between the last message and the composer. */
+[data-hud-shell] [data-chat-surface] {
+  --thread-last-message-clearance: 0.25rem;
+}
+
+/* Same for the dock's own bottom pad — this var also feeds
+   --composer-measured-height, so the thread and the composer stay in
+   agreement from one value. */
+[data-hud-shell] {
+  /* Conversation rhythm, tightened for a bar a few lines tall. The docked
+     thread's spacing is sized for a full-height column; in the HUD that air is
+     most of the band, and the ramp eats the older turns before you can read
+     them. Same knobs the app uses, just smaller here. */
+  --conversation-turn-gap: 0.1875rem;
+  --turn-block-gap: 0.375rem;
+  --paragraph-gap: 0.4rem;
+  --composer-shell-pad-block-end: 0px;
+  /* The viewport fills the band, period. The app's calc shortens the viewport
+     to leave the dock's strips visible below it; the HUD hides those strips, so
+     applying it here just strands a dead zone at the end of the thread that
+     grows as you type. Room for the bar comes from the clearance instead. */
+  --thread-viewport-height: 100%;
+}
+
+/* NOTHING in HUD mode declares `-webkit-app-region: drag`. The window manager
+   takes a draggable region's mouse input whole, so the page never sees the
+   cursor arrive there — and `useHudClickThrough`, which decides whether the
+   window is solid from exactly those moves, has already handed the window away
+   by the time you press. Every version of the app-region handle was therefore
+   both unusable (the press fell through to the app behind) and the reason the
+   HUD stayed solid over dead space once you left it. The two mechanisms cannot
+   share a window; click-through wins, and dragging is `useHudComposerDrag` —
+   press and hold the bar, then move. */
+[data-hud-shell] [data-slot='composer-dock'] {
+  /* The one surface that is always there, so the one that always takes the
+     mouse — everything else in the shell earns it by being on screen. */
+  pointer-events: auto;
+}
+
+/* HUD mode is the input and the log — nothing else. The dock stacks
+   [micro-action pills] · [status stack] · [composer] · [underside slot], and
+   only the composer belongs here: the status stack (todos, subagents,
+   background tasks, queue, the coding/cwd/git-branch row) and the strips
+   around it are ambient chrome for a full window, and in a bar a few lines
+   tall they'd shove the input off screen.
+
+   Written as "keep the composer, hide its siblings" rather than a list of
+   selectors, because those siblings carry no data-slot of their own — a list
+   would silently miss whatever gets added to the dock next. */
+[data-hud-shell] [data-slot='composer-dock'] > *:not([data-slot='composer-root']) {
+  display: none !important;
+}
+
+/* The coding/cwd/git-branch strip is NOT a dock sibling — it renders inside
+   `composer-surface` (it's meant to inherit the composer's width and top
+   radius), so the rule above never reaches it. Same intent, own selector. */
+[data-hud-shell] .coding-status-bar {
+  display: none !important;
+}
+
+/* The composer is the Spotlight bar: centered, capped width, the ONE
+   permanent object on screen. When the thread is faded out, this is all HUD
+   mode is.
+
+   The dock is `absolute bottom-0 left-1/2 -translate-x-1/2` against the chat
+   surface. Two traps live in that, and both silently ate earlier attempts:
+     - `margin-bottom` does NOTHING to an absolutely-positioned box anchored to
+       an edge; the lift has to come from `bottom`.
+     - Tailwind centers it with `left-1/2` + a translate, so BOTH `transform`
+       and `translate` (the standalone property) must be cancelled — absolute
+       centering here is left/right 0 + capped width + margin-inline auto.
+
+   Do NOT restyle `position`: the controls row (model pill, mic, send) resolves
+   against the nearest positioned ancestor, so making the dock static re-anchors
+   that row and the composer tears in half — input in flow at the top, controls
+   stranded at the bottom. */
+[data-hud-shell] [data-slot='composer-dock'],
+[data-hud-shell] [data-slot='composer-dock'][data-popped-out] {
+  left: 0 !important;
+  right: 0 !important;
+  bottom: 0 !important;
+  top: auto !important;
+  width: 100% !important;
+  max-width: none !important;
+  transform: none !important;
+  /* Keep this value indirect. Lightning CSS folds literal identity values into
+     `transform: translate(0)`, which does not override Tailwind's standalone
+     `translate: -50%`; the dock then starts half a HUD width off-screen. */
+  --hud-composer-translate: 0;
+  translate: var(--hud-composer-translate) !important;
+  padding: 0 !important;
+}
+
+/* The bar is never "away". In the docked app the composer dims to 30% while
+   you read back through the thread, and comes back on hover or focus — sensible
+   when it's a panel at the bottom of a big window you're scrolling past. Here
+   it IS the interface: the one permanent, fully-present object, whatever the
+   transcript above it is doing. */
+[data-hud-shell] [data-slot='composer-fade'] {
+  opacity: 1 !important;
+}
+
+[data-hud-shell] [data-slot='composer-root'] {
+  /* Opaque, so anything docked to the composer (status stack, queue panel)
+     paints the same solid fill the bar does — they share this var. */
+  --composer-fill: var(--dt-card);
+  /* The base rule adds 5px of transparent grab margin for the peel-out drag,
+     and the dock compensates with +10px of width. Neither applies here (the
+     HUD composer doesn't peel out), and left in they inset the card unevenly
+     inside its own float. */
+  padding: 0 !important;
+  width: 100% !important;
+}
+
+/* The composer surface paints TWO layers: the surface itself, plus an
+   `absolute inset-0 -z-10` fill+glass div behind it (composerFill /
+   composerSurfaceGlass). Two stacked fills read as a box inside a box, so the
+   backing layer goes and the surface carries the single fill. */
+[data-hud-shell] [data-slot='composer-surface'] > .pointer-events-none.absolute.inset-0 {
+  display: none !important;
+}
+
+/* Opaque, pill-rounded — the Spotlight bar. Same surface tokens the composer
+   already uses; only the radius steps up so a lone floating bar reads as an
+   object rather than a snippet of app chrome.
+
+   ALWAYS fully opaque. It's the input — the one thing that must never be
+   compromised by whatever's behind the window, in any state. The idle/engaged
+   breathing belongs to the thread and the chat surface; the bar just sits
+   there, solid, like Spotlight does. */
+[data-hud-shell] [data-slot='composer-surface'] {
+  border: 1px solid var(--ui-stroke-secondary) !important;
+  /* Same radius as the band's top and the window's own corners, so the HUD
+     reads as one object however the band is behaving. Its top corners let a
+     sliver of band through, which is the point — the glass wraps the bar's
+     shoulders instead of stopping in a straight line above it. */
+  border-radius: 0.75rem !important;
+  background: var(--dt-card) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  /* Bottom edge only. Enough to lift the bar off whatever it is lying over —
+     without it the HUD reads as pasted onto the other app — and tight enough
+     that it never becomes a glow around a floating card. */
+  box-shadow: 0 2px 2px -1px rgb(0 0 0 / 0.12) !important;
+  transition: border-color var(--hud-reveal) var(--hud-ease-enter);
+}
+
+/* Focus: the border the bar already has, in the accent. Everything with its own
+   geometry is out — the bar sits flush against the window, so a ring or a
+   shadow is sawn off by the window before any CSS can shape it, and paying for
+   the clearance moves the bar. Recolouring what is already drawn costs no
+   space, cannot be clipped, and leaves the working arc as the only ring. */
+[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-slot='composer-surface'] {
+  border-color: var(--dt-primary) !important;
+}
+
+/* Long-press drag armed — the whole bar is the handle until release. */
+[data-hud-shell] [data-slot='composer-root'][data-hud-grabbing] [data-slot='composer-dock'] {
+  cursor: grabbing;
+}
+
+/* The exit button. HUD mode has no titlebar, so this is the only visible way
+   back; it lives in the open space off the bar's outer edge, at the right.
+
+   A bare themed glyph rather than a chip: it sits over whatever the user is
+   really working in, and a card floating there is a stray fragment of app on
+   their screen.
+
+   Placed from --hud-bar-height rather than CSS anchor(). Lightning CSS drops a
+   whole rule containing an `anchor()` on the vertical axis, so the flipped-edge
+   override never reached the browser and the chip rendered off screen. */
+[data-hud-shell] [data-hud-exit] {
+  left: auto;
+  top: auto;
+  right: 0.375rem;
+  bottom: calc(var(--hud-bar-height, var(--composer-fallback-height)) + 0.375rem);
+  aspect-ratio: 1;
+  height: auto;
+  background: transparent !important;
+  border: 0;
+  color: var(--ui-text-primary) !important;
+  /* Always clickable, dim at rest. Gating the CLICKS on composer `:focus` made
+     the only visible way out of HUD mode depend on the thing most likely to be
+     broken when someone wants out: if focus never lands (#81893) you can't type
+     AND the chip silently swallows clicks, leaving a transparent always-on-top
+     rectangle over the desktop with no in-app way to dismiss it.
+
+     Dim rather than invisible keeps the original intent — this shouldn't be a
+     loud chip floating over whatever you're actually working in — without
+     making the escape hatch conditional on the failure it exists for. */
+  opacity: 0.45;
+  transition: opacity var(--hud-fade) var(--hud-ease-exit);
+  pointer-events: auto;
+}
+
+/* Flipped, "above the composer" is the reserved strip at the top of the
+   window rather than a gap the band has to leave. */
+[data-hud-shell][data-hud-edge='top'] [data-hud-exit] {
+  bottom: auto;
+  top: 0;
+}
+
+/* Hover and focus-visible brighten it too, so pointing at the chip confirms it
+   is a control before you commit the click. */
+[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-exit],
+[data-hud-shell] [data-hud-exit]:hover,
+[data-hud-shell] [data-hud-exit]:focus-visible {
+  opacity: 0.9;
+  transition-duration: var(--hud-reveal);
+  transition-delay: 0s;
+}
+
+[data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-exit]:hover {
+  opacity: 1;
+}
+
+/* The corner resize handle — a hot corner, not a button. The window is created
+   non-resizable (the transparent-frameless Windows drag-growth bug), so this
+   is the one sanctioned way to change the HUD's size; it drives
+   `hermes:hud:set-bounds`, which flips resizable on for the call.
+
+   Deliberately invisible chrome: no glyph, no border — the corner of the bar
+   reads as the affordance, and painting a handle on a surface that lives over
+   other apps would be a stray UI fragment. It opts in to pointer events the
+   same way every other HUD control does (the shell defaults to none). */
+[data-hud-shell] [data-hud-resize] {
+  width: 1.25rem;
+  height: 1.25rem;
+  cursor: nwse-resize;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+/* The composer's drop target is a full-window dashed sheet sized for the app's
+   chat column. In the HUD it is a white slab hanging under the bar on a fresh
+   thread, and there is nowhere to drop anything into a bar anyway. */
+[data-hud-shell] [data-slot='chat-drop-overlay'] {
+  display: none !important;
+}
+
+/* The dock's fade-to-surface gradient assumes a chat column behind it; over a
+   transparent HUD it's a grey smear. */
+[data-hud-shell] [data-slot='composer-root'] > .pointer-events-none {
+  display: none !important;
+}
+
+/* Popovers in a ~320px-tall window. Two separate problems:
+
+   1. Radix clamps the popover to --radix-*-available-height, but fixed
+      max-heights INSIDE the panels (the model catalog's max-h-[max(150px,
+      30dvh)] list) don't shrink with it, so the list keeps its own floor and
+      the menu overflows the window.
+   2. The window IS the collision boundary, so even a correctly-clamped menu
+      has only ~320px to live in.
+
+   (1) is ours to fix in CSS; inner scrollers yield to the window instead of
+   their own floor. (2) is why the menus are compact here rather than roomy —
+   a HUD is a small window and a 400px menu cannot fit in it. */
+html:has([data-hud-shell]) [data-slot='dropdown-menu-content'] [class*='max-h-'],
+html:has([data-hud-shell]) [data-slot='popover-content'] [class*='max-h-'] {
+  max-height: max(5rem, calc(100dvh - 9rem)) !important;
+}
+
+/* The menu panels themselves: never taller than the window minus the bar. */
+html:has([data-hud-shell]) [data-slot='dropdown-menu-content'],
+html:has([data-hud-shell]) [data-slot='popover-content'] {
+  max-height: calc(100dvh - 4.5rem) !important;
+  overflow-y: auto;
+}
+
+/* Hide the scrollbar — a HUD with a visible track stops reading as an overlay. */
+[data-hud-shell] [data-slot='composer-bounds'] * {
+  scrollbar-width: none;
+}
+
+[data-hud-shell] [data-slot='composer-bounds'] *::-webkit-scrollbar {
+  display: none;
 }

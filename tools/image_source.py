@@ -1,9 +1,15 @@
-"""Single resolver for every vision_analyze image source -> bytes + mime.
+"""Single resolver for every media source -> bytes + mime.
 
 All source handling (data:/http(s)/file/local/container) funnels through
 :func:`resolve_image_source` so size and magic-byte checks are enforced exactly
 once.  Returns raw bytes (not a path): the downstream step is base64 -> data URL
 (RFC 2397) and provider base64 content blocks.
+
+Images are the default and the historical purpose. Callers whose argument
+takes video opt in via ``permitted=("video",)`` — the same confinement and
+credential-guard pipeline applies, and only the type check at the end differs
+(extension-table typing plus an mp4 magic sniff, rather than image magic
+bytes). Every existing call site keeps the image-only default unchanged.
 
 Security (terminal-backend confinement, GHSA-gpxw-6wxv-w3qq): under a non-local
 terminal backend the file tools are confined to the sandbox (SECURITY.md 2.2),
@@ -86,18 +92,23 @@ class ResolvedImage:
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.\-]*://")
 
 
-async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
+async def resolve_image_source(
+    src: str,
+    ctx: ResolveContext,
+    *,
+    permitted: tuple = ("image",),
+) -> ResolvedImage:
     if not isinstance(src, str) or not src.strip():
         raise SourceNotFound("image_url is required", src=str(src))
     s = src.strip()
     if s.startswith("data:"):
         data, mime = _resolve_data_url(s)
-        return _finalize(data, mime, "data", s)
+        return _finalize(data, mime, "data", s, permitted)
     if s.startswith(("http://", "https://")):
         reason = _http_block_reason(s)
         if reason:
             raise SourceUnsafe(reason, src=s)
-        return _finalize(await _download_to_bytes(s), "", "http", s)
+        return _finalize(await _download_to_bytes(s), "", "http", s, permitted)
 
     if _SCHEME_RE.match(s) and not s.lower().startswith("file://"):
         raise UnsupportedScheme(
@@ -134,15 +145,15 @@ async def resolve_image_source(src: str, ctx: ResolveContext) -> ResolvedImage:
             except ValueError as exc:
                 raise SourceUnsafe(str(exc), src=s, origin="file")
         data = await asyncio.to_thread(host_target.read_bytes)
-        return _finalize(data, "", "file", s)
+        return _finalize(data, "", "file", s, permitted)
     if _is_local_terminal_backend():
         # Local backend: any path was host-readable, so a miss simply means
         # the file doesn't exist — no sandbox to fall back to.
-        raise SourceNotFound(f"image file not found: '{p}'", src=s, origin="file")
+        raise SourceNotFound(f"media file not found: '{p}'", src=s, origin="file")
     # Not a permitted host read (or the host file is absent) -> read the
     # bytes inside the sandbox. Under a sandbox this reads the container's
     # filesystem, never the host's.
-    return await _resolve_container_fallback(p, ctx, s)
+    return await _resolve_container_fallback(p, ctx, s, permitted)
 
 
 def _resolve_data_url(s: str) -> tuple[bytes, str]:
@@ -219,6 +230,7 @@ def _media_cache_roots() -> list:
     home = get_hermes_home()
     return [
         home / "cache",  # cache/images, cache/vision, cache/video(s), cache/audio
+        home / "images",  # desktop/clipboard/PDF uploads (tui_gateway) — #69575
         home / "image_cache",
         home / "audio_cache",
         home / "video_cache",
@@ -270,7 +282,28 @@ def _get_active_env(task_id: Optional[str]):
         return None
 
 
-async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) -> ResolvedImage:
+def _ensure_container_env(task_id: Optional[str]) -> None:
+    """Lazily bring up the sandbox (SSH/Docker/…) before an in-sandbox read.
+
+    Unlike the terminal tool, vision never triggered environment creation, so a
+    session whose first action is ``vision_analyze`` on a container-only path
+    under a non-local backend found no active env and failed — until a terminal
+    command happened to create one (issue #62825). Best-effort: any failure just
+    leaves the env absent and the caller hits the existing fail-closed error.
+    """
+    if not task_id:
+        return
+    try:
+        from tools.terminal_tool import ensure_task_env
+
+        ensure_task_env(task_id)
+    except Exception:
+        pass
+
+
+async def _resolve_container_fallback(
+    p: Path, ctx: ResolveContext, src: str, permitted: tuple = ("image",)
+) -> ResolvedImage:
     """Read the image bytes inside the sandbox (fail-closed when none exists).
 
     Reached when a host read is not permitted or the host file is absent. The
@@ -282,9 +315,25 @@ async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) ->
 
     Fail-closed: if there is no active sandbox env we refuse rather than falling
     back to a host read, so a non-cache host path under a sandbox never leaks.
+
+    Cold-start retry: under Docker the very first exec against a freshly
+    started container can fail (empty pipe / partial setup) while an identical
+    second call succeeds. We retry once with a short delay before giving up,
+    so callers don't see "could not read inside the sandbox" on a file that is
+    verifiably readable on the immediate retry. See #76566.
+
+    Diagnostic: when every attempt fails, the container's own output (stderr
+    + stdout) is folded into the raised error so the user can distinguish
+    "no such file" from "permission denied" from "container never came up"
+    instead of staring at one opaque message.
     """
     import asyncio
     import shlex
+
+    # Bring the sandbox up on demand: without this, the first vision_analyze of
+    # a session (before any terminal command) has no active env to read from
+    # under a non-local backend (issue #62825).
+    _ensure_container_env(ctx.task_id)
 
     env = _get_active_env(ctx.task_id)
     if env is None:
@@ -302,37 +351,126 @@ async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) ->
     # env.execute is a blocking backend exec; keep it off the event loop so a
     # multi-MB base64 read doesn't stall every other coroutine.
     qp = shlex.quote(str(p))
-    res = await asyncio.to_thread(
-        env.execute,
-        f"head -c {_MAX_INGEST_BYTES + 1} < {qp} | base64 | tr -d '\\n'")
-    if res.get("returncode", 1) != 0:
-        raise SourceNotFound(f"could not read '{p}' inside the sandbox", src=src, origin="container")
+    cmd = f"head -c {_MAX_INGEST_BYTES + 1} < {qp} | base64 | tr -d '\\n'"
+
+    last_res: dict = {"returncode": 1, "output": ""}
+    for attempt in range(2):
+        last_res = await asyncio.to_thread(env.execute, cmd)
+        if last_res.get("returncode", 1) == 0:
+            break
+        if attempt == 0:
+            # Cold-start: give the container a moment to settle its pipes
+            # before retrying. 150ms covers Docker exec warm-up in practice
+            # without making a real failure feel sluggish.
+            await asyncio.sleep(0.15)
+    if last_res.get("returncode", 1) != 0:
+        diag = (last_res.get("output") or "").strip().splitlines()
+        # Keep the diagnostic small and noise-free: first non-empty line,
+        # trimmed to a sane length so it slots into the agent's error UI.
+        first = next((ln.strip() for ln in diag if ln.strip()), "")
+        suffix = f" ({first[:200]})" if first else ""
+        raise SourceNotFound(
+            f"could not read '{p}' inside the sandbox{suffix}",
+            src=src, origin="container")
     try:
-        data = base64.b64decode(res.get("output", ""), validate=True)
+        data = base64.b64decode(last_res.get("output", ""), validate=True)
     except Exception as exc:
         raise NotAnImage(f"sandbox returned non-image data for '{p}': {exc}", src=src)
     if len(data) > _MAX_INGEST_BYTES:
-        raise SourceTooLarge("image exceeds size limit", src=src, origin="container")
-    return _finalize(data, "", "container", src)
+        raise SourceTooLarge("media exceeds size limit", src=src, origin="container")
+    return _finalize(data, "", "container", src, permitted)
 
 
-def _finalize(data: bytes, declared_mime: str, origin: str, src: str) -> ResolvedImage:
-    """Intrinsic-correctness chokepoint: ingest byte cap + magic-byte sniff.
+def _finalize(
+    data: bytes, declared_mime: str, origin: str, src: str, permitted: tuple = ("image",)
+) -> ResolvedImage:
+    """Intrinsic-correctness chokepoint: ingest byte cap + type check.
 
     The cap here is the generous 50MB *ingest* budget, not the 20MB provider
     payload cap — a 20-50MB image must survive this step so the call site can
     resize it under the payload cap. See ``_MAX_INGEST_BYTES``.
+
+    Images are typed by magic bytes. Video (opt-in via ``permitted``) is typed
+    by the extension table plus an mp4 container sniff: extension typing is
+    sufficient because every downstream consumer re-validates — the upload
+    gateway signs the content type into its presigned URL and the vendor
+    rejects undecodable input — so a wrong guess is a clean rejection there
+    rather than a hole here.
     """
     from tools.vision_tools import _detect_image_mime_type_from_bytes
 
     if len(data) > _MAX_INGEST_BYTES:
-        raise SourceTooLarge("image exceeds size limit", src=src, origin=origin)
+        raise SourceTooLarge("media exceeds size limit", src=src, origin=origin)
+
     sniffed = _detect_image_mime_type_from_bytes(data)
-    if sniffed is None:
-        if b"<svg" in data[:4096].lower():
-            # Pass SVG through — the vision call sites rasterize it to PNG
-            # via _normalize_to_supported_image before embedding (providers
-            # only ingest raster images).
-            return ResolvedImage(data=data, mime="image/svg+xml", origin=origin)
-        raise NotAnImage("source is not a recognized image", src=src, origin=origin)
-    return ResolvedImage(data=data, mime=sniffed, origin=origin)
+    if sniffed is not None:
+        if "image" not in permitted:
+            raise NotAnImage("source is an image, but this argument takes a video", src=src, origin=origin)
+        return ResolvedImage(data=data, mime=sniffed, origin=origin)
+
+    if "image" in permitted and b"<svg" in data[:4096].lower():
+        # Pass SVG through — the vision call sites rasterize it to PNG
+        # via _normalize_to_supported_image before embedding (providers
+        # only ingest raster images).
+        return ResolvedImage(data=data, mime="image/svg+xml", origin=origin)
+
+    if "video" in permitted:
+        video_mime = _detect_video_mime(data, src)
+        if video_mime is not None:
+            return ResolvedImage(data=data, mime=video_mime, origin=origin)
+        raise NotAnImage("source is not a recognized video (mp4 expected)", src=src, origin=origin)
+
+    raise NotAnImage("source is not a recognized image", src=src, origin=origin)
+
+
+def _detect_video_mime(data: bytes, src: str) -> Optional[str]:
+    """Video MIME from the extension table, else the mp4/mov container magic.
+
+    The magic fallback covers extensionless sources (data: URLs, URLs with
+    query strings): ISO base-media files carry ``ftyp`` at offset 4.
+    """
+    from urllib.parse import urlsplit
+
+    from tools.vision_tools import _detect_video_mime_type
+
+    path_part = urlsplit(src).path if _SCHEME_RE.match(src) else src
+    by_extension = _detect_video_mime_type(Path(path_part))
+    if by_extension is not None:
+        return by_extension
+    if len(data) > 12 and data[4:8] == b"ftyp":
+        return "video/mp4"
+    return None
+
+
+async def resolve_local_source_to_data_url(
+    src: str, task_id: Optional[str], *, permitted: tuple = ("image",)
+) -> str:
+    """Convert a path-like media source into a ``data:`` URL via the resolver.
+
+    Generation tools (image_generate / video_generate) forward model-supplied
+    source images to provider plugins, which historically read local paths off
+    the HOST filesystem regardless of terminal backend. Under a non-local
+    backend that is both broken (the file usually lives in the sandbox, so the
+    host read misses) and inconsistent with the confinement model vision/video
+    analysis enforce (GHSA-gpxw-6wxv-w3qq): the sandbox boundary should govern
+    every model-supplied path.
+
+    This helper is the dispatch-layer chokepoint: URL-shaped sources
+    (http/https/data) pass through untouched; anything path-like resolves
+    through :func:`resolve_image_source` — media-cache host reads, bounded
+    in-sandbox exec-read, lazy env bring-up, credential guard, ingest cap —
+    and comes back as a ``data:`` URL every provider already accepts.
+
+    Callers apply this only under a non-local terminal backend: on the local
+    backend providers keep their existing host-side reads (chosen posture,
+    zero behavior change).
+    """
+    s = (src or "").strip()
+    if not s or s.lower().startswith(("http://", "https://", "data:")):
+        return src
+    resolved = await resolve_image_source(
+        s, ResolveContext(task_id=task_id), permitted=permitted
+    )
+    encoded = base64.b64encode(resolved.data).decode("ascii")
+    mime = resolved.mime or "application/octet-stream"
+    return f"data:{mime};base64,{encoded}"

@@ -1,14 +1,14 @@
 ---
-title: "Lambda Labs Gpu Cloud — Reserved and on-demand GPU cloud instances for ML training and inference"
-sidebar_label: "Lambda Labs Gpu Cloud"
-description: "Reserved and on-demand GPU cloud instances for ML training and inference"
+title: "Lambda Labs — On-demand GPU cloud instances for ML training"
+sidebar_label: "Lambda Labs"
+description: "On-demand GPU cloud instances for ML training"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
-# Lambda Labs Gpu Cloud
+# Lambda Labs
 
-Reserved and on-demand GPU cloud instances for ML training and inference. Use when you need dedicated GPU instances with simple SSH access, persistent filesystems, or high-performance multi-node clusters for large-scale training.
+On-demand GPU cloud instances for ML training.
 
 ## Skill metadata
 
@@ -31,7 +31,7 @@ The following is the complete skill definition that Hermes loads when this skill
 
 # Lambda Labs GPU Cloud
 
-Comprehensive guide to running ML workloads on Lambda Labs GPU cloud with on-demand instances and 1-Click Clusters.
+Guide to running ML workloads on Lambda Labs GPU cloud with on-demand instances and 1-Click Clusters.
 
 ## When to use Lambda Labs
 
@@ -304,7 +304,7 @@ Filesystems must be attached at instance launch time:
   └── outputs/
 
 # Local SSD (faster, ephemeral)
-/home/ubuntu/
+~/ (instance home)
   └── working/  # Temporary files
 ```
 <!-- ascii-guard-ignore-end -->

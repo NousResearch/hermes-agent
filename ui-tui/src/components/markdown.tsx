@@ -153,25 +153,27 @@ const autolinkUrl = (raw: string) =>
 const defaultLinkLabel = (url: string) =>
   url.startsWith('mailto:') ? url.replace(/^mailto:/, '') : /^https?:\/\//i.test(url) ? urlSlugTitleLabel(url) : url
 
-const pickFallbackLabel = (label: string | undefined, target: string): string | undefined => {
+// A label only counts as authored if it says something the URL doesn't:
+// `[https://example.com](https://example.com)` and `<https://example.com>`
+// are bare links wearing markdown syntax, so they still want a page title.
+const pickAuthoredLabel = (label: string | undefined, target: string): string | undefined => {
   const trimmed = label?.trim()
 
-  if (!trimmed) {
-    return undefined
-  }
-
-  return normalizeExternalUrl(trimmed) === target ? undefined : trimmed
+  return trimmed && normalizeExternalUrl(trimmed) !== target ? trimmed : undefined
 }
 
 interface ResolvedLinkProps {
-  fallbackLabel?: string
+  authoredLabel?: string
   t: Theme
   url: string
 }
 
-function ResolvedLink({ fallbackLabel, t, url }: ResolvedLinkProps) {
-  const fetched = useLinkTitle(url)
-  const display = fetched || fallbackLabel || defaultLinkLabel(url)
+// Title resolution is a fallback for links with no text of their own, not an
+// override — replacing `[Read the RFC](url)` with the page title throws away
+// better wording than we can derive, and mangles labels like `#71706`.
+function ResolvedLink({ authoredLabel, t, url }: ResolvedLinkProps) {
+  const fetched = useLinkTitle(authoredLabel ? null : url)
+  const display = authoredLabel || fetched || defaultLinkLabel(url)
 
   return (
     <Link url={url}>
@@ -185,7 +187,7 @@ function ResolvedLink({ fallbackLabel, t, url }: ResolvedLinkProps) {
 const renderResolvedLink = (k: number, t: Theme, rawUrl: string, label?: string) => {
   const target = normalizeExternalUrl(rawUrl)
 
-  return <ResolvedLink fallbackLabel={pickFallbackLabel(label, target)} key={k} t={t} url={target} />
+  return <ResolvedLink authoredLabel={pickAuthoredLabel(label, target)} key={k} t={t} url={target} />
 }
 
 export const stripInlineMarkup = (v: string) =>
@@ -539,7 +541,14 @@ const renderTable = (k: number, rows: string[][], t: Theme, cols?: number) => {
   )
 }
 
-function MdInline({ t, text }: { t: Theme; text: string }) {
+// `color` anchors the prose runs to a palette tone. Block callers that
+// already wrap MdInline in a colored <Text> (headings, quotes, footnotes)
+// leave it unset and inherit that parent; body-prose callers pass
+// `t.color.text` so plain words are themed instead of falling through to
+// the terminal's default foreground. Without it a single line mixes
+// themed spans (code, links, math) with unthemed prose — and because an
+// inline token can match mid-word, so can a single word.
+function MdInline({ color, t, text }: { color?: string; t: Theme; text: string }) {
   const parts: ReactNode[] = []
 
   let last = 0
@@ -650,7 +659,11 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
     parts.push(<Text key={parts.length}>{text.slice(last)}</Text>)
   }
 
-  return <Text wrap="wrap-trim">{parts.length ? parts : text}</Text>
+  return (
+    <Text {...(color ? { color } : {})} wrap="wrap-trim">
+      {parts.length ? parts : text}
+    </Text>
+  )
 }
 
 // Cross-instance parsed-children cache: useMemo's per-instance cache dies
@@ -881,7 +894,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
 
         if (closeIdx < 0) {
           start('paragraph')
-          nodes.push(<MdInline key={key} t={t} text={line} />)
+          nodes.push(<MdInline color={t.color.text} key={key} t={t} text={line} />)
           i++
 
           continue
@@ -998,7 +1011,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           nodes.push(
             <Text key={`${key}-def-${i}`} wrap="wrap-trim">
               <Text color={t.color.muted}> · </Text>
-              <MdInline t={t} text={def} />
+              <MdInline color={t.color.text} t={t} text={def} />
             </Text>
           )
           i++
@@ -1019,7 +1032,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           <Box key={key} paddingLeft={indentDepth(bullet[1]!) * 2}>
             <Text wrap="wrap-trim">
               <Text color={t.color.muted}>{marker} </Text>
-              <MdInline t={t} text={task ? task[2]! : bullet[2]!} />
+              <MdInline color={t.color.text} t={t} text={task ? task[2]! : bullet[2]!} />
             </Text>
           </Box>
         )
@@ -1036,7 +1049,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
           <Box key={key} paddingLeft={indentDepth(numbered[1]!) * 2}>
             <Text wrap="wrap-trim">
               <Text color={t.color.muted}>{numbered[2]}. </Text>
-              <MdInline t={t} text={numbered[3]!} />
+              <MdInline color={t.color.text} t={t} text={numbered[3]!} />
             </Text>
           </Box>
         )
@@ -1141,7 +1154,7 @@ function MdImpl({ cols, compact, t, text }: MdProps) {
       }
 
       start('paragraph')
-      nodes.push(<MdInline key={key} t={t} text={line} />)
+      nodes.push(<MdInline color={t.color.text} key={key} t={t} text={line} />)
       i++
     }
 

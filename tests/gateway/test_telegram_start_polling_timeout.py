@@ -8,9 +8,10 @@ httpx connection pool — it neither returns nor raises. Unbounded, that wedges:
 2. the heartbeat loop (sees the recovery task as alive-but-wedged and skips),
 3. the fatal-error escalation (never reached).
 
-The fix wraps every ``start_polling()`` await in ``asyncio.wait_for`` with
-``_UPDATER_START_TIMEOUT`` so a hung call raises and feeds the existing retry
-ladder. These tests patch the timeout down to keep the suite fast.
+The fix wraps every ``start_polling()`` await in the wall-deadline helper with
+``_UPDATER_START_TIMEOUT`` so a cancellation-shielded hung call still raises and
+feeds the existing retry ladder. These tests patch the timeout down to keep the
+suite fast.
 """
 import asyncio
 import sys
@@ -43,7 +44,7 @@ from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
 async def _hang_forever(**kwargs):
-    await asyncio.sleep(1000)
+    await asyncio.sleep(0.2)
 
 
 def _bare_adapter():
@@ -58,6 +59,7 @@ def _bare_adapter():
     a._fatal_error_retryable = True
     a._polling_network_error_count = 0
     a._polling_conflict_count = 0
+    a._polling_conflict_recovery_generation = None
     a._polling_error_callback_ref = None
     a._background_tasks = set()
     a._send_path_degraded = False
@@ -93,65 +95,82 @@ async def test_network_ladder_start_polling_hang_does_not_wedge(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_bootstrap_start_polling_hang_schedules_recovery(monkeypatch):
-    """_start_polling_resilient: a hung bootstrap start_polling() must raise
-    TimeoutError (an OSError → classified as network error) and schedule
-    background recovery instead of blocking connect() forever."""
-    monkeypatch.setattr(tg_adapter, "_UPDATER_START_TIMEOUT", 0.2)
+async def test_initial_connect_succeeds_on_current_generation_progress(monkeypatch):
+    """Strict cold start returns True once THIS generation records progress."""
+    monkeypatch.setattr(tg_adapter, "_INITIAL_POLLING_PROGRESS_TIMEOUT", 5.0)
     a = _bare_adapter()
-
     app = MagicMock()
     app.updater = AsyncMock()
-    app.updater.start_polling = _hang_forever
+
+    async def start_polling_with_progress(**_kwargs):
+        # PTB's instrumented getUpdates request records progress for the
+        # generation started by this call.
+        a._record_polling_progress(a._polling_generation)
+
+    app.updater.start_polling = AsyncMock(side_effect=start_polling_with_progress)
     a._app = app
 
-    scheduled = []
-    monkeypatch.setattr(
-        a, "_schedule_polling_recovery",
-        lambda err, reason: scheduled.append((err, reason)),
-        raising=False,
-    )
-
     ok = await asyncio.wait_for(
-        a._start_polling_resilient(drop_pending_updates=False, error_callback=None),
+        a._start_polling_resilient(
+            drop_pending_updates=True,
+            error_callback=None,
+            require_progress=True,
+        ),
         timeout=10,
     )
-    assert ok is False
-    assert len(scheduled) == 1
-    assert isinstance(scheduled[0][0], (TimeoutError, asyncio.TimeoutError))
+    assert ok is True
+    assert a._send_path_degraded is False
+    # Strict mode owns readiness itself; the background verifier must not be
+    # racing it on the cold-start application.
+    assert getattr(a, "_polling_progress_verifier_task", None) is None
 
 
 @pytest.mark.asyncio
-async def test_start_polling_success_path_unaffected(monkeypatch):
-    """Sanity: a fast start_polling() still returns True through the wrapper."""
-    monkeypatch.setattr(tg_adapter, "_UPDATER_START_TIMEOUT", 5.0)
+async def test_initial_connect_polling_error_fails_fast_not_background(monkeypatch):
+    """#67498 idle-threads shape: a polling error during strict cold start
+    must surface immediately as a connect failure — NOT be swallowed into a
+    background recovery task that restarts polling on the partial app while
+    the readiness gate waits out its full deadline (the G1/G2 race from the
+    #69240 review)."""
+    monkeypatch.setattr(tg_adapter, "_INITIAL_POLLING_PROGRESS_TIMEOUT", 30.0)
     a = _bare_adapter()
-
     app = MagicMock()
     app.updater = AsyncMock()
-    app.updater.start_polling = AsyncMock(return_value=None)
+
+    captured_callbacks = []
+
+    async def start_polling_capture(**kwargs):
+        captured_callbacks.append(kwargs.get("error_callback"))
+
+    app.updater.start_polling = AsyncMock(side_effect=start_polling_capture)
     a._app = app
 
-    ok = await a._start_polling_resilient(drop_pending_updates=False, error_callback=None)
-    assert ok is True
-    app.updater.start_polling.assert_awaited_once()
+    recovery_scheduled = []
+    a._schedule_polling_recovery = lambda err, reason: recovery_scheduled.append(err)
+
+    async def run_connect():
+        return await a._start_polling_resilient(
+            drop_pending_updates=True,
+            error_callback=lambda e: recovery_scheduled.append(e),
+            require_progress=True,
+        )
+
+    task = asyncio.ensure_future(run_connect())
+    # Let start_polling run and the strict gate begin waiting.
+    for _ in range(10):
+        await asyncio.sleep(0)
+        if captured_callbacks:
+            break
+    assert captured_callbacks and captured_callbacks[0] is not None
+
+    # PTB reports a network error on the first getUpdates (G1 error).
+    captured_callbacks[0](OSError("getUpdates failed"))
+
+    # The cold attempt must fail promptly (well before the 30s readiness
+    # deadline) with a loud OSError, and must NOT have scheduled background
+    # recovery (which would start G2 on the same partial application).
+    with pytest.raises(OSError, match="errored before first getUpdates"):
+        await asyncio.wait_for(task, timeout=5)
+    assert recovery_scheduled == []
 
 
-def test_every_start_polling_call_site_is_time_bounded():
-    """Bug-class contract: every `updater.start_polling(` await in the adapter
-    must be wrapped in asyncio.wait_for. A new unbounded call site reintroduces
-    the #59614 wedge."""
-    import inspect
-    import re
-
-    src = inspect.getsource(tg_adapter)
-    # Find each start_polling( call and check an enclosing wait_for within the
-    # preceding 6 lines (the wrapper always sits directly above).
-    lines = src.splitlines()
-    unbounded = []
-    for i, line in enumerate(lines):
-        if re.search(r"updater\.start_polling\(", line) and "def " not in line:
-            window = "\n".join(lines[max(0, i - 6):i + 1])
-            if "wait_for" not in window:
-                unbounded.append((i + 1, line.strip()))
-    assert not unbounded, f"unbounded start_polling() call sites: {unbounded}"

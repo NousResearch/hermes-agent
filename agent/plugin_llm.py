@@ -210,8 +210,8 @@ def _resolve_trust_policy(plugin_id: str) -> _TrustPolicy:
         return _TrustPolicy(plugin_id="")
 
     try:
-        from hermes_cli.config import load_config
-        config = load_config() or {}
+        from hermes_cli.config import load_config_readonly
+        config = load_config_readonly() or {}
     except Exception:  # pragma: no cover — config IO failure
         return _TrustPolicy(plugin_id=plugin_id)
 

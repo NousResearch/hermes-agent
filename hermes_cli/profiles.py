@@ -30,7 +30,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 
@@ -237,6 +237,9 @@ _DEFAULT_EXPORT_INCLUDE_ROOT = frozenset({
     # Configuration / persona
     "config.yaml", "SOUL.md", "MEMORY.md", "USER.md", "todo.json",
     "system_prompt.md", "AGENTS.md", "CLAUDE.md", ".cursorrules",
+    # Desktop appearance/interface overlay (written by the desktop app's
+    # profile export; applied by its import — see desktop.json handling).
+    "desktop.json",
     # User-facing skill, cron, and session artifacts
     "skills", "cron", "scripts", "sessions",
     # Plugin / memory surfaces (per-profile overrides live here)
@@ -406,7 +409,7 @@ def check_alias_collision(name: str) -> Optional[str]:
     try:
         result = subprocess.run(
             ["where" if is_windows else "which", canon],
-            capture_output=True, text=True, timeout=5,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5,
         )
         if result.returncode == 0:
             existing_path = result.stdout.strip().splitlines()[0]
@@ -414,7 +417,7 @@ def check_alias_collision(name: str) -> Optional[str]:
             expected = wrapper_dir / (f"{canon}.bat" if is_windows else canon)
             if existing_path == str(expected):
                 try:
-                    content = expected.read_text()
+                    content = expected.read_text(encoding="utf-8")
                     if "hermes -p" in content:
                         return None  # it's our wrapper, safe to overwrite
                 except Exception:
@@ -458,7 +461,7 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
     if is_windows:
         wrapper_path = wrapper_dir / f"{canon}.bat"
         try:
-            wrapper_path.write_text(f"@echo off\r\nhermes -p {profile} %*\r\n")
+            wrapper_path.write_text(f"@echo off\r\nhermes -p {profile} %*\r\n", encoding="utf-8")
             return wrapper_path
         except OSError as e:
             print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")
@@ -467,7 +470,7 @@ def create_wrapper_script(name: str, target: Optional[str] = None) -> Optional[P
         wrapper_path = wrapper_dir / canon
         try:
             hermes_exe = shutil.which("hermes") or "hermes"
-            wrapper_path.write_text(f'#!/bin/sh\nexec {shlex.quote(hermes_exe)} -p {profile} "$@"\n')
+            wrapper_path.write_text(f'#!/bin/sh\nexec {shlex.quote(hermes_exe)} -p {profile} "$@"\n', encoding="utf-8")
             wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
             return wrapper_path
         except OSError as e:
@@ -496,7 +499,7 @@ def remove_wrapper_script(name: str) -> bool:
         if wrapper_path.exists():
             try:
                 # Verify it's our wrapper before removing
-                content = wrapper_path.read_text()
+                content = wrapper_path.read_text(encoding="utf-8")
                 if "hermes -p" in content:
                     wrapper_path.unlink()
                     return True
@@ -683,9 +686,10 @@ def _read_config_model(profile_dir: Path) -> tuple:
     if not config_path.exists():
         return None, None
     try:
-        import yaml
-        with open(config_path, "r", encoding="utf-8") as f:
-            cfg = yaml.safe_load(f) or {}
+        # Multi-profile display read: load_config() targets the ACTIVE
+        # profile's home, so read THIS profile's file via the raw primitive.
+        from hermes_cli.config import read_user_config_raw
+        cfg = read_user_config_raw(config_path)
         model_cfg = cfg.get("model", {})
         if isinstance(model_cfg, str):
             return model_cfg, None
@@ -866,8 +870,12 @@ def write_profile_meta(
         existing["description"] = description.strip()
     if description_auto is not None:
         existing["description_auto"] = bool(description_auto)
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(existing, f, sort_keys=False, default_flow_style=False)
+    # Atomic write: bare open("w") truncates before the dump, and the read
+    # path above swallows parse errors as {}, so a crashed write would
+    # silently drop unspecified fields on the next call (#51356, #16743).
+    from utils import atomic_yaml_write
+
+    atomic_yaml_write(path, existing, sort_keys=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1206,7 +1214,7 @@ def seed_profile_skills(profile_dir: Path, quiet: bool = False) -> Optional[dict
              "r = sync_skills(quiet=True); print(json.dumps(r))"],
             env={**os.environ, "HERMES_HOME": str(profile_dir)},
             cwd=str(project_root),
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60,
         )
         if result.returncode == 0 and result.stdout.strip():
             return json.loads(result.stdout.strip())
@@ -1755,7 +1763,7 @@ def _stop_gateway_process(profile_dir: Path) -> None:
         return
 
     try:
-        raw = pid_file.read_text().strip()
+        raw = pid_file.read_text(encoding="utf-8").strip()
         data = json.loads(raw) if raw.startswith("{") else {"pid": int(raw)}
         pid = int(data["pid"])
         # Route through terminate_pid so Windows uses the appropriate
@@ -1796,7 +1804,7 @@ def get_active_profile() -> str:
     """
     path = _get_active_profile_path()
     try:
-        name = path.read_text().strip()
+        name = path.read_text(encoding="utf-8").strip()
         if not name:
             return "default"
         return name
@@ -1825,7 +1833,7 @@ def set_active_profile(name: str) -> None:
     else:
         # Atomic write
         tmp = path.with_suffix(".tmp")
-        tmp.write_text(canon + "\n")
+        tmp.write_text(canon + "\n", encoding="utf-8")
         tmp.replace(path)
 
 
@@ -1897,9 +1905,29 @@ def _default_export_ignore(root_dir: Path):
     return _ignore
 
 
-def export_profile(name: str, output_path: str) -> Path:
+def _make_profile_archive(base: str, root_dir: str, base_dir: str) -> str:
+    """Create ``<base>.tar.gz`` of ``root_dir/base_dir`` — GNU tar format.
+
+    Not :func:`shutil.make_archive`: that writes PAX (Python's tarfile default
+    since 3.8), whose fractional-mtime records macOS Archive Utility rejects —
+    double-clicking an exported profile threw "Error 94 - Bad message." GNU
+    format keeps long paths working (longlink extensions) and stays integer-
+    mtime, so Finder, bsdtar, and gnutar all extract it.
+    """
+    import tarfile
+
+    archive_path = f"{base}.tar.gz"
+    with tarfile.open(archive_path, "w:gz", format=tarfile.GNU_FORMAT) as tf:
+        tf.add(str(Path(root_dir) / base_dir), arcname=base_dir)
+    return archive_path
+
+
+def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, str]] = None) -> Path:
     """Export a profile to a tar.gz archive.
 
+    ``extra_files`` maps root-relative filenames (e.g. ``desktop.json``) to
+    text content staged into the archive alongside the profile's own files —
+    the desktop app uses it to bundle its appearance/interface overlay.
     Returns the output file path.
     """
     import tempfile
@@ -1911,8 +1939,15 @@ def export_profile(name: str, output_path: str) -> Path:
         raise FileNotFoundError(f"Profile '{canon}' does not exist.")
 
     output = Path(output_path)
-    # shutil.make_archive wants the base name without extension
+    # Archive base name without extension (.tar.gz appended by the writer).
     base = str(output).removesuffix(".tar.gz").removesuffix(".tgz")
+
+    def _stage_extras(staged: Path) -> None:
+        for rel, content in (extra_files or {}).items():
+            parts = _normalize_profile_archive_parts(rel)
+            target = staged.joinpath(*parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
 
     if canon == "default":
         # The default profile IS ~/.hermes itself — its parent is ~/ and its
@@ -1926,7 +1961,8 @@ def export_profile(name: str, output_path: str) -> Path:
                 symlinks=True,
                 ignore=_default_export_ignore(profile_dir),
             )
-            result = shutil.make_archive(base, "gztar", tmpdir, "default")
+            _stage_extras(staged)
+            result = _make_profile_archive(base, tmpdir, "default")
             return Path(result)
 
     # Named profiles — stage a filtered copy to exclude credentials
@@ -1939,7 +1975,8 @@ def export_profile(name: str, output_path: str) -> Path:
             symlinks=True,
             ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
         )
-        result = shutil.make_archive(base, "gztar", tmpdir, canon)
+        _stage_extras(staged)
+        result = _make_profile_archive(base, tmpdir, canon)
         return Path(result)
 
 

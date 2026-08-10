@@ -18,10 +18,7 @@
         map (p: p.passthru.packageJsonPath or null) packages
       );
 
-      # Non-npm packages may have their own devShellHook (e.g. hermes-agent
-      # stamps pyproject.toml + uv.lock for Python venv setup).
-      nonNpmHooks = map (p: p.passthru.devShellHook or "") packages;
-      combinedNonNpm = pkgs.lib.concatStringsSep "\n" (builtins.filter (h: h != "") nonNpmHooks);
+      hermesAgentDevShellHook = self'.packages.default.passthru.devShellHook;
     in
     {
       devShells.default = pkgs.mkShell {
@@ -30,10 +27,7 @@
             mkdir -p $out/bin
             install -Dm755 ${../hermes} $out/bin/hermes
           '')
-          (pkgs.runCommand "dev-sandbox" { } ''
-            mkdir -p $out/bin
-            install -Dm755 ${../scripts/dev-sandbox.sh} $out/bin/sandbox
-          '')
+          self'.packages.sandbox
           uv
           # Headless Wayland compositor for E2E tests (test:e2e:visual).
           # cage renders a single client with no window management, so
@@ -49,7 +43,7 @@
         ]
         ++ self'.packages.default.passthru.devDeps;
         shellHook = ''
-          ${combinedNonNpm}
+          ${hermesAgentDevShellHook}
           ${hermesNpmLib.mkNpmDevShellHook npmPackageJsonPaths}
 
           # Force Node to use Nix's playwright-test binary instead of node_modules/.bin
@@ -57,6 +51,11 @@
 
           # for the devshell to pick up the src
           export HERMES_PYTHON_SRC_ROOT=$(git rev-parse --show-toplevel)
+
+          # Let `uv run --active --no-sync` reuse Nix's provisioned Python
+          # environment instead of creating an empty project .venv.
+          export VIRTUAL_ENV="$(dirname "$(dirname "$(readlink -f "$(command -v python)")")")"
+
           echo "Hermes Agent dev shell in $HERMES_PYTHON_SRC_ROOT"
           echo "Ready. Run 'hermes' or 'sandbox hermes' to start."
         '';

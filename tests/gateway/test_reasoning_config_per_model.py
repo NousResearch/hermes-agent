@@ -28,68 +28,6 @@ class TestGatewayPerModelReasoningConfig:
         assert result["enabled"] is True
         assert result["effort"] == "xhigh"
 
-    def test_global_fallback_when_no_override(self, monkeypatch):
-        """Global reasoning_effort applies when no per-model override matches."""
-        fake_cfg = {
-            "model": {"default": "gpt-5"},
-            "agent": {
-                "reasoning_effort": "high",
-                "reasoning_overrides": {
-                    "anthropic/claude-opus-4.5": "xhigh",
-                },
-            },
-        }
-        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: fake_cfg)
-
-        result = gateway_run.GatewayRunner._load_reasoning_config()
-        assert result is not None
-        assert result["effort"] == "high"
-
-    def test_spelling_tolerant_match_in_gateway(self, monkeypatch):
-        """Override matches even with different spelling (dots vs dashes)."""
-        fake_cfg = {
-            "model": {"default": "claude-opus-4-5"},
-            "agent": {
-                "reasoning_effort": "medium",
-                "reasoning_overrides": {
-                    "claude-opus-4.5": "xhigh",  # key has dots, model has dashes
-                },
-            },
-        }
-        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: fake_cfg)
-
-        result = gateway_run.GatewayRunner._load_reasoning_config()
-        assert result is not None
-        assert result["effort"] == "xhigh"
-
-    def test_no_overrides_dict(self, monkeypatch):
-        """Works fine when reasoning_overrides key is absent."""
-        fake_cfg = {
-            "model": {"default": "gpt-5"},
-            "agent": {
-                "reasoning_effort": "low",
-            },
-        }
-        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: fake_cfg)
-
-        result = gateway_run.GatewayRunner._load_reasoning_config()
-        assert result is not None
-        assert result["effort"] == "low"
-
-    def test_empty_overrides(self, monkeypatch):
-        """Empty overrides dict falls back to global."""
-        fake_cfg = {
-            "model": {"default": "gpt-5"},
-            "agent": {
-                "reasoning_effort": "medium",
-                "reasoning_overrides": {},
-            },
-        }
-        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: fake_cfg)
-
-        result = gateway_run.GatewayRunner._load_reasoning_config()
-        assert result is not None
-        assert result["effort"] == "medium"
 
     def test_global_fallback_with_yaml_false(self, monkeypatch):
         """YAML boolean False must reach parse_reasoning_effort uncoerced.
@@ -144,33 +82,63 @@ class TestGatewaySessionEffectiveModel:
         assert result_default is not None
         assert result_default["effort"] == "low"
 
-    def test_resolve_session_reasoning_forwards_model(self, monkeypatch):
-        """_resolve_session_reasoning_config passes the effective model through
-        (and session-scoped /reasoning overrides still win over it)."""
-        fake_cfg = {
-            "model": {"default": "gpt-5"},
+
+
+class TestApiServerPerModelReasoning:
+    """The OpenAI-compatible surface must resolve reasoning for the model the
+    request actually runs, not ``model.default``.
+
+    e81d18dfb removed exactly this defect from the native gateway paths
+    ("the gateway resolving reasoning against config model.default instead of
+    the session's effective model"); the API server adapter kept it because it
+    resolved reasoning at function entry, before the model precedence chain.
+    """
+
+    @staticmethod
+    def _cfg():
+        return {
+            "model": {"default": "cheap/model-mini"},
             "agent": {
-                "reasoning_effort": "medium",
-                "reasoning_overrides": {"claude-opus-4.5": "xhigh"},
+                "reasoning_effort": "low",
+                "reasoning_overrides": {"premium/model-max": "xhigh"},
             },
         }
-        monkeypatch.setattr(gateway_run, "_load_gateway_runtime_config", lambda: fake_cfg)
 
-        runner = object.__new__(gateway_run.GatewayRunner)
-        runner._session_reasoning_overrides = {}
+    def _run(self, monkeypatch, effective_model):
+        from unittest.mock import MagicMock, patch
 
-        # No session override → per-model override for the effective model.
-        result = runner._resolve_session_reasoning_config(
-            session_key="agent:main:telegram:private:1", model="claude-opus-4.5"
+        from gateway.config import PlatformConfig
+        from gateway.platforms.api_server import APIServerAdapter
+
+        monkeypatch.setattr(
+            gateway_run, "_load_gateway_runtime_config", lambda: self._cfg(),
         )
-        assert result is not None
-        assert result["effort"] == "xhigh"
+        adapter = APIServerAdapter(PlatformConfig())
 
-        # Session-scoped /reasoning override still wins over per-model.
-        runner._session_reasoning_overrides = {
-            "agent:main:telegram:private:1": {"enabled": True, "effort": "minimal"}
-        }
-        result = runner._resolve_session_reasoning_config(
-            session_key="agent:main:telegram:private:1", model="claude-opus-4.5"
-        )
-        assert result == {"enabled": True, "effort": "minimal"}
+        with patch("gateway.platforms.api_server.AIOHTTP_AVAILABLE", True), \
+             patch("gateway.run._resolve_runtime_agent_kwargs") as kwargs_mock, \
+             patch("gateway.run._resolve_gateway_model") as model_mock, \
+             patch("gateway.run._load_gateway_config") as cfg_mock, \
+             patch("run_agent.AIAgent") as agent_cls:
+            kwargs_mock.return_value = {
+                "api_key": "k", "base_url": None, "provider": None,
+                "api_mode": None, "command": None, "args": [],
+            }
+            model_mock.return_value = effective_model
+            cfg_mock.return_value = self._cfg()
+            agent_cls.return_value = MagicMock()
+
+            adapter._create_agent()
+
+            return agent_cls.call_args.kwargs
+
+    def test_reasoning_follows_the_requested_model(self, monkeypatch):
+        kwargs = self._run(monkeypatch, "premium/model-max")
+
+        assert kwargs["model"] == "premium/model-max"
+        assert kwargs["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+
+    def test_model_without_an_override_falls_back_to_global(self, monkeypatch):
+        kwargs = self._run(monkeypatch, "cheap/model-mini")
+
+        assert kwargs["reasoning_config"] == {"enabled": True, "effort": "low"}

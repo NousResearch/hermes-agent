@@ -1,15 +1,31 @@
 import { useEffect, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 
 import { closeActiveTab } from '@/app/chat/close-tab'
-import { $terminalTakeover, setTerminalTakeover } from '@/app/right-sidebar/store'
+import { hudTargetSessionId } from '@/app/hud/handoff'
+import { setTerminalTakeover } from '@/app/right-sidebar/store'
 import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-sidebar/terminal/terminals'
-import { activateTreeTabSlot, cycleTreeTabInFocusedZone, layoutHasRootSide } from '@/components/pane-shell/tree/store'
+import {
+  activateTreeTabSlot,
+  cycleTreeTabInFocusedZone,
+  isPaneVisible,
+  layoutHasRootSide,
+  togglePaneVisible
+} from '@/components/pane-shell/tree/store'
+import { onReleaseTypingFocus } from '@/components/ui/keyboard-first'
+import { findBarClaimsCombo } from '@/lib/find-in-page'
 import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
-import { $repoStatus } from '@/store/coding-status'
+import { openWorktreeDialog } from '@/store/coding-status'
 import { toggleCommandPalette } from '@/store/command-palette'
+import {
+  $findInPage,
+  findNext as findNextMatch,
+  findPrevious as findPreviousMatch,
+  openFindBar
+} from '@/store/find-in-page'
+import { toggleHud } from '@/store/hud'
 import { $capture, $comboIndex, endCapture, setBinding } from '@/store/keybinds'
 import {
   requestSessionSearchFocus,
@@ -26,9 +42,9 @@ import {
   switchToDefaultProfile,
   toggleShowAllProfiles
 } from '@/store/profile'
-import { requestNewWorktree } from '@/store/projects'
+import { openFolderAsProject } from '@/store/projects'
 import { toggleReview } from '@/store/review'
-import { setModelPickerOpen } from '@/store/session'
+import { $selectedStoredSessionId, setModelPickerOpen } from '@/store/session'
 import { reopenLastClosedTile } from '@/store/session-states'
 import {
   $switcherOpen,
@@ -41,15 +57,20 @@ import {
   switcherActive,
   switcherJustClosed
 } from '@/store/session-switcher'
+import { toggleStatusbarVisible } from '@/store/statusbar-prefs'
 import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
-import { requestComposerFocus, requestVoiceToggle } from '../chat/composer/focus'
+import { requestComposerFocus, requestModelMenuToggle, requestVoiceToggle } from '../chat/composer/focus'
+import { openSession } from '../open-session'
 import {
+  $workspaceIsPage,
   AGENTS_ROUTE,
   ARTIFACTS_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
+  navigateToWorkspacePage,
+  NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
   sessionRoute,
   SETTINGS_ROUTE,
@@ -82,11 +103,29 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
   const profileSwitchHandlers: HandlerMap = {}
 
+  // A tab key that lands on the WORKSPACE tab while a full page (skills /
+  // messaging / artifacts / a plugin route) covers it must also route back to
+  // the chat: the workspace pane is already the zone's active tab behind the
+  // page, so fronting it alone changes nothing on screen and the key reads
+  // dead. Mirrors `openSession`'s full-page rule — only a route change puts
+  // the chat back.
+  const leavePageForWorkspaceChat = (paneId: null | string) => {
+    if (paneId === 'workspace' && $workspaceIsPage.get()) {
+      const selected = $selectedStoredSessionId.get()
+
+      navigate(selected ? sessionRoute(selected) : NEW_CHAT_ROUTE)
+    }
+  }
+
   for (let slot = 1; slot <= PROFILE_SLOT_COUNT; slot += 1) {
     // ⌘1…⌘9 switch the FOCUSED zone's tab when it's a real tab strip; only a
     // single-pane (or unfocused) layout falls through to the profile switch.
     profileSwitchHandlers[`profile.switch.${slot}`] = () => {
-      if (!activateTreeTabSlot(slot)) {
+      const pane = activateTreeTabSlot(slot)
+
+      if (pane) {
+        leavePageForWorkspaceChat(pane)
+      } else {
         switchProfileToSlot(slot)
       }
     }
@@ -94,7 +133,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
   const goToSession = (sessionId: null | string) => {
     if (sessionId) {
-      navigate(sessionRoute(sessionId))
+      openSession(sessionId, navigate)
     }
   }
 
@@ -115,6 +154,19 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     goToSession(openOrAdvanceSwitcher(direction))
   }
 
+  // ⌃Tab cycles the focused session/main tab strip; only a non-tabbed focus
+  // falls through to the recent-session switcher. Landing on the workspace
+  // under a full page routes back to the chat (same as ⌘1).
+  const cycleTab = (direction: 1 | -1) => {
+    const pane = cycleTreeTabInFocusedZone(direction)
+
+    if (pane) {
+      leavePageForWorkspaceChat(pane)
+    } else {
+      stepSession(direction)
+    }
+  }
+
   const showFiles = () => {
     setFileBrowserOpen(true)
     setTerminalTakeover(false)
@@ -124,16 +176,22 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'keybinds.openPanel': () => navigate(`${SETTINGS_ROUTE}?tab=keybinds`),
 
     'composer.focus': () => requestComposerFocus('active'),
-    'composer.modelPicker': () => setModelPickerOpen(true),
+    // Toggle the composer pill's live model dropdown (pane under the pointer,
+    // else active composer); no chat surface on screen → the full dialog.
+    'composer.modelPicker': () => {
+      if (!requestModelMenuToggle()) {
+        setModelPickerOpen(true)
+      }
+    },
     'composer.voice': requestVoiceToggle,
 
     'nav.commandPalette': toggleCommandPalette,
     'nav.commandCenter': deps.toggleCommandCenter,
     'nav.settings': () => navigate(SETTINGS_ROUTE),
     'nav.profiles': () => navigate(PROFILES_ROUTE),
-    'nav.skills': () => navigate(SKILLS_ROUTE),
-    'nav.messaging': () => navigate(MESSAGING_ROUTE),
-    'nav.artifacts': () => navigate(ARTIFACTS_ROUTE),
+    'nav.skills': () => navigateToWorkspacePage(navigate, SKILLS_ROUTE),
+    'nav.messaging': () => navigateToWorkspacePage(navigate, MESSAGING_ROUTE),
+    'nav.artifacts': () => navigateToWorkspacePage(navigate, ARTIFACTS_ROUTE),
     'nav.cron': () => navigate(CRON_ROUTE),
     'nav.agents': () => navigate(AGENTS_ROUTE),
 
@@ -147,16 +205,19 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     },
     'session.newTab': () => deps.openNewSessionTab(),
     'session.newWindow': () => void openNewWindow(),
-    // ⌃Tab cycles the focused session/main tab strip; only a non-tabbed focus
-    // falls through to the recent-session switcher.
-    'session.next': () => void (cycleTreeTabInFocusedZone(1) || stepSession(1)),
-    'session.prev': () => void (cycleTreeTabInFocusedZone(-1) || stepSession(-1)),
+    'session.next': () => cycleTab(1),
+    'session.prev': () => cycleTab(-1),
     ...sessionSlotHandlers,
     'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,
-    // Only meaningful inside a git repo — a no-op otherwise (the key falls
-    // through instead of silently doing nothing).
-    'workspace.newWorktree': () => $repoStatus.get() && requestNewWorktree(),
+    // openWorktreeDialog resolves the target. There is no test for a repo
+    // here, so the key works from a detached session that sits inside a
+    // project, and not only from a session with a repo. When no repo is in
+    // reach, openWorktreeDialog does nothing.
+    'workspace.newWorktree': () => void openWorktreeDialog(),
+    // ⌘O: native folder picker → open the folder as a project (upsert) with a
+    // fresh session anchored there.
+    'workspace.openFolder': () => void openFolderAsProject(),
 
     // Narrow-viewport reveal is handled inside the store toggles now.
     'view.toggleSidebar': toggleSidebarOpen,
@@ -164,21 +225,24 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // terminal-on-bottom) would leave it a dead key, so it falls back to the
     // terminal there. The single "secondary panel" toggle.
     'view.toggleRightSidebar': () =>
-      layoutHasRootSide('right') ? toggleFileBrowserOpen() : setTerminalTakeover(!$terminalTakeover.get()),
+      layoutHasRootSide('right') ? toggleFileBrowserOpen() : togglePaneVisible('terminal'),
     'view.toggleReview': toggleReview,
+    'view.toggleStatusbar': toggleStatusbarVisible,
     'view.showFiles': showFiles,
-    'view.showTerminal': () => setTerminalTakeover(!$terminalTakeover.get()),
+    'view.toggleHud': () => toggleHud(hudTargetSessionId()),
+    'view.showTerminal': () => togglePaneVisible('terminal'),
     // Create first so the pane's open-effect ensure sees a non-empty set and
     // doesn't also spawn one — net effect is exactly one fresh terminal.
     'view.newTerminal': () => {
       createTerminal()
       setTerminalTakeover(true)
     },
-    // Switch / close only act while the pane is open (no focus-scoping here, so
-    // this stands in for "terminal is showing").
-    'view.nextTerminal': () => $terminalTakeover.get() && cycleTerminal(1),
-    'view.prevTerminal': () => $terminalTakeover.get() && cycleTerminal(-1),
-    'view.closeTerminal': () => $terminalTakeover.get() && closeActiveTerminal(),
+    // Switch / close only act while the terminal is actually ON SCREEN — ask
+    // the tree, not the toggle store (which stays true behind a stacked
+    // sibling tab or a minimized zone).
+    'view.nextTerminal': () => isPaneVisible('terminal') && cycleTerminal(1),
+    'view.prevTerminal': () => isPaneVisible('terminal') && cycleTerminal(-1),
+    'view.closeTerminal': () => isPaneVisible('terminal') && closeActiveTerminal(),
     'view.flipPanes': togglePanesFlipped,
     // ⌘W: close the focused tab (terminal / preview target / zone tree tab).
     // On the main tab with session tabs stacked, it shifts the next one in —
@@ -188,6 +252,14 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     // the Win/Linux path where ⌘W reaches the renderer directly.
     'view.closeTab': () => void closeActiveTab(id => navigate(sessionRoute(id))),
     'view.reopenTab': reopenLastClosedTile,
+    'view.findInPage': openFindBar,
+    // ⌘G / ⌘⇧G are handled by the find bar's own capture-phase listener while
+    // it is open (so they don't collide with `view.toggleReview`). These
+    // registry handlers cover a user-assigned dedicated chord: stepping is a
+    // no-op unless the bar is open with a query, so a bound key can't search
+    // invisibly.
+    'view.findNext': findNextMatch,
+    'view.findPrevious': findPreviousMatch,
 
     'appearance.toggleMode': () => setMode(resolvedMode === 'dark' ? 'light' : 'dark'),
 
@@ -198,6 +270,24 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'profile.toggleAll': toggleShowAllProfiles,
     'profile.create': requestProfileCreate
   }
+
+  // A keyboard-driven overlay closing hands typing back to the composer: Radix
+  // restores focus to the trigger (a toolbar button for the model pill), so
+  // without this the Enter that committed a model also eats the next keystroke.
+  // Deferred one frame and skipped when something else editable has claimed
+  // focus, because a palette action can legitimately open a dialog or navigate
+  // — the release must never steal focus from the surface it just opened.
+  useEffect(
+    () =>
+      onReleaseTypingFocus(() =>
+        requestAnimationFrame(() => {
+          if (!isEditableTarget(document.activeElement)) {
+            requestComposerFocus('active')
+          }
+        })
+      ),
+    []
+  )
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -240,6 +330,16 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       const combo = comboFromEvent(event)
 
       if (!combo) {
+        return
+      }
+
+      // The open find bar owns ⌘G / ⌘⇧G / Escape. Its own capture-phase
+      // listener runs those actions; bail here so the registry doesn't ALSO
+      // fire the action bound to the same combo (⌘G = view.toggleReview,
+      // Escape = composer.cancel, which would abort a live turn). Both
+      // listeners are on `window`, so stopPropagation in the bar can't
+      // suppress this one — the dispatcher has to yield explicitly.
+      if ($findInPage.get().active && findBarClaimsCombo(combo)) {
         return
       }
 

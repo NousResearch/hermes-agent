@@ -2,7 +2,10 @@
 
 import pytest
 
-from agent.conversation_compression import ROUTINE_COMPRESSION_STATUS_SAMPLES
+from agent.conversation_compression import (
+    CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE,
+    ROUTINE_COMPRESSION_STATUS_SAMPLES,
+)
 from gateway.config import Platform
 from gateway.run import (
     _prepare_gateway_status_message,
@@ -11,22 +14,14 @@ from gateway.run import (
 
 # Every human-facing chat surface that must receive noise-filtered,
 # secret-redacted, provider-error-sanitized output (not just Telegram).
+# The filtering functions under test (_prepare_gateway_status_message /
+# _sanitize_gateway_final_response) are platform-agnostic shared logic in
+# gateway.run — a representative platform subset is sufficient; per-platform
+# copies were near-duplicate parametrizations.
 CHAT_PLATFORMS = [
     "telegram",
-    "whatsapp",
-    "discord",
     "slack",
-    "signal",
-    "matrix",
-    "mattermost",
-    "dingtalk",
     "feishu",
-    "wecom",
-    "weixin",
-    "bluebubbles",
-    "qqbot",
-    "homeassistant",
-    "sms",
 ]
 
 NOISY_STATUS_MESSAGES = [
@@ -81,6 +76,30 @@ VISIBLE_COMPRESSION_MESSAGES = [
     (
         "⚠ Compression returned an empty transcript. No session split was "
         "performed; conversation continues unchanged."
+    ),
+    # Manual /compress lock-skip feedback (issue #57631): both the
+    # confirmed-holder and unconfirmed-acquire wordings must reach the user.
+    (
+        "⏳ Compression already in progress for this session "
+        "(holder: pid=12345:tid=7:agent=1:nonce=ab). Please wait for it to "
+        "finish."
+    ),
+    (
+        "⏳ Compression skipped: could not acquire this session's "
+        "compression lock. Another compression may still be running, or "
+        "the lock check failed — try again shortly."
+    ),
+    # Blocked-overflow warning (#62625/#62708): the context is over the
+    # compression threshold but compression is blocked (summary-LLM cooldown
+    # or the anti-thrash breaker). FAILURE-CLASS — must reach chat users so
+    # they can /new or /compress before the session dies at the hard token
+    # limit. Formatted from the SAME template the emit site uses, so a
+    # rewording that drifts into the noise regex fails here.
+    CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
+        tokens=85_000, threshold=72_000, reason="cooldown:30"
+    ),
+    CONTEXT_OVERFLOW_BLOCKED_WARNING_TEMPLATE.format(
+        tokens=85_000, threshold=72_000, reason="ineffective"
     ),
 ]
 
@@ -158,7 +177,7 @@ def test_manual_compress_feedback_and_failure_notices_stay_visible(platform, mes
     assert _prepare_gateway_status_message(platform, "warn", message) == message
 
 
-@pytest.mark.parametrize("platform", ["whatsapp", "slack", "signal", "matrix"])
+@pytest.mark.parametrize("platform", ["slack", "matrix"])
 def test_chat_gateways_redact_secret_in_provider_error(platform):
     """Provider-error bodies carrying secrets must never reach chat users.
 
@@ -180,7 +199,7 @@ def test_chat_gateways_redact_secret_in_provider_error(platform):
     assert "provider" in sanitized.lower()
 
 
-@pytest.mark.parametrize("platform", ["whatsapp", "slack", "signal", "matrix"])
+@pytest.mark.parametrize("platform", ["slack", "matrix"])
 def test_chat_gateways_redact_secret_in_non_error_body(platform):
     """Secrets must be redacted even when no provider-error rewrite fires.
 

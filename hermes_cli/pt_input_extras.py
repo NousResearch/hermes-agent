@@ -83,6 +83,49 @@ def install_ctrl_enter_alias() -> int:
     return changed
 
 
+def install_cmd_backspace_alias() -> int:
+    """Map Cmd+Backspace / Cmd+ForwardDelete to the readline kill bindings
+    prompt_toolkit already ships (``unix-line-discard`` / ``kill-line``).
+
+    Terminals that rewrite Cmd+Backspace to Ctrl+U (``\\x15``) already work.
+    Kitty keyboard protocol and xterm modifyOtherKeys terminals instead
+    report Cmd as the *super* modifier bit (8), producing sequences
+    prompt_toolkit does not map — the raw bytes then fall through to
+    literal insertion.
+
+    Cmd+Backspace → ``Keys.ControlU`` (kill backward to start of line).
+    Codepoint 127 with modifier 9 (super) / 10 (super+shift):
+      - ``\\x1b[127;9u`` / ``\\x1b[127;10u``  — Kitty CSI-u
+      - ``\\x1b[27;9;127~``                   — xterm modifyOtherKeys
+
+    Cmd+ForwardDelete → ``Keys.ControlK`` (kill to end of line). The
+    forward-delete key is a CSI *tilde* key, not a CSI-u codepoint, so the
+    modifier rides in the standard ``CSI 3 ; mod ~`` form:
+      - ``\\x1b[3;9~`` / ``\\x1b[3;10~``
+
+    Returns the number of sequences whose mapping was changed.
+    """
+    try:
+        from prompt_toolkit.input.ansi_escape_sequences import ANSI_SEQUENCES
+        from prompt_toolkit.keys import Keys
+    except Exception:
+        return 0
+
+    aliases = {
+        "\x1b[127;9u": Keys.ControlU,
+        "\x1b[127;10u": Keys.ControlU,
+        "\x1b[27;9;127~": Keys.ControlU,
+        "\x1b[3;9~": Keys.ControlK,
+        "\x1b[3;10~": Keys.ControlK,
+    }
+    changed = 0
+    for seq, key in aliases.items():
+        if ANSI_SEQUENCES.get(seq) != key:
+            ANSI_SEQUENCES[seq] = key
+            changed += 1
+    return changed
+
+
 def install_ignored_terminal_sequences() -> int:
     """Map terminal-emitted noise sequences to ``Keys.Ignore`` so they
     are consumed by the VT100 parser before they reach key bindings or

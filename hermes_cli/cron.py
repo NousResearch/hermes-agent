@@ -113,11 +113,15 @@ def cron_list(show_all: bool = False):
     print(color("└─────────────────────────────────────────────────────────────────────────┘", Colors.CYAN))
     print()
 
+    from cron.jobs import effective_job_state
+
     for job in jobs:
         job_id = job.get("id", "?")
         name = job.get("name", "(unnamed)")
         schedule = job.get("schedule_display", job.get("schedule", {}).get("value", "?"))
-        state = job.get("state", "scheduled" if job.get("enabled", True) else "paused")
+        # Derive from the scheduler-honoured flag — never show [paused] when
+        # enabled=true (half-paused contradiction must not look frozen).
+        state = effective_job_state(job)
         next_run = job.get("next_run_at", "?")
 
         # `repeat` may be present-but-null in the job record (e.g. a one-shot
@@ -158,6 +162,12 @@ def cron_list(show_all: bool = False):
         script = job.get("script")
         if script:
             print(f"    Script:    {script}")
+        monitor_source = job.get("monitor_script") or job.get("monitor_url")
+        if monitor_source:
+            print(f"    Monitor:   {monitor_source} (agent runs only on output change)")
+            mon_state = job.get("monitor_state") or {}
+            if mon_state.get("last_changed_at"):
+                print(f"    Changed:   {mon_state['last_changed_at']}")
         if job.get("no_agent"):
             print(f"    Mode:      {color('no-agent', Colors.DIM)} (script stdout delivered directly)")
         workdir = job.get("workdir")
@@ -254,6 +264,7 @@ def cron_status():
         # (#32612, #32895).
         from cron.jobs import (
             get_ticker_heartbeat_age,
+            get_ticker_last_error,
             get_ticker_success_age,
             TICKER_INTERVAL_SECONDS,
         )
@@ -283,6 +294,20 @@ def cron_status():
                 Colors.YELLOW,
             ))
             print(f"  PID: {', '.join(map(str, pids))}")
+            last_error = get_ticker_last_error()
+            if last_error:
+                # Show WHY ticks fail — e.g. a root-rewritten jobs.json
+                # (PermissionError) that silently locked out the ticker's
+                # uid for ~14h in the field (#68483).
+                print(color(f"  Last tick error: {last_error}", Colors.RED))
+                if "Permission denied" in last_error:
+                    print(color(
+                        "  Hint: jobs.json may be owned by another user "
+                        "(e.g. rewritten by a root `docker exec hermes "
+                        "hermes cron ...`). Fix ownership to match the "
+                        "gateway user, and prefer `docker exec -u <uid>:<gid>`.",
+                        Colors.YELLOW,
+                    ))
             print("  Check the gateway log for 'Cron tick error'.")
         else:
             print(color("✓ Gateway is running — cron jobs will fire automatically", Colors.GREEN))
@@ -334,7 +359,11 @@ def cron_create(args):
         skills=_normalize_skills(getattr(args, "skill", None), getattr(args, "skills", None)),
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
+        model=getattr(args, "model", None),
+        provider=getattr(args, "model_provider", None),
         no_agent=getattr(args, "no_agent", False) or None,
+        monitor_script=getattr(args, "monitor_script", None),
+        monitor_url=getattr(args, "monitor_url", None),
     )
     if not result.get("success"):
         print(color(f"Failed to create job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -347,6 +376,10 @@ def cron_create(args):
     job_data = result.get("job", {})
     if job_data.get("script"):
         print(f"  Script: {job_data['script']}")
+    if job_data.get("monitor_script"):
+        print(f"  Monitor: {job_data['monitor_script']} (agent runs only on output change)")
+    if job_data.get("monitor_url"):
+        print(f"  Monitor: {job_data['monitor_url']} (agent runs only on output change)")
     if job_data.get("no_agent"):
         print("  Mode: no-agent (script stdout delivered directly)")
     if job_data.get("workdir"):
@@ -397,7 +430,11 @@ def cron_edit(args):
         skills=final_skills,
         script=getattr(args, "script", None),
         workdir=getattr(args, "workdir", None),
+        model=getattr(args, "model", None),
+        provider=getattr(args, "model_provider", None),
         no_agent=getattr(args, "no_agent", None),
+        monitor_script=getattr(args, "monitor_script", None),
+        monitor_url=getattr(args, "monitor_url", None),
     )
     if not result.get("success"):
         print(color(f"Failed to update job: {result.get('error', 'unknown error')}", Colors.RED))
@@ -413,6 +450,10 @@ def cron_edit(args):
         print("  Skills: none")
     if updated.get("script"):
         print(f"  Script: {updated['script']}")
+    if updated.get("monitor_script"):
+        print(f"  Monitor: {updated['monitor_script']} (agent runs only on output change)")
+    if updated.get("monitor_url"):
+        print(f"  Monitor: {updated['monitor_url']} (agent runs only on output change)")
     if updated.get("no_agent"):
         print("  Mode: no-agent (script stdout delivered directly)")
     if updated.get("workdir"):
@@ -441,6 +482,69 @@ def _job_action(action: str, job_id: str, success_verb: str) -> int:
     return 0
 
 
+def cron_notepad(args) -> int:
+    """Handle ``hermes cron notepad <job_id> [get|set|delete|list]``.
+
+    The per-job durable KV scratchpad (``cron/notepad.py``). This CLI is the
+    write path — a running cron agent updates its own notepad by invoking
+    these commands via its terminal tool; the scheduler injects non-empty
+    notepads into the job prompt on each run.
+    """
+    from cron import notepad
+
+    job_id = str(getattr(args, "job_id", "") or "")
+    action = getattr(args, "notepad_action", None) or "list"
+    key = getattr(args, "key", None)
+    value = getattr(args, "value", None)
+
+    if not job_id:
+        print(color("A job ID is required.", Colors.RED))
+        return 1
+
+    try:
+        if action == "set":
+            if key is None or value is None:
+                print(color("Usage: hermes cron notepad <job_id> set <key> <value>", Colors.RED))
+                return 1
+            notepad.set_note(job_id, key, value)
+            print(color(f"Set notepad key '{key}' for job {job_id}.", Colors.GREEN))
+            return 0
+
+        if action == "get":
+            if key is None:
+                print(color("Usage: hermes cron notepad <job_id> get <key>", Colors.RED))
+                return 1
+            stored = notepad.get_note(job_id, key)
+            if stored is None:
+                print(color(f"No notepad key '{key}' for job {job_id}.", Colors.YELLOW))
+                return 1
+            print(stored)
+            return 0
+
+        if action == "delete":
+            if key is None:
+                print(color("Usage: hermes cron notepad <job_id> delete <key>", Colors.RED))
+                return 1
+            if notepad.delete_note(job_id, key):
+                print(color(f"Deleted notepad key '{key}' for job {job_id}.", Colors.GREEN))
+                return 0
+            print(color(f"No notepad key '{key}' for job {job_id}.", Colors.YELLOW))
+            return 1
+
+        # list (default)
+        notes = notepad.list_notes(job_id)
+        if not notes:
+            print(color(f"Notepad for job {job_id} is empty.", Colors.DIM))
+            return 0
+        for note in notes:
+            print(f"  {color(note['key'], Colors.YELLOW)} = {note['value']}")
+            print(f"    {color('updated: ' + str(note['updated_at']), Colors.DIM)}")
+        return 0
+    except ValueError as exc:
+        print(color(f"Notepad error: {exc}", Colors.RED))
+        return 1
+
+
 def cron_command(args):
     """Handle cron subcommands."""
     subcmd = getattr(args, 'cron_command', None)
@@ -461,6 +565,9 @@ def cron_command(args):
     if subcmd in {"runs", "history"}:
         cron_runs(getattr(args, "job_id", None), getattr(args, "limit", 20))
         return 0
+
+    if subcmd == "notepad":
+        return cron_notepad(args)
 
     if subcmd in {"create", "add"}:
         return cron_create(args)

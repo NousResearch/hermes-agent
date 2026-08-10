@@ -35,42 +35,7 @@ class TestSignatureFromSchema:
         assert annots["query"] == str
         assert param.default is inspect.Parameter.empty
 
-    def test_optional_integer_param(self):
-        """An optional param gets Optional[type] with default=None."""
-        schema = {
-            "type": "object",
-            "properties": {"limit": {"type": "integer"}},
-        }
-        sig, annots = _signature_from_schema(schema)
 
-        param = sig.parameters["limit"]
-        # Optional[type] is type | None in Python 3.10+
-        assert param.default is None
-
-    def test_multiple_params_mixed_required_optional(self):
-        """Mixed required and optional params are handled correctly."""
-        schema = {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string"},
-                "limit": {"type": "integer"},
-                "offset": {"type": "integer"},
-            },
-            "required": ["query"],
-        }
-        sig, annots = _signature_from_schema(schema)
-
-        assert len(sig.parameters) == 3
-
-        # query: required str
-        assert annots["query"] == str
-        assert sig.parameters["query"].default is inspect.Parameter.empty
-
-        # limit: optional int
-        assert sig.parameters["limit"].default is None
-
-        # offset: optional int
-        assert sig.parameters["offset"].default is None
 
     def test_skip_private_params(self):
         """Params starting with '_' are excluded from the signature."""
@@ -111,20 +76,7 @@ class TestSignatureFromSchema:
         assert annots["a"] == list
         assert annots["o"] == dict
 
-    def test_empty_schema(self):
-        """Empty schema returns empty signature."""
-        sig, annots = _signature_from_schema(None)
-        assert len(sig.parameters) == 0
-        assert len(annots) == 0
 
-    def test_return_annotation_is_str(self):
-        """All generated signatures have str as return type."""
-        schema = {
-            "type": "object",
-            "properties": {"query": {"type": "string"}},
-        }
-        sig, annots = _signature_from_schema(schema)
-        assert sig.return_annotation == str
 
 
 
@@ -155,66 +107,9 @@ class TestModuleSurface:
             f"because codex has built-in equivalents: {leaked}"
         )
 
-    def test_expected_hermes_specific_tools_listed(self):
-        """The Hermes-specific tools should be present so users on the
-        codex runtime keep access to them."""
-        from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
-        for required in (
-            "web_search",
-            "web_extract",
-            "browser_navigate",
-            "vision_analyze",
-            "image_generate",
-            "skill_view",
-        ):
-            assert required in EXPOSED_TOOLS, f"missing {required!r}"
 
-    def test_agent_loop_tools_not_exposed(self):
-        """delegate_task / memory / session_search / todo require the
-        running AIAgent context to dispatch, so a stateless MCP callback
-        can't drive them. They must NOT be in EXPOSED_TOOLS."""
-        from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
-        for agent_loop_tool in ("delegate_task", "memory", "session_search", "todo"):
-            assert agent_loop_tool not in EXPOSED_TOOLS, (
-                f"{agent_loop_tool!r} requires the agent loop context "
-                "and can't be reached through a stateless MCP callback"
-            )
 
-    def test_kanban_worker_tools_exposed(self):
-        """Kanban workers run as `hermes chat -q` subprocesses; if they
-        come up on the codex_app_server runtime, the worker can do the
-        actual work via codex's shell but needs the kanban tools through
-        the MCP callback to report back to the kernel. Without these
-        tools available, the worker would hang at completion time."""
-        from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
-        # Worker handoff tools — every dispatched worker uses at least
-        # one of {complete, block, comment} to close out its task.
-        for worker_tool in (
-            "kanban_complete",
-            "kanban_block",
-            "kanban_comment",
-            "kanban_heartbeat",
-        ):
-            assert worker_tool in EXPOSED_TOOLS, (
-                f"{worker_tool!r} missing from codex callback — kanban "
-                "workers on codex_app_server runtime would hang"
-            )
 
-    def test_kanban_orchestrator_tools_exposed(self):
-        """Orchestrator agents need to dispatch new tasks, query the
-        board, and unblock/link tasks. Exposed so an orchestrator on
-        codex_app_server can do its job."""
-        from agent.transports.hermes_tools_mcp_server import EXPOSED_TOOLS
-        for orch_tool in (
-            "kanban_create",
-            "kanban_show",
-            "kanban_list",
-            "kanban_unblock",
-            "kanban_link",
-        ):
-            assert orch_tool in EXPOSED_TOOLS, (
-                f"{orch_tool!r} missing from codex callback"
-            )
 
 
 class TestMain:

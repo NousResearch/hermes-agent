@@ -1,9 +1,11 @@
 """Tests for agent/system_prompt.py — context-file cwd wiring."""
 
+from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.system_prompt import build_system_prompt_parts
+from agent.system_prompt import build_system_prompt, build_system_prompt_parts
 
 
 def _make_agent(**overrides):
@@ -70,6 +72,16 @@ def _stable_prompt(agent):
         return build_system_prompt_parts(agent)["stable"]
 
 
+def _prompt_parts(agent):
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=""),
+    ):
+        return build_system_prompt_parts(agent)
+
+
 def _init_code_repo(path):
     """A git repo that actually holds code — the coding posture requires a source
     file (or manifest), not a bare ``.git`` (a prose/notes repo stays general)."""
@@ -84,9 +96,9 @@ class TestCodingContextBlock:
         _init_code_repo(tmp_path)
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         agent = _make_agent(valid_tool_names=["read_file"], platform="cli")
-        stable = _stable_prompt(agent)
-        assert "coding agent" in stable
-        assert "Workspace" in stable
+        parts = _prompt_parts(agent)
+        assert "coding agent" in parts["stable"]
+        assert "Workspace" in parts["context"]
 
     def test_absent_when_off(self, monkeypatch, tmp_path):
         _init_code_repo(tmp_path)
@@ -104,38 +116,138 @@ class TestCodingContextBlock:
         assert "coding agent" not in _stable_prompt(agent)
 
 
+def test_build_system_prompt_records_stable_prefix():
+    agent = _make_agent()
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value="context"),
+    ):
+        prompt = build_system_prompt(agent)
+
+    assert prompt.startswith(agent._cached_system_prompt_static)
+    assert prompt[len(agent._cached_system_prompt_static):].startswith("\n\ncontext")
+
+
+def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
+    """The cache split must not reorder the stored coding prompt."""
+    import agent.system_prompt as system_prompt
+
+    agent = _make_agent(
+        valid_tool_names=["read_file"],
+        _parallel_tool_call_guidance=False,
+    )
+    monkeypatch.setattr(system_prompt, "DEFAULT_AGENT_IDENTITY", "IDENTITY")
+    monkeypatch.setattr(system_prompt, "HERMES_AGENT_HELP_GUIDANCE", "HELP")
+    monkeypatch.setattr(system_prompt, "STEER_CHANNEL_NOTE", "STEER")
+    monkeypatch.setattr(system_prompt, "get_hermes_home", lambda: Path("/hermes"))
+
+    expected_profile = (
+        "Active Hermes profile: default. Other profiles (if any) live "
+        "under /hermes/profiles/<name>/. Each profile has its own skills/, "
+        "plugins/, cron/, and memories/ that affect a different session than "
+        "this one. Do not modify another profile's skills/plugins/cron/memories "
+        "unless the user explicitly directs you to."
+    )
+    expected = "\n\n".join((
+        "IDENTITY",
+        "HELP",
+        "STEER",
+        "CODING_STABLE",
+        "WORKSPACE",
+        "Operator instructions (from config):\nOPERATOR",
+        expected_profile,
+        "SYSTEM_MESSAGE",
+        "CONTEXT_FILES",
+        "Conversation started: Friday, January 02, 2026",
+    ))
+
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value="CONTEXT_FILES"),
+        patch(
+            "agent.coding_context.coding_system_prompt_parts",
+            return_value=(
+                ["CODING_STABLE"],
+                ["WORKSPACE"],
+                ["Operator instructions (from config):\nOPERATOR"],
+            ),
+        ),
+        patch("agent.file_safety._resolve_active_profile_name", return_value="default"),
+        patch("hermes_time.now", return_value=datetime(2026, 1, 2)),
+    ):
+        prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
+
+    assert prompt == expected
+    assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:4])
+
+
 class TestTelegramRichMessagesHint:
     """Verify that TELEGRAM_RICH_MESSAGES_HINT is conditionally included."""
 
     def test_base_hint_without_rich_messages(self, monkeypatch):
-        """When rich_messages is False (default), only the base hint is used."""
+        """When rich_messages is False, only the base hint is used."""
         agent = _make_agent(platform="telegram")
-        # Mock config to return rich_messages: false (default)
         with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
             mock_cfg.return_value = {
-                "platforms": {"telegram": {"extra": {"rich_messages": False}}}
+                "gateway": {"platforms": {"telegram": {"extra": {"rich_messages": False}}}}
             }
             stable = _stable_prompt(agent)
-        # Base hint should be present
         assert "Standard Markdown is automatically converted" in stable
-        # Rich-messages extension should NOT be present
         assert "lean into it" not in stable
         assert "task lists" not in stable
 
     def test_rich_hint_with_rich_messages_enabled(self, monkeypatch):
-        """When rich_messages is True, the rich-messages extension is appended."""
+        """When rich_messages is True in gateway.platforms, the extension
+        is appended (the canonical/primary location)."""
+        agent = _make_agent(platform="telegram")
+        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
+            mock_cfg.return_value = {
+                "gateway": {"platforms": {"telegram": {"extra": {"rich_messages": True}}}}
+            }
+            stable = _stable_prompt(agent)
+        assert "lean into it" in stable
+        assert "task lists" in stable
+        assert "math/formulas" in stable
+
+    def test_rich_hint_from_top_level_platforms(self):
+        """Top-level ``platforms.telegram.extra.rich_messages`` is merged
+        alongside gateway.platforms, so it works on its own."""
         agent = _make_agent(platform="telegram")
         with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
             mock_cfg.return_value = {
                 "platforms": {"telegram": {"extra": {"rich_messages": True}}}
             }
             stable = _stable_prompt(agent)
-        # Base hint should be present
-        assert "Standard Markdown is automatically converted" in stable
-        # Rich-messages extension should be present
         assert "lean into it" in stable
         assert "task lists" in stable
-        assert "math/formulas" in stable
+
+    def test_top_level_overrides_gateway_rich_messages(self):
+        """Top-level ``platforms.telegram.extra`` wins over gateway.platforms
+        at the leaf, matching the adapter's merge precedence."""
+        agent = _make_agent(platform="telegram")
+        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
+            mock_cfg.return_value = {
+                "gateway": {"platforms": {"telegram": {"extra": {"rich_messages": False}}}},
+                "platforms": {"telegram": {"extra": {"rich_messages": True}}},
+            }
+            stable = _stable_prompt(agent)
+        assert "lean into it" in stable
+
+    def test_gateway_extra_other_keys_does_not_block_top_level_rich_messages(self):
+        """When gateway.platforms.telegram.extra has other keys but not
+        rich_messages, the top-level rich_messages still activates."""
+        agent = _make_agent(platform="telegram")
+        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
+            mock_cfg.return_value = {
+                "gateway": {"platforms": {"telegram": {"extra": {"disable_link_previews": True}}}},
+                "platforms": {"telegram": {"extra": {"rich_messages": True}}},
+            }
+            stable = _stable_prompt(agent)
+        assert "lean into it" in stable
 
     def test_base_hint_without_config(self, monkeypatch):
         """When config has no telegram section, only base hint is used."""
@@ -145,3 +257,85 @@ class TestTelegramRichMessagesHint:
             stable = _stable_prompt(agent)
         assert "Standard Markdown is automatically converted" in stable
         assert "lean into it" not in stable
+
+
+    def test_gateway_rich_messages_integration_via_real_config(self, tmp_path, monkeypatch):
+        """End-to-end through the real config-resolution chain: a config.yaml
+        under HERMES_HOME with ``gateway.platforms.telegram.extra.rich_messages``
+        must activate the rich hint. ``load_config_readonly`` is NOT mocked here,
+        so this guards against the exact path-mismatch bug this PR fixes.
+        """
+        config_yaml = (
+            "gateway:\n"
+            "  platforms:\n"
+            "    telegram:\n"
+            "      extra:\n"
+            "        rich_messages: true\n"
+        )
+        home = tmp_path / "hermes_home"
+        home.mkdir()
+        (home / "config.yaml").write_text(config_yaml)
+
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        # Point config resolution at the temp file without mocking the loader:
+        # mirror the pattern used in test_config_env_expansion.py.
+        from hermes_cli import config as _cfgmod
+        monkeypatch.setattr(_cfgmod, "get_config_path", lambda: home / "config.yaml")
+
+        agent = _make_agent(platform="telegram")
+        stable = _stable_prompt(agent)
+        assert "lean into it" in stable
+        assert "task lists" in stable
+
+    def test_malformed_extra_value_falls_back_to_base_hint(self, tmp_path, monkeypatch):
+        """A truthy non-mapping ``extra`` must not crash prompt construction —
+        it should fail open to the base hint (Tek's fail-open concern).
+        """
+        agent = _make_agent(platform="telegram")
+        with patch("hermes_cli.config.load_config_readonly") as mock_cfg:
+            mock_cfg.return_value = {
+                "gateway": {"platforms": {"telegram": {"extra": "not-a-map"}}}
+            }
+            stable = _stable_prompt(agent)
+        assert "Standard Markdown is automatically converted" in stable
+        assert "lean into it" not in stable
+
+
+_SKILLS = "SKILLS_INDEX_SENTINEL"
+_CONTEXT = "CONTEXT_FILES_SENTINEL"
+
+
+def _build(builder, **overrides):
+    """Run a build_* function with skills + context files present."""
+    agent = _make_agent(valid_tool_names=["skills_list"], **overrides)
+    with (
+        patch("run_agent.load_soul_md", return_value=""),
+        patch("run_agent.build_nous_subscription_prompt", return_value=""),
+        patch("run_agent.build_environment_hints", return_value=""),
+        patch("run_agent.build_context_files_prompt", return_value=_CONTEXT),
+        patch("run_agent.get_toolset_for_tool", return_value=None),
+        patch("run_agent.build_skills_system_prompt", return_value=_SKILLS),
+    ):
+        return builder(agent)
+
+
+class TestSkillsInVolatileBand:
+    """The skills index is runtime-mutable, so it lives in the volatile band,
+    not the stable band, to keep the cached stable prefix reusable when a
+    rebuild picks up a skill change."""
+
+    def test_skills_not_in_stable_band(self):
+        parts = _build(build_system_prompt_parts)
+        assert _SKILLS not in parts["stable"]
+
+    def test_skills_lead_the_volatile_band(self):
+        parts = _build(build_system_prompt_parts)
+        assert parts["volatile"].startswith(_SKILLS)
+
+    def test_full_order_is_stable_context_then_skills(self):
+        # build_system_prompt joins stable + context + volatile, so the skills
+        # index renders after the context files and before the per-turn
+        # memory/timestamp tail.
+        full = _build(build_system_prompt)
+        assert full.index(_CONTEXT) < full.index(_SKILLS)
+        assert full.index(_SKILLS) < full.index("Conversation started:")

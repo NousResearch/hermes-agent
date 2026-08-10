@@ -492,6 +492,7 @@ const StatusRulePane = memo(function StatusRulePane({
         busy={ui.busy}
         cols={composer.cols}
         cwdLabel={status.cwdLabel}
+        focusView={ui.focusView}
         indicatorStyle={ui.indicatorStyle}
         lastTurnEndedAt={status.lastTurnEndedAt}
         liveSessionCount={ui.liveSessionCount}
@@ -501,6 +502,7 @@ const StatusRulePane = memo(function StatusRulePane({
         notice={ui.notice}
         onSessionCountClick={() => patchOverlayState({ sessions: true })}
         sessionStartedAt={status.sessionStartedAt}
+        sessionTitle={status.sessionTitle}
         status={ui.status}
         statusColor={status.statusColor}
         t={ui.theme}

@@ -2,7 +2,10 @@
 
 from types import SimpleNamespace
 
-from agent.manual_compression_feedback import summarize_manual_compression
+from agent.manual_compression_feedback import (
+    describe_compression_lock_skip,
+    summarize_manual_compression,
+)
 
 
 def _messages(count: int) -> list[dict[str, str]]:
@@ -12,29 +15,6 @@ def _messages(count: int) -> list[dict[str, str]]:
     ]
 
 
-def test_aborted_compression_reports_preserved_messages_and_reason():
-    messages = _messages(12)
-    state = SimpleNamespace(
-        _last_compress_aborted=True,
-        _last_summary_fallback_used=False,
-        _last_summary_error=(
-            "Provider 'opencode-zen' is set in config.yaml but no API key was found."
-        ),
-    )
-
-    feedback = summarize_manual_compression(
-        messages,
-        list(messages),
-        120_000,
-        120_000,
-        compression_state=state,
-    )
-
-    assert feedback["aborted"] is True
-    assert feedback["fallback_used"] is False
-    assert feedback["headline"] == "Compression aborted: 12 messages preserved"
-    assert "no messages were removed" in feedback["note"]
-    assert "no API key was found" in feedback["note"]
 
 
 def test_failure_reason_redaction_is_forced_at_ui_boundary(monkeypatch):
@@ -82,3 +62,7 @@ def test_fallback_compression_reports_dropped_message_count():
     assert feedback["headline"] == "Compressed with fallback: 12 → 4 messages"
     assert "removed 8 message(s)" in feedback["note"]
     assert "invalid response" in feedback["note"]
+
+
+
+

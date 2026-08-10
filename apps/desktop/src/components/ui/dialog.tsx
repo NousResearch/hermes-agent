@@ -2,7 +2,7 @@ import { Dialog as DialogPrimitive } from 'radix-ui'
 import * as React from 'react'
 
 import { Button } from '@/components/ui/button'
-import { Tip } from '@/components/ui/tooltip'
+import { DialogPortalContainerContext } from '@/components/ui/dialog-portal-context'
 import { useI18n } from '@/i18n'
 import { X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -27,7 +27,7 @@ function DialogOverlay({ className, ...props }: React.ComponentProps<typeof Dial
   return (
     <DialogPrimitive.Overlay
       className={cn(
-        'fixed inset-0 z-[120] pointer-events-auto bg-black/22 backdrop-blur-[0.125rem] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0',
+        'fixed inset-0 z-(--z-modal-backdrop) pointer-events-auto bg-black/22 backdrop-blur-[0.125rem] data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:animate-in data-[state=open]:fade-in-0',
         className
       )}
       data-slot="dialog-overlay"
@@ -62,6 +62,7 @@ export function preventCloseButtonAutoFocus(event: Event) {
 
 function DialogContent({
   className,
+  bodyClassName,
   children,
   showCloseButton = true,
   fitContent = false,
@@ -75,6 +76,10 @@ function DialogContent({
   // default fixed `max-w-lg`. For content that has no intrinsic width (grids,
   // full-width inputs) pair it with a `min-w-*` in `className`.
   fitContent?: boolean
+  // Layout and scroll classes for the inner body box: padding, gap, display,
+  // overflow. `className` styles the OUTER shell: position, size, border, and
+  // background. The note on the shell below explains this split.
+  bodyClassName?: string
   // A dialog-level notice rendered as a banner flush to the bottom edge (tinted,
   // inherited bottom radius) so it reads as part of the dialog, not a floating
   // alert. Falsy → no banner. Tone picks the colour.
@@ -85,29 +90,32 @@ function DialogContent({
 
   const widthClass = fitContent ? 'w-auto max-w-[92vw]' : 'w-full max-w-lg'
 
+  // Publish the dialog's content node so popovers (Select / Popover /
+  // DropdownMenu) opened inside it portal INTO the dialog instead of
+  // document.body. That keeps them as DOM descendants — focus never leaves the
+  // dialog, so dismissing a dropdown (or clicking another field) no longer
+  // trips the Dialog's outside-interaction/focus-out close. See
+  // dialog-portal-context.ts. State (not just a ref) so consumers re-render once
+  // the node mounts.
+  const [contentNode, setContentNode] = React.useState<HTMLElement | null>(null)
+
   // No default here — Radix's normal autofocus (first focusable element, often
   // an input) is what most dialogs want. Dialogs with no input should pass
   // `onOpenAutoFocus={preventCloseButtonAutoFocus}` explicitly instead.
 
-  // `Tip` wraps `DialogPrimitive.Close asChild` (not the other way around) so
-  // Radix's `Slot` can forward `Close`'s `onClick` straight through to the
-  // `Button`. When `Tip` was the innermost wrapper, `onClick` was absorbed by
-  // `Tip`'s passthrough `...props` and forwarded to `TooltipContent` instead of
-  // the button, so clicking the close button silently did nothing.
+  // No tip on the X — the glyph is the label. Keep aria-label / sr-only for a11y.
   const closeButton = showCloseButton ? (
-    <Tip label={t.common.close}>
-      <DialogPrimitive.Close asChild data-slot="dialog-close-button">
-        <Button
-          aria-label={t.common.close}
-          className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
-          size="icon-xs"
-          variant="ghost"
-        >
-          <X className="size-4" />
-          <span className="sr-only">{t.common.close}</span>
-        </Button>
-      </DialogPrimitive.Close>
-    </Tip>
+    <DialogPrimitive.Close asChild data-slot="dialog-close-button">
+      <Button
+        aria-label={t.common.close}
+        className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+        size="icon-xs"
+        variant="ghost"
+      >
+        <X className="size-4" />
+        <span className="sr-only">{t.common.close}</span>
+      </Button>
+    </DialogPrimitive.Close>
   ) : null
 
   // With a banner, the border can't live on the scroll/clip box (it would draw a
@@ -120,7 +128,10 @@ function DialogContent({
         <DialogOverlay />
         <DialogPrimitive.Content
           className={cn(
-            'fixed left-1/2 top-1/2 z-[130] pointer-events-auto flex max-h-[85vh] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-xl bg-(--ui-chat-bubble-background) text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
+            // The same split as the plain variant. The shell must not clip,
+            // because it crops the popovers that portal into it. The banner
+            // below has its own `overflow-hidden`, which rounds its corners.
+            'fixed left-1/2 top-1/2 z-(--z-modal) pointer-events-auto flex max-h-[85vh] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl bg-(--ui-chat-bubble-background) text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
             widthClass,
             className,
             // Callers often pass `gap-*` for the no-banner grid layout — suppress
@@ -129,25 +140,30 @@ function DialogContent({
           )}
           data-slot="dialog-content"
           onOpenAutoFocus={onOpenAutoFocus}
+          ref={setContentNode}
           {...props}
         >
-          {/* Scroll lives on an inner box so this shell keeps a painted bottom radius. */}
-          <div className="relative z-10 overflow-hidden rounded-xl border border-b-0 border-(--stroke-nous) bg-(--ui-chat-bubble-background)">
-            <div className="grid max-h-[calc(85vh-5rem)] min-h-0 gap-3 overflow-y-auto p-4">{children}</div>
-          </div>
-          <div
-            className={cn(
-              // Overlap by one corner radius so the white bottom lobes read clearly
-              // over the tint instead of meeting it on a straight seam.
-              'relative z-0 -mt-[var(--radius-xl)] px-4 pb-2.5 pt-[calc(var(--radius-xl)+0.625rem)] text-center text-[length:var(--conversation-tool-font-size)] leading-relaxed shadow-[inset_0_7px_7px_-4px_rgb(0_0_0/0.28)]',
-              DIALOG_BANNER_TONES[bannerTone]
-            )}
-            data-slot="dialog-banner"
-            role={bannerTone === 'error' ? 'alert' : 'status'}
-          >
-            {banner}
-          </div>
-          {closeButton}
+          <DialogPortalContainerContext.Provider value={contentNode}>
+            {/* Scroll lives on an inner box so this shell keeps a painted bottom radius. */}
+            <div className="relative z-10 overflow-hidden rounded-xl border border-b-0 border-(--stroke-nous) bg-(--ui-chat-bubble-background)">
+              <div className={cn('grid max-h-[calc(85vh-5rem)] min-h-0 gap-3 overflow-y-auto p-4', bodyClassName)}>
+                {children}
+              </div>
+            </div>
+            <div
+              className={cn(
+                // Overlap by one corner radius so the white bottom lobes read clearly
+                // over the tint instead of meeting it on a straight seam.
+                'relative z-0 -mt-[var(--radius-xl)] overflow-hidden rounded-b-xl px-4 pb-2.5 pt-[calc(var(--radius-xl)+0.625rem)] text-center text-[length:var(--conversation-tool-font-size)] leading-relaxed shadow-[inset_0_7px_7px_-4px_rgb(0_0_0/0.28)]',
+                DIALOG_BANNER_TONES[bannerTone]
+              )}
+              data-slot="dialog-banner"
+              role={bannerTone === 'error' ? 'alert' : 'status'}
+            >
+              {banner}
+            </div>
+            {closeButton}
+          </DialogPortalContainerContext.Provider>
         </DialogPrimitive.Content>
       </DialogPortal>
     )
@@ -158,19 +174,30 @@ function DialogContent({
       <DialogOverlay />
       <DialogPrimitive.Content
         className={cn(
-          // Cap height at 85vh and let long content scroll inside the dialog
-          // instead of overflowing off-screen (long cron titles, tool detail
-          // dumps, etc.). Individual dialogs can still override via className.
-          'fixed left-1/2 top-1/2 z-[130] pointer-events-auto grid max-h-[85vh] -translate-x-1/2 -translate-y-1/2 gap-3 overflow-y-auto rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) p-4 text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
+          // The SHELL: position, size, and skin. It has no overflow of its own,
+          // and that is deliberate. It is the portal container for the popovers
+          // that open inside the dialog (see DialogPortalContainerContext), and
+          // a clipping ancestor crops them. The body box below owns the scroll,
+          // so a tall dialog scrolls and a Select or Popover can still paint
+          // past the edge of that box.
+          'fixed left-1/2 top-1/2 z-(--z-modal) pointer-events-auto flex max-h-[85vh] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl border border-(--stroke-nous) bg-(--ui-chat-bubble-background) text-[length:var(--conversation-text-font-size)] text-foreground shadow-nous duration-200 data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95 data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
           widthClass,
           className
         )}
         data-slot="dialog-content"
         onOpenAutoFocus={onOpenAutoFocus}
+        ref={setContentNode}
         {...props}
       >
-        {children}
-        {closeButton}
+        <DialogPortalContainerContext.Provider value={contentNode}>
+          {/* The BODY: layout and scroll. `min-h-0` lets this box shrink inside
+              the max-height of the shell. The overflow then scrolls here
+              instead of pushing the shell past the viewport. */}
+          <div className={cn('grid min-h-0 gap-3 overflow-y-auto rounded-[inherit] p-4', bodyClassName)}>
+            {children}
+          </div>
+          {closeButton}
+        </DialogPortalContainerContext.Provider>
       </DialogPrimitive.Content>
     </DialogPortal>
   )

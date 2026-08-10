@@ -229,7 +229,7 @@ function Sidebar({
 }
 
 function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<typeof Button>) {
-  const { toggleSidebar } = useSidebar()
+  const { state, toggleSidebar } = useSidebar()
   const { t } = useI18n()
 
   return (
@@ -246,19 +246,20 @@ function SidebarTrigger({ className, onClick, ...props }: React.ComponentProps<t
       {...props}
     >
       <PanelLeftIcon />
-      <span className="sr-only">{t.ui.sidebar.toggle}</span>
+      <span className="sr-only">{t.ui.sidebar.toggle(state === 'collapsed')}</span>
     </Button>
   )
 }
 
 function SidebarRail({ className, ...props }: React.ComponentProps<'button'>) {
-  const { toggleSidebar } = useSidebar()
+  const { state, toggleSidebar } = useSidebar()
   const { t } = useI18n()
+  const label = t.ui.sidebar.toggle(state === 'collapsed')
 
   return (
-    <Tip label={t.ui.sidebar.toggle}>
+    <Tip label={label}>
       <button
-        aria-label={t.ui.sidebar.toggle}
+        aria-label={label}
         className={cn(
           'absolute inset-y-0 z-20 hidden w-4 -translate-x-1/2 transition-all ease-linear group-data-[side=left]:-right-4 group-data-[side=right]:left-0 after:absolute after:inset-y-0 after:left-1/2 after:w-[0.125rem] hover:after:bg-sidebar-border sm:flex',
           'in-data-[side=left]:cursor-w-resize in-data-[side=right]:cursor-e-resize',
@@ -340,7 +341,7 @@ function SidebarContent({ className, ...props }: React.ComponentProps<'div'>) {
   return (
     <div
       className={cn(
-        'flex min-h-0 flex-1 flex-col gap-2 overflow-x-hidden overflow-y-auto group-data-[collapsible=icon]:overflow-hidden',
+        'scrollbar-fade flex min-h-0 flex-1 flex-col gap-2 overflow-x-hidden overflow-y-auto group-data-[collapsible=icon]:overflow-hidden',
         className
       )}
       data-sidebar="content"

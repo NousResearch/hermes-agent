@@ -1,4 +1,4 @@
-import { type FC, useCallback, useMemo, useState } from 'react'
+import { createContext, memo, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
 import { AssistantMessage } from '@/components/assistant-ui/thread/assistant-message'
 import { ThreadMessageList } from '@/components/assistant-ui/thread/list'
@@ -16,7 +16,23 @@ import { notifyError } from '@/store/notifications'
 
 type ThreadLoadingState = 'response' | 'session'
 
-export const Thread: FC<{
+interface ThreadEditContextValue {
+  cwd: string | null
+  gateway: HermesGateway | null
+  sessionId: string | null
+}
+
+// Edit-composer context. The composer only exists while a message is being
+// edited, and it mounts deep inside the memo'd ThreadMessageList, so the
+// edit context can neither ride the component-map memo deps (that remints
+// the component types on every session switch and remounts the outgoing
+// transcript) nor sit in a render-time ref (a mounted composer never
+// re-reads it when a same-session change leaves every list prop
+// referentially equal). Context solves both: the component type stays
+// stable, and a changed value propagates straight to the mounted consumer.
+const ThreadEditContext = createContext<ThreadEditContextValue>({ cwd: null, gateway: null, sessionId: null })
+
+interface ThreadProps {
   clampToComposer?: boolean
   cwd?: string | null
   gateway?: HermesGateway | null
@@ -28,7 +44,16 @@ export const Thread: FC<{
   onRestoreToMessage?: (messageId: string, target?: RestoreMessageTarget) => Promise<void> | void
   sessionId?: string | null
   sessionKey?: string | null
-}> = ({
+}
+
+// memo'd on purpose, and load-bearing for session-switch cost. ChatView
+// re-renders on every route change (it reads `location`), and this subtree is
+// the entire transcript — without a bail-out here the router's context update
+// rebuilds every message of the OUTGOING thread before it is replaced. The
+// props above are all stable across a plain re-render (see the component-map
+// and loadingIndicator memos below), so the only thing that gets through is a
+// genuine change.
+export const Thread = memo(function Thread({
   clampToComposer = false,
   cwd = null,
   gateway = null,
@@ -40,7 +65,7 @@ export const Thread: FC<{
   onRestoreToMessage,
   sessionId = null,
   sessionKey
-}) => {
+}: ThreadProps) {
   const { t } = useI18n()
   const copy = t.assistant.thread
 
@@ -67,21 +92,59 @@ export const Thread: FC<{
     setRestoreConfirmTarget({ messageId, ...target })
   }, [])
 
+  // The values in this map are component *types*: when their identity
+  // changes, React unmounts and remounts every visible message — async
+  // re-rendered parts (shiki code blocks) collapse and re-expand, so the
+  // whole thread visibly jumps. Parents re-render on unrelated state
+  // (e.g. the 15s status-snapshot poll in the desktop controller) and
+  // can't be trusted to keep callback identities stable (see #38333), so
+  // route the callbacks through a ref instead of listing them as memo
+  // deps. Only their definedness stays a dep — it gates UI (the user
+  // Stop button, the restore-confirm affordance). Assigned during render
+  // (the useStoreSelector pattern) so the ref never lags a render.
+  //
+  // cwd / gateway / sessionId stay OUT of the memo deps for the same
+  // reason: all three change on EVERY session switch, so listing them
+  // re-minted these types mid-switch and remounted the entire OUTGOING
+  // transcript — thousands of renders of a thread that was about to be
+  // replaced, all of it before the resume RPC had even been sent. They
+  // reach the edit composer through ThreadEditContext instead (see above).
+  const callbacksRef = useRef({ onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage })
+  callbacksRef.current = { onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage }
+
+  // Only changes identity when one of the three values does, so Thread
+  // re-renders for unrelated reasons never re-render the composer.
+  const editContext = useMemo(() => ({ cwd, gateway, sessionId }), [cwd, gateway, sessionId])
+
+  const hasBranchInNewChat = Boolean(onBranchInNewChat)
+  const hasCancel = Boolean(onCancel)
+  const hasDismissError = Boolean(onDismissError)
+  const hasRestoreToMessage = Boolean(onRestoreToMessage)
+
   const messageComponents = useMemo(
     () => ({
       AssistantMessage: () => (
-        <AssistantMessage onBranchInNewChat={onBranchInNewChat} onDismissError={onDismissError} />
+        <AssistantMessage
+          onBranchInNewChat={
+            hasBranchInNewChat ? messageId => callbacksRef.current.onBranchInNewChat?.(messageId) : undefined
+          }
+          onDismissError={hasDismissError ? messageId => callbacksRef.current.onDismissError?.(messageId) : undefined}
+        />
       ),
       SystemMessage,
-      UserEditComposer: () => <UserEditComposer cwd={cwd} gateway={gateway} sessionId={sessionId} />,
+      UserEditComposer: () => {
+        const { cwd: editCwd, gateway: editGateway, sessionId: editSessionId } = useContext(ThreadEditContext)
+
+        return <UserEditComposer cwd={editCwd} gateway={editGateway} sessionId={editSessionId} />
+      },
       UserMessage: () => (
         <UserMessage
-          onCancel={onCancel}
-          onRequestRestoreConfirm={onRestoreToMessage ? requestRestoreConfirm : undefined}
+          onCancel={hasCancel ? () => callbacksRef.current.onCancel?.() : undefined}
+          onRequestRestoreConfirm={hasRestoreToMessage ? requestRestoreConfirm : undefined}
         />
       )
     }),
-    [cwd, gateway, onBranchInNewChat, onCancel, onDismissError, onRestoreToMessage, requestRestoreConfirm, sessionId]
+    [hasBranchInNewChat, hasCancel, hasDismissError, hasRestoreToMessage, requestRestoreConfirm]
   )
 
   const emptyPlaceholder = intro ? (
@@ -90,26 +153,35 @@ export const Thread: FC<{
     </div>
   ) : undefined
 
+  // Stable element identity, for the same reason the component map above is
+  // memoized: this is a prop of the memo'd ThreadMessageList, so a fresh
+  // element every render defeats the bail-out and drags the whole transcript
+  // into the switch's render pass. It takes no props, so one element is
+  // always correct.
+  const loadingIndicator = useMemo(() => <BackgroundResumeNotice />, [])
+
   return (
-    <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]">
-      <ThreadMessageList
-        clampToComposer={clampToComposer}
-        components={messageComponents}
-        emptyPlaceholder={emptyPlaceholder}
-        loadingIndicator={<BackgroundResumeNotice />}
-        sessionKey={sessionKey}
-      />
-      {loading === 'session' && <CenteredThreadSpinner />}
-      <ThreadTimeline />
-      <ConfirmDialog
-        confirmLabel={copy.restoreConfirm}
-        description={copy.restoreBody}
-        destructive
-        onClose={closeRestoreConfirm}
-        onConfirm={confirmRestore}
-        open={Boolean(restoreConfirmTarget)}
-        title={copy.restoreTitle}
-      />
-    </div>
+    <ThreadEditContext.Provider value={editContext}>
+      <div className="relative grid h-full min-h-0 max-w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-transparent contain-[layout_paint]">
+        <ThreadMessageList
+          clampToComposer={clampToComposer}
+          components={messageComponents}
+          emptyPlaceholder={emptyPlaceholder}
+          loadingIndicator={loadingIndicator}
+          sessionKey={sessionKey}
+        />
+        {loading === 'session' && <CenteredThreadSpinner />}
+        <ThreadTimeline />
+        <ConfirmDialog
+          confirmLabel={copy.restoreConfirm}
+          description={copy.restoreBody}
+          destructive
+          onClose={closeRestoreConfirm}
+          onConfirm={confirmRestore}
+          open={Boolean(restoreConfirmTarget)}
+          title={copy.restoreTitle}
+        />
+      </div>
+    </ThreadEditContext.Provider>
   )
-}
+})

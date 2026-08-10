@@ -19,6 +19,8 @@ import shutil
 import subprocess
 from pathlib import Path
 
+from hermes_cli._subprocess_compat import noninteractive_git_env
+
 _GIT_TIMEOUT = 30
 _GH_TIMEOUT = 30
 _MAX_BUFFER = 32 * 1024 * 1024
@@ -31,14 +33,22 @@ _TRUNK_BRANCHES = ("main", "master")
 
 def _git(cwd: str, args: list[str], *, timeout: int = _GIT_TIMEOUT) -> tuple[int, str, str]:
     """Run ``git`` in ``cwd``. Returns (returncode, stdout, stderr); never raises
-    on a non-zero exit (callers decide what an error means)."""
+    on a non-zero exit (callers decide what an error means).
+
+    Runs non-interactively (stdin nulled, ``GIT_TERMINAL_PROMPT=0``): these
+    calls serve authenticated REST requests from the dashboard/desktop, so a
+    credential prompt from ``fetch``/``push``/``pull`` could never be answered
+    — it would just hang the request until the timeout. Failing fast surfaces
+    the real auth error in the toast instead."""
     try:
         proc = subprocess.run(
             ["git", *args],
             cwd=cwd,
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=timeout,
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
         )
     except (OSError, subprocess.SubprocessError):
         return 1, "", "git invocation failed"
@@ -419,9 +429,15 @@ def review_commit_context(cwd: str) -> dict:
 def _gh(cwd: str, args: list[str]) -> tuple[bool, str]:
     if not shutil.which("gh"):
         return False, ""
+    # Same non-interactive contract as _git: these serve REST requests, so gh
+    # must fail fast instead of prompting (GH_PROMPT_DISABLED is gh's own
+    # documented kill-switch for interactive prompts).
+    env = noninteractive_git_env()
+    env["GH_PROMPT_DISABLED"] = "1"
     try:
         proc = subprocess.run(
-            ["gh", *args], cwd=cwd, capture_output=True, text=True, timeout=_GH_TIMEOUT
+            ["gh", *args], cwd=cwd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=_GH_TIMEOUT,
+            stdin=subprocess.DEVNULL, env=env,
         )
     except (OSError, subprocess.SubprocessError):
         return False, ""
@@ -445,6 +461,96 @@ def review_ship_info(cwd: str) -> dict:
     if pr and pr.get("url"):
         return {"ghReady": True, "pr": {"url": pr["url"], "state": pr.get("state"), "number": pr.get("number")}}
     return {"ghReady": True, "pr": None}
+
+
+# GraphQL asks per branch, so the answer can't be crowded out the way a
+# `gh pr list` page can. Aliases let one request carry many branches; 50 keeps
+# the document well inside GitHub's node budget.
+_PR_QUERY_BRANCH_CHUNK = 50
+_PR_QUERY_BRANCH_CAP = 300
+
+
+_PR_NODE_FIELDS = "number state isDraft isCrossRepository title url headRefName"
+
+
+def _pr_query(owner: str, name: str, branches: list[str], numbers: list[int]) -> str:
+    fields = [
+        f"b{i}: pullRequests(headRefName: {json.dumps(branch)}, first: 5, "
+        f"orderBy: {{field: CREATED_AT, direction: DESC}}) "
+        f"{{ nodes {{ {_PR_NODE_FIELDS} }} }}"
+        for i, branch in enumerate(branches)
+    ]
+    # A PR recovered from a transcript is known by number, and asking for it
+    # directly also tells us its branch — so it lands in the same by-branch map
+    # as everything else.
+    fields += [f"n{i}: pullRequest(number: {n}) {{ {_PR_NODE_FIELDS} }}" for i, n in enumerate(numbers)]
+    return (
+        f"query {{ repository(owner: {json.dumps(owner)}, name: {json.dumps(name)}) {{\n"
+        + "\n".join(fields)
+        + "\n} }"
+    )
+
+
+def _pr_payload(pr: dict) -> dict:
+    return {
+        "branch": str(pr.get("headRefName")),
+        "draft": bool(pr.get("isDraft")),
+        "number": int(pr.get("number") or 0),
+        "state": str(pr.get("state") or "").lower(),
+        "title": str(pr.get("title") or ""),
+        "url": str(pr.get("url") or ""),
+    }
+
+
+def review_pr_list(cwd: str, branches: list[str], numbers: list[int] = None) -> dict:
+    """The PRs on the given branches (plus any asked for by number). Asks GitHub
+    about the branches we actually have sessions on rather than listing the
+    repo's newest PRs and hoping ours are in the page."""
+    if not _is_dir(cwd):
+        return {"ghReady": False, "prs": []}
+    wanted = list(dict.fromkeys(str(b) for b in (branches or []) if b))[:_PR_QUERY_BRANCH_CAP]
+    by_number = list(dict.fromkeys(int(n) for n in (numbers or []) if n))[:_PR_QUERY_BRANCH_CAP]
+    if not wanted and not by_number:
+        return {"ghReady": False, "prs": []}
+    repo_ok, repo_out = _gh(cwd, ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"])
+    owner, _, name = repo_out.strip().partition("/")
+    if not repo_ok or not owner or not name:
+        # gh missing, unauthenticated, or no GitHub remote — all "nothing to badge".
+        return {"ghReady": False, "prs": []}
+
+    prs: list[dict] = []
+    chunks = [
+        (wanted[i : i + _PR_QUERY_BRANCH_CHUNK], [])
+        for i in range(0, len(wanted), _PR_QUERY_BRANCH_CHUNK)
+    ] + [
+        ([], by_number[i : i + _PR_QUERY_BRANCH_CHUNK])
+        for i in range(0, len(by_number), _PR_QUERY_BRANCH_CHUNK)
+    ]
+    for branch_chunk, number_chunk in chunks:
+        ok, out = _gh(cwd, ["api", "graphql", "-f", f"query={_pr_query(owner, name, branch_chunk, number_chunk)}"])
+        if not ok:
+            continue
+        try:
+            repository = (json.loads(out).get("data") or {}).get("repository") or {}
+        except json.JSONDecodeError:
+            continue  # A malformed chunk drops its branches; the rest still resolve.
+        for key, field in repository.items():
+            if not field:
+                continue
+            if key.startswith("n"):
+                # Asked for by number, so it's ours by construction — a fork PR
+                # can't be recovered from our own transcript.
+                if field.get("headRefName"):
+                    prs.append(_pr_payload(field))
+                continue
+            # Fork PRs share our branch namespace: a contributor's `main` is how
+            # a session sitting on trunk ends up badged with a stranger's closed
+            # PR. Only this repo's own branches describe our sessions.
+            nodes = field.get("nodes") or []
+            pr = next((n for n in nodes if n and not n.get("isCrossRepository")), None)
+            if pr and pr.get("headRefName"):
+                prs.append(_pr_payload(pr))
+    return {"ghReady": True, "prs": prs}
 
 
 def review_create_pr(cwd: str) -> dict:

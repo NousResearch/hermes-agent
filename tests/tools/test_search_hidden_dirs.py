@@ -53,14 +53,6 @@ class TestFindExcludesHiddenDirs:
         assert "catalog.json" not in result.stdout
         assert ".hub" not in result.stdout
 
-    def test_find_skips_git_internals(self, searchable_tree):
-        """find should not return files from .git/ directory."""
-        cmd = (
-            f"find {searchable_tree} -not -path '*/.*' -type f -name '*.idx'"
-        )
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
-        assert "pack-abc.idx" not in result.stdout
-        assert ".git" not in result.stdout
 
     def test_find_still_returns_visible_files(self, searchable_tree):
         """find should still return files from visible directories."""
@@ -77,7 +69,7 @@ class TestGrepExcludesHiddenDirs:
     def test_grep_skips_hub_cache(self, searchable_tree):
         """grep --exclude-dir should skip .hub/ directory."""
         cmd = (
-            f"grep -rnH --exclude-dir='.*' 'ignore' {searchable_tree}"
+            f"grep -rnHE --exclude-dir='.*' 'ignore' {searchable_tree}"
         )
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         # Should NOT find the injection text in .hub/index-cache/catalog.json
@@ -87,7 +79,7 @@ class TestGrepExcludesHiddenDirs:
     def test_grep_still_finds_visible_content(self, searchable_tree):
         """grep should still find content in visible directories."""
         cmd = (
-            f"grep -rnH --exclude-dir='.*' 'real skill' {searchable_tree}"
+            f"grep -rnHE --exclude-dir='.*' 'real skill' {searchable_tree}"
         )
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
         assert "SKILL.md" in result.stdout

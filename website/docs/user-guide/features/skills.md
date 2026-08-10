@@ -113,7 +113,26 @@ commands).
 
 # Pasted notes / a described procedure
 /learn filing an expense: open the portal, New > Expense, attach the receipt, submit
+
+# A whole book, paper stack, or large docs corpus — becomes a knowledge-base skill
+/learn ~/books/designing-data-intensive-applications.pdf
 ```
+
+### Large sources become knowledge-base skills
+
+When the source is a book, a stack of papers, a spec, or a large docs folder,
+the agent doesn't cram it into one file or reduce it to a lossy summary.
+Instead it authors an **expansive knowledge-base skill**: a lean `SKILL.md`
+carrying the source's core mental models plus an index, with one distilled
+file per chapter or topic under `references/` (plus a glossary or cheatsheet
+when the source earns them). Reference files cost nothing until a question
+needs one — the agent loads them on demand with `skill_view`, so query cost
+stays proportional to the answer, not the source. Re-running `/learn` with new
+material on the same topic folds it into the existing skill rather than
+creating a duplicate.
+
+The distillation synthesizes structure — frameworks, definitions, decision
+rules, anti-patterns — and never reproduces passages of the source text.
 
 Because the live agent does the sourcing, `/learn` works the same in the CLI,
 the messaging gateway, the TUI, and the dashboard — and on any terminal backend
@@ -640,17 +659,7 @@ A third-party skills marketplace integrated as a community source.
 - Site: [clawhub.ai](https://clawhub.ai/)
 - Hermes source id: `clawhub`
 
-#### 6. Claude marketplace-style repos (`claude-marketplace`)
-
-Hermes supports marketplace repos that publish Claude-compatible plugin/marketplace manifests.
-
-Known integrated sources include:
-- [anthropics/skills](https://github.com/anthropics/skills)
-- [aiskillstore/marketplace](https://github.com/aiskillstore/marketplace)
-
-Hermes source id: `claude-marketplace`
-
-#### 7. LobeHub (`lobehub`)
+#### 6. LobeHub (`lobehub`)
 
 Hermes can search and convert agent entries from LobeHub's public catalog into installable Hermes skills.
 
@@ -659,7 +668,7 @@ Hermes can search and convert agent entries from LobeHub's public catalog into i
 - Backing repo: [lobehub/lobe-chat-agents](https://github.com/lobehub/lobe-chat-agents)
 - Hermes source id: `lobehub`
 
-#### 8. browse.sh (`browse-sh`)
+#### 7. browse.sh (`browse-sh`)
 
 Hermes integrates with [browse.sh](https://browse.sh), Browserbase's catalog of 200+ site-specific browser-automation SKILL.md files (Airbnb, Amazon, arXiv, 12306.cn, Etsy, Xero, and many more). Each skill describes how to drive one website end-to-end and is suitable for use with Hermes' browser tools and any browser-automation skills you already have installed.
 
@@ -676,7 +685,7 @@ hermes skills install browse-sh/airbnb.com/search-listings-ddgioa
 
 Identifiers use the form `browse-sh/<hostname>/<task-id>` and match the slug exposed by the browse.sh catalog. Content is resolved through the per-skill detail endpoint (`/api/skills/<slug>` → `skillMdUrl`), not through the catalog's GitHub `sourceUrl`.
 
-#### 9. Direct URL (`url`)
+#### 8. Direct URL (`url`)
 
 Install `SKILL.md` directly from any HTTP(S) URL — useful when an author hosts a skill on their own site (no hub listing, no GitHub path to type). Hermes also fetches explicitly referenced files under `references/`, `templates/`, `scripts/`, `assets/`, and `examples/`, then scans and installs the complete bundle.
 
@@ -822,7 +831,7 @@ hermes skills install my-org/hermes-skills/deploy-runbook
 
 #### Non-default paths
 
-If your skills don't live under `skills/` (common when you're adding a `skills/` subtree to an existing project), edit the tap entry in `~/.hermes/.hub/taps.json`:
+If your skills don't live under `skills/` (common when you're adding a `skills/` subtree to an existing project), edit the tap entry in `~/.hermes/skills/.hub/taps.json`:
 
 ```json
 {
@@ -864,7 +873,7 @@ Inside a running session:
 /skills tap remove myorg/skills-repo
 ```
 
-Taps are stored in `~/.hermes/.hub/taps.json` (created on demand).
+Taps are stored in `~/.hermes/skills/.hub/taps.json` (created on demand).
 
 ## Bundled skill updates (`hermes skills reset`)
 

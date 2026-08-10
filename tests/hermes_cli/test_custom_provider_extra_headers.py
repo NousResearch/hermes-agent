@@ -68,6 +68,7 @@ def test_normalize_entry_stringifies_values_and_skips_none():
 
 
 def test_get_custom_provider_extra_headers_matches_base_url():
+    """Match by normalized base_url returns the entry's extra_headers."""
     providers = [
         {
             "name": "my-proxy",
@@ -84,6 +85,7 @@ def test_get_custom_provider_extra_headers_matches_base_url():
 
 
 def test_get_custom_provider_extra_headers_no_match_returns_empty():
+    """No matching base_url yields empty dict."""
     providers = [
         {
             "name": "my-proxy",
@@ -102,20 +104,66 @@ def test_get_custom_provider_extra_headers_no_match_returns_empty():
 
 
 def test_get_custom_provider_extra_headers_preserves_extra_path_segment():
+    """Extra path segment after normalisation is still a mismatch."""
     providers = [
         {
             "base_url": "https://llm.internal.example.com/v1//",
             "extra_headers": {"Authorization": "secret"},
         }
     ]
-
     assert get_custom_provider_extra_headers(
         "https://llm.internal.example.com/v1",
         custom_providers=providers,
     ) == {}
 
 
+def test_get_custom_provider_extra_headers_skips_alias_without_headers():
+    """Bug #74465: an earlier entry matching the same URL but without
+    extra_headers must not shadow a later entry that DOES have headers."""
+    providers = [
+        {
+            "name": "direct",
+            "base_url": "http://127.0.0.1:8787/v1",
+            # no extra_headers
+        },
+        {
+            "name": "aether-router",
+            "base_url": "http://127.0.0.1:8787/v1",
+            "extra_headers": {"X-Aether-Route": "my-route"},
+        },
+    ]
+    headers = get_custom_provider_extra_headers(
+        "http://127.0.0.1:8787/v1",
+        custom_providers=providers,
+    )
+    assert headers == {"X-Aether-Route": "my-route"}
+
+
+def test_get_custom_provider_extra_headers_skips_empty_header_dict_alias():
+    """An earlier entry with an explicit but empty extra_headers dict must
+    not shadow a later entry that carries real headers."""
+    providers = [
+        {
+            "name": "bare-alias",
+            "base_url": "http://127.0.0.1:8787/v1",
+            "extra_headers": {},
+        },
+        {
+            "name": "proxied",
+            "base_url": "http://127.0.0.1:8787/v1",
+            "extra_headers": {"Authorization": "Bearer tok"},
+        },
+    ]
+    headers = get_custom_provider_extra_headers(
+        "http://127.0.0.1:8787/v1",
+        custom_providers=providers,
+    )
+    assert headers == {"Authorization": "Bearer tok"}
+
+
 def test_apply_extra_headers_merges_onto_existing_defaults():
+    """apply_custom_provider_extra_headers_to_client_kwargs merges headers,
+    with provider-specific values winning over existing defaults."""
     client_kwargs = {
         "api_key": "x",
         "base_url": "https://llm.internal.example.com/v1",
@@ -141,6 +189,7 @@ def test_apply_extra_headers_merges_onto_existing_defaults():
 
 
 def test_apply_extra_headers_noop_without_match():
+    """No matching base_url -> no default_headers key added."""
     client_kwargs = {"api_key": "x", "base_url": "https://other.example.com/v1"}
     providers = [
         {

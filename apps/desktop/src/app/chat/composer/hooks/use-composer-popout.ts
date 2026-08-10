@@ -1,17 +1,19 @@
 import { useStore } from '@nanostores/react'
-import { type RefObject, useCallback, useEffect } from 'react'
+import { type RefObject, useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
+import { usePaneGroup, usePaneVisible } from '@/components/pane-shell/pane-visibility'
+import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { triggerHaptic } from '@/lib/haptics'
 import {
-  $composerPopoutPosition,
-  $composerPoppedOut,
+  $composerPopoutZone,
+  clampPopoutPosition,
+  getComposerPopoutZone,
+  popoutBoundsElement,
+  type PopoutPosition,
   readPopoutBounds,
-  setComposerPopoutPosition,
   setComposerPoppedOut
 } from '@/store/composer-popout'
 import { isSecondaryWindow } from '@/store/windows'
-
-import { useComposerScope } from '../scope'
 
 import { useComposerPopoutGestures } from './use-popout-drag'
 
@@ -20,32 +22,122 @@ interface UseComposerPopoutOptions {
 }
 
 /**
- * Pop-out engine: the docked↔floating state (a shared, persisted atom), the
- * dock/float/toggle actions, the drag gestures, and the on-screen re-clamp.
- * Secondary windows (the tiny Ctrl+Shift+N window, subagent watch windows) can't
- * pop out — a floating composer makes no sense there and would yank the main
- * window's composer out via the shared atom.
+ * This surface's on-screen placement, derived from its zone's drag intent.
+ *
+ * A zone stores one intent for its whole tab stack — drag the box in any tab and
+ * it moves in all of them — but each surface owns a different rect, so the
+ * intent is clamped per surface. Clamping into the store instead would have
+ * every keep-alive-mounted tab overwrite the others with a position bounded by
+ * ITS geometry, last writer winning: that's how a drag in one tab used to get
+ * lost in another.
+ *
+ * Re-placing is skipped while this surface drags (the gesture already clamped
+ * against this rect) and while it's an inactive tab (still mounted, so a live
+ * drag would otherwise force a reflow per background tab per frame).
+ */
+function usePopoutPlacement(
+  composerRef: RefObject<HTMLFormElement | null>,
+  groupId: string,
+  intent: PopoutPosition,
+  dragging: boolean,
+  poppedOut: boolean
+): PopoutPosition {
+  const [placement, setPlacement] = useState(intent)
+  const visible = usePaneVisible()
+  // Re-place while this surface is the visible tab and isn't itself dragging.
+  const live = poppedOut && visible && !dragging
+
+  // Resolved before the shared ResizeObserver below registers (hook order puts
+  // this layout effect first), so the observer always has this surface's own
+  // bounds element rather than a document-wide first match.
+  const boundsRef = useRef<Element | null>(null)
+
+  useLayoutEffect(() => {
+    boundsRef.current = popoutBoundsElement(composerRef.current)
+  })
+
+  const reclamp = useCallback(() => {
+    const el = composerRef.current
+
+    if (!el) {
+      return
+    }
+
+    const size = { height: el.offsetHeight, width: el.offsetWidth }
+    const next = clampPopoutPosition(getComposerPopoutZone(groupId).position, size, readPopoutBounds(el))
+
+    // Bail on an unchanged placement: a sash drag resizes the surface every
+    // frame, and a fresh object each time re-renders the whole composer.
+    setPlacement(prev => (prev.bottom === next.bottom && prev.right === next.right ? prev : next))
+  }, [composerRef, groupId])
+
+  // The surface resizing (sash drag, sidebar open, tab split) re-places the box
+  // against its new rect; the composer resizing (a growing draft) re-places it
+  // against its new height.
+  useResizeObserver(
+    useCallback(() => {
+      if (live) {
+        reclamp()
+      }
+    }, [live, reclamp]),
+    composerRef,
+    boundsRef
+  )
+
+  // useLayoutEffect, not useEffect: a tab revealed after the box was dragged in
+  // another one must not paint a frame at its stale placement before catching
+  // up. Runs before paint, and no-ops for hidden tabs (`live`).
+  useLayoutEffect(() => {
+    if (!live) {
+      return undefined
+    }
+
+    reclamp()
+    // A second pass after layout settles (sidebar widths, fonts): anyone
+    // restored out of bounds is pulled back even if the first measure was
+    // premature.
+    const raf = requestAnimationFrame(reclamp)
+    window.addEventListener('resize', reclamp)
+
+    return () => {
+      cancelAnimationFrame(raf)
+      window.removeEventListener('resize', reclamp)
+    }
+  }, [intent, live, reclamp])
+
+  return dragging ? intent : placement
+}
+
+/**
+ * Pop-out engine: the docked↔floating state, the dock/float/toggle actions, the
+ * drag gestures, and this surface's placement.
+ *
+ * State is scoped to the surface's layout ZONE (its tab stack): tabs in the same
+ * zone share one float, so switching tabs keeps the box exactly where you put
+ * it, while a split zone beside them keeps its own — popping out on the left
+ * doesn't fling a composer out of the right.
+ *
+ * Secondary windows (the tiny Ctrl+Shift+N window, subagent watch windows) stay
+ * docked: a floating composer makes no sense in a scratch window.
  */
 export function useComposerPopout({ composerRef }: UseComposerPopoutOptions) {
-  // The floating composer is a window-level singleton: only the main scope
-  // (not tiles) in a primary window may pop out.
-  const scope = useComposerScope()
-  const popoutAllowed = !isSecondaryWindow() && scope.popoutAllowed
-  const poppedOut = useStore($composerPoppedOut) && popoutAllowed
-  const popoutPosition = useStore($composerPopoutPosition)
+  const popoutAllowed = !isSecondaryWindow()
+  const groupId = usePaneGroup()
+  const zone = useStore(useMemo(() => $composerPopoutZone(groupId), [groupId]))
+  const poppedOut = zone.poppedOut && popoutAllowed
 
   const handleComposerPopOut = useCallback(() => {
     triggerHaptic('open')
-    setComposerPoppedOut(true)
-  }, [])
+    setComposerPoppedOut(groupId, true)
+  }, [groupId])
 
   const handleComposerDock = useCallback(() => {
     triggerHaptic('success')
-    setComposerPoppedOut(false)
-  }, [])
+    setComposerPoppedOut(groupId, false)
+  }, [groupId])
 
   // Double-click the grab area toggles dock/float. Undocking restores the last
-  // position (the persisted atom is never cleared on dock).
+  // position (a zone's stored position is never cleared on dock).
   const handleComposerToggle = useCallback(() => {
     poppedOut ? handleComposerDock() : handleComposerPopOut()
   }, [handleComposerDock, handleComposerPopOut, poppedOut])
@@ -56,39 +148,14 @@ export function useComposerPopout({ composerRef }: UseComposerPopoutOptions) {
     onPointerDown: onComposerGesturePointerDown
   } = useComposerPopoutGestures({
     composerRef,
+    groupId,
     onDock: handleComposerDock,
     onPopOut: handleComposerPopOut,
     poppedOut,
-    position: popoutPosition
+    position: zone.position
   })
 
-  // Keep the floating box on-screen: re-clamp (with the real measured size +
-  // thread bounds) when it pops out and on every window resize — so a position
-  // persisted on a bigger/other monitor, a shrunk window, or now-wider sidebar
-  // can never strand it. The rAF pass re-clamps after layout settles (sidebar
-  // widths, fonts), so anyone loading in out of bounds is pulled back + saved
-  // even if the first measure was premature.
-  useEffect(() => {
-    if (!poppedOut) {
-      return undefined
-    }
-
-    const reclamp = (persist: boolean) => {
-      const el = composerRef.current
-      const size = el ? { height: el.offsetHeight, width: el.offsetWidth } : undefined
-      setComposerPopoutPosition($composerPopoutPosition.get(), { area: readPopoutBounds(el), persist, size })
-    }
-
-    reclamp(true)
-    const raf = requestAnimationFrame(() => reclamp(true))
-    const onResize = () => reclamp(false)
-    window.addEventListener('resize', onResize)
-
-    return () => {
-      cancelAnimationFrame(raf)
-      window.removeEventListener('resize', onResize)
-    }
-  }, [composerRef, poppedOut])
+  const popoutPosition = usePopoutPlacement(composerRef, groupId, zone.position, dragging, poppedOut)
 
   return {
     dockProximity,

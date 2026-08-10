@@ -1,6 +1,6 @@
 ---
 name: comfyui
-description: "Generate images, video, and audio with ComfyUI — install, launch, manage nodes/models, run workflows with parameter injection. Uses the official comfy-cli for lifecycle and direct REST/WebSocket API for execution."
+description: Generate images, video, and audio via diffusion workflows.
 version: 5.1.0
 author: [kshitijk4poor, alt-glitch, purzbeats]
 license: MIT
@@ -23,7 +23,7 @@ metadata:
       - creative
       - generative-ai
       - video-generation
-    related_skills: [stable-diffusion-image-generation, image_gen]
+    related_skills: [stable-diffusion]
     category: creative
 ---
 
@@ -324,7 +324,7 @@ For users without a capable GPU or who want zero setup. Hosted on RTX 6000 Pro.
 2. Generate an API key at https://platform.comfy.org/login
 3. Set the key:
    ```bash
-   export COMFY_CLOUD_API_KEY="comfyui-xxxxxxxxxxxx"
+   export COMFY_CLOUD_API_KEY="your-comfyui-key"
    ```
 4. Run workflows:
    ```bash

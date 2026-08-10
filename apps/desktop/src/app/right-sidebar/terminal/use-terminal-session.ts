@@ -1,27 +1,34 @@
 import { FitAddon } from '@xterm/addon-fit'
 import { SerializeAddon } from '@xterm/addon-serialize'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
-import { WebLinksAddon } from '@xterm/addon-web-links'
 import { WebglAddon } from '@xterm/addon-webgl'
 import { Terminal } from '@xterm/xterm'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 
+import { writeClipboardText } from '@/components/ui/copy-button'
+import { markRightPanePerf } from '@/debug/right-pane-events'
 import { triggerHaptic } from '@/lib/haptics'
-import { $filePreviewTarget, $previewTarget } from '@/store/preview'
+import { $previewTarget } from '@/store/preview'
 import { useTheme } from '@/themes/context'
 
 import { $terminalInjection } from '../store'
 
+import { observeActiveTerminalResize } from './active-resize'
 import { makeTerminalReader, registerTerminalReader } from './buffer'
+import { mirrorSelection, terminalClipboardIntent } from './clipboard'
+import { terminalLinkHandler, terminalWebLinksAddon } from './links'
 import {
   isAddSelectionShortcut,
+  isMacPlatform,
   resolveSurfaceColor,
   terminalSelectionAnchor,
   terminalSelectionLabel,
   terminalTheme
 } from './selection'
+import { prepareTerminalFontFamily } from './terminal-font'
 import { closeTerminal, updateTerminalRestoreCwd, updateTerminalReviveBuffer } from './terminals'
+import { useTerminalFontController } from './use-terminal-font'
 
 // How many scrollback lines to serialize for relaunch restore. Mirrors VS Code's
 // terminal.integrated.persistentSessionScrollback default; the store caps the
@@ -62,7 +69,7 @@ type TerminalStatus = 'closed' | 'open' | 'starting'
 // file's name instead of the shell, so the composer ref reads as a file quote
 // rather than a bogus "zsh:N lines".
 function previewSelectionLabel(): string {
-  const target = $filePreviewTarget.get() ?? $previewTarget.get()
+  const target = $previewTarget.get()
   const source = target?.path || target?.url || ''
 
   return source.split(/[\\/]/).filter(Boolean).pop() || target?.label?.trim() || ''
@@ -408,6 +415,7 @@ export function useTerminalSession({
   // drag-and-drop paths, or an injected command). Gates idle-buffer handling in
   // persistSnapshot so an untouched tab never re-saves an accumulating snapshot.
   const hasSessionActivityRef = useRef(false)
+  const initialActiveRef = useRef(active)
   const shellNameRef = useRef('shell')
   const selectionLabelRef = useRef('')
   const selectionRef = useRef('')
@@ -415,12 +423,15 @@ export function useTerminalSession({
   const onShellRef = useRef(onShell)
   // Re-fit on activation: a tab hidden via display:none has a 0×0 host, so its
   // last fit is stale by the time it's shown again.
-  const fitRef = useRef<(() => void) | null>(null)
+  const fitRef = useRef<((visible: boolean) => void) | null>(null)
+  const initialActiveFitRef = useRef(false)
+  const { latestFontFamilyRef, mountedRef } = useTerminalFontController({ fitRef, termRef, webglRef })
   const [status, setStatus] = useState<TerminalStatus>('starting')
   const [selection, setSelection] = useState('')
   const [selectionStyle, setSelectionStyle] = useState<CSSProperties | null>(null)
   const [shellName, setShellName] = useState('shell')
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     onAddSelectionToChatRef.current = onAddSelectionToChat
     onShellRef.current = onShell
@@ -478,6 +489,7 @@ export function useTerminalSession({
     return () => window.removeEventListener('keydown', onKeyDown, { capture: true })
   }, [addSelectionToChat, readSelection])
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const host = hostRef.current
     const terminalApi = window.hermesDesktop?.terminal
@@ -494,6 +506,11 @@ export function useTerminalSession({
 
     const term = new Terminal({
       allowProposedApi: true,
+      // ⌥-drag is our force-selection gesture (below), and xterm's default
+      // alt-click-moves-cursor claims the same click, emitting one cursor
+      // left/right escape per column of travel — shells that don't consume them
+      // echo the raw `^[[D` burst into the buffer. One gesture, one meaning.
+      altClickMovesCursor: false,
       // Opaque canvas = WebGL's crisp fast-path. allowTransparency instead bakes
       // glyphs as grayscale-alpha for compositing over a see-through canvas, which
       // reads soft on every platform; VS Code keeps it off and our surface
@@ -501,7 +518,7 @@ export function useTerminalSession({
       allowTransparency: false,
       convertEol: true,
       cursorBlink: true,
-      fontFamily: "'JetBrains Mono', 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace",
+      fontFamily: latestFontFamilyRef.current,
       fontSize: 11,
       // VS Code's terminal renders 'normal'/'bold' (400/700); we were using Medium
       // (500) as the base, which reads a touch heavy at this size.
@@ -509,6 +526,10 @@ export function useTerminalSession({
       fontWeightBold: 'bold',
       letterSpacing: 0,
       lineHeight: 1.12,
+      // OSC 8 hyperlinks (gh, cargo, npm, ls --hyperlink) activate through this
+      // handler; without it xterm shows a raw confirm() and then a window.open
+      // Electron denies.
+      linkHandler: terminalLinkHandler,
       // Full-screen TUIs (hermes --tui, vim) grab the mouse, so a plain drag
       // can't select — ⌥-drag (macOS) / Shift-drag (else) forces a native
       // selection over mouse-mode apps, which ⌘/Ctrl+L then sends to chat.
@@ -531,7 +552,7 @@ export function useTerminalSession({
     term.loadAddon(fit)
     term.loadAddon(serialize)
     term.loadAddon(new Unicode11Addon())
-    term.loadAddon(new WebLinksAddon())
+    term.loadAddon(terminalWebLinksAddon())
     term.unicode.activeVersion = '11'
 
     // Replay last session's scrollback before the fresh shell boots. The process
@@ -725,55 +746,27 @@ export function useTerminalSession({
       term.write(next)
     }
 
-    const fitAndResize = () => {
+    const fitAndResize = (visible: boolean) => {
       if (disposed || !host.isConnected || host.clientWidth <= 0 || host.clientHeight <= 0) {
         return
       }
 
       try {
         fit.fit()
+        markRightPanePerf(visible ? 'terminal-fit-active' : 'terminal-fit-hidden', id)
       } catch {
         return
       }
 
-      const id = sessionIdRef.current
+      const sessionId = sessionIdRef.current
 
-      if (id && (lastSentSize?.cols !== term.cols || lastSentSize?.rows !== term.rows)) {
+      if (sessionId && (lastSentSize?.cols !== term.cols || lastSentSize?.rows !== term.rows)) {
         lastSentSize = { cols: term.cols, rows: term.rows }
-        void terminalApi.resize(id, { cols: term.cols, rows: term.rows })
+        void terminalApi.resize(sessionId, { cols: term.cols, rows: term.rows })
       }
     }
 
     fitRef.current = fitAndResize
-
-    // Coalesce ResizeObserver bursts through rAF — running fit.fit()
-    // synchronously while sibling panes are mid-transition (e.g. file browser
-    // collapsing to 0px) crashes the WebGL renderer mid texture-atlas rebuild.
-    let pendingFrame = 0
-
-    const scheduleResize = () => {
-      if (pendingFrame) {
-        return
-      }
-
-      pendingFrame = window.requestAnimationFrame(() => {
-        pendingFrame = 0
-
-        if (!disposed) {
-          fitAndResize()
-        }
-      })
-    }
-
-    const resizeObserver = new ResizeObserver(scheduleResize)
-    resizeObserver.observe(host)
-    cleanup.push(() => {
-      resizeObserver.disconnect()
-
-      if (pendingFrame) {
-        window.cancelAnimationFrame(pendingFrame)
-      }
-    })
 
     const dataDisposable = term.onData(data => {
       hasSessionActivityRef.current = true
@@ -790,11 +783,54 @@ export function useTerminalSession({
       const next = term.getSelection()
       selectionRef.current = next
       selectionLabelRef.current = next.trim() ? terminalSelectionLabel(term, shellNameRef.current, next) : ''
+      // Mirror into xterm's helper textarea so the OS sees a real selection —
+      // that's what makes the Edit menu, ⌘C, and right-click Copy work over a
+      // canvas that has no DOM selection of its own.
+      mirrorSelection(host, next)
       setSelection(next)
       setSelectionStyle(next.trim() ? terminalSelectionAnchor(host) : null)
     })
 
     cleanup.push(() => selectionDisposable.dispose())
+
+    // Copy/paste chords. Returning false stops xterm from also sending the key
+    // to the PTY; every path that doesn't copy or paste returns true, so plain
+    // Ctrl+C with no selection still interrupts the running process.
+    term.attachCustomKeyEventHandler(event => {
+      const intent = terminalClipboardIntent(event, {
+        hasSelection: Boolean(term.getSelection()),
+        isMac: isMacPlatform()
+      })
+
+      if (!intent) {
+        return true
+      }
+
+      event.preventDefault()
+
+      if (intent === 'copy') {
+        const text = term.getSelection()
+        // Write through the main process: the renderer's clipboard API throws
+        // "Write permission denied" whenever the document isn't focused.
+        void writeClipboardText(text).catch(() => {
+          // Clipboard unavailable — the selection stays put so the user can retry.
+        })
+        term.clearSelection()
+        triggerHaptic('selection')
+
+        return false
+      }
+      void (async () => {
+        const text = (await window.hermesDesktop?.readClipboard?.()) ?? ''
+
+        if (text) {
+          hasSessionActivityRef.current = true
+          term.paste(text)
+        }
+      })()
+
+      return false
+    })
 
     const startSession = () =>
       void terminalApi
@@ -841,9 +877,7 @@ export function useTerminalSession({
           )
 
           window.requestAnimationFrame(() => {
-            fitAndResize()
             term.clearSelection() // drop any selection painted over transient boot rows
-            term.focus()
           })
         })
         .catch(error => {
@@ -861,6 +895,7 @@ export function useTerminalSession({
       }
 
       term.open(host)
+      mountedRef.current = true
       term.focus()
 
       // WebGL renderer matches the dashboard ChatPage path; xterm's default DOM
@@ -877,22 +912,26 @@ export function useTerminalSession({
         console.warn('[hermes-terminal] WebGL unavailable; falling back to DOM', err)
       }
 
-      fitAndResize()
+      fitAndResize(initialActiveRef.current)
+      initialActiveFitRef.current = initialActiveRef.current
       startSession()
     }
 
-    // fonts.ready settles only already-requested faces; the regular (400),
-    // bold (700) and italic aren't asked for until styled output paints (past
-    // atlas init), so warm them up front — otherwise the WebGL atlas bakes a
-    // fallback face and the terminal renders thin until a repaint.
-    const warm = document.fonts?.load
-      ? Promise.allSettled(['400', '700', 'italic 400'].map(v => document.fonts.load(`${v} 11px 'JetBrains Mono'`)))
-      : Promise.resolve()
+    void prepareTerminalFontFamily(
+      () => latestFontFamilyRef.current,
+      () => !disposed && host.isConnected
+    ).then(fontFamily => {
+      if (!fontFamily) {
+        return
+      }
 
-    void warm.then(mount, mount)
+      term.options.fontFamily = fontFamily
+      mount()
+    })
 
     return () => {
       disposed = true
+      mountedRef.current = false
       cleanup.forEach(run => run())
       fitRef.current = null
 
@@ -913,7 +952,7 @@ export function useTerminalSession({
     // `id` is stable for the instance's life (keyed by tab id), so listing it
     // doesn't re-create the shell — it just satisfies the deps check for the
     // closeTerminal(id) call in onExit.
-  }, [addSelectionToChat, cwd, id])
+  }, [addSelectionToChat, cwd, id, latestFontFamilyRef, mountedRef])
 
   useEffect(() => {
     const term = termRef.current
@@ -949,24 +988,39 @@ export function useTerminalSession({
     return term ? registerTerminalReader(id, makeTerminalReader(term)) : undefined
   }, [id, status])
 
-  // On (re)activation: a WebGL terminal doesn't paint while visibility:hidden, so
-  // it reveals a stale/garbled frame. Refit, rebuild the glyph atlas, and force a
-  // full redraw against the live buffer, then focus.
+  // Only the active terminal observes its host. Every terminal stays mounted
+  // (PTY + scrollback preserved), but hidden tabs do no FitAddon/layout work.
+  // Re-activation owns one fit + atlas rebuild + redraw.
+  // eslint-disable-next-line no-restricted-syntax -- lifecycle flag prevents a duplicate first-mount fit
   useEffect(() => {
     if (!active || status !== 'open') {
+      if (!active) {
+        initialActiveFitRef.current = false
+      }
+
       return
     }
 
-    const frame = requestAnimationFrame(() => {
-      const term = termRef.current
+    const host = hostRef.current
 
-      fitRef.current?.()
-      webglRef.current?.clearTextureAtlas()
-      term?.refresh(0, term.rows - 1)
-      term?.focus()
+    if (!host) {
+      return
+    }
+
+    const fitOnActivate = !initialActiveFitRef.current
+    initialActiveFitRef.current = false
+
+    return observeActiveTerminalResize(host, {
+      fitOnActivate,
+      onFit: () => fitRef.current?.(true),
+      onActivate: () => {
+        const term = termRef.current
+
+        webglRef.current?.clearTextureAtlas()
+        term?.refresh(0, term.rows - 1)
+        term?.focus()
+      }
     })
-
-    return () => cancelAnimationFrame(frame)
   }, [active, status])
 
   // Flush a queued command (e.g. a provider-disconnect) into the live session.
@@ -974,6 +1028,7 @@ export function useTerminalSession({
   // the subscribe fires immediately, so a command set before this pane mounted
   // runs as soon as the session is ready. Cleared after writing so a later
   // remount can't replay a stale command.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!active || status !== 'open') {
       return

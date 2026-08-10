@@ -132,12 +132,17 @@ export interface SkillCommandDispatchResponse {
   type: 'skill'
   name: string
   message?: string
+  /** The invocation the UI renders (`/work fix the leak`). `message` is the
+   *  expanded skill body — model-facing scaffolding no surface may show. */
+  display?: string
 }
 
 export interface SendCommandDispatchResponse {
   type: 'send'
   message: string
   notice?: string
+  /** Set for a skill-bundle send: see SkillCommandDispatchResponse.display. */
+  display?: string
 }
 
 export interface PrefillCommandDispatchResponse {
@@ -182,6 +187,12 @@ export interface ClientSessionState {
   awaitingResponse: boolean
   streamId: string | null
   sawAssistantPayload: boolean
+  /** This window picked up a turn it did not start — it resumed onto a session
+   *  that was already running somewhere else (leaving HUD mode, opening a
+   *  pop-out mid-turn). It therefore holds the reply but never received the
+   *  prompt, so the usual "I streamed it, my transcript is complete" shortcut
+   *  is false and the turn must hydrate from stored history when it settles. */
+  adoptedRunningTurn: boolean
   pendingBranchGroup: string | null
   interrupted: boolean
   /** True after message.interim finalized a bubble in the still-running turn. */

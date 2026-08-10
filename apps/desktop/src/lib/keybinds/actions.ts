@@ -56,7 +56,10 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ── Composer ─────────────────────────────────────────────────────────────
   // Soft `/` / Enter focus (gated); other printables type-to-focus unbound.
   { id: 'composer.focus', category: 'composer', defaults: ['/', 'enter'] },
-  { id: 'composer.modelPicker', category: 'composer', defaults: [] },
+  // ⌘⇧M — "m" for model; the convention chat apps converged on (LibreChat,
+  // Open WebUI, and Cherry Studio all ship the same chord). Opens the pill's
+  // live dropdown on the pane under the pointer, else the active composer.
+  { id: 'composer.modelPicker', category: 'composer', defaults: ['mod+shift+m'] },
   // Voice conversation toggle. Matches the documented `voice.record_key`
   // (Ctrl+B). On macOS that's literally ⌃B — distinct from the ⌘B sidebar
   // toggle. Off macOS `ctrl` folds to `mod`, which IS the ⌘B/Ctrl+B sidebar
@@ -85,6 +88,11 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'session.togglePin', category: 'session', defaults: [] },
   // ⌘⇧B — "b" for branch: spin up a new git worktree from the active repo.
   { id: 'workspace.newWorktree', category: 'session', defaults: ['mod+shift+b'] },
+  // ⌘O — the editor-standard "open folder" chord (VS Code ⌘O, Zed's
+  // workspace::Open). Picks a folder and opens it as a project (upsert:
+  // enters the owning project when one exists, else creates one), landing on
+  // a fresh session anchored there.
+  { id: 'workspace.openFolder', category: 'session', defaults: ['mod+o'] },
 
   // ── Navigation ───────────────────────────────────────────────────────────
   { id: 'nav.commandPalette', category: 'navigation', defaults: ['mod+k', 'mod+p'] },
@@ -100,9 +108,19 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // ── View (layout + appearance + the shortcuts panel itself) ───────────────
   { id: 'view.toggleSidebar', category: 'view', defaults: ['mod+b'] },
   { id: 'view.toggleRightSidebar', category: 'view', defaults: ['mod+j'] },
+  // ⌘⇧S — "s" for status bar. VS Code ships
+  // `workbench.action.toggleStatusbarVisibility` unbound (it's a chord-free
+  // gap in their View family) and Hermes has no chord dispatcher, so this
+  // takes the nearest free single combo instead of a ⌘K ⌘S two-stroke.
+  { id: 'view.toggleStatusbar', category: 'view', defaults: ['mod+shift+s'] },
   // ⌘G — "g" for git; the review pane is the source-control view.
   { id: 'view.toggleReview', category: 'view', defaults: ['mod+g'] },
   { id: 'view.showFiles', category: 'view', defaults: [] },
+  // ⌘⇧H — "h" for HUD. Enters/leaves the chrome-free floating chat: the app
+  // window steps aside and a composer + live reply float over whatever the
+  // user is working in. Ships bound because the whole point is leaving the app
+  // without reaching for it — but the titlebar button is the discoverable door.
+  { id: 'view.toggleHud', category: 'view', defaults: ['mod+shift+h'] },
   // Control+` everywhere (literal `ctrl`, NOT `mod`): ⌘` is macOS-reserved for
   // cycling app windows, so VS Code/Cursor/Zed bind the terminal to Ctrl+` on
   // every platform. Off macOS `ctrl` folds to `mod` (= Ctrl), so it's unchanged.
@@ -122,6 +140,21 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   // is a no-op. ⌘⇧T reopens the last closed tab where it was.
   { id: 'view.closeTab', category: 'view', defaults: ['mod+w'] },
   { id: 'view.reopenTab', category: 'view', defaults: ['mod+shift+t'] },
+  // ⌘F — open the find-in-page bar. `comboAllowedInInput` lets the combo
+  // fire from inside a textarea / contenteditable (matches browser behavior
+  // so typing in the composer and pressing ⌘F focuses find, not 'f').
+  { id: 'view.findInPage', category: 'view', defaults: ['mod+f'] },
+  // ⌘G / ⌘⇧G step matches — the platform-standard find-next/find-previous
+  // pair (Chrome, Safari, VS Code, and Claude Desktop all ship it). No
+  // `defaults` here on purpose: ⌘G already belongs to `view.toggleReview`,
+  // and shipping a duplicate default would flag a permanent conflict in the
+  // keybinds panel. While the find bar is OPEN, its capture-phase listener
+  // claims ⌘G/⌘⇧G and stops propagation (see components/find-bar.tsx), so
+  // stepping works out of the box and the review toggle keeps the key the
+  // rest of the time. These entries exist so the panel documents the pair
+  // and a user who prefers a dedicated chord can bind one.
+  { id: 'view.findNext', category: 'view', defaults: [] },
+  { id: 'view.findPrevious', category: 'view', defaults: [] },
   { id: 'appearance.toggleMode', category: 'view', defaults: ['shift+x'] },
   { id: 'keybinds.openPanel', category: 'view', defaults: ['mod+/'] }
 ]
@@ -206,5 +239,12 @@ export const KEYBIND_READONLY: readonly KeybindReadonly[] = [
   { id: 'composer.history', category: 'composer', keys: ['up', 'down'] },
   { id: 'composer.cancel', category: 'composer', keys: ['escape'] },
   // Fixed, context-local shortcuts surfaced for discoverability.
-  { id: 'view.terminalSelection', category: 'view', keys: ['mod+l'] }
+  { id: 'view.terminalSelection', category: 'view', keys: ['mod+l'] },
+  // Terminal clipboard. ⌘C/⌘V on macOS, Ctrl+Shift+C/V elsewhere — matching VS
+  // Code. Plain Ctrl+C also copies when text is selected (Windows Terminal /
+  // Tabby behavior); with no selection it stays SIGINT, so it isn't listed.
+  { id: 'view.terminalCopy', category: 'view', keys: IS_MAC ? ['mod+c'] : ['mod+shift+c'] },
+  { id: 'view.terminalPaste', category: 'view', keys: IS_MAC ? ['mod+v'] : ['mod+shift+v'] },
+  // Global OS chord registered in main while HUD mode is up.
+  { id: 'hud.snapToPointer', category: 'view', keys: ['mod+shift+g'] }
 ]

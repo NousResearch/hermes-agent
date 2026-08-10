@@ -1,7 +1,7 @@
 ---
 name: outlines
 description: "Outlines: structured JSON/regex/Pydantic LLM generation."
-version: 1.0.0
+version: 1.0.1
 author: Orchestra Research
 license: MIT
 dependencies: [outlines, transformers, vllm, pydantic]
@@ -24,7 +24,15 @@ Use Outlines when you need to:
 - **Generate against JSON schemas** automatically
 - **Control token sampling** at the grammar level
 
-**GitHub Stars**: 8,000+ | **From**: dottxt.ai (formerly .txt)
+**GitHub Stars**: 12,000+ | **From**: dottxt.ai (formerly .txt)
+
+> **API note (Outlines 1.x):** This skill targets the current v1 API.
+> The pre-1.0 helpers (`outlines.models.transformers(...)`,
+> `outlines.generate.json/choice/regex/...`) have been **removed**. In v1 you
+> create a model with `outlines.from_transformers(...)` (or `from_vllm`,
+> `from_llamacpp`, `from_openai`) and then **call the model directly** with an
+> output type: `model(prompt, output_type)`. JSON/Pydantic outputs are returned
+> as a **JSON string** — validate with `YourModel.model_validate_json(result)`.
 
 ## Installation
 
@@ -45,14 +53,19 @@ pip install outlines vllm  # vLLM for high-throughput
 ```python
 import outlines
 from typing import Literal
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# Load model
-model = outlines.models.transformers("microsoft/Phi-3-mini-4k-instruct")
+MODEL_NAME = "microsoft/Phi-3-mini-4k-instruct"
 
-# Generate with type constraint
+# v1: wrap a Transformers model + tokenizer
+model = outlines.from_transformers(
+    AutoModelForCausalLM.from_pretrained(MODEL_NAME, device_map="auto"),
+    AutoTokenizer.from_pretrained(MODEL_NAME),
+)
+
+# Call the model directly with an output type
 prompt = "Sentiment of 'This product is amazing!': "
-generator = outlines.generate.choice(model, ["positive", "negative", "neutral"])
-sentiment = generator(prompt)
+sentiment = model(prompt, Literal["positive", "negative", "neutral"])
 
 print(sentiment)  # "positive" (guaranteed one of these)
 ```
@@ -62,19 +75,24 @@ print(sentiment)  # "positive" (guaranteed one of these)
 ```python
 from pydantic import BaseModel
 import outlines
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 class User(BaseModel):
     name: str
     age: int
     email: str
 
-model = outlines.models.transformers("microsoft/Phi-3-mini-4k-instruct")
+MODEL_NAME = "microsoft/Phi-3-mini-4k-instruct"
+model = outlines.from_transformers(
+    AutoModelForCausalLM.from_pretrained(MODEL_NAME, device_map="auto"),
+    AutoTokenizer.from_pretrained(MODEL_NAME),
+)
 
-# Generate structured output
+# Generate structured output (returns a JSON string)
 prompt = "Extract user: John Doe, 30 years old, john@example.com"
-generator = outlines.generate.json(model, User)
-user = generator(prompt)
+result = model(prompt, User, max_new_tokens=200)
 
+user = User.model_validate_json(result)  # parse into the Pydantic model
 print(user.name)   # "John Doe"
 print(user.age)    # 30
 print(user.email)  # "john@example.com"
@@ -84,11 +102,12 @@ print(user.email)  # "john@example.com"
 
 ### 1. Constrained Token Sampling
 
-Outlines uses Finite State Machines (FSM) to constrain token generation at the logit level.
+Outlines constrains token generation at the logit level using a compiled
+automaton derived from your output type.
 
 **How it works:**
-1. Convert schema (JSON/Pydantic/regex) to context-free grammar (CFG)
-2. Transform CFG into Finite State Machine (FSM)
+1. Convert the output type (JSON/Pydantic/regex/`Literal`) to a schema/grammar
+2. Compile the grammar into a token-level automaton
 3. Filter invalid tokens at each step during generation
 4. Fast-forward when only one valid token exists
 
@@ -99,42 +118,36 @@ Outlines uses Finite State Machines (FSM) to constrain token generation at the l
 
 ```python
 import outlines
+from pydantic import BaseModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# Pydantic model -> JSON schema -> CFG -> FSM
 class Person(BaseModel):
     name: str
     age: int
 
-model = outlines.models.transformers("microsoft/Phi-3-mini-4k-instruct")
-
-# Behind the scenes:
-# 1. Person -> JSON schema
-# 2. JSON schema -> CFG
-# 3. CFG -> FSM
-# 4. FSM filters tokens during generation
-
-generator = outlines.generate.json(model, Person)
-result = generator("Generate person: Alice, 25")
-```
-
-### 2. Structured Generators
-
-Outlines provides specialized generators for different output types.
-
-#### Choice Generator
-
-```python
-# Multiple choice selection
-generator = outlines.generate.choice(
-    model,
-    ["positive", "negative", "neutral"]
+model = outlines.from_transformers(
+    AutoModelForCausalLM.from_pretrained("microsoft/Phi-3-mini-4k-instruct", device_map="auto"),
+    AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct"),
 )
 
-sentiment = generator("Review: This is great!")
-# Result: One of the three choices
+result = model("Generate person: Alice, 25", Person)
+person = Person.model_validate_json(result)
 ```
 
-#### JSON Generator
+### 2. Output Types
+
+In v1 you pass the desired **output type** directly as the second argument.
+
+#### Multiple choice (`Literal`)
+
+```python
+from typing import Literal
+
+sentiment = model("Review: This is great!", Literal["positive", "negative", "neutral"])
+# Result: one of the three choices
+```
+
+#### JSON via Pydantic
 
 ```python
 from pydantic import BaseModel
@@ -144,97 +157,85 @@ class Product(BaseModel):
     price: float
     in_stock: bool
 
-# Generate valid JSON matching schema
-generator = outlines.generate.json(model, Product)
-product = generator("Extract: iPhone 15, $999, available")
-
-# Guaranteed valid Product instance
-print(type(product))  # <class '__main__.Product'>
+result = model("Extract: iPhone 15, $999, available", Product)
+product = Product.model_validate_json(result)  # valid Product instance
 ```
 
-#### Regex Generator
+#### Regex (pass a regex string)
 
 ```python
-# Generate text matching regex
-generator = outlines.generate.regex(
-    model,
-    r"[0-9]{3}-[0-9]{3}-[0-9]{4}"  # Phone number pattern
-)
-
-phone = generator("Generate phone number:")
-# Result: "555-123-4567" (guaranteed to match pattern)
+# Generate text matching a regex pattern
+phone = model("Generate phone number:", r"[0-9]{3}-[0-9]{3}-[0-9]{4}")
+# Result: "555-123-4567" (guaranteed to match the pattern)
 ```
 
-#### Integer/Float Generators
+#### Numeric types
 
 ```python
-# Generate specific numeric types
-int_generator = outlines.generate.integer(model)
-age = int_generator("Person's age:")  # Guaranteed integer
-
-float_generator = outlines.generate.float(model)
-price = float_generator("Product price:")  # Guaranteed float
+# Pass the Python type directly
+age = model("Person's age:", int)      # guaranteed integer
+price = model("Product price:", float)  # guaranteed float
 ```
 
 ### 3. Model Backends
 
-Outlines supports multiple local and API-based backends.
+Outlines supports multiple local and API-based backends via `from_*` factories.
 
 #### Transformers (Hugging Face)
 
 ```python
 import outlines
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-# Load from Hugging Face
-model = outlines.models.transformers(
-    "microsoft/Phi-3-mini-4k-instruct",
-    device="cuda"  # Or "cpu"
+model = outlines.from_transformers(
+    AutoModelForCausalLM.from_pretrained("microsoft/Phi-3-mini-4k-instruct", device_map="auto"),
+    AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct"),
 )
 
-# Use with any generator
-generator = outlines.generate.json(model, YourModel)
+result = model(prompt, YourModel)
 ```
 
 #### llama.cpp
 
 ```python
-# Load GGUF model
-model = outlines.models.llamacpp(
-    "./models/llama-3.1-8b-instruct.Q4_K_M.gguf",
-    n_gpu_layers=35
-)
+import outlines
+from llama_cpp import Llama
 
-generator = outlines.generate.json(model, YourModel)
+llm = Llama("./models/llama-3.1-8b-instruct.Q4_K_M.gguf", n_gpu_layers=35, n_ctx=4096)
+model = outlines.from_llamacpp(llm)
+
+result = model(prompt, YourModel)
 ```
 
 #### vLLM (High Throughput)
 
 ```python
-# For production deployments
-model = outlines.models.vllm(
-    "meta-llama/Llama-3.1-8B-Instruct",
-    tensor_parallel_size=2  # Multi-GPU
-)
+import outlines
+from vllm import LLM
 
-generator = outlines.generate.json(model, YourModel)
+llm = LLM("meta-llama/Llama-3.1-8B-Instruct", tensor_parallel_size=2)
+model = outlines.from_vllm(llm)
+
+result = model(prompt, YourModel)
 ```
 
-#### OpenAI (Limited Support)
+#### OpenAI (server-side constrained JSON)
 
 ```python
-# Basic OpenAI support
-model = outlines.models.openai(
-    "gpt-4o-mini",
-    api_key="your-api-key"
-)
+import outlines
+from openai import OpenAI
 
-# Note: Some features limited with API models
-generator = outlines.generate.json(model, YourModel)
+client = OpenAI()
+model = outlines.from_openai(client, "gpt-4o-mini")
+
+# API backends support JSON-schema style structured output
+result = model(prompt, YourModel)
 ```
 
 ### 4. Pydantic Integration
 
 Outlines has first-class Pydantic support with automatic schema translation.
+Generation returns a JSON string; call `model_validate_json` to get an instance.
 
 #### Basic Models
 
@@ -247,10 +248,8 @@ class Article(BaseModel):
     word_count: int = Field(description="Number of words", gt=0)
     tags: list[str] = Field(description="List of tags")
 
-model = outlines.models.transformers("microsoft/Phi-3-mini-4k-instruct")
-generator = outlines.generate.json(model, Article)
-
-article = generator("Generate article about AI")
+result = model("Generate article about AI", Article, max_new_tokens=300)
+article = Article.model_validate_json(result)
 print(article.title)
 print(article.word_count)  # Guaranteed > 0
 ```
@@ -268,9 +267,8 @@ class Person(BaseModel):
     age: int
     address: Address  # Nested model
 
-generator = outlines.generate.json(model, Person)
-person = generator("Generate person in New York")
-
+result = model("Generate person in New York", Person)
+person = Person.model_validate_json(result)
 print(person.address.city)  # "New York"
 ```
 
@@ -290,9 +288,8 @@ class Application(BaseModel):
     status: Status  # Must be one of enum values
     priority: Literal["low", "medium", "high"]  # Must be one of literals
 
-generator = outlines.generate.json(model, Application)
-app = generator("Generate application")
-
+result = model("Generate application", Application)
+app = Application.model_validate_json(result)
 print(app.status)  # Status.PENDING (or APPROVED/REJECTED)
 ```
 
@@ -303,6 +300,7 @@ print(app.status)  # Status.PENDING (or APPROVED/REJECTED)
 ```python
 from pydantic import BaseModel
 import outlines
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 class CompanyInfo(BaseModel):
     name: str
@@ -310,8 +308,10 @@ class CompanyInfo(BaseModel):
     industry: str
     employees: int
 
-model = outlines.models.transformers("microsoft/Phi-3-mini-4k-instruct")
-generator = outlines.generate.json(model, CompanyInfo)
+model = outlines.from_transformers(
+    AutoModelForCausalLM.from_pretrained("microsoft/Phi-3-mini-4k-instruct", device_map="auto"),
+    AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct"),
+)
 
 text = """
 Apple Inc. was founded in 1976 in the technology industry.
@@ -319,7 +319,7 @@ The company employs approximately 164,000 people worldwide.
 """
 
 prompt = f"Extract company information:\n{text}\n\nCompany:"
-company = generator(prompt)
+company = CompanyInfo.model_validate_json(model(prompt, CompanyInfo, max_new_tokens=200))
 
 print(f"Name: {company.name}")
 print(f"Founded: {company.founded_year}")
@@ -331,26 +331,24 @@ print(f"Employees: {company.employees}")
 
 ```python
 from typing import Literal
-import outlines
-
-model = outlines.models.transformers("microsoft/Phi-3-mini-4k-instruct")
+from pydantic import BaseModel
 
 # Binary classification
-generator = outlines.generate.choice(model, ["spam", "not_spam"])
-result = generator("Email: Buy now! 50% off!")
+result = model("Email: Buy now! 50% off!", Literal["spam", "not_spam"])
 
 # Multi-class classification
-categories = ["technology", "business", "sports", "entertainment"]
-category_gen = outlines.generate.choice(model, categories)
-category = category_gen("Article: Apple announces new iPhone...")
+category = model(
+    "Article: Apple announces new iPhone...",
+    Literal["technology", "business", "sports", "entertainment"],
+)
 
 # With confidence
 class Classification(BaseModel):
     label: Literal["positive", "negative", "neutral"]
     confidence: float
 
-classifier = outlines.generate.json(model, Classification)
-result = classifier("Review: This product is okay, nothing special")
+out = model("Review: This product is okay, nothing special", Classification)
+result = Classification.model_validate_json(out)
 ```
 
 ### Pattern 3: Structured Forms
@@ -364,9 +362,6 @@ class UserProfile(BaseModel):
     country: str
     interests: list[str]
 
-model = outlines.models.transformers("microsoft/Phi-3-mini-4k-instruct")
-generator = outlines.generate.json(model, UserProfile)
-
 prompt = """
 Extract user profile from:
 Name: Alice Johnson
@@ -377,7 +372,7 @@ Country: USA
 Interests: hiking, photography, cooking
 """
 
-profile = generator(prompt)
+profile = UserProfile.model_validate_json(model(prompt, UserProfile, max_new_tokens=250))
 print(profile.full_name)
 print(profile.interests)  # ["hiking", "photography", "cooking"]
 ```
@@ -385,6 +380,8 @@ print(profile.interests)  # ["hiking", "photography", "cooking"]
 ### Pattern 4: Multi-Entity Extraction
 
 ```python
+from typing import Literal
+
 class Entity(BaseModel):
     name: str
     type: Literal["PERSON", "ORGANIZATION", "LOCATION"]
@@ -392,13 +389,10 @@ class Entity(BaseModel):
 class DocumentEntities(BaseModel):
     entities: list[Entity]
 
-model = outlines.models.transformers("microsoft/Phi-3-mini-4k-instruct")
-generator = outlines.generate.json(model, DocumentEntities)
-
 text = "Tim Cook met with Satya Nadella at Microsoft headquarters in Redmond."
 prompt = f"Extract entities from: {text}"
 
-result = generator(prompt)
+result = DocumentEntities.model_validate_json(model(prompt, DocumentEntities, max_new_tokens=300))
 for entity in result.entities:
     print(f"{entity.name} ({entity.type})")
 ```
@@ -412,11 +406,8 @@ class PythonFunction(BaseModel):
     docstring: str
     body: str
 
-model = outlines.models.transformers("microsoft/Phi-3-mini-4k-instruct")
-generator = outlines.generate.json(model, PythonFunction)
-
 prompt = "Generate a Python function to calculate factorial"
-func = generator(prompt)
+func = PythonFunction.model_validate_json(model(prompt, PythonFunction, max_new_tokens=300))
 
 print(f"def {func.function_name}({', '.join(func.parameters)}):")
 print(f'    """{func.docstring}"""')
@@ -426,29 +417,29 @@ print(f"    {func.body}")
 ### Pattern 6: Batch Processing
 
 ```python
-def batch_extract(texts: list[str], schema: type[BaseModel]):
-    """Extract structured data from multiple texts."""
-    model = outlines.models.transformers("microsoft/Phi-3-mini-4k-instruct")
-    generator = outlines.generate.json(model, schema)
-
-    results = []
-    for text in texts:
-        result = generator(f"Extract from: {text}")
-        results.append(result)
-
-    return results
+import outlines
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from pydantic import BaseModel
 
 class Person(BaseModel):
     name: str
     age: int
 
+model = outlines.from_transformers(
+    AutoModelForCausalLM.from_pretrained("microsoft/Phi-3-mini-4k-instruct", device_map="auto"),
+    AutoTokenizer.from_pretrained("microsoft/Phi-3-mini-4k-instruct"),
+)
+
 texts = [
     "John is 30 years old",
     "Alice is 25 years old",
-    "Bob is 40 years old"
+    "Bob is 40 years old",
 ]
 
-people = batch_extract(texts, Person)
+# v1 accepts a list of prompts for batched generation
+prompts = [f"Extract from: {t}" for t in texts]
+outputs = model(prompts, Person, max_new_tokens=100)
+people = [Person.model_validate_json(o) for o in outputs]
 for person in people:
     print(f"{person.name}: {person.age}")
 ```
@@ -459,58 +450,67 @@ for person in people:
 
 ```python
 import outlines
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+MODEL_NAME = "microsoft/Phi-3-mini-4k-instruct"
 
 # Basic usage
-model = outlines.models.transformers("microsoft/Phi-3-mini-4k-instruct")
+model = outlines.from_transformers(
+    AutoModelForCausalLM.from_pretrained(MODEL_NAME, device_map="auto"),
+    AutoTokenizer.from_pretrained(MODEL_NAME),
+)
 
-# GPU configuration
-model = outlines.models.transformers(
-    "microsoft/Phi-3-mini-4k-instruct",
-    device="cuda",
-    model_kwargs={"torch_dtype": "float16"}
+# GPU + dtype configuration is set on the HF model itself
+import torch
+model = outlines.from_transformers(
+    AutoModelForCausalLM.from_pretrained(MODEL_NAME, device_map="cuda", torch_dtype=torch.float16),
+    AutoTokenizer.from_pretrained(MODEL_NAME),
 )
 
 # Popular models
-model = outlines.models.transformers("meta-llama/Llama-3.1-8B-Instruct")
-model = outlines.models.transformers("mistralai/Mistral-7B-Instruct-v0.3")
-model = outlines.models.transformers("Qwen/Qwen2.5-7B-Instruct")
+for name in [
+    "meta-llama/Llama-3.1-8B-Instruct",
+    "mistralai/Mistral-7B-Instruct-v0.3",
+    "Qwen/Qwen2.5-7B-Instruct",
+]:
+    model = outlines.from_transformers(
+        AutoModelForCausalLM.from_pretrained(name, device_map="auto"),
+        AutoTokenizer.from_pretrained(name),
+    )
 ```
 
 ### llama.cpp
 
 ```python
-# Load GGUF model
-model = outlines.models.llamacpp(
-    "./models/llama-3.1-8b.Q4_K_M.gguf",
-    n_ctx=4096,         # Context window
-    n_gpu_layers=35,    # GPU layers
-    n_threads=8         # CPU threads
-)
+import outlines
+from llama_cpp import Llama
 
-# Full GPU offload
-model = outlines.models.llamacpp(
-    "./models/model.gguf",
-    n_gpu_layers=-1  # All layers on GPU
+# Load GGUF model
+llm = Llama(
+    "./models/llama-3.1-8b.Q4_K_M.gguf",
+    n_ctx=4096,       # Context window
+    n_gpu_layers=35,  # GPU layers
+    n_threads=8,      # CPU threads
 )
+model = outlines.from_llamacpp(llm)
+
+# Full GPU offload: set n_gpu_layers=-1 on the Llama object
 ```
 
 ### vLLM (Production)
 
 ```python
+import outlines
+from vllm import LLM
+
 # Single GPU
-model = outlines.models.vllm("meta-llama/Llama-3.1-8B-Instruct")
+model = outlines.from_vllm(LLM("meta-llama/Llama-3.1-8B-Instruct"))
 
 # Multi-GPU
-model = outlines.models.vllm(
-    "meta-llama/Llama-3.1-70B-Instruct",
-    tensor_parallel_size=4  # 4 GPUs
-)
+model = outlines.from_vllm(LLM("meta-llama/Llama-3.1-70B-Instruct", tensor_parallel_size=4))
 
 # With quantization
-model = outlines.models.vllm(
-    "meta-llama/Llama-3.1-8B-Instruct",
-    quantization="awq"  # Or "gptq"
-)
+model = outlines.from_vllm(LLM("meta-llama/Llama-3.1-8B-Instruct", quantization="awq"))
 ```
 
 ## Best Practices
@@ -598,15 +598,23 @@ class Article(BaseModel):
 # Can succeed even if author/date missing
 ```
 
+### 6. Always Validate JSON Output
+
+```python
+# v1 returns a JSON string for Pydantic/JSON output types.
+result = model(prompt, Article)          # str
+article = Article.model_validate_json(result)  # Article instance
+```
+
 ## Comparison to Alternatives
 
 | Feature | Outlines | Instructor | Guidance | LMQL |
 |---------|----------|------------|----------|------|
-| Pydantic Support | ✅ Native | ✅ Native | ❌ No | ❌ No |
-| JSON Schema | ✅ Yes | ✅ Yes | ⚠️ Limited | ✅ Yes |
+| Pydantic Support | ✅ Native | ✅ Native | ✅ Yes | ❌ No |
+| JSON Schema | ✅ Yes | ✅ Yes | ✅ Yes | ✅ Yes |
 | Regex Constraints | ✅ Yes | ❌ No | ✅ Yes | ✅ Yes |
 | Local Models | ✅ Full | ⚠️ Limited | ✅ Full | ✅ Full |
-| API Models | ⚠️ Limited | ✅ Full | ✅ Full | ✅ Full |
+| API Models | ✅ Yes | ✅ Full | ✅ Yes | ✅ Full |
 | Zero Overhead | ✅ Yes | ❌ No | ⚠️ Partial | ✅ Yes |
 | Automatic Retrying | ❌ No | ✅ Yes | ❌ No | ❌ No |
 | Learning Curve | Low | Low | Low | High |
@@ -631,19 +639,19 @@ class Article(BaseModel):
 - **1.2-2x faster** than post-generation validation approaches
 
 **Memory:**
-- FSM compiled once per schema (cached)
+- Automaton compiled once per output type (cached)
 - Minimal runtime overhead
 - Efficient with vLLM for high throughput
 
 **Accuracy:**
-- **100% valid outputs** (guaranteed by FSM)
+- **100% valid outputs** (guaranteed by the constrained automaton)
 - No retry loops needed
 - Deterministic token filtering
 
 ## Resources
 
-- **Documentation**: https://outlines-dev.github.io/outlines
-- **GitHub**: https://github.com/outlines-dev/outlines (8k+ stars)
+- **Documentation**: https://dottxt-ai.github.io/outlines/
+- **GitHub**: https://github.com/dottxt-ai/outlines (12k+ stars)
 - **Discord**: https://discord.gg/R9DSu34mGd
 - **Blog**: https://blog.dottxt.co
 
@@ -652,5 +660,3 @@ class Article(BaseModel):
 - `references/json_generation.md` - Comprehensive JSON and Pydantic patterns
 - `references/backends.md` - Backend-specific configuration
 - `references/examples.md` - Production-ready examples
-
-

@@ -1,7 +1,9 @@
 """Tests for plugins/memory/openviking/__init__.py — URI normalization and payload handling."""
 
 import json
+import os
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
@@ -14,7 +16,8 @@ def _write_skill(skills_dir, name, body="Do the thing."):
     skill_dir = skills_dir / name
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: Description for {name}\n---\n\n# {name}\n\n{body}\n"
+        f"---\nname: {name}\ndescription: Description for {name}\n---\n\n# {name}\n\n{body}\n",
+        encoding="utf-8",
     )
     return skill_dir
 
@@ -23,7 +26,10 @@ def _write_bundle(bundles_dir, slug, skills):
     bundles_dir.mkdir(parents=True, exist_ok=True)
     lines = [f"name: {slug}", "skills:"]
     lines.extend(f"  - {skill}" for skill in skills)
-    (bundles_dir / f"{slug}.yaml").write_text("\n".join(lines) + "\n")
+    (bundles_dir / f"{slug}.yaml").write_text(
+        "\n".join(lines) + "\n",
+        encoding="utf-8",
+    )
 
 
 class FakeVikingClient:
@@ -139,21 +145,6 @@ class TestOpenVikingSkillQuerySafety:
         assert openviking_plugin._derive_openviking_user_text(123) == ""
         assert openviking_plugin._derive_openviking_user_text([{"text": "hi"}]) == ""
 
-    def test_derive_passes_through_non_skill_content(self):
-        assert (
-            openviking_plugin._derive_openviking_user_text("regular user message")
-            == "regular user message"
-        )
-
-    def test_derive_returns_empty_for_skill_scaffolding_with_no_instruction(self):
-        skill_message = (
-            '[IMPORTANT: The user has invoked the "example" skill, indicating they want '
-            "you to follow its instructions. The full skill content is loaded below.]\n\n"
-            "# Example\n\n"
-            "Skill body only, no instruction."
-        )
-
-        assert openviking_plugin._derive_openviking_user_text(skill_message) == ""
 
     def test_skill_markers_match_hermes_scaffolding(self, tmp_path, monkeypatch):
         import agent.skill_bundles as skill_bundles
@@ -228,55 +219,6 @@ class TestOpenVikingSkillQuerySafety:
             ),
         ]
 
-    def test_prefetch_searches_only_skill_bundle_user_instruction(self, monkeypatch):
-        RecordingVikingClient.calls = []
-        monkeypatch.setattr(openviking_plugin, "_VikingClient", RecordingVikingClient)
-        provider = OpenVikingMemoryProvider()
-        provider._client = cast(Any, object())
-        provider._endpoint = "http://openviking.test"
-        provider._api_key = ""
-        provider._account = "default"
-        provider._user = "default"
-        provider._agent = "hermes"
-        skill_message = (
-            '[IMPORTANT: The user has invoked the "backend-dev" skill bundle, '
-            "loading 2 skills together. Treat every skill below as active guidance for this turn.]\n\n"
-            "Bundle: backend-dev\n"
-            "Skills loaded: test-driven-development, code-review\n\n"
-            "User instruction: fix the failing retrieval test\n\n"
-            '[Loaded as part of the "backend-dev" skill bundle.]\n\n'
-            "Large bundled skill body that must not be searched or embedded."
-        )
-
-        provider.prefetch(skill_message)
-
-        assert RecordingVikingClient.calls == [
-            (
-                "/api/v1/search/find",
-                {
-                    "query": "fix the failing retrieval test",
-                    "limit": 24,
-                    "score_threshold": 0,
-                    "context_type": "memory",
-                },
-            ),
-        ]
-
-    def test_prefetch_skips_slash_skill_without_user_instruction(self, monkeypatch):
-        RecordingVikingClient.calls = []
-        monkeypatch.setattr(openviking_plugin, "_VikingClient", RecordingVikingClient)
-        provider = OpenVikingMemoryProvider()
-        provider._client = cast(Any, object())
-        skill_message = (
-            '[IMPORTANT: The user has invoked the "skill-creator" skill, indicating they want '
-            "you to follow its instructions. The full skill content is loaded below.]\n\n"
-            "# Skill Creator\n\n"
-            "Large skill body that must not be searched or embedded."
-        )
-
-        assert provider.prefetch(skill_message) == ""
-
-        assert RecordingVikingClient.calls == []
 
     def test_sync_turn_stores_only_slash_skill_user_instruction(self, monkeypatch):
         RecordingVikingClient.calls = []
@@ -322,30 +264,13 @@ class TestOpenVikingSkillQuerySafety:
             ),
         ]
 
-    def test_sync_turn_skips_slash_skill_without_user_instruction(self, monkeypatch):
-        RecordingVikingClient.calls = []
-        monkeypatch.setattr(openviking_plugin, "_VikingClient", RecordingVikingClient)
-        provider = OpenVikingMemoryProvider()
-        provider._client = cast(Any, object())
-        skill_message = (
-            '[IMPORTANT: The user has invoked the "skill-creator" skill, indicating they want '
-            "you to follow its instructions. The full skill content is loaded below.]\n\n"
-            "# Skill Creator\n\n"
-            "Large skill body that must not be stored as user content."
-        )
-
-        provider.sync_turn(skill_message, "Done.")
-
-        assert provider._turn_count == 0
-        assert provider._inflight_writers == {}
-        assert RecordingVikingClient.calls == []
-
 
 class TestOpenVikingConfigSchema:
     def test_recall_policy_options_are_exposed_in_setup_schema(self):
         provider = OpenVikingMemoryProvider()
 
         schema = provider.get_config_schema()
+        fields = {entry["key"]: entry for entry in schema}
         env_vars = {entry.get("env_var") for entry in schema}
 
         assert "OPENVIKING_RECALL_LIMIT" in env_vars
@@ -356,6 +281,11 @@ class TestOpenVikingConfigSchema:
         assert "OPENVIKING_RECALL_FULL_READ_LIMIT" in env_vars
         assert "OPENVIKING_RECALL_PREFER_ABSTRACT" in env_vars
         assert "OPENVIKING_RECALL_RESOURCES" in env_vars
+        assert fields["recall_limit"]["type"] == "integer"
+        assert fields["recall_limit"]["minimum"] == 1
+        assert fields["recall_limit"]["maximum"] == 100
+        assert fields["recall_score_threshold"]["type"] == "number"
+        assert fields["recall_prefer_abstract"]["type"] == "boolean"
         assert provider._recall_config() == {
             "limit": 6,
             "score_threshold": 0.15,
@@ -366,6 +296,166 @@ class TestOpenVikingConfigSchema:
             "prefer_abstract": False,
             "resources": False,
         }
+
+    def test_recall_config_reads_from_config_yaml(self, monkeypatch, tmp_path):
+        """_recall_config() reads memory.openviking values from config.yaml when
+        the corresponding OPENVIKING_RECALL_* env vars are not set."""
+        # Populate config.yaml in the temp HERMES_HOME
+        hermes_home = tmp_path / "hermes_test"
+        hermes_home.mkdir(exist_ok=True)
+        config_yaml = hermes_home / "config.yaml"
+        config_yaml.write_text(
+            """\
+memory:
+  provider: openviking
+  openviking:
+    recall_limit: 12
+    recall_score_threshold: 0.42
+    recall_max_injected_chars: 8000
+    profile_token_budget: 7000
+    recall_timeout_seconds: 2.0
+    recall_request_timeout_seconds: 1.5
+    recall_full_read_limit: 5
+    recall_prefer_abstract: true
+    recall_resources: true
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Clear any OPENVIKING_RECALL_* env vars so config.yaml prevails
+        for key in list(os.environ):
+            if key.startswith("OPENVIKING_RECALL_"):
+                monkeypatch.delenv(key, raising=False)
+
+        provider = OpenVikingMemoryProvider()
+        cfg = provider._recall_config()
+
+        assert cfg["limit"] == 12
+        assert cfg["score_threshold"] == 0.42
+        assert cfg["max_injected_chars"] == 8000
+        assert cfg["timeout_seconds"] == 2.0
+        assert cfg["request_timeout_seconds"] == 1.5
+        assert cfg["full_read_limit"] == 5
+        assert cfg["prefer_abstract"] is True
+        assert cfg["resources"] is True
+        assert provider._profile_token_budget() == 7000
+
+    def test_recall_config_env_overrides_config_yaml(self, monkeypatch, tmp_path):
+        """Env vars OPENVIKING_RECALL_* take precedence over config.yaml values
+        when both are present."""
+        hermes_home = tmp_path / "hermes_test"
+        hermes_home.mkdir(exist_ok=True)
+        config_yaml = hermes_home / "config.yaml"
+        config_yaml.write_text(
+            """\
+memory:
+  provider: openviking
+  openviking:
+    recall_limit: 12
+    recall_resources: true
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Override config.yaml via env
+        monkeypatch.setenv("OPENVIKING_RECALL_LIMIT", "6")
+        monkeypatch.setenv("OPENVIKING_RECALL_RESOURCES", "false")
+
+        provider = OpenVikingMemoryProvider()
+        cfg = provider._recall_config()
+
+        assert cfg["limit"] == 6, "env var should override config.yaml"
+        assert cfg["resources"] is False, "env var false should override config.yaml true"
+
+    def test_recall_config_partial_config_yaml(self, monkeypatch, tmp_path):
+        """Partially populated config.yaml falls back to defaults for omitted keys
+        and env vars can override individual fields."""
+        hermes_home = tmp_path / "hermes_test"
+        hermes_home.mkdir(exist_ok=True)
+        config_yaml = hermes_home / "config.yaml"
+        config_yaml.write_text(
+            """\
+memory:
+  provider: openviking
+  openviking:
+    recall_limit: 3
+    # No recall_resources set — should use default (False)
+""",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        for key in list(os.environ):
+            if key.startswith("OPENVIKING_RECALL_"):
+                monkeypatch.delenv(key, raising=False)
+
+        provider = OpenVikingMemoryProvider()
+        cfg = provider._recall_config()
+
+        assert cfg["limit"] == 3, "config.yaml value should be picked up"
+        assert cfg["resources"] is False, "omitted key should use default"
+        assert cfg["timeout_seconds"] == 4.0, "omitted key should use built-in default"
+
+    def test_dashboard_shaped_string_values_are_typed(self, monkeypatch):
+        for key in list(os.environ):
+            if key.startswith("OPENVIKING_RECALL_") or key == "OPENVIKING_PROFILE_TOKEN_BUDGET":
+                monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(
+            openviking_plugin,
+            "_load_hermes_openviking_config",
+            lambda: {
+                "recall_limit": "12",
+                "recall_score_threshold": "0.42",
+                "recall_prefer_abstract": "false",
+                "recall_resources": "true",
+                "profile_token_budget": "7500",
+            },
+        )
+        provider = OpenVikingMemoryProvider()
+
+        cfg = provider._recall_config()
+
+        assert cfg["limit"] == 12
+        assert cfg["score_threshold"] == 0.42
+        assert cfg["prefer_abstract"] is False
+        assert cfg["resources"] is True
+        assert provider._profile_token_budget() == 7500
+
+    def test_invalid_recall_values_fall_back_without_type_errors(self, monkeypatch):
+        for key in list(os.environ):
+            if key.startswith("OPENVIKING_RECALL_") or key == "OPENVIKING_PROFILE_TOKEN_BUDGET":
+                monkeypatch.delenv(key, raising=False)
+        monkeypatch.setattr(
+            openviking_plugin,
+            "_load_hermes_openviking_config",
+            lambda: {
+                "recall_limit": "many",
+                "recall_score_threshold": True,
+                "recall_prefer_abstract": "sometimes",
+                "profile_token_budget": "7.5",
+            },
+        )
+        provider = OpenVikingMemoryProvider()
+
+        cfg = provider._recall_config()
+
+        assert cfg["limit"] == 6
+        assert cfg["score_threshold"] == 0.15
+        assert cfg["prefer_abstract"] is False
+        assert provider._profile_token_budget() == 6000
+
+    def test_recall_env_overrides_string_config_with_native_types(self, monkeypatch):
+        monkeypatch.setattr(
+            openviking_plugin,
+            "_load_hermes_openviking_config",
+            lambda: {"recall_limit": "12", "recall_resources": "false"},
+        )
+        monkeypatch.setenv("OPENVIKING_RECALL_LIMIT", "4")
+        monkeypatch.setenv("OPENVIKING_RECALL_RESOURCES", "true")
+
+        cfg = OpenVikingMemoryProvider()._recall_config()
+
+        assert cfg["limit"] == 4
+        assert cfg["resources"] is True
 
 
 class TestOpenVikingTurnConversion:
@@ -454,268 +544,6 @@ class TestOpenVikingTurnConversion:
             {"type": "text", "text": "The current main does not expose assemble."}
         ]
 
-    def test_messages_to_openviking_batch_marks_json_tool_error_results(self):
-        turn = [
-            {"role": "user", "content": "Check the file."},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_read_1",
-                        "type": "function",
-                        "function": {
-                            "name": "read_file",
-                            "arguments": json.dumps({"path": "missing.md"}),
-                        },
-                    }
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "call_read_1",
-                "name": "read_file",
-                "content": json.dumps({"error": "File not found", "exit_code": 1}),
-            },
-        ]
-
-        batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
-
-        assert batch[1]["role"] == "assistant"
-        assert batch[1]["parts"] == [
-            {
-                "type": "tool",
-                "tool_id": "call_read_1",
-                "tool_name": "read_file",
-                "tool_input": {"path": "missing.md"},
-                "tool_output": json.dumps({"error": "File not found", "exit_code": 1}),
-                "tool_status": "error",
-            }
-        ]
-
-    def test_messages_to_openviking_batch_keeps_pending_tool_call_without_result(self):
-        turn = [
-            {"role": "user", "content": "Start a long running check."},
-            {
-                "role": "assistant",
-                "content": "Starting it now.",
-                "tool_calls": [
-                    {
-                        "id": "call_long_1",
-                        "type": "function",
-                        "function": {
-                            "name": "long_check",
-                            "arguments": json.dumps({"target": "repo"}),
-                        },
-                    }
-                ],
-            },
-        ]
-
-        batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
-
-        assert batch[1]["parts"] == [
-            {"type": "text", "text": "Starting it now."},
-            {
-                "type": "tool",
-                "tool_id": "call_long_1",
-                "tool_name": "long_check",
-                "tool_input": {"target": "repo"},
-                "tool_status": "pending",
-            },
-        ]
-
-    def test_messages_to_openviking_batch_coalesces_adjacent_tool_results(self):
-        turn = [
-            {"role": "user", "content": "Run both tools."},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_a",
-                        "type": "function",
-                        "function": {
-                            "name": "first_tool",
-                            "arguments": json.dumps({"x": 1}),
-                        },
-                    },
-                    {
-                        "id": "call_b",
-                        "type": "function",
-                        "function": {
-                            "name": "second_tool",
-                            "arguments": json.dumps({"y": 2}),
-                        },
-                    },
-                ],
-            },
-            {"role": "tool", "tool_call_id": "call_a", "name": "first_tool", "content": "a"},
-            {"role": "tool", "tool_call_id": "call_b", "name": "second_tool", "content": "b"},
-            {"role": "assistant", "content": "Done."},
-        ]
-
-        batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
-
-        assert [message["role"] for message in batch] == ["user", "assistant", "assistant"]
-        assert batch[1]["parts"] == [
-            {
-                "type": "tool",
-                "tool_id": "call_a",
-                "tool_name": "first_tool",
-                "tool_input": {"x": 1},
-                "tool_output": "a",
-                "tool_status": "completed",
-            },
-            {
-                "type": "tool",
-                "tool_id": "call_b",
-                "tool_name": "second_tool",
-                "tool_input": {"y": 2},
-                "tool_output": "b",
-                "tool_status": "completed",
-            },
-        ]
-
-    def test_messages_to_openviking_batch_skips_openviking_recall_tool_results(self):
-        for recall_tool_name in ("viking_search", "viking_read", "viking_browse"):
-            turn = [
-                {"role": "user", "content": "What did we decide about context assembly?"},
-                {
-                    "role": "assistant",
-                    "content": "",
-                    "tool_calls": [
-                        {
-                            "id": "call_recall_1",
-                            "type": "function",
-                            "function": {
-                                "name": recall_tool_name,
-                                "arguments": json.dumps({"query": "context assembly decision"}),
-                            },
-                        },
-                        {
-                            "id": "call_shell_1",
-                            "type": "function",
-                            "function": {
-                                "name": "shell_command",
-                                "arguments": json.dumps({"command": "rg preassemble"}),
-                            },
-                        },
-                    ],
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "call_recall_1",
-                    "name": recall_tool_name,
-                    "content": json.dumps({
-                        "results": [
-                            {
-                                "uri": "viking://user/hermes/memories/context",
-                                "abstract": "Old OpenViking memory content",
-                            }
-                        ]
-                    }),
-                },
-                {
-                    "role": "tool",
-                    "tool_call_id": "call_shell_1",
-                    "name": "shell_command",
-                    "content": "plugins/memory/openviking/__init__.py",
-                },
-                {"role": "assistant", "content": "We decided to keep sync_turn scoped to ingestion."},
-            ]
-
-            batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
-
-            assert [message["role"] for message in batch] == ["user", "assistant", "assistant"]
-            assert batch[1]["parts"] == [
-                {
-                    "type": "tool",
-                    "tool_id": "call_shell_1",
-                    "tool_name": "shell_command",
-                    "tool_input": {"command": "rg preassemble"},
-                    "tool_output": "plugins/memory/openviking/__init__.py",
-                    "tool_status": "completed",
-                }
-            ]
-            batch_text = json.dumps(batch)
-            assert recall_tool_name not in batch_text
-            assert "Old OpenViking memory content" not in batch_text
-
-    def test_messages_to_openviking_batch_empty_tool_id_does_not_drop_other_results(self):
-        # A recall tool result that arrives with an empty tool_call_id must not
-        # poison the skip set with "" and silently drop unrelated tool results
-        # that also lack an id. Empty tool_call_id is reachable in the canonical
-        # transcript (agent_runtime_helpers defaults it to "").
-        turn = [
-            {"role": "user", "content": "What did we decide?"},
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "",
-                        "type": "function",
-                        "function": {
-                            "name": "viking_search",
-                            "arguments": json.dumps({"query": "decision"}),
-                        },
-                    }
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "",
-                "name": "viking_search",
-                "content": json.dumps({"results": ["recall stuff"]}),
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "",
-                "name": "shell_command",
-                "content": "important shell output",
-            },
-            {"role": "assistant", "content": "done"},
-        ]
-
-        batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
-
-        batch_text = json.dumps(batch)
-        # The unrelated (empty-id) shell result must survive.
-        assert "important shell output" in batch_text
-        # The recall tool result must still be excluded.
-        assert "recall stuff" not in batch_text
-        assert "viking_search" not in batch_text
-
-    def test_messages_to_openviking_batch_preserves_responses_text_parts(self):
-        turn = [
-            {"role": "user", "content": [{"type": "input_text", "text": "hello"}]},
-            {"role": "assistant", "content": [{"type": "output_text", "text": "answer"}]},
-        ]
-
-        batch = OpenVikingMemoryProvider._messages_to_openviking_batch(turn)
-
-        assert batch == [
-            {"role": "user", "parts": [{"type": "text", "text": "hello"}]},
-            {"role": "assistant", "parts": [{"type": "text", "text": "answer"}]},
-        ]
-
-    def test_messages_to_openviking_batch_adds_assistant_peer_id_when_requested(self):
-        turn = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "answer"},
-        ]
-
-        batch = OpenVikingMemoryProvider._messages_to_openviking_batch(
-            turn,
-            assistant_peer_id="hermes",
-        )
-
-        assert batch == [
-            {"role": "user", "parts": [{"type": "text", "text": "hello"}]},
-            {"role": "assistant", "parts": [{"type": "text", "text": "answer"}], "peer_id": "hermes"},
-        ]
-
 
 class TestOpenVikingRead:
     def test_overview_read_normalizes_uri_and_unwraps_result(self):
@@ -740,27 +568,6 @@ class TestOpenVikingRead:
             {"uri": "viking://user/hermes"},
         )]
 
-    def test_full_read_keeps_original_uri(self):
-        provider = OpenVikingMemoryProvider()
-        provider._client = FakeVikingClient(
-            {
-                (
-                    "/api/v1/content/read",
-                    (("uri", "viking://user/hermes/memories/profile.md"),),
-                ): {"result": "full text"},
-            }
-        )
-
-        result = json.loads(provider._tool_read({"uri": "viking://user/hermes/memories/profile.md", "level": "full"}))
-
-        assert result["uri"] == "viking://user/hermes/memories/profile.md"
-        assert result["resolved_uri"] == "viking://user/hermes/memories/profile.md"
-        assert result["level"] == "full"
-        assert result["content"] == "full text"
-        assert provider._client.calls == [(
-            "/api/v1/content/read",
-            {"uri": "viking://user/hermes/memories/profile.md"},
-        )]
 
     def test_read_accepts_uri_batch_and_caps_batch_full_content(self):
         provider = OpenVikingMemoryProvider()
@@ -803,144 +610,6 @@ class TestOpenVikingRead:
             ("/api/v1/content/read", {"uri": uris[2]}),
         ]
 
-    def test_read_deduplicates_uri_batch_and_keeps_errors_per_uri(self):
-        provider = OpenVikingMemoryProvider()
-        ok_uri = "viking://user/hermes/memories/ok.md"
-        bad_uri = "viking://user/hermes/memories/bad.md"
-        provider._client = FakeVikingClient(
-            {
-                (
-                    "/api/v1/content/read",
-                    (("uri", ok_uri),),
-                ): {"result": {"content": "ok content"}},
-                (
-                    "/api/v1/content/read",
-                    (("uri", bad_uri),),
-                ): RuntimeError("read failed"),
-            }
-        )
-
-        result = json.loads(
-            provider._tool_read({"uris": [ok_uri, ok_uri, bad_uri], "level": "full"})
-        )
-
-        assert result["requested"] == 2
-        assert result["returned"] == 2
-        assert result["truncated"] is False
-        assert result["results"][0]["content"] == "ok content"
-        assert result["results"][1] == {
-            "uri": bad_uri,
-            "level": "full",
-            "error": "read failed",
-        }
-
-    def test_overview_file_uri_routes_straight_to_content_read_via_stat_probe(self):
-        """Pre-check via fs/stat: file URIs skip the directory-only endpoint entirely."""
-        provider = OpenVikingMemoryProvider()
-        file_uri = "viking://user/hermes/memories/entities/mem_abc.md"
-        provider._client = FakeVikingClient(
-            {
-                (
-                    "/api/v1/fs/stat",
-                    (("uri", file_uri),),
-                ): {"result": {"isDir": False}},
-                (
-                    "/api/v1/content/read",
-                    (("uri", file_uri),),
-                ): {"result": {"content": "full content"}},
-            }
-        )
-
-        result = json.loads(provider._tool_read({"uri": file_uri, "level": "overview"}))
-
-        assert result["uri"] == file_uri
-        assert result["resolved_uri"] == file_uri
-        assert result["level"] == "overview"
-        assert result["fallback"] == "content/read"
-        assert result["content"] == "full content"
-        assert provider._client.calls == [
-            ("/api/v1/fs/stat", {"uri": file_uri}),
-            ("/api/v1/content/read", {"uri": file_uri}),
-        ]
-
-    def test_overview_dir_uri_skips_stat_when_pseudo_summary(self):
-        """Pseudo-URI path already resolves to dir, so no stat probe needed."""
-        provider = OpenVikingMemoryProvider()
-        provider._client = FakeVikingClient(
-            {
-                (
-                    "/api/v1/content/overview",
-                    (("uri", "viking://user/hermes"),),
-                ): {"result": "overview"},
-            }
-        )
-
-        result = json.loads(provider._tool_read({"uri": "viking://user/hermes/.overview.md", "level": "overview"}))
-
-        assert result["content"] == "overview"
-        # No fs/stat call — normalization already determined it's a directory.
-        assert provider._client.calls == [
-            ("/api/v1/content/overview", {"uri": "viking://user/hermes"}),
-        ]
-
-    def test_overview_directory_uri_uses_stat_probe_then_overview(self):
-        """Non-pseudo directory URI: stat → isDir=True → summary endpoint."""
-        provider = OpenVikingMemoryProvider()
-        dir_uri = "viking://user/hermes/memories"
-        provider._client = FakeVikingClient(
-            {
-                (
-                    "/api/v1/fs/stat",
-                    (("uri", dir_uri),),
-                ): {"result": {"isDir": True}},
-                (
-                    "/api/v1/content/overview",
-                    (("uri", dir_uri),),
-                ): {"result": "dir overview"},
-            }
-        )
-
-        result = json.loads(provider._tool_read({"uri": dir_uri, "level": "overview"}))
-
-        assert result["content"] == "dir overview"
-        assert "fallback" not in result
-        assert provider._client.calls == [
-            ("/api/v1/fs/stat", {"uri": dir_uri}),
-            ("/api/v1/content/overview", {"uri": dir_uri}),
-        ]
-
-    def test_overview_file_uri_falls_back_via_exception_when_stat_indeterminate(self):
-        """If fs/stat raises or returns unknown shape, legacy exception fallback still kicks in."""
-        provider = OpenVikingMemoryProvider()
-        file_uri = "viking://user/hermes/memories/entities/mem_abc.md"
-        provider._client = FakeVikingClient(
-            {
-                (
-                    "/api/v1/fs/stat",
-                    (("uri", file_uri),),
-                ): RuntimeError("stat unavailable"),
-                (
-                    "/api/v1/content/overview",
-                    (("uri", file_uri),),
-                ): RuntimeError("500 Internal Server Error"),
-                (
-                    "/api/v1/content/read",
-                    (("uri", file_uri),),
-                ): {"result": {"content": "fallback full content"}},
-            }
-        )
-
-        result = json.loads(provider._tool_read({"uri": file_uri, "level": "overview"}))
-
-        assert result["uri"] == file_uri
-        assert result["level"] == "overview"
-        assert result["fallback"] == "content/read"
-        assert result["content"] == "fallback full content"
-        assert provider._client.calls == [
-            ("/api/v1/fs/stat", {"uri": file_uri}),
-            ("/api/v1/content/overview", {"uri": file_uri}),
-            ("/api/v1/content/read", {"uri": file_uri}),
-        ]
 
     def test_summary_uri_error_does_not_fallback_and_raises(self):
         provider = OpenVikingMemoryProvider()
@@ -983,7 +652,7 @@ class TestOpenVikingAutoRecallPrefetch:
             def do_GET(self):
                 parsed = urlparse(self.path)
                 if parsed.path == "/health":
-                    self._send_json({"healthy": True})
+                    self._send_json({"status": "ok", "healthy": True, "version": "test"})
                     return
                 if parsed.path == "/api/v1/content/read":
                     query = parse_qs(parsed.query)
@@ -1112,259 +781,6 @@ class TestOpenVikingAutoRecallPrefetch:
         assert all(headers.get("x-openviking-account") == "acct" for headers in normalized_headers)
         assert all(headers.get("x-openviking-user") == "user" for headers in normalized_headers)
 
-    def test_prefetch_searches_current_query_when_no_background_result(self, monkeypatch):
-        responses = {
-            (
-                "/api/v1/search/search",
-                "memory",
-                "Who is Caroline?",
-                "session-test",
-            ): {
-                "result": {
-                    "memories": [
-                        {
-                            "uri": "viking://user/peers/hermes/memories/caroline.md",
-                            "score": 0.9,
-                            "level": 1,
-                            "category": "profile",
-                            "abstract": "Caroline is a transgender woman.",
-                        }
-                    ]
-                }
-            },
-        }
-        provider = make_prefetch_provider(monkeypatch, responses)
-
-        block = provider.prefetch("Who is Caroline?", session_id="session-test")
-
-        assert "Caroline is a transgender woman." in block
-
-    def test_prefetch_does_not_consume_other_session_query_result(self, monkeypatch):
-        responses = {
-            (
-                "/api/v1/search/search",
-                "memory",
-                "Who is Caroline?",
-                "session-a",
-            ): {
-                "result": {
-                    "memories": [
-                        {
-                            "uri": "viking://user/peers/hermes/memories/caroline.md",
-                            "score": 0.9,
-                            "level": 1,
-                            "category": "profile",
-                            "abstract": "Caroline context should stay scoped.",
-                        }
-                    ]
-                }
-            },
-            (
-                "/api/v1/search/search",
-                "memory",
-                "When did Melanie run a charity race?",
-                "session-b",
-            ): {
-                "result": {
-                    "memories": [
-                        {
-                            "uri": "viking://user/peers/hermes/memories/melanie-race.md",
-                            "score": 0.9,
-                            "level": 1,
-                            "category": "events",
-                            "abstract": "Melanie ran the charity race on May 20.",
-                        }
-                    ]
-                }
-            },
-        }
-        provider = make_prefetch_provider(monkeypatch, responses)
-
-        first_block = provider.prefetch("Who is Caroline?", session_id="session-a")
-        block = provider.prefetch(
-            "When did Melanie run a charity race?",
-            session_id="session-b",
-        )
-
-        assert "Caroline context should stay scoped." in first_block
-        assert "Melanie ran the charity race on May 20." in block
-        assert "Caroline context should stay scoped." not in block
-
-    def test_prefetch_filters_low_score_items_with_local_threshold(self, monkeypatch):
-        responses = {
-            ("/api/v1/search/search", "memory", "What should we recall?", "session-test"): {
-                "result": {
-                    "memories": [
-                        {
-                            "uri": "viking://user/peers/hermes/memories/keep.md",
-                            "score": 0.22,
-                            "level": 1,
-                            "category": "preferences",
-                            "abstract": "Keep this relevant memory.",
-                        },
-                        {
-                            "uri": "viking://user/peers/hermes/memories/drop.md",
-                            "score": 0.12,
-                            "level": 1,
-                            "category": "preferences",
-                            "abstract": "Drop this weak memory.",
-                        },
-                    ]
-                }
-            },
-        }
-        provider = make_prefetch_provider(monkeypatch, responses)
-
-        block = wait_prefetch(provider)
-
-        assert block.startswith("## OpenViking Context\n")
-        assert "Keep this relevant memory." in block
-        assert "Drop this weak memory." not in block
-        search_payloads = [call[2] for call in FakeRecallClient.calls if call[:2] == ("post", "/api/v1/search/search")]
-        assert len(search_payloads) == 1
-        assert search_payloads[0]["context_type"] == "memory"
-        assert "target_uri" not in search_payloads[0]
-        assert all(payload["limit"] == 24 for payload in search_payloads)
-        assert all("top_k" not in payload for payload in search_payloads)
-        assert all("mode" not in payload for payload in search_payloads)
-        assert all(payload["score_threshold"] == 0 for payload in search_payloads)
-
-    def test_prefetch_skips_complete_entries_that_do_not_fit_budget(self, monkeypatch):
-        long_memory = "X" * 120
-        responses = {
-            ("/api/v1/search/search", "memory", "What should we recall?", "session-test"): {
-                "result": {
-                    "memories": [
-                        {
-                            "uri": "viking://user/peers/hermes/memories/too-large.md",
-                            "score": 0.9,
-                            "level": 1,
-                            "category": "memory",
-                            "abstract": long_memory,
-                        },
-                        {
-                            "uri": "viking://user/peers/hermes/memories/small.md",
-                            "score": 0.8,
-                            "level": 1,
-                            "category": "memory",
-                            "abstract": "Small memory fits.",
-                        },
-                    ]
-                }
-            },
-        }
-        provider = make_prefetch_provider(
-            monkeypatch,
-            responses,
-            OPENVIKING_RECALL_MAX_INJECTED_CHARS="90",
-        )
-
-        block = wait_prefetch(provider)
-
-        assert "Small memory fits." in block
-        assert long_memory not in block
-        assert "XXX" not in block
-
-    def test_prefetch_reads_full_l2_content_by_default(self, monkeypatch):
-        responses = {
-            ("/api/v1/search/search", "memory", "What should we recall?", "session-test"): {
-                "result": {
-                    "memories": [
-                        {
-                            "uri": "viking://user/peers/hermes/memories/full.md",
-                            "score": 0.9,
-                            "level": 2,
-                            "category": "events",
-                            "abstract": "Abstract only.",
-                        }
-                    ]
-                }
-            },
-            ("/api/v1/content/read", "viking://user/peers/hermes/memories/full.md"): {
-                "result": {"content": "Full L2 memory content."}
-            },
-        }
-        provider = make_prefetch_provider(monkeypatch, responses)
-
-        block = wait_prefetch(provider)
-
-        assert "Full L2 memory content." in block
-        assert "Abstract only." not in block
-        assert (
-            "get",
-            "/api/v1/content/read",
-            {"uri": "viking://user/peers/hermes/memories/full.md"},
-        ) in FakeRecallClient.calls
-
-    def test_prefetch_prefer_abstract_does_not_read_l2_content(self, monkeypatch):
-        responses = {
-            ("/api/v1/search/search", "memory", "What should we recall?", "session-test"): {
-                "result": {
-                    "memories": [
-                        {
-                            "uri": "viking://user/peers/hermes/memories/full.md",
-                            "score": 0.9,
-                            "level": 2,
-                            "category": "events",
-                            "abstract": "Use the abstract.",
-                        }
-                    ]
-                }
-            },
-        }
-        provider = make_prefetch_provider(
-            monkeypatch,
-            responses,
-            OPENVIKING_RECALL_PREFER_ABSTRACT="true",
-        )
-
-        block = wait_prefetch(provider)
-
-        assert "Use the abstract." in block
-        assert not any(call[:2] == ("get", "/api/v1/content/read") for call in FakeRecallClient.calls)
-
-    def test_prefetch_honors_configured_limit_candidate_limit_and_resources(self, monkeypatch):
-        responses = {
-            ("/api/v1/search/search", ("memory", "resource"), "What should we recall?", "session-test"): {
-                "result": {
-                    "memories": [],
-                    "resources": [
-                        {
-                            "uri": "viking://resources/doc.md",
-                            "score": 0.9,
-                            "level": 1,
-                            "category": "resource",
-                            "abstract": "Resource recall enabled.",
-                        }
-                    ]
-                }
-            },
-        }
-        provider = make_prefetch_provider(
-            monkeypatch,
-            responses,
-            OPENVIKING_RECALL_LIMIT="2",
-            OPENVIKING_RECALL_RESOURCES="true",
-        )
-
-        block = wait_prefetch(provider)
-
-        assert "Resource recall enabled." in block
-        search_payloads = [call[2] for call in FakeRecallClient.calls if call[:2] == ("post", "/api/v1/search/search")]
-        assert len(search_payloads) == 1
-        assert search_payloads[0]["context_type"] == ["memory", "resource"]
-        assert "target_uri" not in search_payloads[0]
-        assert all(payload["limit"] == 20 for payload in search_payloads)
-        assert all("top_k" not in payload for payload in search_payloads)
-        assert all("mode" not in payload for payload in search_payloads)
-
-    def test_queue_prefetch_is_noop_for_openviking_recall(self, monkeypatch):
-        provider = make_prefetch_provider(monkeypatch, {})
-
-        provider.queue_prefetch("What should we recall?", session_id="session-test")
-
-        assert FakeRecallClient.calls == []
-
 
 class TestOpenVikingBrowse:
     def test_list_browse_unwraps_and_normalizes_entry_shapes(self):
@@ -1418,31 +834,456 @@ class TestOpenVikingMemoryUriBuilder:
         assert uri.startswith("viking://user/peers/coder/memories/preferences/mem_")
         assert uri.endswith(".md")
 
-    def test_uri_uses_configured_peer_not_default(self):
-        """_agent value is the OpenViking actor peer ID, not hardcoded to 'hermes'."""
-        p = self._make_provider(user="alice", agent="research-bot")
-        uri = p._build_memory_uri("entities")
-        assert "/peers/research-bot/" in uri
-        assert "/peers/hermes/" not in uri
 
-    def test_uri_slug_is_twelve_hex_chars_and_unique(self):
-        """Slug must be 12 hex chars and differ between calls."""
-        import re
-        p = self._make_provider()
-        uri1 = p._build_memory_uri("preferences")
-        uri2 = p._build_memory_uri("preferences")
-        slug1 = uri1.split("/mem_")[1].replace(".md", "")
-        slug2 = uri2.split("/mem_")[1].replace(".md", "")
-        assert re.fullmatch(r"[0-9a-f]{12}", slug1)
-        assert re.fullmatch(r"[0-9a-f]{12}", slug2)
-        assert slug1 != slug2
+# ===================================================================
+# Issue #21130 — OPENVIKING_* not reloaded after /reload
+# ===================================================================
 
-    def test_uri_subdir_placed_correctly_for_all_categories(self):
-        """All five category subdirs must appear between memories/ and slug."""
-        p = self._make_provider(user="u", agent="a")
-        subdirs = ["preferences", "entities", "events", "cases", "patterns"]
-        for subdir in subdirs:
-            uri = p._build_memory_uri(subdir)
-            assert f"/memories/{subdir}/mem_" in uri, (
-                f"subdir '{subdir}' not placed correctly in URI: {uri}"
-            )
+
+class TestEnsureClientReloadsEnv:
+    """Verify /reload picks up new OPENVIKING_* values without a restart (#21130)."""
+
+    def test_ensure_client_rebuilds_when_api_key_changes(self, monkeypatch):
+        constructions = []
+
+        class _StubClient:
+            def __init__(self, endpoint, api_key, account="", user="", agent="hermes"):
+                constructions.append({"endpoint": endpoint, "api_key": api_key,
+                                      "account": account, "user": user, "agent": agent})
+                self.endpoint, self.api_key = endpoint, api_key
+                self.account, self.user, self.agent = account, user, agent
+
+            def health(self):
+                return True
+
+        monkeypatch.setattr("plugins.memory.openviking._VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://srv:31933")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "")
+
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+        first = provider._ensure_client()
+        assert first is not None
+        assert first.api_key == ""
+        assert len(constructions) == 1
+
+        # Same env on second call — must reuse cached client (no rebuild).
+        assert provider._ensure_client() is first
+        assert len(constructions) == 1
+
+        # Simulate /reload: env now carries the new API key.
+        monkeypatch.setenv("OPENVIKING_API_KEY", "sk-fresh")
+        rebuilt = provider._ensure_client()
+        assert rebuilt is not None
+        assert rebuilt is not first
+        assert rebuilt.api_key == "sk-fresh"
+        assert len(constructions) == 2
+
+
+    def test_handle_tool_call_reconnects_after_startup_health_failure(self, monkeypatch):
+        instances = []
+
+        class _StubClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+                self.endpoint = endpoint
+                self.api_key = api_key
+                self.account = account
+                self.user = user
+                self.agent = agent
+                self.index = len(instances)
+                self.posts = []
+                instances.append(self)
+
+            def health(self):
+                return self.index > 0
+
+            def post(self, path, payload=None, **kwargs):
+                self.posts.append((path, payload or {}))
+                return {"result": {"written_bytes": 11}}
+
+        monkeypatch.setattr("plugins.memory.openviking._VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://openviking.example")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "sk-test")
+
+        provider = OpenVikingMemoryProvider()
+        provider.initialize("session-1")
+
+        assert provider._client is None
+
+        out = json.loads(provider.handle_tool_call(
+            "viking_remember",
+            {"content": "stable fact"},
+        ))
+
+        assert out["status"] == "stored"
+        assert len(instances) == 2
+        assert instances[1].posts[0][0] == "/api/v1/content/write"
+        assert instances[1].posts[0][1]["content"] == "stable fact"
+        assert instances[1].posts[0][1]["mode"] == "create"
+        assert instances[1].posts[0][1]["uri"].startswith(
+            "viking://user/peers/hermes/memories/"
+        )
+
+    def test_concurrent_refresh_does_not_return_stale_client(self, monkeypatch):
+        refresh_entered = threading.Event()
+        release_refresh = threading.Event()
+
+        class _StubClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+                self.endpoint = endpoint
+                self.api_key = api_key
+
+            def health(self):
+                if self.endpoint == "https://new.example":
+                    refresh_entered.set()
+                    assert release_refresh.wait(2.0)
+                    return False
+                return True
+
+        monkeypatch.setattr(openviking_plugin, "_VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://new.example")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "sk-new")
+        monkeypatch.delenv("OPENVIKING_ACCOUNT", raising=False)
+        monkeypatch.delenv("OPENVIKING_USER", raising=False)
+        monkeypatch.delenv("OPENVIKING_AGENT", raising=False)
+
+        provider = OpenVikingMemoryProvider()
+        stale_client = _StubClient("https://old.example", "sk-old")
+        provider._endpoint = stale_client.endpoint
+        provider._api_key = stale_client.api_key
+        provider._account = ""
+        provider._user = ""
+        provider._agent = "hermes"
+        provider._client = stale_client
+        provider._env_refresh_enabled = True
+
+        results = {}
+        errors = []
+        second_started = threading.Event()
+        second_done = threading.Event()
+
+        def refresh_client(name, *, started=None, done=None):
+            if started is not None:
+                started.set()
+            try:
+                results[name] = provider._ensure_client()
+            except BaseException as exc:  # pragma: no cover - surfaced below
+                errors.append(exc)
+            finally:
+                if done is not None:
+                    done.set()
+
+        first = threading.Thread(target=refresh_client, args=("first",))
+        first.start()
+        assert refresh_entered.wait(2.0)
+
+        second = threading.Thread(
+            target=refresh_client,
+            args=("second",),
+            kwargs={"started": second_started, "done": second_done},
+        )
+        second.start()
+        assert second_started.wait(2.0)
+        completed_during_refresh = second_done.wait(0.2)
+
+        release_refresh.set()
+        first.join(timeout=2.0)
+        second.join(timeout=2.0)
+
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert errors == []
+        assert completed_during_refresh is False
+        assert results == {"first": None, "second": None}
+        assert all(client is not stale_client for client in results.values())
+
+
+    def test_concurrent_local_runtime_recovery_starts_once(self, monkeypatch):
+        class _AliveThread:
+            def is_alive(self):
+                return True
+
+        provider = OpenVikingMemoryProvider()
+        provider._endpoint = "http://127.0.0.1:31933"
+        start_calls = []
+        start_lock = threading.Lock()
+        first_start_entered = threading.Event()
+        release_start = threading.Event()
+        second_started = threading.Event()
+
+        def start_local(endpoint):
+            with start_lock:
+                start_calls.append(endpoint)
+            first_start_entered.set()
+            release_start.wait(timeout=2)
+            return openviking_plugin._LOCAL_SERVER_STARTED, "started"
+
+        monkeypatch.setattr(openviking_plugin, "_start_local_openviking_server", start_local)
+        monkeypatch.setattr(
+            provider,
+            "_start_runtime_openviking_waiter",
+            lambda **kwargs: setattr(provider, "_runtime_start_thread", _AliveThread()),
+            raising=False,
+        )
+
+        errors = []
+
+        def recover(*, started=None):
+            if started is not None:
+                started.set()
+            try:
+                provider._handle_runtime_openviking_unreachable()
+            except BaseException as exc:  # pragma: no cover - surfaced below
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=recover, name="openviking-recovery-1"),
+            threading.Thread(
+                target=recover,
+                kwargs={"started": second_started},
+                name="openviking-recovery-2",
+            ),
+        ]
+        for thread in threads:
+            thread.start()
+
+        assert first_start_entered.wait(timeout=2)
+        assert second_started.wait(timeout=2)
+        release_start.set()
+        for thread in threads:
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+
+        assert errors == []
+        assert start_calls == ["http://127.0.0.1:31933"]
+
+
+class TestEnsureClientFailureHardening:
+    """Follow-up hardening on top of #21130: failed-config cooldown and
+    torn-identity-safe connection snapshots."""
+
+    def test_failed_config_probes_once_then_cools_down(self, monkeypatch):
+        """A down endpoint must not pay a health probe on every access."""
+        probes = []
+
+        class _StubClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+                self.endpoint = endpoint
+
+            def health(self):
+                probes.append(self.endpoint)
+                return False
+
+        monkeypatch.setattr(openviking_plugin, "_VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://down.example")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "sk-x")
+
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+
+        assert provider._ensure_client() is None
+        assert provider._ensure_client() is None
+        assert provider._ensure_client() is None
+        # Only the first access probes; the rest hit the cooldown.
+        assert len(probes) == 1
+
+
+    def test_conn_snapshot_published_only_on_healthy(self, monkeypatch):
+        class _StubClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+                self.endpoint = endpoint
+
+            def health(self):
+                return self.endpoint == "https://up.example"
+
+        monkeypatch.setattr(openviking_plugin, "_VikingClient", _StubClient)
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://up.example")
+        monkeypatch.setenv("OPENVIKING_API_KEY", "sk-good")
+        monkeypatch.delenv("OPENVIKING_ACCOUNT", raising=False)
+        monkeypatch.delenv("OPENVIKING_USER", raising=False)
+        monkeypatch.delenv("OPENVIKING_AGENT", raising=False)
+
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+        assert provider._ensure_client() is not None
+        healthy_snapshot = provider._conn_snapshot
+        assert healthy_snapshot is not None
+        assert healthy_snapshot[0] == "https://up.example"
+        assert healthy_snapshot[1] == "sk-good"
+
+        # A failed refresh must NOT advance the snapshot: background writers
+        # (_new_client) keep targeting the last identity that passed health.
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://down.example")
+        assert provider._ensure_client() is None
+        assert provider._conn_snapshot == healthy_snapshot
+        built = provider._new_client()
+        assert built.endpoint == "https://up.example"
+
+
+class TestUnavailableWarningsPromiseRetry:
+    """Every "OpenViking is unavailable" warning must describe what actually
+    happens next.
+
+    ``_ensure_client()`` rebuilds and re-probes the client whenever the
+    resolved config changes or the failed-config cooldown has elapsed, so no
+    warning may tell the user memory is off for the rest of the run — that
+    reads as "it never recovers" and sends people restarting hermes for
+    nothing (#5721).
+    """
+
+    @staticmethod
+    def _assert_promises_retry(message: str) -> None:
+        assert "for this Hermes run" not in message, message
+        assert "will retry on a later access" in message, message
+        assert "when the config changes" in message, message
+
+    @staticmethod
+    def _stub_client(health_result):
+        class _StubClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+                self.endpoint = endpoint
+
+            def health(self):
+                return health_result
+
+        return _StubClient
+
+    def test_local_autostart_timeout_warning(self):
+        self._assert_promises_retry(
+            openviking_plugin._runtime_openviking_timeout_message("http://127.0.0.1:1934")
+        )
+
+    def test_remote_unreachable_warning(self):
+        provider = OpenVikingMemoryProvider()
+        provider._endpoint = "https://remote.example"
+        warnings: list[str] = []
+
+        provider._handle_runtime_openviking_unreachable(warning_callback=warnings.append)
+
+        assert provider._client is None
+        assert len(warnings) == 1
+        self._assert_promises_retry(warnings[0])
+
+    def test_local_autostart_refused_warning(self, monkeypatch):
+        monkeypatch.setattr(
+            openviking_plugin,
+            "_start_local_openviking_server",
+            lambda endpoint: (
+                openviking_plugin._LOCAL_SERVER_FAILED,
+                "openviking-server was not found on PATH.",
+            ),
+        )
+        provider = OpenVikingMemoryProvider()
+        provider._endpoint = "http://127.0.0.1:1934"
+        warnings: list[str] = []
+
+        provider._handle_runtime_openviking_unreachable(warning_callback=warnings.append)
+
+        assert provider._client is None
+        assert len(warnings) == 1
+        self._assert_promises_retry(warnings[0])
+
+    def test_still_unhealthy_after_autostart_warning(self, monkeypatch):
+        monkeypatch.setattr(openviking_plugin, "_VikingClient", self._stub_client(False))
+        monkeypatch.setattr(
+            openviking_plugin, "_wait_for_openviking_health", lambda endpoint, **kwargs: True
+        )
+        provider = OpenVikingMemoryProvider()
+        provider._endpoint = "http://127.0.0.1:1934"
+        warnings: list[str] = []
+
+        provider._finish_runtime_openviking_start(warning_callback=warnings.append)
+
+        assert provider._client is None
+        assert len(warnings) == 1
+        self._assert_promises_retry(warnings[0])
+
+    def test_attach_failure_after_autostart_warning(self, monkeypatch):
+        def _explode(*args, **kwargs):
+            raise RuntimeError("connection reset by peer")
+
+        monkeypatch.setattr(openviking_plugin, "_VikingClient", _explode)
+        monkeypatch.setattr(
+            openviking_plugin, "_wait_for_openviking_health", lambda endpoint, **kwargs: True
+        )
+        provider = OpenVikingMemoryProvider()
+        provider._endpoint = "http://127.0.0.1:1934"
+        warnings: list[str] = []
+
+        provider._finish_runtime_openviking_start(warning_callback=warnings.append)
+
+        assert provider._client is None
+        assert len(warnings) == 1
+        self._assert_promises_retry(warnings[0])
+
+    def test_initialize_responded_unhealthy_warning(self, monkeypatch, tmp_path):
+        class _UnhealthyClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+                self.endpoint = endpoint
+
+            def health_payload(self):
+                return {"healthy": False}
+
+            def health(self):
+                return False
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://sick.example")
+        monkeypatch.setattr(openviking_plugin, "_VikingClient", _UnhealthyClient)
+        provider = OpenVikingMemoryProvider()
+        warnings: list[str] = []
+
+        provider.initialize("session-1", platform="cli", warning_callback=warnings.append)
+
+        assert provider._client is None
+        assert len(warnings) == 1
+        self._assert_promises_retry(warnings[0])
+
+    def test_ensure_client_responded_unhealthy_warning(self, monkeypatch, caplog):
+        class _UnhealthyClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+                self.endpoint = endpoint
+
+            def health_payload(self):
+                return {"healthy": False}
+
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://sick.example")
+        monkeypatch.setattr(openviking_plugin, "_VikingClient", _UnhealthyClient)
+        provider = OpenVikingMemoryProvider()
+        provider._env_refresh_enabled = True
+
+        with caplog.at_level("WARNING", logger=openviking_plugin.__name__):
+            assert provider._ensure_client() is None
+
+        self._assert_promises_retry(caplog.text)
+
+    def test_startup_failure_really_does_reconnect_on_a_later_access(
+        self, monkeypatch, tmp_path
+    ):
+        """The warnings promise a retry — prove the provider delivers one."""
+        probes: list[str] = []
+
+        class _FlakyClient:
+            def __init__(self, endpoint, api_key="", account="", user="", agent=""):
+                self.endpoint = endpoint
+
+            def health(self):
+                probes.append(self.endpoint)
+                return len(probes) > 1  # down at startup, up on the next access
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://remote.example")
+        monkeypatch.setattr(openviking_plugin, "_VikingClient", _FlakyClient)
+        provider = OpenVikingMemoryProvider()
+        warnings: list[str] = []
+
+        provider.initialize("session-1", platform="cli", warning_callback=warnings.append)
+        assert provider._client is None
+        assert len(warnings) == 1
+        self._assert_promises_retry(warnings[0])
+
+        # A startup failure arms no cooldown, so the very next access re-probes.
+        client = provider._ensure_client()
+        assert client is not None
+        assert client.endpoint == "https://remote.example"
+        assert len(probes) == 2

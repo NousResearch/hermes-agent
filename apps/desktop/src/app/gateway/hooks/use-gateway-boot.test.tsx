@@ -2,7 +2,7 @@ import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
-import { $gatewayState } from '@/store/session'
+import { $currentCwd, $gatewayState } from '@/store/session'
 
 import { takeGatewaySurvivor } from './gateway-hmr-survivor'
 import { useGatewayBoot } from './use-gateway-boot'
@@ -134,6 +134,7 @@ const originalWebSocket = globalThis.WebSocket
 beforeEach(() => {
   // Drop any parked gateway left by a prior file/case (globalThis slot).
   const leftover = takeGatewaySurvivor()
+
   if (leftover) {
     try {
       leftover.gateway.close()
@@ -141,6 +142,7 @@ beforeEach(() => {
       // ignore
     }
   }
+
   vi.useFakeTimers()
   FakeWebSocket.mode = 'open'
   FakeWebSocket.instances = []
@@ -166,6 +168,7 @@ afterEach(() => {
   // open gateway instead of tearing it down (the real HMR path). Drain + close
   // that survivor so the next test boots a fresh socket instead of adoptBoot().
   const survivor = takeGatewaySurvivor()
+
   if (survivor) {
     try {
       survivor.gateway.close()
@@ -173,9 +176,12 @@ afterEach(() => {
       // ignore
     }
   }
+
   vi.useRealTimers()
   ;(globalThis as { WebSocket: unknown }).WebSocket = originalWebSocket
   delete (window as { hermesDesktop?: unknown }).hermesDesktop
+  window.localStorage.removeItem('hermes.desktop.workspace-cwd')
+  $currentCwd.set('')
 })
 
 // Let pending microtasks (awaits) AND the queued 0ms socket open/error fire.
@@ -332,5 +338,49 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($desktopBoot.get().error).toBeNull()
     expect($desktopBoot.get().visible).toBe(false)
     expect($desktopBoot.get().phase).toBe('renderer.ready')
+  })
+
+  it('seeds the configured default project dir pre-connect — no route-resume race (#71873)', async () => {
+    // The reporter's scenario: a configured default project dir must be applied
+    // at boot regardless of route-resume timing. The seed now runs BEFORE the
+    // gateway opens, so no session restore can race it (route-resume is gated
+    // on gatewayState === 'open').
+    const desktop = fakeDesktop() as {
+      sanitizeWorkspaceCwd?: unknown
+      settings?: unknown
+    }
+
+    desktop.settings = {
+      getDefaultProjectDir: vi.fn(async () => ({
+        defaultLabel: 'C:\\Users\\sonny',
+        dir: 'C:\\Hermes',
+        resolvedCwd: 'C:\\Hermes'
+      })),
+      pickDefaultProjectDir: vi.fn(async () => undefined),
+      setDefaultProjectDir: vi.fn(async () => undefined)
+    }
+    desktop.sanitizeWorkspaceCwd = vi.fn(async (cwd: string) => ({ cwd }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    // Record the cwd at the exact moment the gateway opens its WebSocket: if
+    // the seed moved back post-connect, this would still be '' here and the
+    // end-state assertion would pass anyway (the seed would run later in the
+    // same flush). The construction-time snapshot is what proves ordering.
+    let cwdAtConnect = ''
+
+    class RecordingSocket extends FakeWebSocket {
+      constructor(url: string) {
+        super(url)
+        cwdAtConnect = $currentCwd.get()
+      }
+    }
+
+    ;(globalThis as { WebSocket: unknown }).WebSocket = RecordingSocket
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect(cwdAtConnect).toBe('C:\\Hermes')
+    expect($currentCwd.get()).toBe('C:\\Hermes')
   })
 })

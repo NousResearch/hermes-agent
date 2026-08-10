@@ -6,15 +6,22 @@ expiry to keep it live.
 
 Refresh tokens rotate with single-use reuse detection: a replayed stale token
 revokes the whole grant. So every refresh must persist the rotated token
-atomically and be serialized — and a failed refresh never raises into the
-agent (stale token stays; the fail-open path absorbs the eventual 401).
+atomically and be serialized. A failed exchange never raises into the agent:
+transient failures retry once immediately (the server re-rotates a replayed
+refresh token only within a short grace window, so waiting for the next
+memory call is too late), and a permanent OAuth error such as invalid_grant
+marks the grant dead so nothing keeps hitting the token endpoint — callers
+surface a re-login prompt instead. A server-side 401 on a locally-valid
+token is recovered via ``force_refresh_token``.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 from contextlib import contextmanager
@@ -34,6 +41,48 @@ _REFRESH_SKEW_SECONDS = 120
 # Default HTTP timeout for the token exchange. Kept short — the refresh happens
 # on the path to a memory call, and a stalled auth server must not hang it.
 _REFRESH_TIMEOUT_SECONDS = 15.0
+
+# Retry pause, kept short: the server honors a replayed refresh token only briefly after rotating it.
+_REFRESH_RETRY_DELAY_SECONDS = 2.0
+
+# Total wall-clock budget for one exchange cycle (first attempt + pause + retry).
+# The exchange runs while holding the global refresh locks on the path to a
+# memory call, so a stalled token endpoint must not hold them for two full
+# HTTP timeouts back to back.
+_REFRESH_TOTAL_BUDGET_SECONDS = 20.0
+
+# After a transient exchange failure, fail open without re-exchanging for this
+# long. Prevents N waiting threads (or turns) from serializing N full exchange
+# cycles against an endpoint that just failed.
+_REFRESH_FAILURE_COOLDOWN_SECONDS = 30.0
+
+# OAuth error codes that a retry can never fix — the grant itself is dead.
+_PERMANENT_OAUTH_ERRORS = frozenset({"invalid_grant", "invalid_client", "unauthorized_client"})
+
+# Token values are secret even though their prefixes are not; redact before logging.
+# Derived from the canonical prefixes above so a prefix change can't silently
+# break redaction.
+_TOKEN_VALUE_RE = re.compile(
+    rf"({re.escape(ACCESS_TOKEN_PREFIX)}|{re.escape(REFRESH_TOKEN_PREFIX)})[A-Za-z0-9._~+/=-]+"
+)
+
+
+def redact_tokens(text: str) -> str:
+    """Replace any embedded token values with their prefix plus a placeholder."""
+    return _TOKEN_VALUE_RE.sub(lambda m: f"{m.group(1)}[redacted]", text)
+
+
+# Backward-compat alias for oauth-internal call sites and older importers.
+_redact_tokens = redact_tokens
+
+
+class OAuthRefreshError(Exception):
+    """Token endpoint rejected the refresh. ``permanent`` means re-login is required."""
+
+    def __init__(self, message: str, *, error: str = "", permanent: bool = False):
+        super().__init__(message)
+        self.error = error
+        self.permanent = permanent
 
 # Serializes refresh across threads sharing one process's config. Re-checked
 # under the lock (double-checked) so racing callers don't replay a rotated
@@ -98,6 +147,73 @@ def _config_refresh_lock(path: Path):
 # cache entry can't break auth — it just defers picking up external changes
 # until the token nears expiry and disk is read again.
 _expiry_cache: dict[tuple[str, str], tuple[float, str]] = {}
+
+# Permanently rejected grants: (config path, host) → sha256 of the dead refresh token; a re-login rotates the token, so the digest check self-clears.
+_dead_grants: dict[tuple[str, str], str] = {}
+
+# Last transient exchange failure per grant: key → monotonic timestamp. While
+# inside the cooldown window callers fail open to the stale token without
+# re-exchanging, so waiting threads don't serialize repeated full exchange
+# cycles against an endpoint that just failed.
+_refresh_failure_at: dict[tuple[str, str], float] = {}
+
+
+def _in_failure_cooldown(key: tuple[str, str]) -> bool:
+    failed_at = _refresh_failure_at.get(key)
+    return (
+        failed_at is not None
+        and (time.monotonic() - failed_at) < _REFRESH_FAILURE_COOLDOWN_SECONDS
+    )
+
+
+# Memoized reauth_required verdict per grant: key → (config mtime_ns, result).
+# The verdict only changes when the config file is rewritten (re-login), so an
+# unchanged mtime short-circuits the read+parse on the dead-grant hot path.
+_reauth_check_cache: dict[tuple[str, str], tuple[int, bool]] = {}
+
+
+def _refresh_token_digest(cred: OAuthCredential) -> str:
+    return hashlib.sha256(cred.refresh_token.encode("utf-8")).hexdigest()
+
+
+def _grant_is_dead(key: tuple[str, str], cred: OAuthCredential) -> bool:
+    return _dead_grants.get(key) == _refresh_token_digest(cred)
+
+
+def _mark_grant_dead(key: tuple[str, str], cred: OAuthCredential) -> None:
+    _dead_grants[key] = _refresh_token_digest(cred)
+    # The verdict changed without a config rewrite; drop any memoized answer.
+    _reauth_check_cache.pop(key, None)
+
+
+def reauth_required(path: Path, host: str) -> bool:
+    """True when ``host``'s OAuth grant is dead and only a new login fixes it."""
+    key = (str(path), host)
+    if key not in _dead_grants:
+        return False
+    # A re-login rewrites the config file, so gate the read+parse on mtime:
+    # while the file is unchanged the answer cannot change.
+    try:
+        mtime = path.stat().st_mtime_ns
+    except OSError:
+        mtime = -1
+    cached = _reauth_check_cache.get(key)
+    if cached is not None and cached[0] == mtime:
+        return cached[1]
+    block = (_read_config(path).get("hosts") or {}).get(host) or {}
+    cred = OAuthCredential.from_host_block(block)
+    result = cred is not None and _grant_is_dead(key, cred)
+    _reauth_check_cache[key] = (mtime, result)
+    return result
+
+
+def any_dead_grants() -> bool:
+    """Cheap predicate: has any grant in this process been marked dead?
+
+    Lets hot-path callers skip config-path resolution entirely in the
+    overwhelmingly common healthy state.
+    """
+    return bool(_dead_grants)
 
 
 def is_oauth_access_token(value: str | None) -> bool:
@@ -175,20 +291,62 @@ def _http_post_form(url: str, data: dict[str, str], timeout: float) -> dict[str,
     return resp.json()
 
 
-def _exchange_refresh_token(cred: OAuthCredential, *, now: float) -> OAuthCredential:
+def _http_post_form_status(
+    url: str, data: dict[str, str], timeout: float
+) -> tuple[int, dict[str, Any]]:
+    """POST form-encoded ``data``; return ``(status, parsed JSON body)``.
+
+    Unlike ``_http_post_form``, 4xx does not raise — RFC 8628 polling reads the
+    OAuth error body off a 400. A non-JSON body parses to ``{}``.
+    """
+    import httpx
+
+    resp = httpx.post(url, data=data, timeout=timeout)
+    try:
+        body = resp.json()
+    except ValueError:
+        body = {}
+    if not isinstance(body, dict):
+        body = {}
+    return resp.status_code, body
+
+
+def _http_get_json(url: str, timeout: float) -> dict[str, Any]:
+    """GET ``url`` and return the parsed JSON body. Raises on non-2xx/non-JSON."""
+    import httpx
+
+    resp = httpx.get(url, timeout=timeout)
+    resp.raise_for_status()
+    body = resp.json()
+    return body if isinstance(body, dict) else {}
+
+
+def _exchange_refresh_token(
+    cred: OAuthCredential, *, now: float, timeout: float = _REFRESH_TIMEOUT_SECONDS
+) -> OAuthCredential:
     """Run the refresh_token grant and return the rotated credential.
 
-    Raises on any transport/protocol failure; callers fail open.
+    Raises ``OAuthRefreshError`` (with the endpoint's error body) on an error
+    response, transport errors as-is; callers fail open.
     """
-    body = _http_post_form(
+    status, body = _http_post_form_status(
         cred.token_endpoint,
         {
             "grant_type": "refresh_token",
             "client_id": cred.client_id,
             "refresh_token": cred.refresh_token,
         },
-        _REFRESH_TIMEOUT_SECONDS,
+        timeout,
     )
+    if status >= 400:
+        error = str(body.get("error") or "")
+        description = str(body.get("error_description") or "")
+        detail = " — ".join(p for p in (error, description) if p) or "no error body"
+        raise OAuthRefreshError(
+            _redact_tokens(f"token endpoint returned HTTP {status}: {detail}"),
+            error=error,
+            permanent=error in _PERMANENT_OAUTH_ERRORS,
+        )
     access = body.get("access_token")
     refresh = body.get("refresh_token")
     if not is_oauth_access_token(access) or not refresh:
@@ -206,6 +364,75 @@ def _exchange_refresh_token(cred: OAuthCredential, *, now: float) -> OAuthCreden
         scope=str(body.get("scope", cred.scope)),
         token_type=str(body.get("token_type", cred.token_type)),
     )
+
+
+def _exchange_with_retry(cred: OAuthCredential, *, now: float) -> OAuthCredential:
+    """Exchange the refresh token, retrying once on transient failure.
+
+    The server accepts a replayed token only briefly after rotating it, so the
+    retry cannot wait — and the whole cycle is capped by
+    ``_REFRESH_TOTAL_BUDGET_SECONDS`` because it runs under the global refresh
+    locks: a fast first failure gets a full-timeout retry, a slow (timed-out)
+    first attempt gets only the remaining budget.
+    """
+    deadline = time.monotonic() + _REFRESH_TOTAL_BUDGET_SECONDS
+    try:
+        return _exchange_refresh_token(cred, now=now)
+    except OAuthRefreshError as exc:
+        if exc.permanent:
+            raise
+        first: Exception = exc
+    except Exception as exc:
+        first = exc
+    remaining = deadline - time.monotonic() - _REFRESH_RETRY_DELAY_SECONDS
+    if remaining <= 0:
+        raise first
+    logger.warning(
+        "Honcho OAuth token exchange failed, retrying once: %s",
+        _redact_tokens(str(first)),
+    )
+    time.sleep(_REFRESH_RETRY_DELAY_SECONDS)
+    return _exchange_refresh_token(
+        cred, now=now, timeout=min(remaining, _REFRESH_TIMEOUT_SECONDS)
+    )
+
+
+def _rotate_and_persist(
+    path: Path,
+    host: str,
+    key: tuple[str, str],
+    cred: OAuthCredential,
+    *,
+    now: float,
+    op_label: str = "refresh",
+) -> OAuthCredential | None:
+    """Exchange ``cred`` and persist the rotation; ``None`` on failure (logged).
+
+    A permanent OAuth error marks the grant dead so later calls skip the
+    endpoint until a new login rotates the refresh token.
+    """
+    try:
+        rotated = _exchange_with_retry(cred, now=now)
+    except OAuthRefreshError as exc:
+        if exc.permanent:
+            _mark_grant_dead(key, cred)
+            logger.error(
+                "Honcho OAuth grant for host %s is no longer valid (%s); "
+                "run 'hermes honcho setup' to re-authenticate", host, exc,
+            )
+        else:
+            _refresh_failure_at[key] = time.monotonic()
+            logger.warning("Honcho OAuth %s failed for host %s: %s", op_label, host, exc)
+        return None
+    except Exception as exc:
+        _refresh_failure_at[key] = time.monotonic()
+        logger.warning(
+            "Honcho OAuth %s failed for host %s: %s",
+            op_label, host, _redact_tokens(str(exc)),
+        )
+        return None
+    _persist_credential(path, host, rotated)
+    return rotated
 
 
 def _read_config(path: Path) -> dict[str, Any]:
@@ -249,6 +476,8 @@ def _persist_credential(path: Path, host: str, cred: OAuthCredential) -> None:
     block["oauth"] = cred.oauth_block()
     _atomic_write_config(path, raw)
     _expiry_cache[(str(path), host)] = (cred.expires_at, cred.access_token)
+    _dead_grants.pop((str(path), host), None)
+    _refresh_failure_at.pop((str(path), host), None)
 
 
 def ensure_fresh_token(
@@ -263,7 +492,9 @@ def ensure_fresh_token(
     Returns ``(None, False)`` when the host has no OAuth credential (e.g. a plain
     API key) so callers leave the existing token untouched. Refresh failures are
     swallowed: the current (possibly stale) token is returned with
-    ``refreshed=False`` and the fail-open path handles any resulting 401.
+    ``refreshed=False``, transient failures retry once immediately, and a
+    permanently rejected grant is marked dead so later calls skip the endpoint.
+    The 401 recovery in session.py escalates dead grants to the user.
     """
     now = time.time() if now is None else now
     key = (str(path), host)
@@ -285,6 +516,9 @@ def ensure_fresh_token(
     _expiry_cache[key] = (cred.expires_at, cred.access_token)
     if not cred.is_expired(now=now):
         return cred.access_token, False
+    if _in_failure_cooldown(key):
+        # An exchange just failed transiently; don't pile on the endpoint.
+        return cred.access_token, False
 
     with _refresh_lock, _config_refresh_lock(path):
         # Re-read under both locks: another thread or process may have just
@@ -293,14 +527,47 @@ def ensure_fresh_token(
         current = OAuthCredential.from_host_block(fresh_block) or cred
         if not current.is_expired(now=now):
             return current.access_token, current.access_token != cred.access_token
-        try:
-            rotated = _exchange_refresh_token(current, now=now)
-        except Exception as exc:
-            logger.warning("Honcho OAuth refresh failed for host %s: %s", host, exc)
+        if _grant_is_dead(key, current):
             return current.access_token, False
-        _persist_credential(path, host, rotated)
+        if _in_failure_cooldown(key):
+            # The lock holder we waited on just failed; fail open too.
+            return current.access_token, False
+        rotated = _rotate_and_persist(path, host, key, current, now=now)
+        if rotated is None:
+            return current.access_token, False
         logger.info("Honcho OAuth token refreshed for host %s", host)
         return rotated.access_token, True
+
+
+def force_refresh_token(path: Path, host: str) -> str | None:
+    """Rotate ``host``'s access token now, ignoring local expiry.
+
+    Recovers a 401 on a token the local clock still thinks is valid.
+    """
+    now = time.time()
+    key = (str(path), host)
+    with _refresh_lock, _config_refresh_lock(path):
+        block = (_read_config(path).get("hosts") or {}).get(host) or {}
+        cred = OAuthCredential.from_host_block(block)
+        if cred is None:
+            _expiry_cache.pop(key, None)
+            return None
+        if _grant_is_dead(key, cred):
+            return None
+        if _in_failure_cooldown(key):
+            # An exchange just failed transiently; don't force another full
+            # cycle — callers fail open and retry after the cooldown.
+            return None
+        cached = _expiry_cache.get(key)
+        # Another thread or process already rotated: adopt the newer on-disk token.
+        if cached is not None and cred.access_token != cached[1] and not cred.is_expired(now=now):
+            _expiry_cache[key] = (cred.expires_at, cred.access_token)
+            return cred.access_token
+        rotated = _rotate_and_persist(path, host, key, cred, now=now, op_label="forced refresh")
+        if rotated is None:
+            return None
+        logger.info("Honcho OAuth token force-refreshed for host %s after an auth failure", host)
+        return rotated.access_token
 
 
 def install_grant(
@@ -348,6 +615,8 @@ def install_grant(
         if apply_config:
             _deep_merge(raw, granted_config)
     _expiry_cache[(str(path), host)] = (cred.expires_at, cred.access_token)
+    _dead_grants.pop((str(path), host), None)
+    _refresh_failure_at.pop((str(path), host), None)
     hosts = raw.setdefault("hosts", {})
     block = hosts.setdefault(host, {})
     block["apiKey"] = cred.access_token

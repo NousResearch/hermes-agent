@@ -16,7 +16,7 @@ import io
 import json
 import shlex
 import sys
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Literal, NoReturn, Sequence
 
@@ -57,16 +57,24 @@ def _capture_output(fn: Callable[[], object]) -> str:
     stdout = io.StringIO()
     stderr = io.StringIO()
     code = 0
+    message = ""
     with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
         try:
             result = fn()
             if isinstance(result, int) and result:
                 raise SystemExit(result)
         except SystemExit as exc:
-            code = int(exc.code or 0)
+            # sys.exit("msg") / raise SystemExit("msg") is the standard non-zero-exit idiom:
+            # exc.code is the message string, not an int. int() would raise ValueError here,
+            # which escapes execute()'s ConsoleCommandError handler and crashes the REPL.
+            if isinstance(exc.code, str):
+                message = exc.code
+                code = 1
+            else:
+                code = int(exc.code or 0)
     text = stdout.getvalue() + stderr.getvalue()
     if code:
-        raise ConsoleCommandError(text.strip() or f"Command exited with status {code}")
+        raise ConsoleCommandError(message.strip() or text.strip() or f"Command exited with status {code}")
     return text.rstrip()
 
 
@@ -140,9 +148,11 @@ def _format_sessions(sessions: Sequence[dict]) -> str:
 
 
 def _format_job(job: dict, action: str) -> str:
+    from cron.jobs import effective_job_state
+
     job_id = job.get("id") or job.get("job_id") or "?"
     name = job.get("name") or "(unnamed)"
-    state = job.get("state") or ("scheduled" if job.get("enabled", True) else "paused")
+    state = effective_job_state(job)
     return f"{action} job: {name} ({job_id}) [{state}]"
 
 
@@ -1324,7 +1334,7 @@ def _sessions_list(_engine: HermesConsoleEngine, args: list[str]) -> str:
     db = SessionDB()
     try:
         sessions = db.list_sessions_rich(
-            exclude_sources=["tool"],
+            exclude_sources=["kanban", "tool"],
             limit=ns.limit,
             order_by_last_active=True,
         )
@@ -1340,7 +1350,7 @@ def _sessions_stats(_engine: HermesConsoleEngine, args: list[str]) -> str:
     db = SessionDB()
     try:
         total = db.session_count()
-        listable = db.session_count(exclude_children=True, exclude_sources=["tool"])
+        listable = db.session_count(exclude_children=True, exclude_sources=["kanban", "tool"])
         messages = db.message_count()
         lines = [
             f"Total sessions: {total}",
@@ -1406,19 +1416,49 @@ def _sessions_export(_engine: HermesConsoleEngine, args: list[str]) -> str:
     ns = parser.parse_args(args)
 
     def _run() -> None:
-        from hermes_state import SessionDB
+        from hermes_state import (
+            SessionDB,
+            SessionExportTooLargeError,
+            resolved_max_export_messages,
+        )
 
         db = SessionDB()
         try:
+            def _guard_exports(session_ids: list[str]) -> None:
+                # Per-session budget: each session is checked independently
+                # against the configured limit, so a full-DB backup of many
+                # small sessions never trips the guard — only an individual
+                # runaway transcript does. 0 disables the guard.
+                limit = resolved_max_export_messages()
+                if limit <= 0:
+                    return
+                try:
+                    for session_id in session_ids:
+                        db.assert_export_safe(session_id, max_messages=limit)
+                except SessionExportTooLargeError as exc:
+                    raise ConsoleCommandError(
+                        f"Session '{exc.session_id}' has more than {limit:,} active "
+                        "messages; in-memory export is capped per session. "
+                        "Use the Sessions page's streaming Export action, or set "
+                        "sessions.max_export_messages: 0 in config.yaml to disable "
+                        "the guard."
+                    ) from exc
+
             if ns.session_id:
                 resolved_session_id = db.resolve_session_id(ns.session_id)
                 if not resolved_session_id:
                     raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
+                _guard_exports([resolved_session_id])
                 data = db.export_session(resolved_session_id)
                 if not data:
                     raise ConsoleCommandError(f"Session '{ns.session_id}' not found.")
                 rows = [data]
             else:
+                session_ids = [
+                    session["id"]
+                    for session in db.search_sessions(source=ns.source, limit=100000)
+                ]
+                _guard_exports(session_ids)
                 rows = db.export_all(source=ns.source)
 
             lines = [json.dumps(row, ensure_ascii=False) for row in rows]

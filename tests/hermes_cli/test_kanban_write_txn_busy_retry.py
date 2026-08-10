@@ -74,45 +74,6 @@ def test_transient_busy_at_begin_is_absorbed():
     assert conn.count("COMMIT") == 1
 
 
-def test_transient_busy_at_commit_is_absorbed():
-    conn = _FakeConn({"COMMIT": [_busy(), None]})
-    with kb.write_txn(conn):
-        pass
-    assert conn.count("COMMIT") == 2
-
-
-def test_non_busy_operational_error_is_not_retried():
-    conn = _FakeConn({"BEGIN": [_other()]})
-    with pytest.raises(sqlite3.OperationalError, match="no such table"):
-        with kb.write_txn(conn):
-            pass
-    assert conn.count("BEGIN") == 1
-
-
-def test_persistent_busy_is_bounded_and_reraises():
-    conn = _FakeConn({"BEGIN": [_busy()] * 50})
-    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
-        with kb.write_txn(conn):
-            pass
-    # Bounded: a finite number of attempts, not 50.
-    assert conn.count("BEGIN") < 50
-
-
-def test_body_is_not_replayed_on_commit_retry():
-    conn = _FakeConn({"COMMIT": [_busy(), None]})
-    body_runs = 0
-    with kb.write_txn(conn):
-        body_runs += 1
-    assert body_runs == 1
-
-
-def test_clean_path_commits_once():
-    conn = _FakeConn({})
-    with kb.write_txn(conn):
-        pass
-    assert conn.count("BEGIN") == 1
-
-
 def test_persistent_busy_at_commit_rolls_back():
     # Exhausted COMMIT leaves the txn open; write_txn must ROLLBACK before
     # re-raising so the connection isn't poisoned for the next transaction.

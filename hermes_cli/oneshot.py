@@ -277,6 +277,15 @@ def run_oneshot(
 
     _write_usage_file(usage_file, result)
 
+    # Model text can contain lone UTF-16 surrogates (invalid in UTF-8). Writing
+    # those to a real stdout TextIO raises UnicodeEncodeError and aborts with
+    # exit 1 after the turn already completed — scrub to U+FFFD first.
+    # See #80366.
+    if response:
+        from agent.message_sanitization import _sanitize_surrogates
+
+        response = _sanitize_surrogates(response)
+
     if response:
         real_stdout.write(response)
         if not response.endswith("\n"):
@@ -395,6 +404,20 @@ def _run_agent(
     if toolsets_list is None and use_config_toolsets:
         toolsets_list = sorted(_get_platform_tools(cfg, "cli"))
 
+    # Ensure MCP tools are discovered before building the agent.  Oneshot
+    # bypasses cli.py's _prepare_agent_startup MCP background path and
+    # HermesCLI._init_agent's wait — it builds AIAgent directly here, so the
+    # tool snapshot at construction time misses any MCP server that hasn't
+    # registered yet.  This helper starts discovery if needed (idempotent) and
+    # bounded-waits with the larger single-query bound (default 15s) because
+    # there is only ONE turn and no between-turns late-binding refresh (#38448).
+    from hermes_cli.mcp_startup import ensure_mcp_discovery_before_agent_build
+
+    ensure_mcp_discovery_before_agent_build(
+        logger=logging.getLogger(__name__),
+        single_query=True,
+    )
+
     session_db = _create_session_db_for_oneshot()
     # The try spans agent construction (not just ``chat``) so the SQLite store
     # opened above is always closed — including when ``AIAgent(...)`` itself
@@ -469,10 +492,15 @@ def _run_agent(
                 logging.debug("oneshot session store cleanup failed", exc_info=True)
 
 
-def _oneshot_clarify_callback(question: str, choices=None) -> str:
+def _oneshot_clarify_callback(question: str, choices=None, multi_select=False) -> str:
     """Clarify is disabled in oneshot mode — tell the agent to pick a
     default and proceed instead of stalling or erroring."""
     if choices:
+        if multi_select:
+            return (
+                f"[oneshot mode: no user available. Pick the best subset from "
+                f"{choices} using your own judgment and continue.]"
+            )
         return (
             f"[oneshot mode: no user available. Pick the best option from "
             f"{choices} using your own judgment and continue.]"

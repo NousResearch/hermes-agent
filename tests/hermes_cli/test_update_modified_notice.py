@@ -18,6 +18,7 @@ import re
 from pathlib import Path
 
 import hermes_cli.main as main_mod
+import hermes_cli.update_cmd as update_mod
 
 
 _COUNT_RE = re.compile(r"user-modified \(kept\)")
@@ -25,7 +26,13 @@ _HINT_RE = re.compile(r"hermes skills list-modified")
 
 
 def _source_lines() -> list[str]:
-    return Path(main_mod.__file__).read_text(encoding="utf-8").splitlines()
+    # The update pipeline was extracted to hermes_cli/update_cmd.py
+    # (main.py decomposition); scan both homes of the notice.
+    return [
+        line
+        for mod in (main_mod, update_mod)
+        for line in Path(mod.__file__).read_text(encoding="utf-8").splitlines()
+    ]
 
 
 def test_every_user_modified_notice_points_at_list_modified():

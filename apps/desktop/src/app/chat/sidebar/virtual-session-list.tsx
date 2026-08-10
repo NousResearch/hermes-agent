@@ -1,20 +1,23 @@
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import type * as React from 'react'
 import { type FC, useCallback, useRef } from 'react'
 
 import type { SessionInfo } from '@/hermes'
-import { type SidebarSessionEntry } from '@/lib/session-branch-tree'
+import { useI18n } from '@/i18n'
+import { type SidebarListRow } from '@/lib/session-date-groups'
+import { sessionBucketLabel } from '@/lib/time'
 import { cn } from '@/lib/utils'
 import { sessionPinId } from '@/store/session'
 
+import { SidebarDateDivider } from './chrome'
 import { SidebarSessionRow } from './session-row'
 
 interface SessionRowCommonProps {
   branchStem?: string
   isPinned: boolean
   isSelected: boolean
-  isWorking: boolean
   onArchive: () => void
   onBranch?: () => void
   onDelete: () => void
@@ -24,10 +27,12 @@ interface SessionRowCommonProps {
   showProfile?: boolean
 }
 
-interface VirtualSessionListProps {
+export interface VirtualSessionListProps {
   activeSessionId: null | string
   className?: string
-  entries: SidebarSessionEntry[]
+  /** Hover-revealed control for date dividers (the group-level "+"). */
+  dividerAction?: React.ReactNode
+  rows: SidebarListRow[]
   onArchiveSession: (sessionId: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
   onDeleteSession: (sessionId: string) => void
@@ -36,7 +41,6 @@ interface VirtualSessionListProps {
   pinned: boolean
   showProfileTags?: boolean
   sortable: boolean
-  workingSessionIdSet: Set<string>
 }
 
 const ROW_ESTIMATE_PX = 28
@@ -45,7 +49,8 @@ const OVERSCAN_ROWS = 12
 export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   activeSessionId,
   className,
-  entries,
+  dividerAction,
+  rows: listRows,
   onArchiveSession,
   onBranchSession,
   onDeleteSession,
@@ -53,15 +58,20 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   onTogglePin,
   pinned,
   showProfileTags = false,
-  sortable,
-  workingSessionIdSet
+  sortable
 }) => {
+  const { t } = useI18n()
+  const dividerLabels = t.sidebar.dateDivider
   const scrollerRef = useRef<HTMLDivElement | null>(null)
 
   const virtualizer = useVirtualizer({
-    count: entries.length,
+    count: listRows.length,
     estimateSize: () => ROW_ESTIMATE_PX,
-    getItemKey: index => entries[index]?.session.id ?? index,
+    getItemKey: index => {
+      const row = listRows[index]
+
+      return row ? (row.kind === 'divider' ? row.key : row.entry.session.id) : index
+    },
     getScrollElement: () => scrollerRef.current,
     // jsdom-friendly default; the real rect takes over on first observe.
     initialRect: { height: 600, width: 240 },
@@ -74,20 +84,32 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   const paddingBottom = Math.max(0, totalSize - (virtualItems[virtualItems.length - 1]?.end ?? 0))
 
   const rows = virtualItems.map(virtualItem => {
-    const entry = entries[virtualItem.index]
+    const row = listRows[virtualItem.index]
 
-    if (!entry) {
+    if (!row) {
       return null
     }
 
-    const { branchStem, session } = entry
+    // Dividers are non-sortable, self-measured rows interleaved with sessions.
+    if (row.kind === 'divider') {
+      return (
+        <SidebarDateDivider
+          action={dividerAction}
+          data-index={virtualItem.index}
+          key={row.key}
+          label={'label' in row ? row.label : sessionBucketLabel(row.bucket, dividerLabels)}
+          ref={virtualizer.measureElement}
+        />
+      )
+    }
+
+    const { branchStem, session } = row.entry
     const reorderable = sortable && !branchStem
 
     const commonProps: SessionRowCommonProps = {
       branchStem,
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
-      isWorking: workingSessionIdSet.has(session.id),
       onArchive: () => onArchiveSession(session.id),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
       onDelete: () => onDeleteSession(session.id),
@@ -121,7 +143,10 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   // just consume that context via useSortable.
   return (
     <div
-      className={cn('relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain', className)}
+      className={cn(
+        'scrollbar-fade relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain',
+        className
+      )}
       ref={scrollerRef}
     >
       <div className="grid gap-px" style={{ paddingBottom: `${paddingBottom}px`, paddingTop: `${paddingTop}px` }}>

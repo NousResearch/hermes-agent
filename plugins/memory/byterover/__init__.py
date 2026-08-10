@@ -140,7 +140,7 @@ def _run_brv(args: List[str], timeout: int = _QUERY_TIMEOUT,
 
     try:
         result = subprocess.run(
-            cmd, capture_output=True, text=True,
+            cmd, capture_output=True, text=True, encoding='utf-8', errors='replace',
             timeout=timeout, cwd=effective_cwd, env=env,
             stdin=subprocess.DEVNULL,
         )

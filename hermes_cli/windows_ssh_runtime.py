@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import re
@@ -11,7 +10,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_default_hermes_root
 
 _HEX32 = re.compile(r"[0-9a-f]{32}\Z")
 _HEX16 = re.compile(r"[0-9a-f]{16}\Z")
@@ -50,7 +49,11 @@ def _nonce(value: str) -> str:
 
 
 def _root() -> Path:
-    return get_hermes_home() / "desktop-ssh"
+    # The helper uploads the token before the child applies `--profile`, while
+    # read_token() runs after profile activation. Anchor both processes to the
+    # machine root so a named profile cannot move the reader away from the
+    # helper's token, including custom HERMES_HOME layouts.
+    return get_default_hermes_root() / "desktop-ssh"
 
 
 def _directory(ownership_id: str) -> Path:
@@ -362,7 +365,7 @@ def _resolve_direct_interpreter(python_entry: str) -> tuple[str, list[str]]:
         "print(json.dumps({'base':getattr(sys,'_base_executable','') or sys.executable,"
         "'path':[p for p in sys.path if p],'root':root}))"
     )
-    out = subprocess.run([python_entry, "-c", query], capture_output=True, text=True, timeout=30)
+    out = subprocess.run([python_entry, "-c", query], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
     if out.returncode != 0:
         raise ValueError("could not resolve the base Python interpreter")
     info = json.loads(out.stdout.strip().splitlines()[-1])
@@ -437,8 +440,8 @@ def inspect_hermes(hermes_path: str) -> dict[str, Any]:
     path = os.path.abspath(hermes_path)
     if not os.path.isabs(hermes_path) or not os.path.isfile(path):
         raise ValueError("Hermes path is not an executable file")
-    version = subprocess.run([path, "--version"], capture_output=True, text=True, timeout=20)
-    help_result = subprocess.run([path, "serve", "--help"], capture_output=True, text=True, timeout=20)
+    version = subprocess.run([path, "--version"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
+    help_result = subprocess.run([path, "serve", "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20)
     help_text = help_result.stdout + help_result.stderr
     return {
         "path": path,
@@ -453,7 +456,7 @@ def dispatch(argv: list[str]) -> Any:
     operation = argv[0]
     if operation == "probe":
         import platform
-        return {"os": "Windows", "arch": platform.machine(), "hermesHome": str(get_hermes_home()), "python": sys.executable}
+        return {"os": "Windows", "arch": platform.machine(), "hermesHome": str(get_default_hermes_root()), "python": sys.executable}
     if operation == "upload-token" and len(argv) == 3:
         return upload_token(argv[1], argv[2], sys.stdin.buffer.read(65))
     if operation == "read-lock" and len(argv) == 2:

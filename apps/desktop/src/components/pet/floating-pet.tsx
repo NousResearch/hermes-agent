@@ -6,13 +6,17 @@ import { useOnProfileSwitch } from '@/app/hooks/use-on-profile-switch'
 import { useRouteOverlayActive } from '@/app/hooks/use-route-overlay-active'
 import { PetHeartField } from '@/components/chat/vibe-hearts'
 import { persistString, storedString } from '@/lib/storage'
+import { $changeEventsAvailable, $petChange } from '@/store/live-sync'
 import {
   $petAtRest,
   $petInfo,
   $petRoam,
   $petRoamDir,
   clearPetUnread,
+  hasPetSpriteForMeta,
+  mergePetInfoMeta,
   type PetInfo,
+  type PetInfoMeta,
   petProfile,
   setPetInfo
 } from '@/store/pet'
@@ -36,25 +40,6 @@ const NOMINAL_PET_PX = 96
 interface Point {
   x: number
   y: number
-}
-
-interface PetInfoMeta {
-  enabled: boolean
-  slug?: string
-  displayName?: string
-  scale?: number
-  spritesheetRevision?: string
-}
-
-function samePetRevision(info: PetInfo, meta: PetInfoMeta): boolean {
-  return (
-    info.enabled &&
-    Boolean(info.spritesheetBase64) &&
-    info.slug === meta.slug &&
-    info.displayName === meta.displayName &&
-    info.scale === meta.scale &&
-    info.spritesheetRevision === meta.spritesheetRevision
-  )
 }
 
 // Keep a w×h box fully inside the viewport. Pre-pet-load callers pass a nominal
@@ -115,6 +100,8 @@ export function FloatingPet() {
   const { resolvedMode } = useTheme()
   const gatewayState = useStore($gatewayState)
   const info = useStore($petInfo)
+  const changeEventsAvailable = useStore($changeEventsAvailable)
+  const petChange = useStore($petChange)
   const overlayActive = useStore($petOverlayActive)
   const roamEnabled = useStore($petRoam)
   const atRest = useStore($petAtRest)
@@ -142,9 +129,11 @@ export function FloatingPet() {
   // edge can't leave the window cropping it. Shared by drag + the reclamp effect.
   const clamp = useCallback(({ x, y }: Point): Point => clampPoint(x, y, petW, petH), [petW, petH])
 
-  // Fetch pet.info on connect. Poll quickly while inactive so an in-app
-  // `/pet <slug>` appears, then slowly while active so regenerated spritesheets
-  // and row-count metadata replace the cached base64 payload.
+  // Fetch pet.info on connect, then let pet.changed drive refreshes: the
+  // change watcher broadcasts when /pet (de)activates a pet or the hatch flow
+  // rewrites a sheet, so event-capable backends need no interval at all —
+  // users with no pet especially (this used to poll hardest for them). Older
+  // backends keep the legacy fast-while-inactive poll.
   const active = info.enabled && Boolean(info.spritesheetBase64)
   useEffect(() => {
     if (gatewayState !== 'open') {
@@ -152,6 +141,16 @@ export function FloatingPet() {
     }
 
     let cancelled = false
+
+    // pet.changed already carries the meta payload — an enabled=false
+    // broadcast clears the mascot with zero round-trips, and an unchanged
+    // revision (scale-only move still changes the sig) short-circuits below
+    // via hasPetSpriteForMeta + mergePetInfoMeta.
+    if (changeEventsAvailable && petChange.tick > 0 && petChange.meta?.enabled === false) {
+      setPetInfo({ enabled: false })
+
+      return
+    }
 
     const pull = async () => {
       try {
@@ -169,7 +168,15 @@ export function FloatingPet() {
               return
             }
 
-            if (samePetRevision($petInfo.get(), meta)) {
+            const current = $petInfo.get()
+
+            if (hasPetSpriteForMeta(current, meta)) {
+              const merged = mergePetInfoMeta(current, meta)
+
+              if (merged !== current) {
+                setPetInfo(merged)
+              }
+
               return
             }
           } catch {
@@ -202,15 +209,30 @@ export function FloatingPet() {
     }
 
     void pull()
-    const timer = window.setInterval(() => void pull(), active ? PET_ACTIVE_REFRESH_MS : PET_POLL_MS)
     window.addEventListener('focus', pull)
+
+    // Event-capable backend: pet.changed re-runs this effect (petChange dep),
+    // so no timer. Legacy backend: the historical poll.
+    const timer = changeEventsAvailable
+      ? null
+      : window.setInterval(
+          () => {
+            if (document.visibilityState === 'visible') {
+              void pull()
+            }
+          },
+          active ? PET_ACTIVE_REFRESH_MS : PET_POLL_MS
+        )
 
     return () => {
       cancelled = true
       window.removeEventListener('focus', pull)
-      window.clearInterval(timer)
+
+      if (timer !== null) {
+        window.clearInterval(timer)
+      }
     }
-  }, [gatewayState, active, requestGateway])
+  }, [gatewayState, active, changeEventsAvailable, petChange, requestGateway])
 
   // Pets are per-profile. When the active profile changes, drop the previous
   // profile's mascot + gallery cache so the poll above refetches the new
@@ -247,6 +269,7 @@ export function FloatingPet() {
   // Restore a popped-out pet on boot, once the pet has loaded (so we never spawn
   // an empty overlay window). Primary window only; runs at most once.
   const restoredRef = useRef(false)
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (isSecondaryWindow() || restoredRef.current || !active) {
       return

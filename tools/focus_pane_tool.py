@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """Reveal/focus a pane in the Hermes desktop GUI.
 
-Gated on ``HERMES_DESKTOP`` (like the other GUI affordances). Emits
-``pane.reveal`` through the shared ``desktop_ui`` bridge; the renderer runs each
-pane's own reveal path and only acts on the active window (a background turn
-never moves the user's focus). To show a URL/file, use ``open_preview``.
+Lives in the ``desktop_ui`` toolset (like the other GUI affordances), which the
+GUI gateway enables only for desktop-sourced sessions. Emits ``pane.reveal``
+through the shared ``desktop_ui`` bridge; the renderer runs each pane's own
+reveal path and only acts on the active window (a background turn never moves
+the user's focus). To show a URL/file, use ``open_preview``.
 """
 
 import json
 
 from tools import desktop_ui
 from tools.registry import registry, tool_error
-from utils import env_var_enabled
 
 PANES = ("chat", "files", "terminal", "review", "sessions")
 
@@ -30,11 +30,6 @@ def focus_pane_tool(pane: str) -> str:
         return tool_error("Pane focus is only available in the Hermes desktop app.")
 
     return json.dumps({"success": True, "pane": name}, ensure_ascii=False)
-
-
-def check_focus_pane_requirements() -> bool:
-    """Desktop GUI only — HERMES_DESKTOP is set on the gateway the app spawns."""
-    return env_var_enabled("HERMES_DESKTOP")
 
 
 FOCUS_PANE_SCHEMA = {
@@ -62,9 +57,8 @@ FOCUS_PANE_SCHEMA = {
 
 registry.register(
     name="focus_pane",
-    toolset="terminal",
+    toolset="desktop_ui",
     schema=FOCUS_PANE_SCHEMA,
     handler=lambda args, **kw: focus_pane_tool(pane=args.get("pane", "")),
-    check_fn=check_focus_pane_requirements,
     emoji="🪟",
 )

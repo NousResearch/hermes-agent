@@ -423,6 +423,10 @@ class TestAsyncWriterRetry:
 class TestMemoryFileMigrationTargets:
     def test_soul_upload_targets_ai_peer(self, tmp_path, make_manager):
         mgr = make_manager(write_frequency="turn")
+        # Migration is owner-gated: the session's user peer must match what
+        # _resolve_user_peer_id returns. Make the runtime identity match the
+        # crafted session so this reads as the owner's own session.
+        mgr._runtime_user_peer_name = "custom-user"
         session = _make_session(
             key="cli:test",
             user_peer_id="custom-user",
@@ -456,6 +460,27 @@ class TestMemoryFileMigrationTargets:
         assert peer_by_upload_name["consolidated_memory.md"] is user_peer
         assert peer_by_upload_name["user_profile.md"] is user_peer
         assert peer_by_upload_name["agent_soul.md"] is ai_peer
+
+    def test_migration_skipped_for_non_owner_session(self, tmp_path, make_manager):
+        """A non-owner user peer in the session must not receive the owner's
+        memory files — see #43752-adjacent shared-channel misattribution."""
+        mgr = make_manager(write_frequency="turn")
+        mgr._runtime_user_peer_name = "owner-user"
+        session = _make_session(
+            key="discord:shared",
+            user_peer_id="some-other-human",
+            assistant_peer_id="custom-ai",
+            honcho_session_id="shared-chan",
+        )
+        mgr._cache[session.key] = session
+        mgr._sessions_cache[session.honcho_session_id] = MagicMock()
+
+        (tmp_path / "MEMORY.md").write_text("owner facts", encoding="utf-8")
+
+        uploaded = mgr.migrate_memory_files(session.key, str(tmp_path))
+
+        assert uploaded is False
+        assert mgr._sessions_cache[session.honcho_session_id].upload_file.call_count == 0
 
 
 # ---------------------------------------------------------------------------

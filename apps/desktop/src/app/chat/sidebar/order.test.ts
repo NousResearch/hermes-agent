@@ -6,6 +6,7 @@ import type { SessionInfo } from '@/types/hermes'
 import {
   orderByIds,
   orderRowsWithinGroups,
+  rankSessions,
   reconcileOrderIds,
   reorderableRowIds,
   resolveManualSessionOrderIds,
@@ -61,6 +62,23 @@ describe('orderByIds', () => {
   it('splits unknown ids either side of the order by their own position', () => {
     const items = [{ id: 'new' }, { id: 'a' }, { id: 'b' }, { id: 'old' }]
     expect(orderByIds(items, id, ['b', 'a'])).toEqual([{ id: 'new' }, { id: 'b' }, { id: 'a' }, { id: 'old' }])
+  })
+})
+
+describe('rankSessions', () => {
+  const sessions = [{ id: 'newest' }, { id: 'middle' }, { id: 'oldest' }]
+
+  it('leaves the lane alone when the sidebar is on its default sort', () => {
+    expect(rankSessions(sessions)).toBe(sessions)
+    expect(rankSessions(sessions, [])).toBe(sessions)
+  })
+
+  it('applies the active sort key to a lane the flat list never renders', () => {
+    expect(rankSessions(sessions, ['oldest', 'newest', 'middle']).map(s => s.id)).toEqual([
+      'oldest',
+      'newest',
+      'middle'
+    ])
   })
 })
 

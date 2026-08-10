@@ -17,6 +17,7 @@ import {
   setMessagingTruncated,
   setSelectedStoredSessionId,
   setSessionProfilesTruncated,
+  setSessionProfilesUsage,
   setSessions,
   setSessionsLoading
 } from '@/store/session'
@@ -50,6 +51,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   resetSessionPinMirror()
   setSessions([])
   setSessionProfilesTruncated({})
+  setSessionProfilesUsage({})
   setCronSessions([])
   setMessagingSessions([])
   setMessagingPlatformTotals({})

@@ -61,6 +61,13 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
 
 const AGE_KEY = { day: 'ageDay', hour: 'ageHour', minute: 'ageMin' } as const
 
+// The last thing in the trailing slot hands its place to the ⋯ button on hover,
+// and is never narrower than the button that has to cover it. A PR chip is the
+// exception while the pointer is on it: it's a link, and the kebab sits
+// absolute over this space, so it has to stop taking clicks too, not just fade.
+const TAIL_HIDES = 'min-w-5 transition-opacity group-hover:opacity-0 group-has-[[data-pr-link]:hover]:opacity-100'
+const KEBAB_YIELDS = 'group-has-[[data-pr-link]:hover]:pointer-events-none group-has-[[data-pr-link]:hover]:opacity-0'
+
 function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
   const { unit, value } = coarseElapsed(Date.now() - seconds * 1000)
 
@@ -112,10 +119,9 @@ function SidebarSessionRowImpl({
   const totalTokens = session.input_tokens + session.output_tokens
   const cost = sessionCostUsd(session)
 
-  // Tokens, cost and age share the one trailing slot rather than each claiming
-  // their own column: several switched on read as one figure, not as a
-  // widening gutter.
-  const pinnedFacts = [
+  // Tokens, cost and age share one figure rather than each claiming a column:
+  // several switched on read as one number, not as a widening gutter.
+  const figures = [
     rowMeta.includes('tokens') && totalTokens > 0 ? compactNumber(totalTokens) : null,
     // Sub-cent spend rounds to "$0.00", which reads as a bug rather than as a
     // cheap session — below a cent the row says nothing at all.
@@ -123,18 +129,43 @@ function SidebarSessionRowImpl({
     pinnedAge ? age : null
   ].filter(Boolean) as string[]
 
-  // The kebab covers the END of the slot, so only the last fact steps aside for
-  // it. With tokens and age both on, hovering costs you the age and keeps the
-  // number you switched on to read.
-  const pinnedTail = pinnedFacts.at(-1) ?? ''
-  const pinnedHead = pinnedFacts.slice(0, -1).join(' · ')
-  const pinnedLabel = pinnedFacts.join(' · ')
-  // Chips that ride in the BODY, beside the title. The kebab lifts out of the
-  // actions slot, so it only ever covers what's in there — a body chip has no
-  // reason to step aside, and the hover-age (which does overlay the body) is
-  // dropped rather than made to fight them.
-  const bodyChip = Boolean(pr) || pinnedProfile || (showProfile && hasProfileTag)
-  const pinnedMeta = Boolean(pinnedLabel) || bodyChip
+  // Everything the Show menu puts after the title shares ONE right-aligned
+  // slot, in reading order: identity chips, then the figures. The kebab covers
+  // the END of that slot on hover, so only the last thing in it steps aside —
+  // with tokens and age both on you lose the age and keep the number you
+  // switched on, and a PR keeps its place (and its click) unless it IS the last
+  // thing. Chips used to render in the body instead, which left them stranded
+  // to the left of the kebab's own column: never flush right, never swapping.
+  const trailing: { key: string; node: React.ReactNode }[] = []
+
+  if ((showProfile || pinnedProfile) && hasProfileTag) {
+    trailing.push({ key: 'profile', node: <ProfileTag profile={session.profile} /> })
+  }
+
+  if (pr) {
+    trailing.push({ key: 'pr', node: <PrTag pr={pr} /> })
+  }
+
+  if (figures.length) {
+    const head = figures.slice(0, -1).join(' · ')
+
+    trailing.push({
+      key: 'figures',
+      node: (
+        <span className="pointer-events-none whitespace-nowrap text-[0.625rem] leading-none text-(--ui-text-tertiary)">
+          {head}
+          {/* The figures own their tail: the separator goes with it. */}
+          <span className={cn('inline-block text-right', TAIL_HIDES)}>
+            {head && ' · '}
+            {figures.at(-1)}
+          </span>
+        </span>
+      )
+    })
+  }
+
+  // A chip that ends the slot hides whole; the figures handle their own tail.
+  const chipEndsSlot = trailing.length > 0 && !figures.length
   // A handed-off session's live source is local, but it originated on a
   // messaging platform — surface that origin as a small badge so e.g. a
   // Telegram thread continued here still reads as Telegram.
@@ -167,38 +198,23 @@ function SidebarSessionRowImpl({
     >
       <SidebarRowShell
         actions={
-          // Pinned metadata sits in normal flow and the kebab lifts out of it,
-          // so this slot's intrinsic width IS the metadata's — the row's
+          // The trailing metadata sits in normal flow and the kebab lifts out
+          // of it, so this slot's intrinsic width IS the metadata's — the row's
           // `auto` actions column measures it and the title truncates against
-          // whatever is switched on, with no width to hand-maintain.
-          <div className="relative z-2 flex items-center justify-end" data-row-actions>
-            {/* Pinned metadata stays put through a turn — it was switched on to
-                be read. Only the tail hands its slot to the kebab; anything
-                ahead of it stays legible while you hover. The hover-only age is
-                an overlay instead, so it needs the row to open up 48px of right
-                padding — which beside a body chip reads as a hole. A row that
-                already shows a chip skips it. */}
-            {(pinnedLabel || (!liveTurn && !bodyChip)) && (
+          // whatever is switched on, with no width to hand-maintain. Nothing
+          // switched on leaves the slot to the kebab alone; hover changes what
+          // you can see in it, never how wide it is.
+          <div className="relative z-2 flex items-center justify-end gap-1" data-row-actions>
+            {trailing.map(({ key, node }, index) => (
               <span
-                className={cn(
-                  'pointer-events-none whitespace-nowrap text-right text-[0.625rem] leading-none text-(--ui-text-tertiary)',
-                  !pinnedLabel && 'absolute right-6 opacity-0 transition-opacity group-hover:opacity-100'
-                )}
+                className={
+                  chipEndsSlot && index === trailing.length - 1 ? cn('inline-flex justify-end', TAIL_HIDES) : undefined
+                }
+                key={key}
               >
-                {pinnedLabel ? (
-                  <>
-                    {pinnedHead}
-                    {/* Never narrower than the kebab that has to cover it. */}
-                    <span className="inline-block min-w-5 transition-opacity group-hover:opacity-0">
-                      {pinnedHead && ' · '}
-                      {pinnedTail}
-                    </span>
-                  </>
-                ) : (
-                  age
-                )}
+                {node}
               </span>
-            )}
+            ))}
             <SessionActionsMenu
               onArchive={onArchive}
               onBranch={onBranch}
@@ -213,7 +229,8 @@ function SidebarSessionRowImpl({
                 aria-label={r.sessionActions}
                 className={cn(
                   'size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!',
-                  pinnedLabel && 'absolute right-0'
+                  trailing.length > 0 && 'absolute right-0',
+                  pr && KEBAB_YIELDS
                 )}
                 size="icon"
                 variant="ghost"
@@ -266,10 +283,10 @@ function SidebarSessionRowImpl({
       >
         {showsRunningArc(dotState) && <span aria-hidden="true" className="arc-border arc-row" />}
         <SidebarRowBody
-          // Pinned metadata already sits in the actions slot, so the title only
-          // needs a gap from it — and the same gap on hover, or the row would
-          // jump every time the kebab took over.
-          className={cn('z-0', pinnedMeta ? 'pr-2' : 'group-hover:pr-12', branchStem && 'pl-3.5')}
+          // Every trailing figure lives in the actions slot, which the row
+          // measures — so the title needs a gap from it and nothing else. Hover
+          // changes what you can see in that slot, never how wide it is.
+          className={cn('z-0 pr-2', branchStem && 'pl-3.5')}
           // Middle-click = open in a new tab (browser muscle memory).
           {...middleClickHandlers(() => {
             triggerHaptic('selection')
@@ -339,10 +356,6 @@ function SidebarSessionRowImpl({
           <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
             {title}
           </SidebarRowLabel>
-          {/* Stays put on hover, unlike the other chips: it's a link, and the
-              kebab lives in its own column rather than over this one. */}
-          {pr && <PrTag pr={pr} />}
-          {(showProfile || pinnedProfile) && hasProfileTag && <ProfileTag profile={session.profile} />}
         </SidebarRowBody>
       </SidebarRowShell>
     </SessionContextMenu>

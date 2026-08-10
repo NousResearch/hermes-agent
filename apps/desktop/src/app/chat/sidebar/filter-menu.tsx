@@ -26,6 +26,7 @@ import {
   $sidebarGrouping,
   $sidebarOrdering,
   $sidebarPrFilter,
+  $sidebarProfileFilter,
   $sidebarProjectFilter,
   $sidebarRowMeta,
   $sidebarShowArchived,
@@ -41,10 +42,19 @@ import {
   type SidebarOrdering,
   type SidebarRowMeta,
   toggleSidebarPrFilter,
+  toggleSidebarProfileFilter,
   toggleSidebarProjectFilter,
   toggleSidebarRowMeta,
   toggleSidebarStatusFilter
 } from '@/store/layout'
+import {
+  $profiles,
+  $showAllProfiles,
+  normalizeProfileKey,
+  requestProfileCreate,
+  toggleShowAllProfiles
+} from '@/store/profile'
+import { runImportProfileFlow } from '@/store/profile-share'
 import { $projectTree } from '@/store/projects'
 import type { PullRequestBucket } from '@/store/pull-requests'
 import { $unreadFinishedSessionIds, markAllSessionsRead } from '@/store/session'
@@ -62,7 +72,8 @@ interface Option<T extends string = string> {
 const GROUPINGS: Option<SidebarGrouping>[] = [
   { icon: 'clock', id: 'date', label: 'Updated' },
   { icon: 'root-folder', id: 'project', label: 'Project' },
-  { icon: 'pulse', id: 'status', label: 'Status' }
+  { icon: 'pulse', id: 'status', label: 'Status' },
+  { icon: 'account', id: 'profile', label: 'Profile' }
 ]
 
 const ORDERINGS: Option<SidebarOrdering>[] = [
@@ -141,6 +152,10 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
   const rowMeta = useStore($sidebarRowMeta)
   const statusFilter = useStore($sidebarStatusFilter)
   const projectFilter = useStore($sidebarProjectFilter)
+  const profileFilter = useStore($sidebarProfileFilter)
+  const showAllProfiles = useStore($showAllProfiles)
+  const profileNames = useStore($profiles).map(profile => normalizeProfileKey(profile.name))
+  const narrowsByProfile = showAllProfiles && profileNames.length > 1
   const prFilter = useStore($sidebarPrFilter)
   const showArchived = useStore($sidebarShowArchived)
   const filtersActive = useStore($sidebarFiltersActive)
@@ -287,6 +302,32 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
             </DropdownMenuSub>
           )}
 
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>Profile</DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="max-h-80 overflow-y-auto">
+              {/* Scoped to one profile the rail is already the filter, so the
+                  per-profile boxes only appear where they can narrow something.
+                  The actions below stand on their own. */}
+              {narrowsByProfile && (
+                <>
+                  {profileNames.map(name => (
+                    <OptionCheckbox
+                      checked={profileFilter.includes(name)}
+                      key={name}
+                      onCheck={() => toggleSidebarProfileFilter(name)}
+                      option={{ icon: 'account', id: name, label: name }}
+                    />
+                  ))}
+                  <DropdownMenuSeparator />
+                </>
+              )}
+              <DropdownMenuItem onSelect={requestProfileCreate}>{t.profiles.newProfile}</DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => void runImportProfileFlow()}>
+                {t.profiles.importProfile}
+              </DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+
           {projects.length > 1 && (
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>Project</DropdownMenuSubTrigger>
@@ -306,6 +347,19 @@ export function SidebarFilterMenu({ className }: { className?: string }) {
                 ))}
               </DropdownMenuSubContent>
             </DropdownMenuSub>
+          )}
+
+          {/* Off by default: one profile's sessions are what the rail selected.
+              Nothing to widen to until a second profile exists — but stay
+              visible while it's on, or deleting your way back down to one
+              profile would strand the sidebar in a mode nothing can leave (the
+              rail hides its switcher at one profile too). */}
+          {(profileNames.length > 1 || showAllProfiles) && (
+            <OptionCheckbox
+              checked={showAllProfiles}
+              onCheck={toggleShowAllProfiles}
+              option={{ id: 'all-profiles', label: t.profiles.allProfiles }}
+            />
           )}
 
           <OptionCheckbox

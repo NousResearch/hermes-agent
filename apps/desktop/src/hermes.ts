@@ -462,6 +462,9 @@ export interface SidebarSessionSlice {
   /** Per-profile "the window came back full, more rows exist on disk" flags —
    *  what pagination needs, without a COUNT(*) per profile DB per refresh. */
   profiles_truncated?: Record<string, boolean>
+  /** Per-profile tokens and spend over every session, not just this window.
+   *  Absent from the legacy per-slice endpoint, which has no aggregate. */
+  profiles_usage?: Record<string, { cost_usd: number; tokens: number }>
 }
 
 /** Which profiles filled their per-profile window in a returned page. The

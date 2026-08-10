@@ -6886,6 +6886,35 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     )
     _session_compact_cols_sql: Optional[str] = None
 
+    def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> Dict[str, float]:
+        """Tokens and spend across this store, as one aggregate.
+
+        The sidebar shows a profile's totals beside a page of its sessions, so
+        summing the rows it happens to have loaded would report a fraction of
+        the truth and shrink as paging changed. SQLite adds the columns up over
+        every row instead, at the cost of one scan.
+
+        Spend is the billed figure when the provider returned one and the
+        estimate otherwise — the same precedence a single row renders.
+        """
+        where = ["parent_session_id IS NULL", "message_count >= ?"]
+        params: List[Any] = [min_message_count]
+        if not include_archived:
+            where.append("COALESCE(archived, 0) = 0")
+
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                f"""
+                SELECT COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0),
+                       COALESCE(SUM(COALESCE(actual_cost_usd, estimated_cost_usd, 0)), 0)
+                  FROM sessions
+                 WHERE {' AND '.join(where)}
+                """,
+                params,
+            ).fetchone()
+
+        return {"tokens": int(row[0] or 0), "cost_usd": float(row[1] or 0.0)}
+
     def list_sessions_rich(
         self,
         source: str = None,

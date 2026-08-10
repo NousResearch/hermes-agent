@@ -1144,6 +1144,26 @@ code {
     display: none;
   }
 
+  /* Hover-only bars. A thumb sitting on a list you aren't touching is chrome,
+     not information — the gutter is reserved either way, so fading it in and
+     out costs no reflow. Opt-in per surface: the sidebar wants it, a document
+     you're reading down wants its bar where you can see it. */
+  .scrollbar-fade::-webkit-scrollbar-thumb,
+  .scrollbar-dt .scrollbar-fade::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    transition: background-color 150ms ease-out;
+  }
+
+  .scrollbar-fade:hover::-webkit-scrollbar-thumb,
+  .scrollbar-dt .scrollbar-fade:hover::-webkit-scrollbar-thumb {
+    background-color: color-mix(in srgb, var(--dt-midground) 18%, transparent);
+  }
+
+  .scrollbar-fade:hover::-webkit-scrollbar-thumb:hover,
+  .scrollbar-dt .scrollbar-fade:hover::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in srgb, var(--dt-midground) 40%, transparent);
+  }
+
   /* Variant for portaled overlays (Radix DropdownMenu, Popover, etc.) that
      render under document.body, outside the `.scrollbar-dt` scope on
      #root. Same visual treatment, applied directly to the overlay
@@ -1190,6 +1210,15 @@ code {
     .scrollbar-overlay {
       scrollbar-width: thin;
       scrollbar-color: color-mix(in srgb, var(--dt-midground) 28%, transparent) transparent;
+    }
+
+    /* No transition — Firefox doesn't animate scrollbar-color. */
+    .scrollbar-fade {
+      scrollbar-color: transparent transparent;
+    }
+
+    .scrollbar-fade:hover {
+      scrollbar-color: color-mix(in srgb, var(--dt-midground) 18%, transparent) transparent;
     }
   }
 }

@@ -855,9 +855,24 @@ describe('overlayLivePreviews', () => {
       ]
     })
 
-    const previews = overlayLivePreviews([project], [], [], 3, new Set(['gone']))
+    const previews = overlayLivePreviews([project], [], [], 3, { removed: new Set(['gone']) })
 
     expect(previews['/www/app'].map(s => s.id)).toEqual(['old'])
+  })
+
+  it('ranks by the active sort key before trimming, so the preview is its top rows', () => {
+    const project = projectNode({
+      id: '/www/app',
+      previewSessions: [
+        makeSession('/www/app', { id: 'newest', last_active: 9, started_at: 9 }),
+        makeSession('/www/app', { id: 'cheap', last_active: 8, started_at: 8 }),
+        makeSession('/www/app', { id: 'priciest', last_active: 1, started_at: 1 })
+      ]
+    })
+
+    const previews = overlayLivePreviews([project], [], [], 2, { rankIds: ['priciest', 'newest', 'cheap'] })
+
+    expect(previews['/www/app'].map(s => s.id)).toEqual(['priciest', 'newest'])
   })
 
   it('previews a detached session under Home, which no cwd could place', () => {

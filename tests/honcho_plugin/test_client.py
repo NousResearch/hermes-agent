@@ -214,6 +214,41 @@ class TestFromGlobalConfig:
             config = HonchoClientConfig.from_global_config(config_path=config_file)
         assert config.base_url == "http://host-block:9001"
 
+    def test_base_url_full_precedence_chain(self, tmp_path):
+        """Invariant: host block > endpoint.baseUrl (SDK-native) > flat root
+        > HONCHO_BASE_URL > HONCHO_URL. Pins the composed order of #14489
+        (host block) and #43803 (endpoint block + HONCHO_URL)."""
+        config_file = tmp_path / "config.json"
+        layers = {
+            "hosts": {"hermes": {"baseUrl": "http://host:1"}},
+            "endpoint": {"baseUrl": "http://endpoint:2"},
+            "baseUrl": "http://flat:3",
+        }
+        env = {"HONCHO_BASE_URL": "http://envbase:4", "HONCHO_URL": "http://envurl:5"}
+        expected = [
+            "http://host:1",     # full stack -> host block wins
+            "http://endpoint:2", # drop host block -> SDK-native endpoint
+            "http://flat:3",     # drop endpoint -> flat root key
+            "http://envbase:4",  # empty file -> HONCHO_BASE_URL
+            "http://envurl:5",   # drop HONCHO_BASE_URL -> HONCHO_URL
+        ]
+
+        for i, want in enumerate(expected):
+            cfg_dict = dict(layers)
+            if i >= 1:
+                cfg_dict.pop("hosts")
+            if i >= 2:
+                cfg_dict.pop("endpoint")
+            if i >= 3:
+                cfg_dict.pop("baseUrl")
+            env_dict = dict(env)
+            if i >= 4:
+                env_dict.pop("HONCHO_BASE_URL")
+            config_file.write_text(json.dumps(cfg_dict))
+            with patch.dict(os.environ, env_dict, clear=True):
+                config = HonchoClientConfig.from_global_config(config_path=config_file)
+            assert config.base_url == want, f"layer {i}: got {config.base_url!r}, want {want!r}"
+
 
 class TestResolveSessionName:
     def test_manual_override(self):
@@ -352,6 +387,50 @@ class TestObservationModeMigration:
 class TestGetHonchoClient:
     def teardown_method(self):
         reset_honcho_client()
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_dot_form_legacy_host_key_keeps_local_api_key(self):
+        """Regression for #37436: a legacy dot-form host block (hermes.work)
+        must be found by the local-auth check. Before the _host_block fallback,
+        the direct dict lookup missed it, the stored apiKey was dropped for the
+        'local' placeholder, and every write 401'd silently."""
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="explicit-local-key",
+            base_url="http://localhost:8000",
+            host="hermes_work",
+            workspace_id="hermes",
+            raw={"hosts": {"hermes.work": {"apiKey": "explicit-local-key"}}},
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho:
+            get_honcho_client(cfg)
+
+        assert mock_honcho.call_args.kwargs["api_key"] == "explicit-local-key"
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
+    def test_local_base_url_without_host_key_uses_placeholder(self):
+        """Without an explicit host-block apiKey, a local base_url still gets
+        the SDK's non-empty placeholder instead of the (likely cloud) root key."""
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="cloud-root-key",
+            base_url="http://localhost:8000",
+            host="hermes",
+            workspace_id="hermes",
+            raw={},
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho:
+            get_honcho_client(cfg)
+
+        assert mock_honcho.call_args.kwargs["api_key"] == "local"
 
     @pytest.mark.skipif(
         not importlib.util.find_spec("honcho"),

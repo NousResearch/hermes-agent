@@ -48,14 +48,25 @@ describe('the sidebar as it ships', () => {
     expect($sidebarViewCustomized.get()).toBe(false)
   })
 
-  it('resets to the all-profiles default while that scope is on', () => {
+  it('ships by date in the all-profiles scope too, and resets back to it', () => {
     $showAllProfiles.set(true)
-    setSidebarGrouping('status')
+    setSidebarGrouping('profile')
 
     resetSidebarView()
 
-    expect($sidebarGrouping.get()).toBe('profile')
+    expect($sidebarGrouping.get()).toBe('date')
     expect($sidebarViewCustomized.get()).toBe(false)
+  })
+
+  it('resets the scope the user is not looking at, so flipping the rail cannot restore it', () => {
+    setSidebarGrouping('status')
+    $showAllProfiles.set(true)
+    setSidebarGrouping('profile')
+
+    resetSidebarView()
+    $showAllProfiles.set(false)
+
+    expect($sidebarGrouping.get()).toBe('date')
   })
 
   it('turns all-profiles on when the user groups by profile, since that is the ask', () => {

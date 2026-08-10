@@ -11929,7 +11929,7 @@ def _project_tree_row(r: dict) -> dict:
         "input_tokens": r.get("input_tokens") or 0,
         "output_tokens": r.get("output_tokens") or 0,
         # Cost is one of the fields SidebarSessionRow renders, so a lane row has
-        # to carry it too — without it, switching Show → cost on filled every
+        # to carry it too — without it, switching Show → cost filled in every
         # figure in Recents and left the same sessions blank under a project.
         "actual_cost_usd": r.get("actual_cost_usd"),
         "estimated_cost_usd": r.get("estimated_cost_usd"),

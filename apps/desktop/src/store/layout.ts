@@ -243,24 +243,20 @@ const $sidebarFlatGrouping = persistentAtom<SidebarGrouping>(
   oneOf(['date', 'status'], 'date')
 )
 
-// All-profiles keeps its own grouping. The two scopes want different answers —
-// one profile's chats read best by day, everyone's read best by owner — and a
-// shared atom would either drag `profile` into a scope where it means nothing
-// or reset the choice every time the user flips the rail.
+// All-profiles keeps its own grouping: `profile` only means anything there, and
+// a shared atom would either drag it into a scope where it means nothing or
+// reset the choice every time the user flips the rail. Both scopes still ship
+// by day — grouping by owner is something you go and pick.
 const $sidebarAllProfilesGrouping = persistentAtom<SidebarGrouping>(
   SIDEBAR_ALL_PROFILES_GROUPING_STORAGE_KEY,
-  'profile',
-  oneOf(['date', 'profile', 'status'], 'profile')
-)
-
-/** What the active scope groups by before the user touches anything. */
-export const $sidebarDefaultGrouping: ReadableAtom<SidebarGrouping> = computed([$showAllProfiles], showAll =>
-  showAll ? 'profile' : 'date'
+  'date',
+  oneOf(['date', 'profile', 'status'], 'date')
 )
 
 // The sidebar as it ships. Declared once so the atoms below, "Reset to
 // defaults" and the "has this view been customized?" check can't drift apart —
 // they used to inline the same literals in three places.
+const SIDEBAR_DEFAULT_GROUPING: SidebarGrouping = 'date'
 const SIDEBAR_DEFAULT_ORDERING: SidebarOrdering = 'updated'
 const SIDEBAR_DEFAULT_ROW_META: SidebarRowMeta[] = ['updated']
 
@@ -339,9 +335,9 @@ export const $sidebarFiltersActive: ReadableAtom<boolean> = computed(
  *  offering. Broader than `$sidebarFiltersActive`, which only knows about what
  *  hides rows, not about how they're grouped, sorted or labelled. */
 export const $sidebarViewCustomized: ReadableAtom<boolean> = computed(
-  [$sidebarGrouping, $sidebarDefaultGrouping, $sidebarOrdering, $sidebarRowMeta, $sidebarFiltersActive],
-  (grouping, defaultGrouping, ordering, rowMeta, filtersActive) =>
-    grouping !== defaultGrouping ||
+  [$sidebarGrouping, $sidebarOrdering, $sidebarRowMeta, $sidebarFiltersActive],
+  (grouping, ordering, rowMeta, filtersActive) =>
+    grouping !== SIDEBAR_DEFAULT_GROUPING ||
     ordering !== SIDEBAR_DEFAULT_ORDERING ||
     !sameRowMeta(rowMeta, SIDEBAR_DEFAULT_ROW_META) ||
     filtersActive
@@ -619,7 +615,11 @@ function clearSidebarFilters() {
 /** Every knob the filter menu owns, back to the sidebar as it ships. Ordering
  *  goes through its setter so a hand-dragged sequence is dropped along with it. */
 export function resetSidebarView() {
-  setSidebarGrouping($sidebarDefaultGrouping.get())
+  setSidebarGrouping(SIDEBAR_DEFAULT_GROUPING)
+  // Both scopes, not just the one on screen: each keeps its own grouping, so a
+  // reset that left the other customized would hand it back on the next flip.
+  $sidebarFlatGrouping.set(SIDEBAR_DEFAULT_GROUPING)
+  $sidebarAllProfilesGrouping.set(SIDEBAR_DEFAULT_GROUPING)
   setSidebarOrdering(SIDEBAR_DEFAULT_ORDERING)
   $sidebarRowMeta.set(SIDEBAR_DEFAULT_ROW_META)
   clearSidebarFilters()

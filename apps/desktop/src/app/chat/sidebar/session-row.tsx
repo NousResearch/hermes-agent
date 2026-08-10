@@ -61,6 +61,13 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
 
 const AGE_KEY = { day: 'ageDay', hour: 'ageHour', minute: 'ageMin' } as const
 
+// The last thing in the trailing slot hands its place to the ⋯ button on hover,
+// and is never narrower than the button that has to cover it. A PR chip is the
+// exception while the pointer is on it: it's a link, and the kebab sits
+// absolute over this space, so it has to stop taking clicks too, not just fade.
+const TAIL_HIDES = 'min-w-5 transition-opacity group-hover:opacity-0 group-has-[[data-pr-link]:hover]:opacity-100'
+const KEBAB_YIELDS = 'group-has-[[data-pr-link]:hover]:pointer-events-none group-has-[[data-pr-link]:hover]:opacity-0'
+
 function formatAge(seconds: number, r: Translations['sidebar']['row']): string {
   const { unit, value } = coarseElapsed(Date.now() - seconds * 1000)
 
@@ -148,7 +155,7 @@ function SidebarSessionRowImpl({
         <span className="pointer-events-none whitespace-nowrap text-[0.625rem] leading-none text-(--ui-text-tertiary)">
           {head}
           {/* The figures own their tail: the separator goes with it. */}
-          <span className="inline-block min-w-5 text-right transition-opacity group-hover:opacity-0">
+          <span className={cn('inline-block text-right', TAIL_HIDES)}>
             {head && ' · '}
             {figures.at(-1)}
           </span>
@@ -200,12 +207,9 @@ function SidebarSessionRowImpl({
           <div className="relative z-2 flex items-center justify-end gap-1" data-row-actions>
             {trailing.map(({ key, node }, index) => (
               <span
-                className={cn(
-                  // Never narrower than the kebab that has to cover it.
-                  chipEndsSlot &&
-                    index === trailing.length - 1 &&
-                    'inline-flex min-w-5 justify-end transition-opacity group-hover:opacity-0'
-                )}
+                className={
+                  chipEndsSlot && index === trailing.length - 1 ? cn('inline-flex justify-end', TAIL_HIDES) : undefined
+                }
                 key={key}
               >
                 {node}
@@ -225,7 +229,8 @@ function SidebarSessionRowImpl({
                 aria-label={r.sessionActions}
                 className={cn(
                   'size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!',
-                  trailing.length > 0 && 'absolute right-0'
+                  trailing.length > 0 && 'absolute right-0',
+                  pr && KEBAB_YIELDS
                 )}
                 size="icon"
                 variant="ghost"

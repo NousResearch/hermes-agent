@@ -5258,7 +5258,7 @@ function getWindowButtonPosition(win = mainWindow) {
 
   // Fullscreen hides the traffic lights — treat as no left-side controls so the
   // renderer drops the traffic-light dodge inset and Y nudge.
-  if (Boolean(win?.isFullScreen?.())) {
+  if (win?.isFullScreen?.()) {
     return null
   }
 

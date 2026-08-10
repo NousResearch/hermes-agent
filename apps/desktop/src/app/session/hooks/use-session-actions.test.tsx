@@ -1610,6 +1610,77 @@ describe('resumeSession warm-cache mapping integrity', () => {
     expect(renderedMessages).not.toContain('stale runtime answer')
   })
 
+  it('keeps the activated transcript when a persisted transcript refresh returns empty rows', async () => {
+    // Regression: after a wake/reconnect, session.activate can legitimately
+    // rebind a session with a non-empty transcript while the concurrent REST
+    // refresh (getLatestSessionMessages) races a just-respawned backend and
+    // resolves with zero rows. That empty page must not be trusted over the
+    // transcript activate already restored.
+    const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
+      current: new Map([['stored-A', 'rt-A']])
+    }
+
+    const state = clientState('stored-A')
+    state.messages = [
+      {
+        id: 'cached-user',
+        role: 'user',
+        parts: [{ type: 'text', text: 'still here after wake' }]
+      },
+      {
+        id: 'cached-assistant',
+        role: 'assistant',
+        parts: [{ type: 'text', text: 'still here after wake too' }]
+      }
+    ]
+
+    const sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>> = {
+      current: new Map([['rt-A', state]])
+    }
+
+    const activatedMessages = [
+      { content: 'still here after wake', role: 'user', timestamp: 1 },
+      { content: 'still here after wake too', role: 'assistant', timestamp: 2 }
+    ]
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ messages: [], session_id: 'stored-A' } as never)
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.activate') {
+        return {
+          session_id: 'rt-A',
+          session_key: 'stored-A',
+          resumed: 'stored-A',
+          message_count: activatedMessages.length,
+          messages: activatedMessages,
+          running: false,
+          info: {}
+        } as never
+      }
+
+      return {} as never
+    })
+
+    let resumedState: ClientSessionState | undefined
+    let resume: ((storedSessionId: string, replaceRoute?: boolean) => Promise<unknown>) | null = null
+
+    render(
+      <ResumeHarness
+        onReady={ready => (resume = ready)}
+        onStateUpdate={(_sessionId, next) => (resumedState = next)}
+        requestGateway={requestGateway}
+        runtimeIdByStoredSessionIdRef={runtimeIdByStoredSessionIdRef}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(resume).not.toBeNull())
+    await resume!('stored-A', true)
+
+    const renderedMessages = JSON.stringify(resumedState?.messages)
+    expect(renderedMessages).toContain('still here after wake')
+    expect(renderedMessages).toContain('still here after wake too')
+  })
+
   it('keeps a warm runtime and optimistic turn on a transient activation timeout', async () => {
     const runtimeIdByStoredSessionIdRef: MutableRefObject<Map<string, string>> = {
       current: new Map([['stored-A', 'rt-A']])

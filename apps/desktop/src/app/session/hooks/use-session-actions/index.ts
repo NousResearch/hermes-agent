@@ -804,7 +804,13 @@ export function useSessionActions({
                   !activatedStoredSessionId ||
                   persisted.session_id === activatedStoredSessionId
 
-                if (persisted && persistedMatchesActivatedSession) {
+                // An empty REST page is not proof the transcript is empty — it's
+                // also what a backend respawn returns while its state.db read
+                // races the activate response. Reconciling against it anyway
+                // wipes the just-restored activate/cache transcript (the same
+                // wipe the `activated.messages.length || ...` guard above
+                // already prevents for the activate payload itself).
+                if (persisted && persistedMatchesActivatedSession && (persisted.messages.length || !activatedMessages.length)) {
                   activatedMessages = reconcileAuthoritativeMessages(persisted.messages, activatedMessages)
                 }
               }

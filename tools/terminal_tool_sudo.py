@@ -13,6 +13,7 @@ import subprocess
 import sys
 import threading
 import time
+from typing import Callable
 from collections.abc import Iterator
 
 from utils import env_var_enabled
@@ -434,7 +435,10 @@ def _rewrite_compound_background(command: str) -> str:
     return result
 
 
-def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None]:
+def _transform_sudo_command(
+    command: str | None,
+    sudo_nopasswd_check: Callable[[], bool] | None = None,
+) -> tuple[str | None, str | None]:
     """Rewrite command-position ``sudo`` executables to ``sudo -S -p ''`` when a password is available (shared by every
     execution environment). Returns ``(command, sudo_stdin)``: ``sudo_stdin`` is one password
     line per sudo invocation that the caller must PREPEND to the process stdin (sudo -S consumes
@@ -461,9 +465,16 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     has_configured_password = _configured_password is not None
     sudo_password = _configured_password if has_configured_password else _get_cached_sudo_password()
 
-    # sudoers NOPASSWD hosts must not be forced through the prompt or the -S pipe (local only).
-    if not has_configured_password and not sudo_password and _sudo_nopasswd_works():
-        return command, None
+    # sudoers NOPASSWD must not be forced through the prompt or the -S pipe. BaseEnvironment
+    # supplies a probe scoped to the selected backend; direct callers keep the local-host
+    # fallback. Re-probed every call so an expired sudo timestamp cannot silently block.
+    if not has_configured_password and not sudo_password:
+        nopasswd_check = sudo_nopasswd_check or _sudo_nopasswd_works
+        try:
+            if nopasswd_check():
+                return command, None
+        except Exception:
+            pass
 
     # delegate_task children inherit HERMES_INTERACTIVE=1 (and possibly a stale thread-local
     # callback on a recycled worker) but have no user on the other side — always headless;

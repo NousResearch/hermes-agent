@@ -587,9 +587,27 @@ class BaseEnvironment(ABC):
             pass
 
     def _prepare_command(self, command: str) -> tuple[str, str | None]:
-        """Transform sudo commands if SUDO_PASSWORD is available."""
+        """Prepare sudo using this environment's passwordless-sudo probe."""
         from tools.terminal_tool_sudo import _transform_sudo_command
-        return _transform_sudo_command(command)
+
+        return _transform_sudo_command(
+            command,
+            sudo_nopasswd_check=self._sudo_nopasswd_works,
+        )
+
+    def _sudo_nopasswd_works(self) -> bool:
+        """Probe passwordless sudo inside this execution environment."""
+        try:
+            proc = self._run_bash(
+                "sudo -n true",
+                login=False,
+                timeout=3,
+                stdin_data=None,
+            )
+            result = self._wait_for_process(proc, timeout=3)
+            return result.get("returncode") == 0
+        except Exception:
+            return False
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

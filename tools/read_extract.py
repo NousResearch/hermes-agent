@@ -485,7 +485,7 @@ def _notebook_output_text(output: Any) -> str:
     return ""
 
 
-def _notebook_outputs(cell: dict) -> str:
+def _notebook_outputs(cell: dict, jq_pointer: str = "", filename: str = "") -> str:
     outputs = cell.get("outputs")
     if not isinstance(outputs, list):
         return ""
@@ -495,7 +495,10 @@ def _notebook_outputs(cell: dict) -> str:
     joined = "\n".join(blocks)
     if len(joined) > _MAX_OUTPUT_CHARS:
         omitted = len(joined) - _MAX_OUTPUT_CHARS
-        joined = joined[:_MAX_OUTPUT_CHARS] + f"\n… [{omitted:,} output chars truncated]"
+        hint = ""
+        if jq_pointer and filename:
+            hint = f" — full output: jq -r '{jq_pointer}' {filename}"
+        joined = joined[:_MAX_OUTPUT_CHARS] + f"\n… [{omitted:,} output chars truncated{hint}]"
     return joined
 
 
@@ -508,21 +511,24 @@ def _extract_notebook(path: str) -> str:
     if not isinstance(nb, dict):
         raise ExtractionError("Notebook root is not an object")
 
-    cells = nb.get("cells")
-    if not isinstance(cells, list):
+    raw_cells = nb.get("cells")
+    if isinstance(raw_cells, list):
+        cells = [(f".cells[{i}].outputs", cell) for i, cell in enumerate(raw_cells)]
+    else:
         cells = [
-            cell
-            for ws in nb.get("worksheets", [])
+            (f".worksheets[{wi}].cells[{ci}].outputs", cell)
+            for wi, ws in enumerate(nb.get("worksheets", []))
             if isinstance(ws, dict)
-            for cell in ws.get("cells", [])
+            for ci, cell in enumerate(ws.get("cells", []))
         ]
     if not cells:
         raise ExtractionError("Notebook contains no cells")
 
+    nb_name = os.path.basename(path)
     counts = {"markdown": 0, "code": 0, "raw": 0}
     labels = {"markdown": "Markdown", "code": "Code", "raw": "Raw"}
     out: list[str] = []
-    for cell in cells:
+    for jq_pointer, cell in cells:
         if not isinstance(cell, dict):
             continue
         typ = cell.get("cell_type")
@@ -532,7 +538,7 @@ def _extract_notebook(path: str) -> str:
         suffix = f" {counts[typ]}" if typ != "raw" else ""
         out.extend((f"# ── {labels[typ]} cell{suffix} ──", _source_text(cell.get("source", "")).rstrip("\n"), ""))
         if typ == "code":
-            rendered = _notebook_outputs(cell)
+            rendered = _notebook_outputs(cell, jq_pointer, nb_name)
             if rendered:
                 out.extend((f"# ── Output (cell {counts[typ]}) ──", rendered.rstrip("\n"), ""))
     if not out:

@@ -435,13 +435,33 @@ class TestNotebookExtraction(unittest.TestCase):
         from tools.read_extract import _MAX_OUTPUT_CHARS
         p = os.path.join(self.tmp, "nb_big.ipynb")
         _write_notebook(p, [
+            {"cell_type": "markdown", "source": "# intro"},
             {"cell_type": "code", "source": "spam()",
              "outputs": [{"output_type": "stream",
                           "text": "x" * (_MAX_OUTPUT_CHARS + 5000)}]},
         ])
         text = extract_document_text(p)
-        self.assertIn("output chars truncated]", text)
+        self.assertIn("output chars truncated", text)
+        self.assertIn("— full output: jq -r '.cells[1].outputs' nb_big.ipynb]", text)
         self.assertLess(len(text), _MAX_OUTPUT_CHARS + 2000)
+
+    def test_oversized_outputs_truncated_v3_jq_hint(self):
+        from tools.read_extract import _MAX_OUTPUT_CHARS
+        p = os.path.join(self.tmp, "nb_v3_big.ipynb")
+        nb = {"worksheets": [{"cells": [
+            {"cell_type": "markdown", "source": "# intro"},
+            {"cell_type": "code", "source": "spam()",
+             "outputs": [{"output_type": "stream",
+                          "text": "x" * (_MAX_OUTPUT_CHARS + 5000)}]},
+        ]}], "nbformat": 3}
+        with open(p, "w") as fh:
+            json.dump(nb, fh)
+        text = extract_document_text(p)
+        self.assertIn("output chars truncated", text)
+        self.assertIn(
+            "— full output: jq -r '.worksheets[0].cells[1].outputs' nb_v3_big.ipynb]",
+            text,
+        )
 
     def test_legacy_v3_pyout_flat_fields(self):
         p = os.path.join(self.tmp, "nb_v3.ipynb")

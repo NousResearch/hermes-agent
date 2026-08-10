@@ -770,15 +770,16 @@ def _reap_orphaned_desktop_local_serves(
 
     # Brief grace, then SIGKILL survivors.
     sleep_fn(1.5)
+    # psutil.pid_exists for the liveness probe: os.kill(pid, 0) is a
+    # Windows footgun (sends CTRL_C_EVENT, bpo-14484). This path is
+    # POSIX-only (win32 early-returns above), but the linter blocks the
+    # pattern everywhere and psutil is a core dependency anyway.
+    import psutil
+
     for pid, _cmd in targets:
         if pid in failed:
             continue
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            killed.append(pid)
-            continue
-        except OSError:
+        if not psutil.pid_exists(pid):
             killed.append(pid)
             continue
         try:

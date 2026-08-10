@@ -258,6 +258,35 @@ What they do:
 
 **Name-based lookup.** All four mutating verbs (`pause`, `resume`, `run`, `remove`, `edit`) plus the agent's `cronjob` tool now accept a job **name** (case-insensitive) in place of the hex ID. The agent and CLI both prefer an exact ID match if one exists; ambiguous name matches (multiple jobs sharing the same name) are refused with the full list of candidate IDs so you can pick one explicitly. Names are not unique, so this guard is load-bearing — it prevents silently mutating the wrong job when two share a name.
 
+## Agent-managed scheduling (cron jobs that manage cron jobs)
+
+By default, agents launched *by* the scheduler cannot use the `cronjob` tool —
+a scheduled job cannot create, edit, or remove other jobs. Opt in via
+`config.yaml`:
+
+```yaml
+cron:
+  allow_agent_scheduling: true   # default: false
+```
+
+When enabled, a scheduled agent can manage the cron table like any chat
+session: schedule follow-up one-shots from within scheduled work, tune its own
+cadence, or run a "cron librarian" job that reconciles the whole table
+(list, then update/remove/create as needed). Two properties keep this sane:
+
+- **One flat, user-owned table.** Jobs created from a cron run land in the
+  same `jobs.json` as every other job with no special ownership — you can
+  list, edit, or remove them exactly as if you had created them yourself.
+- **No dangling delivery.** A cron run is ephemeral, so `deliver: origin`
+  from inside one is resolved **at create time** to the creating job's own
+  concrete target (`platform:chat_id[:thread_id]`, or `local` if the creating
+  job delivers nowhere). A job created by a scheduled agent can never point
+  its output at a session that no longer exists. Explicit targets
+  (`local`, `all`, `telegram:<chat_id>`) are honored verbatim.
+
+Prefer prompts that update existing jobs (list first, then update by ID)
+over ones that create new jobs each run.
+
 ## How it works
 
 **Cron execution is handled by the gateway daemon.** The gateway ticks the scheduler every 60 seconds, running any due jobs in isolated agent sessions.

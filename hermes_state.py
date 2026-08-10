@@ -495,7 +495,11 @@ def _process_looks_like_pytest(proc: Any) -> bool:
         return False
     for arg in cmdline:
         try:
-            name = os.path.basename(str(arg).strip('"').strip("'")).lower()
+            token = str(arg).strip('"').strip("'")
+            # Split on both separators on every host: os.path.basename is
+            # POSIX-only under Linux and would leave a Windows-style path
+            # intact, making the matcher's answer depend on the platform.
+            name = token.replace("\\", "/").rsplit("/", 1)[-1].lower()
         except Exception:
             continue
         if name in _PYTEST_LAUNCHER_NAMES:

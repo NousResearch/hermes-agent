@@ -173,6 +173,13 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["session_key"] == "agent:main:cli:dm:local"
     assert evt["parent_session_id"] == "20260703_parent_sid"
     assert evt["delegation_id"] == res["delegation_id"]
+    assert evt["event_schema"] == "hermes.internal_event.v1"
+    assert evt["event_id"] == f"async_delegation:{res['delegation_id']}:terminal"
+    assert evt["event_kind"] == "workflow.async_delegation.terminal"
+    assert evt["workflow_id"] == f"delegation:{res['delegation_id']}"
+    assert evt["display_kind"] == "internal_event"
+    assert evt["user_originated"] is False
+    assert evt["terminal"] is True
 
 
 def test_rich_reinjection_block_is_self_contained():

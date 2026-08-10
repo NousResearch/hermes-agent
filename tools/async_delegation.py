@@ -378,6 +378,7 @@ def recover_abandoned_delegations() -> int:
             for _k in ("scope_id", "user_id", "user_name"):
                 if task.get(_k):
                     event[_k] = task[_k]
+            event.update(_internal_event_envelope(delegation_id))
             result = {"status": "unknown", "summary": None, "error": event["error"]}
             conn.execute(
                 """UPDATE async_delegations SET state='unknown', completed_at=?,
@@ -704,6 +705,26 @@ def _new_delegation_id() -> str:
     return f"deleg_{uuid.uuid4().hex[:8]}"
 
 
+def _internal_event_envelope(delegation_id: Any) -> Dict[str, Any]:
+    """Return the stable presentation-neutral identity for a terminal result.
+
+    Hosts may still inject the formatted payload into a model-facing ``user``
+    turn to preserve provider role alternation.  These fields make that transport
+    detail explicit so transcript projections never have to infer authorship
+    from prompt text such as ``[ASYNC DELEGATION ...]``.
+    """
+    delegation_key = str(delegation_id or "").strip()
+    return {
+        "event_schema": "hermes.internal_event.v1",
+        "event_id": f"async_delegation:{delegation_key}:terminal",
+        "event_kind": "workflow.async_delegation.terminal",
+        "workflow_id": f"delegation:{delegation_key}",
+        "display_kind": "internal_event",
+        "user_originated": False,
+        "terminal": True,
+    }
+
+
 def _prune_completed_locked() -> None:
     """Drop the oldest completed records beyond the retention cap.
 
@@ -991,6 +1012,7 @@ def _push_completion_event(
     for _k in ("scope_id", "user_id", "user_name"):
         if record.get(_k):
             evt[_k] = record[_k]
+    evt.update(_internal_event_envelope(record.get("delegation_id")))
     # Structured stall metadata (#51690) — additive, present only on
     # stall-monitor finalizations.
     for _k in (

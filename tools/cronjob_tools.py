@@ -434,6 +434,53 @@ def _normalize_deliver_param(value: Any) -> Optional[str]:
     return text or None
 
 
+def _resolve_cron_context_deliver(deliver: Optional[str]) -> Optional[str]:
+    """Resolve ``origin`` to a concrete target for cron-context creates.
+
+    A job created FROM a cron run must never store the literal ``origin``:
+    the creating session is ephemeral, so by fire time there is no origin to
+    resolve and the scheduler would fall back to guessing a home channel.
+    Resolve at create time instead, using the creating run's own concrete
+    delivery target — the ``HERMES_CRON_AUTO_DELIVER_*`` contextvars that
+    ``run_job`` publishes per run (already per-job-safe under the parallel
+    pool). Rules:
+
+    * Not a cron-context session → returned unchanged (chat/CLI creates keep
+      today's fire-time ``origin`` semantics, byte-identical).
+    * ``origin`` element (or an omitted value, which the scheduler treats as
+      origin) → replaced with ``platform:chat_id[:thread_id]`` from the
+      creating run's target; ``local`` when the creating run has no concrete
+      target (e.g. its own deliver is ``local``).
+    * Every other element (``local``, ``all``, explicit ``platform:...``)
+      passes through verbatim, including inside comma lists.
+    """
+    from gateway.session_context import get_session_env
+    from utils import is_truthy_value
+
+    if not is_truthy_value(get_session_env("HERMES_CRON_SESSION", "")):
+        return deliver
+
+    def _creator_target() -> str:
+        platform = get_session_env("HERMES_CRON_AUTO_DELIVER_PLATFORM", "").strip()
+        chat_id = get_session_env("HERMES_CRON_AUTO_DELIVER_CHAT_ID", "").strip()
+        if not platform or not chat_id:
+            return "local"
+        thread_id = get_session_env("HERMES_CRON_AUTO_DELIVER_THREAD_ID", "").strip()
+        if thread_id:
+            return f"{platform}:{chat_id}:{thread_id}"
+        return f"{platform}:{chat_id}"
+
+    if deliver is None:
+        return _creator_target()
+    parts = [p.strip() for p in str(deliver).split(",") if p.strip()]
+    resolved = [_creator_target() if p.lower() == "origin" else p for p in parts]
+    # De-dup while preserving order: 'origin,local' with a local-target
+    # creator would otherwise store 'local,local'.
+    seen: set = set()
+    unique = [p for p in resolved if not (p in seen or seen.add(p))]
+    return ",".join(unique) if unique else None
+
+
 def _validate_cron_base_url(
     provider: Optional[Any], base_url: Optional[Any]
 ) -> Optional[str]:
@@ -1126,7 +1173,9 @@ def cronjob(
                     schedule=schedule,
                     name=name,
                     repeat=repeat,
-                    deliver=_normalize_deliver_param(deliver),
+                    deliver=_resolve_cron_context_deliver(
+                        _normalize_deliver_param(deliver)
+                    ),
                     origin=_origin_from_env(),
                     skills=canonical_skills,
                     model=_normalize_optional_job_value(model),

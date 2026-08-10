@@ -52,10 +52,20 @@ class _FakeCamofoxHandler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
     def _tab(self, tab_id: str):
-        """Return the tab record or answer 404 (garbage-collected tab)."""
+        """Return the tab record or answer like the real server for a dead
+        tab: 410 Gone with ``code: browser_restarted`` (the actual Camofox
+        server's response for a GC'd tab; the older 404 shape is also
+        covered by the runtime's recovery check)."""
         tab = self.server.camofox.tabs.get(tab_id)
         if tab is None or tab.get("dead"):
-            self._send_json(404, {"error": "tab not found"})
+            self._send_json(
+                410,
+                {
+                    "error": "Tab no longer exists (browser was restarted). "
+                    "Create a new tab.",
+                    "code": "browser_restarted",
+                },
+            )
             return None
         return tab
 
@@ -83,6 +93,8 @@ class _FakeCamofoxHandler(BaseHTTPRequestHandler):
             ]
             return self._send_json(200, {"tabs": tabs})
         if tab_id is not None and path == "stats":
+            if srv.stats_error_code:
+                return self._send_json(srv.stats_error_code, {"error": "forced error"})
             tab = self._tab(tab_id)
             if tab is None:
                 return
@@ -118,6 +130,13 @@ class _FakeCamofoxHandler(BaseHTTPRequestHandler):
         srv = self.server.camofox
         body = self._body()
         if path == "/tabs" and tab_id is None:
+            # Mirror the real server: an explicit non-http(s) url (e.g.
+            # "about:blank") is rejected; omitting the key opens a blank tab.
+            url = body.get("url", "")
+            if url and not url.startswith(("http://", "https://")):
+                return self._send_json(
+                    400, {"error": f"Blocked URL scheme: {url}"}
+                )
             srv.counter += 1
             tid = f"t{srv.counter}"
             srv.tabs[tid] = {
@@ -149,6 +168,7 @@ class FakeCamofoxServer:
         self.snapshot = "[heading] Hello Camofox\n[link e1] More information\n"
         self.refs_count = 2
         self.evaluate_result = "eval-result-42"
+        self.stats_error_code = None  # when set, /stats answers this status
         self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), _FakeCamofoxHandler)
         self.httpd.camofox = self
         self.url = f"http://127.0.0.1:{self.httpd.server_port}"
@@ -298,6 +318,20 @@ class TestExecE2E:
         assert "CAMOFOX_TAB_ID=t2" in second["output"]
         assert camofox_mod._sessions["e2e-recover"]["tab_id"] == "t2"
 
+    def test_non_gone_errors_do_not_recreate(self, camofox_mode):
+        """A 401 (bad API key) must propagate, not silently recreate the tab."""
+        first = _exec("new_tab('https://example.com')\nprint(page_info())", task_id="e2e-401")
+        assert first["success"] is True, first
+        assert camofox_mod._sessions["e2e-401"]["tab_id"] == "t1"
+
+        camofox_mode.stats_error_code = 401
+        second = _exec("print(page_info())", task_id="e2e-401")
+        assert second["success"] is False
+        assert "HTTP 401" in second.get("stderr", "")
+        # no recreation happened: the cache still points at the stale tab
+        assert camofox_mod._sessions["e2e-401"]["tab_id"] == "t1"
+        assert "CAMOFOX_TAB_ID=t2" not in second.get("output", "")
+
     def test_clear_error_without_server(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.config.read_raw_config",
@@ -311,6 +345,38 @@ class TestExecE2E:
     def test_blocked_url_rejected(self, camofox_mode):
         result = _exec("new_tab('http://169.254.169.254/latest/meta-data')", task_id="e2e-blocked")
         assert result.get("success") is not True
+
+    def test_last_tab_id_wins(self, camofox_mode):
+        """Two new_tab() calls in one script: the cache must follow the LAST."""
+        result = _exec(
+            "new_tab('https://example.com')\nnew_tab('https://example.org')",
+            task_id="e2e-two-tabs",
+        )
+        assert result["success"] is True, result
+        assert "CAMOFOX_TAB_ID=t1" in result["output"]
+        assert "CAMOFOX_TAB_ID=t2" in result["output"]
+        assert camofox_mod._sessions["e2e-two-tabs"]["tab_id"] == "t2"
+
+    def test_provider_credentials_are_scrubbed(self, camofox_mode, monkeypatch):
+        """The model's code runs here — it must not inherit provider keys."""
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-not-leak")
+        result = _exec(
+            "import os\nprint('KEY=' + os.environ.get('ANTHROPIC_API_KEY', 'absent'))",
+            task_id="e2e-scrub",
+        )
+        assert result["success"] is True, result
+        assert "KEY=absent" in result["output"]
+        assert "sk-should-not-leak" not in result["output"]
+
+    def test_agent_helpers_auto_imported(self, camofox_mode, monkeypatch, tmp_path):
+        """The description promises agent_helpers.py is auto-imported."""
+        monkeypatch.setenv("BH_AGENT_WORKSPACE", str(tmp_path))
+        (tmp_path / "agent_helpers.py").write_text(
+            "def my_helper():\n    return 'helper-ran'\n", encoding="utf-8"
+        )
+        result = _exec("print(my_helper())", task_id="e2e-helpers")
+        assert result["success"] is True, result
+        assert "helper-ran" in result["output"]
 
 
 # ---------------------------------------------------------------------------

@@ -233,21 +233,30 @@ def is_browser_use_cli_mode() -> bool:
     """
     try:
         from tools.browser_camofox import is_camofox_mode
+
+        def _camofox_active() -> bool:
+            try:
+                return bool(is_camofox_mode())
+            except Exception as e:
+                logger.debug("Camofox activity check failed: %s", e)
+                return False
     except Exception as e:
         logger.debug("Camofox activity check failed: %s", e)
-        is_camofox_mode = lambda: False  # noqa: E731
+
+        def _camofox_active() -> bool:
+            return False
 
     backend = get_browser_backend()
     if backend == CAMOFOX_BACKEND_KEY:
         # Camofox exec mode: only meaningful when a Camofox server is
         # configured; otherwise fall through to the built-in tools.
-        return is_camofox_mode()
+        return _camofox_active()
     if backend == _BACKEND_KEY:
         # Explicit Browser Use CLI mode — Camofox still falls back to the
         # built-in tools (the CDP-only harness cannot drive Camoufox). A
         # missing CLI is reported at execution time, not here: explicit
         # opt-in means the user asked for the surface.
-        if is_camofox_mode():
+        if _camofox_active():
             return False
         return True
     if backend:
@@ -257,7 +266,7 @@ def is_browser_use_cli_mode() -> bool:
     # Default (backend unset): Browser Use mode when the CLI can run at all;
     # Camofox setups keep the built-in tools; otherwise the built-in stack
     # stays so browsing never silently breaks.
-    if is_camofox_mode():
+    if _camofox_active():
         return False
     return _find_cli() is not None
 

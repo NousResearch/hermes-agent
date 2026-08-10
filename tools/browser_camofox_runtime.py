@@ -53,6 +53,14 @@ if not _USER_ID:
     raise RuntimeError("BH_USER_ID is not set — Camofox session not resolved.")
 
 
+class CamofoxHTTPError(RuntimeError):
+    """A non-2xx response from the Camofox server (carries the status code)."""
+
+    def __init__(self, message: str, code: int):
+        super().__init__(message)
+        self.code = code
+
+
 def _request(
     method: str,
     path: str,
@@ -85,8 +93,8 @@ def _request(
             detail = exc.read().decode("utf-8", "replace")[:300]
         except Exception:
             pass
-        raise RuntimeError(
-            f"Camofox {method} {path} failed: HTTP {exc.code} {detail}"
+        raise CamofoxHTTPError(
+            f"Camofox {method} {path} failed: HTTP {exc.code} {detail}", exc.code
         ) from exc
     except urllib.error.URLError as exc:
         raise RuntimeError(
@@ -102,12 +110,21 @@ def _tab() -> str:
             _request("GET", f"/tabs/{_TAB_ID}/stats", params={"userId": _USER_ID}, timeout=10)
             print(f"CAMOFOX_TAB_ID={_TAB_ID}")
             return _TAB_ID
-        except RuntimeError:
-            pass  # stale tab — fall through and create a fresh one
+        except CamofoxHTTPError as exc:
+            # A 404 (tab gone) or 410 (the real Camofox server's response
+            # for a GC'd/restarted tab: "Tab no longer exists (browser was
+            # restarted)") means "recreate". Anything else — 401, 5xx, or a
+            # connection error — must surface: silently opening a fresh tab
+            # would throw away the live page and hide the real failure.
+            if exc.code not in (404, 410):
+                raise
     data = _request(
         "POST",
         "/tabs",
-        body={"userId": _USER_ID, "listItemId": _SESSION_KEY, "url": "about:blank"},
+        # No explicit url: the real server rejects the "about:" scheme
+        # (HTTP 400 "Blocked URL scheme"), while omitting the key opens a
+        # native blank page. new_tab() always passes a real http(s) URL.
+        body={"userId": _USER_ID, "listItemId": _SESSION_KEY},
     )
     tab_id = str(data.get("tabId") or "")
     if not tab_id:
@@ -124,15 +141,18 @@ def ensure_real_tab() -> dict:
 
 def new_tab(url: str) -> dict:
     """Open a URL in a fresh tab (first navigation of a session)."""
+    global _TAB_ID
     data = _request(
         "POST",
         "/tabs",
         body={"userId": _USER_ID, "listItemId": _SESSION_KEY, "url": url},
         timeout=60,
     )
-    global _TAB_ID
-    _TAB_ID = str(data.get("tabId") or _TAB_ID)
-    print(f"CAMOFOX_TAB_ID={_TAB_ID}")
+    tab_id = str(data.get("tabId") or "")
+    if not tab_id:
+        raise RuntimeError(f"Camofox /tabs returned no tabId: {data!r}")
+    _TAB_ID = tab_id
+    print(f"CAMOFOX_TAB_ID={tab_id}")
     return {"url": data.get("url", url), "title": data.get("title", "")}
 
 
@@ -308,6 +328,11 @@ def capture_screenshot(full_page: bool = False) -> str:
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"camofox_{int(time.time() * 1000)}.png"
     path.write_bytes(png)
+    # Native path marker first (the parent prefers it: the screenshot
+    # detector regex for the CLI backend requires a leading "/", which
+    # resolves wrong for Windows drive letters), then the POSIX-style
+    # print as a fallback for the model and the CLI-style detector.
+    print(f"CAMOFOX_SCREENSHOT={path}")
     posix = path.as_posix()
     print(posix)
     return posix
@@ -385,3 +410,38 @@ __all__ = [
     "capture_screenshot",
     "cdp",
 ]
+
+
+def _load_agent_helpers() -> None:
+    """Auto-import ``agent_helpers.py`` from the workspace, as promised.
+
+    The tool description tells the model it can "define reusable functions in
+    agent_helpers.py there — the harness auto-imports it into every call"
+    (the Browser Use CLI harness does). Without this, the model writes the
+    file and every helper silently vanishes on the next call. Names are
+    appended to ``__all__`` so the wrapper's ``import *`` re-exports them.
+    """
+    if not _WORKSPACE:
+        return
+    helpers = Path(_WORKSPACE) / "agent_helpers.py"
+    if not helpers.is_file():
+        return
+    if _WORKSPACE not in sys.path:
+        sys.path.insert(0, _WORKSPACE)
+    try:
+        import agent_helpers
+    except Exception as exc:  # a broken helper file must not kill the call
+        print(f"agent_helpers.py failed to import: {exc}", file=sys.stderr)
+        return
+    exported = getattr(agent_helpers, "__all__", None) or [
+        name for name in vars(agent_helpers) if not name.startswith("_")
+    ]
+    for name in exported:
+        if not hasattr(agent_helpers, name):
+            continue
+        globals()[name] = getattr(agent_helpers, name)
+        if name not in __all__:
+            __all__.append(name)
+
+
+_load_agent_helpers()

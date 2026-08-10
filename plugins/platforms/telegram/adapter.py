@@ -7222,6 +7222,58 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return
 
+        # --- Executor 결재 callbacks (apv:choice:sid) — profile-b 로컬 패치 2026-08-10 ---
+        # 무인 실행자(pipeops executor)의 결재 버튼. 탭 = 즉시 접수:
+        # replies-web.jsonl에 append(관제탑 /apv와 같은 소비 지점 → A5가 원장·집행 반영)
+        # + 버튼 제거 + 접수 표시. 사장 지시: "승인 누르면 승인이 되어야지".
+        if data.startswith("apv:"):
+            parts = data.split(":", 2)
+            if len(parts) == 3 and parts[1] in ("a", "b", "c"):
+                caller_id = str(getattr(query.from_user, "id", ""))
+                if not self._is_callback_user_authorized(
+                    caller_id,
+                    chat_id=query_chat_id,
+                    chat_type=str(query_chat_type) if query_chat_type is not None else None,
+                    thread_id=str(query_thread_id) if query_thread_id is not None else None,
+                    user_name=query_user_name,
+                ):
+                    await query.answer(text="⛔ 결재 권한이 없습니다.")
+                    return
+                import json as _json
+                import re as _re
+                from datetime import datetime as _dt
+                from pathlib import Path as _P
+                choice, sid = parts[1], parts[2]
+                if not _re.fullmatch(r"[0-9a-f]{6,16}", sid):
+                    await query.answer(text="잘못된 결재 데이터입니다.")
+                    return
+                _dst = _P(r"G:\lab\workspace\mas\_automation\executor\replies-web.jsonl")
+                try:
+                    _dst.parent.mkdir(parents=True, exist_ok=True)
+                    with _dst.open("a", encoding="utf-8") as _fh:
+                        _fh.write(_json.dumps(
+                            {"ts": _dt.now().isoformat(timespec="seconds"),
+                             "sid": sid, "choice": choice}, ensure_ascii=False) + "\n")
+                except OSError as _exc:
+                    logger.warning("[%s] apv append failed: %s", self.name, _exc)
+                    await query.answer(text="⚠ 접수 기록 실패 — 텍스트 회신으로 부탁합니다.")
+                    return
+                _label = {"a": "✅ 승인", "b": "❌ 거절", "c": "⏸ 보류"}[choice]
+                await query.answer(text="%s 접수 — 15분 내 반영됩니다." % _label)
+                try:
+                    _orig = getattr(query.message, "text", "") or ""
+                    await query.edit_message_text(
+                        text=_orig + "\n\n→ %s 접수 %s" % (_label, _dt.now().strftime("%H:%M")),
+                        reply_markup=None)
+                except Exception:
+                    try:
+                        await query.edit_message_reply_markup(reply_markup=None)
+                    except Exception:
+                        pass
+                return
+            await query.answer(text="잘못된 결재 데이터입니다.")
+            return
+
         # --- Exec approval callbacks (ea:choice:id) ---
         if data.startswith("ea:"):
             parts = data.split(":", 2)

@@ -1753,11 +1753,29 @@ def write_credential_pool(
 
 
 def suppress_credential_source(provider_id: str, source: str) -> None:
-    """Mark a credential source as suppressed so it won't be re-seeded."""
+    """Mark a credential source as suppressed so it won't be re-seeded.
+
+    Older auth stores may represent a provider's suppressed sources as a
+    mapping.  Treat its keys as source names and migrate the value to the
+    canonical list form before appending the requested source.
+    """
     with _auth_store_lock():
         auth_store = _load_auth_store()
-        suppressed = auth_store.setdefault("suppressed_sources", {})
-        provider_list = suppressed.setdefault(provider_id, [])
+        suppressed = auth_store.get("suppressed_sources")
+        if not isinstance(suppressed, dict):
+            suppressed = {}
+            auth_store["suppressed_sources"] = suppressed
+
+        raw_sources = suppressed.get(provider_id)
+        if isinstance(raw_sources, list):
+            provider_list = raw_sources
+        elif isinstance(raw_sources, dict):
+            provider_list = [str(name) for name in raw_sources]
+            suppressed[provider_id] = provider_list
+        else:
+            provider_list = []
+            suppressed[provider_id] = provider_list
+
         if source not in provider_list:
             provider_list.append(source)
         _save_auth_store(auth_store)
@@ -1783,8 +1801,15 @@ def unsuppress_credential_source(provider_id: str, source: str) -> bool:
         suppressed = auth_store.get("suppressed_sources")
         if not isinstance(suppressed, dict):
             return False
-        provider_list = suppressed.get(provider_id)
-        if not isinstance(provider_list, list) or source not in provider_list:
+        raw_sources = suppressed.get(provider_id)
+        if isinstance(raw_sources, dict):
+            provider_list = [str(name) for name in raw_sources]
+            suppressed[provider_id] = provider_list
+        elif isinstance(raw_sources, list):
+            provider_list = raw_sources
+        else:
+            return False
+        if source not in provider_list:
             return False
         provider_list.remove(source)
         if not provider_list:

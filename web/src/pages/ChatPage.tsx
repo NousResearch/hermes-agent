@@ -290,6 +290,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // tabs because the dep wouldn't change on tab switch.
   const [mobilePanelOpenRaw, setMobilePanelOpenRaw] = useState(false);
   const mobilePanelOpen = isActive && mobilePanelOpenRaw;
+
+  // Collapse toggle for the desktop chat side panel (model + sessions),
+  // persisted in localStorage so the choice survives reloads.
+  const [chatPanelCollapsed, setChatPanelCollapsed] = useState(
+    () => localStorage.getItem("hermes-chat-panel-collapsed") === "1",
+  );
+  const toggleChatPanel = useCallback(() => {
+    setChatPanelCollapsed((prev) => {
+      const next = !prev;
+      localStorage.setItem("hermes-chat-panel-collapsed", next ? "1" : "0");
+      return next;
+    });
+  }, []);
   const { setEnd, setTitle } = usePageHeader();
   const [sessionTitleState, setSessionTitleState] = useState<{
     scope: string;
@@ -1717,15 +1730,53 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               </span>
             </span>
           </Button>
+
+          {chatPanelCollapsed && (
+            <Button
+              ghost
+              onClick={toggleChatPanel}
+              title="Show side panel (model + sessions)"
+              aria-label="Show chat side panel"
+              className={cn(
+                "absolute z-10",
+                "normal-case tracking-normal font-normal",
+                "rounded border border-current/30",
+                "bg-black/20",
+                "opacity-70 hover:opacity-100 hover:border-current/60",
+                "transition-opacity duration-150",
+                "top-2 right-2 px-2 py-1 text-xs sm:top-3 sm:right-3",
+              )}
+              style={{ color: terminalFg }}
+            >
+              <span className="inline-flex items-center gap-1">
+                <PanelRight className="h-3 w-3 shrink-0" />
+                <span className="hidden min-[400px]:inline tracking-wide">
+                  panel
+                </span>
+              </span>
+            </Button>
+          )}
         </div>
 
-        {!narrow && (
+        {!narrow && !chatPanelCollapsed && (
           <div
             id="chat-side-panel"
             role="complementary"
             aria-label={modelToolsLabel}
             className="flex min-h-0 shrink-0 flex-col gap-3 overflow-hidden lg:h-full lg:w-60"
           >
+            <div className="flex h-8 shrink-0 items-center justify-end pr-1">
+              <Button
+                ghost
+                size="icon"
+                onClick={toggleChatPanel}
+                aria-label="Collapse chat side panel"
+                title="Collapse side panel"
+                className="text-text-secondary hover:text-midground"
+              >
+                <X />
+              </Button>
+            </div>
             {/* Model picker — keeps the rail thin. */}
             <div className="shrink-0">
               <ChatSidebar

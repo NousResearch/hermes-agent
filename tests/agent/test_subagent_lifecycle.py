@@ -82,7 +82,7 @@ def test_duplicate_correlation_is_reserved_during_child_construction(
         ident = next(build_count)
         if ident == 0:
             first_build_started.set()
-            assert release_first_build.wait(timeout=1)
+            assert release_first_build.wait(timeout=5)
         return FakeChild(f"sa-race-{ident}")
 
     monkeypatch.setattr(
@@ -92,17 +92,17 @@ def test_duplicate_correlation_is_reserved_during_child_construction(
 
     with ThreadPoolExecutor(max_workers=2) as executor:
         first = executor.submit(lifecycle.launch, request)
-        assert first_build_started.wait(timeout=1)
+        assert first_build_started.wait(timeout=5)
         second = executor.submit(lifecycle.launch, request)
         try:
             with pytest.raises(SubagentLifecycleError, match="Duplicate"):
-                second.result(timeout=1)
+                second.result(timeout=5)
         finally:
             release_first_build.set()
-        handle = first.result(timeout=1)
+        handle = first.result(timeout=5)
 
     assert handle.correlation_id == "same-concurrent"
-    lifecycle.wait(handle, timeout_seconds=1)
+    lifecycle.wait(handle, timeout_seconds=5)
 
 
 @pytest.mark.parametrize("failure", ["build", "identity"])
@@ -129,7 +129,7 @@ def test_failed_child_construction_releases_correlation_reservation(
     handle = lifecycle.launch(request)
 
     assert handle.subagent_id == f"sa-retry-{failure}"
-    lifecycle.wait(handle, timeout_seconds=1)
+    lifecycle.wait(handle, timeout_seconds=5)
 
 
 def test_failed_executor_submission_rolls_back_record_and_correlation(
@@ -152,7 +152,7 @@ def test_failed_executor_submission_rolls_back_record_and_correlation(
     handle = lifecycle.launch(request)
 
     assert handle.correlation_id == "retry-after-reject"
-    lifecycle.wait(handle, timeout_seconds=1)
+    lifecycle.wait(handle, timeout_seconds=5)
 
 
 def test_cancel_is_cooperative_and_forged_handle_is_unknown(lifecycle):

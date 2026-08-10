@@ -6997,8 +6997,22 @@ def run_conversation(
                 # final response path.
                 agent._mute_post_response = False
                 
-                # Check if response only has think block with no actual content after it
-                if not agent._has_content_after_think_block(final_response):
+                # Check if response only has think block with no actual content after it.
+                # Also treat a response that STARTS WITH our own "(empty)" sentinel as
+                # contentless: the sentinel is injected by the post-tool nudge below, so
+                # a model echoing it back has leaked scratchpad shorthand into the final
+                # answer instead of answering (observed: "(empty) again risk. Need
+                # progress + tool.").  Such a turn must recover, not terminate.
+                # Measured on 3,804 real non-trivial stop-messages: exactly 1 match, the
+                # leak itself — so this cannot swallow a legitimate short answer.
+                _leaked_empty_sentinel = (
+                    (final_response or "").lstrip().startswith("(empty)")
+                    and agent._has_content_after_think_block(final_response)
+                )
+                if (
+                    not agent._has_content_after_think_block(final_response)
+                    or _leaked_empty_sentinel
+                ):
                     # ── Partial stream recovery ─────────────────────
                     # If content was already streamed to the user before
                     # the connection died, use it as the final response
@@ -7007,7 +7021,7 @@ def run_conversation(
                     _partial_streamed = (
                         getattr(agent, "_current_streamed_assistant_text", "") or ""
                     )
-                    if agent._has_content_after_think_block(_partial_streamed):
+                    if not _leaked_empty_sentinel and agent._has_content_after_think_block(_partial_streamed):
                         _turn_exit_reason = "partial_stream_recovery"
                         _recovered = agent._strip_think_blocks(_partial_streamed).strip()
                         logger.info(

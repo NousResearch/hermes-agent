@@ -3001,6 +3001,13 @@ def create_task(
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     if metadata is not None and not isinstance(metadata, dict):
         raise ValueError("metadata must be an object")
+    from hermes_cli.kanban_intake import preflight_workflow_configuration
+
+    assignee, metadata = preflight_workflow_configuration(
+        task_type=(metadata or {}).get("task_type") if isinstance(metadata, dict) else None,
+        assignee=assignee,
+        metadata=metadata,
+    )
     if provider_override and not model_override:
         raise ValueError("provider_override requires a model_override")
     assignee = _canonical_assignee(assignee)

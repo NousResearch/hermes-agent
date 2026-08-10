@@ -327,6 +327,17 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     b_set_wd.add_argument("path", nargs="?", default=None,
                           help="Absolute path to use as default workdir. Omit to clear.")
 
+    # --- preflight ---
+    p_preflight = sub.add_parser(
+        "preflight",
+        help="Preview workflow-configuration routing without writing tasks",
+    )
+    p_preflight.add_argument("--task-type", required=True)
+    p_preflight.add_argument("--assignee", default=None)
+    p_preflight.add_argument("--coding-agent", default=None)
+    p_preflight.add_argument("--metadata", default=None, help="JSON object")
+    p_preflight.add_argument("--json", action="store_true")
+
     # --- create ---
     p_create = sub.add_parser("create", help="Create a new task")
     p_create.add_argument("title", help="Task title")
@@ -1038,6 +1049,11 @@ def kanban_command(args: argparse.Namespace) -> int:
     if action == "boards":
         return _dispatch_boards(args)
 
+    # Preflight is intentionally DB-free: it must remain safe to run against
+    # a fresh install and must not initialize a board or create a duplicate.
+    if action == "preflight":
+        return _cmd_preflight(args)
+
     # `--board <slug>` applies to every subcommand below by way of an
     # env-var pin for the duration of this call. Using HERMES_KANBAN_BOARD
     # (rather than threading `board=` through 50+ kb.connect() sites)
@@ -1603,6 +1619,39 @@ def _cmd_create(args: argparse.Namespace) -> int:
             if not running and message:
                 print(f"\n⚠  {message}", file=sys.stderr)
     return 0
+
+
+def _cmd_preflight(args: argparse.Namespace) -> int:
+    metadata = None
+    if getattr(args, "metadata", None):
+        try:
+            metadata = json.loads(args.metadata)
+        except json.JSONDecodeError as exc:
+            print(f"kanban preflight: --metadata: {exc}", file=sys.stderr)
+            return 2
+        if not isinstance(metadata, dict):
+            print("kanban preflight: --metadata must be a JSON object", file=sys.stderr)
+            return 2
+    from hermes_cli.kanban_intake import preflight_output
+
+    output = preflight_output(
+        task_type=args.task_type,
+        assignee=args.assignee,
+        metadata=metadata,
+        requested_agent=args.coding_agent,
+    )
+    if getattr(args, "json", False):
+        print(json.dumps(output, indent=2, ensure_ascii=False))
+    else:
+        print("accepted: " + ("yes" if output["accepted"] else "no"))
+        print("writes: 0")
+        print("duplicates_created: 0")
+        if output["accepted"]:
+            print(f"resolved_assignee: {output['resolved_assignee']}")
+            print(json.dumps(output["metadata"], indent=2, ensure_ascii=False))
+        else:
+            print(f"error: {output['error']}", file=sys.stderr)
+    return 0 if output["accepted"] else 2
 
 
 def _cmd_swarm(args: argparse.Namespace) -> int:

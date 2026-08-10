@@ -1,0 +1,47 @@
+# docker/hermes-env.example — template for data/.env
+#
+# Copy to data/.env and fill in your secrets:
+#   cp docker/hermes-env.example data/.env
+#
+# WeChat (weixin) credentials are auto-populated by the QR onboarding flow
+# in the web dashboard (Channels → WeChat → Set up with QR). You do not
+# need to set WEIXIN_* variables manually.
+#
+# All values are optional for a plain Ollama setup — the compose files have
+# sensible defaults (POSTGRES_PASSWORD defaults to "changeme", OPENAI_API_KEY
+# is set to "ollama" in compose, etc.). Only set what you need.
+
+# ── Database ──────────────────────────────────────────────────────────────────
+# PostgreSQL container password. Must match the POSTGRES_PASSWORD used in
+# docker-compose.yml (defaults to "changeme" if unset).
+# POSTGRES_PASSWORD=changeme
+
+# ── WeChat (weixin) ───────────────────────────────────────────────────────────
+# Do NOT set these manually — the QR onboarding wizard writes them to
+# data/weixin/accounts/<account_id>.json and data/.env automatically.
+# WEIXIN_ACCOUNT_ID=
+# WEIXIN_TOKEN=
+# WEIXIN_BASE_URL=
+# Required by v0.18.0 security change: dm_policy:open needs explicit opt-in
+WEIXIN_ALLOW_ALL_USERS=1
+
+# ── Messaging platforms (optional) ────────────────────────────────────────────
+# TELEGRAM_BOT_TOKEN=
+# DISCORD_BOT_TOKEN=
+# SLACK_BOT_TOKEN=
+# SLACK_APP_TOKEN=
+
+# ── AI providers (optional — Ollama needs no key) ─────────────────────────────
+# EXA_API_KEY=
+# OPENAI_API_KEY=
+# ANTHROPIC_API_KEY=
+
+# ── API Server (OpenAI-compatible endpoint on :8642) ──────────────────────────
+# Disabled by default. Set API_SERVER_KEY to enable the /v1/chat/completions
+# endpoint so external frontends (Open WebUI, LobeChat, LibreChat, etc.) can
+# connect to hermes-agent. See .github/instructions/api-gateway-ports.instructions.md
+# API_SERVER_KEY=<generate-a-strong-bearer-token>
+# API_SERVER_PORT=8642
+# API_SERVER_HOST=127.0.0.1
+# API_SERVER_CORS_ORIGINS=http://localhost:3000
+# API_SERVER_MODEL_NAME=hermes-agent

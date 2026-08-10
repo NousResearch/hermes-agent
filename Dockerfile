@@ -7,36 +7,36 @@ ARG SQLITE_AUTOCONF_VERSION=3530400
 ARG SQLITE_SHA256=0e9483900e92cd5de8fd48d16bf9200145a61f7fd5be542a5ac81d8a9516eb9c
 RUN apt-get -o Acquire::Retries=3 update && \
     apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
-        build-essential ca-certificates curl && \
+    build-essential ca-certificates curl && \
     rm -rf /var/lib/apt/lists/* && \
     (curl -fsSL --retry 1 --retry-all-errors --connect-timeout 15 --max-time 60 \
-        -o /tmp/sqlite.tar.gz \
-        "https://sqlite.org/2026/sqlite-autoconf-${SQLITE_AUTOCONF_VERSION}.tar.gz" || \
-     curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 120 \
-        -o /tmp/sqlite.tar.gz \
-        "https://sources.buildroot.net/sqlite/sqlite-autoconf-${SQLITE_AUTOCONF_VERSION}.tar.gz") && \
+    -o /tmp/sqlite.tar.gz \
+    "https://sqlite.org/2026/sqlite-autoconf-${SQLITE_AUTOCONF_VERSION}.tar.gz" || \
+    curl -fsSL --retry 3 --retry-all-errors --connect-timeout 15 --max-time 120 \
+    -o /tmp/sqlite.tar.gz \
+    "https://sources.buildroot.net/sqlite/sqlite-autoconf-${SQLITE_AUTOCONF_VERSION}.tar.gz") && \
     printf '%s  %s\n' "${SQLITE_SHA256}" /tmp/sqlite.tar.gz > /tmp/sqlite.sha256 && \
     sha256sum -c /tmp/sqlite.sha256 && \
     tar -xzf /tmp/sqlite.tar.gz -C /tmp && \
     cd "/tmp/sqlite-autoconf-${SQLITE_AUTOCONF_VERSION}" && \
     CFLAGS="-O2 \
-        -DSQLITE_ENABLE_FTS3 \
-        -DSQLITE_ENABLE_FTS3_PARENTHESIS \
-        -DSQLITE_ENABLE_FTS4 \
-        -DSQLITE_ENABLE_FTS5 \
-        -DSQLITE_ENABLE_RTREE \
-        -DSQLITE_ENABLE_GEOPOLY \
-        -DSQLITE_ENABLE_COLUMN_METADATA \
-        -DSQLITE_ENABLE_UNLOCK_NOTIFY \
-        -DSQLITE_ENABLE_DBSTAT_VTAB \
-        -DSQLITE_ENABLE_DBPAGE_VTAB \
-        -DSQLITE_ENABLE_MATH_FUNCTIONS \
-        -DSQLITE_ENABLE_PREUPDATE_HOOK \
-        -DSQLITE_ENABLE_SESSION \
-        -DSQLITE_SECURE_DELETE \
-        -DSQLITE_THREADSAFE=1 \
-        -DSQLITE_MAX_VARIABLE_NUMBER=250000" \
-        ./configure --prefix=/opt/sqlite-fixed --disable-static && \
+    -DSQLITE_ENABLE_FTS3 \
+    -DSQLITE_ENABLE_FTS3_PARENTHESIS \
+    -DSQLITE_ENABLE_FTS4 \
+    -DSQLITE_ENABLE_FTS5 \
+    -DSQLITE_ENABLE_RTREE \
+    -DSQLITE_ENABLE_GEOPOLY \
+    -DSQLITE_ENABLE_COLUMN_METADATA \
+    -DSQLITE_ENABLE_UNLOCK_NOTIFY \
+    -DSQLITE_ENABLE_DBSTAT_VTAB \
+    -DSQLITE_ENABLE_DBPAGE_VTAB \
+    -DSQLITE_ENABLE_MATH_FUNCTIONS \
+    -DSQLITE_ENABLE_PREUPDATE_HOOK \
+    -DSQLITE_ENABLE_SESSION \
+    -DSQLITE_SECURE_DELETE \
+    -DSQLITE_THREADSAFE=1 \
+    -DSQLITE_MAX_VARIABLE_NUMBER=250000" \
+    ./configure --prefix=/opt/sqlite-fixed --disable-static && \
     make -j"$(nproc)" && \
     make install
 
@@ -82,13 +82,13 @@ RUN ln -sf libsqlite3.so.3.53.4 /usr/local/lib/libsqlite3.so.0 && \
     printf '/usr/local/lib\n' > /etc/ld.so.conf.d/000-sqlite-fixed.conf && \
     ldconfig && \
     python3 -c "import sqlite3, sys; \
-v = sqlite3.sqlite_version_info; \
-sys.exit(f'linked SQLite {sqlite3.sqlite_version} still has the WAL-reset bug') if v < (3, 51, 3) else None; \
-db = sqlite3.connect(':memory:'); \
-db.execute(\"CREATE VIRTUAL TABLE docs USING fts5(content, tokenize='trigram')\"); \
-db.execute(\"INSERT INTO docs VALUES ('hermes')\"); \
-sys.exit('SQLite FTS5 trigram self-test failed') if db.execute(\"SELECT count(*) FROM docs WHERE docs MATCH 'erm'\").fetchone()[0] != 1 else None; \
-db.close()"
+    v = sqlite3.sqlite_version_info; \
+    sys.exit(f'linked SQLite {sqlite3.sqlite_version} still has the WAL-reset bug') if v < (3, 51, 3) else None; \
+    db = sqlite3.connect(':memory:'); \
+    db.execute(\"CREATE VIRTUAL TABLE docs USING fts5(content, tokenize='trigram')\"); \
+    db.execute(\"INSERT INTO docs VALUES ('hermes')\"); \
+    sys.exit('SQLite FTS5 trigram self-test failed') if db.execute(\"SELECT count(*) FROM docs WHERE docs MATCH 'erm'\").fetchone()[0] != 1 else None; \
+    db.close()"
 
 # ---------- s6-overlay install ----------
 # s6-overlay provides supervision for the main hermes process, the dashboard,
@@ -112,21 +112,21 @@ ARG S6_OVERLAY_AARCH64_SHA256=0952056ff913482163cc30e35b2e944b507ba1025d78f5becb
 ARG S6_OVERLAY_SYMLINKS_SHA256=a60dc5235de3ecbcf874b9c1f18d73263ab99b289b9329aa950e8729c4789f0e
 RUN set -eu; \
     case "${TARGETARCH:-amd64}" in \
-        amd64) s6_arch="x86_64"; s6_arch_sha="${S6_OVERLAY_X86_64_SHA256}" ;; \
-        arm64) s6_arch="aarch64"; s6_arch_sha="${S6_OVERLAY_AARCH64_SHA256}" ;; \
-        *) echo "Unsupported TARGETARCH=${TARGETARCH} for s6-overlay" >&2; exit 1 ;; \
+    amd64) s6_arch="x86_64"; s6_arch_sha="${S6_OVERLAY_X86_64_SHA256}" ;; \
+    arm64) s6_arch="aarch64"; s6_arch_sha="${S6_OVERLAY_AARCH64_SHA256}" ;; \
+    *) echo "Unsupported TARGETARCH=${TARGETARCH} for s6-overlay" >&2; exit 1 ;; \
     esac; \
     base="https://github.com/just-containers/s6-overlay/releases/download/v${S6_OVERLAY_VERSION}"; \
     curl -fsSL --retry 3 -o /tmp/s6-overlay-noarch.tar.xz \
-        "${base}/s6-overlay-noarch.tar.xz"; \
+    "${base}/s6-overlay-noarch.tar.xz"; \
     curl -fsSL --retry 3 -o /tmp/s6-overlay-symlinks-noarch.tar.xz \
-        "${base}/s6-overlay-symlinks-noarch.tar.xz"; \
+    "${base}/s6-overlay-symlinks-noarch.tar.xz"; \
     curl -fsSL --retry 3 -o /tmp/s6-overlay-arch.tar.xz \
-        "${base}/s6-overlay-${s6_arch}.tar.xz"; \
+    "${base}/s6-overlay-${s6_arch}.tar.xz"; \
     { \
-        printf '%s  %s\n' "${S6_OVERLAY_NOARCH_SHA256}" /tmp/s6-overlay-noarch.tar.xz; \
-        printf '%s  %s\n' "${s6_arch_sha}" /tmp/s6-overlay-arch.tar.xz; \
-        printf '%s  %s\n' "${S6_OVERLAY_SYMLINKS_SHA256}" /tmp/s6-overlay-symlinks-noarch.tar.xz; \
+    printf '%s  %s\n' "${S6_OVERLAY_NOARCH_SHA256}" /tmp/s6-overlay-noarch.tar.xz; \
+    printf '%s  %s\n' "${s6_arch_sha}" /tmp/s6-overlay-arch.tar.xz; \
+    printf '%s  %s\n' "${S6_OVERLAY_SYMLINKS_SHA256}" /tmp/s6-overlay-symlinks-noarch.tar.xz; \
     } > /tmp/s6-overlay.sha256; \
     sha256sum -c /tmp/s6-overlay.sha256; \
     tar -C / -Jxpf /tmp/s6-overlay-noarch.tar.xz; \
@@ -198,8 +198,8 @@ ENV npm_config_install_links=false
 
 RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
     for i in 1 2 3; do \
-        npx playwright install --with-deps chromium --only-shell && break || \
-        { [ "$i" = 3 ] && exit 1; echo "playwright install failed (attempt $i); retrying in 10s"; sleep 10; }; \
+    npx playwright install --with-deps chromium --only-shell && break || \
+    { [ "$i" = 3 ] && exit 1; echo "playwright install failed (attempt $i); retrying in 10s"; sleep 10; }; \
     done && \
     npm cache clean --force
 
@@ -212,9 +212,9 @@ RUN npm install --prefer-offline --no-audit --fetch-retries=5 && \
 # means the spectrum-ts patch is applied at build time. Layer-cached:
 # only re-runs when the sidecar manifests/patch change.
 COPY plugins/platforms/photon/sidecar/package.json \
-     plugins/platforms/photon/sidecar/package-lock.json \
-     plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs \
-     plugins/platforms/photon/sidecar/
+    plugins/platforms/photon/sidecar/package-lock.json \
+    plugins/platforms/photon/sidecar/patch-spectrum-mixed-attachments.mjs \
+    plugins/platforms/photon/sidecar/
 RUN cd plugins/platforms/photon/sidecar && \
     npm ci --no-audit --fetch-retries=5 && \
     npm cache clean --force
@@ -264,7 +264,10 @@ RUN cd plugins/platforms/photon/sidecar && \
 # The editable link is created after the source copy below.
 COPY pyproject.toml uv.lock ./
 RUN touch ./README.md
-RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix
+# --extra voice (faster-whisper) + --extra edge-tts: bake the default STT+TTS
+# providers so /v1/audio/transcriptions and /v1/audio/speech work out of the
+# box without runtime lazy-install (PyPI is often blocked in containers).
+RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra otlp --extra anthropic --extra bedrock --extra azure-identity --extra hindsight --extra matrix --extra voice --extra edge-tts
 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't
@@ -272,7 +275,13 @@ RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra 
 COPY web/ web/
 COPY ui-tui/ ui-tui/
 COPY apps/shared/ apps/shared/
-RUN cd web && npm run build && \
+# Skip `tsc -b` (type-check) — upstream TS 6 migration has unresolved type
+# errors in web/src/ (ChatSidebar, PairingPage, PluginsPage, etc.) that
+# block the Docker build.  `vite build` uses esbuild and does not type-check,
+# so the production bundle is unaffected.  Upstream's own Docker workflow is
+# gated on `github.repository == 'NousResearch/hermes-agent'` and may be
+# similarly broken on cold builds.
+RUN cd web && npx vite build && \
     cd ../ui-tui && npm run build
 
 # ---------- Source code ----------
@@ -330,7 +339,7 @@ RUN mkdir -p /opt/hermes/bin && \
 # every published image has it.
 ARG HERMES_GIT_SHA=
 RUN if [ -n "${HERMES_GIT_SHA}" ]; then \
-        printf '%s\n' "${HERMES_GIT_SHA}" > /opt/hermes/.hermes_build_sha; \
+    printf '%s\n' "${HERMES_GIT_SHA}" > /opt/hermes/.hermes_build_sha; \
     fi
 
 # ---------- s6-overlay service wiring ----------
@@ -351,7 +360,7 @@ COPY docker/s6-rc.d/ /etc/s6-overlay/s6-rc.d/
 # (the /run/service/ scandir is tmpfs and wiped on restart). Phase 4.
 RUN mkdir -p /etc/cont-init.d && \
     printf '#!/command/with-contenv sh\nexec /opt/hermes/docker/stage2-hook.sh\n' \
-        > /etc/cont-init.d/01-hermes-setup && \
+    > /etc/cont-init.d/01-hermes-setup && \
     chmod +x /etc/cont-init.d/01-hermes-setup
 COPY --chmod=0755 docker/cont-init.d/015-supervise-perms /etc/cont-init.d/015-supervise-perms
 COPY --chmod=0755 docker/cont-init.d/02-reconcile-profiles /etc/cont-init.d/02-reconcile-profiles

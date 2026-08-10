@@ -92,6 +92,14 @@ class WhatsAppOnboardingApply(BaseModel):
     profile: Optional[str] = None
 
 
+class WeixinOnboardingStart(BaseModel):
+    profile: Optional[str] = None
+
+
+class WeixinOnboardingApply(BaseModel):
+    profile: Optional[str] = None
+
+
 class AudioTranscriptionRequest(BaseModel):
     data_url: str
     mime_type: Optional[str] = None

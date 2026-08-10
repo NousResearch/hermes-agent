@@ -68,4 +68,16 @@ describe('hudIgnoresMouse', () => {
 
     expect(hudIgnoresMouse(shell, mount, document.body, true)).toBe(true)
   })
+
+  it('stays solid while a gesture owns the window, even once the hit test goes empty', () => {
+    const { mount, shell } = hud()
+    const handle = document.createElement('div')
+    handle.setAttribute('data-hud-grabbing', '')
+    shell.append(handle)
+
+    // The corner resize grows the window out from under the cursor, so the hit
+    // test reports the scaffolding — handing the mouse away mid-gesture.
+    expect(hudIgnoresMouse(shell, mount, null, true)).toBe(false)
+    expect(hudIgnoresMouse(shell, null, null, true)).toBe(false)
+  })
 })

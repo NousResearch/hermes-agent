@@ -2883,6 +2883,23 @@ button[data-slot='aui_msg-reactions'] svg {
   opacity: 1;
 }
 
+/* The corner resize handle — a hot corner, not a button. The window is created
+   non-resizable (the transparent-frameless Windows drag-growth bug), so this
+   is the one sanctioned way to change the HUD's size; it drives
+   `hermes:hud:set-bounds`, which flips resizable on for the call.
+
+   Deliberately invisible chrome: no glyph, no border — the corner of the bar
+   reads as the affordance, and painting a handle on a surface that lives over
+   other apps would be a stray UI fragment. It opts in to pointer events the
+   same way every other HUD control does (the shell defaults to none). */
+[data-hud-shell] [data-hud-resize] {
+  width: 1.25rem;
+  height: 1.25rem;
+  cursor: nwse-resize;
+  pointer-events: auto;
+  touch-action: none;
+}
+
 /* The composer's drop target is a full-window dashed sheet sized for the app's
    chat column. In the HUD it is a white slab hanging under the bar on a fresh
    thread, and there is nowhere to drop anything into a bar anyway. */

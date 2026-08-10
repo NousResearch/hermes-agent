@@ -9581,10 +9581,40 @@ def _install_python_dependencies_with_optional_fallback(
     in the venv Scripts dir before each install attempt so uv can write fresh
     copies (Windows blocks REPLACE on a running .exe but allows RENAME). See
     ``_quarantine_running_hermes_exe`` for the rationale.
+
+    When ``env`` carries a ``VIRTUAL_ENV`` that does not exist (a pip /
+    site-packages install whose ``PROJECT_ROOT`` is the interpreter's
+    ``site-packages`` directory, where ``PROJECT_ROOT / "venv"`` is never
+    created), ``uv pip`` fails with ``Failed to inspect Python interpreter from
+    active virtual environment`` before doing any work.  Pin the install at the
+    running interpreter instead so the update/recovery path succeeds on those
+    installs (#71510 fixed the ZIP path, #83335 fixed lazy-deps; this closes the
+    shared helper for the remaining callers).
     """
     scripts_dir = _venv_scripts_dir() if _is_windows() else None
 
+    # A pip / site-packages install has no PROJECT_ROOT/venv; the caller still
+    # passes VIRTUAL_ENV=PROJECT_ROOT/venv, which does not exist. uv would fail
+    # before installing anything ("Failed to inspect Python interpreter from
+    # active virtual environment"). Detect the stale pointer and pin the target
+    # interpreter explicitly instead of trusting the nonexistent venv.
+    pin_python = False
+    if (
+        env
+        and env.get("VIRTUAL_ENV")
+        and not Path(env["VIRTUAL_ENV"]).is_dir()
+        and install_cmd_prefix
+        and "uv" in Path(install_cmd_prefix[0]).name.lower()
+    ):
+        # Only uv needs the explicit pin; pip resolves the target from
+        # sys.executable itself and has no --python flag.
+        pin_python = True
+        env = {**env}
+        env.pop("VIRTUAL_ENV", None)
+
     def _install(args: list[str]) -> None:
+        if pin_python:
+            args = [args[0], "--python", str(sys.executable), *args[1:]]
         # strict_quarantine: this is the UPDATE dependency sync. A shim that
         # cannot be renamed aside proves a hard venv hold; running uv anyway
         # is how installs strand half-updated (#87331). ShimQuarantineError

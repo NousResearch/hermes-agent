@@ -1358,7 +1358,9 @@ def cronjob(
             if name is not None:
                 updates["name"] = name
             if deliver is not None:
-                updates["deliver"] = _normalize_deliver_param(deliver)
+                updates["deliver"] = _resolve_cron_context_deliver(
+                    _normalize_deliver_param(deliver)
+                )
             if skills is not None or skill is not None:
                 canonical_skills = _canonical_skills(skill, skills)
                 updates["skills"] = canonical_skills

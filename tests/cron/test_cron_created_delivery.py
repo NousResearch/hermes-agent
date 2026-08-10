@@ -145,6 +145,40 @@ class TestCronContextDeliveryResolution:
         assert "origin" not in [p.strip() for p in stored.split(",")]
 
 
+class TestCronContextUpdatePath:
+    def test_update_deliver_origin_resolves_in_cron_context(self, temp_cron_home):
+        """The update action must apply the same resolution as create — a
+        cron agent updating deliver='origin' would otherwise recreate the
+        dangling literal-origin shape on an origin-less job."""
+        from tools.cronjob_tools import cronjob
+        from cron.jobs import get_job
+
+        tokens, extra = _enter_cron_context("telegram", "-100123456", "17")
+        try:
+            created = _create(deliver="local")
+            result = json.loads(
+                cronjob(action="update", job_id=created["job_id"], deliver="origin")
+            )
+        finally:
+            _exit_cron_context(tokens, extra)
+        assert result["success"] is True
+        job = get_job(created["job_id"])
+        stored = str(job.get("deliver", ""))
+        assert "origin" not in [p.strip() for p in stored.split(",")]
+        assert stored == "telegram:-100123456:17"
+
+    def test_update_deliver_outside_cron_context_unchanged(self, temp_cron_home):
+        from tools.cronjob_tools import cronjob
+        from cron.jobs import get_job
+
+        created = _create(deliver="local")
+        result = json.loads(
+            cronjob(action="update", job_id=created["job_id"], deliver="origin")
+        )
+        assert result["success"] is True
+        assert get_job(created["job_id"]).get("deliver") == "origin"
+
+
 class TestNonCronContextUnchanged:
     def test_chat_session_create_keeps_literal_origin(self, temp_cron_home):
         # No cron_session var — ordinary chat/CLI create. Existing semantics:

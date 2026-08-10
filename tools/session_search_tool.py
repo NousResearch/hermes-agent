@@ -17,6 +17,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from hermes_state_common import _BOUNDARY_END_REASONS
 from hermes_time import safe_strftime
+from tools import query_expansion as qe
 
 # Hidden from browsing/searching — integrations (HERMES_SESSION_SOURCE=tool), delegate
 # subagent runs, kanban workers are not the user's history.
@@ -351,6 +352,25 @@ def _hydrate_hit(db, lineage_root: str, match_info: dict[str, Any], result_detai
         detail=result_detail)
 
 
+def _supplement_thin_results(db, query: str, raw_results: list, limit: int, **search) -> tuple[list, list[str]]:
+    """Append one bounded keyword OR probe below the strict FTS rows when they cover fewer
+    than ``limit`` sessions: FTS5 ANDs every word, so a conversational query ("that thing we
+    discussed about the API") misses rows that only carry its keywords. Explicit FTS syntax
+    and queries whose every token is already a keyword are left alone."""
+    if len({r.get("session_id") for r in raw_results}) >= limit or qe.has_fts_operators(query):
+        return raw_results, []
+    keywords = qe.extract_keywords(query)
+    if not keywords or qe.expansion_is_noop(query, keywords):
+        return raw_results, []
+    supplemental = _quiet(lambda: db.search_messages(
+        query=qe.build_expansion_query(keywords), exclude_sources=list(_HIDDEN_SESSION_SOURCES),
+        limit=_DISCOVER_SCAN_LIMIT, offset=0, fields=_DISCOVER_SEARCH_FIELDS, **search), [],
+        "supplemental keyword probe failed", with_exc=True)
+    seen_ids = {r.get("id") for r in raw_results}
+    extras = [r for r in supplemental if r.get("id") not in seen_ids]
+    return (list(raw_results) + extras, keywords) if extras else (raw_results, [])
+
+
 def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort: Optional[str],
               detail: str, current_session_id: str | None = None, link_profile: str | None = None,
               after_ts: Optional[int] = None, before_ts: Optional[int] = None,
@@ -372,6 +392,9 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
         fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts), "FTS5 search failed: %s", "Search failed")
     if err:
         return err
+    raw_results, expanded_terms = _supplement_thin_results(
+        db, query, raw_results, limit, role_filter=role_filter or ["user", "assistant"], sort=sort,
+        after_ts=after_ts, before_ts=before_ts)
     # Demote cron rows below interactive ones BEFORE dedup so a high-volume cron corpus
     # can't starve the user's own sessions out of the top `limit`; stable sort keeps BM25
     # order within each class.
@@ -423,7 +446,10 @@ def _discover(db, query: str, role_filter: Optional[list[str]], limit: int, sort
             results.append(entry)
     for entry in results:
         entry["link"] = _session_link(entry["session_id"], link_profile)
-    return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions), link_hint=(
+    expansion = {} if not expanded_terms else {"expanded_terms": expanded_terms, "expansion_note": (
+        "Strict query was thin; results were supplemented by a bounded keyword OR probe over "
+        "the terms above. Strict matches rank first.")}
+    return _discover_payload(db, query, detail, results, sessions_searched=len(seen_sessions), **expansion, link_hint=(
         "When referring the user to a session, write its `link` value "
         "verbatim inline mid-sentence (it renders as a titled link) — never "
         "as markdown, in backticks, on its own line, or next to the "

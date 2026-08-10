@@ -27810,9 +27810,10 @@ def main():
     # Advertise the agent harness to child processes (AI_AGENT is the
     # cross-agent standard; HERMES_AGENT the Hermes-specific marker — see
     # _advertise_agent_env in hermes_cli/main.py, kept inline here to avoid
-    # importing that module's startup side effects). setdefault so an outer
-    # harness is never clobbered.
-    os.environ.setdefault("AI_AGENT", "hermes")
+    # importing that module's startup side effects). The value must equal our
+    # public agent-harness registry id (``hermes-agent``) — standard-var
+    # matching is exact. setdefault so an outer harness is never clobbered.
+    os.environ.setdefault("AI_AGENT", "hermes-agent")
     os.environ.setdefault("HERMES_AGENT", "true")
 
     # Force UTF-8 stdio on Windows — gateway logs and startup banner would

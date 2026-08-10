@@ -11331,11 +11331,14 @@ def _advertise_agent_env() -> None:
     ``AI_AGENT`` is the emerging cross-agent standard (huggingface_hub's agent
     detection reads it; pi and other agents set it — earendil-works/pi#7493)
     so generic tooling can attribute subprocesses to the harness that spawned
-    them. ``HERMES_AGENT`` is the Hermes-specific marker. setdefault: never
+    them. The value must be our id in the public agent-harness registry
+    (``hermes-agent`` in huggingface.js ``agent-harnesses.ts``): standard-var
+    matching is exact, so any other value is counted as "unknown".
+    ``HERMES_AGENT`` is the Hermes-specific marker. setdefault: never
     clobber an outer harness (e.g. Hermes running inside another agent's
     terminal).
     """
-    os.environ.setdefault("AI_AGENT", "hermes")
+    os.environ.setdefault("AI_AGENT", "hermes-agent")
     os.environ.setdefault("HERMES_AGENT", "true")
 
 

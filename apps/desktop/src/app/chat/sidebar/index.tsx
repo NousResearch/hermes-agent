@@ -212,8 +212,9 @@ const SIDEBAR_NAV: SidebarNavItem[] = [
 // the next — the flexbox `min-height: auto` overlap trap that caused the bug.
 const COMPACT_FLAT = 'compact:max-h-none compact:overflow-visible'
 
-// Vertical scroll only — never a horizontal bar from glow bleed, long titles, etc.
-const SCROLL_Y = 'overflow-y-auto overflow-x-hidden overscroll-contain'
+// Vertical scroll only — never a horizontal bar from glow bleed, long titles,
+// etc. The bar itself only shows while the pointer is in the list.
+const SCROLL_Y = 'overflow-y-auto overflow-x-hidden overscroll-contain scrollbar-fade'
 
 // The outer list reserves its bar's width whether or not one is showing, so
 // filtering or collapsing a section doesn't reflow every row sideways. Only the

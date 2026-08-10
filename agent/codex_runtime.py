@@ -118,6 +118,68 @@ def _prune_zero_event_retry_payload(api_kwargs: dict, attempt: int, attempts: in
     return {**api_kwargs, "input": pruned_items}
 
 
+def _configured_mcp_elicitation_prompt_servers(
+    config: dict[str, Any] | None = None,
+) -> frozenset[str]:
+    """Return MCP names explicitly configured for Codex consent prompts.
+
+    The policy is read from each Hermes MCP entry at
+    ``elicitation.approval``. Only the literal value ``prompt`` opts a
+    server in; missing or malformed configuration fails closed.
+    """
+    if config is None:
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            config = load_config_readonly() or {}
+        except Exception:
+            logger.debug(
+                "codex app-server: MCP elicitation policy lookup failed",
+                exc_info=True,
+            )
+            return frozenset()
+    if not isinstance(config, dict):
+        return frozenset()
+
+    servers = config.get("mcp_servers")
+    if not isinstance(servers, dict):
+        return frozenset()
+
+    prompt_servers: set[str] = set()
+    for raw_name, server in servers.items():
+        if not isinstance(raw_name, str) or not raw_name.strip():
+            continue
+        if not isinstance(server, dict) or server.get("enabled") is False:
+            continue
+        elicitation = server.get("elicitation")
+        if not isinstance(elicitation, dict):
+            continue
+        if elicitation.get("enabled") is False:
+            continue
+        approval = elicitation.get("approval")
+        if isinstance(approval, str) and approval.strip().lower() == "prompt":
+            prompt_servers.add(raw_name.strip())
+    return frozenset(prompt_servers)
+
+
+def _make_mcp_elicitation_callback(
+    approval_callback: Callable[..., str] | None,
+) -> Callable[..., str]:
+    """Adapt the shared Hermes consent router to the Codex transport."""
+
+    def _callback(message: str, description: str, *, surface: str) -> str:
+        from tools.approval_prompt import request_elicitation_consent
+
+        return request_elicitation_consent(
+            message,
+            description,
+            surface=surface,
+            approval_callback=approval_callback,
+        )
+
+    return _callback
+
+
 def _coerce_usage_int(value: Any) -> int:
     if isinstance(value, bool):
         return 0
@@ -589,8 +651,13 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
         model_provider = codex_model_provider_id(str(getattr(agent, "requested_provider", "") or ""))
     agent._codex_session = CodexAppServerSession(
         cwd=getattr(agent, "session_cwd", None) or str(resolve_agent_cwd()), approval_callback=approval_callback,
+        mcp_elicitation_callback=_make_mcp_elicitation_callback(approval_callback),
         codex_bin=get_configured_codex_binary(load_config()),
-        request_routing=_ServerRequestRouting(auto_approve_exec=auto_approve_requests, auto_approve_apply_patch=auto_approve_requests),
+        request_routing=_ServerRequestRouting(
+            auto_approve_exec=auto_approve_requests,
+            auto_approve_apply_patch=auto_approve_requests,
+            prompt_mcp_elicitation_servers=_configured_mcp_elicitation_prompt_servers(),
+        ),
         on_event=make_codex_app_server_event_bridge(agent),
         developer_instructions=developer_instructions or None,
         model=getattr(agent, "model", None) if model_provider else None, model_provider=model_provider,

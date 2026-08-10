@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { LayoutNode } from '@/components/pane-shell/tree/model'
+
 // Closing and re-opening a docked tile (the in-app browser) must respect the
 // size the user left it at. Adoption's edge insert used to split the anchor
 // zone [1, 1] every time, so each agent-triggered browser open re-took half
@@ -45,7 +47,7 @@ describe('tile split-share memory across close/reopen', () => {
   }
 
   /** The root row's weights, normalized to shares of their sum. */
-  function rowShares(root: import('@/components/pane-shell/tree/model').LayoutNode) {
+  function rowShares(root: LayoutNode) {
     if (root.type !== 'split') {
       throw new Error('expected a split root')
     }

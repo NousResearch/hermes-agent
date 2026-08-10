@@ -869,7 +869,8 @@ class TestMaxIterationsSummaryReplay:
             chat=types.SimpleNamespace(completions=_Completions())
         )
         transport = types.SimpleNamespace(
-            normalize_response=lambda _r: types.SimpleNamespace(content="SUMMARY")
+            normalize_response=lambda _r: types.SimpleNamespace(content="SUMMARY"),
+            validate_response=lambda response: response,
         )
 
         messages = [

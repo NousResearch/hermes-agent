@@ -3156,6 +3156,50 @@ function Install-NodeDeps {
         $tuiLog = "$env:TEMP\hermes-npm-tui-$(Get-Random).log"
         [void](_Run-NpmInstall "TUI" $tuiDir $tuiLog $npmExe)
     }
+
+    Install-BrowserUseCli
+}
+
+# The Browser Use CLI is the default browser backend when it is runnable
+# (tools/browser_use_cli.py). Provision it at install time so fresh installs
+# don't silently fall back to the built-in browser tools. Best-effort: any
+# failure is non-fatal (browser_exec can still run via uvx, and `hermes tools`
+# can install it later).
+function Install-BrowserUseCli {
+    if (-not $script:UvCmd) { Resolve-UvCmd }
+    if (-not $script:UvCmd) {
+        Write-Info "Skipping Browser Use CLI install (uv unavailable)"
+        return
+    }
+    $managedBin = Join-Path $HermesHome "bin"
+    $managedBu = Join-Path $managedBin "browser-use.exe"
+    if ((Get-Command browser-use -ErrorAction SilentlyContinue) -or (Test-Path $managedBu)) {
+        Write-Success "Browser Use CLI already installed"
+        return
+    }
+
+    Write-Info "Installing Browser Use CLI (default browser backend)..."
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        # UV_TOOL_BIN_DIR keeps the binary inside Hermes' managed bin dir,
+        # where the browser tool resolves it — no reliance on the user PATH.
+        $env:UV_TOOL_BIN_DIR = $managedBin
+        $env:UV_NO_CONFIG = "1"
+        & $script:UvCmd tool install browser-use 2>&1 | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Success "Browser Use CLI installed"
+        } else {
+            Write-Warn "Browser Use CLI install failed (exit $LASTEXITCODE) -- browser automation falls back to built-in tools."
+            Write-Info "Install later with: uv tool install browser-use  (or via 'hermes tools')"
+        }
+    } catch {
+        Write-Warn "Browser Use CLI install failed: $_"
+    } finally {
+        $ErrorActionPreference = $prevEAP
+        Remove-Item Env:\UV_TOOL_BIN_DIR -ErrorAction SilentlyContinue
+        Remove-Item Env:\UV_NO_CONFIG -ErrorAction SilentlyContinue
+    }
 }
 
 # Clear the cached Electron download + any half-written unpacked output so the

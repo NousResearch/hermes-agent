@@ -14,6 +14,7 @@ import tomllib
 import uuid
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
+from enum import Enum, auto
 from pathlib import Path
 from typing import Any, Callable
 
@@ -136,6 +137,16 @@ def pop_relay_scope(
     return pop(handle, **kwargs)
 
 
+class _RelayPluginConfigurationState(Enum):
+    """Process-wide result shared by every currently hosted profile."""
+
+    UNINITIALIZED = auto()
+    DISABLED = auto()
+    ACTIVE = auto()
+    FOREIGN = auto()
+    FAILED = auto()
+
+
 @dataclass
 class RelaySession:
     """One isolated Relay scope stack owned by a Hermes session."""
@@ -248,25 +259,33 @@ class _ProcessRelayPluginConfiguration:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._owners: set[int] = set()
+        self._state = _RelayPluginConfigurationState.UNINITIALIZED
         self._active = False
         self._relay: Any = None
         self._activation: Any = None
 
-    def acquire(self, owner: Any, relay: Any) -> bool:
+    def acquire(
+        self,
+        owner: Any,
+        relay: Any,
+    ) -> _RelayPluginConfigurationState:
         """Join the process configuration, initializing it for the first host."""
         owner_id = id(owner)
         with self._lock:
             if owner_id in self._owners:
-                return self._active
+                return self._state
             if self._owners:
                 self._owners.add(owner_id)
-                return self._active
+                return self._state
             if self._active and not self._clear_active():
                 logger.warning(
                     "Hermes Relay plugin cleanup is still pending; refusing to "
                     "replace the process-global configuration"
                 )
-                return False
+                return self._remember(
+                    owner_id,
+                    _RelayPluginConfigurationState.FAILED,
+                )
 
             try:
                 existing_report = relay.plugin.report()
@@ -276,19 +295,28 @@ class _ProcessRelayPluginConfiguration:
                     "plugin configuration is already active; refusing to replace it",
                     exc_info=True,
                 )
-                return False
+                return self._remember(
+                    owner_id,
+                    _RelayPluginConfigurationState.FAILED,
+                )
             if existing_report is not None:
                 logger.warning(
                     "A process-global Relay plugin configuration is already active "
                     "outside Hermes native ownership; leaving it unchanged and "
                     "disabling Hermes-managed Relay middleware for this process"
                 )
-                return False
+                return self._remember(
+                    owner_id,
+                    _RelayPluginConfigurationState.FOREIGN,
+                )
 
             try:
                 configured_inputs = _configured_plugin_inputs(relay)
                 if configured_inputs is None:
-                    return False
+                    return self._remember(
+                        owner_id,
+                        _RelayPluginConfigurationState.DISABLED,
+                    )
                 plugin_config, dynamic_plugins = configured_inputs
                 if dynamic_plugins:
                     try:
@@ -321,12 +349,32 @@ class _ProcessRelayPluginConfiguration:
                     exc,
                     exc_info=True,
                 )
-                return False
+                return self._remember(
+                    owner_id,
+                    _RelayPluginConfigurationState.FAILED,
+                )
 
-            self._owners.add(owner_id)
             self._active = True
             self._relay = relay
-            return True
+            state = self._remember(
+                owner_id,
+                _RelayPluginConfigurationState.ACTIVE,
+            )
+            logger.info(
+                "Relay plugins are active process-wide and apply to all profiles "
+                "hosted by this Hermes process."
+            )
+            return state
+
+    def _remember(
+        self,
+        owner_id: int,
+        state: _RelayPluginConfigurationState,
+    ) -> _RelayPluginConfigurationState:
+        """Retain one process decision for all concurrently hosted profiles."""
+        self._owners.add(owner_id)
+        self._state = state
+        return state
 
     def release(self, owner: Any) -> None:
         """Release one host and clear Relay after the final host exits."""
@@ -337,19 +385,22 @@ class _ProcessRelayPluginConfiguration:
             self._owners.remove(owner_id)
             if self._owners:
                 return
-            self._clear_active()
+            if self._clear_active():
+                self._state = _RelayPluginConfigurationState.UNINITIALIZED
 
     def reset_for_tests(self) -> None:
         """Clear process-global state left by directly constructed test hosts."""
         with self._lock:
             self._owners.clear()
-            self._clear_active()
+            if self._clear_active():
+                self._state = _RelayPluginConfigurationState.UNINITIALIZED
 
     def retry_pending_cleanup(self) -> None:
         """Retry a failed final cleanup without disrupting live owners."""
         with self._lock:
             if not self._owners:
-                self._clear_active()
+                if self._clear_active():
+                    self._state = _RelayPluginConfigurationState.UNINITIALIZED
 
     def _clear_active(self) -> bool:
         relay = self._relay
@@ -410,11 +461,15 @@ class RelayRuntime:
         self._active_operations = 0
         self._execution_consumers_lock = threading.RLock()
         self._execution_consumers: set[str] = set()
-        self._plugin_configuration_registered = _PLUGIN_CONFIGURATION.acquire(
+        self._plugin_configuration_state = _PLUGIN_CONFIGURATION.acquire(
             self,
             self.relay,
         )
-        if self._plugin_configuration_registered:
+        self._plugin_configuration_registered = True
+        if (
+            self._plugin_configuration_state
+            is _RelayPluginConfigurationState.ACTIVE
+        ):
             self.retain_managed_execution(RELAY_PLUGINS_EXECUTION_CONSUMER)
         self._shutdown_registered = True
         atexit.register(self.shutdown)
@@ -1063,7 +1118,13 @@ class RelayRuntime:
             for session_id in session_ids:
                 self._safe(self._close_session, {"session_id": session_id})
             if self._plugin_configuration_registered:
-                self.release_managed_execution(RELAY_PLUGINS_EXECUTION_CONSUMER)
+                if (
+                    self._plugin_configuration_state
+                    is _RelayPluginConfigurationState.ACTIVE
+                ):
+                    self.release_managed_execution(
+                        RELAY_PLUGINS_EXECUTION_CONSUMER
+                    )
                 _PLUGIN_CONFIGURATION.release(self)
                 self._plugin_configuration_registered = False
             if self._shutdown_registered:

@@ -62,6 +62,36 @@ from the selected file only. If the selected file cannot be loaded, Hermes
 reports the error and does not invoke Relay initialization or fall back to
 ambient discovery.
 
+## Process-Wide Plugin Policy and Profile Isolation
+
+Relay plugin configuration is a process-level deployment choice, not a Hermes
+profile setting. The first hosted profile triggers lazy initialization, and
+every additional profile hosted by that Hermes process shares the resulting
+static middleware, dynamic plugins, subscribers, exporters, and guardrail
+policy. After initialization succeeds, Hermes logs:
+
+```text
+Relay plugins are active process-wide and apply to all profiles hosted by this Hermes process.
+```
+
+Profile scopes still preserve causal isolation inside that shared policy.
+ATIF groups events by their top-level Agent scope, so simultaneous profile
+sessions produce separate trajectories rather than one mixed trajectory.
+ATOF and other global subscribers observe events from every hosted profile.
+Static and dynamic middleware likewise runs for managed calls from every
+profile.
+
+A worker plugin running in a separate worker process does not create a
+per-profile security boundary. One process-wide activation dispatches calls
+from all hosted profiles to that worker while preserving the invoking
+profile's Relay scope stack. Native dynamic plugins are loaded into the Hermes
+process and share the same policy boundary.
+
+Run profiles in separate Hermes processes when they require different trust
+levels, plugin credentials, exporter destinations, or guardrail policies.
+This process-wide plugin contract does not change each profile's independent
+shared-metrics consent, local SQLite state, or ATIF trajectory grouping.
+
 Hermes core owns one Relay host and one isolated Relay session scope per Hermes
 session. Core lifecycle producers use
 `hermes_cli.observability.relay_runtime` to obtain the shared session handle or

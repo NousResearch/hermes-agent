@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import threading
 from types import SimpleNamespace
@@ -106,6 +107,65 @@ class _ConcurrentPublicationRelay(_FakeRelay):
         assert await asyncio.to_thread(self.publication_finished.wait, 5)
 
 
+class _BehavioralFakeRelay(_FakeRelay):
+    """Record plugin interception together with the active session stack."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._scope_stack = contextvars.ContextVar(
+            "behavioral_fake_relay_scope_stack",
+            default=None,
+        )
+        self._plugin_source: str | None = None
+        self.tools = SimpleNamespace(request_intercepts=self._request_intercepts)
+
+    def get_scope_stack(self) -> Any:
+        return self._scope_stack.get()
+
+    async def _initialize_plugins(self, config: dict[str, Any]) -> dict[str, Any]:
+        report = await super()._initialize_plugins(config)
+        self._plugin_source = "static"
+        return report
+
+    async def _initialize_dynamic_plugins(
+        self,
+        config: dict[str, Any],
+        dynamic_plugins: list[dict[str, Any]],
+    ) -> Any:
+        activation = await super()._initialize_dynamic_plugins(
+            config,
+            dynamic_plugins,
+        )
+        self._plugin_source = "dynamic"
+        return activation
+
+    def _scope_push(self, name: str, scope_type: Any, **kwargs: Any) -> Any:
+        handle = super()._scope_push(name, scope_type, **kwargs)
+        self._scope_stack.set(handle)
+        return handle
+
+    def _request_intercepts(
+        self,
+        tool_name: str,
+        args: dict[str, Any],
+    ) -> dict[str, Any]:
+        scope_stack = self.get_scope_stack()
+        self.events.append(
+            (
+                "tools.request_intercepts",
+                tool_name,
+                args,
+                self._plugin_source,
+                scope_stack,
+            )
+        )
+        return {
+            **args,
+            "relay_plugin_source": self._plugin_source,
+            "relay_scope_stack": scope_stack,
+        }
+
+
 @pytest.fixture(autouse=True)
 def _reset_runtime():
     relay_runtime._reset_for_tests()
@@ -135,6 +195,28 @@ def test_unset_config_disables_plugin_initialization(monkeypatch):
         host.shutdown()
 
     assert not any(event[0] == "subscribers.flush_async" for event in relay.events)
+
+
+def test_first_profile_plugin_decision_applies_to_later_profile(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.delenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, raising=False)
+    relay = _FakeRelay()
+    host_a = relay_runtime.RelayRuntime(relay=relay, profile_key="profile-a")
+
+    config = tmp_path / "plugins.toml"
+    config.write_text("", encoding="utf-8")
+    monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
+    host_b = relay_runtime.RelayRuntime(relay=relay, profile_key="profile-b")
+
+    try:
+        assert not host_a.managed_execution_enabled()
+        assert not host_b.managed_execution_enabled()
+        assert not any(event[0].startswith("plugin.") for event in relay.events)
+    finally:
+        host_a.shutdown()
+        host_b.shutdown()
 
 
 def test_relay_initializes_explicit_plugins_before_first_session_scope(
@@ -222,22 +304,19 @@ def test_initialization_failure_is_fail_open(explicit_static_config, caplog):
         host.shutdown()
 
 
-def test_later_host_retries_after_initialization_failure(explicit_static_config):
+def test_later_host_shares_initialization_failure(explicit_static_config):
     relay = _FakeRelay(initialize_error=RuntimeError("transient failure"))
     failed_host = relay_runtime.RelayRuntime(relay=relay, profile_key="failed")
     assert not failed_host.managed_execution_enabled()
 
     relay.initialize_error = None
-    recovered_host = relay_runtime.RelayRuntime(relay=relay, profile_key="recovered")
+    later_host = relay_runtime.RelayRuntime(relay=relay, profile_key="later")
     try:
-        assert recovered_host.managed_execution_enabled()
-        assert relay.events == [
-            ("plugin.initialize", {}),
-            ("plugin.initialize", {}),
-        ]
+        assert not later_host.managed_execution_enabled()
+        assert relay.events == [("plugin.initialize", {})]
     finally:
         failed_host.shutdown()
-        recovered_host.shutdown()
+        later_host.shutdown()
 
 
 def test_missing_explicit_config_does_not_fall_back_to_discovery(
@@ -310,15 +389,37 @@ def test_present_plugins_section_is_validated_even_when_falsey(
 
 def test_two_profile_hosts_initialize_once_and_clear_after_final_shutdown(
     explicit_static_config,
+    caplog,
 ):
-    relay = _FakeRelay()
-    host_a = relay_runtime.RelayRuntime(relay=relay, profile_key="profile-a")
-    host_b = relay_runtime.RelayRuntime(relay=relay, profile_key="profile-b")
+    relay = _BehavioralFakeRelay()
+    with caplog.at_level("INFO"):
+        host_a = relay_runtime.RelayRuntime(relay=relay, profile_key="profile-a")
+        host_b = relay_runtime.RelayRuntime(relay=relay, profile_key="profile-b")
 
     assert relay.events == [("plugin.initialize", {})]
     assert host_a.managed_execution_enabled()
     assert host_b.managed_execution_enabled()
-    host_b.ensure_session({"session_id": "profile-b-session"})
+    assert (
+        caplog.text.count(
+            "Relay plugins are active process-wide and apply to all profiles "
+            "hosted by this Hermes process."
+        )
+        == 1
+    )
+
+    rewritten_a = host_a.apply_tool_request_intercepts(
+        session_id="profile-a-session",
+        tool_name="terminal",
+        args={"profile": "a"},
+    )
+    rewritten_b = host_b.apply_tool_request_intercepts(
+        session_id="profile-b-session",
+        tool_name="terminal",
+        args={"profile": "b"},
+    )
+    assert rewritten_a["relay_plugin_source"] == "static"
+    assert rewritten_b["relay_plugin_source"] == "static"
+    assert rewritten_a["relay_scope_stack"] != rewritten_b["relay_scope_stack"]
 
     host_a.shutdown()
     assert ("plugin.clear_async",) not in relay.events
@@ -397,7 +498,7 @@ manifest = "plugins/worker/relay-plugin.toml"
         encoding="utf-8",
     )
     monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
-    relay = _FakeRelay()
+    relay = _BehavioralFakeRelay()
     relay.dynamic_plugin_specs = [
         {
             "plugin_id": "native.policy",
@@ -441,7 +542,20 @@ manifest = "plugins/worker/relay-plugin.toml"
         )
     ]
 
-    host_b.ensure_session({"session_id": "profile-b-session"})
+    rewritten_a = host_a.apply_tool_request_intercepts(
+        session_id="profile-a-session",
+        tool_name="terminal",
+        args={"profile": "a"},
+    )
+    rewritten_b = host_b.apply_tool_request_intercepts(
+        session_id="profile-b-session",
+        tool_name="terminal",
+        args={"profile": "b"},
+    )
+    assert rewritten_a["relay_plugin_source"] == "dynamic"
+    assert rewritten_b["relay_plugin_source"] == "dynamic"
+    assert rewritten_a["relay_scope_stack"] != rewritten_b["relay_scope_stack"]
+
     host_a.shutdown()
     assert ("plugin.activation.close",) not in relay.events
 
@@ -477,7 +591,7 @@ manifest = "relay-plugin.toml"
     )
     relay.dynamic_plugin_specs = [{"plugin_id": "worker.policy"}]
 
-    with caplog.at_level("WARNING"):
+    with caplog.at_level("INFO"):
         host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
         assert not host.managed_execution_enabled()
@@ -486,6 +600,7 @@ manifest = "relay-plugin.toml"
             "plugin.initialize_dynamic",
         ]
         assert "dynamic plugin activation failed" in caplog.text
+        assert "Relay plugins are active process-wide" not in caplog.text
     finally:
         host.shutdown()
 
@@ -921,7 +1036,7 @@ mode = "overwrite"
     assert (atof_dir / "events.jsonl").is_file()
 
 
-def test_real_binding_loads_explicit_config_and_exports_native_activity(
+def test_real_binding_keeps_two_profile_trajectories_separate_in_shared_exporters(
     tmp_path,
     monkeypatch,
 ):
@@ -972,66 +1087,94 @@ agent_version = "test"
     monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config_home))
     monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config_path))
     monkeypatch.setattr(relay_runtime, "_load_nemo_relay", lambda: relay)
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "profile"))
     relay.plugin.clear()
 
-    profile_key = relay_runtime.current_profile_key()
-    lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
-        profile_key=profile_key,
-        session_id="native-export",
-        platform="cli",
-        model="test-model",
-    )
-    turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
-        lease,
-        turn_id="turn-1",
-        task_id="task-1",
-    )
+    runtime_ids: dict[str, str] = {}
     try:
-        assert lease.host.managed_execution_enabled()
-        relay_llm.execute(
-            {"model": "test-model", "messages": []},
-            lambda _request: {
-                "id": "response-1",
-                "model": "test-model",
-                "choices": [
-                    {
-                        "message": {"role": "assistant", "content": "ok"},
-                        "finish_reason": "stop",
-                    }
-                ],
-            },
-            session_id="native-export",
-            name="test-provider",
-            model_name="test-model",
-            metadata={
-                "api_mode": "chat_completions",
-                "api_request_id": "request-1",
-            },
-        )
-        relay_tools.execute(
-            "terminal",
-            {"command": "true"},
-            lambda _args: {"output": "ok"},
-            session_id="native-export",
-            metadata={"tool_call_id": "tool-1"},
-        )
+        for profile in ("profile-a", "profile-b"):
+            session_id = f"native-export-{profile}"
+            monkeypatch.setenv("HERMES_HOME", str(tmp_path / profile))
+            profile_key = relay_runtime.current_profile_key()
+            lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
+                profile_key=profile_key,
+                session_id=session_id,
+                platform="cli",
+                model="test-model",
+            )
+            assert isinstance(lease.host, relay_runtime.RelayRuntime)
+            runtime_ids[profile] = lease.host.runtime_id
+            turn = relay_runtime.SESSION_COORDINATOR.begin_turn(
+                lease,
+                turn_id=f"turn-{profile}",
+                task_id=f"task-{profile}",
+            )
+            try:
+                assert lease.host.managed_execution_enabled()
+                relay_llm.execute(
+                    {"model": "test-model", "messages": []},
+                    lambda _request, profile=profile: {
+                        "id": f"response-{profile}",
+                        "model": "test-model",
+                        "choices": [
+                            {
+                                "message": {
+                                    "role": "assistant",
+                                    "content": "ok",
+                                },
+                                "finish_reason": "stop",
+                            }
+                        ],
+                    },
+                    session_id=session_id,
+                    name="test-provider",
+                    model_name="test-model",
+                    metadata={
+                        "api_mode": "chat_completions",
+                        "api_request_id": f"request-{profile}",
+                    },
+                )
+                relay_tools.execute(
+                    "terminal",
+                    {"command": "true"},
+                    lambda _args: {"output": "ok"},
+                    session_id=session_id,
+                    metadata={"tool_call_id": f"tool-{profile}"},
+                )
+            finally:
+                relay_runtime.SESSION_COORDINATOR.end_turn(
+                    turn,
+                    outcome="success",
+                )
+                relay_runtime.SESSION_COORDINATOR.release_conversation(lease)
+                relay_runtime.SESSION_COORDINATOR.finalize_conversation(
+                    profile_key=profile_key,
+                    session_id=session_id,
+                )
     finally:
-        relay_runtime.SESSION_COORDINATOR.end_turn(turn, outcome="success")
-        relay_runtime.SESSION_COORDINATOR.release_conversation(lease)
-        relay_runtime.SESSION_COORDINATOR.finalize_conversation(
-            profile_key=profile_key,
-            session_id="native-export",
-        )
         relay_runtime._reset_for_tests()
 
     assert (atof_dir / "events.jsonl").is_file()
+    atof_payload = (atof_dir / "events.jsonl").read_text(encoding="utf-8")
+    assert all(runtime_id in atof_payload for runtime_id in runtime_ids.values())
+
     trajectories = list(atif_dir.glob("trajectory-*.json"))
-    assert len(trajectories) == 1
-    trajectory = json.loads(trajectories[0].read_text(encoding="utf-8"))
-    observed_categories = {
-        event["category"]
-        for event in trajectory["extra"]["observed_events"]
-        if event["kind"] == "scope"
-    }
-    assert {"agent", "llm", "tool"} <= observed_categories
+    assert len(trajectories) == 2
+    observed_runtime_ids: set[str] = set()
+    for trajectory_path in trajectories:
+        trajectory = json.loads(trajectory_path.read_text(encoding="utf-8"))
+        trajectory_payload = json.dumps(trajectory)
+        matching_runtime_ids = {
+            runtime_id
+            for runtime_id in runtime_ids.values()
+            if runtime_id in trajectory_payload
+        }
+        assert len(matching_runtime_ids) == 1
+        observed_runtime_ids.update(matching_runtime_ids)
+        observed_categories = {
+            event["category"]
+            for event in trajectory["extra"]["observed_events"]
+            if event["kind"] == "scope"
+        }
+        assert {"agent", "llm", "tool"} <= observed_categories
+
+    assert observed_runtime_ids == set(runtime_ids.values())

@@ -136,7 +136,10 @@ def run(stream: Optional[str] = None, dry_run: bool = False) -> dict:
 
     # Defer the heavy import so --dry-run stays cheap.
     from blog.blog_pipeline import run_stream
-    result = run_stream(chosen_stream, pub_date=pub_date)
+    # Backlog pregen topics are research/PR-derived (not product case studies);
+    # exempt them from the AI-stream "named company + number" hard gate so
+    # legitimate analysis posts aren't blocked (see blog-backlog-pregen history).
+    result = run_stream(chosen_stream, pub_date=pub_date, case_study_exempt=True)
     result["pub_date"] = pub_date
     print(f"[pregen] result: {result.get('status')} {result.get('slug', '')}")
     return result

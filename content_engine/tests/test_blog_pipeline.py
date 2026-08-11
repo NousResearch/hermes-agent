@@ -58,7 +58,7 @@ def test_run_stream_happy_path(monkeypatch, tmp_path):
     monkeypatch.setattr(bpl, "choose", lambda stream: plan)
 
     # Mock generator.
-    monkeypatch.setattr(bpl, "write_with_gate", lambda p, stream: _DRAFT)
+    monkeypatch.setattr(bpl, "write_with_gate", lambda p, stream, **kw: _DRAFT)
 
     # Mock illustrator.
     monkeypatch.setattr(bpl, "illustrate", lambda d, out_dir=None, max_sections=None: {"hero_path": "/tmp/fake_hero.png", "section_paths": {}})
@@ -125,7 +125,7 @@ def test_run_stream_skips_when_generator_returns_none(monkeypatch, tmp_path):
     plan = {"topic_id": "t1", "title_hint": "t", "tags": [], "source": "manual",
             "signals": [{"signal_id": "t1", "summary": "s"}]}
     monkeypatch.setattr(bpl, "choose", lambda stream: plan)
-    monkeypatch.setattr(bpl, "write_with_gate", lambda p, stream: None)
+    monkeypatch.setattr(bpl, "write_with_gate", lambda p, stream, **kw: None)
     result = bpl.run_stream("ai", repo=str(repo))
     assert result["status"] == "skipped_generator"
 
@@ -136,7 +136,7 @@ def test_run_stream_does_not_record_on_generator_failure(monkeypatch, tmp_path):
     plan = {"topic_id": "t1", "title_hint": "t", "tags": [], "source": "manual",
             "signals": [{"signal_id": "t1", "summary": "s"}]}
     monkeypatch.setattr(bpl, "choose", lambda stream: plan)
-    monkeypatch.setattr(bpl, "write_with_gate", lambda p, stream: None)
+    monkeypatch.setattr(bpl, "write_with_gate", lambda p, stream, **kw: None)
     record_called = []
     monkeypatch.setattr(bpl, "record", lambda s, tid, t: record_called.append(tid))
     reserve_called = []
@@ -158,7 +158,7 @@ def test_run_all_runs_all_streams(monkeypatch, tmp_path):
     plan = {"topic_id": "t1", "title_hint": "t", "tags": [], "source": "manual",
             "signals": [{"signal_id": "t1", "summary": "s"}]}
     monkeypatch.setattr(bpl, "choose", lambda stream: plan)
-    monkeypatch.setattr(bpl, "write_with_gate", lambda p, stream: _DRAFT)
+    monkeypatch.setattr(bpl, "write_with_gate", lambda p, stream, **kw: _DRAFT)
     monkeypatch.setattr(bpl, "illustrate", lambda d, out_dir=None, max_sections=None: {"hero_path": "/tmp/fake_hero.png", "section_paths": {}})
     def fake_assemble(d, imgs, repo=None, pub_date=None):
         p = Path(repo) / "src/content/blog" / f"{d['slug']}.mdx"
@@ -194,7 +194,7 @@ def test_run_stream_graceful_when_reviewer_degraded(monkeypatch, tmp_path):
 
     # write_with_gate in non-strict mode returns a draft even when the
     # reviewer degrades. Mock it to simulate that path.
-    monkeypatch.setattr(bpl, "write_with_gate", lambda p, stream: _DRAFT)
+    monkeypatch.setattr(bpl, "write_with_gate", lambda p, stream, **kw: _DRAFT)
     monkeypatch.setattr(bpl, "illustrate",
                         lambda d, out_dir=None, max_sections=None:
                         {"hero_path": "/tmp/fake_hero.png", "section_paths": {}})
@@ -219,7 +219,7 @@ def test_run_stream_failed_images_status(monkeypatch, tmp_path):
     plan = {"topic_id": "t1", "title_hint": "t", "tags": [], "source": "manual",
             "signals": [{"signal_id": "t1", "summary": "s"}]}
     monkeypatch.setattr(bpl, "choose", lambda stream: plan)
-    monkeypatch.setattr(bpl, "write_with_gate", lambda p, stream: _DRAFT)
+    monkeypatch.setattr(bpl, "write_with_gate", lambda p, stream, **kw: _DRAFT)
     # All images fail.
     monkeypatch.setattr(bpl, "illustrate",
                         lambda d, out_dir=None, max_sections=None:
@@ -238,7 +238,7 @@ def test_run_stream_partial_images_proceeds(monkeypatch, tmp_path):
     plan = {"topic_id": "t1", "title_hint": "t", "tags": [], "source": "manual",
             "signals": [{"signal_id": "t1", "summary": "s"}]}
     monkeypatch.setattr(bpl, "choose", lambda stream: plan)
-    monkeypatch.setattr(bpl, "write_with_gate", lambda p, stream: _DRAFT)
+    monkeypatch.setattr(bpl, "write_with_gate", lambda p, stream, **kw: _DRAFT)
     # Hero succeeds, sections all fail.
     monkeypatch.setattr(bpl, "illustrate",
                         lambda d, out_dir=None, max_sections=None:
@@ -409,7 +409,7 @@ def test_stage_draft_only_assembles_with_three_image_bound_and_no_delivery(monke
             "signals": [{"signal_id": "t1", "summary": "s"}]}
     seen = {}
     monkeypatch.setattr(bpl, "choose", lambda stream: plan)
-    monkeypatch.setattr(bpl, "write_with_gate", lambda p, stream: _DRAFT)
+    monkeypatch.setattr(bpl, "write_with_gate", lambda p, stream, **kw: _DRAFT)
     monkeypatch.setattr(
         bpl,
         "illustrate",

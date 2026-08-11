@@ -190,11 +190,14 @@ def _maybe_request_approval(draft: dict, stream: str, slug: str, mdx_path: str) 
 
 
 def run_stream(stream: str, repo: Optional[str] = None,
-               pub_date: Optional[str] = None) -> dict:
+               pub_date: Optional[str] = None,
+               case_study_exempt: bool = False) -> dict:
     """Drive one blog post through the pipeline for a single stream.
 
     pub_date (YYYY-MM-DD) backdates the post; defaults to today. Used by the
     backlog pre-generation driver to scatter dates across a historical window.
+    case_study_exempt: skip the AI-stream "named company + number" hard gate
+    (backlog pregen passes True; research/PR-derived topics aren't case studies).
     """
     if not BLOG_ENABLED:
         return {"status": "skipped_disabled", "stream": stream}
@@ -222,7 +225,7 @@ def run_stream(stream: str, repo: Optional[str] = None,
     reservation_token = reserve(stream, plan.get("topic_id", ""), plan.get("title_hint", ""))
 
     # 2. Generator (with gate + retry).
-    draft = write_with_gate(plan, stream=stream)
+    draft = write_with_gate(plan, stream=stream, case_study_exempt=case_study_exempt)
     if not draft:
         release(reservation_token)
         return {"status": "skipped_generator", "stream": stream,
@@ -286,6 +289,7 @@ def run_stage_draft_only(
     max_new_drafts: int = 1,
     max_images: int = 3,
     dry_run: bool = False,
+    case_study_exempt: bool = False,
 ) -> dict:
     """Create at most one uncommitted worktree draft with at most three images.
 
@@ -328,7 +332,7 @@ def run_stage_draft_only(
 
     reservation_token = reserve(stream, plan.get("topic_id", ""), plan.get("title_hint", ""))
     try:
-        draft = write_with_gate(plan, stream=stream)
+        draft = write_with_gate(plan, stream=stream, case_study_exempt=case_study_exempt)
         if not draft:
             return {
                 "status": "skipped_generator", "stream": stream, "stage_only": True,

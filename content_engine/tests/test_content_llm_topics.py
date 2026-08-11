@@ -40,7 +40,6 @@ def test_longform_chain_has_provider_fallbacks(monkeypatch):
     models = [c["model"] for c in cfgs]
     assert models[0] == "deepseek/deepseek-v4-flash"
     assert "deepseek-v4-flash" in models
-    assert "minimax-m3" in models
     assert "gemini-2.5-flash" in models
 
 

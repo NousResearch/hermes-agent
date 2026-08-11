@@ -547,7 +547,8 @@ def _verify_claims(claims: list[str]) -> list[str]:
 def write_with_gate(plan: dict, stream: str = "ai",
                     max_retries: int = 1,
                     verification: Optional[dict] = None,
-                    strict_review: bool = False) -> Optional[dict]:
+                    strict_review: bool = False,
+                    case_study_exempt: bool = False) -> Optional[dict]:
     """Generate a draft, run deterministic gate + editorial reviewer, retry once.
 
     Pipeline:
@@ -596,9 +597,15 @@ def write_with_gate(plan: dict, stream: str = "ai",
     # --- First attempt: deterministic gate + editorial reviewer ---
     status, gate_issues = gate_check(draft)
     # Case study gate: AI stream must have named company + number.
-    cs_status, cs_issues = _case_study_check(
-        draft.get("body_md", ""), stream=stream
-    )
+    # Backlog pregen (research/PR-derived topics) is exempt — forcing a
+    # "named company + number" onto a research analysis produces unnatural
+    # content and blocks legitimate posts (see blog-backlog-pregen failures).
+    if case_study_exempt:
+        cs_status, cs_issues = "ok", []
+    else:
+        cs_status, cs_issues = _case_study_check(
+            draft.get("body_md", ""), stream=stream
+        )
     if cs_issues:
         gate_issues.extend(cs_issues)
         if cs_status == "fail":

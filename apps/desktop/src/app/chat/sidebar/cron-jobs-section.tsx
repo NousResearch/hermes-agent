@@ -9,7 +9,7 @@ import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
 import { Tip } from '@/components/ui/tooltip'
-import { deleteCronJob, getCronJobRuns, pauseCronJob, resumeCronJob, type SessionInfo } from '@/hermes'
+import { type CronJobOutput, deleteCronJob, getCronJobOutputs, pauseCronJob, resumeCronJob } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { fmtDayTime, relativeTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
@@ -17,7 +17,6 @@ import { confirm } from '@/store/confirm'
 import { updateCronJobs } from '@/store/cron'
 import { $changeEventsAvailable, $cronChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
-import { $selectedStoredSessionId } from '@/store/session'
 import type { CronJob } from '@/types/hermes'
 
 import { jobState, jobTitle, STATE_DOT } from '../../cron/job-state'
@@ -32,7 +31,7 @@ const INACTIVE_STATES = new Set(['completed', 'disabled', 'error', 'paused'])
 // without turning the sidebar into the full Cron page.
 const PEEK_RUN_LIMIT = 5
 
-// Runs are written by the background scheduler tick. cron.changed reloads the
+// Outputs are written by the background scheduler tick. cron.changed reloads the
 // open peek immediately on event-capable backends (poll drops to a backstop);
 // older backends keep the legacy cadence.
 const PEEK_POLL_INTERVAL_MS = 8000
@@ -70,8 +69,8 @@ interface SidebarCronJobsSectionProps {
   jobs: CronJob[]
   label: string
   max?: number
-  // Open a run session's chat (1 click to output).
-  onOpenRun: (sessionId: string) => void
+  // Open the full Cron page focused on this durable output.
+  onOpenRun: (jobId: string, outputId: string, profile?: string) => void
   // Open the full Cron page focused on this job (manage / full history).
   onManageJob: (jobId: string) => void
   // Fire the job now.
@@ -233,7 +232,7 @@ function CronJobSidebarRow({
   job: CronJob
   nowMs: number
   onManage: () => void
-  onOpenRun: (sessionId: string) => void
+  onOpenRun: (jobId: string, outputId: string, profile?: string) => void
   onTogglePeek: () => void
   onTrigger: () => void
 }) {
@@ -377,35 +376,50 @@ function CronJobSidebarRow({
           </Tip>
         </SidebarRowShell>
       </ActionsContextMenu>
-      {expanded && <CronJobSidebarRuns jobId={job.id} onOpenRun={onOpenRun} />}
+      {expanded && <CronJobSidebarRuns jobId={job.id} onOpenRun={onOpenRun} profile={job.profile} />}
     </div>
   )
 }
 
-function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (sessionId: string) => void }) {
+export function CronJobSidebarRuns({
+  jobId,
+  onOpenRun,
+  profile
+}: {
+  jobId: string
+  onOpenRun: (jobId: string, outputId: string, profile?: string) => void
+  profile?: string
+}) {
   const { t } = useI18n()
   const c = t.cron
-  const selectedSessionId = useStore($selectedStoredSessionId)
+
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
-  const [runs, setRuns] = useState<null | SessionInfo[]>(null)
+  const [runs, setRuns] = useState<null | CronJobOutput[]>(null)
+  const [runsError, setRunsError] = useState(false)
   const visible = usePaneVisible()
 
   useEffect(() => {
     let cancelled = false
+    let latestRequestId = 0
 
-    const load = () =>
-      getCronJobRuns(jobId, PEEK_RUN_LIMIT)
+    const load = () => {
+      const requestId = ++latestRequestId
+
+      return getCronJobOutputs(jobId, PEEK_RUN_LIMIT, profile)
         .then(result => {
-          if (!cancelled) {
+          if (!cancelled && requestId === latestRequestId) {
+            setRunsError(false)
             setRuns(result)
           }
         })
         .catch(() => {
-          if (!cancelled) {
+          if (!cancelled && requestId === latestRequestId) {
+            setRunsError(true)
             setRuns(prev => prev ?? [])
           }
         })
+    }
 
     // Hidden pane: skip the peek entirely — no initial load, no interval.
     // `visible` is in the dep array, so becoming visible re-runs this effect
@@ -432,11 +446,13 @@ function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (s
       window.clearInterval(intervalId)
     }
     // cronChangeTick: a fired run reloads the peek immediately.
-  }, [changeEventsAvailable, cronChangeTick, jobId, visible])
+  }, [changeEventsAvailable, cronChangeTick, jobId, profile, visible])
 
   return (
     <div className="mb-1 ml-[1.375rem] flex flex-col gap-px">
-      {runs === null ? (
+      {runsError ? (
+        <div className="py-1 pl-1 text-[0.6875rem] text-destructive">{c.failedLoad}</div>
+      ) : runs === null ? (
         <div className="flex items-center gap-1.5 py-1 pl-1 text-[0.6875rem] text-(--ui-text-tertiary)">
           <GlyphSpinner ariaLabel={c.loading} className="text-[0.75rem]" />
         </div>
@@ -446,17 +462,12 @@ function CronJobSidebarRuns({ jobId, onOpenRun }: { jobId: string; onOpenRun: (s
         <>
           {runs.map(run => (
             <button
-              className={cn(
-                'truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] tabular-nums focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
-                run.id === selectedSessionId
-                  ? 'bg-(--ui-row-active-background) text-foreground'
-                  : 'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-foreground'
-              )}
+              className="truncate rounded-md px-1.5 py-0.5 text-left text-[0.6875rem] text-(--ui-text-secondary) tabular-nums hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
               key={run.id}
-              onClick={() => onOpenRun(run.id)}
+              onClick={() => onOpenRun(jobId, run.id, profile)}
               type="button"
             >
-              {formatRunTime(run.last_active || run.started_at)}
+              {formatRunTime(run.created_at)}
             </button>
           ))}
         </>

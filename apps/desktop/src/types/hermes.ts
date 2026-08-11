@@ -848,11 +848,24 @@ export interface CronJob {
   next_run_at?: null | string
   no_agent?: boolean
   prompt?: null | string
+  profile?: string
   provider?: null | string
   schedule?: CronJobSchedule
   schedule_display?: null | string
   script?: null | string
   state?: null | string
+}
+
+export interface CronJobOutput {
+  byte_size: number
+  created_at: number
+  filename: string
+  id: string
+}
+
+export interface CronJobOutputDetail extends CronJobOutput {
+  content: string
+  profile: string
 }
 
 export interface CronJobCreatePayload {

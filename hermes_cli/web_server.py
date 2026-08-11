@@ -12749,6 +12749,8 @@ from hermes_cli.web_routers.cron import (  # noqa: E402,F401 — legacy re-expor
     list_cron_jobs,
     get_cron_job,
     list_cron_job_runs,
+    list_cron_job_outputs,
+    get_cron_job_output,
     create_cron_job,
     get_cron_delivery_targets,
     update_cron_job,
@@ -12819,6 +12821,70 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
         db.close()
 
 
+def _list_cron_job_outputs_sync(job_id: str, profile: Optional[str] = None, limit: int = 20):
+    """Durable markdown outputs produced by a cron job, newest first."""
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = _call_cron_for_profile(selected, "get_job", job_id)
+    if not isinstance(job, dict) or not job.get("id"):
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    raw_outputs = _call_cron_for_profile(
+        selected, "list_job_outputs", str(job["id"]), limit
+    )
+    outputs = [
+        {
+            "id": item["id"],
+            "filename": item["filename"],
+            "byte_size": item["byte_size"],
+            "created_at": item["created_at"],
+        }
+        for item in raw_outputs
+        if isinstance(item, dict)
+    ] if isinstance(raw_outputs, list) else []
+    return {"outputs": outputs, "profile": selected}
+
+
+def _get_cron_job_output_sync(
+    job_id: str,
+    output_id: str,
+    profile: Optional[str] = None,
+):
+    """Return one cron output document from its owning profile."""
+    # Reject malformed ids before profile/job discovery so path-like input is
+    # always a client error and never reaches filesystem construction.
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}", str(output_id or "")):
+        raise HTTPException(status_code=400, detail="Invalid cron output id")
+
+    selected = profile or _find_cron_job_profile(job_id)
+    if not selected:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    job = _call_cron_for_profile(selected, "get_job", job_id)
+    if not isinstance(job, dict) or not job.get("id"):
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    try:
+        raw_output = _call_cron_for_profile(
+            selected, "get_job_output", str(job["id"]), output_id
+        )
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Cron output not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    if not isinstance(raw_output, dict):
+        raise HTTPException(status_code=500, detail="Invalid cron output response")
+    return {
+        "id": raw_output["id"],
+        "filename": raw_output["filename"],
+        "byte_size": raw_output["byte_size"],
+        "created_at": raw_output["created_at"],
+        "content": raw_output["content"],
+        "profile": selected,
+    }
 
 
 def _create_cron_job_sync(body: CronJobCreate, profile: Optional[str] = None):

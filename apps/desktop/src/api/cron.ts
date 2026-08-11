@@ -3,6 +3,8 @@ import type {
   CronDeliveryTarget,
   CronJob,
   CronJobCreatePayload,
+  CronJobOutput,
+  CronJobOutputDetail,
   CronJobUpdates,
   SessionInfo
 } from '@/types/hermes'
@@ -47,6 +49,27 @@ export async function getCronJobRuns(jobId: string, limit = 20): Promise<Session
   })
 
   return runs ?? []
+}
+
+export async function getCronJobOutputs(jobId: string, limit = 20, profile?: string): Promise<CronJobOutput[]> {
+  const owner = profile ? `&profile=${encodeURIComponent(profile)}` : ''
+  const { outputs } = await hermesApi<{ outputs: CronJobOutput[] }>({
+    ...profileScoped(),
+    ...connectionScoped(),
+    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/outputs?limit=${limit}${owner}`
+  })
+
+  return outputs ?? []
+}
+
+export function getCronJobOutput(jobId: string, outputId: string, profile?: string): Promise<CronJobOutputDetail> {
+  const owner = profile ? `?profile=${encodeURIComponent(profile)}` : ''
+
+  return hermesApi<CronJobOutputDetail>({
+    ...profileScoped(),
+    ...connectionScoped(),
+    path: `/api/cron/jobs/${encodeURIComponent(jobId)}/outputs/${encodeURIComponent(outputId)}${owner}`
+  })
 }
 
 // The single source of truth for cron delivery targets (local + configured

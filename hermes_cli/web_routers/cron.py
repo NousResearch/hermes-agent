@@ -35,6 +35,8 @@ _run_cron_dashboard_io = late("_run_cron_dashboard_io")
 _list_cron_jobs_sync = late("_list_cron_jobs_sync")
 _get_cron_job_sync = late("_get_cron_job_sync")
 _list_cron_job_runs_sync = late("_list_cron_job_runs_sync")
+_list_cron_job_outputs_sync = late("_list_cron_job_outputs_sync")
+_get_cron_job_output_sync = late("_get_cron_job_output_sync")
 _create_cron_job_sync = late("_create_cron_job_sync")
 _update_cron_job_sync = late("_update_cron_job_sync")
 _pause_cron_job_sync = late("_pause_cron_job_sync")
@@ -73,6 +75,18 @@ async def get_cron_job(job_id: str, profile: Optional[str] = None):
 @router.get("/api/cron/jobs/{job_id}/runs")
 async def list_cron_job_runs(job_id: str, profile: Optional[str] = None, limit: int = 20):
     return await _run_cron_dashboard_io(_list_cron_job_runs_sync, job_id, profile, limit)
+
+
+@router.get("/api/cron/jobs/{job_id}/outputs")
+async def list_cron_job_outputs(job_id: str, profile: Optional[str] = None, limit: int = 20):
+    return await _run_cron_dashboard_io(_list_cron_job_outputs_sync, job_id, profile, limit)
+
+
+@router.get("/api/cron/jobs/{job_id}/outputs/{output_id}")
+async def get_cron_job_output(job_id: str, output_id: str, profile: Optional[str] = None):
+    return await _run_cron_dashboard_io(
+        _get_cron_job_output_sync, job_id, output_id, profile
+    )
 
 
 @router.post("/api/cron/jobs")

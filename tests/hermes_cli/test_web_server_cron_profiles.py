@@ -2,6 +2,7 @@
 
 from concurrent.futures import ThreadPoolExecutor
 import json
+from pathlib import Path
 from queue import Empty, SimpleQueue
 import threading
 
@@ -125,6 +126,302 @@ def test_create_registers_scheduler_inside_target_profile(
     assert captured["runtime_home"] == worker_home
     assert captured["jobs_file"] == worker_home / "cron" / "jobs.json"
     assert job["profile"] == "worker_alpha"
+
+
+def test_cron_run_outputs_are_read_from_the_owning_profile(
+    isolated_profiles,
+):
+    """Desktop run detail must use the durable markdown output, not a chat row."""
+    from hermes_cli import web_server
+
+    worker_home = isolated_profiles["worker_alpha"]
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="produce a markdown report",
+        schedule="every 1h",
+        name="markdown-report",
+    )
+    assert isinstance(job, dict)
+    output_dir = worker_home / "cron" / "output" / job["id"]
+    output_dir.mkdir(parents=True)
+    older = output_dir / "2026-08-10_09-00-00.md"
+    newer = output_dir / "2026-08-11_09-00-00.md"
+    older.write_text("# Older\n", encoding="utf-8")
+    newer.write_text("# Report\n\n| Name | Value |\n| --- | --- |\n| ok | 1 |\n", encoding="utf-8")
+
+    listed = web_server._list_cron_job_outputs_sync(job["id"], limit=1)
+
+    assert listed["profile"] == "worker_alpha"
+    assert listed["outputs"] == [
+        {
+            "id": "2026-08-11_09-00-00",
+            "filename": newer.name,
+            "byte_size": newer.stat().st_size,
+            "created_at": newer.stat().st_mtime,
+        }
+    ]
+    detail = web_server._get_cron_job_output_sync(
+        job["id"], "2026-08-11_09-00-00"
+    )
+    assert detail["profile"] == "worker_alpha"
+    assert detail["content"].startswith("# Report")
+    assert "| ok | 1 |" in detail["content"]
+
+
+def test_cron_run_output_rejects_path_escape(isolated_profiles):
+    from hermes_cli import web_server
+
+    with pytest.raises(HTTPException) as exc_info:
+        web_server._get_cron_job_output_sync("missing", "../jobs")
+
+    assert exc_info.value.status_code == 400
+
+
+def test_cron_run_output_does_not_follow_symlinks(isolated_profiles, tmp_path):
+    """The dashboard must not turn a planted output symlink into a file reader."""
+    from hermes_cli import web_server
+
+    worker_home = isolated_profiles["worker_alpha"]
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="produce a markdown report",
+        schedule="every 1h",
+        name="symlink-report",
+    )
+    assert isinstance(job, dict)
+    output_dir = worker_home / "cron" / "output" / job["id"]
+    output_dir.mkdir(parents=True)
+    secret = tmp_path / "secret.md"
+    secret.write_text("must not leak", encoding="utf-8")
+    planted = output_dir / "2026-08-11_09-00-00.md"
+    try:
+        planted.symlink_to(secret)
+    except OSError:
+        pytest.skip("symlink creation is unavailable on this platform")
+
+    assert web_server._list_cron_job_outputs_sync(job["id"])["outputs"] == []
+    with pytest.raises(HTTPException) as exc_info:
+        web_server._get_cron_job_output_sync(job["id"], planted.stem)
+
+    assert exc_info.value.status_code == 404
+
+
+def test_cron_run_output_rejects_symlink_swap_during_open(
+    isolated_profiles,
+    monkeypatch,
+    tmp_path,
+):
+    """The descriptor read must stay pinned when the path changes after lstat."""
+    from cron import jobs as cron_jobs
+    from hermes_cli import web_server
+
+    worker_home = isolated_profiles["worker_alpha"]
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="produce a markdown report",
+        schedule="every 1h",
+        name="race-report",
+    )
+    assert isinstance(job, dict)
+    output_dir = worker_home / "cron" / "output" / job["id"]
+    output_dir.mkdir(parents=True)
+    planted = output_dir / "2026-08-11_09-00-00.md"
+    planted.write_text("safe output", encoding="utf-8")
+    secret = tmp_path / "secret.md"
+    secret.write_text("must not leak", encoding="utf-8")
+
+    real_open = cron_jobs.os.open
+    swapped = False
+
+    def swap_then_open(path, flags, *args, **kwargs):
+        nonlocal swapped
+        if not swapped and Path(path).name == planted.name:
+            planted.unlink()
+            try:
+                planted.symlink_to(secret)
+            except OSError:
+                pytest.skip("symlink creation is unavailable on this platform")
+            swapped = True
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(cron_jobs.os, "open", swap_then_open)
+
+    with pytest.raises(HTTPException) as exc_info:
+        web_server._get_cron_job_output_sync(
+            job["id"], planted.stem, profile="worker_alpha"
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+def test_cron_run_output_rejects_symlinked_output_root(
+    isolated_profiles,
+    tmp_path,
+):
+    """A planted parent symlink must not move reads outside the profile store."""
+    from hermes_cli import web_server
+
+    worker_home = isolated_profiles["worker_alpha"]
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="produce a markdown report",
+        schedule="every 1h",
+        name="parent-symlink-report",
+    )
+    assert isinstance(job, dict)
+    external_root = tmp_path / "outside"
+    external_job_dir = external_root / job["id"]
+    external_job_dir.mkdir(parents=True)
+    planted = external_job_dir / "2026-08-11_09-00-00.md"
+    planted.write_text("must not leak", encoding="utf-8")
+    output_root = worker_home / "cron" / "output"
+    if output_root.exists():
+        output_root.rmdir()
+    try:
+        output_root.symlink_to(external_root, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation is unavailable on this platform")
+
+    assert web_server._list_cron_job_outputs_sync(
+        job["id"], profile="worker_alpha"
+    )["outputs"] == []
+    with pytest.raises(HTTPException) as exc_info:
+        web_server._get_cron_job_output_sync(
+            job["id"], planted.stem, profile="worker_alpha"
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+@pytest.mark.parametrize("force_path_fallback", [False, True])
+def test_cron_run_output_rejects_symlinked_job_directory(
+    isolated_profiles,
+    monkeypatch,
+    tmp_path,
+    force_path_fallback,
+):
+    """Descriptor and cross-platform path fallback both reject a job-dir link."""
+    from cron import jobs as cron_jobs
+    from hermes_cli import web_server
+
+    if force_path_fallback:
+        monkeypatch.setattr(
+            cron_jobs.os,
+            "supports_dir_fd",
+            frozenset(cron_jobs.os.supports_dir_fd - {cron_jobs.os.open}),
+        )
+
+    worker_home = isolated_profiles["worker_alpha"]
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="produce a markdown report",
+        schedule="every 1h",
+        name="job-dir-symlink-report",
+    )
+    assert isinstance(job, dict)
+    external_job_dir = tmp_path / "outside-job"
+    external_job_dir.mkdir()
+    planted = external_job_dir / "2026-08-11_09-00-00.md"
+    planted.write_text("must not leak", encoding="utf-8")
+    output_root = worker_home / "cron" / "output"
+    output_root.mkdir(exist_ok=True)
+    job_dir = output_root / job["id"]
+    try:
+        job_dir.symlink_to(external_job_dir, target_is_directory=True)
+    except OSError:
+        pytest.skip("symlink creation is unavailable on this platform")
+
+    assert web_server._list_cron_job_outputs_sync(
+        job["id"], profile="worker_alpha"
+    )["outputs"] == []
+    with pytest.raises(HTTPException) as exc_info:
+        web_server._get_cron_job_output_sync(
+            job["id"], planted.stem, profile="worker_alpha"
+        )
+
+    assert exc_info.value.status_code == 404
+
+
+def test_cron_run_output_listing_surfaces_storage_errors(
+    isolated_profiles,
+    monkeypatch,
+):
+    from cron import jobs as cron_jobs
+    from hermes_cli import web_server
+
+    worker_home = isolated_profiles["worker_alpha"]
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="produce a markdown report",
+        schedule="every 1h",
+        name="unreadable-report",
+    )
+    assert isinstance(job, dict)
+    output_dir = worker_home / "cron" / "output" / job["id"]
+    output_dir.mkdir(parents=True)
+    real_scandir = cron_jobs.os.scandir
+
+    def fail_output_scan(path):
+        if isinstance(path, int) or Path(path) == output_dir:
+            raise PermissionError("output directory unavailable")
+        return real_scandir(path)
+
+    monkeypatch.setattr(cron_jobs.os, "scandir", fail_output_scan)
+
+    with pytest.raises(PermissionError, match="output directory unavailable"):
+        web_server._list_cron_job_outputs_sync(
+            job["id"], profile="worker_alpha"
+        )
+
+
+def test_cron_run_output_listing_surfaces_metadata_errors(
+    isolated_profiles,
+    monkeypatch,
+):
+    """A durable output metadata failure is not an empty-history response."""
+    from cron import jobs as cron_jobs
+    from hermes_cli import web_server
+
+    worker_home = isolated_profiles["worker_alpha"]
+    job = web_server._call_cron_for_profile(
+        "worker_alpha",
+        "create_job",
+        prompt="produce a markdown report",
+        schedule="every 1h",
+        name="unreadable-output-metadata",
+    )
+    assert isinstance(job, dict)
+    output_dir = worker_home / "cron" / "output" / job["id"]
+    output_dir.mkdir(parents=True)
+
+    class UnreadableOutputEntry:
+        name = "2026-08-11_09-00-00.md"
+
+        def is_file(self, *, follow_symlinks=True):
+            return True
+
+        def stat(self, *, follow_symlinks=True):
+            raise PermissionError("output metadata unavailable")
+
+    class OutputEntries:
+        def __enter__(self):
+            return iter([UnreadableOutputEntry()])
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+    monkeypatch.setattr(cron_jobs.os, "scandir", lambda _path: OutputEntries())
+
+    with pytest.raises(PermissionError, match="output metadata unavailable"):
+        web_server._list_cron_job_outputs_sync(
+            job["id"], profile="worker_alpha"
+        )
 
 
 def test_dashboard_create_reports_saved_but_unregistered(

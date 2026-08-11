@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import type * as React from 'react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
+import { MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
 import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
@@ -34,21 +35,23 @@ import {
   createCronJob,
   type CronDeliveryTarget,
   type CronJob,
+  type CronJobOutput,
   deleteCronJob,
   getAutomationBlueprints,
   getCronDeliveryTargets,
-  getCronJobRuns,
+  getCronJobOutput,
+  getCronJobOutputs,
   instantiateAutomationBlueprint,
   pauseCronJob,
   resumeCronJob,
-  type SessionInfo,
   updateCronJob
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { AlertTriangle } from '@/lib/icons'
 import { requestModelOptions } from '@/lib/model-options'
 import { asText } from '@/lib/text'
-import { $cronFocusJobId, $cronJobs, invalidateCronJobsRequests, setCronFocusJobId } from '@/store/cron'
+import { cn } from '@/lib/utils'
+import { $cronFocus, $cronJobs, invalidateCronJobsRequests, setCronFocusJobId } from '@/store/cron'
 import { $changeEventsAvailable, $cronChangeTick } from '@/store/live-sync'
 import { notify, notifyError } from '@/store/notifications'
 import { $profileScope, ALL_PROFILES } from '@/store/profile'
@@ -291,11 +294,10 @@ function matchesQuery(job: CronJob, q: string): boolean {
 
 interface CronViewProps extends React.ComponentProps<'section'> {
   onClose: () => void
-  onOpenSession?: (sessionId: string) => void
   setStatusbarItemGroup?: SetStatusbarItemGroup
 }
 
-export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setStatusbarItemGroup }: CronViewProps) {
+export function CronView({ onClose, setStatusbarItemGroup: _setStatusbarItemGroup }: CronViewProps) {
   const { t } = useI18n()
   const c = t.cron
   // Source of truth is the shared atom (also fed by the controller poll), so the
@@ -340,7 +342,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   // Set when a job is opened from the sidebar so we scroll it into view once the
   // row exists. Cleared after the scroll fires.
   const pendingScrollRef = useRef<null | string>(null)
-  const focusJobId = useStore($cronFocusJobId)
+  const focusTarget = useStore($cronFocus)
 
   const [editor, setEditor] = useState<EditorState>({ mode: 'closed' })
   const [pendingDelete, setPendingDelete] = useState<CronJob | null>(null)
@@ -380,19 +382,25 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
   // normally doesn't re-trigger it.
   // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    if (!focusJobId) {
+    if (!focusTarget) {
       return
     }
 
-    const match = jobs.find(job => job.id === focusJobId || jobName(job) === focusJobId)
+    const match = jobs.find(
+      job =>
+        (job.id === focusTarget.jobId || jobName(job) === focusTarget.jobId) &&
+        (!focusTarget.profile || job.profile === focusTarget.profile)
+    )
 
     if (match) {
       setSelectedJobId(match.id)
       pendingScrollRef.current = match.id
     }
 
-    setCronFocusJobId(null)
-  }, [focusJobId, jobs])
+    if (!focusTarget.outputId) {
+      setCronFocusJobId(null)
+    }
+  }, [focusTarget, jobs])
 
   const visibleJobs = useMemo(
     () => jobs.filter(job => matchesQuery(job, query.trim())).sort((a, b) => jobTitle(a).localeCompare(jobTitle(b))),
@@ -701,7 +709,6 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
               busy={busyJobTokens.has(selectedJob.id) || triggeringJobKeys.has(`${profile}:${selectedJob.id}`)}
               c={c}
               job={selectedJob}
-              onOpenSession={onOpenSession}
               onPauseResume={() => void handlePauseResume(selectedJob)}
               onTrigger={() => void handleTrigger(selectedJob)}
             />
@@ -781,14 +788,12 @@ function CronJobDetail({
   busy,
   c,
   job,
-  onOpenSession,
   onPauseResume,
   onTrigger
 }: {
   busy: boolean
   c: Translations['cron']
   job: CronJob
-  onOpenSession?: (sessionId: string) => void
   onPauseResume: () => void
   onTrigger: () => void
 }) {
@@ -841,7 +846,7 @@ function CronJobDetail({
         </section>
       ) : null}
 
-      <CronJobRuns c={c} jobId={job.id} onOpenSession={onOpenSession} />
+      <CronJobRuns c={c} jobId={job.id} key={`${job.profile ?? ''}:${job.id}`} profile={job.profile} />
     </PanelDetail>
   )
 }
@@ -856,41 +861,74 @@ function formatRunTime(seconds?: null | number): string {
   return Number.isNaN(date.valueOf()) ? '—' : date.toLocaleString()
 }
 
-// Runs are produced by the background scheduler tick. cron.changed /
-// sessions.changed broadcasts re-load immediately on event-capable backends
+// Outputs are produced by the background scheduler tick. cron.changed
+// broadcasts re-load immediately on event-capable backends
 // (the tick dep below), so the poll drops to a slow backstop there; older
 // backends keep the legacy cadence.
 const RUNS_POLL_INTERVAL_MS = 8000
 const RUNS_BACKSTOP_INTERVAL_MS = 60_000
 
-function CronJobRuns({
-  c,
-  jobId,
-  onOpenSession
-}: {
-  c: Translations['cron']
-  jobId: string
-  onOpenSession?: (sessionId: string) => void
-}) {
-  const [runs, setRuns] = useState<null | SessionInfo[]>(null)
+export function CronJobRuns({ c, jobId, profile }: { c: Translations['cron']; jobId: string; profile?: string }) {
+  const [runs, setRuns] = useState<null | CronJobOutput[]>(null)
+  const [runsError, setRunsError] = useState(false)
+  const [selectedOutputId, setSelectedOutputId] = useState<null | string>(null)
+  const [output, setOutput] = useState<null | string>(null)
+  const [outputError, setOutputError] = useState(false)
+  const [outputLoading, setOutputLoading] = useState(false)
+  const outputRequestRef = useRef(0)
+  const focusTarget = useStore($cronFocus)
   const changeEventsAvailable = useStore($changeEventsAvailable)
   const cronChangeTick = useStore($cronChangeTick)
 
+  const openOutput = useCallback(
+    async (outputId: string) => {
+      const requestId = ++outputRequestRef.current
+
+      setSelectedOutputId(outputId)
+      setOutput(null)
+      setOutputError(false)
+      setOutputLoading(true)
+
+      try {
+        const detail = await getCronJobOutput(jobId, outputId, profile)
+
+        if (outputRequestRef.current === requestId) {
+          setOutput(detail.content)
+        }
+      } catch {
+        if (outputRequestRef.current === requestId) {
+          setOutputError(true)
+        }
+      } finally {
+        if (outputRequestRef.current === requestId) {
+          setOutputLoading(false)
+        }
+      }
+    },
+    [jobId, profile]
+  )
+
   useEffect(() => {
     let cancelled = false
+    let latestRequestId = 0
 
-    const load = () =>
-      getCronJobRuns(jobId)
+    const load = () => {
+      const requestId = ++latestRequestId
+
+      return getCronJobOutputs(jobId, 20, profile)
         .then(result => {
-          if (!cancelled) {
+          if (!cancelled && requestId === latestRequestId) {
+            setRunsError(false)
             setRuns(result)
           }
         })
         .catch(() => {
-          if (!cancelled) {
+          if (!cancelled && requestId === latestRequestId) {
+            setRunsError(true)
             setRuns(prev => prev ?? [])
           }
         })
+    }
 
     void load()
 
@@ -917,7 +955,24 @@ function CronJobRuns({
       document.removeEventListener('visibilitychange', onVisible)
     }
     // cronChangeTick: a fired run moves jobs.json bookkeeping → reload now.
-  }, [changeEventsAvailable, cronChangeTick, jobId])
+  }, [changeEventsAvailable, cronChangeTick, jobId, profile])
+
+  useEffect(() => {
+    if (
+      runs === null ||
+      focusTarget?.jobId !== jobId ||
+      (focusTarget.profile && focusTarget.profile !== profile) ||
+      !focusTarget.outputId
+    ) {
+      return
+    }
+
+    if (runs.some(run => run.id === focusTarget.outputId)) {
+      void openOutput(focusTarget.outputId)
+    }
+
+    setCronFocusJobId(null)
+  }, [focusTarget, jobId, openOutput, profile, runs])
 
   return (
     <div>
@@ -925,7 +980,9 @@ function CronJobRuns({
         {c.runHistory}
         {runs && runs.length > 0 ? ` · ${runs.length}` : ''}
       </PanelSectionLabel>
-      {runs === null ? (
+      {runsError ? (
+        <p className="py-1 text-xs text-destructive">{c.failedLoad}</p>
+      ) : runs === null ? (
         <div className="flex items-center gap-1.5 py-1 text-xs text-muted-foreground">
           <Codicon name="loading" size="0.75rem" spinning />
         </div>
@@ -935,19 +992,37 @@ function CronJobRuns({
         <div className="flex flex-col gap-px">
           {runs.map(run => (
             <button
-              className="row-hover flex items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+              aria-expanded={selectedOutputId === run.id}
+              className={cn(
+                'row-hover flex items-center justify-between gap-3 rounded-md px-2 py-1 text-left text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+                selectedOutputId === run.id && 'bg-(--ui-row-active-background)'
+              )}
               key={run.id}
-              onClick={() => onOpenSession?.(run.id)}
+              onClick={() => void openOutput(run.id)}
               type="button"
             >
-              <span className="truncate text-foreground/85">{run.title?.trim() || run.preview?.trim() || run.id}</span>
+              <span className="truncate text-foreground/85">{run.filename}</span>
               <span className="shrink-0 text-[0.62rem] text-muted-foreground/55 tabular-nums">
-                {formatRunTime(run.last_active || run.started_at)}
+                {formatRunTime(run.created_at)}
               </span>
             </button>
           ))}
         </div>
       )}
+      {selectedOutputId ? (
+        <div className="mt-3 min-h-16 rounded-md border border-(--ui-stroke-tertiary) bg-background p-3">
+          {outputLoading ? (
+            <div className="flex items-center gap-1.5 py-2 text-xs text-muted-foreground">
+              <Codicon name="loading" size="0.75rem" spinning />
+              {c.loading}
+            </div>
+          ) : outputError ? (
+            <p className="py-2 text-xs text-destructive">{c.failedLoad}</p>
+          ) : output !== null ? (
+            <MarkdownTextContent containerClassName="text-sm" disableArtifacts isRunning={false} text={output} />
+          ) : null}
+        </div>
+      ) : null}
     </div>
   )
 }

@@ -169,7 +169,7 @@ def adapter():
 
 
 @pytest.fixture(autouse=True)
-def _isolate_usage_dependencies(monkeypatch):
+def _isolate_usage_dependencies(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_LANGUAGE", "en")
     monkeypatch.setattr(
         "hermes_cli.profiles.get_active_profile_name",
@@ -178,6 +178,21 @@ def _isolate_usage_dependencies(monkeypatch):
     monkeypatch.setattr(
         "agent.account_usage.nous_credits_lines",
         lambda **kwargs: [],
+    )
+    # _profile_name_for_source only honors a matched route when the routed
+    # profile is actually served (profiles_to_serve scans profiles/ on disk
+    # and a miss raises ProfileRouteRejected). The synthetic workprof profile
+    # has no on-disk home, so serve it explicitly; raising=False keeps this
+    # inert on trees that predate the serving filter.
+    workprof_home = tmp_path / "profiles" / WORK_PROFILE
+    workprof_home.mkdir(parents=True)
+    monkeypatch.setattr(
+        "hermes_cli.profiles.profiles_to_serve",
+        lambda *args, **kwargs: [
+            ("default", str(tmp_path / "profiles" / "default")),
+            (WORK_PROFILE, str(workprof_home)),
+        ],
+        raising=False,
     )
 
 

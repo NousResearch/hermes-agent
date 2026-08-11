@@ -657,6 +657,9 @@ class TelegramAdapter(BasePlatformAdapter):
     # When a chunk is near this limit, a continuation is almost certain.
     _SPLIT_THRESHOLD = 4000
     MEDIA_GROUP_WAIT_SECONDS = 0.8
+    # Cap on inbound events held across a disconnect/reconnect window.
+    # Bounds memory during extended outages; oldest events are dropped first.
+    HELD_INBOUND_MAX = 64
     _GENERAL_TOPIC_THREAD_ID = "1"
 
     # Telegram's edit_message applies MarkdownV2 formatting only on the
@@ -789,6 +792,12 @@ class TelegramAdapter(BasePlatformAdapter):
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._drop_delayed_deliveries = False
+        # Inbound events held across disconnect. PTB advances the polling offset
+        # before our enqueue/flush drop-guard runs, so Telegram will not
+        # redeliver — destroying the event is silent permanent loss. Hold and
+        # redispatch on reconnect instead (see _hold_inbound_event).
+        self._held_inbound_events: List[MessageEvent] = []
+        self._held_inbound_redispatch_task: Optional[asyncio.Task] = None
         self._polling_error_task: Optional[asyncio.Task] = None
         self._polling_conflict_count: int = 0
         self._polling_conflict_recovery_generation: Optional[int] = None
@@ -911,6 +920,20 @@ class TelegramAdapter(BasePlatformAdapter):
     def _mark_connected(self) -> None:
         self._drop_delayed_deliveries = False
         super()._mark_connected()
+        # Drain anything held while we were down. PTB will not redeliver —
+        # these events exist only in our hold queue now.
+        if not getattr(self, "_held_inbound_events", None):
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        prior = getattr(self, "_held_inbound_redispatch_task", None)
+        # Single tracked task so disconnect can cancel+await it (teknium
+        # lifecycle rule from #72037 review: no untracked dispatch).
+        self._held_inbound_redispatch_task = loop.create_task(
+            self._redispatch_held_inbound(prior=prior)
+        )
 
     def _mark_disconnected(self) -> None:
         self._drop_delayed_deliveries = True
@@ -919,15 +942,118 @@ class TelegramAdapter(BasePlatformAdapter):
     def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
         self._drop_delayed_deliveries = True
         super()._set_fatal_error(code, message, retryable=retryable)
+        # Permanent fatal: no reconnect will drain the queue. Surface the loss
+        # explicitly instead of letting held messages die silently with the process.
+        if not retryable and getattr(self, "_held_inbound_events", None):
+            n = len(self._held_inbound_events)
+            logger.warning(
+                "[Telegram] Non-retryable fatal (%s); discarding %d held inbound message(s)",
+                code,
+                n,
+            )
+            self._held_inbound_events.clear()
 
     def _should_drop_delayed_delivery(self) -> bool:
-        """True once teardown/fatal-error started — delayed flushes must drop.
+        """True once teardown/fatal-error started — delayed flushes must not dispatch.
 
         Buffered text/photo/media-group flushes sit behind an asyncio.sleep().
         If disconnect wins the race, dispatching them spawns an agent on a
         torn-down session, producing stale/duplicate deliveries.
+
+        Callers must NOT destroy the event when this returns True: PTB has
+        already advanced the polling offset, so Telegram will never redeliver.
+        Use ``_hold_inbound_event`` and redispatch on reconnect.
         """
         return bool(getattr(self, "_drop_delayed_deliveries", False))
+
+    def _hold_inbound_event(self, event: "MessageEvent", *, where: str) -> None:
+        """Preserve an inbound event that cannot be dispatched right now.
+
+        The disconnect drop-guard (#55971) correctly prevents dispatch into a
+        torn-down session. Destroying the event is wrong: by the time we reach
+        enqueue/flush, python-telegram-bot has already acked the update and
+        advanced the offset — silent permanent loss, no log, no error.
+
+        Hold the event and redispatch it from ``_mark_connected``. Cap the
+        queue so a long outage cannot grow without bound. Dedup by object
+        identity so salvage-after-hold never double-queues the same event.
+        """
+        # Dedup: same MessageEvent object already held (flush held, then
+        # teardown salvage races the same reference — shouldn't happen after
+        # pop, but identity guard is free and closes the class of bug).
+        held = getattr(self, "_held_inbound_events", None)
+        if held is None:
+            self._held_inbound_events = []
+            held = self._held_inbound_events
+        for existing in held:
+            if existing is event:
+                return
+
+        max_n = int(getattr(self, "HELD_INBOUND_MAX", 64) or 64)
+        while len(held) >= max_n:
+            dropped = held.pop(0)
+            logger.warning(
+                "[Telegram] Held-inbound queue full (%d); dropping oldest (%d chars)",
+                max_n,
+                len(getattr(dropped, "text", None) or ""),
+            )
+        held.append(event)
+        logger.warning(
+            "[Telegram] Holding inbound during disconnect (%s, %d chars, queue=%d) "
+            "- will redispatch on reconnect",
+            where,
+            len(getattr(event, "text", None) or ""),
+            len(held),
+        )
+
+    async def _redispatch_held_inbound(
+        self, prior: Optional[asyncio.Task] = None
+    ) -> None:
+        """Drain the hold queue after reconnect.
+
+        ``prior`` is the previous redispatch task, if any — awaited here so
+        ``_mark_connected`` stays synchronous while teardown can still
+        cancel+await the single tracked task via
+        ``_cancel_pending_delivery_tasks``.
+        """
+        if prior is not None and prior is not asyncio.current_task() and not prior.done():
+            prior.cancel()
+            try:
+                await prior
+            except asyncio.CancelledError:
+                pass
+
+        held = getattr(self, "_held_inbound_events", None)
+        if not held:
+            return
+        # Take ownership atomically so a concurrent hold during drain appends
+        # to a fresh list and is picked up by a later connect.
+        events = list(held)
+        held.clear()
+        logger.warning(
+            "[Telegram] Redispatching %d held inbound message(s) after reconnect",
+            len(events),
+        )
+        for idx, event in enumerate(events):
+            if self._should_drop_delayed_delivery():
+                # Disconnect returned mid-drain — re-hold current + remainder.
+                self._hold_inbound_event(event, where="redispatch-interrupted")
+                for rest in events[idx + 1 :]:
+                    self._hold_inbound_event(rest, where="redispatch-interrupted")
+                return
+            try:
+                await self.handle_message(event)
+            except asyncio.CancelledError:
+                # Task cancelled (disconnect / superseding redispatch) — re-hold.
+                self._hold_inbound_event(event, where="redispatch-cancelled")
+                for rest in events[idx + 1 :]:
+                    self._hold_inbound_event(rest, where="redispatch-cancelled")
+                raise
+            except Exception:
+                logger.exception(
+                    "[Telegram] Failed to redispatch held inbound (%d chars)",
+                    len(getattr(event, "text", None) or ""),
+                )
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -4565,11 +4691,26 @@ class TelegramAdapter(BasePlatformAdapter):
             collect(task)
         collect(getattr(self, "_polling_error_task", None))
         collect(getattr(self, "_polling_progress_verifier_task", None))
+        # Hold-queue redispatch must be cancellable+awaitable on teardown so it
+        # cannot dispatch handle_message into a torn-down session (same lifecycle
+        # rule teknium called out on #72037 for shielded flush dispatch).
+        collect(getattr(self, "_held_inbound_redispatch_task", None))
 
         for task in pending_tasks:
             task.cancel()
         if awaitable_tasks:
             await asyncio.gather(*awaitable_tasks, return_exceptions=True)
+
+        # Salvage buffered inbound events before clearing maps. Cancel alone
+        # leaves the event in the map with no flush task — clearing without
+        # hold would silently destroy user messages (PTB already advanced the
+        # offset). Hold for redispatch on reconnect.
+        for event in list(self._pending_text_batches.values()):
+            self._hold_inbound_event(event, where="text-batch-teardown")
+        for event in list(self._pending_photo_batches.values()):
+            self._hold_inbound_event(event, where="photo-batch-teardown")
+        for event in list(self._media_group_events.values()):
+            self._hold_inbound_event(event, where="media-group-teardown")
 
         self._media_group_tasks.clear()
         self._media_group_events.clear()
@@ -4581,6 +4722,8 @@ class TelegramAdapter(BasePlatformAdapter):
             self._polling_error_task = None
         if getattr(self, "_polling_progress_verifier_task", None) is not current_task:
             self._polling_progress_verifier_task = None
+        if getattr(self, "_held_inbound_redispatch_task", None) is not current_task:
+            self._held_inbound_redispatch_task = None
 
     async def _await_disconnect_step(self, awaitable, timeout: float, step: str) -> bool:
         """Await one disconnect step; detach on timeout so teardown advances.
@@ -9317,7 +9460,7 @@ class TelegramAdapter(BasePlatformAdapter):
         dispatching the combined message.
         """
         if self._should_drop_delayed_delivery():
-            logger.debug("[Telegram] Dropping text batch enqueue after disconnect started")
+            self._hold_inbound_event(event, where="text-enqueue")
             return
 
         key = self._text_batch_key(event)
@@ -9351,6 +9494,7 @@ class TelegramAdapter(BasePlatformAdapter):
         split point, since a continuation chunk is almost certain.
         """
         current_task = asyncio.current_task()
+        event = None
         try:
             # Adaptive delay tiers:
             #  - last chunk ≥ _SPLIT_THRESHOLD: a continuation is almost
@@ -9380,13 +9524,20 @@ class TelegramAdapter(BasePlatformAdapter):
             if not event:
                 return
             if self._should_drop_delayed_delivery():
-                logger.debug("[Telegram] Dropping text batch flush after disconnect started")
+                self._hold_inbound_event(event, where="text-flush")
+                event = None
                 return
             logger.info(
                 "[Telegram] Flushing text batch %s (%d chars)",
                 key, len(event.text or ""),
             )
             await self.handle_message(event)
+            event = None
+        except asyncio.CancelledError:
+            # Cancelled after pop but before durable dispatch — hold, don't lose.
+            if event is not None:
+                self._hold_inbound_event(event, where="text-flush-cancelled")
+            raise
         finally:
             if self._pending_text_batch_tasks.get(key) is current_task:
                 self._pending_text_batch_tasks.pop(key, None)
@@ -9411,16 +9562,23 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _flush_photo_batch(self, batch_key: str) -> None:
         """Send a buffered photo burst/album as a single MessageEvent."""
         current_task = asyncio.current_task()
+        event = None
         try:
             await asyncio.sleep(self._media_batch_delay_seconds)
             event = self._pending_photo_batches.pop(batch_key, None)
             if not event:
                 return
             if self._should_drop_delayed_delivery():
-                logger.debug("[Telegram] Dropping photo batch flush after disconnect started")
+                self._hold_inbound_event(event, where="photo-flush")
+                event = None
                 return
             logger.info("[Telegram] Flushing photo batch %s with %d image(s)", batch_key, len(event.media_urls))
             await self.handle_message(event)
+            event = None
+        except asyncio.CancelledError:
+            if event is not None:
+                self._hold_inbound_event(event, where="photo-flush-cancelled")
+            raise
         finally:
             if self._pending_photo_batch_tasks.get(batch_key) is current_task:
                 self._pending_photo_batch_tasks.pop(batch_key, None)
@@ -9428,7 +9586,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _enqueue_photo_event(self, batch_key: str, event: MessageEvent) -> None:
         """Merge photo events into a pending batch and schedule flush."""
         if self._should_drop_delayed_delivery():
-            logger.debug("[Telegram] Dropping photo batch enqueue after disconnect started")
+            self._hold_inbound_event(event, where="photo-enqueue")
             return
 
         existing = self._pending_photo_batches.get(batch_key)
@@ -9755,7 +9913,7 @@ class TelegramAdapter(BasePlatformAdapter):
         attachments into a single MessageEvent.
         """
         if self._should_drop_delayed_delivery():
-            logger.debug("[Telegram] Dropping media group enqueue after disconnect started")
+            self._hold_inbound_event(event, where="media-group-enqueue")
             return
 
         existing = self._media_group_events.get(media_group_id)
@@ -9777,15 +9935,22 @@ class TelegramAdapter(BasePlatformAdapter):
 
     async def _flush_media_group_event(self, media_group_id: str) -> None:
         current_task = asyncio.current_task()
+        event = None
         try:
             await asyncio.sleep(self.MEDIA_GROUP_WAIT_SECONDS)
             event = self._media_group_events.pop(media_group_id, None)
-            if event is not None:
-                if self._should_drop_delayed_delivery():
-                    logger.debug("[Telegram] Dropping media group flush after disconnect started")
-                    return
-                await self.handle_message(event)
+            if event is None:
+                return
+            if self._should_drop_delayed_delivery():
+                self._hold_inbound_event(event, where="media-group-flush")
+                event = None
+                return
+            await self.handle_message(event)
+            event = None
         except asyncio.CancelledError:
+            # Cancelled after pop but before durable dispatch — hold, don't lose.
+            if event is not None:
+                self._hold_inbound_event(event, where="media-group-flush-cancelled")
             return
         finally:
             if self._media_group_tasks.get(media_group_id) is current_task:

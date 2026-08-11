@@ -4570,9 +4570,9 @@ def _fetch_anthropic_models(
     resolved_base_url = base_url
     token = (api_key or "").strip() or resolve_anthropic_token()
     if not token:
-        token, pool_base_url = _resolve_anthropic_pool_catalog_credentials()
-        if not resolved_base_url and pool_base_url:
-            resolved_base_url = pool_base_url
+        # A pool credential and its endpoint are one security boundary. Never
+        # pair the selected pool key with a caller-provided model endpoint.
+        token, resolved_base_url = _resolve_anthropic_pool_catalog_credentials()
     if not token:
         return None
 

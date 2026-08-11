@@ -28,20 +28,26 @@ def test_anthropic_picker_discovers_models_with_pool_api_key(monkeypatch):
     )
     monkeypatch.setattr(
         "hermes_cli.auth.read_credential_pool",
-        lambda provider: [
-            {
-                "auth_type": "api_key",
-                "access_token": "sk-ant-api03-pool-key",
-                "base_url": "https://api.anthropic.com",
-            }
-        ] if provider == "anthropic" else [],
+        lambda provider: (
+            [
+                {
+                    "auth_type": "api_key",
+                    "access_token": "sk-ant-api03-pool-key",
+                    "base_url": "https://api.anthropic.com",
+                }
+            ]
+            if provider == "anthropic"
+            else []
+        ),
     )
 
     captured = {}
 
     def _open(request, *, timeout):
         captured["url"] = request.full_url
-        captured["headers"] = {key.lower(): value for key, value in request.header_items()}
+        captured["headers"] = {
+            key.lower(): value for key, value in request.header_items()
+        }
         captured["timeout"] = timeout
         return _Response({"data": [{"id": "claude-opus-5"}]})
 
@@ -55,32 +61,53 @@ def test_anthropic_picker_discovers_models_with_pool_api_key(monkeypatch):
     assert "authorization" not in captured["headers"]
 
 
-def test_anthropic_pool_api_key_uses_its_configured_endpoint(monkeypatch):
-    """Never send a proxy-scoped pool credential to Anthropic's public host."""
+def test_anthropic_pool_api_key_overrides_conflicting_active_endpoint(monkeypatch):
+    """A pool-scoped key must never reach the active model's other endpoint."""
+    active_endpoint = "https://active.example/anthropic/v1"
+    pool_endpoint = "https://pool.example/anthropic/v1"
+    monkeypatch.setattr(
+        models,
+        "_get_model_config_dict",
+        lambda: {"provider": "anthropic", "base_url": active_endpoint},
+    )
     monkeypatch.setattr(
         "agent.anthropic_adapter.resolve_anthropic_token",
         lambda: None,
     )
     monkeypatch.setattr(
         "hermes_cli.auth.read_credential_pool",
-        lambda _provider: [
-            {
-                "auth_type": "api_key",
-                "access_token": "proxy-key",
-                "base_url": "https://proxy.example/anthropic/v1",
-            }
-        ],
+        lambda provider: (
+            [
+                {
+                    "auth_type": "api_key",
+                    "access_token": "proxy-key",
+                    "base_url": pool_endpoint,
+                }
+            ]
+            if provider == "anthropic"
+            else []
+        ),
     )
 
-    captured = {}
+    requests = []
 
     def _open(request, *, timeout):
-        captured["url"] = request.full_url
-        captured["headers"] = {key.lower(): value for key, value in request.header_items()}
+        requests.append((
+            request.full_url,
+            {key.lower(): value for key, value in request.header_items()},
+        ))
         return _Response({"data": [{"id": "claude-proxy-model"}]})
 
     monkeypatch.setattr(models, "_urlopen_model_catalog_request", _open)
 
-    assert models._fetch_anthropic_models() == ["claude-proxy-model"]
-    assert captured["url"] == "https://proxy.example/anthropic/v1/models"
-    assert captured["headers"]["x-api-key"] == "proxy-key"
+    assert models.provider_model_ids("anthropic") == ["claude-proxy-model"]
+    assert requests == [
+        (
+            f"{pool_endpoint}/models",
+            {
+                "anthropic-version": "2023-06-01",
+                "x-api-key": "proxy-key",
+            },
+        )
+    ]
+    assert all(not url.startswith(active_endpoint) for url, _headers in requests)

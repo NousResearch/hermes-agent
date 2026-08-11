@@ -510,6 +510,80 @@ def test_delete_task_removes_task_and_cascades(kanban_home):
 # ---------------------------------------------------------------------------
 
 
+def _task_with_pr_comment(conn, url="https://github.com/NousResearch/hermes-agent/pull/123"):
+    task_id = kb.create_task(conn, title="PR-backed task", assignee="worker")
+    kb.add_comment(conn, task_id, "worker", f"Opened {url}")
+    return task_id
+
+
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [
+        ("open", "active_pr"),
+        ("merged", None),
+        ("closed", None),
+    ],
+)
+def test_respawn_guard_resolves_live_pr_state(kanban_home, state, expected):
+    """Only an actually-open PR should suppress a ready task."""
+    with kb.connect() as conn:
+        task_id = _task_with_pr_comment(conn)
+
+        assert kb.check_respawn_guard(
+            conn,
+            task_id,
+            pr_state_resolver=lambda _url: state,
+        ) == expected
+
+
+def test_respawn_guard_fails_closed_when_pr_lookup_fails(kanban_home):
+    calls = 0
+
+    def unavailable(_url):
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("GitHub unavailable")
+
+    with kb.connect() as conn:
+        task_id = _task_with_pr_comment(conn)
+
+        assert kb.check_respawn_guard(
+            conn,
+            task_id,
+            pr_state_resolver=unavailable,
+        ) == "active_pr"
+        assert kb.check_respawn_guard(
+            conn,
+            task_id,
+            pr_state_resolver=unavailable,
+        ) == "active_pr"
+
+    assert calls == 1, "failed lookups should be cached to avoid retry storms"
+
+
+def test_respawn_guard_caches_pr_state_lookups(kanban_home):
+    calls = []
+
+    def resolve(url):
+        calls.append(url)
+        return "open"
+
+    with kb.connect() as conn:
+        task_id = _task_with_pr_comment(
+            conn,
+            "http://github.com/NousResearch/hermes-agent/pull/456",
+        )
+
+        assert kb.check_respawn_guard(
+            conn, task_id, pr_state_resolver=resolve,
+        ) == "active_pr"
+        assert kb.check_respawn_guard(
+            conn, task_id, pr_state_resolver=resolve,
+        ) == "active_pr"
+
+    assert calls == ["http://github.com/NousResearch/hermes-agent/pull/456"]
+
+
 
 
 

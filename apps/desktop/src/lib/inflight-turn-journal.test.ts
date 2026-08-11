@@ -559,7 +559,7 @@ describe('recoverInFlightTurnJournal', () => {
     ])
 
     const base = [user('u0', 'earlier turn'), assistant('a0', 'earlier reply')]
-    const result = recoverInFlightTurnJournal('stored-1', base)
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: true })
 
     expect(result.applied).toBe(true)
     expect(result.messages.map(m => m.id)).toEqual(['u0', 'a0', 'u1', 'assistant-stream-1'])
@@ -658,6 +658,76 @@ describe('recoverInFlightTurnJournal', () => {
     const merged = result.messages.at(-1)!
     expect(merged.id).toBe('assistant-stream-rt9')
     expect(merged.parts[1]).toMatchObject({ type: 'text', text: 'a much longer locally journaled partial answer' })
+  })
+
+  // ── Scrambled-transcript regression (duplicate trailing answers) ───────────
+  // The journal can outlive the turn it recorded (reclaim/reconnect/restart
+  // races skip the settle that would clear it). On resume the fold then
+  // re-appends content that the committed transcript ALREADY holds, rendering
+  // the same answers twice at the end of the conversation. Reported on the
+  // desktop as "the answer was already there, but it was inputted again".
+
+  it('does not re-append committed answers when the journaled user row never persisted', () => {
+    // A resume projection can journal a `user-inflight-*` row that was never
+    // written to the DB (and may even belong to a different conversation).
+    // Because no base user matches it, the fold used to treat the whole tail
+    // as unknown and append it — duplicating the assistant answers below.
+    journalEntry([
+      user('user-inflight-a3c2beb1', 'a stray user bubble that never persisted'),
+      assistant('assistant-stream-1', 'the committed answer')
+    ])
+
+    const base = [user('db-u1', 'the real prompt'), assistant('db-a1', 'the committed answer')]
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: false })
+
+    expect(result.caughtUp).toBe(true)
+    expect(result.applied).toBe(false)
+    expect(result.messages).toBe(base)
+    expect(result.messages.map(m => m.id)).toEqual(['db-u1', 'db-a1'])
+    // The stale entry is cleared so the next resume stays clean.
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
+  })
+
+  it('does not re-append committed answers when the journal tail has no user row', () => {
+    // A tail captured after a partial hydrate can end on assistant rows with
+    // no user prompt before them. The old code appended them verbatim, so the
+    // transcript ended with a duplicate of an answer that was already settled.
+    journalEntry([assistant('assistant-stream-1', 'the committed answer')])
+
+    const base = [user('db-u1', 'the real prompt'), assistant('db-a1', 'the committed answer')]
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: false })
+
+    expect(result.caughtUp).toBe(true)
+    expect(result.messages).toBe(base)
+    expect(readInFlightTurnJournal('stored-1')).toBeNull()
+  })
+
+  it('keeps appending a genuinely unknown turn (crash recovery still works)', () => {
+    // The staleness check must not swallow a tail the base never saw: that is
+    // the crash-recovery path the journal exists for.
+    journalEntry([user('u1', 'the live prompt'), assistant('assistant-stream-1', 'partial answer', { pending: true })])
+
+    const base = [user('db-u0', 'an earlier turn'), assistant('db-a0', 'earlier reply')]
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: true })
+
+    expect(result.applied).toBe(true)
+    expect(result.caughtUp).toBe(false)
+    expect(result.messages.map(m => m.id)).toEqual(['db-u0', 'db-a0', 'u1', 'assistant-stream-1'])
+    expect(readInFlightTurnJournal('stored-1')).not.toBeNull()
+  })
+
+  it('does not resurrect the journal streamId on a not-running resume (journal self-clear)', () => {
+    // The fold used to carry the stale entry's streamId onto the resumed state
+    // even when the backend reported the session idle. persistInFlightTurnState
+    // then re-wrote the journal instead of clearing it, so the same stale tail
+    // was folded again on every open — the scramble never healed.
+    journalEntry([user('u1', 'do the thing'), assistant('assistant-stream-1', 'partial answer', { pending: true })])
+
+    const base = [user('db-u0', 'an earlier turn'), assistant('db-a0', 'earlier reply')]
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: false })
+
+    expect(result.applied).toBe(true)
+    expect(result.streamId).toBeNull()
   })
 })
 

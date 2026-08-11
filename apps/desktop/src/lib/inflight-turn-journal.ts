@@ -693,6 +693,32 @@ function withoutBaseIds(rows: ChatMessage[], baseMessages: ChatMessage[]): ChatM
   return rows.filter(row => !baseIds.has(row.id))
 }
 
+/** Whether every recoverable assistant row in the journal tail already exists
+ *  as committed text in the base transcript. When true, the journal outlived
+ *  the turn it recorded and appending it would re-render the same answers at
+ *  the end of the transcript (the "scrambled conversation" regression). */
+function journalTailAlreadyCommitted(tailAssistants: ChatMessage[], baseMessages: ChatMessage[]): boolean {
+  const recoverable = tailAssistants.filter(assistantHasRecoverableContent)
+
+  if (recoverable.length === 0) {
+    return false
+  }
+
+  const baseTexts = new Set(
+    baseMessages
+      .filter(message => message.role === 'assistant' && !message.hidden)
+      .map(message => normalizedText(chatMessageText(message)))
+  )
+
+  return recoverable.every(message => {
+    const text = normalizedText(chatMessageText(message))
+
+    // Error-only rows carry no text to verify against — keep the conservative
+    // append path rather than risk dropping a recoverable failure.
+    return text.length > 0 && baseTexts.has(text)
+  })
+}
+
 export function mergeInFlightMessages(
   baseMessages: ChatMessage[],
   tailMessages: ChatMessage[],
@@ -719,15 +745,27 @@ export function mergeInFlightMessages(
   const matchingUserIndex = tailUser ? baseMessages.findLastIndex(message => userMessagesMatch(message, tailUser)) : -1
 
   if (matchingUserIndex < 0) {
-    // Base doesn't know this turn at all (user row was never persisted):
-    // append the whole tail.
+    // No base user matches the tail's user row (a projected user-inflight row
+    // that never persisted, or a tail captured without its user prompt). If the
+    // tail's answers are already committed in the transcript, the journal is
+    // stale — appending it would re-render the same replies at the end of the
+    // conversation. Otherwise, the base never saw this turn at all: append the
+    // whole tail (the crash-recovery path the journal exists for).
+    if (journalTailAlreadyCommitted(tailAssistants, baseMessages)) {
+      return { ...noop, caughtUp: true }
+    }
+
     const streamId = lastJournalRow?.id ?? null
 
     return {
       applied: true,
       caughtUp: false,
       messages: [...baseMessages, ...withoutBaseIds(tail, baseMessages)],
-      streamId,
+      // Only a genuinely running turn keeps a live stream target. On an idle
+      // resume, carrying the stale streamId would keep the journal entry alive
+      // (persistInFlightTurnState only clears when streamId is null) and the
+      // same tail would be folded again on every open.
+      streamId: options.keepPending ? streamId : null,
       turnStartedAt: null
     }
   }
@@ -781,7 +819,16 @@ export function mergeInFlightMessages(
     ...baseMessages.slice(projectionIndex + 1)
   ]
 
-  return { applied: true, caughtUp: false, messages, streamId: merged.id, turnStartedAt: null }
+  return {
+    applied: true,
+    caughtUp: false,
+    messages,
+    // Same idle-resume rule as the append path: only a running turn keeps the
+    // stream target alive, so an idle resume clears the journal instead of
+    // re-folding the same tail on every open.
+    streamId: options.keepPending ? merged.id : null,
+    turnStartedAt: null
+  }
 }
 
 const persistTimers = new Map<string, ReturnType<typeof setTimeout>>()
@@ -935,7 +982,11 @@ export function recoverInFlightTurnJournal(
 
   return {
     ...recovered,
-    streamId: recovered.applied ? (recovered.streamId ?? snapshot.streamId) : null,
+    // Never resurrect a stale stream target on an idle resume: with
+    // keepPending=false the session is not running, so the recovered rows are
+    // settled history and the journal must clear on the next state update —
+    // otherwise the same stale tail is folded again on every open.
+    streamId: recovered.applied ? (recovered.streamId ?? (options.keepPending ? snapshot.streamId : null)) : null,
     turnStartedAt: recovered.applied ? snapshot.turnStartedAt : null
   }
 }

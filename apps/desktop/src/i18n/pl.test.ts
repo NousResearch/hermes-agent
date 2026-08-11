@@ -137,7 +137,8 @@ describe('Polish desktop catalog', () => {
   it('preserves state-specific toggle labels', () => {
     expect(pl.settings.mcp.toggleFailed('serwer', true)).not.toBe(pl.settings.mcp.toggleFailed('serwer', false))
     expect(pl.skills.toggleToolset('web', true)).not.toBe(pl.skills.toggleToolset('web', false))
-    expect(pl.sidebar.projects.toggle('Projekt', true)).not.toBe(pl.sidebar.projects.toggle('Projekt', false))
+    expect(pl.sidebar.projects.toggle('Projekt', true)).toBe('Pokaż sesje projektu „Projekt”')
+    expect(pl.sidebar.projects.toggle('Projekt', false)).toBe('Ukryj sesje projektu „Projekt”')
     expect(pl.webhooks.toggleFailed('subskrypcja', true)).not.toBe(pl.webhooks.toggleFailed('subskrypcja', false))
   })
 })

@@ -2039,7 +2039,7 @@ const plTranslatedOverrides = {
       forceRemove: 'Wymuś usunięcie',
       enter: label => `Otwórz ${label}`,
       reorder: label => `Zmień kolejność ${label}`,
-      toggle: (label, open) => `${open ? 'Ukryj' : 'Pokaż'} sesje projektu „${label}”`,
+      toggle: (label, open) => `${open ? 'Pokaż' : 'Ukryj'} sesje projektu „${label}”`,
       back: 'Wszystkie projekty'
     },
     newSessionIn: label => `Nowa sesja w ${label}`,

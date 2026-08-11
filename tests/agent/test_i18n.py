@@ -82,6 +82,28 @@ def test_normalize_lang_accepts_polish_aliases():
     assert i18n._LANGUAGE_ALIASES["pl-pl"] == "pl"
 
 
+def test_polish_language_flows_through_real_config_seam(tmp_path, monkeypatch):
+    """A real HERMES_HOME config drives load_config_readonly(), get_language(), and t()."""
+    from hermes_cli.config import load_config_readonly
+
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  language: pl-PL\n  skin: mono\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_LANGUAGE", raising=False)
+    i18n.reset_language_cache()
+
+    try:
+        config = load_config_readonly()
+        assert config["display"]["language"] == "pl-PL"
+        assert config["display"]["skin"] == "mono"
+        assert i18n.get_language() == "pl"
+        assert i18n.t("approval.denied").endswith("Odrzucono")
+    finally:
+        i18n.reset_language_cache()
+
+
 def test_default_when_nothing_set(monkeypatch):
     """With no env var and no config override, falls back to English."""
     monkeypatch.delenv("HERMES_LANGUAGE", raising=False)

@@ -197,7 +197,17 @@ import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeig
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
-import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
+import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL, resolveUpdateRemote } from './update-remote'
+import { runRebuildWithRetry } from './update-rebuild'
+import {
+  buildRelaunchScript,
+  collectRelaunchArgs,
+  collectRelaunchEnv,
+  decideRelaunchOutcome,
+  resolveUnpackedRelease,
+  sandboxFallbackFromEnv,
+  sandboxPreflight
+} from './update-relaunch'
 import {
   collectRelaunchArgs,
   resolvePosixScriptHandoff,
@@ -2461,10 +2471,14 @@ function runGit(args, options: any = {}): Promise<{ code: number; stdout: string
 
 const firstLine = text => (text || '').split('\n').find(Boolean) || ''
 
-async function getOriginUrl(updateRoot) {
-  const origin = await runGit(['remote', 'get-url', 'origin'], { cwd: updateRoot })
+async function getRemoteUrl(updateRoot, remote = 'origin') {
+  const result = await runGit(['remote', 'get-url', remote], { cwd: updateRoot })
 
-  return origin.code === 0 ? origin.stdout.trim() : ''
+  return result.code === 0 ? result.stdout.trim() : ''
+}
+
+async function getOriginUrl(updateRoot) {
+  return getRemoteUrl(updateRoot)
 }
 
 function emitUpdateProgress(payload) {
@@ -2522,8 +2536,10 @@ async function checkUpdates() {
 
   branch = await resolveHealedBranch(updateRoot, branch)
   const originUrl = await getOriginUrl(updateRoot)
+  const updateRemote = resolveUpdateRemote(originUrl, await getRemoteUrl(updateRoot, 'upstream'))
+  const updateRemoteUrl = updateRemote === 'origin' ? originUrl : await getRemoteUrl(updateRoot, updateRemote)
 
-  if (isOfficialSshRemote(originUrl)) {
+  if (isOfficialSshRemote(updateRemoteUrl)) {
     const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
 
     const [currentSha, target, dirtyStr, currentBranch] = await Promise.all([
@@ -2560,7 +2576,7 @@ async function checkUpdates() {
     }
   }
 
-  const fetched = await runGit(['fetch', '--quiet', 'origin', branch], { cwd: updateRoot })
+  const fetched = await runGit(['fetch', '--quiet', updateRemote, branch], { cwd: updateRoot })
 
   if (fetched.code !== 0) {
     return {
@@ -2574,16 +2590,17 @@ async function checkUpdates() {
   }
 
   const git = args => runGit(args, { cwd: updateRoot }).then(r => r.stdout.trim())
+  const remoteBranch = `${updateRemote}/${branch}`
 
   const [currentSha, targetSha, dirtyStr, currentBranch, shallowStr, mergeBaseStr] = await Promise.all([
     git(['rev-parse', 'HEAD']),
-    git(['rev-parse', `origin/${branch}`]),
+    git(['rev-parse', remoteBranch]),
     git(['status', '--porcelain']),
     git(['rev-parse', '--abbrev-ref', 'HEAD']),
     git(['rev-parse', '--is-shallow-repository']),
     // merge-base exits non-zero with empty stdout when HEAD shares no common
     // ancestor with the freshly fetched tip — exactly the shallow-clone case.
-    git(['merge-base', 'HEAD', `origin/${branch}`])
+    git(['merge-base', 'HEAD', remoteBranch])
   ])
 
   const isShallow = shallowStr === 'true'
@@ -2594,7 +2611,7 @@ async function checkUpdates() {
   // (thousands of commits, see #51922) and resolveBehindCount discards the
   // result anyway in favour of a SHA compare — so skip the expensive query.
   const countStr = shouldCountCommits({ isShallow, hasMergeBase })
-    ? await git(['rev-list', `HEAD..origin/${branch}`, '--count'])
+    ? await git(['rev-list', `HEAD..${remoteBranch}`, '--count'])
     : ''
 
   const behind = resolveBehindCount({
@@ -2605,7 +2622,7 @@ async function checkUpdates() {
     hasMergeBase
   })
 
-  const commits = behind > 0 ? await readCommitLog(updateRoot, branch) : []
+  const commits = behind > 0 ? await readCommitLog(updateRoot, remoteBranch) : []
 
   return {
     supported: true,
@@ -2621,12 +2638,12 @@ async function checkUpdates() {
   }
 }
 
-async function readCommitLog(cwd, branch) {
+async function readCommitLog(cwd, remoteRef) {
   const SEP = '\x1f'
   const REC = '\x1e'
 
   const { stdout } = await runGit(
-    ['log', `HEAD..origin/${branch}`, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', '40'],
+    ['log', `HEAD..${remoteRef}`, `--pretty=format:%H${SEP}%s${SEP}%an${SEP}%at${REC}`, '-n', '40'],
     { cwd }
   )
 

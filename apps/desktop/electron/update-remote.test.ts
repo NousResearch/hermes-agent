@@ -24,7 +24,8 @@ import {
   isOfficialSshRemote,
   isSshRemote,
   OFFICIAL_REPO_CANONICAL,
-  OFFICIAL_REPO_HTTPS_URL
+  OFFICIAL_REPO_HTTPS_URL,
+  resolveUpdateRemote
 } from './update-remote'
 
 test('canonicalGitHubRemote normalizes SSH and HTTPS forms to the same value', () => {
@@ -71,6 +72,24 @@ test('isOfficialSshRemote does NOT match forks, other hosts, or HTTPS', () => {
   assert.equal(isOfficialSshRemote('https://github.com/NousResearch/hermes-agent.git'), false)
   assert.equal(isOfficialSshRemote(''), false)
   assert.equal(isOfficialSshRemote(null), false)
+})
+
+test('resolveUpdateRemote prefers an official upstream over a fork origin', () => {
+  assert.equal(
+    resolveUpdateRemote(
+      'git@github.com:imrightguy/hermes-agent.git',
+      'https://github.com/NousResearch/hermes-agent.git'
+    ),
+    'upstream'
+  )
+})
+
+test('resolveUpdateRemote keeps origin when upstream is absent or non-official', () => {
+  assert.equal(resolveUpdateRemote('https://github.com:imrightguy/hermes-agent.git', ''), 'origin')
+  assert.equal(
+    resolveUpdateRemote('https://github.com:imrightguy/hermes-agent.git', 'https://github.com:other/hermes-agent.git'),
+    'origin'
+  )
 })
 
 test('OFFICIAL_REPO_HTTPS_URL canonicalizes to OFFICIAL_REPO_CANONICAL', () => {

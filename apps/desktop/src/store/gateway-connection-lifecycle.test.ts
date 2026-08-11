@@ -22,6 +22,7 @@ const gatewayMocks = vi.hoisted(() => {
 })
 
 vi.mock('@/hermes', () => ({
+  setApiRequestConnection: vi.fn(),
   HermesGateway: class {
     connectionState = 'closed'
     close = vi.fn(() => {

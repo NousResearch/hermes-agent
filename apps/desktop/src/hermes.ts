@@ -1,5 +1,6 @@
 import { JsonRpcGatewayClient } from '@hermes/shared'
 
+import type { HermesConnection } from '@/global'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import { recordTranscriptTail } from '@/store/transcript-tail'
 import type {
@@ -270,6 +271,41 @@ export function getApiRequestProfile(): null | string {
   return _apiProfile
 }
 
+// Registry connection serving the active gateway (null → the local pool).
+// Pushed from store/gateway's setActive — the single seam BOTH
+// ensureGatewayProfile and ensureGatewayAgent funnel through — so WS calls
+// that dial their own backend (pluginSocket) resolve it through the SAME
+// source of truth those paths maintain for $connection. That makes the plugin
+// socket follow registry-agent activations too, not just profile switches.
+// Same no-store-import contract as _apiProfile (avoids a cycle).
+let _apiConnectionId: null | string = null
+
+export function setApiRequestConnection(connectionId: null | string): void {
+  _apiConnectionId = connectionId || null
+}
+
+/** Registry connection id that connection-scoped WS calls should target
+ *  (null → the local pool). Read-only twin of setApiRequestConnection. */
+export function getApiRequestConnection(): null | string {
+  return _apiConnectionId
+}
+
+/** Resolve the ACTIVE backend's connection descriptor, (connectionId,
+ *  profile)-scoped — mirroring how store/profile resolves $connection: a
+ *  registry agent's descriptor comes from getConnectionFor (its SOURCE
+ *  connection), everything else from the profile-keyed local pool. The
+ *  getConnectionFor bridge is optional (older Desktop mains); without it the
+ *  profile-scoped pool lookup is the best available answer. */
+async function activeConnection(): Promise<HermesConnection> {
+  const getConnectionFor = window.hermesDesktop.getConnectionFor
+
+  if (_apiConnectionId && getConnectionFor) {
+    return getConnectionFor({ connectionId: _apiConnectionId, profile: _apiProfile })
+  }
+
+  return window.hermesDesktop.getConnection(_apiProfile)
+}
+
 /** Options for a plugin REST call — mirrors the app's own `hermesDesktop.api`
  *  shape, minus the path (which is namespace-derived). */
 export interface PluginRestOptions {
@@ -331,7 +367,7 @@ export function pluginSocket(pluginId: string, path: string, onMessage: (data: u
   let attempt = 0
 
   const connect = async () => {
-    const connection = await window.hermesDesktop.getConnection().catch(() => null)
+    const connection = await activeConnection().catch(() => null)
 
     // No bridge / OAuth cookie auth (WS tickets are single-use, core-managed):
     // stay on the polling fallback rather than half-working.

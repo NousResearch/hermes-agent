@@ -1,7 +1,7 @@
 import { backendScopeKey, type ConnectionState, type GatewayEvent, resolveGatewayWsUrl } from '@hermes/shared'
 import { atom } from 'nanostores'
 
-import { HermesGateway } from '@/hermes'
+import { HermesGateway, setApiRequestConnection } from '@/hermes'
 import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
@@ -183,6 +183,11 @@ function setActive(profile: string): void {
   const gateway = activeGateway()
   g.$gateway.set(gateway)
   setGatewayState(gateway?.connectionState ?? 'closed')
+  // Push the active scope's registry connection into the hermes module (null
+  // for the local pool) so connection-building WS calls (pluginSocket) resolve
+  // through the same source of truth every activation path maintains here —
+  // registry-agent activations included, not just profile switches.
+  setApiRequestConnection(activeGatewayConnectionId())
 }
 
 function clearTimer(entry: Secondary): void {

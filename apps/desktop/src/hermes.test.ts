@@ -22,6 +22,7 @@ import {
   listAllProfileSessions,
   listSessions,
   listSidebarSessions,
+  pluginSocket,
   resetSidebarBatchCapability,
   setApiRequestProfile,
   speakText,
@@ -527,5 +528,43 @@ describe('Hermes REST helpers', () => {
         path: '/api/model/options?refresh=1&include_unconfigured=1'
       })
     )
+  })
+})
+
+describe('pluginSocket', () => {
+  let getConnection: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    getConnection = vi.fn().mockResolvedValue(null)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { api: vi.fn(), getConnection }
+    })
+  })
+
+  afterEach(() => {
+    vi.restoreAllMocks()
+    Reflect.deleteProperty(window, 'hermesDesktop')
+    setApiRequestProfile(null)
+  })
+
+  it('scopes the connection to the active profile, like pluginRest', async () => {
+    setApiRequestProfile('work')
+
+    const dispose = pluginSocket('kanban', '/events', () => {})
+
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalled())
+    expect(getConnection).toHaveBeenCalledWith('work')
+
+    dispose()
+  })
+
+  it('passes null when no profile is scoped (single-profile / primary)', async () => {
+    const dispose = pluginSocket('kanban', '/events', () => {})
+
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalled())
+    expect(getConnection).toHaveBeenCalledWith(null)
+
+    dispose()
   })
 })

@@ -4622,9 +4622,6 @@ def test_prompt_submit_refuses_ordinal_and_message_id_mismatch(monkeypatch):
         server._sessions.pop("mismatch-trunc-sid", None)
 
 
-
-
-
 def test_prompt_submit_truncates_by_row_id(monkeypatch):
     """#82959: prompt.submit with truncate_before_row_id must cut at the target row id."""
     replaced = []
@@ -4706,57 +4703,6 @@ def test_prompt_submit_truncates_by_string_row_id(monkeypatch):
         assert len(sess["history"]) == 2
     finally:
         server._sessions.pop("str-row-id-trunc-sid", None)
-
-
-def test_reproduce_row_id_truncation(monkeypatch):
-    """#82959: Reproduction test for durable row_id truncation and 4030 ordinal mismatch validation."""
-    replaced = []
-
-    class _FakeDB:
-        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
-            replaced.append((key, list(messages)))
-
-    history = [
-        {"_row_id": 101, "role": "user", "content": "first"},
-        {"_row_id": 102, "role": "assistant", "content": "reply 1"},
-        {"_row_id": 103, "role": "user", "content": "second"},
-        {"_row_id": 104, "role": "assistant", "content": "reply 2"},
-    ]
-    server._sessions["repro-sid"] = _session(history=list(history))
-    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
-    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
-
-    try:
-        # 1. Target turn 2 via row_id 103
-        resp = server.handle_request({
-            "id": "1",
-            "method": "prompt.submit",
-            "params": {
-                "session_id": "repro-sid",
-                "text": "edited second turn",
-                "truncate_before_row_id": 103,
-                "confirm_truncate": True,
-            }
-        })
-        assert resp.get("error") is None
-
-        # 2. Refuse ordinal & row_id mismatch with code 4030
-        server._sessions["mismatch-sid"] = _session(history=list(history))
-        resp_mismatch = server.handle_request({
-            "id": "2",
-            "method": "prompt.submit",
-            "params": {
-                "session_id": "mismatch-sid",
-                "text": "stale rewind",
-                "truncate_before_row_id": 103,
-                "truncate_before_user_ordinal": 0,
-                "confirm_truncate": True,
-            }
-        })
-        assert resp_mismatch["error"]["code"] == 4030
-    finally:
-        server._sessions.pop("repro-sid", None)
-        server._sessions.pop("mismatch-sid", None)
 
 
 def test_prompt_submit_refuses_ordinal_and_row_id_mismatch(monkeypatch):
@@ -4868,8 +4814,6 @@ def test_prompt_submit_row_id_ignores_platform_id_fallback(monkeypatch):
         assert resp["error"]["code"] == 4018
     finally:
         server._sessions.pop("string-id-sid", None)
-
-
 
 
 def test_prompt_submit_refuses_empty_truncation_without_confirm(monkeypatch):

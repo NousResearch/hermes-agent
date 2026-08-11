@@ -155,6 +155,55 @@ def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
     return db_ord, mem_idx
 
 
+def _coerce_truncate_ordinal(rid, value):
+    """Return ``(ordinal, error_response)`` for a client-supplied ordinal.
+
+    bool is an int subclass: a JSON ``true`` would coerce via int() to
+    ordinal 1 and aim a confirmed rewind at the second user turn — refuse it
+    like any other non-integer.
+    """
+    if isinstance(value, bool):
+        return None, _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
+    try:
+        return int(value), None
+    except (TypeError, ValueError):
+        return None, _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
+
+
+def _reconcile_client_ordinal(rid, sid, client_ordinal, msg_ordinal, param_name, target_repr):
+    """Cross-check a client ordinal against a resolved durable target.
+
+    Returns ``(ordinal, error_response)``: the target's ordinal when the
+    client sent none or agreed, else the 4004/4030 refusal. A stale ordinal
+    alongside a *resolved* durable id is the #82756 drift class — refuse
+    rather than guess which address the user meant.
+    """
+    if client_ordinal is None:
+        return msg_ordinal, None
+    ordinal, err = _coerce_truncate_ordinal(rid, client_ordinal)
+    if err is not None:
+        return None, err
+    if ordinal != msg_ordinal:
+        logger.warning(
+            "prompt.submit: REFUSED truncation due to ordinal mismatch for session %s "
+            "(ordinal=%d, %s_ordinal=%d, %s=%s). "
+            "Stale truncate_before_user_ordinal detected.",
+            sid,
+            ordinal,
+            param_name,
+            msg_ordinal,
+            param_name,
+            target_repr,
+        )
+        return None, _err(
+            rid,
+            4030,
+            f"truncate_before_user_ordinal ({ordinal}) does not match "
+            f"{param_name} target turn ({msg_ordinal})",
+        )
+    return ordinal, None
+
+
 def _pending_reaction_notes(session: dict) -> str:
     """Note block describing reactions the user added since the last turn, or "".
 
@@ -329,7 +378,6 @@ def _(rid, params: dict) -> dict:
             history = session.get("history", [])
             user_indices = _history_user_indices(history)
 
-            target_idx = None
             ordinal = None
 
             if truncate_row_id is not None:
@@ -371,41 +419,13 @@ def _(rid, params: dict) -> dict:
                         "target user message is no longer in session history",
                     )
 
-                msg_ordinal, target_idx = found_match
-
-                if truncate_user_ordinal is not None:
-                    if isinstance(truncate_user_ordinal, bool):
-                        return _err(
-                            rid,
-                            4004,
-                            "truncate_before_user_ordinal must be an integer",
-                        )
-                    try:
-                        ordinal = int(truncate_user_ordinal)
-                    except (TypeError, ValueError):
-                        return _err(
-                            rid,
-                            4004,
-                            "truncate_before_user_ordinal must be an integer",
-                        )
-                    if ordinal != msg_ordinal:
-                        logger.warning(
-                            "prompt.submit: REFUSED truncation due to ordinal mismatch for session %s "
-                            "(ordinal=%d, row_id_ordinal=%d, row_id=%d). "
-                            "Stale truncate_before_user_ordinal detected.",
-                            sid,
-                            ordinal,
-                            msg_ordinal,
-                            target_row_id,
-                        )
-                        return _err(
-                            rid,
-                            4030,
-                            f"truncate_before_user_ordinal ({ordinal}) does not match "
-                            f"truncate_before_row_id target turn ({msg_ordinal})",
-                        )
-                else:
-                    ordinal = msg_ordinal
+                msg_ordinal, _ = found_match
+                ordinal, err = _reconcile_client_ordinal(
+                    rid, sid, truncate_user_ordinal, msg_ordinal,
+                    "truncate_before_row_id", target_row_id,
+                )
+                if err is not None:
+                    return err
             elif truncate_message_id is not None:
                 msg_id_str = str(truncate_message_id)
                 found_match = None
@@ -431,56 +451,17 @@ def _(rid, params: dict) -> dict:
                         "target user message is no longer in session history",
                     )
 
-                msg_ordinal, target_idx = found_match
-
-                if truncate_user_ordinal is not None:
-                    if isinstance(truncate_user_ordinal, bool):
-                        return _err(
-                            rid,
-                            4004,
-                            "truncate_before_user_ordinal must be an integer",
-                        )
-                    try:
-                        ordinal = int(truncate_user_ordinal)
-                    except (TypeError, ValueError):
-                        return _err(
-                            rid,
-                            4004,
-                            "truncate_before_user_ordinal must be an integer",
-                        )
-                    if ordinal != msg_ordinal:
-                        logger.warning(
-                            "prompt.submit: REFUSED truncation due to ordinal mismatch for session %s "
-                            "(ordinal=%d, message_id_ordinal=%d, message_id=%s). "
-                            "Stale truncate_before_user_ordinal detected.",
-                            sid,
-                            ordinal,
-                            msg_ordinal,
-                            msg_id_str,
-                        )
-                        return _err(
-                            rid,
-                            4030,
-                            f"truncate_before_user_ordinal ({ordinal}) does not match "
-                            f"truncate_before_message_id target turn ({msg_ordinal})",
-                        )
-                else:
-                    ordinal = msg_ordinal
+                msg_ordinal, _ = found_match
+                ordinal, err = _reconcile_client_ordinal(
+                    rid, sid, truncate_user_ordinal, msg_ordinal,
+                    "truncate_before_message_id", msg_id_str,
+                )
+                if err is not None:
+                    return err
             else:
-                if isinstance(truncate_user_ordinal, bool):
-                    return _err(
-                        rid,
-                        4004,
-                        "truncate_before_user_ordinal must be an integer",
-                    )
-                try:
-                    ordinal = int(truncate_user_ordinal)
-                except (TypeError, ValueError):
-                    return _err(
-                        rid,
-                        4004,
-                        "truncate_before_user_ordinal must be an integer",
-                    )
+                ordinal, err = _coerce_truncate_ordinal(rid, truncate_user_ordinal)
+                if err is not None:
+                    return err
 
                 if ordinal < 0 or ordinal >= len(user_indices):
                     return _err(
@@ -488,7 +469,6 @@ def _(rid, params: dict) -> dict:
                         4018,
                         "target user message is no longer in session history",
                     )
-                target_idx = user_indices[ordinal]
 
             # An ordinal/id alone is not consent. A client that carries a leftover
             # ordinal into an ORDINARY submit sends a request that is
@@ -515,10 +495,7 @@ def _(rid, params: dict) -> dict:
                     "an ordinary prompt.submit must not drop session history "
                     "(update your Hermes client if a rewind was intended)",
                 )
-            user_indices = [
-                i for i, m in enumerate(history)
-                if m.get("role") == "user" and not m.get("display_kind")
-            ]
+            user_indices = _history_user_indices(history)
             # Reject out-of-range ordinals on BOTH ends. A negative value would
             # otherwise sail past the upper-bound check and hit Python's negative
             # indexing below (user_indices[-1] -> the LAST user turn), silently
@@ -1336,6 +1313,8 @@ def register(server) -> None:
         _mem_db_pair_agrees,
         _find_user_turn_by_row_id,
         _resolve_truncate_row_id,
+        _coerce_truncate_ordinal,
+        _reconcile_client_ordinal,
         _pending_reaction_notes,
     ):
         setattr(

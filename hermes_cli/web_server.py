@@ -13617,7 +13617,7 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
                 "is_default": False,
                 "model": model,
                 "provider": provider,
-                "has_env": (entry_path / ".env").exists(),
+                "has_env": _safe(lambda entry=entry_path: (entry / ".env").exists(), False),
                 "skill_count": _safe(lambda entry=entry_path: profiles_mod._count_skills(entry), 0),
                 "gateway_running": _safe(lambda entry=entry_path: profiles_mod._check_gateway_running(entry), False),
                 "description": _safe(lambda entry=entry_path: profiles_mod.read_profile_meta(entry).get("description", ""), ""),

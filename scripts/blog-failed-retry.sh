@@ -22,6 +22,13 @@ set -uo pipefail
 # pipeline exit is captured and written to the status file rather than
 # aborting the wrapper before the status is persisted.
 
+# Cron's minimal PATH does not include npm's user-global bin directory, where
+# the ChatGPT-authenticated Codex CLI is installed. Keep this idempotent and
+# prepend only when the directory exists.
+if [[ -d "$HOME/.npm-global/bin" ]]; then
+  export PATH="$HOME/.npm-global/bin:$PATH"
+fi
+
 ROOT=${BLOG_RETRY_ENGINE_ROOT:-/home/kensei/repos/KenseiAgent/content_engine}
 LOG_DIR=$ROOT/output/logs
 STATUS=$LOG_DIR/blog-failed-retry-status.json

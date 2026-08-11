@@ -8,6 +8,7 @@ Problem-only report for cron/manual checks:
 - duplicate draft title clusters
 - failed image entries
 - protected approved posts are not treated as image defects
+- cron job last_status for blog-backlog-pregen and blog-failed-retry
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ import os
 import re
 import subprocess
 from collections import defaultdict
+from datetime import datetime, timezone
 from difflib import SequenceMatcher
 from pathlib import Path
 
@@ -49,6 +51,78 @@ ESCALATE_AFTER = 3
 
 
 RETRY_STATUS = ENGINE / "output" / "logs" / "blog-failed-retry-status.json"
+CRON_JOBS_JSON = Path.home() / ".hermes" / "cron" / "jobs.json"
+BLOG_CRON_NAMES = {"blog-backlog-pregen", "blog-failed-retry"}
+
+
+def _cron_schedule_minutes(schedule: dict) -> float | None:
+    """Return the interval in minutes for a cron schedule dict, or None."""
+    kind = schedule.get("kind")
+    if kind == "interval":
+        return schedule.get("minutes")
+    if kind == "cron":
+        expr = schedule.get("expr", "")
+        # Only handle simple hourly/daily/sub-12h fixed schedules.
+        # Every N hours: "0 */N * * *" → N*60
+        m = re.match(r"^\d+\s+\*/(\d+)\s+\*\s+\*\s+\*$", expr)
+        if m:
+            return int(m.group(1)) * 60
+        # Daily at HH:MM: "M H * * *" → 1440
+        m = re.match(r"^\d+\s+\d+\s+\*\s+\*\s+\*$", expr)
+        if m:
+            return 1440
+    return None
+
+
+def _read_blog_cron_status() -> list[str]:
+    """Check blog-backlog-pregen and blog-failed-retry cron job health.
+
+    Reports an issue when:
+    - last_status is "error"
+    - last_run_at is stale (older than 2x the schedule interval)
+    """
+    issues: list[str] = []
+    if not CRON_JOBS_JSON.exists():
+        return issues
+    try:
+        data = json.loads(CRON_JOBS_JSON.read_text(encoding="utf-8", errors="replace"))
+    except Exception:
+        return issues
+    jobs = data if isinstance(data, list) else data.get("jobs", [])
+    now = datetime.now(timezone.utc)
+    for job in jobs:
+        name = job.get("name", "")
+        if name not in BLOG_CRON_NAMES:
+            continue
+        last_status = job.get("last_status")
+        last_run_at = job.get("last_run_at")
+        schedule = job.get("schedule", {})
+        enabled = job.get("enabled", False)
+        # Report error status
+        if last_status == "error":
+            err = job.get("last_error") or ""
+            # Truncate long errors
+            if len(err) > 120:
+                err = err[:117] + "..."
+            issues.append(f"cron {name}: last_status=error {err}".rstrip())
+        # Report stale runs (only if enabled and has run at least once)
+        if enabled and last_run_at:
+            try:
+                last_dt = datetime.fromisoformat(last_run_at)
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+                interval_min = _cron_schedule_minutes(schedule)
+                if interval_min is not None:
+                    stale_threshold = interval_min * 2  # 2x schedule interval
+                    elapsed_min = (now - last_dt).total_seconds() / 60
+                    if elapsed_min > stale_threshold:
+                        issues.append(
+                            f"cron {name}: stale last_run ({int(elapsed_min)}m ago, "
+                            f"threshold {int(stale_threshold)}m)"
+                        )
+            except Exception:
+                pass
+    return issues
 
 
 def _read_retry_status() -> dict | None:
@@ -119,6 +193,10 @@ def audit() -> list[str]:
         issues.append(f"KenseiAgent worktree dirty: {kd} changed/untracked paths")
     if bd:
         issues.append(f"SahilBlog worktree dirty: {bd} changed/untracked paths")
+
+    # Cron job health for blog-backlog-pregen and blog-failed-retry
+    cron_issues = _read_blog_cron_status()
+    issues.extend(cron_issues)
 
     exempt = _read_exempt()
 
@@ -259,6 +337,7 @@ if __name__ == "__main__":
             "EXEMPT": _eng / "blog_topics" / "published_exempt.jsonl",
             "POSTS": _blog / "src/content/blog",
             "RETRY_STATUS": _eng / "output" / "logs" / "blog-failed-retry-status.json",
+            "CRON_JOBS_JSON": Path.home() / ".hermes" / "cron" / "jobs.json",
         })
     report = render_report(audit())
     if report:

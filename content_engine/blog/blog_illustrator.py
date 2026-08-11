@@ -95,6 +95,9 @@ def _generate_codex_image(full_prompt: str, out_path: str,
                 cwd=str(config.SAHILBLOG_REPO),
             )
             print(f"[blog_illustrator] codex exec exit={result.returncode} (attempt {attempt})")
+            if result.returncode != 0:
+                print(f"[blog_illustrator] codex stdout: {(result.stdout or '')[-500:]}")
+                print(f"[blog_illustrator] codex stderr: {(result.stderr or '')[-500:]}")
         except subprocess.TimeoutExpired:
             print(f"[blog_illustrator] codex timed out after {current_timeout}s (attempt {attempt})")
             continue

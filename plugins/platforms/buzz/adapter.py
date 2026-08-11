@@ -2361,15 +2361,36 @@ class BuzzAdapter(BasePlatformAdapter):
             return None
         return str(entry[0] or ""), str(entry[1] or "")
     async def _localize_inbound_media(
-        self, text: str, message_id: str
+        self,
+        text: str,
+        message_id: str,
+        *,
+        user_id: str = "",
+        chat_type: Optional[str] = None,
+        chat_id: Optional[str] = None,
     ) -> Tuple[str, List[str], List[str], MessageType]:
         """Authenticate and cache same-relay media references in *text*.
 
         Each object is independent: one failed download is logged and skipped
         without discarding the caption or any other successfully cached files.
+
+        Downloading spends this agent's Buzz credentials on a URL chosen by
+        the sender, so it runs only when the gateway's authorization callback
+        returns an explicit ``True``. The adapter's own ``allowed_users``
+        list is a pre-filter, not a substitute: a missing, failed, or
+        negative gateway decision leaves the text untouched and no
+        credentialed request is made.
         """
         urls, replacements = _find_relay_media_refs(text, self.relay_url)
         if not urls:
+            return text, [], [], MessageType.TEXT
+
+        if self._is_sender_authorized(user_id, chat_type, chat_id) is not True:
+            logger.warning(
+                "Buzz: not localizing %d media reference(s) in message %s — "
+                "sender %s… is not explicitly authorized",
+                len(urls), message_id[:12], (user_id or "?")[:8],
+            )
             return text, [], [], MessageType.TEXT
 
         cleaned_text = _replace_media_refs(text, replacements)
@@ -2475,7 +2496,11 @@ class BuzzAdapter(BasePlatformAdapter):
             return
 
         text, media_urls, media_types, message_type = await self._localize_inbound_media(
-            text, message_id
+            text,
+            message_id,
+            user_id=user_id,
+            chat_type=chat_type,
+            chat_id=chat_id,
         )
 
         source = self.build_source(

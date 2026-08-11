@@ -3907,11 +3907,26 @@ class BasePlatformAdapter(ABC):
         registered via :meth:`set_authorization_check`. Returns ``None``
         when no check is registered (caller should treat as "trust unknown"
         and preserve legacy behaviour).
+
+        Only the literal booleans are propagated. A callback that returns
+        anything else is treated as "unknown" rather than coerced with
+        ``bool()``: callers that gate a credentialed side effect on an
+        explicit ``is True`` must not have a truthy non-boolean (a status
+        string, a sentinel object) silently promoted to an authorization.
         """
         if not user_id or self._authorization_check is None:
             return None
         try:
-            return bool(self._authorization_check(user_id, chat_type, chat_id))
+            result = self._authorization_check(user_id, chat_type, chat_id)
+            if result is True:
+                return True
+            if result is False:
+                return False
+            logger.warning(
+                "[%s] Authorization check returned %s for user %s; treating as unknown",
+                self.name, type(result).__name__, user_id,
+            )
+            return None
         except Exception:
             logger.warning(
                 "[%s] Authorization check raised for user %s; treating as unknown",

@@ -1599,6 +1599,11 @@ class TestInboundMediaLocalisation:
         adapter._message_handler = AsyncMock()
         adapter.send_reaction = AsyncMock(return_value=True)
         adapter._run_cli = cli
+        # Localisation spends the agent's Buzz credentials, so it is gated on
+        # an explicit gateway authorization. The gateway registers this check
+        # on every adapter it constructs; tests are authorized by default and
+        # override the callback where the gate itself is under test.
+        adapter.set_authorization_check(lambda *_args: True)
         return captured, cli_calls
 
     @pytest.mark.asyncio
@@ -1809,6 +1814,9 @@ class TestInboundMediaLocalisation:
         adapter._message_handler = AsyncMock()
         adapter.send_reaction = AsyncMock(return_value=True)
         adapter._run_cli = cli
+        # As the gateway does for every adapter it constructs; the gate itself
+        # is covered by TestInboundMediaAuthorizationGate.
+        adapter.set_authorization_check(lambda *_args: True)
 
         await adapter._handle_event(
             DM_CHANNEL,
@@ -1849,6 +1857,113 @@ class TestInboundMediaLocalisation:
         assert event.message_type == MessageType.TEXT
         assert event.media_urls == []
         assert calls == []
+
+
+class TestInboundMediaAuthorizationGate:
+    """Authenticated retrieval must never run for an unauthorized sender.
+
+    ``buzz media get`` signs the request with this agent's own key, so a
+    relay object named by an unauthorized sender must not be fetched or
+    cached. Every non-``True`` outcome — denial, no registered check, a
+    raising check, or a truthy non-boolean — must fail closed and leave the
+    message text exactly as it arrived.
+    """
+
+    @staticmethod
+    def _media_text():
+        return f"look at this ![shot](https://test.relay/media/{'a' * 64}.png)"
+
+    async def _dispatch_with_check(self, adapter, monkeypatch, tmp_path, check):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+        captured, cli_calls = TestInboundMediaLocalisation._capture_dispatch(adapter)
+        adapter.set_authorization_check(check)
+        text = self._media_text()
+
+        await adapter._dispatch_message(
+            text=text,
+            chat_id=CHANNEL,
+            chat_type="group",
+            user_id=OTHER_PUBKEY,
+            user_name="Joel",
+            message_id="gated-media-event",
+            created_at=1007,
+        )
+        return captured, cli_calls, text
+
+    @pytest.mark.asyncio
+    async def test_denied_sender_media_is_not_downloaded(self, monkeypatch, tmp_path):
+        adapter = _make_adapter()
+        captured, cli_calls, text = await self._dispatch_with_check(
+            adapter, monkeypatch, tmp_path, lambda *_args: False
+        )
+
+        assert cli_calls == []
+        assert captured[0].text == text
+        assert captured[0].message_type == MessageType.TEXT
+        assert captured[0].media_urls == []
+
+    @pytest.mark.asyncio
+    async def test_missing_authorization_check_blocks_download(self, monkeypatch, tmp_path):
+        adapter = _make_adapter()
+        captured, cli_calls, text = await self._dispatch_with_check(
+            adapter, monkeypatch, tmp_path, None
+        )
+
+        assert cli_calls == []
+        assert captured[0].text == text
+        assert captured[0].media_urls == []
+
+    @pytest.mark.asyncio
+    async def test_raising_authorization_check_blocks_download(self, monkeypatch, tmp_path):
+        def boom(*_args):
+            raise RuntimeError("auth backend down")
+
+        adapter = _make_adapter()
+        captured, cli_calls, text = await self._dispatch_with_check(
+            adapter, monkeypatch, tmp_path, boom
+        )
+
+        assert cli_calls == []
+        assert captured[0].text == text
+        assert captured[0].media_urls == []
+
+    @pytest.mark.asyncio
+    async def test_truthy_non_boolean_is_not_an_authorization(self, monkeypatch, tmp_path):
+        """A non-boolean result must not be coerced into a credentialed fetch."""
+        adapter = _make_adapter()
+        captured, cli_calls, text = await self._dispatch_with_check(
+            adapter, monkeypatch, tmp_path, lambda *_args: "allowed"
+        )
+
+        assert cli_calls == []
+        assert captured[0].text == text
+        assert captured[0].media_urls == []
+
+    @pytest.mark.asyncio
+    async def test_adapter_allowlist_does_not_override_gateway_denial(
+        self, monkeypatch, tmp_path
+    ):
+        """``allowed_users`` is a pre-filter, not a second source of truth."""
+        adapter = _make_adapter({"allowed_users": [OTHER_PUBKEY]})
+        captured, cli_calls, _text = await self._dispatch_with_check(
+            adapter, monkeypatch, tmp_path, lambda *_args: False
+        )
+
+        assert OTHER_PUBKEY in adapter._allowed_pubkeys
+        assert cli_calls == []
+        assert captured[0].media_urls == []
+
+    @pytest.mark.asyncio
+    async def test_authorized_sender_still_downloads(self, monkeypatch, tmp_path):
+        """The gate must not break the happy path it protects."""
+        adapter = _make_adapter()
+        captured, cli_calls, _text = await self._dispatch_with_check(
+            adapter, monkeypatch, tmp_path, lambda *_args: True
+        )
+
+        assert len(cli_calls) == 1
+        assert captured[0].message_type == MessageType.PHOTO
+        assert len(captured[0].media_urls) == 1
 
 
 # ── Lifecycle ─────────────────────────────────────────────────────────────

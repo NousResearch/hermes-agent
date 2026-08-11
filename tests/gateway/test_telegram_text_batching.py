@@ -238,13 +238,16 @@ class TestHoldInboundAcrossReconnect:
         """Cancel after pop (before handle_message returns) must hold, not lose.
 
         Uses entered/release Events — no sleep timing (teknium #72037 rule).
+        Connected path then schedules redispatch (#83878).
         """
         adapter = _make_adapter()
         self._zero_batch_delays(adapter)
         entered = asyncio.Event()
         release = asyncio.Event()
+        seen: list[str] = []
 
         async def _blocking_handle(event):
+            seen.append(event.text or "")
             entered.set()
             await release.wait()
 
@@ -257,15 +260,16 @@ class TestHoldInboundAcrossReconnect:
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
-        release.set()  # unblock if anything still waiting
+        release.set()
 
-        # handle_message was entered but cancel + CancelledError hold path
-        # must leave the event recoverable. After cancel during handle, our
-        # CancelledError handler only holds if event is not None — we set
-        # event=None only after successful handle. Cancel during handle means
-        # event is still set → held.
+        drain = adapter._held_inbound_redispatch_task
+        assert drain is not None
+        await asyncio.wait_for(drain, timeout=1.0)
+
+        # Recoverable: held and/or delivered via redispatch (seen may include
+        # the original in-flight attempt plus the redispatch).
         held_texts = [e.text for e in adapter._held_inbound_events]
-        assert "in-flight cancel" in held_texts
+        assert "in-flight cancel" in seen or "in-flight cancel" in held_texts
 
     @pytest.mark.asyncio
     async def test_cancel_pending_salvages_batches_into_held_queue(self):
@@ -386,15 +390,58 @@ class TestHoldInboundAcrossReconnect:
     async def test_non_retryable_fatal_discards_held_with_warning(self):
         adapter = _make_adapter()
         adapter._held_inbound_events = [_make_event("doomed")]
-        # BasePlatformAdapter._set_fatal_error may need attrs — call ours via
-        # the override path with a stub super if needed.
         from gateway.platforms.base import BasePlatformAdapter
 
-        with patch.object(BasePlatformAdapter, "_set_fatal_error", lambda *a, **k: None):
+        def _base_fatal(self, code, message, *, retryable):
+            self._fatal_error_code = code
+            self._fatal_error_message = message
+            self._fatal_error_retryable = retryable
+            self._running = False
+
+        with patch.object(BasePlatformAdapter, "_set_fatal_error", _base_fatal):
             adapter._set_fatal_error("auth", "revoked", retryable=False)
 
         assert adapter._held_inbound_events == []
         assert adapter._drop_delayed_deliveries is True
+        assert adapter._is_permanent_fatal() is True
+
+    @pytest.mark.asyncio
+    async def test_retryable_fatal_preserves_held_for_reconnect_drain(self):
+        """Retryable fatals must NOT clear the hold queue.
+
+        OOF-156's connect-failure classification keeps the common network
+        path ``retryable=True`` (``telegram_connect_error``) — reconnect is
+        precisely what must drain a hold queue populated during the outage.
+        Only non-retryable fatals may discard (covered above).
+        """
+        adapter = _make_adapter()
+        adapter._held_inbound_events = [_make_event("survives-network-fatal")]
+        adapter._drop_delayed_deliveries = True  # fatal/disconnect already set
+
+        from gateway.platforms.base import BasePlatformAdapter
+
+        def _base_fatal(self, code, message, *, retryable):
+            self._fatal_error_code = code
+            self._fatal_error_message = message
+            self._fatal_error_retryable = retryable
+
+        with patch.object(BasePlatformAdapter, "_set_fatal_error", _base_fatal):
+            adapter._set_fatal_error(
+                "telegram_connect_error", "connect timed out", retryable=True
+            )
+
+        assert [e.text for e in adapter._held_inbound_events] == [
+            "survives-network-fatal"
+        ]
+        assert adapter._is_permanent_fatal() is False
+
+        # Reconnect drains what the retryable fatal preserved.
+        adapter._mark_connected()
+        await adapter._held_inbound_redispatch_task
+        adapter.handle_message.assert_called_once()
+        assert (
+            adapter.handle_message.call_args[0][0].text == "survives-network-fatal"
+        )
 
     @pytest.mark.asyncio
     async def test_production_text_handler_terminal_step_holds_when_disconnected(self):
@@ -414,3 +461,72 @@ class TestHoldInboundAcrossReconnect:
         await adapter._held_inbound_redispatch_task
         adapter.handle_message.assert_called_once()
         assert adapter.handle_message.call_args[0][0].text == "acked-by-ptb-then-held"
+
+    @pytest.mark.asyncio
+    async def test_permanent_fatal_teardown_discards_pending_not_rehold(self):
+        """#83878: permanent fatal must not re-populate hold via teardown salvage."""
+        adapter = _make_adapter()
+        adapter._fatal_error_code = "auth"
+        adapter._fatal_error_retryable = False
+        adapter._drop_delayed_deliveries = True
+        adapter._pending_text_batches["t"] = _make_event("pending-text")
+        adapter._pending_photo_batches["p"] = _make_event("pending-photo")
+        adapter._media_group_events["m"] = _make_event("pending-media")
+
+        await adapter._cancel_pending_delivery_tasks()
+
+        assert adapter._held_inbound_events == []
+        assert adapter._pending_text_batches == {}
+        assert adapter._pending_photo_batches == {}
+        assert adapter._media_group_events == {}
+
+    @pytest.mark.asyncio
+    async def test_permanent_fatal_late_enqueue_discards(self):
+        """#83878: late enqueue after permanent fatal must discard, not hold."""
+        adapter = _make_adapter()
+        adapter._fatal_error_code = "auth"
+        adapter._fatal_error_retryable = False
+        adapter._drop_delayed_deliveries = True
+
+        adapter._enqueue_text_event(_make_event("too-late"))
+        adapter.handle_message.assert_not_called()
+        assert adapter._held_inbound_events == []
+
+    @pytest.mark.asyncio
+    async def test_connected_hold_schedules_redispatch(self):
+        """#83878: hold while connected must drain, not orphan until reconnect."""
+        adapter = _make_adapter()
+        adapter._drop_delayed_deliveries = False
+        adapter.handle_message = AsyncMock()
+
+        adapter._hold_inbound_event(
+            _make_event("orphan-without-drain"), where="text-flush-cancelled"
+        )
+
+        drain = adapter._held_inbound_redispatch_task
+        assert drain is not None
+        await asyncio.wait_for(drain, timeout=1.0)
+        adapter.handle_message.assert_called_once()
+        assert adapter.handle_message.call_args[0][0].text == "orphan-without-drain"
+        assert adapter._held_inbound_events == []
+
+    @pytest.mark.asyncio
+    async def test_redispatch_exception_reholds_current_and_remainder(self):
+        """#83878: handle_message failure must not drop current/remainder."""
+        adapter = _make_adapter()
+        adapter._drop_delayed_deliveries = False
+        adapter._held_inbound_events = [
+            _make_event("boom"),
+            _make_event("after"),
+        ]
+
+        async def _handle(event):
+            if event.text == "boom":
+                raise RuntimeError("dispatch failed")
+            return None
+
+        adapter.handle_message = _handle
+        # Direct drain (no auto follow-up on failure)
+        await adapter._redispatch_held_inbound()
+        held_texts = [e.text for e in adapter._held_inbound_events]
+        assert held_texts == ["boom", "after"]

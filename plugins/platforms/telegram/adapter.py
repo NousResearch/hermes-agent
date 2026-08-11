@@ -922,18 +922,7 @@ class TelegramAdapter(BasePlatformAdapter):
         super()._mark_connected()
         # Drain anything held while we were down. PTB will not redeliver —
         # these events exist only in our hold queue now.
-        if not getattr(self, "_held_inbound_events", None):
-            return
-        try:
-            loop = asyncio.get_running_loop()
-        except RuntimeError:
-            return
-        prior = getattr(self, "_held_inbound_redispatch_task", None)
-        # Single tracked task so disconnect can cancel+await it (teknium
-        # lifecycle rule from #72037 review: no untracked dispatch).
-        self._held_inbound_redispatch_task = loop.create_task(
-            self._redispatch_held_inbound(prior=prior)
-        )
+        self._schedule_held_inbound_redispatch()
 
     def _mark_disconnected(self) -> None:
         self._drop_delayed_deliveries = True
@@ -942,16 +931,26 @@ class TelegramAdapter(BasePlatformAdapter):
     def _set_fatal_error(self, code: str, message: str, *, retryable: bool) -> None:
         self._drop_delayed_deliveries = True
         super()._set_fatal_error(code, message, retryable=retryable)
-        # Permanent fatal: no reconnect will drain the queue. Surface the loss
-        # explicitly instead of letting held messages die silently with the process.
-        if not retryable and getattr(self, "_held_inbound_events", None):
-            n = len(self._held_inbound_events)
-            logger.warning(
-                "[Telegram] Non-retryable fatal (%s); discarding %d held inbound message(s)",
-                code,
-                n,
-            )
-            self._held_inbound_events.clear()
+        # Permanent fatal: no reconnect will drain. Discard the hold queue now
+        # and refuse further holds (teardown salvage / late enqueue must not
+        # re-populate a queue that can never drain — review #83878).
+        if not retryable:
+            held = getattr(self, "_held_inbound_events", None)
+            n = len(held) if held else 0
+            if held:
+                held.clear()
+            if n:
+                logger.warning(
+                    "[Telegram] Non-retryable fatal (%s); discarding %d held inbound message(s)",
+                    code,
+                    n,
+                )
+
+    def _is_permanent_fatal(self) -> bool:
+        """True after non-retryable fatal — holds must discard, not queue."""
+        if not getattr(self, "_fatal_error_code", None):
+            return False
+        return not bool(getattr(self, "_fatal_error_retryable", True))
 
     def _should_drop_delayed_delivery(self) -> bool:
         """True once teardown/fatal-error started — delayed flushes must not dispatch.
@@ -962,11 +961,54 @@ class TelegramAdapter(BasePlatformAdapter):
 
         Callers must NOT destroy the event when this returns True: PTB has
         already advanced the polling offset, so Telegram will never redeliver.
-        Use ``_hold_inbound_event`` and redispatch on reconnect.
+        Use ``_hold_inbound_event`` and redispatch on reconnect (unless
+        permanent fatal, which discards explicitly).
         """
         return bool(getattr(self, "_drop_delayed_deliveries", False))
 
-    def _hold_inbound_event(self, event: "MessageEvent", *, where: str) -> None:
+    def _schedule_held_inbound_redispatch(self) -> None:
+        """Ensure a tracked drain runs when held events exist and delivery is live.
+
+        Drain triggers:
+        - ``_mark_connected`` after reconnect
+        - any hold created while already connected (e.g. cancel-after-pop)
+        - end of a drain pass if more events arrived mid-drain
+
+        No-ops while disconnected/tearing down or after permanent fatal.
+        """
+        if self._is_permanent_fatal():
+            return
+        if self._should_drop_delayed_delivery():
+            return
+        held = getattr(self, "_held_inbound_events", None)
+        if not held:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        prior = getattr(self, "_held_inbound_redispatch_task", None)
+        try:
+            current = asyncio.current_task()
+        except RuntimeError:
+            current = None
+        # Already draining on another task — that pass schedules a follow-up
+        # if anything remains. Do not stack duplicate tasks.
+        if prior is not None and not prior.done() and prior is not current:
+            return
+        self._held_inbound_redispatch_task = loop.create_task(
+            self._redispatch_held_inbound(
+                prior=None if prior is current else prior
+            )
+        )
+
+    def _hold_inbound_event(
+        self,
+        event: "MessageEvent",
+        *,
+        where: str,
+        schedule: bool = True,
+    ) -> None:
         """Preserve an inbound event that cannot be dispatched right now.
 
         The disconnect drop-guard (#55971) correctly prevents dispatch into a
@@ -974,13 +1016,22 @@ class TelegramAdapter(BasePlatformAdapter):
         enqueue/flush, python-telegram-bot has already acked the update and
         advanced the offset — silent permanent loss, no log, no error.
 
-        Hold the event and redispatch it from ``_mark_connected``. Cap the
-        queue so a long outage cannot grow without bound. Dedup by object
-        identity so salvage-after-hold never double-queues the same event.
+        Hold the event and redispatch from ``_mark_connected`` (or immediately
+        if already connected). Cap the queue so a long outage cannot grow
+        without bound. Dedup by object identity so salvage-after-hold never
+        double-queues the same event. Permanent fatal discards explicitly.
+
+        ``schedule=False`` when the caller is already inside a drain and will
+        decide follow-up policy (avoids poison-event tight loops).
         """
-        # Dedup: same MessageEvent object already held (flush held, then
-        # teardown salvage races the same reference — shouldn't happen after
-        # pop, but identity guard is free and closes the class of bug).
+        if self._is_permanent_fatal():
+            logger.warning(
+                "[Telegram] Discarding inbound under non-retryable fatal (%s, %d chars)",
+                where,
+                len(getattr(event, "text", None) or ""),
+            )
+            return
+
         held = getattr(self, "_held_inbound_events", None)
         if held is None:
             self._held_inbound_events = []
@@ -999,17 +1050,23 @@ class TelegramAdapter(BasePlatformAdapter):
             )
         held.append(event)
         logger.warning(
-            "[Telegram] Holding inbound during disconnect (%s, %d chars, queue=%d) "
-            "- will redispatch on reconnect",
+            "[Telegram] Holding inbound (%s, %d chars, queue=%d)%s",
             where,
             len(getattr(event, "text", None) or ""),
             len(held),
+            " - will redispatch on reconnect"
+            if self._should_drop_delayed_delivery()
+            else (" - scheduling redispatch" if schedule else ""),
         )
+        # Connected cancel-after-pop (and any other live-path hold) must not
+        # orphan the event waiting for a future reconnect that may never come.
+        if schedule and not self._should_drop_delayed_delivery():
+            self._schedule_held_inbound_redispatch()
 
     async def _redispatch_held_inbound(
         self, prior: Optional[asyncio.Task] = None
     ) -> None:
-        """Drain the hold queue after reconnect.
+        """Drain the hold queue after reconnect or a connected-path hold.
 
         ``prior`` is the previous redispatch task, if any — awaited here so
         ``_mark_connected`` stays synchronous while teardown can still
@@ -1023,37 +1080,79 @@ class TelegramAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 pass
 
+        if self._is_permanent_fatal():
+            held = getattr(self, "_held_inbound_events", None)
+            if held:
+                n = len(held)
+                held.clear()
+                logger.warning(
+                    "[Telegram] Redispatch aborted; discarded %d held inbound under non-retryable fatal",
+                    n,
+                )
+            return
+
         held = getattr(self, "_held_inbound_events", None)
         if not held:
             return
         # Take ownership atomically so a concurrent hold during drain appends
-        # to a fresh list and is picked up by a later connect.
+        # to a fresh list and is picked up by a follow-up schedule.
         events = list(held)
         held.clear()
         logger.warning(
-            "[Telegram] Redispatching %d held inbound message(s) after reconnect",
+            "[Telegram] Redispatching %d held inbound message(s)",
             len(events),
         )
-        for idx, event in enumerate(events):
-            if self._should_drop_delayed_delivery():
-                # Disconnect returned mid-drain — re-hold current + remainder.
-                self._hold_inbound_event(event, where="redispatch-interrupted")
-                for rest in events[idx + 1 :]:
-                    self._hold_inbound_event(rest, where="redispatch-interrupted")
-                return
-            try:
-                await self.handle_message(event)
-            except asyncio.CancelledError:
-                # Task cancelled (disconnect / superseding redispatch) — re-hold.
-                self._hold_inbound_event(event, where="redispatch-cancelled")
-                for rest in events[idx + 1 :]:
-                    self._hold_inbound_event(rest, where="redispatch-cancelled")
-                raise
-            except Exception:
-                logger.exception(
-                    "[Telegram] Failed to redispatch held inbound (%d chars)",
-                    len(getattr(event, "text", None) or ""),
-                )
+        allow_followup_schedule = True
+        try:
+            for idx, event in enumerate(events):
+                if self._is_permanent_fatal() or self._should_drop_delayed_delivery():
+                    # Disconnect/fatal mid-drain — re-hold current + remainder
+                    # (hold itself discards under permanent fatal).
+                    self._hold_inbound_event(
+                        event, where="redispatch-interrupted", schedule=False
+                    )
+                    for rest in events[idx + 1 :]:
+                        self._hold_inbound_event(
+                            rest, where="redispatch-interrupted", schedule=False
+                        )
+                    return
+                try:
+                    await self.handle_message(event)
+                except asyncio.CancelledError:
+                    self._hold_inbound_event(
+                        event, where="redispatch-cancelled", schedule=False
+                    )
+                    for rest in events[idx + 1 :]:
+                        self._hold_inbound_event(
+                            rest, where="redispatch-cancelled", schedule=False
+                        )
+                    raise
+                except Exception:
+                    # Retryable failure: keep current + remainder. Do not
+                    # immediately reschedule — a poison event would tight-loop.
+                    # Next mark_connected or a later connected-path hold drains.
+                    logger.exception(
+                        "[Telegram] Failed to redispatch held inbound (%d chars); re-holding",
+                        len(getattr(event, "text", None) or ""),
+                    )
+                    self._hold_inbound_event(
+                        event, where="redispatch-failed", schedule=False
+                    )
+                    for rest in events[idx + 1 :]:
+                        self._hold_inbound_event(
+                            rest, where="redispatch-failed", schedule=False
+                        )
+                    allow_followup_schedule = False
+                    return
+        finally:
+            # Events arrived mid-drain while still connected need another pass.
+            if (
+                allow_followup_schedule
+                and getattr(self, "_held_inbound_events", None)
+                and not self._should_drop_delayed_delivery()
+                and not self._is_permanent_fatal()
+            ):
+                self._schedule_held_inbound_redispatch()
 
     def _notification_kwargs(
         self, metadata: Optional[Dict[str, Any]]
@@ -4701,16 +4800,27 @@ class TelegramAdapter(BasePlatformAdapter):
         if awaitable_tasks:
             await asyncio.gather(*awaitable_tasks, return_exceptions=True)
 
-        # Salvage buffered inbound events before clearing maps. Cancel alone
-        # leaves the event in the map with no flush task — clearing without
-        # hold would silently destroy user messages (PTB already advanced the
-        # offset). Hold for redispatch on reconnect.
-        for event in list(self._pending_text_batches.values()):
-            self._hold_inbound_event(event, where="text-batch-teardown")
-        for event in list(self._pending_photo_batches.values()):
-            self._hold_inbound_event(event, where="photo-batch-teardown")
-        for event in list(self._media_group_events.values()):
-            self._hold_inbound_event(event, where="media-group-teardown")
+        # Salvage buffered inbound events before clearing maps — unless permanent
+        # fatal, where no reconnect can drain and hold would re-orphan them
+        # (#83878). Discard pending sources explicitly in that case.
+        if self._is_permanent_fatal():
+            n_pending = (
+                len(self._pending_text_batches)
+                + len(self._pending_photo_batches)
+                + len(self._media_group_events)
+            )
+            if n_pending:
+                logger.warning(
+                    "[Telegram] Non-retryable fatal teardown; discarding %d pending inbound batch(es)",
+                    n_pending,
+                )
+        else:
+            for event in list(self._pending_text_batches.values()):
+                self._hold_inbound_event(event, where="text-batch-teardown")
+            for event in list(self._pending_photo_batches.values()):
+                self._hold_inbound_event(event, where="photo-batch-teardown")
+            for event in list(self._media_group_events.values()):
+                self._hold_inbound_event(event, where="media-group-teardown")
 
         self._media_group_tasks.clear()
         self._media_group_events.clear()

@@ -1,17 +1,33 @@
-import { type AppendMessage, AssistantRuntimeProvider, type ThreadMessage } from '@assistant-ui/react'
+import {
+  type AppendMessage,
+  AssistantRuntimeProvider,
+  type ExportedMessageRepository,
+  type ThreadMessage
+} from '@assistant-ui/react'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 import { atom, type ReadableAtom } from 'nanostores'
 import type * as React from 'react'
-import { memo, Suspense, useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  memo,
+  Suspense,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore
+} from 'react'
 import { useLocation } from 'react-router'
 
 import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { Thread } from '@/components/assistant-ui/thread'
+import { commitReceiptContentSignature, type ThreadCommitReceipt } from '@/components/assistant-ui/thread/list'
 import { TranscriptWindowProvider } from '@/components/assistant-ui/thread/transcript-window'
 import { Backdrop } from '@/components/Backdrop'
 import { COMPOSER_HEART_CONFIG, HeartField } from '@/components/chat/vibe-hearts'
-import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
+import { hiddenPaneProps, usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { $sessionTileDragging, $sessionTileEdgeHover } from '@/components/pane-shell/tree/store'
 import { PromptOverlays } from '@/components/prompt-overlays'
 import { Button } from '@/components/ui/button'
@@ -171,7 +187,10 @@ interface ChatRuntimeBoundaryProps {
   onCancel: () => Promise<void> | void
   onEdit: (message: AppendMessage) => Promise<void>
   onReload: (parentId: string | null) => Promise<void>
+  onRevealExpectationChange: (expectation: RevealExpectation) => void
+  onRevealReadyChange: (ready: boolean) => void
   onThreadMessagesChange: (messages: readonly ThreadMessage[]) => void
+  requireRevealReceipt: boolean
   /** Route points at an unloaded session — render empty until resume swaps in
    *  the new transcript, so the previous session's messages don't linger. */
   suppressMessages: boolean
@@ -190,30 +209,81 @@ const ZERO_RESUME_PUBLICATION_REVISION = atom(0)
  * dots stay live through the separate status atoms) and catch up in one
  * commit on reveal — the subscribe fires immediately with the current value.
  */
-function useMessagesWhileVisible($messages: ReadableAtom<ChatMessage[]>): ChatMessage[] {
+function useAtomWhileVisible<T>($store: ReadableAtom<T>): T {
   const visible = usePaneVisible()
-  const [messages, setMessages] = useState(() => $messages.get())
+  const frozen = useRef($store.get() as T)
 
-  // nanostores types the listener value ReadonlyIfObject; the store publishes
-  // a fresh array per flush, so the cast is safe and avoids a per-token clone.
-  useEffect(
-    () => (visible ? $messages.subscribe(value => setMessages(value as ChatMessage[])) : undefined),
-    [$messages, visible]
+  const subscribe = useCallback(
+    (notify: () => void) =>
+      visible
+        ? $store.subscribe(value => {
+            // nanostores types object values as readonly; the store owns the
+            // immutable snapshot, so retaining its reference needs no clone.
+            frozen.current = value as T
+            notify()
+          })
+        : () => undefined,
+    [$store, visible]
   )
+  const getSnapshot = useCallback(() => (visible ? ($store.get() as T) : frozen.current), [$store, visible])
 
-  return messages
+  return useSyncExternalStore(subscribe, getSnapshot, getSnapshot)
+}
+
+function useMessagesWhileVisible($messages: ReadableAtom<ChatMessage[]>): ChatMessage[] {
+  return useAtomWhileVisible($messages)
 }
 
 /** Keep the one-shot resume publication signal in lockstep with the visible
  * transcript. Hidden keep-alive panes catch up when revealed, just like their
  * frozen message subscription, so the revision cannot be consumed early. */
 function useResumePublicationRevisionWhileVisible($revision: ReadableAtom<number>): number {
-  const visible = usePaneVisible()
-  const [revision, setRevision] = useState(() => $revision.get())
+  return useAtomWhileVisible($revision)
+}
 
-  useEffect(() => (visible ? $revision.subscribe(setRevision) : undefined), [$revision, visible])
+function activeRepositoryMessages(repository: ExportedMessageRepository): readonly ThreadMessage[] {
+  const itemById = new Map(repository.messages.map(item => [item.message.id, item]))
+  const result: ThreadMessage[] = []
+  const seen = new Set<string>()
+  let id = repository.headId ?? repository.messages.at(-1)?.message.id ?? null
 
-  return revision
+  while (id && !seen.has(id)) {
+    seen.add(id)
+    const item = itemById.get(id)
+
+    if (!item) return []
+
+    result.push(item.message)
+    id = item.parentId
+  }
+
+  return result.reverse()
+}
+
+/**
+ * What the Thread leaf must have committed before this surface may reveal:
+ * the current visible resume publication revision and the exact committed
+ * chain the boundary handed the runtime (ids in leaf order + exact serialized
+ * content for every message). Compared against the leaf's own commit receipt,
+ * so stale interior content cannot unlock a newer transcript.
+ */
+export interface RevealExpectation {
+  chainSignature: string
+  headMessage: ThreadMessage | null
+  contentSignature: string
+}
+
+export function revealMatchesExpectation(
+  receipt: ThreadCommitReceipt,
+  expectation: RevealExpectation,
+  revision: number
+): boolean {
+  return (
+    receipt.complete &&
+    receipt.revision === revision &&
+    receipt.chainSignature === expectation.chainSignature &&
+    receipt.contentSignature === expectation.contentSignature
+  )
 }
 
 /**
@@ -232,9 +302,13 @@ function ChatRuntimeBoundary({
   onCancel,
   onEdit,
   onReload,
+  onRevealExpectationChange,
+  onRevealReadyChange,
   onThreadMessagesChange,
+  requireRevealReceipt,
   suppressMessages
 }: ChatRuntimeBoundaryProps) {
+  const visible = usePaneVisible()
   const view = useSessionView()
   const runtimeId = useStore(view.$runtimeId)
   const storeMessages = useMessagesWhileVisible(view.$messages)
@@ -273,6 +347,31 @@ function ChatRuntimeBoundary({
     onCancel: async () => onCancel(),
     onReload
   })
+
+  // Bind the reveal to the active repository chain actually handed to the
+  // windowed runtime. The store may contain older pages that this Thread does
+  // not render, while repository and assistant-ui wrappers are not referentially
+  // identical, so compare their shared full-chain semantic projection.
+  const expectedChain = useMemo(() => activeRepositoryMessages(runtimeMessageRepository), [runtimeMessageRepository])
+  const revealExpectation = useMemo<RevealExpectation>(
+    () => ({
+      chainSignature: expectedChain.map(message => message.id).join('\n'),
+      headMessage: expectedChain.at(-1) ?? null,
+      contentSignature: requireRevealReceipt ? commitReceiptContentSignature(expectedChain) : '[]'
+    }),
+    [expectedChain, requireRevealReceipt]
+  )
+
+  // A descendant leaf receipt fires in the layout phase before this boundary's
+  // own effects. Publish the current expectation during render so that receipt
+  // can only be evaluated against the generation being committed.
+  onRevealExpectationChange(revealExpectation)
+
+  useLayoutEffect(() => {
+    if (!visible) {
+      onRevealReadyChange(false)
+    }
+  }, [onRevealReadyChange, visible])
 
   return (
     <TranscriptWindowProvider value={transcriptWindow}>
@@ -318,6 +417,8 @@ export const ChatView = memo(function ChatView({
   // atoms) or a tile's session slice — same component either way.
   const view = useSessionView()
   const composerScope = useComposerScope()
+  const paneVisible = usePaneVisible()
+  const [runtimeRevealReady, setRuntimeRevealReady] = useState(paneVisible)
   const isPrimary = view.kind === 'primary'
   const activeSessionId = useStore(view.$runtimeId)
   const storedId = useStore(view.$storedId)
@@ -329,6 +430,50 @@ export const ChatView = memo(function ChatView({
   const resumePublicationRevision = useResumePublicationRevisionWhileVisible(
     view.$resumePublicationRevision ?? ZERO_RESUME_PUBLICATION_REVISION
   )
+
+  // Stable handlers keep the memo'd Thread out of unrelated parent renders;
+  // render-assigned refs provide the current visibility/revision/expectation.
+  const paneVisibleRef = useRef(paneVisible)
+  paneVisibleRef.current = paneVisible
+  const resumeRevisionRef = useRef(resumePublicationRevision)
+  resumeRevisionRef.current = resumePublicationRevision
+  const revealExpectationRef = useRef<RevealExpectation>({
+    chainSignature: '',
+    headMessage: null,
+    contentSignature: '[]'
+  })
+  const lastCommitReceiptRef = useRef<ThreadCommitReceipt | null>(null)
+
+  const handleRevealExpectationChange = useCallback((expectation: RevealExpectation) => {
+    revealExpectationRef.current = expectation
+  }, [])
+
+  const handleCommitReceipt = useCallback((receipt: ThreadCommitReceipt) => {
+    if (
+      !paneVisibleRef.current ||
+      !revealMatchesExpectation(receipt, revealExpectationRef.current, resumeRevisionRef.current)
+    ) {
+      return
+    }
+
+    lastCommitReceiptRef.current = receipt
+    setRuntimeRevealReady(true)
+  }, [])
+
+  // An unchanged frozen transcript emits no new leaf commit on a plain
+  // visibility round-trip. Revalidate its last receipt; a hidden publication
+  // changes the revision/signature and therefore still requires a fresh one.
+  useLayoutEffect(() => {
+    if (!paneVisible) {
+      return
+    }
+
+    const last = lastCommitReceiptRef.current
+
+    if (last && revealMatchesExpectation(last, revealExpectationRef.current, resumeRevisionRef.current)) {
+      setRuntimeRevealReady(true)
+    }
+  }, [paneVisible])
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const contextSuggestions = useStore($contextSuggestions)
   // Per-session (SessionView) reads — a tile IS its session, so these come
@@ -519,13 +664,16 @@ export const ChatView = memo(function ChatView({
 
   return (
     <div
+      aria-hidden={!runtimeRevealReady || undefined}
       className={cn(
         'relative isolate flex h-full min-w-0 flex-col overflow-hidden bg-(--ui-chat-surface-background)',
+        !runtimeRevealReady && 'pointer-events-none invisible',
         className
       )}
       data-chat-surface=""
       data-composer-target={composerScope.target}
       data-session-anchor={sessionAnchor}
+      {...hiddenPaneProps(!runtimeRevealReady)}
     >
       <Backdrop />
       {/* Tiles get their chrome from the layout zone (chip strip); the modal
@@ -550,7 +698,10 @@ export const ChatView = memo(function ChatView({
         onCancel={haltRun}
         onEdit={onEdit}
         onReload={onReload}
+        onRevealExpectationChange={handleRevealExpectationChange}
+        onRevealReadyChange={setRuntimeRevealReady}
         onThreadMessagesChange={onThreadMessagesChange}
+        requireRevealReceipt={!runtimeRevealReady}
         suppressMessages={routeSessionMismatch}
       >
         <div
@@ -566,6 +717,7 @@ export const ChatView = memo(function ChatView({
             loading={threadLoading}
             onBranchInNewChat={onBranchInNewChat}
             onCancel={haltRun}
+            onCommitReceipt={runtimeRevealReady ? undefined : handleCommitReceipt}
             onDismissError={onDismissError}
             onRestoreToMessage={onRestoreToMessage}
             resumePublicationRevision={resumePublicationRevision}

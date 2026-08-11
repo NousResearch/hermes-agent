@@ -4,10 +4,15 @@ import {
   useAuiState,
   useMessagePartReasoning
 } from '@assistant-ui/react'
-import { type ComponentProps, type FC, type ReactNode, useEffect, useRef, useState } from 'react'
+import { type ComponentProps, type FC, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import { ClarifyTool } from '@/components/assistant-ui/clarify-tool'
 import { MarkdownText, MarkdownTextContent } from '@/components/assistant-ui/markdown-text'
+import {
+  useReportThreadMessagePartCommit,
+  useThreadMessagePartCommitCallback,
+  useThreadMessagePartRangeCommitCallback
+} from '@/components/assistant-ui/thread/list'
 import { DelegateTool } from '@/components/assistant-ui/tool/delegate'
 import { ToolFallback, ToolGroupSlot } from '@/components/assistant-ui/tool/fallback'
 import { formatElapsed, useElapsedSeconds, useMeasuredDuration } from '@/components/chat/activity-timer'
@@ -49,6 +54,8 @@ const DelegateToolPart: FC<ToolCallMessagePartProps> = props => {
 }
 
 const ChainToolFallback: FC<ToolCallMessagePartProps> = props => {
+  useReportThreadMessagePartCommit()
+
   // todo parts are hoisted to a dedicated panel above the message content.
   if (props.toolName === 'todo') {
     return null
@@ -79,11 +86,12 @@ const ChainToolFallback: FC<ToolCallMessagePartProps> = props => {
 const ThinkingDisclosure: FC<{
   children: ReactNode
   messageRunning?: boolean
+  onCollapsedCommit?: () => void
   pending?: boolean
   // Required: the block's duration is remembered against this key, so a
   // component that mounts after the block finished can still report it.
   timerKey: string
-}> = ({ children, messageRunning = false, pending = false, timerKey }) => {
+}> = ({ children, messageRunning = false, onCollapsedCommit, pending = false, timerKey }) => {
   const { t } = useI18n()
   // `null` = no explicit user toggle yet, defer to the streaming default.
   // The default is "auto-open while streaming, auto-collapse when done" so
@@ -98,6 +106,12 @@ const ThinkingDisclosure: FC<{
 
   const open = userOpen ?? pending
   const isPreview = pending && userOpen === null
+
+  useLayoutEffect(() => {
+    if (!open) {
+      onCollapsedCommit?.()
+    }
+  }, [onCollapsedCommit, open])
 
   // Three ways a finished block can report itself. With a measured duration it
   // says so, unless the timer's whole seconds round it to "0s" — accurate and
@@ -217,6 +231,13 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
       .slice(Math.max(0, startIndex), endIndex + 1)
       .some(p => p?.type === 'reasoning' && typeof p.text === 'string' && p.text.trim().length > 0)
   )
+  const publishUnrenderedCommit = useThreadMessagePartRangeCommitCallback(startIndex, endIndex)
+
+  useLayoutEffect(() => {
+    if (!hasContent) {
+      publishUnrenderedCommit?.()
+    }
+  }, [hasContent, publishUnrenderedCommit])
 
   if (!hasContent) {
     return null
@@ -229,6 +250,7 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
     // report the running total as each block's duration.
     <ThinkingDisclosure
       messageRunning={messageRunning}
+      onCollapsedCommit={publishUnrenderedCommit}
       pending={pending}
       timerKey={`reasoning:${messageId}:${startIndex}`}
     >
@@ -243,6 +265,10 @@ const ReasoningAccordionGroup: FC<{ children?: ReactNode; endIndex: number; star
 const ReasoningTextPart: ReasoningMessagePartComponent = () => {
   const { status, text } = useMessagePartReasoning()
   const messageRunning = useAuiState(s => s.message.status?.type === 'running')
+  // Preserve the target branch's glued-block projection, but make it the one
+  // source acknowledged by the commit handshake and rendered into the DOM.
+  const renderedText = separateGluedReasoningBlocks(text.trimStart())
+  const onCommit = useThreadMessagePartCommitCallback(renderedText)
 
   return (
     <MarkdownTextContent
@@ -250,9 +276,16 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
       containerProps={{ 'data-slot': 'aui_reasoning-text' } as ComponentProps<'div'>}
       disableArtifacts
       isRunning={status.type === 'running' || messageRunning}
-      text={separateGluedReasoningBlocks(text.trimStart())}
+      onCommit={onCommit}
+      text={renderedText}
     />
   )
+}
+
+const CommittedMarkdownText = () => {
+  const onCommit = useThreadMessagePartCommitCallback()
+
+  return <MarkdownText onCommit={onCommit} />
 }
 
 // Module-level constant so the `components` prop on `MessagePrimitive.Parts`
@@ -265,7 +298,7 @@ const ReasoningTextPart: ReasoningMessagePartComponent = () => {
 export const MESSAGE_PARTS_COMPONENTS = {
   Reasoning: ReasoningTextPart,
   ReasoningGroup: ReasoningAccordionGroup,
-  Text: MarkdownText,
+  Text: CommittedMarkdownText,
   ToolGroup: ToolGroupSlot,
   tools: { Fallback: ChainToolFallback }
 } as const

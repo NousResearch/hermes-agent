@@ -8,7 +8,7 @@ import {
   tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import type { code as streamdownCode } from '@streamdown/code'
-import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
+import { type ComponentProps, memo, useEffect, useLayoutEffect, useMemo, useState } from 'react'
 
 import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
@@ -404,6 +404,7 @@ interface MarkdownTextSurfaceProps {
   containerClassName?: string
   containerProps?: ComponentProps<'div'>
   defer?: boolean
+  onCommit?: (committedText: string) => void
   /** Disable artifact-card promotion for fenced blocks (reasoning text — a
    *  model's scratchpad draft must not register artifact versions). */
   disableArtifacts?: boolean
@@ -465,10 +466,15 @@ function MarkdownTextSurface({
   containerClassName,
   containerProps,
   defer,
-  disableArtifacts
+  disableArtifacts,
+  onCommit
 }: MarkdownTextSurfaceProps) {
   const { status, text } = useMessagePartText()
   const isStreaming = status.type === 'running'
+
+  useLayoutEffect(() => {
+    onCommit?.(text)
+  }, [onCommit, text])
 
   // Keep code parsing enabled while streaming so incomplete fenced blocks still
   // render as code cards. The expensive Shiki pass is deferred by
@@ -606,7 +612,11 @@ function MarkdownTextSurface({
       components={components}
       containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
       containerProps={containerProps}
-      defer={defer}
+      defer={defer && isStreaming && !onCommit}
+      // During the reveal handshake, bind the rendered subtree to the exact
+      // text generation acknowledged by the following layout commit. Ordinary
+      // visible streaming has no callback and never pays this remount cost.
+      key={onCommit ? text : undefined}
       lineNumbers={false}
       mode="streaming"
       // Incomplete-markdown repair runs in preprocessWithTailRepair on the
@@ -641,8 +651,8 @@ export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: Markdo
   )
 }
 
-const MarkdownTextImpl = () => {
-  return <MarkdownTextSurface defer />
+const MarkdownTextImpl = ({ onCommit }: { onCommit?: (committedText: string) => void }) => {
+  return <MarkdownTextSurface defer onCommit={onCommit} />
 }
 
 export const MarkdownText = memo(MarkdownTextImpl)

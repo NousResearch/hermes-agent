@@ -1,15 +1,48 @@
-import { describe, expect, it } from 'vitest'
+import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { createElement, useCallback, useLayoutEffect, useState } from 'react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { PaneVisibleContext } from '@/components/pane-shell/pane-visibility'
+
+import { Thread } from '.'
 
 import {
   buildGroups,
+  commitReceiptChain,
   firstVisibleGroupIndex,
+  isThreadRenderComplete,
   LIVE_TAIL_MIN_GROUPS,
   LIVE_TAIL_PARTS,
   liveTailStart,
   type MessageGroup,
+  partRequiresCommit,
+  pruneCommitMap,
+  RENDER_BUDGET,
   resolveThreadScrollTarget,
-  shouldRestoreResumeAnchor
+  shouldRestoreResumeAnchor,
+  type ThreadCommitReceipt
 } from './list'
+
+class TestResizeObserver {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+
+vi.stubGlobal('ResizeObserver', TestResizeObserver)
+vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) =>
+  window.setTimeout(() => callback(performance.now()), 0)
+)
+vi.stubGlobal('cancelAnimationFrame', (id: number) => window.clearTimeout(id))
+vi.stubGlobal('CSS', { escape: (str: string) => str })
+
+Element.prototype.scrollTo = function scrollTo() {}
+Element.prototype.animate = function animate() {
+  return { cancel: () => {}, finished: Promise.resolve() } as unknown as Animation
+}
+
+afterEach(() => cleanup())
 
 // Signature rows are `${index}:${id}:${role}:${weight}` (see the useAuiState
 // selector in list.tsx).
@@ -115,6 +148,14 @@ describe('shouldRestoreResumeAnchor', () => {
     expect(shouldRestoreResumeAnchor(2, 2, true)).toBe(false)
     expect(shouldRestoreResumeAnchor(3, 2, true)).toBe(false)
     expect(shouldRestoreResumeAnchor(2, 3, false)).toBe(false)
+  })
+})
+
+describe('isThreadRenderComplete', () => {
+  it('waits for first-paint backfill when earlier groups are budget-hidden', () => {
+    expect(isThreadRenderComplete(3, 20)).toBe(false)
+    expect(isThreadRenderComplete(0, 20)).toBe(true)
+    expect(isThreadRenderComplete(3, RENDER_BUDGET)).toBe(true)
   })
 })
 
@@ -234,5 +275,335 @@ describe('liveTailStart', () => {
 
       expect(rendered(liveTailStart(groups))).toBeLessThanOrEqual(rendered(oldStart))
     }
+  })
+})
+
+const receiptCreatedAt = new Date('2026-08-11T00:00:00.000Z')
+
+function receiptAssistant(text: string): ThreadMessage {
+  return {
+    id: 'assistant-1',
+    role: 'assistant',
+    content: [{ type: 'text', text }],
+    status: { type: 'complete', reason: 'stop' },
+    createdAt: receiptCreatedAt,
+    metadata: {
+      unstable_state: null,
+      unstable_annotations: [],
+      unstable_data: [],
+      steps: [],
+      custom: {}
+    }
+  } as ThreadMessage
+}
+
+function receiptUser(text: string): ThreadMessage {
+  return {
+    id: 'user-1',
+    role: 'user',
+    content: [{ type: 'text', text }],
+    attachments: [],
+    createdAt: receiptCreatedAt,
+    metadata: { custom: {} }
+  } as ThreadMessage
+}
+
+function receiptHeadText(receipt: ThreadCommitReceipt): string {
+  return (
+    receipt.headMessage?.content
+      .filter((part): part is { type: 'text'; text: string } => part.type === 'text')
+      .map(part => part.text)
+      .join('') ?? ''
+  )
+}
+
+function LeafReceiptHarness({
+  isRunning = false,
+  message,
+  messages,
+  onCommitReceipt,
+  revision
+}: {
+  isRunning?: boolean
+  message?: ThreadMessage
+  messages?: readonly ThreadMessage[]
+  onCommitReceipt: (receipt: ThreadCommitReceipt) => void
+  revision: number
+}) {
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages: messages ?? [message!],
+    isRunning,
+    onNew: async () => {}
+  })
+
+  return createElement(
+    AssistantRuntimeProvider,
+    { runtime },
+    createElement(Thread, { onCommitReceipt, resumePublicationRevision: revision })
+  )
+}
+
+function EmptyTranscriptRevealHarness({
+  onCommitReceipt,
+  visible
+}: {
+  onCommitReceipt: (receipt: ThreadCommitReceipt) => void
+  visible: boolean
+}) {
+  const [revealReady, setRevealReady] = useState(visible)
+  const runtime = useExternalStoreRuntime<ThreadMessage>({
+    messages: [],
+    isRunning: false,
+    onNew: async () => {}
+  })
+  const handleCommitReceipt = useCallback(
+    (receipt: ThreadCommitReceipt) => {
+      onCommitReceipt(receipt)
+
+      if (
+        visible &&
+        receipt.complete &&
+        receipt.chainSignature === '' &&
+        receipt.headMessage === null &&
+        receipt.contentSignature === '[]'
+      ) {
+        setRevealReady(true)
+      }
+    },
+    [onCommitReceipt, visible]
+  )
+
+  useLayoutEffect(() => {
+    if (!visible) {
+      setRevealReady(false)
+    }
+  }, [visible])
+
+  return createElement(
+    PaneVisibleContext.Provider,
+    { value: visible },
+    createElement(
+      AssistantRuntimeProvider,
+      { runtime },
+      createElement(
+        'div',
+        { 'aria-hidden': !revealReady || undefined, 'data-testid': 'empty-chat-surface' },
+        createElement(Thread, {
+          onCommitReceipt: revealReady ? undefined : handleCommitReceipt,
+          resumePublicationRevision: 17
+        }),
+        createElement('div', { 'data-testid': 'empty-chat-composer' })
+      )
+    )
+  )
+}
+
+describe('Thread leaf commit receipt', () => {
+  it('re-acknowledges an empty transcript after a hidden pane becomes visible', async () => {
+    const receipts: ThreadCommitReceipt[] = []
+    const onCommitReceipt = (receipt: ThreadCommitReceipt) => receipts.push(receipt)
+    const { rerender } = render(
+      createElement(EmptyTranscriptRevealHarness, {
+        onCommitReceipt,
+        visible: true
+      })
+    )
+    const surface = screen.getByTestId('empty-chat-surface')
+
+    expect(surface.getAttribute('aria-hidden')).toBeNull()
+    expect(screen.getByTestId('empty-chat-composer')).toBeTruthy()
+
+    rerender(
+      createElement(EmptyTranscriptRevealHarness, {
+        onCommitReceipt,
+        visible: false
+      })
+    )
+    await waitFor(() => expect(surface.getAttribute('aria-hidden')).toBe('true'))
+    expect(receipts).toHaveLength(0)
+
+    rerender(
+      createElement(EmptyTranscriptRevealHarness, {
+        onCommitReceipt,
+        visible: true
+      })
+    )
+    await waitFor(() => expect(surface.getAttribute('aria-hidden')).toBeNull())
+    expect(screen.getByTestId('empty-chat-composer')).toBeTruthy()
+    expect(receipts).toContainEqual({
+      revision: 17,
+      chainSignature: '',
+      headMessage: null,
+      contentSignature: '[]',
+      complete: true
+    })
+  })
+
+  it('signs every committed message so stale interior content cannot match an unchanged head', () => {
+    const first = receiptAssistant('First answer')
+    const head = { ...receiptAssistant('Head answer'), id: 'assistant-head' } as ThreadMessage
+    const staleFirst = { ...first, content: [{ type: 'text', text: 'Stale first answer' }] } as ThreadMessage
+
+    expect(commitReceiptChain([first, head]).contentSignature).not.toBe(
+      commitReceiptChain([staleFirst, head]).contentSignature
+    )
+  })
+
+  it('requires Text and Reasoning commits while excluding non-authoritative parts', () => {
+    const reasoning = { type: 'reasoning', text: 'Thinking', status: { type: 'running' } }
+
+    expect(partRequiresCommit({ type: 'text', text: 'Answer' })).toBe(true)
+    expect(partRequiresCommit(reasoning)).toBe(true)
+    expect(partRequiresCommit({ ...reasoning, text: '' })).toBe(true)
+    expect(partRequiresCommit({ ...reasoning, status: { type: 'complete' } })).toBe(true)
+    expect(partRequiresCommit({ type: 'tool-call' })).toBe(false)
+  })
+
+  it('prunes committed object graphs outside the current rendered chain', () => {
+    const retained = new Map([
+      ['old-session-message', { payload: 'large old graph' }],
+      ['current-message', { payload: 'current graph' }]
+    ])
+
+    pruneCommitMap(retained, [{ id: 'current-message' }])
+
+    expect([...retained.keys()]).toEqual(['current-message'])
+  })
+
+  it('publishes a matching receipt only after the matching message-part DOM has committed', async () => {
+    const interim = receiptAssistant('Interim answer')
+    const settled = receiptAssistant('Settled answer')
+    const observations: { receipt: ThreadCommitReceipt; settledDomPresent: boolean }[] = []
+    const onCommitReceipt = (receipt: ThreadCommitReceipt) => {
+      observations.push({ receipt, settledDomPresent: screen.queryByText('Settled answer') !== null })
+    }
+    const { rerender } = render(createElement(LeafReceiptHarness, { message: interim, onCommitReceipt, revision: 1 }))
+
+    await screen.findByText('Interim answer')
+    rerender(createElement(LeafReceiptHarness, { message: settled, onCommitReceipt, revision: 7 }))
+
+    await screen.findByText('Settled answer')
+    await waitFor(() => {
+      expect(
+        observations.map(observation => ({
+          revision: observation.receipt.revision,
+          headText: receiptHeadText(observation.receipt),
+          domPresent: observation.settledDomPresent,
+          complete: observation.receipt.complete
+        }))
+      ).toContainEqual({ revision: 7, headText: 'Settled answer', domPresent: true, complete: true })
+    })
+  })
+
+  it('does not wait for a separately rendered tool leaf before publishing structured text', async () => {
+    const structured = {
+      ...receiptAssistant('Structured settled answer'),
+      content: [
+        {
+          type: 'tool-call',
+          toolCallId: 'todo-1',
+          toolName: 'todo',
+          args: { todos: [] },
+          argsText: '{"todos":[]}',
+          result: { todos: [] }
+        },
+        { type: 'text', text: 'Structured settled answer' }
+      ]
+    } as ThreadMessage
+    const observations: { receipt: ThreadCommitReceipt; settledDomPresent: boolean }[] = []
+    const onCommitReceipt = (receipt: ThreadCommitReceipt) => {
+      observations.push({ receipt, settledDomPresent: screen.queryByText('Structured settled answer') !== null })
+    }
+
+    render(
+      createElement(LeafReceiptHarness, {
+        messages: [receiptUser('Structured prompt'), structured],
+        onCommitReceipt,
+        revision: 8
+      })
+    )
+
+    await screen.findByText('Structured settled answer')
+    await waitFor(() => {
+      expect(
+        observations.map(observation => ({
+          revision: observation.receipt.revision,
+          headText: receiptHeadText(observation.receipt),
+          domPresent: observation.settledDomPresent,
+          complete: observation.receipt.complete
+        }))
+      ).toContainEqual({
+        revision: 8,
+        headText: 'Structured settled answer',
+        domPresent: true,
+        complete: true
+      })
+    })
+  })
+
+  it('acknowledges collapsed completed reasoning that has no mounted DOM leaf', async () => {
+    const structured = {
+      ...receiptAssistant('Answer after thinking'),
+      content: [
+        { type: 'reasoning', text: 'Completed hidden reasoning' },
+        { type: 'text', text: 'Answer after thinking' }
+      ]
+    } as ThreadMessage
+    const receipts: ThreadCommitReceipt[] = []
+
+    render(
+      createElement(LeafReceiptHarness, {
+        message: structured,
+        onCommitReceipt: receipt => receipts.push(receipt),
+        revision: 9
+      })
+    )
+
+    await screen.findByText('Answer after thinking')
+    await waitFor(() => expect(receipts.some(receipt => receipt.revision === 9 && receipt.complete)).toBe(true))
+  })
+
+  it('publishes a user-open completed reasoning receipt only after the updated projected markdown DOM commits', async () => {
+    const completedReasoning = (reasoning: string): ThreadMessage =>
+      ({
+        ...receiptAssistant('Live answer'),
+        content: [
+          { type: 'reasoning', text: reasoning },
+          { type: 'text', text: 'Live answer' }
+        ]
+      }) as ThreadMessage
+    const observations: { revision: number; settledDomPresent: boolean }[] = []
+    const onCommitReceipt = (receipt: ThreadCommitReceipt) => {
+      observations.push({
+        revision: receipt.revision,
+        settledDomPresent: screen.queryByText('Settled reasoning') !== null
+      })
+    }
+    const { rerender } = render(
+      createElement(LeafReceiptHarness, {
+        message: completedReasoning('  Interim reasoning'),
+        onCommitReceipt,
+        revision: 10
+      })
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: /Thought/ }))
+    await screen.findByText('Interim reasoning')
+    rerender(
+      createElement(LeafReceiptHarness, {
+        message: completedReasoning('\n  Settled reasoning'),
+        onCommitReceipt,
+        revision: 11
+      })
+    )
+
+    await screen.findByText('Settled reasoning')
+    await waitFor(() => {
+      const matching = observations.filter(observation => observation.revision === 11)
+
+      expect(matching.length).toBeGreaterThan(0)
+      expect(matching.every(observation => observation.settledDomPresent)).toBe(true)
+      expect(matching[0]).toEqual({ revision: 11, settledDomPresent: true })
+    })
   })
 })

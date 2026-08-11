@@ -1,7 +1,11 @@
 import { createContext, memo, useCallback, useContext, useMemo, useRef, useState } from 'react'
 
 import { AssistantMessage } from '@/components/assistant-ui/thread/assistant-message'
-import { ThreadMessageList } from '@/components/assistant-ui/thread/list'
+import {
+  ThreadMessageList,
+  type ThreadCommitReceipt,
+  useReportThreadMessageCommit
+} from '@/components/assistant-ui/thread/list'
 import { BackgroundResumeNotice, CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { SystemMessage } from '@/components/assistant-ui/thread/system-message'
 import { ThreadTimeline } from '@/components/assistant-ui/thread/timeline'
@@ -40,6 +44,7 @@ interface ThreadProps {
   loading?: ThreadLoadingState
   onBranchInNewChat?: (messageId: string) => void
   onCancel?: () => Promise<void> | void
+  onCommitReceipt?: (receipt: ThreadCommitReceipt) => void
   onDismissError?: (messageId: string) => void
   onRestoreToMessage?: (messageId: string, target?: RestoreMessageTarget) => Promise<void> | void
   resumePublicationRevision?: number
@@ -62,6 +67,7 @@ export const Thread = memo(function Thread({
   loading,
   onBranchInNewChat,
   onCancel,
+  onCommitReceipt,
   onDismissError,
   onRestoreToMessage,
   resumePublicationRevision = 0,
@@ -125,26 +131,40 @@ export const Thread = memo(function Thread({
 
   const messageComponents = useMemo(
     () => ({
-      AssistantMessage: () => (
-        <AssistantMessage
-          onBranchInNewChat={
-            hasBranchInNewChat ? messageId => callbacksRef.current.onBranchInNewChat?.(messageId) : undefined
-          }
-          onDismissError={hasDismissError ? messageId => callbacksRef.current.onDismissError?.(messageId) : undefined}
-        />
-      ),
-      SystemMessage,
-      UserEditComposer: () => {
+      AssistantMessage: function CommittedAssistantMessage() {
+        useReportThreadMessageCommit()
+
+        return (
+          <AssistantMessage
+            onBranchInNewChat={
+              hasBranchInNewChat ? messageId => callbacksRef.current.onBranchInNewChat?.(messageId) : undefined
+            }
+            onDismissError={hasDismissError ? messageId => callbacksRef.current.onDismissError?.(messageId) : undefined}
+          />
+        )
+      },
+      SystemMessage: function CommittedSystemMessage() {
+        useReportThreadMessageCommit()
+
+        return <SystemMessage />
+      },
+      UserEditComposer: function CommittedUserEditComposer() {
+        useReportThreadMessageCommit()
+
         const { cwd: editCwd, gateway: editGateway, sessionId: editSessionId } = useContext(ThreadEditContext)
 
         return <UserEditComposer cwd={editCwd} gateway={editGateway} sessionId={editSessionId} />
       },
-      UserMessage: () => (
-        <UserMessage
-          onCancel={hasCancel ? () => callbacksRef.current.onCancel?.() : undefined}
-          onRequestRestoreConfirm={hasRestoreToMessage ? requestRestoreConfirm : undefined}
-        />
-      )
+      UserMessage: function CommittedUserMessage() {
+        useReportThreadMessageCommit()
+
+        return (
+          <UserMessage
+            onCancel={hasCancel ? () => callbacksRef.current.onCancel?.() : undefined}
+            onRequestRestoreConfirm={hasRestoreToMessage ? requestRestoreConfirm : undefined}
+          />
+        )
+      }
     }),
     [hasBranchInNewChat, hasCancel, hasDismissError, hasRestoreToMessage, requestRestoreConfirm]
   )
@@ -170,6 +190,7 @@ export const Thread = memo(function Thread({
           components={messageComponents}
           emptyPlaceholder={emptyPlaceholder}
           loadingIndicator={loadingIndicator}
+          onCommitReceipt={onCommitReceipt}
           resumePublicationRevision={resumePublicationRevision}
           sessionKey={sessionKey}
         />

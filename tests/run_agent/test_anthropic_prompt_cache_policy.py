@@ -211,6 +211,61 @@ class TestMiniMaxAnthropicWire:
         )
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
+    def test_minimax_m3_on_provider_minimax_does_not_cache(self):
+        # MiniMax-M3 uses server-side automatic prefix caching on the
+        # /anthropic wire (content-keyed, no marker needed). M3 is NOT on
+        # MiniMax's explicit-cache support list (which covers only M2.7 /
+        # M2.5 / M2.1 / M2), and emitting cache_control markers on M3 is
+        # neither observable nor billable — it only wastes serialization
+        # overhead and risks perturbing the server-side prefix hash. Marker
+        # path must stay off for M3 so the response.usage fields reflect
+        # server-side automatic caching without interference.
+        agent = _make_agent(
+            provider="minimax",
+            base_url="https://api.minimax.io/anthropic",
+            api_mode="anthropic_messages",
+            model="MiniMax-M3[1m]",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_minimax_m3_on_china_endpoint_does_not_cache(self):
+        # Mirror of the above against the China-region host. The
+        # M3-vs-M2 substring guard must trigger on the model name
+        # regardless of which MiniMax host the user picks.
+        agent = _make_agent(
+            provider="minimax-cn",
+            base_url="https://api.minimaxi.com/anthropic",
+            api_mode="anthropic_messages",
+            model="MiniMax-M3",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_minimax_m3_via_custom_provider_does_not_cache(self):
+        # When the user wires a custom provider manually at MiniMax's
+        # Anthropic URL with M3, host-match alone must NOT bypass the
+        # M3-specific opt-out.
+        agent = _make_agent(
+            provider="custom",
+            base_url="https://api.minimaxi.com/anthropic",
+            api_mode="anthropic_messages",
+            model="MiniMax-M3[1m]",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_minimax_m27_still_caches_after_m3_opt_out(self):
+        # Regression guard: the M3 substring check must not collide with
+        # M2.7 / M2.5 / M2.1 / M2 model names. "minimax-m3" is not a
+        # substring of "minimax-m2.7" etc., but pin this with a test so a
+        # future "startswith minimax-m" loosening can't silently drop the
+        # M2.x cache_control path.
+        agent = _make_agent(
+            provider="minimax",
+            base_url="https://api.minimax.io/anthropic",
+            api_mode="anthropic_messages",
+            model="MiniMax-M2.7",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
 
 class TestOpenAIWireFormatOnCustomProvider:
     """A custom provider using chat_completions (OpenAI wire) should NOT get caching."""

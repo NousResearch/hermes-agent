@@ -312,3 +312,85 @@ def test_vertex_default_model_estimates_cached_usage(monkeypatch):
 
     assert result.status == "estimated"
     assert result.amount_usd is not None and result.amount_usd > 0
+
+
+def test_normalize_usage_debug_off_emits_no_log(caplog):
+    """The opt-in cache observability block must NOT log when debug=False
+    (the default). Production callers should never see this log line —
+    it is only useful when an operator explicitly opts in to investigate
+    cache behavior on MiniMax-M3 or any other provider whose
+    cache_read_input_tokens carries a misleading constant offset.
+    """
+    usage = SimpleNamespace(
+        input_tokens=53,
+        output_tokens=10,
+        cache_read_input_tokens=128,
+        cache_creation_input_tokens=0,
+    )
+
+    with caplog.at_level("DEBUG", logger="agent.usage_pricing"):
+        normalize_usage(usage, provider="minimax-cn", api_mode="anthropic_messages")
+
+    assert all("cache_observability" not in rec.message for rec in caplog.records)
+
+
+def test_normalize_usage_debug_on_minimax_logs_cache_observability(caplog):
+    """When debug=True is passed and the provider is MiniMax/M3,
+    normalize_usage emits a debug log line that records the observable-only
+    fields (input_tokens, output_tokens, cache_read_tokens,
+    cache_write_tokens) so an operator can see real cache behavior
+    without trusting the misleading cache_read number.
+    """
+    usage = SimpleNamespace(
+        input_tokens=1,
+        output_tokens=11,
+        cache_read_input_tokens=8594,
+        cache_creation_input_tokens=0,
+    )
+
+    with caplog.at_level("DEBUG", logger="agent.usage_pricing"):
+        normalize_usage(
+            usage,
+            provider="minimax-cn",
+            api_mode="anthropic_messages",
+            debug=True,
+        )
+
+    cache_obs_records = [r for r in caplog.records if "cache_observability" in r.message]
+    assert len(cache_obs_records) == 1
+    record = cache_obs_records[0]
+    assert "input_tokens=1" in record.message
+    assert "output_tokens=11" in record.message
+    assert "cache_read_tokens=8594" in record.message
+    assert "cache_write_tokens=0" in record.message
+    assert "+128 constant floor" in record.message
+
+
+def test_normalize_usage_debug_on_claude_also_logs_cache_observability(caplog):
+    """The opt-in observability block fires for every anthropic_messages
+    response — not just MiniMax — because the input_tokens-vs-cache_read
+    framing is useful diagnostic information on any Anthropic-compatible
+    wire (e.g. OpenRouter Claude, Bedrock Claude, GLM Claude) where a
+    provider's cache_read_input_tokens semantics may differ from
+    Anthropic's native contract. The block is debug-level and off by
+    default, so emitting it for Claude traffic has zero production cost.
+    """
+    usage = SimpleNamespace(
+        input_tokens=100,
+        output_tokens=20,
+        cache_read_input_tokens=50,
+        cache_creation_input_tokens=10,
+    )
+
+    with caplog.at_level("DEBUG", logger="agent.usage_pricing"):
+        normalize_usage(
+            usage,
+            provider="anthropic",
+            api_mode="anthropic_messages",
+            debug=True,
+        )
+
+    cache_obs_records = [r for r in caplog.records if "cache_observability" in r.message]
+    assert len(cache_obs_records) == 1
+    assert "input_tokens=100" in cache_obs_records[0].message
+    assert "cache_read_tokens=50" in cache_obs_records[0].message

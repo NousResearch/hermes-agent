@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -8,6 +9,8 @@ from typing import Any, Dict, Literal, Optional
 
 from agent.model_metadata import fetch_endpoint_model_metadata, fetch_model_metadata
 from utils import base_url_host_matches
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_PRICING = {"input": 0.0, "output": 0.0}
 
@@ -1207,6 +1210,7 @@ def normalize_usage(
     *,
     provider: Optional[str] = None,
     api_mode: Optional[str] = None,
+    debug: bool = False,
 ) -> CanonicalUsage:
     """Normalize raw API response usage into canonical token buckets.
 
@@ -1287,6 +1291,26 @@ def normalize_usage(
             reasoning_tokens = _to_int(
                 getattr(completion_details, "reasoning_tokens", 0)
             )
+
+    # NOTE: opt-in cache observability for MiniMax-M3 (and similar providers
+    # whose usage.cache_read_input_tokens carries a constant +128 floor and
+    # whose usage.cache_creation_input_tokens is always 0). See
+    # https://platform.minimax.io/docs/api-reference/text-prompt-caching
+    # (Automatic Caching table). On M3, the cache_read field is NOT a
+    # reliable hit signal; the only signal that survives is the input_tokens
+    # drop between consecutive calls. This debug block logs the
+    # observable-only fields so an operator can confirm cache is working
+    # without relying on the misleading cache_read number.
+    if debug and (mode == "anthropic_messages" or provider_name in {"minimax", "minimax-cn"}):
+        logger.debug(
+            "cache_observability provider=%s mode=%s input_tokens=%s "
+            "output_tokens=%s cache_read_tokens=%s cache_write_tokens=%s "
+            "(note: cache_read on this provider carries a +128 constant "
+            "floor and is not a reliable hit signal — track input_tokens "
+            "drops across calls instead)",
+            provider_name, mode, input_tokens, output_tokens,
+            cache_read_tokens, cache_write_tokens,
+        )
 
     return CanonicalUsage(
         input_tokens=input_tokens,

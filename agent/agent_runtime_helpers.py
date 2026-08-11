@@ -2215,13 +2215,26 @@ def anthropic_prompt_cache_policy(
     # api.minimax.io/anthropic / api.minimaxi.com/anthropic) get the
     # same cost reduction as Claude traffic.
     # Docs: https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache
+    #
+    # MiniMax-M3 is intentionally excluded: M3 ships server-side automatic
+    # prefix caching on this wire format (content-keyed, no marker needed —
+    # see https://platform.minimax.io/docs/api-reference/text-prompt-caching),
+    # and cache_control markers are NOT on its explicit-cache support list
+    # (M2.7/M2.5/M2.1/M2 only). Emitting markers on M3 wasted serialization
+    # overhead, risked perturbing the server-side prefix hash, and gave users
+    # a false sense of explicit-cache savings. Empirically verified against
+    # api.minimaxi.com/anthropic/v1/messages with MiniMax-M3[1m]: identical
+    # system prompt hit-rate with and without markers; cache_read field has
+    # a +128 floor and cache_creation is always 0, so the marker path is
+    # neither observable nor billable for M3 users.
     if is_anthropic_wire:
         is_minimax_provider = provider_lower in {"minimax", "minimax-cn"}
         is_minimax_host = (
             base_url_host_matches(eff_base_url, "api.minimax.io")
             or base_url_host_matches(eff_base_url, "api.minimaxi.com")
         )
-        if is_minimax_provider or is_minimax_host:
+        is_minimax_m3 = "minimax-m3" in model_lower
+        if (is_minimax_provider or is_minimax_host) and not is_minimax_m3:
             return True, True
 
     # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire

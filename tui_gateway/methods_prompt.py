@@ -444,6 +444,16 @@ def _(rid, params: dict) -> dict:
     raw = str(params.get("path", "") or "").strip()
     if not raw:
         return _err(rid, 4015, "path required")
+    # Host-path resolution is local-only: a remote /api/ws caller cannot safely
+    # name the gateway host's filesystem. Remote clients should use the byte
+    # upload RPC instead.
+    if not _attach_caller_is_local():
+        return _err(
+            rid,
+            4016,
+            "host-path attach is not available over a remote connection; "
+            "upload the image bytes via image.attach_bytes instead",
+        )
     try:
         from cli import (
             _IMAGE_EXTENSIONS,
@@ -585,6 +595,18 @@ def _(rid, params: dict) -> dict:
             pdf_path.write_bytes(pdf_bytes)
             display_name = str(params.get("filename", "") or "uploaded.pdf")
         else:
+            # Host-path resolution is local-only: the TUI gateway is a local-IPC
+            # surface (SECURITY.md §2.6), so a host filesystem path is only safe
+            # for a local caller. A remote caller over /api/ws must upload bytes
+            # via content_base64 (as the desktop already does in remote mode);
+            # otherwise an authed remote client could read arbitrary host PDFs.
+            if not _attach_caller_is_local():
+                return _err(
+                    rid,
+                    4016,
+                    "host-path attach is not available over a remote connection; "
+                    "upload the PDF bytes via content_base64 instead",
+                )
             try:
                 from cli import _resolve_attachment_path
 
@@ -733,6 +755,41 @@ def _(rid, params: dict) -> dict:
     )
 
 
+def _looks_like_host_path_drop(raw: str) -> bool:
+    """Cheap syntactic precheck for file-drop input without touching the host FS."""
+    stripped = raw.strip()
+    if not stripped:
+        return False
+    return (
+        stripped.startswith("/")
+        or stripped.startswith("~")
+        or stripped.startswith("./")
+        or stripped.startswith("../")
+        or stripped.startswith("file://")
+        or stripped.startswith('"/')
+        or stripped.startswith('"~')
+        or stripped.startswith("'/")
+        or stripped.startswith("'~")
+        or stripped.startswith('"./')
+        or stripped.startswith('"../')
+        or stripped.startswith("'./")
+        or stripped.startswith("'../")
+        or (
+            len(stripped) >= 3
+            and stripped[1] == ":"
+            and stripped[2] in {"\\", "/"}
+            and stripped[0].isalpha()
+        )
+        or (
+            len(stripped) >= 4
+            and stripped[0] in {"'", '"'}
+            and stripped[2] == ":"
+            and stripped[3] in {"\\", "/"}
+            and stripped[1].isalpha()
+        )
+    )
+
+
 @method("input.detect_drop")
 def _(rid, params: dict) -> dict:
     session, err = _sess_nowait(params, rid)
@@ -742,6 +799,23 @@ def _(rid, params: dict) -> dict:
         from cli import _detect_file_drop
 
         raw = str(params.get("text", "") or "")
+        # ``input.detect_drop`` is another host-path resolution surface: it turns
+        # caller-controlled text into a gateway-visible file path and, for
+        # images, queues that path into ``session["attached_images"]``. A remote
+        # /api/ws caller must not be able to make the gateway probe or queue host
+        # filesystem paths. Keep ordinary remote text harmless (no match) without
+        # calling the resolver; path-looking remote text fails closed like the
+        # explicit image/pdf/file attach host-path branches.
+        if not _attach_caller_is_local():
+            if _looks_like_host_path_drop(raw):
+                return _err(
+                    rid,
+                    4016,
+                    "host-path drop detection is not available over a remote connection; "
+                    "upload attachment bytes via the dedicated attach RPC instead",
+                )
+            return _ok(rid, {"matched": False})
+
         dropped = _detect_file_drop(raw)
         if not dropped:
             return _ok(rid, {"matched": False})

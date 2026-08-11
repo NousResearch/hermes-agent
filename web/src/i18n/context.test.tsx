@@ -6,6 +6,30 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { I18nProvider, useI18n } from './context'
 
+// Node 26 exposes a global `localStorage` accessor that resolves to undefined
+// unless --localstorage-file is configured. In Vitest's jsdom environment that
+// accessor shadows jsdom storage on `window`, so install the same standards-
+// shaped in-memory Storage fallback used by Desktop's shared test setup.
+if (typeof window.localStorage === 'undefined') {
+  const store = new Map<string, string>()
+  const storage: Storage = {
+    get length() {
+      return store.size
+    },
+    clear: () => store.clear(),
+    getItem: key => store.get(String(key)) ?? null,
+    key: index => [...store.keys()][index] ?? null,
+    removeItem: key => void store.delete(String(key)),
+    setItem: (key, value) => void store.set(String(key), String(value))
+  }
+
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: storage,
+    writable: true
+  })
+}
+
 function LanguageProbe() {
   const { locale, setLocale, t } = useI18n()
 

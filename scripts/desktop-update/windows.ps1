@@ -358,6 +358,44 @@ function Show-ErrorFinale([string]$Message) {
     } catch {}
 }
 
+function Show-ManualFinale([string]$Message) {
+    # Update landed but the Desktop did not verifiably come back. Same terse
+    # shape as the error finale, success glyph semantics: the shim renders
+    # `manual` itself; the WinForms card swaps its copy. Held so the user
+    # actually sees the instruction — this window is the only surface until
+    # they reopen Hermes themselves.
+    if ($script:UiServer) {
+        Publish-UiEvent "manual" $Message
+        Stop-UiServer -LeaveWindow
+        return
+    }
+    if (-not $script:Ui) { return }
+    try {
+        $ui = $script:Ui
+        $ui.Bar.Visible = $false
+        $ui.Title.Text = "Update complete"
+        $ui.Sub.Text = $Message
+        $close = New-Object System.Windows.Forms.Button
+        $close.Text = "Close"
+        $close.SetBounds(100, 252, 80, 28)
+        $close.FlatStyle = "Flat"
+        $close.ForeColor = $ui.Title.ForeColor
+        $script:ErrorDismissed = $false
+        $close.Add_Click({ $script:ErrorDismissed = $true })
+        $ui.Form.Controls.Add($close)
+        $ui.Form.AcceptButton = $close
+        try {
+            $ui.Form.Activate()
+            if ($script:Win32) { [HermesHandoff.Win32]::SetForegroundWindow($ui.Form.Handle) | Out-Null }
+        } catch {}
+        $deadline = (Get-Date).AddMinutes(5)
+        while (-not $script:ErrorDismissed -and (Get-Date) -lt $deadline -and $ui.Form.Visible) {
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 100
+        }
+    } catch {}
+}
+
 function Close-ProgressWindow {
     if ($script:UiServer) {
         # Success event: the shim flips to the checkmark, then the window
@@ -402,70 +440,83 @@ function Remove-MarkerIfOwned {
 }
 
 function Start-DesktopRelaunch {
-    if ($RelaunchExe -and (Test-Path -LiteralPath $RelaunchExe)) {
-        Write-HandoffLog "relaunching desktop: $RelaunchExe"
-        # DO NOT spawn Hermes.exe as our child: Electron/Chromium calls
-        # AttachConsole(ATTACH_PARENT_PROCESS) at boot, so a Desktop launched
-        # directly from this console PowerShell latches onto OUR console --
-        # the console window then outlives the script (it can't close while
-        # an attached process lives), and closing it kills the freshly
-        # relaunched GUI with it. Create the process via WMI instead: the
-        # parent becomes WmiPrvSE.exe and there is no console to inherit or
-        # attach -- same detachment explorer.exe gives a normal launch.
-        $spawned = $false
-        try {
-            $workDir = Split-Path -Parent $RelaunchExe
-            $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
-                CommandLine      = ('"{0}"' -f $RelaunchExe)
-                CurrentDirectory = $workDir
-            } -ErrorAction Stop
-            if ($r -and $r.ReturnValue -eq 0) {
-                Write-HandoffLog "desktop relaunched detached (pid $($r.ProcessId))"
-                $spawned = $true
-                # Hand our foreground rights to the new Desktop and focus its
-                # main window once it exists. A WMI-spawned process starts
-                # unfocused, and Windows only lets the CURRENT foreground
-                # owner (us, while the progress window is up / just closed)
-                # delegate that right. Poll briefly for the window: Electron
-                # takes a couple seconds to create it.
-                try {
-                    if ($script:Win32) {
-                        [HermesHandoff.Win32]::AllowSetForegroundWindow([int]$r.ProcessId) | Out-Null
-                        $deadline = (Get-Date).AddSeconds(20)
-                        while ((Get-Date) -lt $deadline) {
-                            $hwnd = [System.IntPtr]::Zero
-                            try {
-                                $p = Get-Process -Id $r.ProcessId -ErrorAction Stop
-                                $hwnd = $p.MainWindowHandle
-                            } catch { break }  # process died; nothing to focus
-                            if ($hwnd -ne [System.IntPtr]::Zero) {
-                                [HermesHandoff.Win32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
-                                [HermesHandoff.Win32]::SetForegroundWindow($hwnd) | Out-Null
-                                Write-HandoffLog "focused relaunched desktop window"
-                                break
-                            }
-                            Start-Sleep -Milliseconds 400
-                        }
-                    }
-                } catch {
-                    Write-HandoffLog "WARNING: could not focus relaunched desktop: $($_.Exception.Message)"
-                }
-            } else {
-                Write-HandoffLog "WARNING: WMI relaunch returned $($r.ReturnValue); falling back"
-            }
-        } catch {
-            Write-HandoffLog "WARNING: WMI relaunch failed: $($_.Exception.Message); falling back"
-        }
-        if (-not $spawned) {
+    # Returns $true only when a launch VERIFIABLY happened (WMI accepted and
+    # the pid exists, or the fallback spawn returned a live process). The
+    # finally block downgrades the on-screen/on-disk outcome when it didn't
+    # — the sibling truth contract to posix.sh's launch acceptance.
+    if (-not ($RelaunchExe -and (Test-Path -LiteralPath $RelaunchExe))) { return $false }
+    Write-HandoffLog "relaunching desktop: $RelaunchExe"
+    # DO NOT spawn Hermes.exe as our child: Electron/Chromium calls
+    # AttachConsole(ATTACH_PARENT_PROCESS) at boot, so a Desktop launched
+    # directly from this console PowerShell latches onto OUR console --
+    # the console window then outlives the script (it can't close while
+    # an attached process lives), and closing it kills the freshly
+    # relaunched GUI with it. Create the process via WMI instead: the
+    # parent becomes WmiPrvSE.exe and there is no console to inherit or
+    # attach -- same detachment explorer.exe gives a normal launch.
+    $spawned = $false
+    try {
+        $workDir = Split-Path -Parent $RelaunchExe
+        $r = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{
+            CommandLine      = ('"{0}"' -f $RelaunchExe)
+            CurrentDirectory = $workDir
+        } -ErrorAction Stop
+        if ($r -and $r.ReturnValue -eq 0) {
+            Write-HandoffLog "desktop relaunched detached (pid $($r.ProcessId))"
+            $spawned = $true
+            # Hand our foreground rights to the new Desktop and focus its
+            # main window once it exists. A WMI-spawned process starts
+            # unfocused, and Windows only lets the CURRENT foreground
+            # owner (us, while the progress window is up / just closed)
+            # delegate that right. Poll briefly for the window: Electron
+            # takes a couple seconds to create it.
             try {
-                # Fallback keeps the old behavior (console tie-in and all) --
-                # a tethered Desktop beats no Desktop.
-                Start-Process -FilePath $RelaunchExe -WorkingDirectory (Split-Path -Parent $RelaunchExe) | Out-Null
+                if ($script:Win32) {
+                    [HermesHandoff.Win32]::AllowSetForegroundWindow([int]$r.ProcessId) | Out-Null
+                    $deadline = (Get-Date).AddSeconds(20)
+                    while ((Get-Date) -lt $deadline) {
+                        $hwnd = [System.IntPtr]::Zero
+                        try {
+                            $p = Get-Process -Id $r.ProcessId -ErrorAction Stop
+                            $hwnd = $p.MainWindowHandle
+                        } catch {
+                            # Process died before showing a window — that is a
+                            # failed launch, not merely an unfocused one.
+                            Write-HandoffLog "WARNING: relaunched desktop exited before its window appeared"
+                            $spawned = $false
+                            break
+                        }
+                        if ($hwnd -ne [System.IntPtr]::Zero) {
+                            [HermesHandoff.Win32]::ShowWindow($hwnd, 9) | Out-Null  # SW_RESTORE
+                            [HermesHandoff.Win32]::SetForegroundWindow($hwnd) | Out-Null
+                            Write-HandoffLog "focused relaunched desktop window"
+                            break
+                        }
+                        Start-Sleep -Milliseconds 400
+                    }
+                }
             } catch {
-                Write-HandoffLog "WARNING: desktop relaunch failed: $($_.Exception.Message)"
+                Write-HandoffLog "WARNING: could not focus relaunched desktop: $($_.Exception.Message)"
             }
+        } else {
+            Write-HandoffLog "WARNING: WMI relaunch returned $($r.ReturnValue); falling back"
+        }
+    } catch {
+        Write-HandoffLog "WARNING: WMI relaunch failed: $($_.Exception.Message); falling back"
+    }
+    if (-not $spawned) {
+        try {
+            # Fallback keeps the old behavior (console tie-in and all) --
+            # a tethered Desktop beats no Desktop.
+            $p = Start-Process -FilePath $RelaunchExe -WorkingDirectory (Split-Path -Parent $RelaunchExe) -PassThru
+            Start-Sleep -Milliseconds 1500
+            if ($p -and -not $p.HasExited) { $spawned = $true }
+            elseif ($p) { Write-HandoffLog "WARNING: fallback relaunch exited immediately" }
+        } catch {
+            Write-HandoffLog "WARNING: desktop relaunch failed: $($_.Exception.Message)"
         }
     }
+    return $spawned
 }
 
 function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
@@ -663,9 +714,28 @@ try {
     }
     exit $finalCode
 } finally {
+    # Truth ordering (sibling contract to posix.sh finish()):
+    #   1. durable result + marker removal (the relaunched Desktop consumes
+    #      the result on boot and must not park on our marker);
+    #   2. attempt the relaunch and require ACCEPTANCE;
+    #   3. only then the terminal UI state — done means "Hermes is back",
+    #      manual means "it is not, reopen it", error is error (and still
+    #      tries to bring the app back after showing itself).
     Write-Result ($finalCode -eq 0) $finalCode $finalMsg
     Remove-MarkerIfOwned
-    if ($finalCode -ne 0) { Show-ErrorFinale $finalMsg }
-    Close-ProgressWindow
-    Start-DesktopRelaunch
+    if ($finalCode -ne 0) {
+        Show-ErrorFinale $finalMsg
+        Close-ProgressWindow
+        [void](Start-DesktopRelaunch)
+    } else {
+        $cameBack = Start-DesktopRelaunch
+        if (-not $cameBack -and $RelaunchExe) {
+            # Launch was due and did not verifiably land: truthful result
+            # for the next boot, manual state held on screen now.
+            $finalMsg = "Update complete. Reopen Hermes to finish (it could not restart itself)."
+            Write-Result $true 0 $finalMsg
+            Show-ManualFinale $finalMsg
+        }
+        Close-ProgressWindow
+    }
 }

@@ -133,6 +133,54 @@ case "$MODE" in
     rm -rf "$G"
     [ "$fails" -eq 0 ] && say "gate matrix: all pass" || { say "gate matrix: $fails FAILED"; exit 1; }
     ;;
+  launch)
+    # Terminal-lifecycle matrix (gille round 2): launch acceptance is part
+    # of the outcome. Each case runs the REAL orchestrator (--no-ui) against
+    # a fake install whose `hermes` stub exits 0 instantly, so the flow
+    # reaches finish() with FINAL_CODE=0 and exercises the launch leg.
+    L="/tmp/hermes-launch-test.$$"
+    fails=0
+    expect_msg() { # name python-expr
+      if python3 -c "import json,sys; d=json.load(open('$L/.hermes-update-result.json')); sys.exit(0 if ($2) else 1)"; then
+        printf 'ok   %s\n' "$1"
+      else
+        printf 'FAIL %s -> %s\n' "$1" "$(cat "$L/.hermes-update-result.json" 2>/dev/null)"; fails=$((fails+1))
+      fi
+    }
+    stub_install() { # creates a fake install whose hermes update succeeds
+      rm -rf "$L"; mkdir -p "$L/hermes-agent/venv/bin"
+      printf '#!/bin/sh\nexit 0\n' > "$L/hermes-agent/venv/bin/hermes"
+      chmod +x "$L/hermes-agent/venv/bin/hermes"
+    }
+
+    # 1. linux relaunch target dies instantly -> manual downgrade in result
+    stub_install
+    UNPACKED="$L/hermes-agent/apps/desktop/release/linux-unpacked"
+    mkdir -p "$UNPACKED"
+    printf '#!/bin/sh\nexit 1\n' > "$UNPACKED/hermes"; chmod +x "$UNPACKED/hermes"
+    if [ "$(uname)" != "Darwin" ]; then
+      bash "$SCRIPT_DIR/posix.sh" --no-ui --desktop-pid 0 --install-root "$L/hermes-agent" \
+        --relaunch-target "$UNPACKED/hermes" >/dev/null 2>&1 || true
+      expect_msg "instant-exit relaunch downgrades to manual" "d['ok']==True and 'Reopen Hermes' in d['message']"
+    else
+      # mac: `open` on a nonexistent bundle is the acceptance-failure analog
+      bash "$SCRIPT_DIR/posix.sh" --no-ui --desktop-pid 0 --install-root "$L/hermes-agent" \
+        --relaunch-target "$L/NoSuch.app" >/dev/null 2>&1 || true
+      expect_msg "missing bundle -> clean result (no launch due)" "d['ok']==True"
+    fi
+
+    # 2. gated skew: success result carries the skew message (the manual
+    #    event's payload), never a bare "Update complete."
+    stub_install
+    bash "$SCRIPT_DIR/posix.sh" --no-ui --desktop-pid 0 --install-root "$L/hermes-agent" \
+      --relaunch-target /opt/Hermes/hermes >/dev/null 2>&1 || true
+    if [ "$(uname)" != "Darwin" ]; then
+      expect_msg "skew outcome surfaces in result message" "d['ok']==True and 'was not changed' in d['message']"
+    fi
+
+    rm -rf "$L"
+    [ "$fails" -eq 0 ] && say "launch matrix: all pass" || { say "launch matrix: $fails FAILED"; exit 1; }
+    ;;
   *)
     sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
     exit 64

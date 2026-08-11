@@ -83,6 +83,26 @@ publish() { # status message -- atomic replace; the server reads per poll
   printf '{"status":"%s","message":"%s"}' "$(json_escape "$1")" "$(json_escape "$2")" > "$STATUS.tmp" \
     && mv -f "$STATUS.tmp" "$STATUS" 2>/dev/null || true
   [ -n "$UI_SERVER_PID" ] && sleep 1  # one poll beat to render the state
+  # Renderer-free recovery surface (gille's review, round 2): on linux a
+  # gated skew/manual outcome or a failure may be the ONLY signal the user
+  # gets — the Desktop deliberately does not reopen, and without a
+  # chromium-family browser there is no shim window. libnotify/zenity ship
+  # with every desktop environment; best-effort, never fatal, mac excluded
+  # (the shim browser list is effectively always satisfiable there and
+  # `open` reopens the app even on error).
+  if [ -z "$UI_SERVER_PID" ] && [ "$(uname)" != "Darwin" ]; then
+    case "$1" in
+      manual|error)
+        if command -v notify-send >/dev/null 2>&1; then
+          notify-send -u critical "Hermes update" "$2" 2>/dev/null || true
+        elif command -v zenity >/dev/null 2>&1; then
+          (zenity --warning --title="Hermes update" --text="$2" 2>/dev/null &) || true
+        elif command -v kdialog >/dev/null 2>&1; then
+          (kdialog --title "Hermes update" --sorry "$2" 2>/dev/null &) || true
+        fi
+        ;;
+    esac
+  fi
 }
 
 find_browser() {
@@ -220,19 +240,29 @@ deliver_outcome() { # the truth-determining half: swap bundles / gate the relaun
   fi
 }
 
-launch_app() { # runs LAST, after the result is durable (the relaunched
-  # Desktop consumes the result file on boot -- launching first races the
-  # write). Returns nonzero when a launch was due but did not happen.
+launch_app() { # attempted BEFORE the terminal event (launch acceptance is
+  # part of the outcome — gille's review). Returns nonzero when a launch
+  # was due but did not verifiably happen; caller downgrades to manual.
   [ -n "$RELAUNCH_TARGET" ] || return 0
   if [ "$(uname)" = "Darwin" ]; then
     [ -d "$RELAUNCH_TARGET" ] || return 0
     /usr/bin/xattr -dr com.apple.quarantine "$RELAUNCH_TARGET" 2>/dev/null || true
-    /usr/bin/open "$RELAUNCH_TARGET" || { log "WARNING: relaunch failed"; return 1; }
+    # `open` talks to launchd and FAILS LOUDLY on a broken/unlaunchable
+    # bundle — its exit code IS launch acceptance here.
+    /usr/bin/open "$RELAUNCH_TARGET" || { log "WARNING: open rejected the app"; return 1; }
   elif [ "$GATE" = "relaunch" ]; then
-    # Replay the original launch context: filtered args from the Desktop
-    # (after --), its cwd, and its env (inherited through our own spawn).
-    (cd "${RELAUNCH_CWD:-/}" 2>/dev/null || cd /; setsid "$RELAUNCH_TARGET" ${RELAUNCH_ARGS[@]+"${RELAUNCH_ARGS[@]}"} >/dev/null 2>&1 &) \
-      || { log "WARNING: relaunch failed"; return 1; }
+    # setsid only proves the wrapper shell started, so verify acceptance:
+    # spawn, then confirm the child is still alive shortly after — an
+    # immediate exec failure (ENOENT, ELF mismatch, dead sandbox) dies
+    # within the window and downgrades to manual instead of lying.
+    (cd "${RELAUNCH_CWD:-/}" 2>/dev/null || cd /
+     setsid "$RELAUNCH_TARGET" ${RELAUNCH_ARGS[@]+"${RELAUNCH_ARGS[@]}"} >/dev/null 2>&1 &
+     echo $! > "$STATUS.launchpid") || { log "WARNING: relaunch spawn failed"; return 1; }
+    local lp
+    lp="$(cat "$STATUS.launchpid" 2>/dev/null)"; rm -f "$STATUS.launchpid" 2>/dev/null
+    [ -n "$lp" ] || { log "WARNING: relaunch pid unknown"; return 1; }
+    sleep 1.5
+    kill -0 "$lp" 2>/dev/null || { log "WARNING: relaunched app exited immediately"; return 1; }
   fi
 }
 
@@ -244,8 +274,16 @@ write_result() {
 }
 
 finish() {
-  # Ordering (helix4u's review): 1. deliver the outcome (swap/gate) so the
-  # truth exists; 2. durable result; 3. marker; 4. shim event; 5. relaunch.
+  # Ordering (gille's reviews, both rounds):
+  #   1. deliver the outcome (swap/gate) so the truth exists;
+  #   2. durable result + marker removal (the relaunched app consumes the
+  #      result on boot and must not park on our marker — this must be on
+  #      disk BEFORE any launch attempt);
+  #   3. attempt the launch and require ACCEPTANCE;
+  #   4. only then the terminal shim event — done means "the app is coming
+  #      back", manual means "it is not, here's what to do", error is error.
+  # A rejected launch rewrites the result (nothing consumed it — the app
+  # never started) so the next boot tells the truth too.
   deliver_outcome
   [ "$FINAL_CODE" -eq 0 ] && [ -n "$DONE_NOTE" ] && FINAL_MSG="$DONE_NOTE"
   write_result
@@ -254,20 +292,25 @@ finish() {
     rm -f "$MARKER" 2>/dev/null || true
   fi
 
-  if [ "$FINAL_CODE" -eq 0 ]; then
-    # A DONE_NOTE means the app will NOT reopen itself -- leave the window
-    # up showing the note instead of closing on a false "Opening Hermes…".
-    publish "done" "$DONE_NOTE"
-    if [ -n "$DONE_NOTE" ]; then stop_ui leave-window; else stop_ui; fi
-  else
+  if [ "$FINAL_CODE" -ne 0 ]; then
     publish "error" "$FINAL_MSG"; stop_ui leave-window
+    launch_app || true   # error path still tries to bring the app back
+    rm -f "$STATUS" "$STATUS.tmp" "$LOG_DIR/desktop-update-ui-port" 2>/dev/null || true
+    return
   fi
 
-  if ! launch_app && [ "$FINAL_CODE" -eq 0 ] && [ -z "$DONE_NOTE" ]; then
-    # Launch failed after "done" went out: nothing consumed the result yet
-    # (the app never started), so make it tell the truth for the next boot.
+  if [ -n "$DONE_NOTE" ]; then
+    # Gated (skew/manual): no launch will happen by design. Say so and
+    # leave the window up — it is the only surface until the next boot.
+    publish "manual" "$DONE_NOTE"; stop_ui leave-window
+  elif launch_app; then
+    publish "done" ""; stop_ui
+  else
+    # Launch was due and did not land. Downgrade: truthful result for the
+    # next boot, manual state held on screen now.
     FINAL_MSG="Update complete. Reopen Hermes to finish (it could not restart itself)."
     write_result
+    publish "manual" "$FINAL_MSG"; stop_ui leave-window
   fi
   rm -f "$STATUS" "$STATUS.tmp" "$LOG_DIR/desktop-update-ui-port" 2>/dev/null || true
 }

@@ -212,10 +212,15 @@
     if (state.status === 'done') {
       settle('done')
       glyphEl.textContent = '\u2713'
-      // A done message means the update landed but Hermes will NOT reopen
-      // itself (package skew, sandbox helper) — say that, not a false
-      // "Opening Hermes…". The orchestrator leaves the window up for it.
-      lineEl.textContent = state.message || 'Opening Hermes\u2026'
+      lineEl.textContent = 'Opening Hermes\u2026'
+    } else if (state.status === 'manual') {
+      // Update landed but Hermes will NOT reopen itself (package skew,
+      // sandbox helper, launch rejected). The orchestrator leaves this
+      // window up; the message says what to do.
+      settle('done')
+      glyphEl.textContent = '\u2713'
+      titleEl.textContent = 'Update complete'
+      lineEl.textContent = state.message || 'Reopen Hermes to finish.'
     } else if (state.status === 'error') {
       settle('error')
       glyphEl.textContent = '\u2715'

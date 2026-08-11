@@ -1023,6 +1023,64 @@ def _wal_is_usable() -> bool:
 _AUDIO_GUARD_BYPASS_MARK = "real_audio_playback"
 _ALLOW_MACOS_KEYCHAIN_MARK = "allow_macos_keychain"
 
+# ---------------------------------------------------------------------------
+# OS gating
+#
+# Hermes runs on Linux, macOS and native Windows, and a lot of its behaviour
+# genuinely differs per host: PTY vs pywinpty, taskkill vs SIGTERM, launchd
+# vs systemd, Keychain vs libsecret, ``%LOCALAPPDATA%`` vs ``~/.hermes``.
+#
+# Historically those code paths were tested by *faking* the host — patching
+# ``sys.platform`` to ``"win32"`` inside a Linux CI job. That gives a green
+# test on a machine where the code under test could not actually run: the
+# fake covers the ``if sys.platform == "win32"`` branch selection but nothing
+# underneath it (``msvcrt`` still isn't importable, ``taskkill`` still isn't
+# on PATH, paths are still POSIX, ``signal.SIGKILL`` still exists). The
+# result was tests that pass on Linux and tell us nothing about Windows.
+#
+# So: a test whose subject is genuinely OS-specific declares the OS it
+# belongs to and runs there for real —
+#
+#   @pytest.mark.windows_only   → only on native Windows (``sys.platform == "win32"``)
+#   @pytest.mark.macos_only     → only on macOS (``sys.platform == "darwin"``)
+#   @pytest.mark.linux_only     → only on Linux (``sys.platform.startswith("linux")``)
+#
+# Elsewhere the test is skipped, not faked. CI runs a dedicated macOS job
+# (``-m macos_only``) and a dedicated Windows job (``-m windows_only``) so
+# those markers are actually exercised on their own host rather than
+# quietly skipped everywhere.
+#
+# This does NOT mean every mention of another platform must be gated. Two
+# things are legitimately host-independent and stay on the Linux runner:
+#
+#   • Pure functions that TAKE a platform as data — e.g.
+#     ``hidden_windows_child_options(opts, is_windows=True)`` or a
+#     ``resolve_launcher(platform_name)`` helper. Passing "win32" as an
+#     argument is not faking the host; the function's whole contract is
+#     that it maps input to output.
+#   • Declaration/packaging invariants — e.g. "pyproject declares tzdata
+#     with a ``sys_platform == 'win32'`` marker". That's an assertion about
+#     a file, not about runtime behaviour.
+#
+# The line is: if the test needs the interpreter to BELIEVE it is on
+# another OS in order to pass, it belongs on that OS.
+# ---------------------------------------------------------------------------
+
+_OS_MARKS = {
+    "linux_only": (
+        lambda: sys.platform.startswith("linux"),
+        "Linux",
+    ),
+    "macos_only": (
+        lambda: sys.platform == "darwin",
+        "macOS",
+    ),
+    "windows_only": (
+        lambda: sys.platform == "win32",
+        "native Windows",
+    ),
+}
+
 
 def pytest_configure(config):  # noqa: D401 — pytest hook
     """Register markers used by hermetic conftest."""
@@ -1055,6 +1113,12 @@ def pytest_configure(config):  # noqa: D401 — pytest hook
         "created in the current environment (needs admin/developer mode "
         "on Windows).",
     )
+    # NOTE: linux_only / macos_only / windows_only are declared in
+    # pyproject.toml's ``markers`` list, not here — they are part of the
+    # project's public marker vocabulary (``pytest --markers``, and the CI
+    # lanes select on them), whereas the marks above are conftest-internal
+    # guards. Declaring them in both places just meant two descriptions that
+    # could drift apart.
 
     # The pyproject addopts pin ``--timeout-method=signal`` relies on
     # ``signal.SIGALRM``, which does not exist on Windows — pytest-timeout
@@ -1095,13 +1159,53 @@ def pytest_runtest_setup(item):
             )
 
 
-def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
-    """Skip ``requires_wal`` tests when the linked SQLite can't use WAL.
+def _reject_multiple_os_marks(items):
+    """Fail collection when one test carries two host-OS markers.
 
-    Cheaper and more honest than each test hand-rolling a version check: the
-    reason string names the actual linked version so the skip is diagnosable
-    rather than mysterious.
+    Every marker in ``_OS_MARKS`` skips on all but one host, so two of them
+    on the same item means it is skipped on *every* host — a test that never
+    runs anywhere, reported as green by both the Linux suite and the
+    tests-os lanes. That is the exact silent-coverage-loss the markers were
+    introduced to remove, so it is a hard collection error rather than a
+    warning nobody reads.
     """
+    offenders = []
+    for item in items:
+        marks = sorted({m.name for m in item.iter_markers() if m.name in _OS_MARKS})
+        if len(marks) > 1:
+            offenders.append(f"  {item.nodeid}: {', '.join(marks)}")
+    if offenders:
+        raise pytest.UsageError(
+            "a test may carry at most one host-OS marker "
+            f"({', '.join(_OS_MARKS)}); these carry several and would be "
+            "skipped on every host:\n" + "\n".join(offenders)
+        )
+
+
+def pytest_collection_modifyitems(config, items):  # noqa: D401 — pytest hook
+    """Apply host-OS gating, then skip ``requires_wal`` where WAL is unusable.
+
+    OS gating: a test marked ``linux_only`` / ``macos_only`` /
+    ``windows_only`` runs only on that host. See the ``_OS_MARKS`` block
+    comment above for why these tests are skipped rather than run against a
+    patched ``sys.platform``.
+
+    WAL gating is cheaper and more honest than each test hand-rolling a
+    version check: the reason string names the actual linked version so the
+    skip is diagnosable rather than mysterious.
+    """
+    _reject_multiple_os_marks(items)
+
+    for mark_name, (is_host, label) in _OS_MARKS.items():
+        if is_host():
+            continue
+        skip_os = pytest.mark.skip(
+            reason=f"{label}-only test (marked {mark_name}); host is {sys.platform}"
+        )
+        for item in items:
+            if item.get_closest_marker(mark_name) is not None:
+                item.add_marker(skip_os)
+
     if _wal_is_usable():
         return
 

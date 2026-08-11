@@ -4129,6 +4129,28 @@ def generate_launchd_plist() -> str:
     )
     prog_args_xml = "\n        ".join(prog_args)
 
+    # Persist the configured RLIMIT_NOFILE floor into the service definition
+    # itself. launchd starts children with a soft limit of 256 by default;
+    # without this block every plist rewrite (e.g. `hermes gateway start`)
+    # would silently strip a manually-added limit and reintroduce EMFILE
+    # crashes under load. The in-process floor (resource_limits.py) still
+    # applies as a second layer for non-launchd launches.
+    nofile_block = ""
+    try:
+        from hermes_cli.resource_limits import configured_nofile_soft_limit
+
+        nofile_target = configured_nofile_soft_limit()
+    except Exception:
+        nofile_target = None
+    if nofile_target:
+        nofile_block = f"""
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{nofile_target}</integer>
+    </dict>
+"""
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -4175,7 +4197,7 @@ def generate_launchd_plist() -> str:
 
     <key>ExitTimeOut</key>
     <integer>25</integer>
-
+{nofile_block}
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
     
@@ -4851,25 +4873,44 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
         # to config.yaml.
         from gateway.config import _env_multiplex_profiles_override
 
+        cfg_path = default_root / "config.yaml"
+        cfg = {}
+        if cfg_path.exists():
+            # Raw read of the DEFAULT root's config (not the active profile
+            # home, so load_config() is the wrong owner here); whole probe is
+            # fail-open via the enclosing except.
+            from hermes_cli.config import read_user_config_raw
+
+            cfg = read_user_config_raw(cfg_path)
+
         env_multiplex = _env_multiplex_profiles_override()
         if env_multiplex is False:
             return  # explicitly forced OFF by the operator env override
         if env_multiplex is True:
             multiplex = True
         else:
-            cfg_path = default_root / "config.yaml"
             if not cfg_path.exists():
                 return
-            # Raw read of the DEFAULT root's config (not the active profile
-            # home, so load_config() is the wrong owner here); whole probe is
-            # fail-open via the enclosing except.
-            from hermes_cli.config import read_user_config_raw
-            cfg = read_user_config_raw(cfg_path)
             multiplex = bool(
                 cfg.get("multiplex_profiles")
                 or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")
             )
         if not multiplex:
+            return
+
+        gateway_cfg = cfg.get("gateway", {}) or {}
+        if "multiplex_profile_allowlist" in cfg:
+            raw_allowlist = cfg.get("multiplex_profile_allowlist")
+        else:
+            raw_allowlist = gateway_cfg.get("multiplex_profile_allowlist")
+        from gateway.config import _normalize_multiplex_profile_allowlist
+        from hermes_cli.profiles import normalize_profile_name
+
+        profile_allowlist = _normalize_multiplex_profile_allowlist(raw_allowlist)
+        if (
+            profile_allowlist is not None
+            and normalize_profile_name(suffix) not in profile_allowlist
+        ):
             return
     except Exception:
         logger.debug("Multiplexer-conflict probe failed", exc_info=True)

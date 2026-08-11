@@ -245,6 +245,31 @@ def _systemd_run_user_scope_available() -> bool:
         return available
 
 
+def _is_supervised_gateway_process() -> bool:
+    """Return whether this process is in a supervised Hermes gateway runtime.
+
+    Both supervisor markers and ``_HERMES_GATEWAY`` are inherited by every
+    descendant, and importing ``gateway.run`` also sets the latter. Require
+    this process to own the live gateway PID file as well. That keeps transient
+    systemd scopes limited to the gateway itself instead of terminal children
+    or unrelated interactive CLIs in the same supervised process tree.
+    """
+    if os.environ.get("_HERMES_GATEWAY") != "1":
+        return False
+
+    try:
+        from gateway.restart import is_gateway_supervisor_process
+        from gateway.status import get_running_pid
+
+        return (
+            is_gateway_supervisor_process()
+            and get_running_pid(cleanup_stale=False) == os.getpid()
+        )
+    except Exception as exc:
+        logger.debug("Could not verify supervised gateway process identity: %s", exc)
+        return False
+
+
 def _build_systemd_scope_argv(
     shell_argv: List[str],
     unit_suffix: str,
@@ -991,36 +1016,26 @@ class ProcessRegistry:
                 # Cgroup isolation for PTY mode (#70716, reviewer gap #1):
                 # Wrap the PTY command in a systemd scope so interactive
                 # executors get their own cgroup, same as pipe mode.
-                pty_use_systemd_scope = False
-                try:
-                    from gateway.restart import is_gateway_supervisor_process
-
-                    pty_under_supervisor = is_gateway_supervisor_process()
-                    pty_use_systemd_scope = (
-                        not _IS_WINDOWS
-                        and pty_under_supervisor
-                        and _systemd_run_user_scope_available()
-                    )
-                except Exception:
-                    pty_use_systemd_scope = False
+                pty_in_supervised_gateway = (
+                    not _IS_WINDOWS and _is_supervised_gateway_process()
+                )
+                pty_use_systemd_scope = (
+                    pty_in_supervised_gateway and _systemd_run_user_scope_available()
+                )
 
                 if pty_use_systemd_scope:
                     pty_argv = _build_systemd_scope_argv(
-                        pty_argv, unit_suffix=session.id,
+                        pty_argv,
+                        unit_suffix=session.id,
                     )
                     session.systemd_unit = f"hermes-worker-{session.id}.scope"
                     pty_scope_attempted = True
-                elif not _IS_WINDOWS:
-                    try:
-                        from gateway.restart import is_gateway_supervisor_process as _sup
-                        if _sup():
-                            logger.debug(
-                                "PTY background executor not isolated in a "
-                                "systemd scope (systemd-run --user unavailable); "
-                                "worker shares the gateway cgroup."
-                            )
-                    except Exception:
-                        pass
+                elif pty_in_supervised_gateway:
+                    logger.debug(
+                        "PTY background executor not isolated in a "
+                        "systemd scope (systemd-run --user unavailable); "
+                        "worker shares the gateway cgroup."
+                    )
 
                 pty_proc = _PtyProcessCls.spawn(
                     pty_argv,
@@ -1073,53 +1088,50 @@ class ProcessRegistry:
         bg_env["PYTHONUNBUFFERED"] = "1"
         _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
 
-        # Cgroup isolation (#70716): when running under a service manager
-        # (systemd gateway), wrap the worker in its own transient systemd
+        # Cgroup isolation (#70716): when running in the live, supervised
+        # systemd gateway, wrap the worker in its own transient systemd
         # scope so it gets a separate cgroup.  An OOM in the worker then
         # kills only the worker instead of taking down the whole gateway
-        # cgroup (and the messaging control plane with it).  We only do this
-        # for both pipe mode and the PTY path above.
+        # cgroup (and the messaging control plane with it). This applies to
+        # both pipe mode and the PTY path above.
         shell_argv = [user_shell, "-lic", f"set +m; {safe_command}"]
-        use_systemd_scope = False
-        under_supervisor = False
-        try:
-            from gateway.restart import is_gateway_supervisor_process
-
-            under_supervisor = is_gateway_supervisor_process()
-            use_systemd_scope = (
-                not _IS_WINDOWS
-                and under_supervisor
-                and _systemd_run_user_scope_available()
-            )
-        except Exception:
-            use_systemd_scope = False
+        in_supervised_gateway = not _IS_WINDOWS and _is_supervised_gateway_process()
+        use_systemd_scope = (
+            in_supervised_gateway and _systemd_run_user_scope_available()
+        )
 
         if use_systemd_scope:
             unit_suffix = (
-                f"{session.id}-pipe-fallback"
-                if pty_scope_attempted
-                else session.id
+                f"{session.id}-pipe-fallback" if pty_scope_attempted else session.id
             )
             spawn_argv = _build_systemd_scope_argv(
-                shell_argv, unit_suffix=unit_suffix,
+                shell_argv,
+                unit_suffix=unit_suffix,
             )
             session.systemd_unit = f"hermes-worker-{unit_suffix}.scope"
-            # systemd-run creates the new session/cgroup for us; do NOT also
-            # set start_new_session (harmless, but redundant and it can mask
-            # scope-creation failures in some systemd versions).
-            popen_start_new_session = False
+            # CRITICAL (#70716 regression): systemd-run --scope does NOT give
+            # the worker a new session — the invoked process keeps the
+            # parent's session and inherits its controlling terminal.  From an
+            # interactive TUI this drops the worker into the same session as
+            # the foreground process group: background spawns then stop the
+            # whole session (observed as 5 dead TUIs in state T / "Arrêté").
+            # start_new_session=True gives systemd-run (and the scoped worker
+            # below it) a private session.  Cgroup isolation is preserved:
+            # the scope is attached to the invoked process, not to the
+            # spawning session.
+            popen_start_new_session = True
         else:
             spawn_argv = shell_argv
             popen_start_new_session = True
-            if not _IS_WINDOWS and under_supervisor:
+            if in_supervised_gateway:
                 # Running under a supervisor but could not get a private
                 # cgroup — the worker shares the gateway cgroup, so an OOM
                 # in the worker can still kill the whole gateway (#70716).
                 logger.debug(
                     "Local background executor not isolated in a systemd scope "
-                    "(supervisor=%s, systemd-run --user available=%s); "
+                    "(in_supervised_gateway=%s, systemd-run --user available=%s); "
                     "worker shares the gateway cgroup.",
-                    under_supervisor,
+                    in_supervised_gateway,
                     _systemd_run_user_scope_available(),
                 )
 
@@ -1163,10 +1175,12 @@ class ProcessRegistry:
             # leak as untracked background processes.
             try:
                 if session.systemd_unit:
-                    # systemd-run --scope shares the gateway's process group
-                    # because start_new_session=False.  Never killpg here: that
-                    # can signal the gateway itself.  Stop the sibling cgroup,
-                    # then safely terminate the wrapper PID tree as fallback.
+                    # The worker runs in its own systemd scope and, since the
+                    # #70716 session-isolation fix, its own session.  Stop the
+                    # scope (kills every process in the worker cgroup), then
+                    # terminate the systemd-run wrapper PID as fallback.
+                    # Never killpg: scope teardown is the authoritative
+                    # cleanup for the worker cgroup.
                     _stop_systemd_unit(session.systemd_unit)
                     self._terminate_host_pid(proc.pid, session.host_start_time)
                 elif not _IS_WINDOWS:
@@ -1833,7 +1847,7 @@ class ProcessRegistry:
             result["note"] = "Process recovered after restart -- output history unavailable"
         return result
 
-    def read_log(self, session_id: str, offset: int = 0, limit: int = 200) -> dict:
+    def read_log(self, session_id: str, offset: int | None = None, limit: int = 200) -> dict:
         """Read the full output log with optional pagination by lines."""
         from tools.ansi_strip import strip_ansi
 
@@ -1847,11 +1861,16 @@ class ProcessRegistry:
         lines = full_output.splitlines()
         total_lines = len(lines)
 
-        # Default: last N lines
-        if offset == 0 and limit > 0:
+        # Default (offset=None): last N lines. An explicit offset=0 means
+        # "start from the first line" — previously it was conflated with
+        # the default and silently returned the TAIL instead of the head
+        # (same falsy-coercion class as the wait() timeout guard; salvaged
+        # from PR #60004, credit @isheng-eqi).
+        if offset is None and limit > 0:
             selected = lines[-limit:]
             observed_completion_output = bool(selected) or total_lines == 0
         else:
+            offset = offset or 0
             selected = lines[offset:offset + limit]
             stop = slice(offset, offset + limit).indices(total_lines)[1]
             observed_completion_output = (
@@ -1892,6 +1911,17 @@ class ProcessRegistry:
         max_timeout = default_timeout
         requested_timeout = timeout
         timeout_note = None
+
+        # Reject non-positive timeouts — the schema declares minimum=1, but
+        # not every caller enforces schemas before dispatch. timeout=0 is
+        # falsy, so without this guard it silently fell through
+        # (`0 or max_timeout`) to the DEFAULT wait instead of erroring.
+        # Salvaged from PR #60004 (credit @isheng-eqi).
+        if requested_timeout is not None and requested_timeout <= 0:
+            return {
+                "status": "error",
+                "error": f"timeout must be positive (got {requested_timeout})",
+            }
 
         if requested_timeout and requested_timeout > max_timeout:
             effective_timeout = max_timeout
@@ -2913,7 +2943,7 @@ def _handle_process(args, **kw):
             return json.dumps(_redact_process_result(process_registry.poll(session_id)), ensure_ascii=False)
         elif action == "log":
             return json.dumps(_redact_process_result(process_registry.read_log(
-                session_id, offset=args.get("offset", 0), limit=args.get("limit", 200))), ensure_ascii=False)
+                session_id, offset=args.get("offset"), limit=args.get("limit", 200))), ensure_ascii=False)
         elif action == "wait":
             return json.dumps(_redact_process_result(process_registry.wait(session_id, timeout=args.get("timeout"))), ensure_ascii=False)
         elif action == "kill":

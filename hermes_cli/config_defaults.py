@@ -20,6 +20,11 @@ DEFAULT_CONFIG = {
         "wal_autocheckpoint": None,
         "journal_size_limit": None,
     },
+    # Soft file-descriptor limit for long-running Hermes server processes.
+    # Clamped to the OS hard limit; 0/false/null disables the adjustment.
+    "runtime": {
+        "nofile_soft_limit": 4096,
+    },
     # Global active chat session cap across CLI, TUI/dashboard, and messaging.
     # None/0 = unbounded.
     "max_concurrent_sessions": None,
@@ -403,6 +408,17 @@ DEFAULT_CONFIG = {
     },
 
     "browser": {
+        # Browser tool implementation.
+        # ""            — DEFAULT: Browser Use mode when the browser-use CLI
+        #                 (or uvx) is available; otherwise the built-in
+        #                 browser tools. Camofox setups always keep the
+        #                 built-in tools (no CDP surface).
+        # "browser-use" — force Browser Use mode: one browser_exec tool
+        #                 driving the Browser Use CLI 3.0 over any CDP
+        #                 backend (local Chrome, cloud browsers)
+        # "off"         — force the built-in browser tools
+        #                 (browser_navigate, browser_click, …)
+        "backend": "",
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
@@ -2330,6 +2346,10 @@ DEFAULT_CONFIG = {
         # only if you run the dispatcher as a separate systemd unit or
         # don't want the gateway to spawn workers.
         "dispatch_in_gateway": True,
+        # Automatically claim tasks in the first-class review column and spawn
+        # the assigned profile with the bundled sdlc-review skill. Disable for
+        # boards where every review is performed manually from the dashboard.
+        "review_dispatch": True,
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
@@ -2526,6 +2546,10 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # Optional named-profile allowlist for multiplex mode. None preserves
+        # the historical serve-all behavior; [] serves only the default.
+        "multiplex_profile_allowlist": None,
+
         # Durable delivery-obligation ledger: final agent responses are
         # recorded in state.db around the platform send, and a gateway that
         # died between finalize and platform ACK redelivers the stored
@@ -2579,14 +2603,24 @@ DEFAULT_CONFIG = {
         # keeps triggering another kill (e.g. the agent runs a raw
         # `launchctl kickstart ai.hermes.gateway` that defenses 1-2 don't
         # cover), the result is a tight SIGTERM-respawn loop. This breaker
-        # counts restart-interrupted boots in a rolling window and, once
-        # `max_restarts` boots happen within `window_seconds`, SKIPS
-        # auto-resume for that boot — the gateway still starts and serves
-        # real inbound messages, it just stops replaying the session that
-        # keeps killing it. Set `max_restarts` to 0 to disable the breaker.
+        # chains restart-interrupted boots together and, once `max_restarts`
+        # of them chain up, SKIPS auto-resume for that boot — the gateway
+        # still starts and serves real inbound messages, it just stops
+        # replaying the session that keeps killing it. Set `max_restarts` to
+        # 0 to disable the breaker.
+        # Two boots belong to the same chain when they are no more than
+        # `max_gap_seconds` apart (floored by `window_seconds`). Chaining on
+        # the GAP rather than on a fixed window is what makes the breaker see
+        # SLOW crash cycles: a loop whose period exceeds the window used to
+        # prune its own history on every boot, so the counter never left 1 and
+        # the breaker never tripped — e.g. the ~150s wedged-event-loop cycle in
+        # #81642 (stall -> ~90s liveness-watchdog hard-exit -> respawn ->
+        # auto-resume replays the same session), which also makes
+        # `hermes update` hang because it can never drain the gateway.
         "restart_loop_guard": {
             "max_restarts": 3,
             "window_seconds": 60,
+            "max_gap_seconds": 300,
         },
 
         # Portable respawn-storm circuit breaker (complements
@@ -3214,7 +3248,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 33,
+    "_config_version": 34,
 }
 
 # Optional environment variables that enhance functionality

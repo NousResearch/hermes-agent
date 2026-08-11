@@ -23,9 +23,9 @@ import { stableRecord } from '@/lib/stable-array'
 
 import { $backgroundRunningSessionIds } from './composer-status'
 import { $sessions, $unreadFinishedSessionIds, lineageAliases } from './session'
-import { $attentionSessionIds, $stalledSessionIds, $workingSessionIds } from './session-states'
+import { $attentionSessionIds, $draftSessionIds, $stalledSessionIds, $workingSessionIds } from './session-states'
 
-export type SessionDotState = 'background' | 'idle' | 'needs-input' | 'stalled' | 'unread' | 'working'
+export type SessionDotState = 'background' | 'draft' | 'idle' | 'needs-input' | 'stalled' | 'unread' | 'working'
 
 /** The sidebar row's arc. A quiet turn is still authoritatively running, so
  *  `stalled` keeps it; a blocking prompt drops it, because the amber dot is the
@@ -37,6 +37,24 @@ export const showsRunningArc = (state: SessionDotState): boolean => state === 's
  *  answer has not ended. */
 export const hasLiveTurn = (state: SessionDotState): boolean => showsRunningArc(state) || state === 'needs-input'
 
+/** The buckets the sidebar's status filter and ordering work in. `stalled` and
+ *  `background` fold into the state a user would name them. */
+export type SessionStatusBucket = 'draft' | 'idle' | 'needs-input' | 'unread' | 'working'
+
+export const sessionStatusBucket = (state: SessionDotState = 'idle'): SessionStatusBucket =>
+  state === 'stalled' || state === 'background' ? 'working' : state
+
+const STATUS_RANK: Record<SessionStatusBucket, number> = {
+  'needs-input': 0,
+  working: 1,
+  unread: 2,
+  draft: 3,
+  idle: 4
+}
+
+/** Loudest first — what ordering by status sorts on. */
+export const sessionStatusRank = (state?: SessionDotState): number => STATUS_RANK[sessionStatusBucket(state)]
+
 let dotStates: Readonly<Record<string, SessionDotState>> = {}
 
 export const $sessionDotStateById = computed(
@@ -46,9 +64,10 @@ export const $sessionDotStateById = computed(
     $stalledSessionIds,
     $backgroundRunningSessionIds,
     $unreadFinishedSessionIds,
+    $draftSessionIds,
     $sessions
   ],
-  (attention, working, stalled, background, unread, sessions) => {
+  (attention, working, stalled, background, unread, draft, sessions) => {
     const next: Record<string, SessionDotState> = {}
 
     const claim = (ids: readonly string[], state: SessionDotState) => {
@@ -62,6 +81,10 @@ export const $sessionDotStateById = computed(
     // Weakest claim first — each pass overwrites the one above it, so the order
     // below IS the priority order. A blocking prompt outranks everything: it is
     // the only state that needs the user.
+    //
+    // Draft is weakest of all: it says only "no turn has happened here yet", so
+    // the first thing that does happen speaks over it.
+    claim(draft, 'draft')
     claim(unread, 'unread')
     claim(background, 'background')
     claim(working, 'working')

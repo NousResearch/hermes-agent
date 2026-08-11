@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/context-menu'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { Tip, TipKeybindLabel, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { ContribRender } from '@/contrib/react/boundary'
 import { useI18n } from '@/i18n'
 import { useKeybindHint } from '@/lib/keybinds/use-keybind-hint'
 import { cn } from '@/lib/utils'
@@ -209,7 +210,7 @@ const StatusbarItemView = memo(function StatusbarItemView({
 
   // Render escape hatch: the contribution owns its own chrome/state/tooltip.
   if (item.render) {
-    return <>{item.render()}</>
+    return <ContribRender render={item.render} />
   }
 
   const tooltipLabel = item.actionId ? <TipKeybindLabel actionId={item.actionId} text={item.title} /> : item.title

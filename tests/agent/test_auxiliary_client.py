@@ -4488,3 +4488,111 @@ class TestAutoRoutedProviderProfileHooks:
         assert relay.call_args_list[1].args[1]["extra_headers"] == {
             "Authorization": "Bearer token-2",
         }
+
+
+class TestFastModelTier:
+    """The titling fast tier: rot-proof resolution, scoped to titling only."""
+
+    def test_catalog_match_prefers_rolling_alias_over_pinned_id(self):
+        """A "-latest" alias wins: it is the only id that cannot go stale."""
+        from agent import auxiliary_client as ac
+
+        catalog = {
+            "z-ai/glm-5.2": {},
+            "openai/gpt-5.4-mini": {},
+            "~openai/gpt-mini-latest": {},
+            "stepfun/step-3.7-flash:free": {},
+        }
+        with patch("hermes_cli.models.fetch_models_with_pricing", return_value=catalog):
+            assert ac._fast_model_from_catalog("nous") == "~openai/gpt-mini-latest"
+
+    def test_catalog_match_skips_reasoning_batch_and_embedding_lookalikes(self):
+        """Substring matching must not pick a thinker, a queue, or an encoder."""
+        from agent import auxiliary_client as ac
+
+        catalog = {
+            "openai/o3-mini": {},
+            "openai/gpt-5.4-mini:batch": {},
+            "sentence-transformers/all-minilm-l6-v2": {},
+            "google/gemini-3.6-flash": {},
+        }
+        with patch("hermes_cli.models.fetch_models_with_pricing", return_value=catalog):
+            assert ac._fast_model_from_catalog("nous") == "google/gemini-3.6-flash"
+
+    def test_catalog_match_skips_the_non_chat_siblings_of_a_chat_model(self):
+        """A provider names its speech and image endpoints after the chat model
+        they're paired with, so they satisfy the family rungs and can't answer."""
+        from agent import auxiliary_client as ac
+
+        catalog = {
+            "openai/gpt-4o-mini-tts": {},
+            "openai/gpt-4o-mini-transcribe": {},
+            "openai/gpt-4o-mini-search-preview": {},
+            "openai/gpt-4o-mini": {},
+        }
+        with patch("hermes_cli.models.fetch_models_with_pricing", return_value=catalog):
+            assert ac._fast_model_from_catalog("nous") == "openai/gpt-4o-mini"
+
+    def test_catalog_match_takes_the_newest_of_a_family(self):
+        """The bare family rungs must land on the current generation.
+
+        A provider serves every generation of its small tier it hasn't retired,
+        and compared as strings the oldest sorts first — so the rung meant to
+        keep the titler current was pinning it to the most obsolete member.
+        """
+        from agent import auxiliary_client as ac
+
+        catalog = {
+            "openai/gpt-3.5-mini": {},
+            "openai/gpt-9-mini": {},
+            "openai/gpt-10-mini": {},
+        }
+        with patch("hermes_cli.models.fetch_models_with_pricing", return_value=catalog):
+            assert ac._fast_model_from_catalog("nous") == "openai/gpt-10-mini"
+
+    def test_catalog_fetch_is_authenticated(self):
+        """Most /v1/models endpoints need a key; anonymously they 401.
+
+        A 401 reads as "this provider serves no small model", so the titler
+        would fall back to the curated default and never notice.
+        """
+        from agent import auxiliary_client as ac
+
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={"api_key": "sk-test", "base_url": "https://api.example.com/v1"},
+        ), patch(
+            "hermes_cli.models.fetch_models_with_pricing", return_value={}
+        ) as fetch:
+            ac._fast_model_from_catalog("openai")
+
+        assert fetch.call_args.kwargs["api_key"] == "sk-test"
+        assert fetch.call_args.kwargs["base_url"] == "https://api.example.com"
+
+    def test_falls_back_to_curated_default_when_catalog_unavailable(self):
+        """An offline catalog degrades to the provider's pinned default."""
+        from agent import auxiliary_client as ac
+
+        with patch.object(ac, "_fast_model_from_catalog", return_value=""):
+            assert (
+                ac._get_aux_model_for_provider("anthropic", prefer_fast=True)
+                == ac._get_aux_model_for_provider("anthropic")
+            )
+
+    def test_fast_tier_is_opt_in(self):
+        """Without prefer_fast the resolver must not touch the live catalog."""
+        from agent import auxiliary_client as ac
+
+        with patch.object(ac, "_fast_model_from_catalog") as spy:
+            ac._get_aux_model_for_provider("nous")
+        spy.assert_not_called()
+
+    def test_only_titling_is_in_the_fast_tier(self):
+        """Compression/vision/search keep 'auto means my chat model'."""
+        from agent.auxiliary_client import _FAST_MODEL_TASKS
+
+        assert "title_generation" in _FAST_MODEL_TASKS
+        overlap = {"compression", "vision", "web_extract"}.intersection(
+            _FAST_MODEL_TASKS
+        )
+        assert not overlap

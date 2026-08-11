@@ -750,3 +750,29 @@ class TestPromptCacheKeyCapability:
             supports_prompt_cache_key=True,
         )
         assert kw1["prompt_cache_key"] != kw2["prompt_cache_key"]
+
+    def test_stale_profile_without_supports_prompt_cache_key_does_not_crash(self, transport):
+        """A ProviderProfile from a stale sys.modules cache (pre-#f4fb23f3d)
+        won't have the ``supports_prompt_cache_key`` field. Accessing it via
+        ``profile.supports_prompt_cache_key`` raises AttributeError and crashes
+        every API call. Use getattr with a False default so it degrades to
+        "no prompt cache key" instead of crashing.
+
+        Regression: 'NousProfile' object has no attribute
+        'supports_prompt_cache_key' (Aug 2026, after partial update).
+        """
+        from providers.base import ProviderProfile
+
+        # Simulate a stale class that predates supports_prompt_cache_key
+        # by creating a profile and deleting the attribute.
+        profile = ProviderProfile(name="stale-provider")
+        del profile.supports_prompt_cache_key
+
+        # Must not raise AttributeError — should fall back to False.
+        kwargs = transport.build_kwargs(
+            model="stale-model",
+            messages=self._messages(),
+            tools=self._tools(),
+            provider_profile=profile,
+        )
+        assert "prompt_cache_key" not in kwargs

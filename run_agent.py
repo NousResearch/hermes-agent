@@ -2768,9 +2768,15 @@ class AIAgent:
         try:
             if hasattr(value, "model_dump"):
                 try:
-                    dumped = value.model_dump(mode="json")
+                    # warnings=False: pydantic's serializer UserWarnings on
+                    # generic-union SDK models (Anthropic ParsedMessage etc.)
+                    # would otherwise leak to the terminal mid-response.
+                    dumped = value.model_dump(mode="json", warnings=False)
                 except TypeError:
-                    dumped = value.model_dump()
+                    try:
+                        dumped = value.model_dump(mode="json")
+                    except TypeError:
+                        dumped = value.model_dump()
                 return cls._hook_jsonable(
                     dumped,
                     depth=depth + 1,
@@ -4620,6 +4626,10 @@ class AIAgent:
             return False
         if msg.get("tool_calls"):
             return False
+        # Prefill stubs are thinking-only by construction; check before content
+        # inspection since repair_empty_non_final_messages may have healed content.
+        if msg.get("_thinking_prefill"):
+            return True
         # Does it have any actual output?
         content = msg.get("content")
         if isinstance(content, str):
@@ -4643,7 +4653,6 @@ class AIAgent:
                 return False
         elif content is not None and content != "":
             return False
-        # Content is empty-ish. Is there reasoning to make it thinking-only?
         reasoning = msg.get("reasoning_content") or msg.get("reasoning")
         if isinstance(reasoning, str) and reasoning.strip():
             return True
@@ -5611,6 +5620,17 @@ class AIAgent:
             adopt = current_base == default_base and not (
                 base_url == current_base and api_key == self.api_key
             )
+            # #79156: if the session already holds a pool-rotated key, do
+            # not treat that divergence as a boot-time env adoption. First
+            # look would otherwise stomp the rotated key with the env value
+            # while leaving ``_credential_pool_entry_id`` on the fallback.
+            if (
+                adopt
+                and api_key != self.api_key
+                and getattr(self, "_credential_pool", None) is not None
+                and getattr(self, "_credential_pool_entry_id", None)
+            ):
+                adopt = False
         else:
             # Env unchanged → no-op; any drift from self.* is rotation/
             # failover or config precedence — leave it alone. An edit is
@@ -5653,6 +5673,19 @@ class AIAgent:
             self._client_kwargs.clear()
             self._client_kwargs.update(prior_client_kwargs)
             return False
+
+        # Rebind the pool entry id to the key we just adopted. Leaving a
+        # stale id after a key rewrite makes mark_exhausted_and_rotate
+        # quarantine the wrong credential on the next 429 (#79156).
+        try:
+            from agent.agent_runtime_helpers import sync_credential_pool_entry_id
+
+            sync_credential_pool_entry_id(self)
+        except Exception:
+            logger.debug(
+                "sync_credential_pool_entry_id after env refresh failed",
+                exc_info=True,
+            )
 
         self._env_creds_seen = resolved
         logger.info(
@@ -5903,7 +5936,8 @@ class AIAgent:
 
             self._client_kwargs["default_headers"] = copilot_default_headers()
         elif base_url_host_matches(base_url, "api.kimi.com"):
-            self._client_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
+            from agent.auxiliary_client import _AI_GATEWAY_HEADERS
+            self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
         elif base_url_host_matches(base_url, "portal.qwen.ai"):
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
         elif base_url_host_matches(base_url, "chatgpt.com"):

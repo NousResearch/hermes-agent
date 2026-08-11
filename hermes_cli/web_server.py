@@ -239,6 +239,19 @@ async def _lifespan(app: "FastAPI"):
     cron_stop: "threading.Event | None" = None
     cron_thread: "threading.Thread | None" = None
     if os.getenv("HERMES_DESKTOP") == "1":
+        # Before forking a fresh gateway, reap any orphan left by a previous
+        # serve session. Graceful shutdown reaps the managed child, but an
+        # abnormal exit (crash, SIGKILL, power loss, forced update) reparents
+        # the old gateway to launchd (PPID=1). It keeps holding the QQ
+        # WebSocket, and a newly forked gateway then races the same credential,
+        # splitting messages across parallel session trees (#77276).
+        try:
+            from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
+
+            _reap_unsupervised_gateway_orphans()
+        except Exception:
+            _log.exception("Desktop startup: orphan gateway reap failed")
+
         cron_stop = threading.Event()
         cron_thread = threading.Thread(
             target=_start_desktop_cron_ticker,
@@ -268,6 +281,8 @@ async def _lifespan(app: "FastAPI"):
         await PTY_REGISTRY.close_all()
         if cron_stop is not None:
             cron_stop.set()
+        if os.getenv("HERMES_DESKTOP") == "1":
+            _terminate_desktop_managed_gateway()
 
 
 def _get_event_state(app: "FastAPI"):
@@ -1052,6 +1067,10 @@ _CATEGORY_MERGE: Dict[str, str] = {
     # `doctor.live_probe_timeout` is the only schema-surfaced doctor field —
     # fold it into general rather than spawning a one-field orphan category.
     "doctor": "general",
+    # `runtime.nofile_soft_limit` (#78873) is the only schema-surfaced runtime
+    # field — fold it into the agent tab rather than spawning a one-field
+    # orphan category.
+    "runtime": "agent",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
@@ -2365,11 +2384,12 @@ async def list_managed_files(request: Request, path: Optional[str] = None):
         raise HTTPException(status_code=400, detail="Path is not a directory")
 
     try:
-        entries = [
-            _managed_file_entry(policy, child)
-            for child in target.iterdir()
-            if not _is_sensitive_path(child)
-        ]
+        with os.scandir(target) as scan:
+            entries = [
+                _managed_file_entry(policy, Path(entry.path))
+                for entry in scan
+                if not _is_sensitive_path(Path(entry.path))
+            ]
     except PermissionError:
         raise HTTPException(status_code=403, detail="Directory is not readable")
     except OSError as exc:
@@ -3793,6 +3813,19 @@ _ACTION_IDS: Dict[str, str] = {}
 _ACTION_RESULTS: Dict[str, Dict[str, Any]] = {}
 
 
+def _terminate_desktop_managed_gateway() -> None:
+    """Stop a live gateway restart child when its Desktop backend shuts down."""
+    proc = _ACTION_PROCS.get("gateway-restart")
+    if proc is None:
+        return
+    try:
+        if proc.poll() is None:
+            proc.terminate()
+    except OSError:
+        # The child may have exited between poll() and terminate().
+        pass
+
+
 def _record_completed_action(name: str, message: str, exit_code: int = 1) -> None:
     """Record a non-spawned action result and write it to the action log."""
     log_file_name = _ACTION_LOG_FILES[name]
@@ -4001,8 +4034,21 @@ def _spawn_gateway_restart(profile: Optional[str] = None) -> Tuple[subprocess.Po
     concurrent ``hermes gateway restart`` children race each other on the
     manual kill-and-start path, so reuse the live one instead.
 
+    Before spawning, sweep for orphaned gateway processes whose parent has
+    exited (e.g. desktop-app restarts leaving a reparented gateway child
+    under launchd/PPID=1).  Without this the orphan keeps its platform
+    connection alive and the fresh gateway stacks a duplicate (#77276).
+
     Returns ``(proc, reused)``.
     """
+    # Reap orphaned gateways before spawning a new one (#77276).
+    try:
+        from hermes_cli.gateway import _reap_unsupervised_gateway_orphans
+
+        _reap_unsupervised_gateway_orphans()
+    except Exception:
+        pass  # best-effort — don't block the restart on a reap failure
+
     subcommand = _gateway_subcommand(profile, "restart")
     existing = _ACTION_PROCS.get("gateway-restart")
     if existing is not None and existing.poll() is None:
@@ -7455,23 +7501,33 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
 
 
 @app.get("/api/providers/custom-endpoints")
-def list_custom_endpoints():
-    """Return configured OpenAI-compatible custom endpoints for Desktop."""
+def list_custom_endpoints(profile: Optional[str] = None):
+    """Return configured OpenAI-compatible custom endpoints for Desktop.
+
+    Scoped to the requested profile's config.yaml (issue: custom providers
+    only landing in the default profile): the desktop settings UI targets the
+    active profile, so read/write must resolve that profile's home rather than
+    the process-level HERMES_HOME. Mirrors ``/api/config``'s profile scoping.
+    """
     try:
-        return _custom_endpoint_response(load_config())
+        with _config_profile_scope(profile):
+            return _custom_endpoint_response(load_config())
+    except HTTPException:
+        raise
     except Exception:
         _log.exception("GET /api/providers/custom-endpoints failed")
         raise HTTPException(status_code=500, detail="Failed to list custom endpoints")
 
 
 @app.post("/api/providers/custom-endpoints")
-def upsert_custom_endpoint(body: CustomEndpointUpdate):
+def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = None):
     """Create or update a v12+ ``providers`` custom endpoint entry."""
     try:
-        cfg = load_config()
-        endpoint_id, _entry = _write_custom_endpoint(cfg, body)
-        save_config(cfg)
-        response = _custom_endpoint_response(cfg)
+        with _config_profile_scope(profile):
+            cfg = load_config()
+            endpoint_id, _entry = _write_custom_endpoint(cfg, body)
+            save_config(cfg)
+            response = _custom_endpoint_response(cfg)
         response["ok"] = True
         response["id"] = endpoint_id
         return response
@@ -7483,30 +7539,31 @@ def upsert_custom_endpoint(body: CustomEndpointUpdate):
 
 
 @app.post("/api/providers/custom-endpoints/{endpoint_id}/activate")
-def activate_custom_endpoint(endpoint_id: str):
+def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     """Set a configured custom endpoint as the default model provider."""
     try:
-        cfg = load_config()
-        provider_key = _custom_endpoint_id(endpoint_id)
-        providers = cfg.get("providers")
-        entry = providers.get(provider_key) if isinstance(providers, dict) else None
-        if not isinstance(entry, dict):
-            raise HTTPException(status_code=404, detail="custom endpoint not found")
+        with _config_profile_scope(profile):
+            cfg = load_config()
+            provider_key = _custom_endpoint_id(endpoint_id)
+            providers = cfg.get("providers")
+            entry = providers.get(provider_key) if isinstance(providers, dict) else None
+            if not isinstance(entry, dict):
+                raise HTTPException(status_code=404, detail="custom endpoint not found")
 
-        models = _models_from_custom_endpoint_entry(entry)
-        model = str(entry.get("model") or (models[0] if models else "")).strip()
-        base_url = str(entry.get("base_url") or "").strip()
-        if not model or not base_url:
-            raise HTTPException(status_code=400, detail="custom endpoint is incomplete")
+            models = _models_from_custom_endpoint_entry(entry)
+            model = str(entry.get("model") or (models[0] if models else "")).strip()
+            base_url = str(entry.get("base_url") or "").strip()
+            if not model or not base_url:
+                raise HTTPException(status_code=400, detail="custom endpoint is incomplete")
 
-        model_cfg = _apply_main_model_assignment(cfg.get("model", {}), provider_key, model, base_url)
-        if entry.get("key_env"):
-            model_cfg["key_env"] = entry["key_env"]
-            model_cfg.pop("api_key", None)
-        elif entry.get("api_key"):
-            model_cfg["api_key"] = entry["api_key"]
-        cfg["model"] = model_cfg
-        save_config(cfg)
+            model_cfg = _apply_main_model_assignment(cfg.get("model", {}), provider_key, model, base_url)
+            if entry.get("key_env"):
+                model_cfg["key_env"] = entry["key_env"]
+                model_cfg.pop("api_key", None)
+            elif entry.get("api_key"):
+                model_cfg["api_key"] = entry["api_key"]
+            cfg["model"] = model_cfg
+            save_config(cfg)
         return {"ok": True, "provider": provider_key, "model": model}
     except HTTPException:
         raise
@@ -7516,20 +7573,21 @@ def activate_custom_endpoint(endpoint_id: str):
 
 
 @app.delete("/api/providers/custom-endpoints/{endpoint_id}")
-def delete_custom_endpoint(endpoint_id: str):
+def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     """Remove a configured custom endpoint from ``providers``."""
     try:
-        cfg = load_config()
-        provider_key = _custom_endpoint_id(endpoint_id)
-        providers = cfg.get("providers")
-        if not isinstance(providers, dict) or provider_key not in providers:
-            raise HTTPException(status_code=404, detail="custom endpoint not found")
-        providers.pop(provider_key, None)
-        cfg["providers"] = providers
-        _detach_main_model_from_provider(cfg, provider_key)
-        remove_env_value(custom_endpoint_key_env(provider_key))
-        save_config(cfg)
-        response = _custom_endpoint_response(cfg)
+        with _config_profile_scope(profile):
+            cfg = load_config()
+            provider_key = _custom_endpoint_id(endpoint_id)
+            providers = cfg.get("providers")
+            if not isinstance(providers, dict) or provider_key not in providers:
+                raise HTTPException(status_code=404, detail="custom endpoint not found")
+            providers.pop(provider_key, None)
+            cfg["providers"] = providers
+            _detach_main_model_from_provider(cfg, provider_key)
+            remove_env_value(custom_endpoint_key_env(provider_key))
+            save_config(cfg)
+            response = _custom_endpoint_response(cfg)
         response["ok"] = True
         return response
     except HTTPException:
@@ -13334,7 +13392,9 @@ async def list_checkpoints():
     sessions = []
     total_bytes = 0
     if cp_dir.is_dir():
-        for child in sorted(cp_dir.iterdir()):
+        with os.scandir(cp_dir) as scan:
+            children = sorted((Path(e.path) for e in scan), key=lambda p: p.name)
+        for child in children:
             if not child.is_dir():
                 continue
             size = 0
@@ -13552,21 +13612,28 @@ def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
 
     profiles_root = profiles_mod._get_profiles_root()
     if profiles_root.is_dir():
-        for entry in sorted(profiles_root.iterdir()):
+        # Use os.scandir (context-managed) instead of Path.iterdir to avoid
+        # leaking directory fds when an exception interrupts iteration — the
+        # sidebar polls every few seconds so an fd leak exhausts RLIMIT_NOFILE
+        # within days (#81547).
+        with os.scandir(profiles_root) as scan:
+            entries = sorted(scan, key=lambda e: e.name)
+        for entry in entries:
+            entry_path = Path(entry.path)
             if not entry.is_dir() or not profiles_mod._PROFILE_ID_RE.match(entry.name):
                 continue
-            model, provider = _safe(lambda entry=entry: profiles_mod._read_config_model(entry), (None, None))
+            model, provider = _safe(lambda entry=entry_path: profiles_mod._read_config_model(entry), (None, None))
             profiles.append({
                 "name": entry.name,
-                "path": str(entry),
+                "path": str(entry_path),
                 "is_default": False,
                 "model": model,
                 "provider": provider,
-                "has_env": (entry / ".env").exists(),
-                "skill_count": _safe(lambda entry=entry: profiles_mod._count_skills(entry), 0),
-                "gateway_running": _safe(lambda entry=entry: profiles_mod._check_gateway_running(entry), False),
-                "description": _safe(lambda entry=entry: profiles_mod.read_profile_meta(entry).get("description", ""), ""),
-                "description_auto": _safe(lambda entry=entry: profiles_mod.read_profile_meta(entry).get("description_auto", False), False),
+                "has_env": _safe(lambda entry=entry_path: (entry / ".env").exists(), False),
+                "skill_count": _safe(lambda entry=entry_path: profiles_mod._count_skills(entry), 0),
+                "gateway_running": _safe(lambda entry=entry_path: profiles_mod._check_gateway_running(entry), False),
+                "description": _safe(lambda entry=entry_path: profiles_mod.read_profile_meta(entry).get("description", ""), ""),
+                "description_auto": _safe(lambda entry=entry_path: profiles_mod.read_profile_meta(entry).get("description_auto", False), False),
                 "distribution_name": None,
                 "distribution_version": None,
                 "distribution_source": None,
@@ -16836,7 +16903,9 @@ def _discover_dashboard_plugins() -> list:
     for plugins_root, source in search_dirs:
         if not plugins_root.is_dir():
             continue
-        for child in sorted(plugins_root.iterdir()):
+        with os.scandir(plugins_root) as scan:
+            children = sorted((Path(e.path) for e in scan), key=lambda p: p.name)
+        for child in children:
             if not child.is_dir():
                 continue
             manifest_file = child / "dashboard" / "manifest.json"
@@ -17639,6 +17708,65 @@ def _maybe_open_browser(
     threading.Thread(target=_open, daemon=True).start()
 
 
+def _is_serve_orphaned(desktop_pid: int, pid_exists=None) -> bool:
+    """True when the Desktop process that owns this serve backend is gone.
+
+    ``HERMES_PARENT_PID`` is the Electron Desktop PID, not necessarily this
+    Python process's immediate PPID. On Windows the venv ``hermes.exe`` launcher
+    introduces one or more shim processes, so comparing ``os.getppid()`` to the
+    Electron PID incorrectly treats a healthy backend as orphaned and exits 0.
+    Probe the recorded Desktop PID directly instead.
+
+    Any liveness-probe failure is fail-safe: keep serving rather than killing a
+    backend whose owner could not be conclusively shown to be dead.
+    """
+    try:
+        if pid_exists is None:
+            from gateway.status import _pid_exists
+
+            pid_exists = _pid_exists
+        return not bool(pid_exists(int(desktop_pid)))
+    except Exception:
+        return False
+
+
+def _start_parent_death_watchdog() -> None:
+    """Exit when the desktop parent that spawned this backend dies.
+
+    The desktop passes its own PID via HERMES_PARENT_PID. When that process
+    vanishes (crash, SIGKILL, update handoff exiting before it reaps us) this
+    orphaned backend would otherwise keep serving forever and leak its MCP
+    child subtree. os._exit propagates to the MCP watchdogs parented here.
+
+    No-op for standalone `hermes serve` (env unset). Poll interval tunable via
+    HERMES_SERVE_WATCHDOG_POLL_S.
+    """
+    raw = os.environ.get("HERMES_PARENT_PID")
+    if not raw:
+        return
+    try:
+        desktop_pid = int(raw)
+    except (TypeError, ValueError):
+        return
+    try:
+        poll = max(0.5, float(os.environ.get("HERMES_SERVE_WATCHDOG_POLL_S", "2.0")))
+    except (TypeError, ValueError):
+        poll = 2.0
+
+    def _loop() -> None:
+        while not _is_serve_orphaned(desktop_pid):
+            time.sleep(poll)
+        os._exit(0)
+
+    threading.Thread(target=_loop, daemon=True, name="serve-parent-watchdog").start()
+
+
+def _demo() -> None:
+    assert _is_serve_orphaned(999999999, pid_exists=lambda _pid: False) is True
+    assert _is_serve_orphaned(42, pid_exists=lambda _pid: True) is False
+    print("web_server parent-death watchdog self-check: OK")
+
+
 def start_server(
     host: str = "127.0.0.1",
     port: int = 9119,
@@ -17665,6 +17793,14 @@ def start_server(
     """
     _apply_ssh_session_token(ssh_session_token or "")
     _apply_ssh_owner_nonce(ssh_owner_nonce)
+
+    # Raise RLIMIT_NOFILE for dashboard-mode starts that don't route through
+    # the `serve` path in main.py (which applies the same floor). Canonical
+    # policy lives in resource_limits; #81547's motivating leak (iterdir fds)
+    # is fixed above, this covers legitimate high fd demand.
+    from hermes_cli.resource_limits import apply_nofile_soft_limit
+
+    apply_nofile_soft_limit()
 
     import uvicorn
 
@@ -17843,6 +17979,29 @@ def start_server(
             await server.startup()
             if server.should_exit:
                 return
+
+            # Parent-death watchdog. The desktop spawns us and is supposed to
+            # SIGTERM us on quit, but a crash / SIGKILL / update handoff that
+            # exits before reaping leaves us orphaned (ppid→1) yet still
+            # serving — leaking the whole backend + its MCP child subtree
+            # (each MCP watchdog is parented to THIS process, so os._exit here
+            # cascades their teardown). Same pattern as
+            # Clear corpses left by a previous unclean Desktop exit before we
+            # stack another backend + MCP tree (EMFILE / missing tabs).
+            # Parent-death watchdog only protects *this* process going forward.
+            if os.getenv("HERMES_DESKTOP") == "1":
+                try:
+                    from hermes_cli.dashboard_procs import (
+                        _reap_orphaned_desktop_local_serves,
+                    )
+
+                    _reap_orphaned_desktop_local_serves()
+                except Exception as exc:
+                    _log.debug("orphan desktop-local serve reap skipped: %s", exc)
+
+            # tui_gateway/slash_worker.py::_start_parent_death_watchdog. No-op
+            # for standalone `hermes serve` (no HERMES_PARENT_PID env).
+            _start_parent_death_watchdog()
 
             actual_port = _read_bound_port(server, fallback=port)
             app.state.bound_port = actual_port

@@ -33,8 +33,8 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { transcribeAudio } from '@/hermes'
 import { useI18n } from '@/i18n'
 import type { ChatMessage } from '@/lib/chat-messages'
-import { sessionTitle } from '@/lib/chat-runtime'
-import { createComposerAttachmentScope } from '@/store/composer'
+import { NEW_SESSION_TITLE, sessionTitle } from '@/lib/chat-runtime'
+import { createComposerAttachmentScope, draftTitleFor } from '@/store/composer'
 import { $pinnedSessionIds, pinSession, unpinSession } from '@/store/layout'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $projectTree } from '@/store/projects'
@@ -61,6 +61,7 @@ import type { SessionDragPayload } from './composer/inline-refs'
 import { type ComposerScope, ComposerScopeProvider } from './composer/scope'
 import { useComposerActions } from './hooks/use-composer-actions'
 import { paneMirror } from './pane-mirror'
+import { SessionDraftTitle } from './session-draft-title'
 import { startSessionDrag } from './session-drag'
 import { SessionStatusDot } from './session-status-dot'
 import { useSessionTileActions } from './session-tile-actions'
@@ -374,19 +375,24 @@ export function tileStoredRow(storedSessionId: string): SessionInfo | undefined 
   )
 }
 
+/** The tab's REGISTERED name. Deliberately the bare placeholder for a draft
+ *  rather than its live composer title (`tabTitle` renders that): re-registering
+ *  per keystroke would re-render the strip, and holding the draft's text here
+ *  would let the registered name already match the row that lands on send —
+ *  skipping the re-register that hands the tab back to this string. */
 function tileTitle(storedSessionId: string): string {
   const stored = tileStoredRow(storedSessionId)
 
-  // A tab-strip "+" tab is unlisted until its first turn persists, so it isn't
-  // in $sessions yet — label it "New session" rather than a bare "Session".
-  return stored ? sessionTitle(stored) : 'New session'
+  return stored ? sessionTitle(stored) : NEW_SESSION_TITLE
 }
 
-/** The `@session` link payload for a tile tab drag — id + owning profile + title. */
+/** The `@session` link payload for a tile tab drag — id + owning profile + title.
+ *  Resolved at drag time, so an unsent tab drags under its draft name. */
 function tileDragPayload(storedSessionId: string): SessionDragPayload {
   const stored = tileStoredRow(storedSessionId)
+  const title = stored ? sessionTitle(stored) : draftTitleFor(storedSessionId) || NEW_SESSION_TITLE
 
-  return { id: storedSessionId, profile: stored?.profile ?? '', title: tileTitle(storedSessionId) }
+  return { id: storedSessionId, profile: stored?.profile ?? '', title }
 }
 
 // ---------------------------------------------------------------------------
@@ -588,6 +594,9 @@ export const watchSessionTiles = paneMirror<SessionTile>({
   tabLead: storedSessionId => (
     <SessionStatusDot session={tileStoredRow(storedSessionId)} storedSessionId={storedSessionId} />
   ),
+  // Until the first turn lists a row there is no title to register, so the tab
+  // takes its name from the composer instead — live, without re-registering.
+  tabTitle: storedSessionId => (tileStoredRow(storedSessionId) ? null : <SessionDraftTitle scope={storedSessionId} />),
   render: storedSessionId => <SessionTilePane storedSessionId={storedSessionId} />,
   tabWrap: (storedSessionId, tab) => (
     <SessionTabMenu

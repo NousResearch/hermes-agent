@@ -342,6 +342,11 @@ class CLIAgentSetupMixin:
         if self.agent is not None:
             return True
 
+        # Join the background preloaded-skills load (cli.py cmd_chat starts
+        # it when --skills/-s is passed) BEFORE the agent snapshots
+        # self.system_prompt below. No-op when nothing was requested.
+        self.finalize_preloaded_skills()
+
         _prepare_deferred_agent_startup()
         self._install_tool_callbacks()
         self._ensure_tirith_security()

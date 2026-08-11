@@ -2045,6 +2045,37 @@ class CredentialPool:
                     (e for e in self._entries if e.id == credential_id),
                     None,
                 )
+                # #79156: when both identities are supplied and they disagree,
+                # trust the key that actually made the request. A stale
+                # ``_credential_pool_entry_id`` (e.g. after per-turn env
+                # refresh rewrote ``api_key`` without rebinding the id) would
+                # otherwise quarantine a healthy fallback for days.
+                if (
+                    entry is not None
+                    and api_key_hint
+                    and entry.runtime_api_key != api_key_hint
+                ):
+                    hint_entry = next(
+                        (
+                            e
+                            for e in self._entries
+                            if e.runtime_api_key == api_key_hint
+                        ),
+                        None,
+                    )
+                    if hint_entry is not None:
+                        logger.info(
+                            "credential pool: credential_id %s runtime key "
+                            "does not match api_key_hint; attributing failure "
+                            "to key-matched entry %s instead (#79156)",
+                            (entry.label or entry.id[:8]),
+                            (hint_entry.label or hint_entry.id[:8]),
+                        )
+                        entry = hint_entry
+                    else:
+                        # Id is stale and the request key is not in the pool —
+                        # drop the id so we do not mark the wrong entry.
+                        entry = None
             if entry is None and api_key_hint:
                 # Prefer the specific entry whose API key matches the one that
                 # actually failed.  When this pool was freshly loaded from disk

@@ -85,10 +85,14 @@ profile-scoped writable directory managed by Hermes.
 Values declared in portable MCP `env` are visible package data, not a secret
 storage mechanism. Do not place credentials in `mcp.json`.
 
-The current portable subset supports stdio MCP only. Portable Streamable HTTP
-and legacy SSE entries are reported and skipped because the native remote
-client does not yet prove the v1 configured-header redirect boundary end to
-end. Agent Plugins v1 does not define trust, permissions, provenance, or a
+The current portable subset supports stdio and Streamable HTTP MCP entries.
+Portable `streamable-http` entries are routed through Hermes' existing native
+remote MCP client (the same runtime that powers URL-based `mcp_servers`
+config), with the v1 boundary rules enforced: the URL must be absolute
+http(s) with no user information or fragment, plain HTTP is accepted only
+for `localhost`/loopback hosts, and configured headers are never forwarded
+across a cross-origin redirect. Legacy `sse` entries are reported and
+skipped. Agent Plugins v1 does not define trust, permissions, provenance, or a
 sandbox. Enabling a package grants its instructions and local executable the
 same full-trust posture as other installed Hermes plugins.
 

@@ -199,6 +199,8 @@ Unset the variable or pass `--resume <id>` explicitly to override on a per-launc
 
 The TUI's status line tracks agent state in real time:
 
+After a session is named, its title appears as an accent-colored badge at the far-right edge of the status line. The title takes the workspace label's place and truncates on narrow terminals.
+
 | Status | Meaning |
 |--------|---------|
 | `starting agent…` | Session ID is live; tools and skills still coming online. You can type — messages queue and send when ready. |

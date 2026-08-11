@@ -1,12 +1,12 @@
 ---
-title: "Fine Tuning With Trl — TRL: SFT, DPO, GRPO, RLOO reward modeling for LLM RLHF"
-sidebar_label: "Fine Tuning With Trl"
+title: "Trl Fine Tuning — TRL: SFT, DPO, GRPO, RLOO reward modeling for LLM RLHF"
+sidebar_label: "Trl Fine Tuning"
 description: "TRL: SFT, DPO, GRPO, RLOO reward modeling for LLM RLHF"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
-# Fine Tuning With Trl
+# Trl Fine Tuning
 
 TRL: SFT, DPO, GRPO, RLOO reward modeling for LLM RLHF.
 

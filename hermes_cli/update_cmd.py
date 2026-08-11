@@ -85,6 +85,57 @@ def _reload_updated_runtime_modules() -> None:
     except Exception as exc:
         logger.debug("Could not refresh update runtime modules: %s", exc)
 
+
+def _reload_config_modules() -> None:
+    """Force-reload config modules from disk after git pull.
+
+    ``hermes update`` runs in the PRE-pull Python process. After ``git pull``
+    updates the source files on disk, modules already in ``sys.modules``
+    still hold the OLD code. Function-level imports return the cached module,
+    so ``DEFAULT_CONFIG["_config_version"]`` is the OLD value and
+    ``check_config_version()`` reports ``(33, 33)`` — "up to date" — even
+    though the freshly-pulled code has v34 with a migration to run.
+
+    This function force-reloads ``hermes_cli.config_defaults``,
+    ``hermes_cli.config``, and ``hermes_cli.config_migrations`` from disk
+    so subsequent imports read the UPDATED code.
+    """
+    import importlib
+
+    importlib.invalidate_caches()
+    for mod_name in ("hermes_cli.config_defaults", "hermes_cli.config", "hermes_cli.config_migrations"):
+        mod = sys.modules.get(mod_name)
+        if mod is not None:
+            try:
+                importlib.reload(mod)
+            except Exception as exc:
+                logger.debug("Could not reload %s for fresh config check: %s", mod_name, exc)
+
+
+def _run_config_check_fresh() -> tuple:
+    """Check config version using freshly-reloaded modules.
+
+    See ``_reload_config_modules`` for why this is necessary.
+    Returns ``(current_ver, latest_ver)``.
+    """
+    _reload_config_modules()
+    from hermes_cli.config import check_config_version
+
+    return check_config_version()
+
+
+def _run_migrate_config_fresh(*, interactive: bool = False, quiet: bool = False) -> dict:
+    """Run config migration using freshly-reloaded modules.
+
+    See ``_reload_config_modules`` for why this is necessary.
+    Returns the migration results dict.
+    """
+    _reload_config_modules()
+    from hermes_cli.config import migrate_config
+
+    return migrate_config(interactive=interactive, quiet=quiet)
+
+
 # Critical files that Hermes must be able to import immediately after an
 # update/install. Most are imported on every CLI startup; ``web_server.py``
 # is the desktop/dashboard backend path that a fresh Windows install launches
@@ -889,6 +940,7 @@ def _update_via_zip(args):
             f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
         )
     _m()._record_bytecode_fingerprint()
+    _m()._refresh_bootstrap_cache_scripts(branch)
 
     # Reinstall Python dependencies. Prefer .[all], but if one optional extra
     # breaks on this machine, keep base deps and reinstall the remaining extras
@@ -2926,7 +2978,13 @@ def _detect_venv_python_processes(
         if not is_holder:
             continue
         name = info.get("name") or Path(exe).name
-        matches.append((int(pid), str(name), cmdline_raw[:120]))
+        # Return the FULL cmdline: callers match against it (the Desktop
+        # preflight's pausable-gateway exemption parses for `gateway run`).
+        # Truncating here cut long managed-runtime interpreter paths before
+        # the `-m hermes_cli.main gateway run` argv, so autostarted gateways
+        # were misreported as blockers and the update dead-ended. Truncate
+        # only at display time.
+        matches.append((int(pid), str(name), cmdline_raw))
     return matches
 
 def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> str:
@@ -2941,7 +2999,7 @@ def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> 
             hint = "  ← Hermes Desktop backend (close the desktop app)"
         elif "gateway" in low:
             hint = "  ← gateway"
-        lines.append(f"  PID {pid}  {name}  {cmdline}{hint}")
+        lines.append(f"  PID {pid}  {name}  {cmdline[:120]}{hint}")
     if len(matches) > 6:
         lines.append(f"  ... and {len(matches) - 6} more")
     lines.append("")
@@ -3068,6 +3126,131 @@ def _leftover_pausable_gateway_pids(
             return None
         pids.append(int(pid))
     return pids
+
+
+def _orphaned_desktop_backend_pids(
+    matches: list[tuple[int, str, str]],
+) -> list[int] | None:
+    """PIDs from *matches* when every remaining holder is an ORPHANED backend.
+
+    The venv-holder guard refuses on the Desktop app's ``serve`` backend by
+    design: while the Desktop is open, killing its backend is futile (the app
+    supervises and respawns it within seconds), so the user must close the
+    app. But in the GUI-updater handoff path the Desktop has *already
+    exited* — by contract it tree-kills its backends and waits for the venv
+    shim before spawning hermes-setup, and the update-in-progress marker
+    parks any relaunched Desktop from spawning a fresh backend (#50238). A
+    ``serve`` backend still holding the venv at that point is a straggler
+    whose supervisor is gone: SIGTERM raced its spawn, or it belongs to a
+    crashed window. Nothing will respawn it, and refusing on it dead-ends
+    the update with "Hermes is still running" while the user stares at zero
+    open windows (ryanc's 2026-08-09 01:59/02:17 failures).
+
+    A holder qualifies only when BOTH hold:
+
+    - its cmdline is a Hermes backend (``hermes_cli.main`` + ``serve`` /
+      ``dashboard``), and
+    - its supervising parent is demonstrably gone: the parent PID no longer
+      exists, or the PID was reused (parent created *after* the child).
+
+    Tree-aware: the scanner can return an orphaned backend AND one of its
+    managed-runtime descendants (the ``.hermes-runtime`` interpreter child)
+    in the same holder set. That descendant has a live parent — the orphaned
+    backend itself — and isn't a ``serve`` cmdline, so per-process rules
+    would refuse a set that is entirely safe to reap. Holders that sit
+    inside an accepted orphan root's tree are therefore folded into that
+    root (only roots are returned; ``taskkill /T`` reaps the descendants).
+
+    Any other live-parent backend (the Desktop is still open), non-backend
+    holder outside an orphan tree, or unprovable case disqualifies the whole
+    set — the guard must keep refusing exactly as before. Returns ``None``
+    in that case, or when psutil is unavailable (can't prove orphanhood →
+    refuse). Never raises.
+    """
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        return None
+
+    def _is_backend(argv_low: str) -> bool:
+        return "hermes_cli.main" in argv_low and (
+            " serve" in argv_low or " dashboard" in argv_low
+        )
+
+    # Pass 1: find orphaned backend ROOTS among the holders.
+    roots: list[int] = []
+    remaining: list[tuple[int, str]] = []  # (pid, argv_low) still to justify
+    for pid, _name, cmdline in matches:
+        argv = cmdline
+        try:
+            argv = " ".join(psutil.Process(int(pid)).cmdline()) or cmdline
+        except psutil.NoSuchProcess:
+            # Holder exited between scan and classification — nothing to
+            # reap, nothing blocking. Skip it.
+            continue
+        except Exception:
+            pass
+        low = argv.lower()
+        if not _is_backend(low):
+            remaining.append((int(pid), low))
+            continue
+        try:
+            proc = psutil.Process(int(pid))
+            ppid = proc.ppid()
+            parent = psutil.Process(ppid) if ppid else None
+            if parent is not None and parent.is_running():
+                # PID-reuse check: a "parent" created after its child is a
+                # recycled PID, not the real (dead) supervisor.
+                if parent.create_time() <= proc.create_time():
+                    # Live parent — NOT a root. But it may still be a
+                    # descendant of an orphan root: the venv python.exe is
+                    # a trampoline that re-execs the uv-managed interpreter
+                    # with the SAME backend argv, so the worker half of the
+                    # two-process chain lands here. Defer to pass 2 instead
+                    # of refusing outright.
+                    remaining.append((int(pid), low))
+                    continue
+        except psutil.NoSuchProcess:
+            pass  # parent gone → orphan
+        except Exception:
+            return None
+        roots.append(int(pid))
+
+    # Pass 2: every non-backend holder must be a descendant of an accepted
+    # orphan root — then it dies with the root's tree reap. Anything else
+    # (operator REPL, stray script) keeps the refusal.
+    root_set = set(roots)
+    for pid, _low in remaining:
+        if not root_set:
+            return None
+        try:
+            ancestors = {int(a.pid) for a in psutil.Process(pid).parents()}
+        except psutil.NoSuchProcess:
+            continue  # exited already
+        except Exception:
+            return None
+        if not (ancestors & root_set):
+            return None
+    return roots
+
+
+def _stop_process_trees(pids: list[int]) -> None:
+    """Force-stop each PID with its full child tree (Windows).
+
+    ``taskkill /T /F`` mirrors the Desktop's ``forceKillProcessTree`` and
+    install.ps1's venv sweep: stopping only the parent can leave a managed
+    ``.hermes-runtime`` interpreter child alive and holding the install open
+    (#70026). Best effort; never raises.
+    """
+    for pid in pids:
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(int(pid)), "/T", "/F"],
+                check=False,
+                capture_output=True,
+            )
+        except Exception as exc:
+            logger.debug("Could not stop process tree %s: %s", pid, exc)
 
 
 def _pause_windows_gateways_for_update() -> dict | None:
@@ -3342,6 +3525,84 @@ def _refresh_windows_gateway_launchers() -> None:
         print("  ✓ Refreshed Windows gateway launcher scripts")
     except Exception as exc:
         logger.debug("Could not refresh Windows gateway launchers after update: %s", exc)
+
+def _refresh_bootstrap_cache_scripts(branch: str = "main") -> None:
+    """Sync the installer's bootstrap-cache scripts from the fresh checkout.
+
+    The Desktop GUI updater (``hermes-setup.exe``) executes
+    ``$HERMES_HOME/bootstrap-cache/install-<ref>.ps1`` (or ``.sh``) for its
+    repair/bootstrap stages. Installer binaries built before the #67193
+    cache-refresh fix (June 2026 and earlier) NEVER re-download a cached
+    branch-ref script — ``install-main.ps1`` cached at install time is
+    reused forever, executing months-stale code with long-fixed bugs (the
+    2026-08-09 incident: a June 4 cached script's venv stage lacked the
+    #81327 process-tree sweep and died on ``Access denied``). The binary
+    has no self-update path, so the poisoned cache outlives every
+    ``hermes update``.
+
+    Overwriting the cached script for *branch* with the freshly pulled
+    ``scripts/install.ps1`` / ``scripts/install.sh`` on every update turns
+    the stale binary's unconditional reuse into a feature: it "reuses" a
+    file this function keeps permanently current. Post-#67193 installers
+    re-download on each run anyway, so for them this is a harmless
+    pre-seed of the same bytes.
+
+    Scope guards, mirroring ``install_script.rs``:
+
+    - Only the cache key for the update-target *branch* is rewritten
+      (``sanitize_ref``: non ``[A-Za-z0-9._-]`` chars become ``_``, so
+      ``bb/gui`` → ``install-bb_gui.ps1``). Sibling mutable refs cache
+      DIFFERENT branches' scripts — updating main must not clobber
+      ``install-bb_gui.ps1`` with main's script.
+    - Commit-SHA pins are immutable by design and never touched. The
+      installer's ``is_valid_commit()`` accepts **7–40** hex chars, so an
+      abbreviated pin like ``install-4ce1994.ps1`` is just as immutable as
+      a full 40-hex one; the sanitized *branch* is additionally required
+      to not itself look like a commit pin (defense in depth against a
+      caller passing a SHA as the branch).
+
+    The .ps1 copy gets a UTF-8 BOM to match the installer's cache format
+    (#67193 encoding fix). Best-effort: a failed refresh must never fail
+    the update.
+    """
+    try:
+        import re as _re
+
+        cache_dir = Path(_m().get_hermes_home()) / "bootstrap-cache"
+        if not cache_dir.is_dir():
+            return
+        # Mirror install_script.rs::sanitize_ref().
+        safe_ref = _re.sub(r"[^A-Za-z0-9._-]", "_", str(branch or "main"))
+        # Mirror install_script.rs::is_valid_commit(): 7-40 hex chars is an
+        # immutable commit pin — abbreviated SHAs included. Never rewrite.
+        if _re.fullmatch(r"[0-9a-fA-F]{7,40}", safe_ref):
+            return
+        refreshed = []
+        for kind, src_name in (("ps1", "install.ps1"), ("sh", "install.sh")):
+            src = _m().PROJECT_ROOT / "scripts" / src_name
+            if not src.is_file():
+                continue
+            cached = cache_dir / f"install-{safe_ref}.{kind}"
+            if not cached.is_file():
+                continue  # this ref was never bootstrap-cached — nothing to heal
+            data = src.read_bytes()
+            if kind == "ps1" and not data.startswith(b"\xef\xbb\xbf"):
+                # Match the installer's cache format: PowerShell needs the
+                # UTF-8 BOM or localized/em-dash text mis-decodes (#67193).
+                data = b"\xef\xbb\xbf" + data
+            if cached.read_bytes() == data:
+                continue  # already current
+            tmp = cached.with_suffix(cached.suffix + ".tmp")
+            tmp.write_bytes(data)
+            os.replace(tmp, cached)
+            refreshed.append(cached.name)
+        if refreshed:
+            print(
+                "  ✓ Refreshed installer bootstrap-cache script(s): "
+                + ", ".join(sorted(refreshed))
+            )
+    except Exception as exc:
+        logger.debug("Could not refresh bootstrap-cache scripts after update: %s", exc)
 
 def _resume_windows_gateways_after_update(token: dict | None) -> None:
     """Restart Windows profile gateways previously paused for update."""
@@ -3665,6 +3926,26 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         logger.debug(
                             "Could not stop leftover gateway %s: %s", _pid, exc
                         )
+                _time.sleep(1.0)
+                _venv_holders = _m()._detect_venv_python_processes()
+        if _venv_holders:
+            _orphan_backends = _m()._orphaned_desktop_backend_pids(_venv_holders)
+            if _orphan_backends:
+                # Every remaining holder is a Desktop `serve` backend whose
+                # supervising app is GONE — the GUI-updater handoff race:
+                # Electron's teardown lost the SIGTERM race, exited, and left
+                # its backend (and any .hermes-runtime child) holding the
+                # venv. Nothing will respawn an orphan, so reap the tree and
+                # re-check instead of dead-ending with "Hermes is still
+                # running" while no window is open. Backends whose Desktop
+                # is still alive never reach here (_orphaned_desktop_
+                # backend_pids returns None for them) — that path keeps the
+                # refusal, because the app would just respawn what we kill.
+                print(
+                    f"  ⚠ {len(_orphan_backends)} orphaned Desktop backend "
+                    "process(es) still hold the venv; stopping their trees"
+                )
+                _m()._stop_process_trees(_orphan_backends)
                 _time.sleep(1.0)
                 _venv_holders = _m()._detect_venv_python_processes()
         if _venv_holders:
@@ -4075,6 +4356,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
             )
         _m()._record_bytecode_fingerprint()
+        _m()._refresh_bootstrap_cache_scripts(branch)
 
         # Fork upstream sync logic (only for main branch on forks)
         if is_fork and branch == "main":
@@ -4164,6 +4446,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
             )
         _m()._record_bytecode_fingerprint()
+        _m()._refresh_bootstrap_cache_scripts(branch)
         _m()._reload_updated_runtime_modules()
 
         # Upgrade pip before lazy refreshes — stale pip can fail source builds
@@ -4456,20 +4739,36 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception:
             pass  # honcho plugin not installed or not configured
 
-        # Check for config migrations
+        # Check for config migrations.
+        #
+        # CRITICAL: check_config_version and migrate_config must use
+        # freshly-reloaded modules, not the sys.modules cache. The
+        # ``hermes update`` process is the PRE-pull Python process — its
+        # ``sys.modules`` cache holds the OLD ``hermes_cli.config`` and
+        # ``hermes_cli.config_migrations`` from before ``git pull`` updated
+        # the source files. A function-level ``from hermes_cli.config import
+        # check_config_version`` returns the cached module, so
+        # ``DEFAULT_CONFIG["_config_version"]`` is the OLD value and
+        # ``check_config_version()`` reports ``(33, 33)`` — "up to date" —
+        # even though the freshly-pulled code has v34 with a migration to
+        # run. The personality reset migration (#81946) was silently skipped
+        # this way, leaving ``display.personality: kawaii`` active after
+        # updates that should have reset it.
         print()
         print("→ Checking configuration for new options...")
+
+        # Reload config modules BEFORE any config reads so get_missing_*,
+        # check_config_version, and migrate_config all use the updated code.
+        _reload_config_modules()
 
         from hermes_cli.config import (
             get_missing_env_vars,
             get_missing_config_fields,
-            check_config_version,
-            migrate_config,
         )
 
         missing_env = get_missing_env_vars(required_only=True)
         missing_config = get_missing_config_fields()
-        current_ver, latest_ver = check_config_version()
+        current_ver, latest_ver = _run_config_check_fresh()
 
         has_new_options = bool(missing_env or missing_config)
         version_bump_only = (
@@ -4488,7 +4787,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 f"  ℹ Updating config format (v{current_ver} → v{latest_ver})…"
             )
             try:
-                migrate_config(interactive=False, quiet=True)
+                _run_migrate_config_fresh(interactive=False, quiet=True)
                 print("  ✓ Config format updated (no new settings to configure)")
             except Exception as _mig_err:
                 print(f"  ⚠️  Config format update failed: {_mig_err}")
@@ -4574,7 +4873,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 interactive_migration = not (
                     gateway_mode or assume_yes or response == "auto"
                 )
-                results = migrate_config(interactive=interactive_migration, quiet=False)
+                results = _run_migrate_config_fresh(interactive=interactive_migration, quiet=False)
 
                 if results["env_added"] or results["config_added"]:
                     print()

@@ -1755,7 +1755,12 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             elif hasattr(d, "__dict__"):
                 preserved.append(d.__dict__)
             elif hasattr(d, "model_dump"):
-                preserved.append(d.model_dump())
+                try:
+                    # warnings=False: avoid pydantic serializer UserWarnings
+                    # on generic-union SDK models leaking to the terminal.
+                    preserved.append(d.model_dump(warnings=False))
+                except TypeError:
+                    preserved.append(d.model_dump())
         if preserved:
             msg["reasoning_details"] = preserved
 
@@ -1845,7 +1850,10 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             extra = getattr(tool_call, "extra_content", None)
             if extra is not None:
                 if hasattr(extra, "model_dump"):
-                    extra = extra.model_dump()
+                    try:
+                        extra = extra.model_dump(warnings=False)
+                    except TypeError:
+                        extra = extra.model_dump()
                 tc_dict["extra_content"] = extra
             tool_calls.append(tc_dict)
         msg["tool_calls"] = tool_calls
@@ -2345,7 +2353,7 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
         for msg in messages:
             api_msg = msg.copy()
             agent._copy_reasoning_content_for_api(msg, api_msg)
-            for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
+            for internal_field in ("reasoning", "finish_reason"):
                 api_msg.pop(internal_field, None)
             # Strict OpenAI-compatible gateways (Fireworks-backed OpenCode Go,
             # Mistral, Moonshot/Kimi) reject any message key outside the Chat
@@ -2368,8 +2376,6 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             # sidecar-carrying message and re-prefilling the whole transcript
             # at exactly the moment the context is largest.
             substitute_api_content(api_msg)
-            for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
-                api_msg.pop(internal_key, None)
             if _needs_sanitize:
                 # In MoA mode, agent.model is the virtual preset name,
                 # not the actual aggregator model.  Resolve the real
@@ -2403,7 +2409,17 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
 
         # Same safety net as the main loop: drop thinking-only assistant
         # turns so Anthropic-family providers don't 400 the summary call.
+        # _thinking_prefill must survive until here so the drop pass can
+        # recognize stubs after reasoning fields are stripped.
         api_messages = agent._drop_thinking_only_and_merge_users(api_messages)
+
+        # Strip all remaining underscore-prefixed scaffolding keys before the
+        # wire. The summary path calls chat.completions.create() directly,
+        # bypassing the transport's universal underscore-key sweeper.
+        for api_msg in api_messages:
+            if isinstance(api_msg, dict):
+                for internal_key in [k for k in api_msg if isinstance(k, str) and k.startswith("_")]:
+                    api_msg.pop(internal_key, None)
 
         summary_extra_body = {}
         try:
@@ -3538,7 +3554,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                         extra = (tc_delta.model_extra if isinstance(tc_delta.model_extra, dict) else {}).get("extra_content")
                     if extra is not None:
                         if hasattr(extra, "model_dump"):
-                            extra = extra.model_dump()
+                            try:
+                                extra = extra.model_dump(warnings=False)
+                            except TypeError:
+                                extra = extra.model_dump()
                         entry["extra_content"] = extra
                     # Fire once per tool when the full name is available
                     name = entry["function"]["name"]

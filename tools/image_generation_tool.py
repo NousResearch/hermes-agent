@@ -451,6 +451,11 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         },
         "upscale": False,
     },
+    # ─── Aug 2026 catalog expansion ────────────────────────────────────────
+    # Endpoint ids, `supports` whitelists and enum defaults below are taken
+    # from each model's FAL OpenAPI schema, so a key we send is a key the
+    # vendor declares. Paired `/edit` apps hang off their text-to-image entry
+    # rather than appearing as separate picker rows.
     "bytedance/seedream/v5/pro/text-to-image": {
         "display": "Seedream 5.0 Pro",
         "speed": "~10s",
@@ -488,11 +493,13 @@ FAL_MODELS: Dict[str, Dict[str, Any]] = {
         "strengths": "Fast/cheap Seedream tier, high-res output",
         "price": "$0.035/image",
         "size_style": "image_size_preset",
-        # Lite wants total pixels between 2560x1440 and 4096x4096.
+        # Lite wants total pixels between 2560x1440 and 4096x4096. Use the
+        # documented presets (FAL auto-scales if a preset is under the floor)
+        # instead of hand-rolled ImageSize dicts that drift from the schema.
         "sizes": {
-            "landscape": {"width": 3840, "height": 2160},
-            "square": {"width": 2048, "height": 2048},
-            "portrait": {"width": 2160, "height": 3840},
+            "landscape": "landscape_16_9",
+            "square": "square_hd",
+            "portrait": "portrait_16_9",
         },
         "defaults": {
             "num_images": 1,

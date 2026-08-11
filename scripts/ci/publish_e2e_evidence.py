@@ -203,7 +203,7 @@ def _find_review_comment(comments: object) -> dict[str, Any] | None:
     return None
 
 
-def _wait_for_review_comment(token: str, source_repo: str, pr_number: str) -> dict[str, Any]:
+def _wait_for_review_comment(token: str, source_repo: str, pr_number: str) -> dict[str, Any] | None:
     """Wait briefly for GitHub's comment API to expose the completed marker."""
     request = urllib.request.Request(
         f"{API_BASE}/repos/{source_repo}/issues/{pr_number}/comments?per_page=100",
@@ -221,7 +221,7 @@ def _wait_for_review_comment(token: str, source_repo: str, pr_number: str) -> di
             return comment
         if attempt + 1 < COMMENT_LOOKUP_ATTEMPTS:
             time.sleep(COMMENT_LOOKUP_DELAY_SECONDS)
-    raise ValueError("CI review comment with E2E evidence marker is missing")
+    return None
 
 
 def upload_evidence(
@@ -280,6 +280,15 @@ def publish(
         print("No inline E2E evidence to publish.")
         return False
     comment = _wait_for_review_comment(token, source_repo, pr_number)
+    if comment is None:
+        # A fork PR gets no CI review comment (the live poller needs a
+        # write token there), so there is no marker to patch. The
+        # evidence stays available in the workflow artifact.
+        print(
+            f"PR #{pr_number} has no CI review comment with an E2E evidence "
+            "marker; the evidence stays in the workflow artifact."
+        )
+        return False
     try:
         attachment_urls = upload_evidence(
             files, evidence_dir, source_repo, session_token

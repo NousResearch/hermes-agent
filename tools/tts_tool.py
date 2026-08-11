@@ -37,6 +37,7 @@ Usage:
 import asyncio
 import base64
 import datetime
+import importlib.util
 import json
 import logging
 import os
@@ -3727,15 +3728,11 @@ def check_tts_requirements() -> bool:
             return False
         return bool(_resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs"))
     if provider == "openai":
-        try:
-            _import_openai_client()
-        except ImportError:
+        if importlib.util.find_spec("openai") is None:
             return False
         return _has_openai_audio_backend()
     if provider == "deepinfra":
-        try:
-            _import_openai_client()
-        except ImportError:
+        if importlib.util.find_spec("openai") is None:
             return False
         return bool(_resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"))
     if provider == "minimax":

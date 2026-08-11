@@ -81,6 +81,12 @@ interface PaneChrome extends PaneSizing {
    *  the tab and the sidebar row render status/color from the ONE primitive
    *  (self-subscribing — it updates without the strip re-registering). */
   tabLead?: () => React.ReactNode
+  /** This pane's TAB LABEL, when it changes faster than the contribution
+   *  should. A session pane whose draft is being typed renames on every
+   *  debounce beat; re-registering `title` that often would re-render the
+   *  whole panes area, so the label subscribes for itself instead. Absent, or
+   *  returning nothing, falls back to `title`. */
+  tabTitle?: () => React.ReactNode
   /** Glyph buttons this pane contributes to the strip, rendered after the last
    *  tab (where "+" sits) while the pane is ACTIVE — controls that act on the
    *  pane, not on any one tab: a preview's console / DevTools toggles. DATA, not

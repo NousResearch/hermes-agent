@@ -1578,7 +1578,8 @@ class GatewaySlashCommandsMixin:
                     )
                 except Exception:
                     self._restart_command_source = event.source
-            atomic_json_write(
+            await asyncio.to_thread(
+                atomic_json_write,
                 _hermes_home / ".restart_notify.json",
                 notify_data,
                 indent=None,
@@ -1598,7 +1599,8 @@ class GatewaySlashCommandsMixin:
             }
             if event.platform_update_id is not None:
                 dedup_data["update_id"] = event.platform_update_id
-            atomic_json_write(
+            await asyncio.to_thread(
+                atomic_json_write,
                 _hermes_home / ".restart_last_processed.json",
                 dedup_data,
                 indent=None,
@@ -2490,74 +2492,65 @@ class GatewaySlashCommandsMixin:
         return f"{prefix} {result.message}"
 
     async def _handle_personality_command(self, event: MessageEvent) -> str:
-        """Handle /personality command - list or set a personality."""
-        from gateway.run import _hermes_home, _load_gateway_config
-        from hermes_constants import display_hermes_home
+        """Handle /personality command - list or set a personality.
 
-        args = event.get_command_args().strip().lower()
-        config_path = _hermes_home / 'config.yaml'
+        All resolution/persistence goes through hermes_cli.personality —
+        the single owner of personality state on every surface.
+        """
+        from gateway.run import _load_gateway_config
+        from hermes_cli.personality import (
+            active_personality_name,
+            available_personalities,
+            describe_personality,
+            persist_personality,
+            prompt_text,
+            resolve_personality,
+        )
+
+        args = event.get_command_args().strip()
 
         try:
             config = _load_gateway_config()
-            personalities = cfg_get(config, "agent", "personalities", default={})
         except Exception:
             config = {}
-            personalities = {}
-
-        if not personalities:
-            return t("gateway.personality.none_configured", path=display_hermes_home())
+        personalities = available_personalities(config)
 
         if not args:
+            current = active_personality_name(config)
             lines = [t("gateway.personality.header")]
             lines.append(t("gateway.personality.none_option"))
             for name, prompt in personalities.items():
-                if isinstance(prompt, dict):
-                    preview = prompt.get("description") or prompt.get("system_prompt", "")[:50]
-                else:
-                    preview = prompt[:50] + "..." if len(prompt) > 50 else prompt
-                lines.append(t("gateway.personality.item", name=name, preview=preview))
+                marker = " ✓" if name == current else ""
+                lines.append(
+                    t(
+                        "gateway.personality.item",
+                        name=f"{name}{marker}",
+                        preview=describe_personality(prompt),
+                    )
+                )
             lines.append(t("gateway.personality.usage"))
             return "\n".join(lines)
 
-        from hermes_cli.config import (
-            _prompt_text,
-            render_personality_prompt,
-        )
+        try:
+            name, new_prompt = resolve_personality(args, config)
+        except ValueError:
+            available = "`none`, " + ", ".join(f"`{n}`" for n in personalities)
+            return t("gateway.personality.unknown", name=args.lower(), available=available)
 
-        if args in {"none", "default", "neutral"}:
-            # Persist the selection only. Never clear agent.system_prompt —
-            # that field is the user-owned manual overlay.
-            try:
-                if "display" not in config or not isinstance(config.get("display"), dict):
-                    config["display"] = {}
-                config["display"]["personality"] = ""
-                atomic_config_write(config_path, config)
-            except Exception as e:
-                return t("gateway.personality.save_failed", error=str(e))
-            self._ephemeral_system_prompt = _prompt_text(
+        # Persist the selection only — hermes_cli.personality never writes
+        # agent.system_prompt (user-owned manual overlay).
+        if not persist_personality(name):
+            return t("gateway.personality.save_failed", error="config write failed")
+
+        if not name:
+            self._ephemeral_system_prompt = prompt_text(
                 cfg_get(config, "agent", "system_prompt", default="")
             )
             return t("gateway.personality.cleared")
-        elif args in personalities:
-            new_prompt = render_personality_prompt(personalities[args])
 
-            # Persist the personality name only — never write personality text
-            # into agent.system_prompt (user-owned manual overlay).
-            try:
-                if "display" not in config or not isinstance(config.get("display"), dict):
-                    config["display"] = {}
-                config["display"]["personality"] = args
-                atomic_config_write(config_path, config)
-            except Exception as e:
-                return t("gateway.personality.save_failed", error=str(e))
-
-            # Update in-memory so it takes effect on the very next message.
-            self._ephemeral_system_prompt = new_prompt
-
-            return t("gateway.personality.set_to", name=args)
-
-        available = "`none`, " + ", ".join(f"`{n}`" for n in personalities)
-        return t("gateway.personality.unknown", name=args, available=available)
+        # Update in-memory so it takes effect on the very next message.
+        self._ephemeral_system_prompt = new_prompt
+        return t("gateway.personality.set_to", name=name)
 
     async def _handle_retry_command(self, event: MessageEvent) -> str:
         """Handle /retry command - re-send the last user message."""
@@ -4783,6 +4776,20 @@ class GatewaySlashCommandsMixin:
 
         parent_session_id = current_entry.session_id
 
+        # Serialize the parent's full origin (same shape as the reset path's
+        # db_create_kwargs in gateway/session.py, #82633) so the branch row
+        # carries complete identity from birth. Prefer the live entry's origin
+        # (it may hold richer metadata than the triggering event's source).
+        _branch_origin = current_entry.origin or source
+        _branch_origin_json = None
+        if _branch_origin is not None:
+            try:
+                import json as _json
+
+                _branch_origin_json = _json.dumps(_branch_origin.to_dict())
+            except Exception:
+                _branch_origin_json = None
+
         # Create the new session with parent link.
         # Persist a stable ``_branched_from`` marker in model_config so
         # list_sessions_rich() keeps the branch visible in /resume and
@@ -4795,6 +4802,31 @@ class GatewaySlashCommandsMixin:
                 model=(self.config.get("model", {}) or {}).get("default") if isinstance(self.config, dict) else None,
                 model_config={"_branched_from": parent_session_id},
                 parent_session_id=parent_session_id,
+                # Gateway routing columns — forward ALL of them at CREATE time,
+                # same fix as the compression-rotation bug in
+                # agent/conversation_compression.py. Without these, the branched
+                # child row has NULL routing columns until switch_session() below
+                # calls _record_gateway_session_peer() — a crash/kill anywhere
+                # between here and there (most plausibly mid-history-copy, since
+                # each append_message call a few lines down is independently
+                # best-effort) leaves the branch permanently unroutable:
+                # unreachable by chat/thread lookup, and unreachable via /resume's
+                # IDOR guard too (which requires the row's chat_id/thread_id to
+                # match the caller's). user_id is critical for the fallback lookup
+                # path (hermes_state.py:1994-2009) that searches by the complete
+                # peer tuple when session_key doesn't match. origin_json and
+                # display_name complete the identity (same shape as the reset
+                # path's db_create_kwargs in gateway/session.py, #82633) so
+                # consumers that read routing/presentation data from state.db
+                # (mcp_serve, mirror, channel directory) see the branch row
+                # fully formed with zero backfill gap.
+                user_id=source.user_id,
+                session_key=session_key,
+                chat_id=source.chat_id,
+                chat_type=source.chat_type,
+                thread_id=source.thread_id,
+                origin_json=_branch_origin_json,
+                display_name=current_entry.display_name,
             )
         except Exception as e:
             logger.error("Failed to create branch session: %s", e)

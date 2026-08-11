@@ -237,24 +237,33 @@ KANBAN_GUIDANCE = (
     "infer (missing credentials, UX choice, paywalled source, peer output you "
     "need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. "
     "The user will unblock with context and the dispatcher will respawn you.\n"
-    "5. **Complete with structured handoff.** Call `kanban_complete(summary=..., "
-    "metadata=...)`. `summary` is 1–3 human-readable sentences naming concrete "
-    "artifacts. `metadata` is machine-readable facts "
-    "(`{changed_files: [...], tests_run: N, decisions: [...]}`). Downstream "
-    "workers read both via their own `kanban_show`. Never put secrets / "
-    "tokens / raw PII in either field — run rows are durable forever. "
-    "Exception: if your output is a code change that needs human review "
-    "before counting as merged/done (most coding tasks), drop the "
-    "structured metadata (changed_files / tests_run / diff_path) into a "
-    "`kanban_comment` first, then end with "
-    "`kanban_block(reason=\"review-required: <one-line summary>\")` so a "
-    "reviewer can approve+unblock or request changes. Reviewing-then-"
-    "completing is more honest than auto-completing work that still needs "
-    "eyes on it.\n"
+    "5. **Finish with the review model encoded by the task graph.** Always "
+    "include the structured handoff (`summary`, `metadata`) on the lifecycle "
+    "transition itself; never put secrets, tokens, or raw PII in these durable "
+    "fields. If `kanban_show()` lists child IDs, inspect those cards with "
+    "`kanban_show(task_id=...)` before choosing the terminal action. When any "
+    "pre-created review, QA, or release child depends on your task, call "
+    "`kanban_complete`: your implementation phase is done, and completion is "
+    "what releases those children. Never sticky-block that parent for "
+    "`review-required` and never request same-card review as well — either "
+    "choice would strand or duplicate the downstream lane. Otherwise, when "
+    "this same task needs review before it is final, call "
+    "`kanban_request_review(summary=..., metadata=..., "
+    "reviewer=<optional-profile>)`. The reviewer approves with "
+    "`kanban_complete`, returns actionable rework with "
+    "`kanban_request_changes`, or uses `kanban_block` only for a genuine "
+    "external escalation. Review is not a block, so repeated review cycles do "
+    "not trip unblock-loop detection.\n"
     "6. **If follow-up work appears, create it; don't do it.** Use "
     "`kanban_create(title=..., assignee=<right-profile>, parents=[your-task-id])` "
     "to spawn a child task for the appropriate specialist profile instead of "
     "scope-creeping into the next thing.\n"
+    "7. **Flag collision hotspots; don't pile on.** If your change keeps "
+    "colliding with sibling branches in one file, or a file your diff touches "
+    "shows up in other cards' recent comments, do not silently add more to it: "
+    "leave a `kanban_comment` starting with `hotspot: <path> — <one-line reason>` "
+    "on your card and repeat the flag in your completion metadata, so the "
+    "orchestrator can decompose that file before more work lands on it.\n"
     "\n"
     "## Orchestrator mode\n"
     "\n"
@@ -264,6 +273,13 @@ KANBAN_GUIDANCE = (
     "express dependencies. Then `kanban_complete` your own task with a summary "
     "of the decomposition. Do NOT execute the work yourself; your job is "
     "routing, not implementation.\n"
+    "\n"
+    "**Decision ownership.** Design decisions belong to you, the orchestrator, "
+    "not to workers — settle naming schemes, schemas, file formats, and API "
+    "shapes before fanning out. Never let two subtree cards decide the same "
+    "question: if two tasks would each pick one, decide it yourself and write "
+    "the decision into BOTH card bodies. Every child card body must carry the "
+    "decisions it depends on, because workers cannot see sibling context.\n"
     "\n"
     "## Reference details that change outcomes\n"
     "\n"
@@ -712,6 +728,13 @@ def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
     than the system prompt, which has to stay byte-stable for a conversation's
     whole life.
 
+    The same is true one level down: the app underneath changes as the user
+    drags the strip around, and they carry a thought across the move ("pause
+    that and play X here"). Earlier windows are already in context as
+    read_window_below results, so the note only has to say they still count —
+    without that, the latest window reads as the only one and half of a
+    two-app request is silently dropped.
+
     Each sentence is gated on the tool it names — naming a tool outside this
     agent's schema invites a hallucinated call — and the note as a whole is
     withheld without the one it rests on.
@@ -725,7 +748,11 @@ def hud_surface_note(valid_tool_names: "set[str] | None" = None) -> str:
         "window sitting over whatever the user is actually working in, so an "
         'unqualified "this" or "here" usually means the app behind the HUD '
         "rather than anything inside Hermes. read_window_below identifies "
-        "that app."
+        "that app.",
+        "They move the HUD from app to app mid-conversation, so one you "
+        "identified on an earlier turn is still a live target: a reference "
+        "that does not fit the window below may name one from a turn or two "
+        "ago, and a single message can span both.",
     ]
     if "computer_use" in names:
         sentences.append(

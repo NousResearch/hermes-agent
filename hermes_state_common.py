@@ -242,6 +242,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_source TEXT,
     pricing_version TEXT,
     title TEXT,
+    title_source TEXT,
     last_activity_at REAL,
     last_activity_description TEXT,
     last_activity_provenance TEXT,
@@ -546,6 +547,14 @@ _FTS_CJK_TRIGGERS = (
 # on are missing from the cjk index, so it must not serve reads until
 # `hermes sessions optimize-storage` rebuilds it on a capable host.
 FTS_CJK_STALE_KEY = "fts_cjk_stale"
+
+
+# Durable breadcrumb for a base/trigram FTS index that was detached from the
+# canonical messages table after runtime corruption. While present, startup
+# must rebuild the complete index before reinstalling sync triggers: rows may
+# have been written while those triggers were absent, so merely recreating
+# them would preserve an unknown index gap.
+FTS_STALE_KEY = "fts_stale"
 
 
 # ── Legacy (v22 / inline-content) FTS DDL ──────────────────────────────

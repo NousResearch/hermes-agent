@@ -740,7 +740,7 @@ class ChatCompletionsTransport(ProviderTransport):
             api_kwargs,
             messages=sanitized,
             tools=api_kwargs.get("tools"),
-            supports_prompt_cache_key=bool(profile.supports_prompt_cache_key),
+            supports_prompt_cache_key=bool(getattr(profile, "supports_prompt_cache_key", False)),
             session_id=params.get("session_id"),
         )
 
@@ -778,7 +778,12 @@ class ChatCompletionsTransport(ProviderTransport):
                 if extra is not None:
                     if hasattr(extra, "model_dump"):
                         try:
-                            extra = extra.model_dump()
+                            extra = extra.model_dump(warnings=False)
+                        except TypeError:
+                            try:
+                                extra = extra.model_dump()
+                            except Exception:
+                                pass
                         except Exception:
                             pass
                     tc_provider_data["extra_content"] = extra

@@ -40,7 +40,13 @@ export function discoverBundledPlugins(): void {
     // Same inventory + live-toggle contract as runtime plugins: each bundled
     // plugin publishes a record with activate/deactivate handles, and a
     // persisted disable survives boots by skipping registration here.
-    const record = { id: plugin.id, name: plugin.name ?? plugin.id, kind: 'bundled' as const }
+    const record = {
+      id: plugin.id,
+      name: plugin.name ?? plugin.id,
+      description: plugin.description,
+      kind: 'bundled' as const
+    }
+
     let disposers: (() => void)[] = []
 
     const activate = () => {

@@ -537,11 +537,15 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
     for c in _format_model_caveats(model_meta, caps):
         parts.append(f"- {c}")
 
-    # Backend modality summary — only useful when the backend supports
-    # both text and image. Single-modality backends are already covered by
-    # the model caveat above.
-    modalities = set(caps.get("modalities") or [])
-    if "text" in modalities and "image" in modalities and not model_meta.get("modality"):
+    # Prefer the active model's modalities over the backend union. An
+    # i2v-only family on a dual-modality backend (e.g. gemini-omni-flash
+    # on FAL) must not also claim text-to-video support.
+    model_modalities = set(model_meta.get("modalities") or [])
+    modality = model_meta.get("modality")
+    if modality:
+        model_modalities.add(modality)
+    effective_modalities = model_modalities or set(caps.get("modalities") or [])
+    if "text" in effective_modalities and "image" in effective_modalities:
         parts.append(
             "- supports both text-to-video (omit image_url) and "
             "image-to-video (pass image_url) — routes automatically"
@@ -551,9 +555,11 @@ def _build_dynamic_video_schema() -> Dict[str, Any]:
         parts.append(f"- aspect_ratio choices: {', '.join(caps['aspect_ratios'])}")
     if caps.get("resolutions"):
         parts.append(f"- resolution choices: {', '.join(caps['resolutions'])}")
-    if caps.get("min_duration") and caps.get("max_duration"):
+    min_duration = model_meta.get("min_duration", caps.get("min_duration"))
+    max_duration = model_meta.get("max_duration", caps.get("max_duration"))
+    if min_duration and max_duration:
         parts.append(
-            f"- duration range: {caps['min_duration']}-{caps['max_duration']}s"
+            f"- duration range: {min_duration}-{max_duration}s"
         )
     if caps.get("supports_audio"):
         parts.append("- audio: pass `audio=true` to enable native audio (pricing tier)")

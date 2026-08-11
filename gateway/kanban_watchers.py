@@ -143,10 +143,13 @@ class GatewayKanbanWatchersMixin:
 
         For each subscription row, fetches ``task_events`` newer than the
         stored cursor with kind in the terminal set (``completed``,
-        ``blocked``, ``gave_up``, ``crashed``, ``timed_out``). Sends one
+        ``blocked``, ``gave_up``, ``crashed``, ``timed_out``,
+        ``review_requested``, ``block_loop_detected``). Sends one
         message per new event to ``(platform, chat_id, thread_id)``,
-        then advances the cursor. When a task reaches a terminal state
-        (``completed`` / ``archived``), the subscription is removed.
+        then advances the cursor. The subscription is removed only when the
+        task reaches a truly final *status* (``done`` / ``archived``), not on
+        any terminal event kind — so review cycles and re-block loops keep
+        notifying.
 
         Runs in the gateway event loop; all SQLite work is pushed to a
         thread via ``asyncio.to_thread`` so the loop never blocks on the
@@ -171,7 +174,11 @@ class GatewayKanbanWatchersMixin:
 
         # "status" covers dashboard drag-drop and `_set_status_direct()`
         # writes — surface those transitions to subscribers too.
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected")
+        # ``review_requested`` wakes the origin subscriber like a block does,
+        # but is not a block (see kanban_db.request_review); the task is not
+        # done/archived, so the subscription stays alive and later review
+        # cycles keep notifying.
+        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested")
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -479,6 +486,16 @@ class GatewayKanbanWatchersMixin:
                             if ev.payload and ev.payload.get("status"):
                                 new_status = str(ev.payload["status"])
                             msg = f"🔄 {board_tag}{tag}Kanban {sub['task_id']} → {new_status}"
+                        elif kind == "review_requested":
+                            # Implementation complete; task moved to the
+                            # first-class review lane. Wake the origin thread.
+                            handoff = ""
+                            if ev.payload and ev.payload.get("summary"):
+                                handoff = f"\n{str(ev.payload['summary'])[:200]}"
+                            msg = (
+                                f"👀 {board_tag}{tag}Kanban {sub['task_id']} ready for review"
+                                f" — {title}{handoff}"
+                            )
                         elif kind == "block_loop_detected":
                             # A task re-blocked for the same cause past the
                             # recurrence limit and was routed to `triage` for a
@@ -1321,6 +1338,13 @@ class GatewayKanbanWatchersMixin:
             here keeps the stuck-warn fire only on real failures (broken
             PATH, missing venv, credential loss for a real Hermes profile).
             """
+            # Only probe the review column when autonomous review dispatch is
+            # actually on. With ``review_dispatch`` off (the default — no
+            # sdlc-review agent), a task parked in 'review' is "correctly idle"
+            # waiting for a human, not a stuck dispatcher; probing it here would
+            # fire a false "dispatcher stuck" warning that never clears. Shares
+            # the exact gate the dispatcher uses so the two can't drift.
+            _review_probe = _kb.review_dispatch_enabled()
             try:
                 boards = _kb.list_boards(include_archived=False)
             except Exception:
@@ -1332,7 +1356,7 @@ class GatewayKanbanWatchersMixin:
                     conn = _kb.connect(board=slug)
                     if _kb.has_spawnable_ready(conn):
                         return True
-                    if _kb.has_spawnable_review(conn):
+                    if _review_probe and _kb.has_spawnable_review(conn):
                         return True
                 except Exception:
                     continue

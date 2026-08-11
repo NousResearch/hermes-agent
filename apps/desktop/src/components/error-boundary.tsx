@@ -50,8 +50,24 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    const tag = this.props.label ? `[error-boundary:${this.props.label}]` : '[error-boundary]'
+    const label = this.props.label ?? ''
+    const tag = label ? `[error-boundary:${label}]` : '[error-boundary]'
     console.error(tag, error, info.componentStack)
+
+    // Persist to desktop.log via Electron (#79428): console.error only reaches
+    // the main process for windows with a console hook, is minified, and loses
+    // the component stack. This survives the window and names the component.
+    try {
+      window.hermesDesktop?.reportRendererError?.({
+        label: new URLSearchParams(window.location.search).get('win') ?? 'main',
+        boundary: label || 'unlabeled',
+        message: error.message,
+        componentStack: info.componentStack ?? ''
+      })
+    } catch {
+      // Logging must never take the boundary down with it.
+    }
+
     this.props.onError?.(error, info)
 
     if (this.props.label === 'root' && isTransientAssistantUiLookupError(error) && this.takeAutoRecoveryAttempt()) {

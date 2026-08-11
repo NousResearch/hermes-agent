@@ -684,6 +684,32 @@ def _run_review_in_thread(
 
     review_agent = None
     review_messages: List[Dict] = []
+
+    def _unregister_review_agent(agent_ref) -> None:
+        """Idempotent: clears the review fork from both tracking slots.
+        Called from the run_conversation finally and the outer safety-net finally.
+        """
+        if agent_ref is None:
+            return
+        if hasattr(agent, "_background_review_agent"):
+            _br_lock = getattr(agent, "_background_review_lock", None)
+            if _br_lock is not None:
+                with _br_lock:
+                    if agent._background_review_agent is agent_ref:
+                        agent._background_review_agent = None
+            elif agent._background_review_agent is agent_ref:
+                agent._background_review_agent = None
+        if hasattr(agent, "_active_children"):
+            try:
+                _ac_lock = getattr(agent, "_active_children_lock", None)
+                if _ac_lock is not None:
+                    with _ac_lock:
+                        agent._active_children.remove(agent_ref)
+                else:
+                    agent._active_children.remove(agent_ref)
+            except (ValueError, AttributeError):
+                pass
+
     try:
         # Silence stdout/stderr for THIS worker thread only.  A process-global
         # ``contextlib.redirect_stdout(devnull)`` here would also blank
@@ -880,6 +906,30 @@ def _run_review_in_thread(
             # agent.compression_enabled, so this short-circuits both paths.
             review_agent.compression_enabled = False
 
+            # Register this fork on the PARENT's _active_children (the same
+            # list interrupt() fans out to for subagent delegation) and
+            # _background_review_agent (a direct pointer the next live turn
+            # uses to proactively cancel a still-running review). Without
+            # this, a review still streaming when the next turn starts races
+            # the live turn against the same session_id/credentials — producing
+            # doubled prompt-token accounting and a Ctrl+C-proof lockup.
+            # Best-effort: agents built without agent_init.py (test stubs)
+            # degrade to "no cross-cancellation" rather than aborting the review.
+            if hasattr(agent, "_background_review_agent"):
+                _br_lock = getattr(agent, "_background_review_lock", None)
+                if _br_lock is not None:
+                    with _br_lock:
+                        agent._background_review_agent = review_agent
+                else:
+                    agent._background_review_agent = review_agent
+            if hasattr(agent, "_active_children"):
+                _ac_lock = getattr(agent, "_active_children_lock", None)
+                if _ac_lock is not None:
+                    with _ac_lock:
+                        agent._active_children.append(review_agent)
+                else:
+                    agent._active_children.append(review_agent)
+
             from model_tools import get_tool_definitions
             from hermes_cli.plugins import (
                 set_thread_tool_whitelist,
@@ -933,6 +983,12 @@ def _run_review_in_thread(
                 )
             finally:
                 clear_thread_tool_whitelist()
+                # Unregister as soon as run_conversation() itself has
+                # returned — that's the only phase making outbound API
+                # calls, i.e. the only phase that can race the parent's
+                # next live turn. Runs on both the success and exception
+                # path (this whole block is inside the try/finally above).
+                _unregister_review_agent(review_agent)
 
             # Snapshot review actions before teardown. close() is allowed to
             # clean per-session state, but the user-visible self-improvement
@@ -1006,6 +1062,13 @@ def _run_review_in_thread(
         # thread-scoped silence here so teardown output (Honcho flush, Hindsight
         # sync, background thread joins) stays quiet even on the exception path,
         # without blanking other threads' streams.
+        # Also a safety-net unregister: covers exceptions raised during setup
+        # (between registration and the run_conversation try/finally above)
+        # that the primary _unregister_review_agent call site never reaches.
+        # _unregister_review_agent is idempotent (checks `is`/`in` membership),
+        # so calling it again here after the primary call site already ran is
+        # a harmless no-op.
+        _unregister_review_agent(review_agent)
         if review_agent is not None:
             try:
                 with thread_scoped_silence():

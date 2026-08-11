@@ -232,18 +232,52 @@ class TestGeneratedSystemdUnits:
         assert str(local_bin) in plist
         assert str(profile_node_bin) not in plist
 
+    def test_launchd_plist_persists_configured_nofile_soft_limit(self, monkeypatch):
+        """The generated plist must carry SoftResourceLimits/NumberOfFiles so a
+        plist rewrite by `hermes gateway start` cannot strip the FD floor and
+        reintroduce EMFILE crashes (launchd default soft limit is 256)."""
+        import hermes_cli.resource_limits as resource_limits
+
+        monkeypatch.setattr(
+            resource_limits, "configured_nofile_soft_limit", lambda config=None: 65536
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>SoftResourceLimits</key>" in plist
+        assert "<key>NumberOfFiles</key>" in plist
+        assert "<integer>65536</integer>" in plist
+
+    def test_launchd_plist_omits_nofile_block_when_disabled(self, monkeypatch):
+        """runtime.nofile_soft_limit: 0/false/null disables the adjustment; the
+        plist must then not contain a SoftResourceLimits block at all."""
+        import hermes_cli.resource_limits as resource_limits
+
+        monkeypatch.setattr(
+            resource_limits, "configured_nofile_soft_limit", lambda config=None: None
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "SoftResourceLimits" not in plist
+
 
 
 class TestGatewayStopCleanup:
+    @pytest.mark.linux_only
     def test_stop_only_kills_current_profile_by_default(self, tmp_path, monkeypatch):
         """Without --all, stop uses systemd (if available) and does NOT call
-        the global kill_gateway_processes()."""
+        the global kill_gateway_processes().
+
+        Linux-gated: the routing under test is the systemd arm, and it is only
+        reached when the host really isn't macOS/Windows (the old
+        ``is_macos → False`` stub is gone).
+        """
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("unit\n", encoding="utf-8")
 
         monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: True)
         monkeypatch.setattr(gateway_cli, "is_termux", lambda: False)
-        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
         monkeypatch.setattr(gateway_cli, "get_systemd_unit_path", lambda system=False: unit_path)
 
         service_calls = []
@@ -737,12 +771,17 @@ class TestGatewaySystemServiceRouting:
 
 
 
+    @pytest.mark.macos_only
     def test_gateway_restart_does_not_fallback_to_foreground_when_launchd_restart_fails(self, tmp_path, monkeypatch):
+        """macOS-gated: the branch under test is ``elif is_macos() and
+        get_launchd_plist_path().exists()``. Faking the platform flags on Linux
+        left ``supports_systemd_services()`` / ``launchctl`` semantics untested;
+        on a real macOS host only ``launchd_restart`` is stubbed (it would touch
+        the user's real launchd domain).
+        """
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text("plist\n", encoding="utf-8")
 
-        monkeypatch.setattr(gateway_cli, "is_linux", lambda: False)
-        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
         monkeypatch.setattr(
             gateway_cli,

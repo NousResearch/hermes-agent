@@ -39,7 +39,9 @@ import {
   $sessions,
   $unreadFinishedSessionIds,
   lineageAliases,
-  setActiveSessionStoredIdRotation
+  sessionMatchesStoredId,
+  setActiveSessionStoredIdRotation,
+  setSessions
 } from './session'
 import { isSecondaryWindow } from './windows'
 
@@ -190,6 +192,28 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
   }
 }
 
+/** Is any surface on THIS window still holding the runtime — the primary view
+ *  or an open tile? (A tile mid-resume references by stored id only; its
+ *  runtime binding is patched in after `resumeTile` returns.) */
+function runtimeReferenced(runtimeId: string, storedSessionId: null | string): boolean {
+  if (runtimeId === $activeSessionId.get()) {
+    return true
+  }
+
+  return $sessionTiles
+    .get()
+    .some(t => t.runtimeId === runtimeId || (storedSessionId !== null && t.storedSessionId === storedSessionId))
+}
+
+/** A state no surface needs anymore: its turn is over (not busy, not waiting
+ *  on the user) and neither the primary view nor any tile holds the runtime.
+ *  `needsInput` states stay — the sidebar's attention dot reads them. */
+function evictable(runtimeId: string, state: ClientSessionState): boolean {
+  return (
+    !state.busy && !state.needsInput && !state.awaitingResponse && !runtimeReferenced(runtimeId, state.storedSessionId)
+  )
+}
+
 /** Publish one session's state. Automatically fires transition side-effects
  *  (watchdog arm/disarm, settle grace, unread marker, compression id rotation)
  *  by diffing previous vs next — callers never need to manually call a
@@ -202,12 +226,30 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
  *  ($workingSessionIds, $attentionSessionIds) and their subscribers
  *  unnecessarily. The runtime-id→state cache (sessionStateByRuntimeIdRef)
  *  is updated independently by the caller, so the visual path stays live
- *  without the store churn. */
+ *  without the store churn.
+ *
+ *  A settled state nothing references is EVICTED instead of republished:
+ *  gateway events keep flowing for sessions whose tile was closed mid-turn,
+ *  and parking each one's full transcript here forever is the leak that made
+ *  the app crawl after a day of tile use — every entry taxes every later
+ *  publish (map spread + the status-set projections). Transition side effects
+ *  still fire, so the closed session's settle keeps its unread dot. Only an
+ *  entry already in the map is evicted — a FIRST publish always lands, because
+ *  a resume can publish its idle state a beat before `$activeSessionId` /
+ *  the tile's runtime binding points at it. */
 export function publishSessionState(runtimeId: string, state: ClientSessionState) {
   const current = $sessionStates.get()
   const prev = current[runtimeId] ?? null
 
   if (prev === state) {
+    return
+  }
+
+  if (prev && evictable(runtimeId, state)) {
+    handleTransition(prev, state, runtimeId)
+    const { [runtimeId]: _dropped, ...rest } = current
+    $sessionStates.set(rest)
+
     return
   }
 
@@ -307,6 +349,38 @@ export const $attentionSessionIds = computed(
       storedIds(states, sessions, s => s.needsInput)
     ))
 )
+
+// An open session nothing has ever been sent to — the ⌘T tab whose backend
+// session exists but is unlisted, or a tile still waiting on its first send.
+// `blankDraftTile`'s predicate, read as a status rather than as a slot to spend.
+//
+// The row's own `message_count` is the tiebreaker, and it is load-bearing: a
+// session RESUMING also holds an empty message list for the moment between
+// binding its runtime and loading its transcript, and calling that a draft
+// would flash the wrong mark on a conversation with years of history in it.
+let draftIds: readonly string[] = []
+export const $draftSessionIds = computed([$sessionStates, $sessions], (states, sessions) => {
+  const unsent = (state: ClientSessionState) => {
+    if (state.busy || state.messages.length > 0) {
+      return false
+    }
+
+    const storedId = state.storedSessionId
+
+    // No stored id is the ⌘T tab that hasn't reached the backend yet: a draft
+    // by definition, and no row to consult. Asking anyway would match a row on
+    // an empty lineage root.
+    if (!storedId) {
+      return true
+    }
+
+    const row = sessions.find(session => sessionMatchesStoredId(session, storedId))
+
+    return !row || row.message_count === 0
+  }
+
+  return (draftIds = stableArray(draftIds, storedIds(states, sessions, unsent)))
+})
 
 // ---------------------------------------------------------------------------
 // Session tiles.
@@ -720,6 +794,18 @@ export function closeSessionTile(storedSessionId: string) {
   }
 
   saveTiles($sessionTiles.get().filter(t => t.storedSessionId !== storedSessionId))
+
+  // A settled session may never publish again, so the publish-time eviction
+  // in publishSessionState can't reach it — drop its cached state here. A
+  // BUSY one stays: its turn keeps streaming in the background, the sidebar
+  // dot reads it, and settle evicts it. ⌘⇧T reopen re-publishes from the
+  // wiring cache (resumeTile's warm path), so nothing is lost.
+  const runtimeId = tile?.runtimeId
+  const state = runtimeId ? $sessionStates.get()[runtimeId] : undefined
+
+  if (runtimeId && state && evictable(runtimeId, state)) {
+    dropSessionState(runtimeId)
+  }
 }
 
 /** Drop a DEAD tile — a persisted tile whose session no longer exists on the
@@ -836,10 +922,19 @@ $selectedStoredSessionId.listen(selected => {
 if ((import.meta.env.DEV || import.meta.env.VITE_PERF_PROBE === '1') && typeof window !== 'undefined') {
   ;(window as unknown as Record<string, unknown>).__HERMES_SESSION_TILES__ = {
     close: closeSessionTile,
+    drop: dropSessionState,
     open: openSessionTile,
     patch: patchSessionTile,
     publish: publishSessionState,
+    /** Seed the recents list — models a populated sessions DB in perf runs. */
+    seedSessions: (rows: SessionInfo[]) => setSessions(rows),
+    sessions: () => $sessions.get(),
     states: () => $sessionStates.get(),
-    tiles: () => $sessionTiles.get()
+    tiles: () => $sessionTiles.get(),
+    /** THE real gateway write path (wiring cache + journal + publish + view
+     *  sync), unlike `publish` which only touches the store. Perf scenarios
+     *  must drive this or they under-model streaming cost. */
+    update: (runtimeId: string, updater: (state: ClientSessionState) => ClientSessionState) =>
+      sessionTileDelegate()?.updateSession(runtimeId, updater)
   }
 }

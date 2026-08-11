@@ -98,6 +98,11 @@ from utils import base_url_host_matches, env_var_enabled
 logger = logging.getLogger(__name__)
 
 
+# Scaffold marker used by _apply_active_turn_redirect and the ghost-row filter
+# in the api_messages loop. Module-level so both sites can never drift.
+_INTERRUPT_SCAFFOLD_MARKER = "[This response was interrupted by a user correction.]"
+
+
 def _restore_user_after_reference_handoff(
     messages: List[Dict[str, Any]], user_message: Any
 ) -> bool:
@@ -220,54 +225,56 @@ def _apply_active_turn_redirect(agent: Any, messages: List[Dict[str, Any]], text
     ``[This response was interrupted by a user correction.]`` and its
     ``Visible response before the interruption:`` header exist so the MODEL
     understands its own reply was cut off. They are not prose the user wrote
-    or the agent said. Persisting them into ``content`` painted the raw
-    machinery as an assistant bubble on every reload (and merged it into the
-    preceding tool-call bubble), which is what made a steered transcript
-    unreadable. Carry the scaffolded form in the ``api_content`` sidecar --
-    the exact bytes replayed to the provider -- and keep ``content`` clean.
-    When nothing was on screen there is no clean form at all, so the row is
-    marked ``display_kind="hidden"``: still replayed to the model, dropped by
-    every transcript surface (desktop, TUI, CLI resume), exactly like the
+    or the agent said. Persisting them into an assistant row's ``content`` or
+    ``api_content`` made the model treat the scaffold as *its own previous
+    reply*, echo it, and self-replicate ghost rows across turns (#81841).
+    Carry the scaffolded form only in the *user correction's* ``api_content``
+    sidecar — never on the placeholder assistant row. When nothing was on
+    screen the placeholder is marked ``display_kind="hidden"`` (empty
+    content) so every transcript surface drops it, exactly like
     compaction-reference rows.
     """
     visible = agent._strip_think_blocks(
         getattr(agent, "_current_streamed_assistant_text", "") or ""
     ).strip()
 
-    checkpoint_parts = ["[This response was interrupted by a user correction.]"]
+    checkpoint_parts = [_INTERRUPT_SCAFFOLD_MARKER]
     if visible:
         checkpoint_parts.extend(
             ["Visible response before the interruption:", visible]
         )
     checkpoint = "\n\n".join(checkpoint_parts)
+    correction = (
+        "[Context from the interrupted assistant response]\n"
+        f"{checkpoint}\n\n"
+        f"{text}"
+    )
 
-    # The normal live tail is user or tool, so an assistant checkpoint followed
-    # by the correction preserves strict alternation. If a transport already
-    # committed an assistant item, attribute the checkpoint inside the user
-    # correction instead of creating assistant→assistant.
+    # The normal live tail is user or tool, so an assistant placeholder
+    # followed by the correction preserves strict alternation. If a transport
+    # already committed an assistant item, attribute the checkpoint inside the
+    # user correction instead of creating assistant→assistant.
     if messages and messages[-1].get("role") == "assistant":
-        correction = (
-            "[Context from the interrupted assistant response]\n"
-            f"{checkpoint}\n\n"
-            f"{text}"
-        )
         # Transcript shows the user's own words; the provider replays the
         # scaffolded form so it still sees the interrupted context.
         messages.append(
             {"role": "user", "content": text, "api_content": correction}
         )
     else:
-        entry: Dict[str, Any] = {
+        # Placeholder preserves role alternation only. Scaffold bytes must
+        # never land here — the API replay path substitutes api_content back
+        # into content, and a scaffold-as-assistant-reply is what the model
+        # then echoes (#81841 / incomplete #73146 else branch).
+        placeholder: Dict[str, Any] = {
             "role": "assistant",
-            "content": visible or checkpoint,
-            "api_content": checkpoint,
+            "content": visible or "",
         }
         if not visible:
-            # Nothing reached the screen — this row carries no assistant prose
-            # at all, only the cut-off notice for the model.
-            entry["display_kind"] = "hidden"
-        messages.append(entry)
-        messages.append({"role": "user", "content": text})
+            placeholder["display_kind"] = "hidden"
+        messages.append(placeholder)
+        messages.append(
+            {"role": "user", "content": text, "api_content": correction}
+        )
 
     agent._current_streamed_assistant_text = ""
     agent._stream_needs_break = True
@@ -759,11 +766,34 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
     return True
 
 
+# The three _get_continuation_prompt variants below, in named-constant form
+# so agent.context_compressor's _is_synthetic_compression_user_turn can
+# recognize them by content after a crash/interrupt persists one mid-list —
+# these rows carry no durable role beyond driving the retry, and SessionDB
+# projection strips the _length_continuation_nudge metadata tag that marks
+# them in live memory (see agent/context_compressor.py).
+_LENGTH_CONTINUATION_NETWORK_STUB = (
+    "[System: The previous response was cut off by a "
+    "network error mid-stream. Continue exactly where "
+    "you left off. Do not restart or repeat prior text. "
+    "Finish the answer directly.]"
+)
+_LENGTH_CONTINUATION_OUTPUT_LIMIT = (
+    "[System: Your previous response was truncated by the output "
+    "length limit. Continue exactly where you left off. Do not "
+    "restart or repeat prior text. Finish the answer directly.]"
+)
+# The dropped-tools variant interpolates the tool name list right after this
+# prefix, so it can't be exact-matched — this stable prefix is what
+# _is_synthetic_compression_user_turn checks with str.startswith instead.
+_LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX = "[System: Your previous tool call "
+
+
 def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List[str]] = None) -> str:
     if is_partial_stub and dropped_tools:
         tool_list = ", ".join(dropped_tools[:3])
         return (
-            "[System: Your previous tool call "
+            f"{_LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX}"
             f"({tool_list}) was too large and "
             "the stream timed out before it "
             "could be delivered. Do NOT retry "
@@ -776,18 +806,9 @@ def _get_continuation_prompt(is_partial_stub: bool, dropped_tools: Optional[List
             "tokens to avoid stream timeouts.]"
         )
     elif is_partial_stub:
-        return (
-            "[System: The previous response was cut off by a "
-            "network error mid-stream. Continue exactly where "
-            "you left off. Do not restart or repeat prior text. "
-            "Finish the answer directly.]"
-        )
+        return _LENGTH_CONTINUATION_NETWORK_STUB
     else:
-        return (
-            "[System: Your previous response was truncated by the output "
-            "length limit. Continue exactly where you left off. Do not "
-            "restart or repeat prior text. Finish the answer directly.]"
-        )
+        return _LENGTH_CONTINUATION_OUTPUT_LIMIT
 
 
 # Continuation nudge for Codex/Responses turns that came back with only
@@ -802,6 +823,36 @@ _CODEX_INCOMPLETE_NUDGE = (
     "never produced a visible answer or tool call. Do not keep thinking. "
     "Produce your final answer as plain text now (or make the tool call "
     "you were planning).]"
+)
+
+
+# Re-prompt sent after a Codex/Responses turn ends with an acknowledgment-only
+# reply (no tool calls, no final answer) — named so
+# agent.context_compressor's _is_synthetic_compression_user_turn can
+# recognize it by content the same way it recognizes _CODEX_INCOMPLETE_NUDGE.
+_CODEX_ACK_CONTINUATION_NUDGE = (
+    "[System: Continue now. Execute the required tool calls and only "
+    "send your final answer after completing the task.]"
+)
+
+# Re-prompt sent when a provider returns finish_reason="tool_calls" with an
+# empty tool_calls array (dropped-tool-call recovery, see the retry loop
+# below). Named for the same reason as _CODEX_ACK_CONTINUATION_NUDGE — this
+# pair is only stripped from the durable transcript once the turn reaches
+# finalization; an interrupt/crash mid-retry can still persist it.
+_DROPPED_TOOLCALL_NUDGE_CONTENT = (
+    "Your previous turn indicated a tool call but none was "
+    "included. Do not narrate a plan or restate intent — issue "
+    "the actual tool call now to continue the task."
+)
+
+# Re-prompt sent when the model returns an empty response after executing tool
+# calls (#9400). Named for the same reason as the nudges above — its
+# _empty_recovery_synthetic metadata flag doesn't survive SessionDB projection.
+_EMPTY_TOOL_RESPONSE_NUDGE = (
+    "You just executed tool calls but returned an "
+    "empty response. Please process the tool "
+    "results above and continue with the task."
 )
 
 
@@ -1429,6 +1480,31 @@ def run_conversation(
     agent._last_compression_attempt_recorded = False
     agent._last_compression_attempt_in_place = None
 
+    # If a background memory/skill review spawned at the end of a PRIOR turn
+    # (agent/background_review.py) is still running its own run_conversation()
+    # when THIS turn starts, cancel it now rather than letting both make
+    # outbound API calls concurrently against the same session_id/credentials.
+    # That concurrency can produce doubled prompt-token accounting on this
+    # turn's own calls and, because the review fork is a fully separate
+    # AIAgent with no route back to THIS agent's interrupt() by default, a
+    # lockup that survives a normal /stop and needs a hard Ctrl+C.
+    # ``review_agent.interrupt()`` is fire-and-forget here — it just flags
+    # cancellation and aborts the review's in-flight socket; it does not
+    # block waiting for the review's daemon thread to exit, so it can't add
+    # latency to this turn. Only ever set on the real owning agent (the
+    # review fork's own copy of this attribute stays None — reviews don't
+    # spawn nested reviews), so this is a no-op on every other run_conversation
+    # caller (subagents, the review fork itself, etc).
+    _pending_review = getattr(agent, "_background_review_agent", None)
+    if _pending_review is not None:
+        try:
+            _pending_review.interrupt("superseded by a new live turn")
+        except Exception:
+            logger.debug(
+                "Failed to cancel in-flight background review for a new turn",
+                exc_info=True,
+            )
+
     # Adopt any ~/.hermes/.env credential/base-url edits made since the last
     # turn — a Settings save updates .env but not this worker's client, which
     # was built at agent init (#67821). No-op when .env is unchanged.
@@ -1708,6 +1784,30 @@ def run_conversation(
                 agent.session_id or "-",
             )
 
+        # Drop legacy ghost rows from the incomplete #73146 else branch BEFORE
+        # the alternation repair below: a hidden assistant placeholder whose
+        # content/api_content is the raw interrupt scaffold. Replaying that as
+        # an assistant message makes the model echo it and self-replicate
+        # (#81841). Dropping before repair lets repair_message_sequence fix
+        # any user→user adjacency the filter creates.
+        messages = [
+            msg for msg in messages
+            if not (
+                msg.get("display_kind") == "hidden"
+                and msg.get("role") == "assistant"
+                and (
+                    (
+                        isinstance(msg.get("content"), str)
+                        and msg["content"].strip() == _INTERRUPT_SCAFFOLD_MARKER
+                    )
+                    or (
+                        isinstance(msg.get("api_content"), str)
+                        and msg["api_content"].strip() == _INTERRUPT_SCAFFOLD_MARKER
+                    )
+                )
+            )
+        ]
+
         # Defensive: repair malformed role-alternation before API call.
         # Catches cases where the history got wedged into a
         # ``tool → user`` or ``user → user`` tail (e.g. after empty-
@@ -1729,6 +1829,7 @@ def run_conversation(
 
         api_messages = []
         for idx, msg in enumerate(messages):
+
             # Structural clone, NOT msg.copy(): every in-place transform
             # below (canonicalize/repair, surrogate + non-ASCII sanitizers,
             # cache decoration) must be unable to reach the persisted
@@ -1806,8 +1907,8 @@ def run_conversation(
             # Remove finish_reason - not accepted by strict APIs (e.g. Mistral)
             if "finish_reason" in api_msg:
                 api_msg.pop("finish_reason")
-            # Strip internal thinking-prefill marker
-            api_msg.pop("_thinking_prefill", None)
+            # _thinking_prefill survives here intentionally: the drop pass below
+            # needs it. The transport strips all underscore keys before the wire.
             # Strip length-continuation marks; not every transport drops underscore keys.
             api_msg.pop("_length_continuation_fragment", None)
             api_msg.pop("_length_continuation_nudge", None)
@@ -7010,11 +7111,7 @@ def run_conversation(
                         messages.append(_nudge_msg)
                         messages.append({
                             "role": "user",
-                            "content": (
-                                "You just executed tool calls but returned an "
-                                "empty response. Please process the tool "
-                                "results above and continue with the task."
-                            ),
+                            "content": _EMPTY_TOOL_RESPONSE_NUDGE,
                             "_empty_recovery_synthetic": True,
                         })
                         continue
@@ -7247,10 +7344,7 @@ def run_conversation(
 
                     continue_msg = {
                         "role": "user",
-                        "content": (
-                            "[System: Continue now. Execute the required tool calls and only "
-                            "send your final answer after completing the task.]"
-                        ),
+                        "content": _CODEX_ACK_CONTINUATION_NUDGE,
                     }
                     messages.append(continue_msg)
                     agent._session_messages = messages
@@ -7318,11 +7412,7 @@ def run_conversation(
                     messages.append(final_msg)
                     messages.append({
                         "role": "user",
-                        "content": (
-                            "Your previous turn indicated a tool call but none was "
-                            "included. Do not narrate a plan or restate intent — issue "
-                            "the actual tool call now to continue the task."
-                        ),
+                        "content": _DROPPED_TOOLCALL_NUDGE_CONTENT,
                         "_dropped_toolcall_nudge": True,
                     })
                     agent._session_messages = messages
@@ -7523,7 +7613,24 @@ def run_conversation(
                     continue
 
                 messages.append(final_msg)
-                
+                # Make the completed answer durable before leaving the loop —
+                # a session torn down before finalize_turn's _persist_session
+                # otherwise loses a reply the user already saw (#81641). Same
+                # contract as the tool-call exit (#49045) and the verify exits
+                # above; _DB_PERSISTED_MARKER keeps _persist_session idempotent.
+                # Unlike the tool-call exit, failure must NOT abort the turn:
+                # no side effect follows and _persist_session retries the write.
+                # Full incident narrative: tests/run_agent/test_81641_*.py.
+                try:
+                    agent._flush_messages_to_session_db(messages, conversation_history)
+                except Exception:
+                    logger.warning(
+                        "final text-turn flush failed (session=%s) — reply is "
+                        "not yet durable; relying on finalize_turn retry",
+                        getattr(agent, "session_id", None) or "none",
+                        exc_info=True,
+                    )
+
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
                 if not agent.quiet_mode:
                     agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")

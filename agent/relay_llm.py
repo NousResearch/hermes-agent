@@ -55,6 +55,13 @@ def execute(
 
     def invoke(next_request: Any) -> Any:
         nonlocal callback_error
+
+        def guarded(final: dict[str, Any]) -> Any:
+            # Nested relay calls inside a managed provider callback must run
+            # unmanaged (#77244) — see relay_runtime.managed_callback_guard.
+            with relay_runtime.managed_callback_guard():
+                return callback(final)
+
         try:
             final_request = _provider_request(
                 request,
@@ -63,7 +70,7 @@ def execute(
                 codec_baseline_body=codec_baseline_body,
                 metadata=metadata,
             )
-            raw = callback_context.copy().run(callback, final_request)
+            raw = callback_context.copy().run(guarded, final_request)
         except BaseException as exc:
             callback_error = exc
             raise
@@ -149,7 +156,10 @@ async def execute_async(
                 metadata=metadata,
             )
             async def call_provider() -> Any:
-                return await callback(final_request)
+                # Nested relay calls inside a managed provider callback must
+                # run unmanaged (#77244).
+                with relay_runtime.managed_callback_guard():
+                    return await callback(final_request)
 
             task = callback_context.copy().run(
                 asyncio.create_task,
@@ -396,7 +406,14 @@ class ManagedLlmStream(Iterator[Any]):
         def run_callback(callback: Callable[..., Any], *args: Any) -> Any:
             # Relay can invoke stream surfaces while another callback still
             # owns the captured Context. A fresh copy is safe to enter.
-            return callback_context.copy().run(callback, *args)
+            def guarded() -> Any:
+                # Hermes-side callbacks run while the native pipeline drives
+                # this stream; nested relay calls they make must bypass
+                # managed execution (#77244).
+                with relay_runtime.managed_callback_guard():
+                    return callback(*args)
+
+            return callback_context.copy().run(guarded)
 
         runtime, session, parent = relay_runtime.resolve_execution_context(session_id)
         if (
@@ -1194,7 +1211,15 @@ def _jsonable(value: Any) -> Any:
     model_dump = getattr(type(value), "model_dump", None)
     if callable(model_dump):
         try:
-            return _jsonable(value.model_dump(mode="json"))
+            # warnings=False: SDK stream events (e.g. the Anthropic
+            # ParsedMessage inside message_stop) carry generic-union content
+            # blocks that pydantic serializes fine but warns about — and the
+            # warning leaks to the user's terminal mid-response (#82xxx).
+            try:
+                return _jsonable(value.model_dump(mode="json", warnings=False))
+            except TypeError:
+                # Duck-typed model_dump without pydantic's signature.
+                return _jsonable(value.model_dump())
         except Exception:
             pass
     try:

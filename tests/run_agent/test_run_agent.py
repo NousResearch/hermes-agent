@@ -3542,14 +3542,18 @@ class TestRunConversation:
             "assistant",
             "user",
         ]
-        checkpoint = replay[-2]["content"]
-        assert "interrupted by a user correction" in checkpoint
+        # Scaffold rides on the user correction (api_content → content), never
+        # as the assistant placeholder's own reply (#81841).
+        placeholder = replay[-2]["content"]
+        correction = replay[-1]["content"]
+        assert "interrupted by a user correction" not in (placeholder or "")
+        assert "interrupted by a user correction" in correction
+        assert correction.endswith("No, use Postgres instead.")
         # Displayed chain-of-thought must NOT be replayed: an assistant turn
         # inlining its own reasoning trips Anthropic's output classifier and
         # bricks the session with deterministic empty responses (July 2026).
-        assert "I should implement this with SQLite." not in checkpoint
-        assert "Reasoning shown before the interruption" not in checkpoint
-        assert replay[-1]["content"] == "No, use Postgres instead."
+        assert "I should implement this with SQLite." not in correction
+        assert "Reasoning shown before the interruption" not in correction
         assert agent._pending_redirect is None
         assert any(
             snapshot[-1].get("content") == "No, use Postgres instead."
@@ -3629,15 +3633,76 @@ class TestRunConversation:
         assert calls == 2
         assert results["result"]["completed"] is True
         assert results["result"]["final_response"] == "Corrected answer."
-        checkpoint = results["result"]["messages"][-3]
-        assert "interrupted by a user correction" in checkpoint["content"]
+        placeholder = results["result"]["messages"][-3]
+        correction = results["result"]["messages"][-2]
+        assert placeholder["role"] == "assistant"
+        assert "interrupted by a user correction" not in (
+            placeholder.get("content") or ""
+        )
+        assert "interrupted by a user correction" in (
+            correction.get("api_content") or ""
+        )
         # Displayed reasoning is display-only — replaying it as assistant
         # content trips Anthropic's output classifier (July 2026 brickings).
-        assert "Following the original approach." not in checkpoint["content"]
-        assert results["result"]["messages"][-2]["content"] == (
-            "Use the corrected approach."
+        assert "Following the original approach." not in (
+            correction.get("api_content") or ""
         )
+        assert correction["content"] == "Use the corrected approach."
 
+    def test_legacy_interrupt_scaffold_ghost_dropped_from_api_replay(self, agent):
+        """Pre-#81841 hidden assistant rows with the interrupt scaffold must
+        not be replayed to the provider — that is what made the model echo
+        them into a self-replicating ghost loop."""
+        self._setup_agent(agent)
+        scaffold = "[This response was interrupted by a user correction.]"
+        history = [
+            {"role": "user", "content": "first"},
+            {
+                "role": "assistant",
+                "content": scaffold,
+                "api_content": scaffold,
+                "display_kind": "hidden",
+            },
+            {"role": "user", "content": "real follow-up"},
+            {"role": "assistant", "content": "ok"},
+        ]
+        requests = []
+
+        def _fake_api_call(api_kwargs):
+            requests.append(api_kwargs)
+            return _mock_response(content="done", finish_reason="stop")
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_fake_api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation(
+                "next turn", conversation_history=history
+            )
+
+        assert result["completed"] is True
+        assert len(requests) == 1
+        replayed = requests[0]["messages"]
+        assert not any(
+            isinstance(m.get("content"), str) and m["content"].strip() == scaffold
+            for m in replayed
+            if m.get("role") == "assistant"
+        )
+        # Real history around the ghost still reaches the provider.
+        # The two consecutive user messages ("first" + "real follow-up")
+        # may be merged by repair_message_sequence, so check for the
+        # content as a substring rather than exact match.
+        assert any(
+            m.get("role") == "user"
+            and "real follow-up" in str(m.get("content", ""))
+            for m in replayed
+        )
+        assert any(
+            m.get("role") == "assistant" and m.get("content") == "ok"
+            for m in replayed
+        )
 
     def test_nous_401_refreshes_after_remint_and_retries(self, agent):
         self._setup_agent(agent)

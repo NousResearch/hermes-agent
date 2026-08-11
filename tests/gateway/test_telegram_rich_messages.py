@@ -18,6 +18,7 @@ import pytest
 
 from gateway.config import PlatformConfig
 from gateway.platforms.base import SendResult
+from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from telegram.error import BadRequest, NetworkError, TimedOut
 
@@ -382,6 +383,56 @@ async def test_cjk_rich_content_skips_rich_draft_to_avoid_tdesktop_garble():
 def test_prefers_fresh_final_streaming_stays_disabled_when_rich_enabled():
     adapter = _make_adapter()
     assert adapter.prefers_fresh_final_streaming(RICH_CONTENT) is False
+
+
+@pytest.mark.asyncio
+async def test_legacy_draft_stream_finalizes_with_persistent_rich_message():
+    """A MarkdownV2 draft must not force the persistent final to MarkdownV2."""
+    adapter = _make_adapter()  # rich messages on, rich drafts off
+    # With the gate in supports_draft_streaming, draft streaming is declined
+    # when rich_drafts is off.  The test force-enables it to verify that even
+    # a legacy MDV2 draft still finalizes as a rich message.
+    assert adapter.supports_draft_streaming(chat_type="dm") is False
+
+    consumer = GatewayStreamConsumer(
+        adapter,
+        "12345",
+        StreamConsumerConfig(transport="auto", chat_type="dm", cursor=""),
+    )
+    consumer._use_draft_streaming = True
+
+    delivered = await consumer._send_or_edit(RICH_CONTENT, finalize=True)
+
+    assert delivered is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    assert bot.do_api_request.call_args.args[0] == "sendRichMessage"
+    bot.send_message.assert_not_called()
+
+
+# ----------------------------------------------------------------------
+# supports_draft_streaming: rich_messages without rich_drafts must NOT use
+# MDV2 sendMessageDraft previews that later snap to sendRichMessage (wiki)
+# finals — that is the "first bubble crooked, second bubble beautiful" bug.
+# ----------------------------------------------------------------------
+
+
+def test_supports_draft_streaming_disabled_when_rich_without_rich_drafts():
+    adapter = _make_adapter()  # rich_messages True, rich_drafts default False
+    assert adapter.supports_draft_streaming(chat_type="dm") is False
+    assert adapter.supports_draft_streaming(chat_type="private") is False
+
+
+def test_supports_draft_streaming_enabled_when_rich_drafts_opt_in():
+    adapter = _make_adapter(extra={"rich_drafts": True})
+    assert adapter.supports_draft_streaming(chat_type="dm") is True
+    assert adapter.supports_draft_streaming(chat_type="group") is False
+
+
+def test_supports_draft_streaming_legacy_when_rich_messages_off():
+    adapter = _make_adapter(extra={"rich_messages": False})
+    assert adapter.supports_draft_streaming(chat_type="dm") is True
 
 
 # ----------------------------------------------------------------------

@@ -76,6 +76,93 @@ class TestFalCatalog:
                     f"{mid} should default to upscale=True (sub-2MP native)"
 
 
+    def test_edit_capable_entries_declare_a_full_edit_contract(self, image_tool):
+        """An `edit_endpoint` is useless without the whitelist and the
+        reference-image cap that `_build_fal_edit_payload` reads."""
+        for mid, meta in image_tool.FAL_MODELS.items():
+            if "edit_endpoint" not in meta:
+                continue
+            assert meta.get("edit_supports"), f"{mid} has edit_endpoint but no edit_supports"
+            assert "image_urls" in meta["edit_supports"], \
+                f"{mid} edit_supports must allow image_urls"
+            cap = meta.get("max_reference_images")
+            assert isinstance(cap, int) and cap > 0, \
+                f"{mid} needs a positive max_reference_images"
+
+
+class TestAugust2026Catalog:
+    """The Aug 2026 FAL catalog expansion, surfaced in the model picker."""
+
+    NEW_MODELS = (
+        "bytedance/seedream/v5/pro/text-to-image",
+        "bytedance/seedream/v5/lite/text-to-image",
+        "ideogram/v4/instant",
+        "ideogram/v4/fast",
+        "alibaba/qwen-image-3/text-to-image",
+        "microsoft/mai-image-2.5-pro",
+        "google/nano-banana-2-lite",
+        "fal-ai/recraft/v4.1/text-to-image",
+        "fal-ai/nano-banana-2",
+    )
+
+    def test_new_models_are_in_the_catalog(self, image_tool):
+        missing = [m for m in self.NEW_MODELS if m not in image_tool.FAL_MODELS]
+        assert not missing, f"missing from FAL_MODELS: {missing}"
+
+    def test_paired_edit_endpoints_are_wired(self, image_tool):
+        expected = {
+            "bytedance/seedream/v5/pro/text-to-image": "bytedance/seedream/v5/pro/edit",
+            "alibaba/qwen-image-3/text-to-image": "alibaba/qwen-image-3/edit",
+            "google/nano-banana-2-lite": "google/nano-banana-2-lite/edit",
+            "fal-ai/nano-banana-2": "fal-ai/nano-banana-2/edit",
+        }
+        for model_id, edit_endpoint in expected.items():
+            assert image_tool.FAL_MODELS[model_id]["edit_endpoint"] == edit_endpoint
+
+    def test_text_only_models_declare_no_edit_endpoint(self, image_tool):
+        """These have no `/edit` app on FAL; claiming one would 404 mid-request."""
+        for model_id in (
+            "bytedance/seedream/v5/lite/text-to-image",
+            "ideogram/v4/instant",
+            "ideogram/v4/fast",
+            "microsoft/mai-image-2.5-pro",
+            "fal-ai/recraft/v4.1/text-to-image",
+        ):
+            assert "edit_endpoint" not in image_tool.FAL_MODELS[model_id]
+
+    def test_recraft_v41_omits_keys_its_schema_lacks(self, image_tool):
+        """Recraft V4.1 exposes no num_images/output_format/seed — the
+        `supports` whitelist has to drop them rather than pass them upstream."""
+        p = image_tool._build_fal_payload(
+            "fal-ai/recraft/v4.1/text-to-image", "hello", "landscape"
+        )
+        assert p["image_size"] == "landscape_16_9"
+        for absent in ("num_images", "output_format", "seed"):
+            assert absent not in p
+
+    def test_nano_banana_2_pins_the_1k_billing_tier(self, image_tool):
+        p = image_tool._build_fal_payload("fal-ai/nano-banana-2", "hello", "landscape")
+        assert p["resolution"] == "1K"
+        assert p["aspect_ratio"] == "16:9"
+        assert "image_size" not in p
+
+    def test_nano_banana_2_lite_has_no_resolution_knob(self, image_tool):
+        """The lite tier renders at a fixed 1K and declares no `resolution`."""
+        meta = image_tool.FAL_MODELS["google/nano-banana-2-lite"]
+        assert "resolution" not in meta["supports"]
+        assert "resolution" not in meta["defaults"]
+        p = image_tool._build_fal_payload("google/nano-banana-2-lite", "hello", "square")
+        assert "resolution" not in p
+        assert p["aspect_ratio"] == "1:1"
+
+    def test_seedream_lite_uses_documented_size_presets(self, image_tool):
+        """Lite accepts FAL's preset enum; custom ImageSize dicts are unnecessary."""
+        p = image_tool._build_fal_payload(
+            "bytedance/seedream/v5/lite/text-to-image", "hello", "landscape"
+        )
+        assert p["image_size"] == "landscape_16_9"
+
+
 # ---------------------------------------------------------------------------
 # Payload building — three size families
 # ---------------------------------------------------------------------------

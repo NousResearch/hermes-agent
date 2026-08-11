@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { type EnumeratedWindow, pickWindowBelow } from './window-below'
+import { type EnumeratedWindow, enumerationFailureNote, pickWindowBelow } from './window-below'
 
 const win = (pid: number, x = 0, y = 0, width = 800, height = 600, app = `app-${pid}`): EnumeratedWindow => ({
   app,
@@ -82,5 +82,47 @@ describe('pickWindowBelow', () => {
     const { below } = pickWindowBelow([win(SELF_PID, 100, 100), adjacent], SELF_PID, SELF_BOUNDS)
 
     expect(below).toBeNull()
+  })
+})
+
+describe('enumerationFailureNote', () => {
+  it('tells a Wayland user the session is the problem', () => {
+    for (const env of [{ XDG_SESSION_TYPE: 'wayland' }, { WAYLAND_DISPLAY: 'wayland-0' }]) {
+      expect(enumerationFailureNote('linux', env)).toMatch(/Wayland/)
+    }
+  })
+
+  // Hyprland is asked over its own IPC, so the X11 tooling advice would be a
+  // wrong turn — reaching here means the compositor didn't answer.
+  it('points a Hyprland user at their compositor, not at xprop', () => {
+    const note = enumerationFailureNote('linux', { HYPRLAND_INSTANCE_SIGNATURE: 'abc', XDG_SESSION_TYPE: 'wayland' })
+
+    expect(note).toMatch(/Hyprland/)
+    expect(note).not.toMatch(/xprop|X11\/Xorg/)
+  })
+
+  it('tells an X11 user which commands are missing', () => {
+    const note = enumerationFailureNote('linux', { XDG_SESSION_TYPE: 'x11', DISPLAY: ':0' })
+
+    expect(note).toMatch(/xprop/)
+    expect(note).not.toMatch(/Wayland/)
+  })
+
+  // XWayland can still answer through xprop, so the fix is the tooling, not
+  // switching session type.
+  it('treats Wayland with an X display as X11', () => {
+    const note = enumerationFailureNote('linux', { WAYLAND_DISPLAY: 'wayland-0', DISPLAY: ':0' })
+
+    expect(note).toMatch(/xprop/)
+    expect(note).not.toMatch(/Wayland/)
+  })
+
+  it('does not offer Linux advice on other platforms', () => {
+    for (const platform of ['darwin', 'win32']) {
+      const note = enumerationFailureNote(platform, {})
+
+      expect(note).not.toMatch(/xprop|Wayland/)
+      expect(note.length).toBeGreaterThan(0)
+    }
   })
 })

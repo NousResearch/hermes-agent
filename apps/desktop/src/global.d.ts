@@ -67,13 +67,16 @@ declare global {
       // bar — so it mounts the real composer rather than a lookalike. Main
       // owns the window; `onChanged` keeps every window's toggle truthful.
       hud?: {
-        open: (request?: { sessionId?: null | string }) => Promise<{ ok: boolean }>
+        open: (request?: { sessionId?: null | string; profile?: null | string }) => Promise<{ ok: boolean }>
         close: () => Promise<{ ok: boolean }>
         setIgnoreMouse: (ignore: boolean) => void
+        moveBy: (delta: { x: number; y: number; width: number; height: number }) => void
+        setBounds: (bounds: { x: number; y: number; width: number; height: number }) => void
         setVibrancy: (on: boolean) => Promise<{ ok: boolean }>
         setSession: (sessionId: null | string) => void
         onGoto: (callback: (sessionId: string) => void) => () => void
         onChanged: (callback: (state: { open: boolean; sessionId: null | string }) => void) => () => void
+        onCursor: (callback: (point: { x: number; y: number } | null) => void) => () => void
       }
       // Quick Entry: a global-hotkey mini composer window. Main owns the OS
       // shortcut registration + the persisted preference (it must restore the
@@ -195,6 +198,13 @@ declare global {
       }
       revealLogs: () => Promise<{ ok: boolean; path: string; error?: string }>
       getRecentLogs: () => Promise<{ path: string; lines: string[] }>
+      /** Persist a renderer error-boundary catch to desktop.log (fire-and-forget). */
+      reportRendererError?: (report: {
+        label: string
+        boundary: string
+        message: string
+        componentStack: string
+      }) => void
       readDir: (path: string) => Promise<HermesReadDirResult>
       gitRoot?: (path: string) => Promise<string | null>
       // Reveal a path in the OS file manager (Finder / Explorer).
@@ -258,6 +268,10 @@ declare global {
           commitContext: (repoPath: string) => Promise<{ diff: string; recent: string }>
           push: (repoPath: string) => Promise<{ ok: boolean }>
           shipInfo: (repoPath: string) => Promise<HermesReviewShipInfo>
+          // The PR on each of the given branches — plus any known only by
+          // number — for badging a list of sessions in one request instead of
+          // one `pr view` per checkout.
+          prList: (repoPath: string, branches: string[], numbers?: number[]) => Promise<HermesRepoPullRequests>
           createPr: (repoPath: string) => Promise<{ url: string }>
         }
         // Repo-first discovery: scan bounded roots for git repos (depth-capped).
@@ -492,6 +506,7 @@ export interface DesktopUpdateProgress {
 
 export interface HermesConnection {
   baseUrl: string
+  darwinMajor?: number
   isFullscreen: boolean
   // The live, RESOLVED connection mode. Only ever 'local' or 'remote' — a
   // 'cloud' saved-config entry resolves to a 'remote' connection under the hood
@@ -525,6 +540,7 @@ export interface HermesActiveWork {
 }
 
 export interface HermesWindowState {
+  darwinMajor?: number
   isFullscreen: boolean
   isMinimized?: boolean
   isVisible?: boolean
@@ -931,6 +947,23 @@ export interface HermesReviewPr {
   url: string
   state: string
   number: number
+}
+
+// One repo's PRs as reported by `gh pr list`, each tied to the branch it was
+// opened from — how a session row finds its own PR.
+export interface HermesBranchPullRequest {
+  branch: string
+  draft: boolean
+  number: number
+  /** `open` | `closed` | `merged`, lowercased from gh. */
+  state: string
+  title: string
+  url: string
+}
+
+export interface HermesRepoPullRequests {
+  ghReady: boolean
+  prs: HermesBranchPullRequest[]
 }
 
 // gh availability/auth + the current branch's PR — drives the review pane's PR

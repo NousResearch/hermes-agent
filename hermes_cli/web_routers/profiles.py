@@ -13,7 +13,9 @@ late-binding seam in :mod:`hermes_cli.web_deps` so tests that
 """
 
 import asyncio  # noqa: F401 — used by handlers
+import json
 import logging
+import re
 import subprocess  # noqa: F401
 import sys  # noqa: F401
 import time  # noqa: F401
@@ -33,6 +35,7 @@ from hermes_cli.web_models import (
     ProfileDescriptionUpdate,
     ProfileModelUpdate,
     ProfileDescribeAuto,
+    SessionPrScanBody,
 )
 
 # Same logger the handlers used before extraction (identical logger object).
@@ -238,13 +241,18 @@ def get_profiles_sessions_sidebar(
     """Batched sidebar session slices — one profile-DB open per refresh.
 
     The desktop sidebar needs three source-scoped windows per refresh: recents
-    (local chats, scoped to the active profile), cron sessions (all profiles),
-    and messaging-platform sessions (all profiles). Served as three separate
-    ``/api/profiles/sessions`` calls they reopened every profile's ``state.db``
-    three times and re-counted each refresh. This opens each DB once and runs
-    the three filtered queries together, returning the three windows in one
-    payload. Read-only and process-light, same row projection and 300s active
-    heuristic as ``/api/profiles/sessions``.
+    (local chats), cron sessions, and messaging-platform sessions. Served as
+    three separate ``/api/profiles/sessions`` calls they reopened every
+    profile's ``state.db`` three times and re-counted each refresh. This opens
+    each DB once and runs the three filtered queries together, returning the
+    three windows in one payload. Read-only and process-light, same row
+    projection and 300s active heuristic as ``/api/profiles/sessions``.
+
+    ``recents_profile`` scopes the whole payload, not just recents. Cron and
+    messaging used to come back cross-profile unconditionally, which is what
+    made a concrete profile show another profile's Telegram threads and
+    cronjobs (#65710, #42651, #70629) — the sidebar has one scope, so every
+    slice answers to it, and ``all`` is how the caller asks for everything.
 
     The caller passes the source taxonomy (``recents_exclude`` /
     ``messaging_exclude`` CSV, ``source=cron`` is implicit) so this stays
@@ -254,8 +262,6 @@ def get_profiles_sessions_sidebar(
     """
     from hermes_cli import profiles as profiles_mod
 
-    # cron + messaging are cross-profile; recents is scoped to recents_profile.
-    # Scan every profile once regardless (each DB opened a single time).
     try:
         infos = profiles_mod.list_profiles()
         targets: List[Tuple[str, Path]] = [(info.name, info.path) for info in infos]
@@ -277,6 +283,7 @@ def get_profiles_sessions_sidebar(
     cron_rows: List[Dict[str, Any]] = []
     messaging_rows: List[Dict[str, Any]] = []
     recents_truncated: Dict[str, bool] = {}
+    profile_totals: Dict[str, Dict[str, float]] = {}
     errors: List[Dict[str, str]] = []
     now = time.time()
 
@@ -311,6 +318,8 @@ def get_profiles_sessions_sidebar(
         )
 
     for name, home in targets:
+        if recents_scope != "all" and name != recents_scope:
+            continue
         db_path = Path(home) / "state.db"
         if not db_path.exists():
             continue
@@ -324,16 +333,19 @@ def get_profiles_sessions_sidebar(
             errors.append({"profile": name, "error": str(exc)})
             continue
         try:
-            if recents_scope == "all" or name == recents_scope:
-                profile_rows = _slice(db, exclude=recents_exclude_list, cap=recents_cap)
-                # A full window means more rows remain on disk. That is all the
-                # sidebar's "load more" needs, and unlike an exact COUNT(*) per
-                # profile per refresh it costs nothing beyond the rows already
-                # read. Discount pinned back-fills — they arrive past the LIMIT
-                # and would otherwise fake a full page on a short list.
-                unpinned_count = sum(1 for s in profile_rows if not s.get("pinned"))
-                recents_truncated[name] = unpinned_count >= recents_cap
-                recents_rows.extend(_tag(profile_rows, name))
+            profile_rows = _slice(db, exclude=recents_exclude_list, cap=recents_cap)
+            # A full window means more rows remain on disk. That is all the
+            # sidebar's "load more" needs, and unlike an exact COUNT(*) per
+            # profile per refresh it costs nothing beyond the rows already
+            # read. Discount pinned back-fills — they arrive past the LIMIT
+            # and would otherwise fake a full page on a short list.
+            unpinned_count = sum(1 for s in profile_rows if not s.get("pinned"))
+            recents_truncated[name] = unpinned_count >= recents_cap
+            recents_rows.extend(_tag(profile_rows, name))
+            # Aggregated in SQL rather than over the window above: the window is
+            # a page, and a total that shrank when you scrolled would be worse
+            # than no total at all.
+            profile_totals[name] = db.usage_totals()
             cron_rows.extend(_tag(_slice(db, source="cron", cap=cron_cap), name))
             messaging_rows.extend(
                 _tag(_slice(db, exclude=messaging_exclude_list, cap=messaging_cap), name)
@@ -360,6 +372,7 @@ def get_profiles_sessions_sidebar(
         "recents": {
             "sessions": _window(recents_rows, recents_cap),
             "profiles_truncated": recents_truncated,
+            "profiles_usage": profile_totals,
         },
         "cron": {"sessions": _window(cron_rows, cron_cap)},
         "messaging": {
@@ -368,6 +381,233 @@ def get_profiles_sessions_sidebar(
         },
         "errors": errors,
     }
+
+
+def _merge_by_id(into: Dict[str, Dict[str, Any]], entries: List[Dict[str, Any]], child_key: str) -> None:
+    """Fold ``entries`` into ``into`` by id, recursing through one child list.
+
+    Repos merge their lanes, lanes merge their sessions. Counts add up and the
+    newest activity wins; everything else is first-writer, since the entries
+    describe the same path either way.
+    """
+    for entry in entries:
+        existing = into.get(entry["id"])
+        if existing is None:
+            into[entry["id"]] = entry
+            continue
+        if child_key == "sessions":
+            existing["sessions"].extend(entry.get("sessions") or [])
+        else:
+            children: Dict[str, Dict[str, Any]] = {c["id"]: c for c in existing.get(child_key) or []}
+            _merge_by_id(children, entry.get(child_key) or [], "sessions")
+            existing[child_key] = list(children.values())
+        if "sessionCount" in existing:
+            existing["sessionCount"] = (existing.get("sessionCount") or 0) + (entry.get("sessionCount") or 0)
+
+
+def _merge_profile_tree(
+    merged: Dict[str, Dict[str, Any]],
+    projects: List[Dict[str, Any]],
+    profile: str,
+    preview_limit: int,
+) -> None:
+    """Fold one profile's projects into the shared tree, keyed by folder.
+
+    The same checkout in two profiles is one group, as is ``__no_project__``,
+    which every profile has and which would otherwise put a "Home" on screen per
+    profile. Keying on the path rather than the id also folds a profile's
+    declared project (``p_<hash>``) together with the auto entry another profile
+    grows for the same folder. Sessions carry the owning profile instead, which
+    is what the row badge and the profile filter read; a group header never
+    claims a single owner.
+    """
+    for project in projects:
+        for lane in (repo for r in project.get("repos") or [] for repo in r.get("groups") or []):
+            for session in lane.get("sessions") or []:
+                session["profile"] = profile
+                session["is_default_profile"] = profile == "default"
+        for session in project.get("previewSessions") or []:
+            session["profile"] = profile
+            session["is_default_profile"] = profile == "default"
+
+        key = project.get("path") or project["id"]
+        existing = merged.get(key)
+        if existing is None:
+            merged[key] = project
+            continue
+
+        # A declared project carries the label, color and icon the user chose,
+        # so it wins the identity when it meets another profile's auto entry.
+        if existing.get("isAuto") and not project.get("isAuto"):
+            existing, project = project, existing
+            merged[key] = existing
+
+        repos: Dict[str, Dict[str, Any]] = {r["id"]: r for r in existing.get("repos") or []}
+        _merge_by_id(repos, project.get("repos") or [], "groups")
+        existing["repos"] = list(repos.values())
+        existing["sessionCount"] = (existing.get("sessionCount") or 0) + (project.get("sessionCount") or 0)
+        existing["totalTokens"] = (existing.get("totalTokens") or 0) + (project.get("totalTokens") or 0)
+        existing["totalCostUsd"] = (existing.get("totalCostUsd") or 0) + (project.get("totalCostUsd") or 0)
+        existing["lastActive"] = max(existing.get("lastActive") or 0, project.get("lastActive") or 0)
+        previews = (existing.get("previewSessions") or []) + (project.get("previewSessions") or [])
+        previews.sort(key=lambda s: s.get("last_active") or s.get("started_at") or 0, reverse=True)
+        existing["previewSessions"] = previews[:preview_limit]
+
+
+@sessions_router.get("/api/profiles/projects/tree")
+def get_profiles_projects_tree(preview_limit: int = 3, session_limit: int = 2000):
+    """Project tree for every profile at once, for the all-profiles sidebar.
+
+    ``projects.tree`` over JSON-RPC answers for the backend's own profile, so
+    the grouped sidebar had nothing to draw once the user asked for all of
+    them. This runs the same authoritative builder once per profile against
+    that profile's ``state.db``, scoping the rest of its inputs — projects.db,
+    the repo-scan policy, the HERMES_HOME junk filters — through the
+    context-local home override the profile-scoped writers already use.
+
+    Projects merge by id across profiles, so a group stands for a checkout
+    rather than a checkout-and-owner, and the profile shows up per row where
+    the filter can act on it.
+
+    Discovery is off. A repo with zero sessions is the same repo in every
+    profile, so folding the disk scan in would multiply empty lanes by the
+    profile count — and it is the one part of the builder that writes
+    (policy reconciliation), which this read-only fan-out should not do to a
+    profile the user is not driving.
+    """
+    from hermes_cli import profiles as profiles_mod
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+    from tui_gateway import server as gateway_server
+
+    try:
+        targets: List[Tuple[str, Path]] = [
+            (info.name, info.path) for info in profiles_mod.list_profiles()
+        ]
+    except Exception:
+        _log.exception("GET /api/profiles/projects/tree: list_profiles failed")
+        targets = []
+    if not targets:
+        targets.append(("default", profiles_mod.get_profile_dir("default")))
+
+    merged: Dict[str, Dict[str, Any]] = {}
+    scoped_session_ids: List[str] = []
+    errors: List[Dict[str, str]] = []
+
+    for name, home in targets:
+        db_path = Path(home) / "state.db"
+        if not db_path.exists():
+            continue
+        try:
+            db = _open_session_db_at_path(db_path, read_only=True)
+        except Exception as exc:
+            _warn_profile_read_error(name, exc)
+            errors.append({"profile": name, "error": str(exc)})
+            continue
+
+        token = set_hermes_home_override(str(home))
+        try:
+            tree, _active_id = gateway_server._build_project_tree(
+                db,
+                preview_limit=preview_limit,
+                hydrate=False,
+                session_limit=session_limit,
+                include_discovered=False,
+            )
+            _merge_profile_tree(merged, tree["projects"], name, preview_limit)
+            scoped_session_ids.extend(tree["scoped_session_ids"])
+        except Exception as exc:
+            _warn_profile_read_error(name, exc)
+            errors.append({"profile": name, "error": str(exc)})
+        finally:
+            reset_hermes_home_override(token)
+            db.close()
+
+    projects = sorted(merged.values(), key=lambda p: p.get("lastActive") or 0, reverse=True)
+    return {
+        "projects": projects,
+        # Ownership is per profile, so no single project is "the active one"
+        # here; the desktop only reads active_id to bias its overview sort.
+        "active_id": None,
+        "scoped_session_ids": scoped_session_ids,
+        "errors": errors,
+    }
+
+
+# `gh pr create` prints the PR url and nothing else, so a tool result whose
+# whole output IS a PR url means this session opened that PR. Anything looser —
+# a url inside prose, a `gh pr view` payload, an issue link — is a session
+# TALKING about a PR, which is not the same claim.
+_PR_URL_RE = re.compile(r"^https://github\.com/[\w.-]+/[\w.-]+/pull/(\d+)/?$")
+
+
+def _pr_url_from_tool_output(content: str) -> Optional[Tuple[int, str]]:
+    """The (number, url) a tool result announces, or None."""
+    try:
+        output = (json.loads(content) or {}).get("output")
+    except (json.JSONDecodeError, TypeError, AttributeError):
+        return None
+    if not isinstance(output, str):
+        return None
+    match = _PR_URL_RE.match(output.strip())
+    return (int(match.group(1)), match.group(0)) if match else None
+
+
+@sessions_router.post("/api/profiles/sessions/pull-requests")
+def post_profiles_sessions_pull_requests(body: SessionPrScanBody):
+    """The PR each of these sessions opened, recovered from its own transcript.
+
+    A session records the branch it started on, so the sidebar can join a row to
+    its PR — but a session that starts in the main checkout and does its work in
+    a worktree has no branch of its own, and its PR is invisible to that join.
+    The evidence is in the conversation: ``gh pr create`` ran, and its output is
+    a bare PR url. Scanning for exactly that shape recovers the link with no
+    inference (see ``_pr_url_from_tool_output``).
+
+    Read-only across every profile, and the caller is expected to ask once per
+    session and remember the answer — a session's transcript does not grow a
+    second PR.
+    """
+    from hermes_cli import profiles as profiles_mod
+
+    wanted = list(dict.fromkeys(s for s in (body.ids or []) if s))[:2000]
+    if not wanted:
+        return {"pull_requests": {}, "scanned": []}
+
+    try:
+        targets = [(info.name, info.path) for info in profiles_mod.list_profiles()]
+    except Exception:
+        _log.exception("POST /api/profiles/sessions/pull-requests: list_profiles failed")
+        targets = []
+    if not targets:
+        targets.append(("default", profiles_mod.get_profile_dir("default")))
+
+    found: Dict[str, Dict[str, Any]] = {}
+    for name, home in targets:
+        db_path = Path(home) / "state.db"
+        if not db_path.exists():
+            continue
+        try:
+            db = _open_session_db_at_path(db_path, read_only=True)
+        except Exception as exc:
+            _warn_profile_read_error(name, exc)
+            continue
+        try:
+            for pr in db.find_pr_url_messages(wanted):
+                parsed = _pr_url_from_tool_output(pr["content"])
+                if parsed:
+                    number, url = parsed
+                    # Ordered oldest-first, so a later `gh pr create` in the
+                    # same conversation wins — a reopened/replacement PR is the
+                    # one the session ended on.
+                    found[pr["session_id"]] = {"number": number, "url": url}
+        except Exception as exc:
+            _warn_profile_read_error(name, exc)
+        finally:
+            db.close()
+
+    # Every id we looked at, so the caller can remember "asked, nothing there"
+    # and never scan this session again.
+    return {"pull_requests": found, "scanned": wanted}
 
 
 @router.get("/api/profiles")

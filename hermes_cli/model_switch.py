@@ -884,8 +884,24 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
     suffix = suffix_buf.lower().strip("-_.")
     suffix = suffix.strip()
 
+    # Split out YYYYMMDD date stamps (e.g. claude-opus-4-20250514): they are
+    # snapshot markers, not version components, and would otherwise dwarf
+    # real point versions (20250514 > 8).  Kept as a trailing tiebreaker so
+    # bare IDs sort before their dated snapshots, and newer snapshots before
+    # older ones.  The 19_000_101 threshold reclassifies only 8-digit stamps,
+    # so shorter numeric components (mistral-large-2411, gpt-4-0613) keep
+    # their current behavior.
+    version_nums: list[float] = []
+    date_stamp = 0.0
+    for n in nums:
+        if n >= 19_000_101:
+            date_stamp = max(date_stamp, n)
+        else:
+            version_nums.append(n)
+
     # Negate versions so higher → sorts first
-    version_key = tuple(-n for n in nums)
+    version_key = tuple(-n for n in version_nums)
+    date_key = (0.0, 0.0) if date_stamp == 0.0 else (1.0, -date_stamp)
 
     # Suffix quality ranking: pro/max > (no suffix) > omni/flash/mini/lite
     # Lower number = preferred
@@ -897,7 +913,38 @@ def _model_sort_key(model_id: str, prefix: str) -> tuple:
     _SUFFIX_RANK = {"pro": 0, "max": 0, "plus": 0, "turbo": 0, "sol": 0}
     suffix_rank = _SUFFIX_RANK.get(suffix, 1)
 
-    return version_key + (suffix_rank, suffix)
+    return version_key + (suffix_rank, suffix) + date_key
+
+
+class AmbiguousAliasError(Exception):
+    """Alias family-matches multiple catalog models; caller must disambiguate.
+
+    Raised by :func:`resolve_alias` instead of silently picking one candidate
+    via version-sort heuristics. ``candidates`` is sorted best-guess-first
+    (see :func:`_model_sort_key`) for display purposes only.
+    """
+
+    def __init__(self, alias: str, provider: str, candidates: list[str]):
+        self.alias = alias
+        self.provider = provider
+        self.candidates = candidates
+        super().__init__(
+            f"alias {alias!r} matches {len(candidates)} models on {provider}"
+        )
+
+
+def _ambiguous_alias_message(err: "AmbiguousAliasError") -> str:
+    """User-facing disambiguation list for an ambiguous alias."""
+    shown = err.candidates[:10]
+    lines = "\n".join(f"  {i}. {m}" for i, m in enumerate(shown, 1))
+    more = ""
+    if len(err.candidates) > len(shown):
+        more = f"\n  … and {len(err.candidates) - len(shown)} more"
+    return (
+        f"'{err.alias}' matches {len(err.candidates)} models on "
+        f"{err.provider} — not switching automatically:\n{lines}{more}\n"
+        f"Pick one with /model <exact-model-name>."
+    )
 
 
 def resolve_alias(
@@ -971,9 +1018,15 @@ def resolve_alias(
     if not matches:
         return None
 
-    # Sort by version descending — prefer the latest/highest version
+    # Sort by version descending (best guess first) for display, but NEVER
+    # silently pick among multiple candidates: version-sort heuristics have
+    # repeatedly guessed wrong (dated snapshots outranking point releases,
+    # suffix tiebreaks landing on the cheapest tier). One match = resolve;
+    # several = make the user choose.
     prefix_for_sort = f"{vendor}/{family}" if aggregator else family
     matches.sort(key=lambda m: _model_sort_key(m, prefix_for_sort))
+    if len(matches) > 1:
+        raise AmbiguousAliasError(key, current_provider, matches)
     return (current_provider, matches[0], key)
 
 
@@ -1010,6 +1063,9 @@ def _resolve_alias_fallback(
     """
     providers = authenticated_providers or ("openrouter", "nous")
     for provider in providers:
+        # AmbiguousAliasError propagates: the alias exists on this provider,
+        # the user just has to choose — trying the next provider instead
+        # would silently switch them somewhere they didn't ask to go.
         result = resolve_alias(raw_input, provider)
         if result is not None:
             return result
@@ -1406,7 +1462,15 @@ def switch_model(
                 )
 
         # Resolve alias on the TARGET provider
-        alias_result = resolve_alias(new_model, target_provider)
+        try:
+            alias_result = resolve_alias(new_model, target_provider)
+        except AmbiguousAliasError as err:
+            return ModelSwitchResult(
+                success=False,
+                target_provider=target_provider,
+                is_global=is_global,
+                error_message=_ambiguous_alias_message(err),
+            )
         if alias_result is not None:
             _, new_model, resolved_alias = alias_result
 
@@ -1428,8 +1492,21 @@ def switch_model(
                 alias_result = None
             else:
                 alias_result = resolve_alias(raw_input, current_provider)
+        except AmbiguousAliasError as err:
+            return ModelSwitchResult(
+                success=False,
+                is_global=is_global,
+                error_message=_ambiguous_alias_message(err),
+            )
         except Exception:
-            alias_result = resolve_alias(raw_input, current_provider)
+            try:
+                alias_result = resolve_alias(raw_input, current_provider)
+            except AmbiguousAliasError as err:
+                return ModelSwitchResult(
+                    success=False,
+                    is_global=is_global,
+                    error_message=_ambiguous_alias_message(err),
+                )
 
         # --- Step a: Try alias resolution on current provider ---
 
@@ -1450,7 +1527,14 @@ def switch_model(
                     user_providers=user_providers,
                     custom_providers=custom_providers,
                 )
-                fallback_result = _resolve_alias_fallback(raw_input, authed)
+                try:
+                    fallback_result = _resolve_alias_fallback(raw_input, authed)
+                except AmbiguousAliasError as err:
+                    return ModelSwitchResult(
+                        success=False,
+                        is_global=is_global,
+                        error_message=_ambiguous_alias_message(err),
+                    )
                 if fallback_result is not None:
                     target_provider, new_model, resolved_alias = fallback_result
                     logger.debug(
@@ -1621,11 +1705,16 @@ def switch_model(
                 or (user_providers or {}).get(target_provider) or {}
             _ukey = str(_ucfg.get("api_key", "") or "").strip()
             if _ukey.startswith("${") and _ukey.endswith("}"):
-                _ukey = os.environ.get(_ukey[2:-1], "").strip()
+                # Same class as the picker reads below: a raw os.environ read
+                # here hands this profile whatever key the process env holds —
+                # another profile's, under the multiplexed gateway. Route
+                # through the per-profile secret scope (identical to
+                # os.getenv when multiplexing is off, fail-closed otherwise).
+                _ukey = _scoped_key_env(_ukey[2:-1])
             if not _ukey:
                 _kenv = str(_ucfg.get("key_env", "") or "").strip()
                 if _kenv:
-                    _ukey = os.environ.get(_kenv, "").strip()
+                    _ukey = _scoped_key_env(_kenv)
             try:
                 runtime = resolve_runtime_provider(
                     requested=target_provider,
@@ -1938,6 +2027,30 @@ def prewarm_picker_cache_async() -> Optional["_threading.Thread"]:
     t = _threading.Thread(target=_warm, daemon=True, name="picker-cache-prewarm")
     t.start()
     return t
+
+
+def _scoped_key_env(name: str) -> str:
+    """Read a provider key env var through the per-profile secret scope.
+
+    The multiplexed gateway installs a secret scope per turn; a raw
+    ``os.environ`` read hands the current profile whatever key happens to be
+    in the process environment — another profile's, in a multiplexer. That is
+    the class swept in 854007d1c for the fallback/aux key reads; the picker's
+    ``key_env`` reads were not covered.
+
+    Identical to ``os.getenv`` when multiplexing is off. A fail-closed
+    ``UnscopedSecretError`` (multiplexing on, no scope installed) means "no
+    credential visible for this profile here", which is exactly how the picker
+    already treats a missing key.
+    """
+    if not name:
+        return ""
+    try:
+        from agent.secret_scope import get_secret
+
+        return (get_secret(name, "") or "").strip()
+    except Exception:
+        return ""
 
 
 def list_authenticated_providers(
@@ -2707,7 +2820,7 @@ def list_authenticated_providers(
             api_key = str(ep_cfg.get("api_key", "") or "").strip()
             if not api_key:
                 key_env = str(ep_cfg.get("key_env", "") or "").strip()
-                api_key = os.environ.get(key_env, "").strip() if key_env else ""
+                api_key = _scoped_key_env(key_env)
             discover = ep_cfg.get("discover_models", True)
             if isinstance(discover, str):
                 discover = discover.lower() not in {"false", "no", "0"}
@@ -2881,9 +2994,7 @@ def list_authenticated_providers(
                 continue
             inline_api_key = (entry.get("api_key") or "").strip()
             key_env = (entry.get("key_env") or "").strip()
-            api_key = inline_api_key or (
-                os.environ.get(key_env, "").strip() if key_env else ""
-            )
+            api_key = inline_api_key or _scoped_key_env(key_env)
             api_mode = str(
                 entry.get("api_mode")
                 or entry.get("transport")

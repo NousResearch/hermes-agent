@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any, Callable, Dict, Optional, Tuple, cast
 
 from gateway.config import Platform, PlatformConfig
@@ -85,6 +86,10 @@ class RelayAdapter(BasePlatformAdapter):
         # feedback off SendResult — see send()). Consumed by the gateway's
         # semantic thread-rename lane; bounded like the sibling caches.
         self._auto_thread_by_chat: Dict[str, Tuple[str, str]] = {}
+        # chat_id -> event fired when the entry above lands, so a consumer that
+        # arrives before the send can wait for it instead of polling. See
+        # wait_for_auto_thread_info.
+        self._auto_thread_waiters: Dict[str, asyncio.Event] = {}
         # chat_id -> chat_type (e.g. "dm", "channel", "group") learned from the
         # inbound event. Used to reproduce native Slack's synthetic-DM-thread
         # suppression on the relay lane: a DM streaming reply carries
@@ -483,6 +488,24 @@ class RelayAdapter(BasePlatformAdapter):
         except Exception:  # noqa: BLE001 - media localization must never break inbound
             logger.debug("relay inbound media localization failed", exc_info=True)
 
+    def prime_routing_cache(self, event) -> None:
+        """Warm the per-chat egress routing caches from a SYNTHETIC event.
+
+        The caches (_scope_by_chat/_dm_user_by_chat/...) are normally warmed
+        only by the inbound path (_on_inbound -> _capture_scope). A synthetic
+        completion turn injected right after a restart (durable
+        async-delegation replay) reaches handle_message with the caches COLD,
+        so every reply it produces egresses without metadata.scope_id /
+        metadata.user_id and is declined by the connector's fail-closed
+        tenant guard ("target not routed to an onboarded tenant" — staging
+        2026-08-09, defect #4). The synthetic event's session-store origin
+        already carries the discriminators; feed it through the same capture
+        used for real inbound. Never raises.
+        """
+        if event is None or getattr(event, "source", None) is None:
+            return
+        self._capture_scope(event)
+
     def _capture_scope(self, event) -> None:
         """Remember a chat_id's egress discriminator from an inbound event so our
         outbound (the agent's reply) can re-assert it for the connector's egress
@@ -819,6 +842,17 @@ class RelayAdapter(BasePlatformAdapter):
         return parts
 
     async def disconnect(self) -> None:
+        # Budget accounting: the runner wraps this whole call in
+        # asyncio.wait_for(_adapter_disconnect_timeout_secs()). Everything we
+        # spend on monitor teardown and go_idle below eats into what the
+        # transport can spend on its outbound drain, so measure from the top
+        # and thread the REMAINDER down — otherwise worst-case
+        # monitor(1s) + go_idle(2s) + drain + 3×teardown(1s) can blow the 5s
+        # budget, cancelling teardown mid-drain and skipping the transport's
+        # fail-pending loop (callers then block on _OUTBOUND_TIMEOUT_S).
+        from gateway.relay.ws_transport import _env_disconnect_budget_s
+        _started = time.monotonic()
+        _budget = _env_disconnect_budget_s()
         # Phase 7 Unit 7d-B: stop the revocation monitor first so it can't fire a
         # spurious fatal during/after a deliberate teardown.
         if self._revocation_monitor is not None:
@@ -862,7 +896,16 @@ class RelayAdapter(BasePlatformAdapter):
                         )
             finally:
                 try:
-                    await asyncio.shield(self._transport.disconnect())
+                    _remaining = max(0.0, _budget - (time.monotonic() - _started))
+                    try:
+                        _td = cast(Any, self._transport).disconnect(
+                            budget_s=_remaining
+                        )
+                    except TypeError:
+                        # Transports without the budget_s keyword (stubs,
+                        # older implementations) keep the legacy signature.
+                        _td = self._transport.disconnect()
+                    await asyncio.shield(_td)
                 except Exception:  # noqa: BLE001 - teardown must not block outer cancel propagation
                     logger.debug(
                         "relay transport disconnect failed during drain",
@@ -993,6 +1036,13 @@ class RelayAdapter(BasePlatformAdapter):
                     )
         except Exception:  # noqa: BLE001 - feedback capture must never break send
             pass
+        # Wake the rename lane on EVERY send into this chat, not only the ones
+        # that auto-threaded. It is waiting to learn where this turn's reply
+        # landed, and "nowhere new" is an answer — one it should get now rather
+        # than by outlasting a timeout.
+        waiter = self._auto_thread_waiters.get(str(chat_id))
+        if waiter is not None:
+            waiter.set()
         return SendResult(
             success=bool(result.get("success")),
             message_id=result.get("message_id"),
@@ -1006,6 +1056,42 @@ class RelayAdapter(BasePlatformAdapter):
         for the most recent send into *chat_id*, if any. Consumed by the
         gateway's semantic thread-rename lane (auto session title)."""
         return self._auto_thread_by_chat.get(str(chat_id))
+
+    async def wait_for_auto_thread_info(
+        self, chat_id: str, timeout: float
+    ) -> Optional[Tuple[str, str]]:
+        """``auto_thread_info_for_chat``, but willing to wait for the send.
+
+        The rename lane asks where the reply landed as soon as the session is
+        titled, and the session is titled from the user's opening message —
+        before the model has answered, let alone before we've sent anything. So
+        the question arrives a whole turn early, and a turn is a one-liner or
+        twenty minutes of tool calls.
+
+        Waits for the next send into this chat and then answers, so a reply the
+        connector didn't auto-thread reports its miss as soon as it's sent
+        instead of holding until *timeout* — which is only a backstop for a turn
+        that never sends at all.
+        """
+        info = self.auto_thread_info_for_chat(chat_id)
+        if info is not None:
+            return info
+        key = str(chat_id)
+        waiter = self._auto_thread_waiters.get(key)
+        if waiter is None:
+            waiter = asyncio.Event()
+            self._auto_thread_waiters[key] = waiter
+        try:
+            await asyncio.wait_for(waiter.wait(), timeout)
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            # Only the waiter we may have installed, and only if no later call
+            # replaced it; a fired event must not be left behind to make the
+            # next turn's wait return instantly on stale feedback.
+            if self._auto_thread_waiters.get(key) is waiter:
+                self._auto_thread_waiters.pop(key, None)
+        return self.auto_thread_info_for_chat(chat_id)
 
     def _resolve_reply_to_for_send(
         self,

@@ -59,7 +59,8 @@
     "js-yaml@^4": "4.3.1",
     "undici@^6": "6.28.0",
     "undici@^7": "7.29.0",
-    "postcss": "8.5.23"
+    "postcss": "8.5.23",
+    "tar": "7.5.22"
   },
   "engines": {
     "node": ">=22.22.0",
@@ -73,6 +74,7 @@
     "agent-browser@0.26.0": true,
     "electron@40.10.2": true,
     "fsevents@2.3.2": true,
-    "fsevents@2.3.3": true
+    "fsevents@2.3.3": true,
+    "get-windows@9.3.0": true
   }
 }

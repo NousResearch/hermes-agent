@@ -1230,14 +1230,29 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
     return headers
 
 
-def _to_openai_base_url(base_url: str) -> str:
-    """Normalize an Anthropic-style base URL to OpenAI-compatible format.
+# Hosts that expose BOTH an Anthropic-style ``…/anthropic`` path and a sibling
+# OpenAI-compatible ``…/v1`` (or vendor-specific OpenAI path). Unconditional
+# ``/anthropic`` → ``/v1`` rewrites break Anthropic-only gateways such as
+# Alibaba Bailian Token Plan (#83642).
+_DUAL_SURFACE_ANTHROPIC_HOST_MARKERS = (
+    "minimax.io",
+    "minimax.chat",
+    "minimaxi.com",
+    "api.minimax",
+)
 
-    Some providers (MiniMax, MiniMax-CN) expose an ``/anthropic`` endpoint for
-    the Anthropic Messages API and a separate ``/v1`` endpoint for OpenAI chat
-    completions.  The auxiliary client uses the OpenAI SDK, so it must hit the
-    ``/v1`` surface.  Passing the raw ``inference_base_url`` causes requests to
-    land on ``/anthropic/chat/completions`` — a 404.
+
+def _to_openai_base_url(base_url: str) -> str:
+    """Normalize dual-surface Anthropic URLs to OpenAI-compatible format.
+
+    MiniMax (and MiniMax-CN) expose an ``/anthropic`` endpoint for the Anthropic
+    Messages API and a separate ``/v1`` endpoint for OpenAI chat completions.
+    The auxiliary client often uses the OpenAI SDK, so those dual-surface hosts
+    must hit ``/v1``.
+
+    Anthropic-**only** custom gateways (path ends in ``/anthropic`` but has no
+    sibling ``/v1``) must keep their path; rewriting them to ``/v1`` yields 404
+    on compression/vision/title_generation (#83642).
     """
     url = str(base_url or "").strip().rstrip("/")
     if url.endswith("/anthropic"):
@@ -1247,9 +1262,16 @@ def _to_openai_base_url(base_url: str) -> str:
             rewritten = url[: -len("/anthropic")] + "/paas/v4"
             logger.debug("Auxiliary client: rewrote ZAI base URL %s → %s", url, rewritten)
             return rewritten
-        rewritten = url[: -len("/anthropic")] + "/v1"
-        logger.debug("Auxiliary client: rewrote base URL %s → %s", url, rewritten)
-        return rewritten
+        if any(marker in url for marker in _DUAL_SURFACE_ANTHROPIC_HOST_MARKERS):
+            rewritten = url[: -len("/anthropic")] + "/v1"
+            logger.debug("Auxiliary client: rewrote dual-surface base URL %s → %s", url, rewritten)
+            return rewritten
+        # Anthropic-only gateway: leave the /anthropic path alone.
+        logger.debug(
+            "Auxiliary client: keeping Anthropic-only base URL %s (no dual-surface host match)",
+            url,
+        )
+        return url
     if "api.kimi.com" in url and url.endswith("/coding"):
         # Kimi Code uses /coding/v1/messages for Anthropic SDK (appends /v1/messages)
         # but /coding/v1/chat/completions for OpenAI SDK (appends /chat/completions)

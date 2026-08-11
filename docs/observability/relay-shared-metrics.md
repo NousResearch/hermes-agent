@@ -9,6 +9,15 @@ Hermes execution remains available, while Relay scopes, middleware, plugins,
 and subscribers are unavailable. The `hermes-agent[nemo-relay]` extra remains
 as a no-op compatibility alias for existing installation commands.
 
+> [!WARNING]
+> This removes the Hermes `observability/nemo_relay` plugin. Existing users
+> must remove `observability/nemo_relay` (or its legacy `nemo_relay` alias)
+> from `plugins.enabled` and move exporter configuration into a Relay
+> `plugins.toml` selected with `HERMES_NEMO_RELAY_PLUGINS_TOML`. The legacy
+> `HERMES_NEMO_RELAY_ATOF_*` and `HERMES_NEMO_RELAY_ATIF_*` variables no
+> longer activate exporters. Without the new variable, Hermes does not run
+> Relay plugin discovery, configuration layering, middleware, or exporters.
+
 Hermes requires NeMo Relay 0.7.1 or later within the 0.7 release line. That
 release establishes the lossless provider-codec contract used for Anthropic
 Messages, OpenAI Chat Completions, and OpenAI Responses requests.

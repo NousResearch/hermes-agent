@@ -20,11 +20,15 @@ class _FakeRelay:
         initialize_error: Exception | None = None,
         dynamic_initialize_error: Exception | None = None,
         activation_close_error: Exception | None = None,
+        active_report: Any = None,
+        report_error: Exception | None = None,
     ) -> None:
         self.events: list[tuple[Any, ...]] = []
         self.initialize_error = initialize_error
         self.dynamic_initialize_error = dynamic_initialize_error
         self.activation_close_error = activation_close_error
+        self.active_report = active_report
+        self.report_error = report_error
         self.dynamic_plugin_specs: list[dict[str, Any]] = []
         self.ScopeType = SimpleNamespace(Agent="agent")
         self.plugin = SimpleNamespace(
@@ -32,6 +36,7 @@ class _FakeRelay:
             initialize_with_dynamic_plugins=self._initialize_dynamic_plugins,
             load_dynamic_plugin_activation_specs=self._load_dynamic_plugin_specs,
             clear_async=self._clear_plugins_async,
+            report=self._report_plugins,
         )
         self.scope = SimpleNamespace(
             push=self._scope_push,
@@ -73,6 +78,11 @@ class _FakeRelay:
 
     async def _clear_plugins_async(self) -> None:
         self.events.append(("plugin.clear_async",))
+
+    def _report_plugins(self) -> Any:
+        if self.report_error is not None:
+            raise self.report_error
+        return self.active_report
 
     def _scope_push(self, name: str, scope_type: Any, **kwargs: Any) -> Any:
         handle = ("scope", name, len(self.events))
@@ -138,6 +148,63 @@ def test_relay_initializes_explicit_plugins_before_first_session_scope(
         host.ensure_session({"session_id": "session"})
         assert relay.events[0] == ("plugin.initialize", {})
         assert relay.events[1][0:2] == ("scope.push", relay_runtime.SESSION_SCOPE)
+    finally:
+        host.shutdown()
+
+
+def test_foreign_active_plugin_configuration_is_left_unchanged(
+    explicit_static_config,
+    caplog,
+):
+    foreign_report = {"diagnostics": [], "source": "embedding-host"}
+    relay = _FakeRelay(active_report=foreign_report)
+
+    with caplog.at_level("WARNING"):
+        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+
+    try:
+        assert not host.managed_execution_enabled()
+        assert relay.active_report is foreign_report
+        assert relay.events == []
+        assert "already active outside Hermes native ownership" in caplog.text
+        assert "leaving it unchanged" in caplog.text
+    finally:
+        host.shutdown()
+
+
+def test_unreadable_foreign_plugin_state_fails_safe(
+    explicit_static_config,
+    caplog,
+):
+    relay = _FakeRelay(report_error=RuntimeError("report unavailable"))
+
+    with caplog.at_level("WARNING"):
+        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+
+    try:
+        assert not host.managed_execution_enabled()
+        assert relay.events == []
+        assert "refusing to replace it" in caplog.text
+    finally:
+        host.shutdown()
+
+
+def test_legacy_exporter_env_without_plugins_toml_warns_and_stays_disabled(
+    monkeypatch,
+    caplog,
+):
+    monkeypatch.delenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, raising=False)
+    monkeypatch.setenv("HERMES_NEMO_RELAY_ATOF_ENABLED", "1")
+    relay = _FakeRelay()
+
+    with caplog.at_level("WARNING"):
+        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+
+    try:
+        assert not host.managed_execution_enabled()
+        assert relay.events == []
+        assert "no HERMES_NEMO_RELAY_PLUGINS_TOML was provided" in caplog.text
+        assert "HERMES_NEMO_RELAY_ATOF_ENABLED" in caplog.text
     finally:
         host.shutdown()
 

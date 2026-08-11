@@ -18,6 +18,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from hermes_constants import get_hermes_home
+from hermes_cli.relay_plugin_cutover import (
+    RELAY_PLUGINS_CONFIG_ENV,
+    configured_legacy_relay_env_vars,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +31,6 @@ LOGICAL_LLM_SCOPE = "hermes.logical_llm_call"
 RUNTIME_SCHEMA_KEY = "hermes.relay.schema_version"
 RUNTIME_SCHEMA_VERSION = "hermes.relay.runtime.v1"
 RUNTIME_INSTANCE_KEY = "hermes.relay.runtime_instance"
-RELAY_PLUGINS_CONFIG_ENV = "HERMES_NEMO_RELAY_PLUGINS_TOML"
 RELAY_PLUGINS_EXECUTION_CONSUMER = "hermes.nemo_relay.plugins"
 _PROFILE_KEY_CACHE: dict[str, str] = {}
 
@@ -262,6 +265,23 @@ class _ProcessRelayPluginConfiguration:
                 logger.warning(
                     "Hermes Relay plugin cleanup is still pending; refusing to "
                     "replace the process-global configuration"
+                )
+                return False
+
+            try:
+                existing_report = relay.plugin.report()
+            except Exception:
+                logger.warning(
+                    "Hermes could not determine whether a process-global Relay "
+                    "plugin configuration is already active; refusing to replace it",
+                    exc_info=True,
+                )
+                return False
+            if existing_report is not None:
+                logger.warning(
+                    "A process-global Relay plugin configuration is already active "
+                    "outside Hermes native ownership; leaving it unchanged and "
+                    "disabling Hermes-managed Relay middleware for this process"
                 )
                 return False
 
@@ -1894,6 +1914,15 @@ def _configured_plugin_inputs(
     """Load environment-selected plugin inputs, or leave plugins disabled."""
     configured = os.environ.get(RELAY_PLUGINS_CONFIG_ENV, "").strip()
     if not configured:
+        legacy_vars = configured_legacy_relay_env_vars(os.environ)
+        if legacy_vars:
+            logger.warning(
+                "Legacy NeMo Relay exporter variables are set but no %s was "
+                "provided. %s no longer activate Relay exporters; migrate the "
+                "exporter configuration to a Relay plugins.toml file.",
+                RELAY_PLUGINS_CONFIG_ENV,
+                ", ".join(legacy_vars),
+            )
         return None
 
     config_path = Path(configured).expanduser()

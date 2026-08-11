@@ -918,6 +918,16 @@ def _(rid, params: dict) -> dict:
     raw = str(params.get("path", "") or "").strip()
     if not raw:
         return _err(rid, 4015, "path required")
+    # Host-path resolution is local-only: a remote /api/ws caller cannot safely
+    # name the gateway host's filesystem. Remote clients should use the byte
+    # upload RPC instead.
+    if not _attach_caller_is_local():
+        return _err(
+            rid,
+            4016,
+            "host-path attach is not available over a remote connection; "
+            "upload the image bytes via image.attach_bytes instead",
+        )
     try:
         from cli import (
             _IMAGE_EXTENSIONS, _detect_file_drop, _resolve_attachment_path, _split_path_input)
@@ -967,6 +977,7 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, _attached_image_result(
         session, img_path,
         remainder="", text=f"[User attached image: {img_path.name}]", bytes=len(img_bytes)))
+
 
 
 @method("pdf.attach")
@@ -1072,7 +1083,19 @@ def _(rid, params: dict) -> dict:
         return err
     try:
         from cli import _detect_file_drop
-        dropped = _detect_file_drop(str(params.get("text", "") or ""))
+
+        raw = str(params.get("text", "") or "")
+        # ``input.detect_drop`` is a preflight that may run on ordinary composer
+        # text before submit. A remote /api/ws caller must not make the gateway
+        # resolve or queue host filesystem paths, but returning an RPC error for
+        # path-looking chat text (for example /status or /me) would break that
+        # harmless preflight path. Treat all remote text as "not a drop" without
+        # touching the host resolver; explicit attach RPCs still surface the
+        # remote host-path refusal and byte-upload guidance.
+        if not _attach_caller_is_local():
+            return _ok(rid, {"matched": False})
+
+        dropped = _detect_file_drop(raw)
         if not dropped:
             return _ok(rid, {"matched": False})
         drop_path, remainder = dropped["path"], dropped["remainder"]
@@ -1294,6 +1317,13 @@ def _pdf_attach_source(rid, params, td_path, raw_path, raw_b64):
         pdf_path = td_path / "input.pdf"
         pdf_path.write_bytes(pdf_bytes)
         return pdf_path, str(params.get("filename", "") or "uploaded.pdf"), None
+    # Host paths belong to the gateway machine; remote callers upload bytes instead.
+    if not _attach_caller_is_local():
+        return None, None, _err(
+            rid, 4016,
+            "host-path attach is not available over a remote connection; "
+            "upload the PDF bytes via content_base64 instead",
+        )
     try:
         from cli import _resolve_attachment_path
         resolved = _resolve_attachment_path(raw_path)

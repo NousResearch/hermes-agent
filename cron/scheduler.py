@@ -3747,6 +3747,78 @@ DRIFT_SKIP_MARKER = "[drift_skip]"
 DRIFT_SKIP_SILENT_MARKER = "[drift_skip:silent]"
 
 
+
+def _is_transient_provider_resolve_error(exc: BaseException) -> bool:
+    """True when primary provider resolution failed for a transient network reason.
+
+    Agent crons resolve OAuth credentials (token refresh / discovery) before the
+    agent loop starts. A short DNS outage (Cloudflare WARP / macOS resolver blip)
+    surfaces as httpx/httpcore ConnectError or raw OSError errno 8 ("nodename nor
+    servname provided") and must be eligible for ``fallback_providers`` the same
+    way AuthError already is — otherwise a healthy XAI_API_KEY / Anthropic rung
+    never gets tried and the whole job dies before the first model call.
+    """
+    # Walk the cause chain; scheduler wraps raw transport errors.
+    seen: set[int] = set()
+    cur: Optional[BaseException] = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        name = type(cur).__name__
+        module = type(cur).__module__ or ""
+        msg = str(cur).lower()
+        # Explicit transport classes from httpx/httpcore/aiohttp.
+        if name in {
+            "ConnectError",
+            "ConnectTimeout",
+            "ReadTimeout",
+            "WriteTimeout",
+            "PoolTimeout",
+            "NetworkError",
+            "TimeoutException",
+            "ClientConnectorError",
+            "ClientConnectorDNSError",
+            "ServerTimeoutError",
+            "ClientOSError",
+        }:
+            return True
+        if "httpx" in module or "httpcore" in module or "aiohttp" in module:
+            if any(
+                needle in msg
+                for needle in (
+                    "nodename nor servname",
+                    "name or service not known",
+                    "temporary failure in name resolution",
+                    "failed to resolve",
+                    "connection refused",
+                    "network is unreachable",
+                    "timed out",
+                    "timeout",
+                )
+            ):
+                return True
+        if isinstance(cur, OSError):
+            # errno 8 = EAI_NONAME on macOS ("nodename nor servname provided")
+            err_no = getattr(cur, "errno", None)
+            if err_no in {8, 7, 11, 51, 60, 61, 65}:  # common resolve/conn failures
+                return True
+            if any(
+                needle in msg
+                for needle in (
+                    "nodename nor servname",
+                    "name or service not known",
+                    "temporary failure in name resolution",
+                    "network is unreachable",
+                )
+            ):
+                return True
+        # Bare RuntimeError/Exception that already carries the DNS text
+        # (format_runtime_provider_error sometimes surfaces the raw message).
+        if "nodename nor servname" in msg or "name or service not known" in msg:
+            return True
+        cur = cur.__cause__ or cur.__context__
+    return False
+
+
 def _cron_preflight_enabled(cfg: dict) -> bool:
     """Whether cron pre-dispatch configuration validation is enabled.
 
@@ -4716,15 +4788,33 @@ def run_job(
                 str(runtime.get("provider") or "").strip().lower()
                 or primary_provider_for_drift
             )
-        except AuthError as auth_exc:
-            # Primary provider auth failed — try each configured provider/model
-            # pair atomically. Keeping the primary model while changing only the
-            # provider can silently route a paid GPT model through OpenRouter.
+        except Exception as resolve_exc:
+            # Primary provider resolution failed. Walk fallback_providers for:
+            #   1) AuthError (missing/expired credential)
+            #   2) Transient network/DNS failures during OAuth refresh or
+            #      discovery (e.g. macOS morning DNS blip → httpx.ConnectError
+            #      "[Errno 8] nodename nor servname provided").
+            # Previously only AuthError tried the chain; a ConnectError during
+            # xai-oauth token refresh killed agent crons even when XAI_API_KEY
+            # / Anthropic fallbacks were healthy (Daily Focus Kickoff 2026-08-11).
+            # Keeping provider+model atomic still applies — never swap only the
+            # provider while retaining a paid primary model.
+            is_auth = isinstance(resolve_exc, AuthError)
+            is_transient_net = _is_transient_provider_resolve_error(resolve_exc)
+            if not (is_auth or is_transient_net):
+                raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
+
             primary_provider_for_drift = (
-                str(getattr(auth_exc, "provider", "") or "").strip().lower()
+                str(getattr(resolve_exc, "provider", "") or "").strip().lower()
                 or primary_provider_for_drift
             )
-            logger.warning("Job '%s': primary auth failed (%s), trying fallback", job_id, auth_exc)
+            reason = "auth" if is_auth else "transient network"
+            logger.warning(
+                "Job '%s': primary provider resolve failed (%s: %s), trying fallback",
+                job_id,
+                reason,
+                resolve_exc,
+            )
             fb_list = get_fallback_chain(_cfg)
             runtime = None
             for entry in fb_list:
@@ -4758,10 +4848,7 @@ def run_job(
                 except Exception as fb_exc:
                     logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
             if runtime is None:
-                raise RuntimeError(format_runtime_provider_error(auth_exc)) from auth_exc
-        except Exception as exc:
-            message = format_runtime_provider_error(exc)
-            raise RuntimeError(message) from exc
+                raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
 
         reasoning_config = resolve_reasoning_config(
             _cfg if isinstance(_cfg, dict) else {}, str(model)

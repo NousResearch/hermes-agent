@@ -1082,6 +1082,70 @@ class TestRunJobConfigEnvVarExpansion:
         )
 
 
+    def test_transient_dns_fallback_switches_provider_and_model_together(self, tmp_path):
+        """DNS blip during primary OAuth resolve must still walk fallback_providers.
+
+        Regression for Daily Focus Kickoff 2026-08-11: xai-oauth token refresh
+        raised httpx.ConnectError ([Errno 8] nodename nor servname provided)
+        and the scheduler only tried fallbacks on AuthError, so the job died
+        before XAI_API_KEY / Anthropic could rescue it.
+        """
+        import httpx
+
+        (tmp_path / "config.yaml").write_text(
+            "model:\n"
+            "  default: grok-4.5\n"
+            "  provider: xai-oauth\n"
+            "fallback_providers:\n"
+            "  - provider: xai\n"
+            "    model: grok-4.5\n"
+            "  - provider: anthropic\n"
+            "    model: claude-opus-5\n",
+            encoding="utf-8",
+        )
+        job = {
+            "id": "dns-fallback",
+            "name": "dns fallback",
+            "prompt": "hi",
+            "provider": "xai-oauth",
+            "model": "grok-4.5",
+        }
+        fake_db = MagicMock()
+        requested = []
+
+        def resolve_runtime(**kwargs):
+            requested.append(kwargs.get("requested"))
+            if kwargs.get("requested") in (None, "xai-oauth"):
+                raise httpx.ConnectError(
+                    "[Errno 8] nodename nor servname provided, or not known"
+                )
+            # First fallback rung (xai API key) succeeds.
+            assert kwargs["requested"] == "xai"
+            assert kwargs["target_model"] == "grok-4.5"
+            return {**self._RUNTIME, "provider": "xai", "api_mode": "chat_completions"}
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   side_effect=resolve_runtime), \
+             patch("tools.mcp_tool.discover_mcp_tools", return_value=[]), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True, error
+        assert error is None
+        assert requested == ["xai-oauth", "xai"]
+        kwargs = mock_agent_cls.call_args.kwargs
+        assert kwargs["provider"] == "xai"
+        assert kwargs["model"] == "grok-4.5"
+
+
     def test_auth_fallback_switches_provider_and_model_together(self, tmp_path):
         """Codex auth failure must produce OpenRouter+GLM, never OpenRouter+GPT."""
         from hermes_cli.auth import AuthError

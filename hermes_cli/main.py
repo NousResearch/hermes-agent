@@ -12398,32 +12398,11 @@ def cmd_claw(args):
     claw_command(args)
 
 
-def _advertise_agent_env() -> None:
-    """Advertise the agent harness to child processes.
-
-    ``AI_AGENT`` is the emerging cross-agent standard (huggingface_hub's agent
-    detection reads it; pi and other agents set it — earendil-works/pi#7493)
-    so generic tooling can attribute subprocesses to the harness that spawned
-    them. The value must be our id in the public agent-harness registry
-    (``hermes-agent`` in huggingface.js ``agent-harnesses.ts``): standard-var
-    matching is exact, so any other value is counted as "unknown".
-    ``HERMES_AGENT`` is the Hermes-specific marker. setdefault: never
-    clobber an outer harness (e.g. Hermes running inside another agent's
-    terminal).
-    """
-    os.environ.setdefault("AI_AGENT", "hermes-agent")
-    os.environ.setdefault("HERMES_AGENT", "true")
-
-
 def main():
     """Main entry point for hermes CLI."""
     # Cosmetic: make the process show up as 'hermes' instead of 'python3.11'
     # in ps/top/htop.  Non-fatal — just a nicer UX.
     _set_process_title()
-
-    # Let child processes (and tools like huggingface_hub) detect they run
-    # under an AI agent harness.
-    _advertise_agent_env()
 
     # Force UTF-8 stdio on Windows before anything prints.  No-op elsewhere.
     try:

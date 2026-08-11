@@ -720,8 +720,6 @@ def _sandbox_dispatch_kwargs(
 
 def _serialize_rpc_result(result: Any) -> str:
     """Return an RPC-safe payload for string and multimodal tool results."""
-    if isinstance(result, str):
-        return result
     try:
         return json.dumps(result, ensure_ascii=False)
     except (TypeError, ValueError):

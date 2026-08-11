@@ -174,6 +174,44 @@ class TestExtractCacheBustingConfig:
 
         assert out["tools.registry_generation"] == 12345
 
+    def test_terminal_backend_change_busts_agent_signature(self, monkeypatch):
+        """Frozen execute_code schemas must rebuild when the backend changes."""
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        local_keys = GatewayRunner._extract_cache_busting_config(
+            {"terminal": {"backend": "local"}}
+        )
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        ssh_keys = GatewayRunner._extract_cache_busting_config(
+            {"terminal": {"backend": "ssh"}}
+        )
+
+        assert local_keys["terminal.backend"] == "local"
+        assert ssh_keys["terminal.backend"] == "ssh"
+        assert local_keys["terminal.effective_backend"] == "local"
+        assert ssh_keys["terminal.effective_backend"] == "ssh"
+        assert GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", cache_keys=local_keys
+        ) != GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", cache_keys=ssh_keys
+        )
+
+    def test_effective_terminal_env_busts_cache_without_config_key(self, monkeypatch):
+        """Legacy TERMINAL_ENV changes still invalidate a frozen tool schema."""
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("TERMINAL_ENV", "local")
+        local_keys = GatewayRunner._extract_cache_busting_config({})
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        ssh_keys = GatewayRunner._extract_cache_busting_config({})
+
+        assert local_keys["terminal.backend"] is None
+        assert ssh_keys["terminal.backend"] is None
+        assert local_keys["terminal.effective_backend"] == "local"
+        assert ssh_keys["terminal.effective_backend"] == "ssh"
+
 
 class TestAgentCacheLifecycle:
     """End-to-end cache behavior with real AIAgent construction."""

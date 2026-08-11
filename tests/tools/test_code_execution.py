@@ -18,7 +18,9 @@ import pytest
 import base64
 import json
 import os
+from pathlib import Path
 import socket
+import tempfile
 import time
 
 os.environ["TERMINAL_ENV"] = "local"
@@ -51,6 +53,7 @@ from tools.code_execution_tool import (
     _rpc_poll_loop,
     _resolve_sandbox_tools,
     _execute_code_handler,
+    _serialize_rpc_result,
 )
 from tools.registry import registry
 
@@ -120,6 +123,47 @@ class TestHermesToolsGeneration(unittest.TestCase):
         src = generate_hermes_tools_module(["terminal"], transport="file")
         self.assertIn("_seq_lock = threading.Lock()", src)
         self.assertIn("with _seq_lock:", src)
+
+    def test_file_transport_round_trips_plain_multiline_result(self):
+        """The generated file client must receive arbitrary text as one value."""
+        text = "first line\nsecond line"
+        with tempfile.TemporaryDirectory() as tmp:
+            previous_rpc_dir = os.environ.get("HERMES_RPC_DIR")
+            os.environ["HERMES_RPC_DIR"] = tmp
+            namespace = {}
+            try:
+                exec(
+                    compile(
+                        generate_hermes_tools_module(["terminal"], transport="file"),
+                        "<generated-hermes-tools>",
+                        "exec",
+                    ),
+                    namespace,
+                )
+
+                def respond():
+                    request = Path(tmp) / "req_000001"
+                    deadline = time.monotonic() + 2
+                    while not request.exists() and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                    self.assertTrue(request.exists(), "generated client did not write its request")
+                    (Path(tmp) / "res_000001").write_text(
+                        _serialize_rpc_result(text),
+                        encoding="utf-8",
+                    )
+
+                worker = threading.Thread(target=respond)
+                worker.start()
+                result = namespace["terminal"]("printf test")
+                worker.join(timeout=2)
+            finally:
+                if previous_rpc_dir is None:
+                    os.environ.pop("HERMES_RPC_DIR", None)
+                else:
+                    os.environ["HERMES_RPC_DIR"] = previous_rpc_dir
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(result, text)
 
 
 class TestExecuteCodeRemoteTempDir(unittest.TestCase):
@@ -351,6 +395,24 @@ print(result.get("output", ""))
         self.assertIn("mock output for: echo hello", result["output"])
         self.assertEqual(result["tool_calls_made"], 1)
 
+    def test_plain_multiline_tool_result_round_trips_over_local_rpc(self):
+        """Plain plugin-style text must not break the local NDJSON frame."""
+        text = "first line\nsecond line"
+        code = """
+import json
+from hermes_tools import terminal
+print(json.dumps({"value": terminal("printf test")}))
+"""
+        with patch("model_tools.handle_function_call", return_value=text):
+            result = json.loads(execute_code(
+                code=code,
+                task_id="test-plain-multiline-rpc",
+                enabled_tools=["terminal"],
+            ))
+
+        self.assertEqual(result["status"], "success", result)
+        self.assertEqual(json.loads(result["output"])["value"], text)
+
     def test_deferred_bridge_tools_preserve_session_toolset_scope(self):
         """One code run composes deferred tools without crossing session scope."""
         from model_tools import _clear_tool_defs_cache, handle_function_call
@@ -462,6 +524,29 @@ print(json.dumps({
         self.assertIn("tool_search(query:", execute_schema["description"])
         self.assertIn("tool_describe(name:", execute_schema["description"])
         self.assertIn("tool_call(name:", execute_schema["description"])
+
+    def test_code_execution_only_schema_discloses_umbrella_direct_helpers(self):
+        """The schema must describe the direct helpers runtime already grants."""
+        from model_tools import _clear_tool_defs_cache, get_tool_definitions
+
+        _clear_tool_defs_cache()
+        try:
+            definitions = get_tool_definitions(
+                enabled_toolsets=["code_execution"],
+                quiet_mode=True,
+            )
+        finally:
+            _clear_tool_defs_cache()
+
+        execute_schema = next(
+            item["function"] for item in definitions
+            if item["function"]["name"] == "execute_code"
+        )
+        description = execute_schema["description"]
+        for name in DIRECT_SANDBOX_TOOLS:
+            self.assertIn(f"{name}(", description)
+        for name in DEFERRED_BRIDGE_TOOLS:
+            self.assertNotIn(f"{name}(", description)
 
     def test_tool_definition_cache_keeps_final_sandbox_scope_consistent(self):
         """Cache misses and hits publish the same model-facing tool names."""

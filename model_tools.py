@@ -643,12 +643,21 @@ def _compute_tool_definitions(
     available_tool_names = {t["function"]["name"] for t in filtered_tools}
     if "execute_code" in available_tool_names:
         from tools.code_execution_tool import (
-            SANDBOX_ALLOWED_TOOLS,
+            DEFERRED_BRIDGE_TOOLS,
+            DIRECT_SANDBOX_TOOLS,
             _get_execution_mode,
             build_execute_code_schema,
         )
 
-        sandbox_enabled = SANDBOX_ALLOWED_TOOLS & available_tool_names
+        # ``execute_code`` has always been an umbrella capability for its
+        # direct helpers: registry callers that expose only code_execution
+        # still receive terminal/file/web helpers inside the script. Keep the
+        # schema honest about that established runtime contract. Deferred
+        # Tool Search bridges remain stricter and are advertised only when
+        # assembly put them on this session's final model-facing surface.
+        sandbox_enabled = DIRECT_SANDBOX_TOOLS | (
+            DEFERRED_BRIDGE_TOOLS & available_tool_names
+        )
         dynamic_schema = build_execute_code_schema(sandbox_enabled, mode=_get_execution_mode())
         for i, td in enumerate(filtered_tools):
             if td.get("function", {}).get("name") == "execute_code":

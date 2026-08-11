@@ -54,6 +54,7 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     close: () => ipcRenderer.invoke('hermes:hud:close'),
     setIgnoreMouse: ignore => ipcRenderer.send('hermes:hud:ignore-mouse', ignore),
     moveBy: delta => ipcRenderer.send('hermes:hud:move-by', delta),
+    setBounds: bounds => ipcRenderer.send('hermes:hud:set-bounds', bounds),
     setVibrancy: on => ipcRenderer.invoke('hermes:hud:vibrancy', on),
     // The HUD tells main which session it is on; main hands that back to the
     // app window when the HUD closes, so the app can re-home onto it.
@@ -198,6 +199,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   },
   revealLogs: () => ipcRenderer.invoke('hermes:logs:reveal'),
   getRecentLogs: () => ipcRenderer.invoke('hermes:logs:recent'),
+  // Fire-and-forget: persists a renderer error-boundary catch (with component
+  // stack) to desktop.log so crashes survive the window (#79428).
+  reportRendererError: report => ipcRenderer.send('hermes:logs:renderer-error', report),
   readDir: dirPath => ipcRenderer.invoke('hermes:fs:readDir', dirPath),
   gitRoot: startPath => ipcRenderer.invoke('hermes:fs:gitRoot', startPath),
   revealPath: targetPath => ipcRenderer.invoke('hermes:fs:reveal', targetPath),

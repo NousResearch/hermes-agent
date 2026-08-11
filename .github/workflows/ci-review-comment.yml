@@ -17,7 +17,13 @@ name: CI review comment
 on:
   workflow_run:
     workflows: [CI]
-    types: [requested]
+    # ``in_progress``, not ``requested``: a first-time contributor's run
+    # sits in ``action_required`` until a maintainer approves it, and
+    # ``requested`` fires at creation — the poller would wait out its
+    # whole timeout on a run that never starts. ``in_progress`` fires
+    # when the run actually starts, and it also fires on re-runs, which
+    # ``requested`` does not.
+    types: [in_progress]
 
 permissions:
   contents: read
@@ -25,9 +31,11 @@ permissions:
   pull-requests: write
 
 # One poller per CI run. A new push starts a new CI run, and its poller
-# cancels the poller of the run that GitHub superseded.
+# cancels the poller of the run that GitHub superseded. The group keys
+# on the head repository too: fork PRs often share a branch name
+# (``main``, ``patch-1``), and two PRs must not cancel each other.
 concurrency:
-  group: ci-review-comment-${{ github.event.workflow_run.head_branch }}
+  group: ci-review-comment-${{ github.event.workflow_run.head_repository.full_name }}-${{ github.event.workflow_run.head_branch }}
   cancel-in-progress: true
 
 jobs:
@@ -50,9 +58,12 @@ jobs:
       - name: Run live comment poller
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          # The CI run to report on — not this run.
-          GITHUB_RUN_ID: ${{ github.event.workflow_run.id }}
+          # The CI run to report on — not this run. The name must not be
+          # GITHUB_RUN_ID: the runner sets the GITHUB_* defaults itself and
+          # ignores an env: override, so that name silently resolves to THIS
+          # run. The poller then watches itself, which stays in_progress for
+          # as long as the poller runs, and it waits out its whole timeout.
+          CI_RUN_ID: ${{ github.event.workflow_run.id }}
           # Sibling runs for the same commit that the comment also covers,
           # one workflow name per line (a name can contain a comma).
           # The poller resolves each name to its runs through the API.
@@ -64,6 +75,6 @@ jobs:
           COMMIT_SHA: ${{ github.event.workflow_run.head_sha }}
           COMMIT_MESSAGE: ${{ github.event.workflow_run.head_commit.message }}
         run: |
-          python3 scripts/ci/live_comment.py \
+          python3 -u scripts/ci/live_comment.py \
             --interval 15 \
             --timeout 3000

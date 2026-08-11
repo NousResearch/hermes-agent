@@ -3,7 +3,7 @@ import logging
 import asyncio
 from contextlib import contextmanager
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -280,9 +280,18 @@ class TestSecondaryProfileConfigHandling:
         from gateway.config import GatewayConfig
 
         runner = GatewayRunner.__new__(GatewayRunner)
-        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner.config = GatewayConfig(
+            multiplex_profiles=True,
+            multiplex_profile_allowlist=["bad", "good"],
+        )
         runner.adapters = {}
         runner._profile_adapters = {}
+        runner.pairing_stores = {
+            "default": MagicMock(),
+            "bad": MagicMock(),
+            "good": MagicMock(),
+        }
+        runner.pairing_store = runner.pairing_stores["default"]
 
         async def fake_start_one(profile_name, profile_home, claimed):
             if profile_name == "bad":
@@ -291,28 +300,35 @@ class TestSecondaryProfileConfigHandling:
             runner._profile_adapters[profile_name] = {}
             return 2
 
-        monkeypatch.setattr(
-            "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex: [
+        def fake_profiles_to_serve(multiplex, profile_allowlist=None):
+            assert multiplex is True
+            assert profile_allowlist == ["bad", "good"]
+            return [
                 ("default", Path("/tmp/default")),
                 ("bad", Path("/tmp/bad")),
                 ("good", Path("/tmp/good")),
-            ],
+            ]
+
+        monkeypatch.setattr(
+            "hermes_cli.profiles.profiles_to_serve",
+            fake_profiles_to_serve,
         )
         monkeypatch.setattr(
             "hermes_cli.profiles.get_active_profile_name",
             lambda: "default",
         )
         monkeypatch.setattr(runner, "_start_one_profile_adapters", fake_start_one)
+        status = {}
         monkeypatch.setattr(
             "gateway.status.write_runtime_status",
-            lambda **kwargs: None,
+            lambda **kwargs: status.update(kwargs),
         )
 
         caplog.set_level(logging.WARNING, logger="gateway.run")
         connected = await runner._start_secondary_profile_adapters()
 
         assert connected == 2
+        assert status["served_profiles"] == ["default", "bad", "good"]
         assert "good" in runner._profile_adapters
         assert "bad" not in runner._profile_adapters
         assert "Skipping secondary profile 'bad'" in caplog.text
@@ -335,7 +351,7 @@ class TestSecondaryProfileConfigHandling:
 
         monkeypatch.setattr(
             "hermes_cli.profiles.profiles_to_serve",
-            lambda multiplex: [
+            lambda multiplex, profile_allowlist=None: [
                 ("default", Path("/tmp/default")),
                 ("unsafe", Path("/tmp/unsafe")),
             ],

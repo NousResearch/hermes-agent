@@ -39,7 +39,14 @@ const SOURCE_ORDER: Record<string, number> = { user: 0, git: 0, project: 1, entr
 // the user-facing control for any of them, so listing them here is noise.
 const HIDDEN_KEY_PREFIXES = ['dashboard_auth/', 'model-providers/', 'platforms/']
 
-const isDesktopRelevant = (row: AgentPluginRow) => !HIDDEN_KEY_PREFIXES.some(prefix => row.key.startsWith(prefix))
+const isDesktopRelevant = (row: AgentPluginRow) => {
+  const key = row.key
+
+  return !key || !HIDDEN_KEY_PREFIXES.some(prefix => key.startsWith(prefix))
+}
+
+const agentPluginRowKey = (row: AgentPluginRow) =>
+  row.key ?? [row.name, row.source, row.version, row.description].join('\0')
 
 function reveal(file: string) {
   void window.hermesDesktop?.revealPath?.(file)?.catch(() => undefined)
@@ -127,20 +134,31 @@ function AgentPluginRowView({ row }: { row: AgentPluginRow }) {
   const p = t.settings.plugins
   const { requestGateway } = useGatewayRequest()
   const busy = useStore($agentPluginBusy)
+  const key = row.key
+
+  // Pre-contract-v6 backends return rows without a canonical key. Name-addressed
+  // toggles silently flip every same-named plugin across category dirs
+  // (image_gen/fal vs video_gen/fal), so keyless rows are read-only — the
+  // backend-contract skew toast tells the user to update.
+  const toggle = (
+    <Switch
+      aria-label={`${row.status === 'enabled' ? p.disable : p.enable} ${row.name}`}
+      checked={row.status === 'enabled'}
+      disabled={!key || busy === key}
+      onCheckedChange={on => {
+        if (!key) {
+          return
+        }
+
+        triggerHaptic('selection')
+        void toggleAgentPlugin(requestGateway, key, on, p.agent.toggleFailed(row.name))
+      }}
+    />
+  )
 
   return (
     <PluginLine
-      controls={
-        <Switch
-          aria-label={`${row.status === 'enabled' ? p.disable : p.enable} ${row.name}`}
-          checked={row.status === 'enabled'}
-          disabled={busy === row.key}
-          onCheckedChange={on => {
-            triggerHaptic('selection')
-            void toggleAgentPlugin(requestGateway, row.key, on, p.agent.toggleFailed(row.name))
-          }}
-        />
-      }
+      controls={key ? toggle : <Tip label={p.agent.updateBackendToManage}>{toggle}</Tip>}
       description={row.description || (row.version ? `v${row.version}` : undefined)}
       title={
         <>
@@ -180,7 +198,7 @@ function AgentPluginsSection() {
       row =>
         !needle ||
         row.name.toLowerCase().includes(needle) ||
-        row.key.toLowerCase().includes(needle) ||
+        (row.key ?? '').toLowerCase().includes(needle) ||
         row.description.toLowerCase().includes(needle)
     )
     .sort((a, b) => (SOURCE_ORDER[a.source] ?? 9) - (SOURCE_ORDER[b.source] ?? 9) || a.name.localeCompare(b.name))
@@ -236,7 +254,7 @@ function AgentPluginsSection() {
       ) : (
         <div>
           {sorted.map(row => (
-            <AgentPluginRowView key={row.key || row.name} row={row} />
+            <AgentPluginRowView key={agentPluginRowKey(row)} row={row} />
           ))}
         </div>
       )}

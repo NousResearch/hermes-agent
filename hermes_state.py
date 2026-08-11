@@ -21,6 +21,7 @@ import hashlib
 import json
 import logging
 import os
+import queue
 import random
 import re
 import sqlite3
@@ -332,6 +333,29 @@ def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
 T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
+
+# How long SessionDB stops attempting read-only opens after one fails, before
+# probing again. Long enough that a genuinely unreadable file isn't retried per
+# query; short enough that transient fd pressure doesn't strand the read pool.
+_READ_OPEN_RETRY_SECONDS = 60.0
+
+# Hard ceiling on read-only connections ALIVE at once per SessionDB — pooled
+# idle ones and checked-out ones together.
+#
+# Deliberately one constant for both the pool's maxsize and the permit count,
+# because bounding only the pool bounds the wrong thing. A LifoQueue caps how
+# many connections are *returned*; it says nothing about how many are *open*.
+# With an open-on-miss checkout, N readers arriving on an empty pool all miss,
+# all open, and peak at N — the surplus is closed on release, so nothing
+# accumulates forever, but EMFILE is a peak-instant condition and the burst
+# that empties the pool is exactly the burst that exhausts the fd table.
+#
+# So a connection holds a permit for its whole lifetime: acquired in
+# _get_read_conn() before the open, released in _close_read_conn() after the
+# close. Once permits are gone the read path degrades to the locked writer
+# connection instead of opening more descriptors — slower under load, which is
+# the correct trade against a process-wide wedge the supervisor cannot see.
+_READ_POOL_MAX = 8
 
 # Import-time snapshot used by _default_db_path() to detect a deliberately
 # re-pointed DEFAULT_DB_PATH (tests monkeypatch the constant directly).
@@ -2517,20 +2541,57 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self.read_only = read_only
 
         self._lock = threading.Lock()
-        # Read-path split (WAL only): recall/browse queries run on per-thread
-        # read-only connections so they never queue behind writer flushes on
-        # self._lock. See _read_ctx().
-        self._read_local = threading.local()
-        # Strong set of all live read connections across all threads.  We
-        # hold a reference so short-lived reader threads' connections are
-        # not GC'd without close() — that would leak tracked fds in
-        # _live_connections.  close() drains this set.
-        self._read_conns: "set[sqlite3.Connection]" = set()
+        # Read-path split (WAL only): recall/browse queries borrow a
+        # read-only connection from a bounded pool so they never queue
+        # behind writer flushes on self._lock. See _read_ctx().
+        #
+        # The pool is BOUNDED because the previous per-thread
+        # (threading.local + strong set) scheme pinned one connection per
+        # (SessionDB x thread) for the life of the process. Starlette
+        # dispatches sync routes on anyio worker threads, so a SessionDB
+        # that is never closed accumulated a connection — and two fds, the
+        # database and its -wal — for every worker thread that ever read,
+        # until the process hit the 256 soft RLIMIT_NOFILE a service manager
+        # hands it and every request failed with EMFILE while the process
+        # stayed alive, so the supervisor's restart-on-exit never fired.
+        # Same bug class as the closing(...) fix in gateway/readiness.py
+        # (#69678 / #69567).
+        self._read_pool: "queue.LifoQueue[sqlite3.Connection]" = queue.LifoQueue(
+            maxsize=_READ_POOL_MAX
+        )
+        # One permit per live read connection, held from before the open in
+        # _get_read_conn() until after the close in _close_read_conn().  This
+        # is what bounds PEAK descriptors; _read_pool alone bounds only the
+        # idle set.  See _READ_POOL_MAX.  Acquired non-blocking on purpose: a
+        # reader that cannot get a permit must degrade to the writer lock, not
+        # queue here — blocking would convert fd exhaustion into a stall, which
+        # is the same outage with a different stack trace.
+        self._read_permits = threading.BoundedSemaphore(_READ_POOL_MAX)
+        # Count of reads that found no permit and fell back to the locked
+        # writer connection. Not load-bearing; it is the only externally
+        # visible signal that the ceiling is actually being reached, so a
+        # too-small _READ_POOL_MAX is diagnosable from a running process
+        # instead of inferred from latency.
+        self._read_permit_exhausted = 0
         self._read_conns_lock = threading.Lock()
-        # Set when close() begins.  _get_read_conn checks this under the
-        # lock so a reader that finishes opening after the drain finds the
-        # shutdown in progress and closes its own connection immediately.
+        # Set when close() begins.  _read_ctx checks this under the lock
+        # before returning a connection to the pool, so a reader still in
+        # flight during the drain closes its own connection instead of
+        # re-populating a pool nobody will drain again.
         self._read_conns_closed = False
+        # "read-only opens are failing against this file" backoff stamp.
+        # Instance-wide rather than per-thread: with a shared pool the open
+        # is no longer a per-thread event, and retrying a known-bad open on
+        # every query is a syscall storm for no benefit. The locked writer
+        # connection still serves reads while the backoff holds.
+        # Deliberately a TIMESTAMP, not a sticky bool: the likeliest trigger
+        # is transient fd pressure (EMFILE) — the very condition this pool
+        # exists to prevent — and a permanent flag would demote every reader
+        # on this instance to the writer lock for the life of the process.
+        # The gateway shares one SessionDB across every agent, so that turns
+        # a momentary blip into a permanent global convoy. Expires after
+        # _READ_OPEN_RETRY_SECONDS so the read path self-heals.
+        self._read_open_failed_at = 0.0
         self._wal_active = False
         self._write_count = 0
         # One-shot guard for the runtime FTS rebuild recovery on the write
@@ -2762,7 +2823,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # ── Read-path split ──
 
     def _get_read_conn(self) -> Optional[sqlite3.Connection]:
-        """Per-thread read-only connection, or None when unavailable.
+        """Open a fresh read-only connection, or None when unavailable.
+
+        Callers must return the connection to self._read_pool (see
+        _read_ctx); this opens, it does not track.
 
         Only used under WAL: WAL readers see a consistent snapshot and never
         block on (or get blocked by) the writer, so recall/browse queries can
@@ -2776,16 +2840,45 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         if not self._wal_active or self.read_only:
             return None
-        conn = getattr(self._read_local, "conn", None)
-        if conn is not None:
-            return conn
-        if getattr(self._read_local, "failed", False):
+        with self._read_conns_lock:
+            if self._read_conns_closed:
+                return None
+            if (
+                self._read_open_failed_at
+                and time.monotonic() - self._read_open_failed_at
+                < _READ_OPEN_RETRY_SECONDS
+            ):
+                return None
+        # Take the descriptor permit BEFORE the open, so concurrent openers
+        # race for permits rather than for file descriptors. Non-blocking:
+        # losing the race means "use the writer connection", not "wait".
+        if not self._read_permits.acquire(blocking=False):
+            with self._read_conns_lock:
+                self._read_permit_exhausted += 1
+            logger.debug(
+                "read pool at capacity (%d) for %s; serving this read from the "
+                "locked writer connection",
+                _READ_POOL_MAX,
+                self.db_path,
+            )
             return None
+        # Bound before the try: the except handlers close it if the open
+        # half-succeeded, and an unbound name there would raise NameError over
+        # the top of the real failure.
+        conn = None
         try:
             conn = _connect_tracked_db(
                 f"file:{self.db_path}?mode=ro",
                 tracking_path=self.db_path,
                 uri=True,
+                # Pooled connections are borrowed by whichever thread runs
+                # the next read, and sqlite3 otherwise refuses cross-thread
+                # use ("SQLite objects created in a thread can only be used
+                # in that same thread") — including on close(), which is how
+                # the old per-thread connections became unclosable and leaked
+                # their fds. Exclusive ownership is enforced by the pool
+                # checkout/return, not by sqlite3. Matches the writer opens.
+                check_same_thread=False,
                 timeout=5.0,
                 isolation_level=None,
             )
@@ -2797,36 +2890,134 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # registry, not the database file, so mode=ro is fine.
             if self._fts_cjk_loaded:
                 load_fts5_cjk_extension(conn)
-            with self._read_conns_lock:
-                if self._read_conns_closed:
-                    # close() already drained — don't register; close
-                    # immediately so no tracked fd leaks.
-                    conn.close()
-                    self._read_local.failed = True
-                    return None
-                self._read_conns.add(conn)
         except sqlite3.Error:
-            # Mark this thread failed so we don't retry the open on every
-            # query; the locked writer connection still serves reads.
-            self._read_local.failed = True
+            # A partially-constructed connection — _connect_tracked_db
+            # succeeded, the CJK extension load did not — must be closed here.
+            # Dropping it on the floor still open leaves a live descriptor the
+            # tracking registry still counts: the same leak shape this pool
+            # exists to fix, one level further down.
+            self._discard_partial_read_conn(conn)
+            # Back off from retrying the open on every query; the locked
+            # writer connection still serves reads until the stamp expires.
+            with self._read_conns_lock:
+                self._read_open_failed_at = time.monotonic()
             logger.debug("read-only connection open failed for %s", self.db_path, exc_info=True)
+            self._read_permits.release()
             return None
-        self._read_local.conn = conn
+        except BaseException:
+            # Anything else (a non-sqlite3 extension-load failure, MemoryError,
+            # KeyboardInterrupt landing between open and return) must not
+            # strand the permit: a stranded permit is not a transient error, it
+            # permanently shrinks the read path by one slot for the life of the
+            # process.
+            self._discard_partial_read_conn(conn)
+            self._read_permits.release()
+            raise
         return conn
+
+    def _discard_partial_read_conn(self, conn) -> None:
+        """Close a connection that failed between open and hand-off.
+
+        Separate from _close_read_conn because that one releases a permit and
+        this runs on paths that release their own.
+        """
+        if conn is None:
+            return
+        try:
+            conn.close()
+        except Exception as exc:
+            logger.warning(
+                "partially-opened read conn close failed for %s: %s", self.db_path, exc
+            )
+
+    def _close_read_conn(self, conn) -> None:
+        """Close a pooled read connection and release its descriptor permit.
+
+        This was a bare ``except Exception: pass``, which silently swallowed
+        the sqlite3.ProgrammingError raised when close() ran on a thread
+        other than the one that opened the connection — the exact signature
+        of the fd leak this pool fixes. A close that fails leaks a tracked
+        fd, so it must not be invisible.
+
+        The permit is released even when close() raises: the descriptor is
+        already lost at that point, and withholding the permit too would turn
+        one leaked fd into a permanently narrower read path — failing twice for
+        one fault. The warning is the signal that matters.
+
+        Pairs with _get_read_conn(). Calling this on a connection that did not
+        come from there over-releases the BoundedSemaphore, which raises
+        ValueError rather than silently widening the ceiling.
+        """
+        try:
+            conn.close()
+        except Exception as exc:
+            logger.warning("read-conn close failed for %s: %s", self.db_path, exc)
+        finally:
+            self._read_permits.release()
+
+    def _checkout_read_conn(self) -> Optional[sqlite3.Connection]:
+        """Borrow a read connection from the pool, opening one on a miss.
+
+        The single acquisition seam for the read path: the WAL/read_only gate,
+        the pool checkout and the open-on-miss all live here, so there is
+        exactly one place to exercise (and one place for a caller to bypass by
+        accident). Returns None when the read path is unavailable and the
+        caller must fall back to the locked writer connection.
+
+        A pool hit costs no permit — the connection it hands back is already
+        holding one. Only the miss path can open, and only _get_read_conn() can
+        take a permit, so peak live connections is bounded by _READ_POOL_MAX no
+        matter how many threads miss simultaneously.
+        """
+        if not self._wal_active or self.read_only:
+            return None
+        try:
+            return self._read_pool.get_nowait()
+        except queue.Empty:
+            return self._get_read_conn()
 
     @contextmanager
     def _read_ctx(self):
         """Yield a connection for read-only statements.
 
-        WAL: a per-thread read-only connection with NO lock — recall queries
-        never convoy behind writer flushes (the gateway shares one SessionDB
-        across every agent, so this lock was a global choke point).
-        Non-WAL or read-conn failure: the shared writer connection under
-        self._lock, byte-for-byte the legacy behavior.
+        WAL: a read-only connection borrowed from a bounded pool with NO
+        lock — recall queries never convoy behind writer flushes (the
+        gateway shares one SessionDB across every agent, so this lock was a
+        global choke point). The connection is checked out for the duration
+        of the block, so no two threads ever touch it concurrently.
+        Non-WAL, read-conn failure, or _READ_POOL_MAX already reached: the
+        shared writer connection under self._lock, byte-for-byte the legacy
+        behavior.
+
+        That last case is the deliberate degradation. Past the ceiling readers
+        convoy on the writer lock instead of opening descriptors — measurably
+        slower under a burst, and the alternative is EMFILE, which takes the
+        whole process down in a way a restart-on-exit supervisor cannot see.
         """
-        conn = self._get_read_conn()
+        conn = self._checkout_read_conn()
         if conn is not None:
-            yield conn
+            try:
+                yield conn
+            finally:
+                returned = False
+                with self._read_conns_lock:
+                    if not self._read_conns_closed:
+                        try:
+                            self._read_pool.put_nowait(conn)
+                            returned = True
+                        except queue.Full:
+                            pass
+                if not returned:
+                    # close() has already drained the pool, so this connection
+                    # is surplus. Close it here — dropping it on the floor is
+                    # what leaked the fd.
+                    #
+                    # queue.Full is now unreachable in practice (permits and
+                    # maxsize are both _READ_POOL_MAX, so there can never be a
+                    # ninth connection to return), but the branch stays: it is
+                    # load-bearing if those two ever drift apart, and a leak is
+                    # the failure mode it prevents.
+                    self._close_read_conn(conn)
             return
         with self._lock:
             yield self._conn
@@ -3395,23 +3586,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # (instance, function), so this removes exactly our registration;
         # no-op when the writer never started.
         atexit.unregister(self._drain_token_queue_at_exit)
-        # Close all read-only connections across all threads.  Per-thread
-        # connections live in threading.local() and would otherwise be GC'd
-        # without calling close(), leaking tracked fds in _live_connections.
-        # The strong set holds references so short-lived reader threads'
-        # connections survive until close() drains them.  Setting the closed
-        # flag under the lock prevents a reader from registering a new
-        # connection after the drain.
+        # Drain the read-only connection pool.  Setting the closed flag
+        # under the lock first means a reader still in flight closes its own
+        # connection on release instead of re-populating a pool that has
+        # already been drained.
         with self._read_conns_lock:
             self._read_conns_closed = True
-            read_conns = list(self._read_conns)
-            self._read_conns.clear()
-        for conn in read_conns:
+        while True:
             try:
-                conn.close()
-            except Exception:
-                pass
-        self._read_local.conn = None
+                conn = self._read_pool.get_nowait()
+            except queue.Empty:
+                break
+            self._close_read_conn(conn)
         with self._lock:
             if self._conn:
                 if not self.read_only:
@@ -6886,6 +7072,35 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     )
     _session_compact_cols_sql: Optional[str] = None
 
+    def usage_totals(self, *, min_message_count: int = 1, include_archived: bool = False) -> Dict[str, float]:
+        """Tokens and spend across this store, as one aggregate.
+
+        The sidebar shows a profile's totals beside a page of its sessions, so
+        summing the rows it happens to have loaded would report a fraction of
+        the truth and shrink as paging changed. SQLite adds the columns up over
+        every row instead, at the cost of one scan.
+
+        Spend is the billed figure when the provider returned one and the
+        estimate otherwise — the same precedence a single row renders.
+        """
+        where = ["parent_session_id IS NULL", "message_count >= ?"]
+        params: List[Any] = [min_message_count]
+        if not include_archived:
+            where.append("COALESCE(archived, 0) = 0")
+
+        with self._read_ctx() as conn:
+            row = conn.execute(
+                f"""
+                SELECT COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0),
+                       COALESCE(SUM(COALESCE(actual_cost_usd, estimated_cost_usd, 0)), 0)
+                  FROM sessions
+                 WHERE {' AND '.join(where)}
+                """,
+                params,
+            ).fetchone()
+
+        return {"tokens": int(row[0] or 0), "cost_usd": float(row[1] or 0.0)}
+
     def list_sessions_rich(
         self,
         source: str = None,
@@ -7974,6 +8189,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         session_id: str,
         messages: List[Dict[str, Any]],
         active_only: bool = False,
+        archive_dropped: bool = False,
     ) -> None:
         """Atomically replace the stored messages for a session.
 
@@ -7994,6 +8210,20 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         full-history rewrite doesn't wipe the rows the agent deliberately
         archived. ``message_count``/``tool_call_count`` then track the live set,
         matching :meth:`archive_and_compact`.
+
+        Pass ``archive_dropped=True`` to SOFT-archive the live rows instead of
+        DELETEing them: the replaced turns stay on disk with ``active = 0``,
+        ``compacted = 0`` — the same "the user took it back" marking
+        :meth:`rewind_to_message` applies — and stay readable via
+        :meth:`get_messages` with ``include_inactive=True``. This is the mode a
+        rewind/edit/regenerate must use: those flows overwrite a transcript the
+        user may not have meant to drop, and a plain DELETE also evicts the rows
+        from the FTS index, leaving nothing to recover from (#82756). It implies
+        active-only handling — already-archived rows are never touched — so
+        ``active_only`` is redundant with it. The rewritten set is inserted as
+        fresh active rows exactly as in the destructive path, so the live view
+        is identical either way; only the durability of the dropped turns
+        differs.
         """
 
         active_clause = " AND active = 1" if active_only else ""
@@ -8009,10 +8239,22 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 and session["end_reason"] == "compression"
             ):
                 raise CompressionSessionClosedError(session_id)
-            conn.execute(
-                f"DELETE FROM messages WHERE session_id = ?{active_clause}",
-                (session_id,),
-            )
+            if archive_dropped:
+                # Content-preserving UPDATE: the rows keep their FTS entries
+                # (the messages_fts triggers fire on INSERT / DELETE / UPDATE
+                # of content columns, not on `active`), so the replaced turns
+                # stay readable via get_messages(include_inactive=True) and
+                # searchable with include_inactive=True after the rewrite.
+                conn.execute(
+                    "UPDATE messages SET active = 0 "
+                    "WHERE session_id = ? AND active = 1",
+                    (session_id,),
+                )
+            else:
+                conn.execute(
+                    f"DELETE FROM messages WHERE session_id = ?{active_clause}",
+                    (session_id,),
+                )
             conn.execute(
                 "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
                 (session_id,),

@@ -20,6 +20,7 @@ Usage::
 """
 
 import json
+import logging
 import os
 import re
 import shlex
@@ -34,7 +35,10 @@ from typing import Dict, List, Optional, Tuple
 
 from agent.skill_utils import is_excluded_skill_path
 
+logger = logging.getLogger(__name__)
+
 _PROFILE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_WARNED_MISSING_ALLOWLIST_ENTRIES: set[tuple[str, ...]] = set()
 
 # Directories bootstrapped inside every new profile
 _PROFILE_DIRS = [
@@ -954,7 +958,10 @@ def list_profiles() -> List[ProfileInfo]:
     return profiles
 
 
-def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
+def profiles_to_serve(
+    multiplex: bool,
+    profile_allowlist: Optional[List[str]] = None,
+) -> List[Tuple[str, Path]]:
     """Return the ``(profile_name, hermes_home)`` pairs a gateway should serve.
 
     This is the single chokepoint for "which profiles does the inbound gateway
@@ -965,7 +972,9 @@ def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
       always had. The name is ``"default"`` for the default profile or the
       active named profile's id.
     - ``multiplex=True``: returns the default profile plus every valid named
-      profile under ``profiles/``, each paired with its own HERMES_HOME.
+      profile under ``profiles/``, each paired with its own HERMES_HOME. When
+      ``profile_allowlist`` is provided, only selected named profiles are
+      included; the default profile is always served.
 
     Intentionally lightweight (a directory scan + name validation only): no
     per-profile config reads, gateway-running probes, or skill counts like
@@ -979,6 +988,19 @@ def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
         return [(active, get_profile_dir(active))]
 
     serve: List[Tuple[str, Path]] = [("default", _get_default_hermes_home())]
+    allowed: Optional[set[str]] = None
+    if profile_allowlist is not None:
+        allowed = set()
+        for entry in profile_allowlist:
+            if not isinstance(entry, str):
+                continue
+            try:
+                name = normalize_profile_name(entry)
+                validate_profile_name(name)
+            except ValueError:
+                continue
+            if name != "default":
+                allowed.add(name)
 
     profiles_root = _get_profiles_root()
     if profiles_root.is_dir():
@@ -990,7 +1012,18 @@ def profiles_to_serve(multiplex: bool) -> List[Tuple[str, Path]]:
                 continue  # default is the built-in entry already added above
             if not _PROFILE_ID_RE.match(name):
                 continue
+            if allowed is not None and name not in allowed:
+                continue
             serve.append((name, entry))
+
+    if allowed is not None:
+        missing = tuple(sorted(allowed - {name for name, _ in serve}))
+        if missing and missing not in _WARNED_MISSING_ALLOWLIST_ENTRIES:
+            _WARNED_MISSING_ALLOWLIST_ENTRIES.add(missing)
+            logger.warning(
+                "Skipping missing gateway.multiplex_profile_allowlist profile(s): %s",
+                ", ".join(missing),
+            )
 
     return serve
 
@@ -1882,7 +1915,8 @@ def _default_export_ignore(root_dir: Path):
     * **Universal exclusions at any depth** — ``__pycache__``, sockets,
       temp files; plus npm lockfiles, which may appear at the root.
 
-    All other profile artifacts are copied through untouched.
+    Surviving text files are later force-redacted by
+    :func:`_scrub_export_secrets` before the archive is written.
     """
 
     def _ignore(directory: str, contents: list) -> set:
@@ -1922,13 +1956,89 @@ def _make_profile_archive(base: str, root_dir: str, base_dir: str) -> str:
     return archive_path
 
 
+# Text / config suffixes walked during export secret scrubbing. Binary DBs,
+# images, and other non-text artifacts are left alone (they may still leave
+# via named-profile export — scrubbing those is a separate concern).
+_EXPORT_REDACT_SUFFIXES = frozenset({
+    ".md", ".txt", ".yaml", ".yml", ".json", ".jsonl",
+    ".toml", ".ini", ".cfg", ".conf", ".py", ".sh",
+    ".bash", ".zsh", ".js", ".ts", ".tsx", ".jsx",
+    ".css", ".html", ".xml", ".csv",
+})
+# pathlib.Path(".cursorrules").suffix is "" — name-match these.
+# ``*.env.example`` uses endswith (suffix would be ``.example``).
+_EXPORT_REDACT_NAMES = frozenset({
+    ".cursorrules",
+})
+
+
+def _should_redact_export_file(path: Path) -> bool:
+    """True when *path* is a text-ish file we should secret-scrub on export."""
+    name = path.name
+    if name in _EXPORT_REDACT_NAMES:
+        return True
+    if name.lower().endswith(".env.example"):
+        return True
+    return path.suffix.lower() in _EXPORT_REDACT_SUFFIXES
+
+
+def _scrub_export_secrets(staged: Path) -> None:
+    """Force-redact secret-shaped strings in a staged export tree.
+
+    Same ``agent.redact.redact_sensitive_text(..., force=True)`` pass used by
+    ``hermes sessions export --redact``. Runs on the *staged copy only* so the
+    live profile is never rewritten. ``force=True`` ignores
+    ``security.redact_secrets`` / ``HERMES_REDACT_SECRETS`` — share archives
+    must not emit raw keys even when the user has disabled live redaction.
+
+    Symlinks to text files are materialized into regular files when their
+    content changes, so redaction never follows a link back into the source
+    profile (``copytree(..., symlinks=True)``).
+    """
+    from agent.redact import redact_sensitive_text
+
+    for path in staged.rglob("*"):
+        try:
+            is_link = path.is_symlink()
+        except OSError:
+            continue
+        if is_link:
+            # Skip broken links and symlinked directories.
+            try:
+                if not path.exists() or path.is_dir():
+                    continue
+            except OSError:
+                continue
+        elif not path.is_file():
+            continue
+
+        if not _should_redact_export_file(path):
+            continue
+
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+
+        redacted = redact_sensitive_text(text, force=True)
+        if redacted == text:
+            continue
+
+        if is_link:
+            path.unlink()
+        path.write_text(redacted, encoding="utf-8")
+
+
 def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, str]] = None) -> Path:
     """Export a profile to a tar.gz archive.
 
     ``extra_files`` maps root-relative filenames (e.g. ``desktop.json``) to
     text content staged into the archive alongside the profile's own files —
     the desktop app uses it to bundle its appearance/interface overlay.
-    Returns the output file path.
+
+    Credential files (``auth.json``, ``.env``) are excluded, and secret-shaped
+    strings in staged text files are force-redacted before the archive is
+    written. Returns the output file path.
     """
     import tempfile
 
@@ -1962,6 +2072,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
                 ignore=_default_export_ignore(profile_dir),
             )
             _stage_extras(staged)
+            _scrub_export_secrets(staged)
             result = _make_profile_archive(base, tmpdir, "default")
             return Path(result)
 
@@ -1976,6 +2087,7 @@ def export_profile(name: str, output_path: str, extra_files: Optional[Dict[str, 
             ignore=lambda d, contents: _CREDENTIAL_FILES & set(contents),
         )
         _stage_extras(staged)
+        _scrub_export_secrets(staged)
         result = _make_profile_archive(base, tmpdir, canon)
         return Path(result)
 

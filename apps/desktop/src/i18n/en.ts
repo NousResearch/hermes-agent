@@ -263,6 +263,7 @@ export const en: Translations = {
       'view.toggleStatusbar': 'Toggle status bar',
       'view.showFiles': 'Show file browser',
       'view.toggleHud': 'Toggle HUD mode',
+      'hud.snapToPointer': 'Move HUD to pointer (global, while HUD is open)',
       'view.showTerminal': 'Toggle terminal',
       'view.newTerminal': 'New terminal',
       'view.nextTerminal': 'Next terminal',
@@ -376,6 +377,7 @@ export const en: Translations = {
         search: 'Search plugins…',
         noMatches: 'No plugins match your search.',
         toggleFailed: (name: string) => `Could not toggle ${name}`,
+        updateBackendToManage: 'Update the Hermes backend to manage this plugin from Desktop.',
         sources: { bundled: 'bundled', user: 'user', git: 'git', project: 'project', entrypoint: 'pip' }
       }
     },

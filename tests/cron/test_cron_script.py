@@ -130,7 +130,11 @@ class TestRunJobScript:
         assert success is True
         assert output == "ABSENT"
 
+    @pytest.mark.windows_only
     def test_windows_uv_venv_python_script_bypasses_launcher(self, cron_env, tmp_path, monkeypatch):
+        # Windows-only: the fake ``sys.platform`` could not reproduce the
+        # ``Scripts/python.exe`` launcher layout or the CREATE_NO_WINDOW
+        # creationflags this branch exists for.
         from cron import scheduler as sched_mod
         from cron.scheduler import _run_job_script
 
@@ -157,9 +161,7 @@ class TestRunJobScript:
             captured["kwargs"] = kwargs
             return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
 
-        monkeypatch.setattr(sched_mod.sys, "platform", "win32")
         monkeypatch.setattr(sched_mod.sys, "executable", str(venv_python))
-        monkeypatch.setattr(sched_mod, "windows_hide_flags", lambda: 0x08000000)
         monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
 
         success, output = _run_job_script("probe.py")
@@ -167,13 +169,14 @@ class TestRunJobScript:
         assert success is True
         assert output == "ok"
         assert captured["argv"] == [str(base_python), str(script.resolve())]
-        assert captured["kwargs"]["creationflags"] == 0x08000000
+        assert captured["kwargs"]["creationflags"] == sched_mod.windows_hide_flags()
         env = captured["kwargs"]["env"]
         assert env["VIRTUAL_ENV"] == str(venv)
         assert str(site_packages) in env["PYTHONPATH"]
 
 
     def test_non_windows_script_preserves_default_text_decoding(self, cron_env, monkeypatch):
+        # No platform patching: the Linux CI host already takes this branch.
         from cron import scheduler as sched_mod
         from cron.scheduler import _run_job_script
 
@@ -187,7 +190,6 @@ class TestRunJobScript:
             captured["kwargs"] = kwargs
             return SimpleNamespace(returncode=0, stdout="ok\n", stderr="")
 
-        monkeypatch.setattr(sched_mod.sys, "platform", "linux")
         monkeypatch.setattr(sched_mod.subprocess, "run", fake_run)
 
         success, output = _run_job_script("probe.py")

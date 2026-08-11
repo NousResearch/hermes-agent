@@ -1,7 +1,6 @@
 """Tests for tools/mcp_oauth.py — OAuth 2.1 PKCE support for MCP servers."""
 
 import json
-import os
 import stat
 import sys
 from io import BytesIO
@@ -159,10 +158,12 @@ class TestUtilities:
         assert _can_open_browser() is False
 
     def test_can_open_browser_true_with_display(self, monkeypatch):
+        # No ``os.name`` pin: on Linux this exercises the DISPLAY branch for
+        # real, and on macOS/Windows the function early-returns True anyway —
+        # the assertion holds on every host without faking one.
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.setenv("DISPLAY", ":0")
-        monkeypatch.setattr(os, "name", "posix")
         assert _can_open_browser() is True
 
 

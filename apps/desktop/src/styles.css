@@ -3,6 +3,13 @@
 @import 'tw-shimmer';
 @import 'katex/dist/katex.min.css';
 @import '@vscode/codicons/dist/codicon.css';
+
+/* Titlebar clusters: 24×24 hit targets, 13.9px glyphs. codicon.css is
+   unlayered (`font: 16px/1`); Tailwind utilities in @layer lose that fight. */
+.titlebar-icon-button .codicon[class*='codicon-'] {
+  font-size: var(--titlebar-icon-size);
+}
+
 @custom-variant dark (&:is(.dark *));
 
 /* Blanket reduced-motion override: kill ALL CSS animations and transitions
@@ -468,8 +475,9 @@
 
     --sidebar-width: 14.8125rem;
     --chat-min-width: 28rem;
-    --titlebar-control-size: 1.25rem;
-    --titlebar-control-height: 1.375rem;
+    --titlebar-control-size: 24px;
+    --titlebar-control-height: 24px;
+    --titlebar-icon-size: 13.9px;
     --sidebar-content-inline-padding: 1rem;
 
     --sidebar: var(--dt-sidebar-bg);
@@ -1099,6 +1107,13 @@ code {
   border-color: var(--dt-destructive);
 }
 
+/* Drag in progress (sash resize, console resize, tab drag): webview/iframe
+   guests hit-test in their own process and swallow the gesture the moment the
+   pointer crosses them — see lib/guest-pointer-guard.ts. */
+body.guest-pointer-lock :is(webview, iframe) {
+  pointer-events: none;
+}
+
 @layer components {
   /* Chromium 121+ (Electron) prefers standard scrollbar-* over
      ::-webkit-scrollbar and ignores the latter when both are set — platform
@@ -1142,6 +1157,26 @@ code {
   .scrollbar-dt::-webkit-scrollbar-button,
   .scrollbar-dt *:not(.scrollbar-overlay)::-webkit-scrollbar-button {
     display: none;
+  }
+
+  /* Hover-only bars. A thumb sitting on a list you aren't touching is chrome,
+     not information — the gutter is reserved either way, so fading it in and
+     out costs no reflow. Opt-in per surface: the sidebar wants it, a document
+     you're reading down wants its bar where you can see it. */
+  .scrollbar-fade::-webkit-scrollbar-thumb,
+  .scrollbar-dt .scrollbar-fade::-webkit-scrollbar-thumb {
+    background-color: transparent;
+    transition: background-color 150ms ease-out;
+  }
+
+  .scrollbar-fade:hover::-webkit-scrollbar-thumb,
+  .scrollbar-dt .scrollbar-fade:hover::-webkit-scrollbar-thumb {
+    background-color: color-mix(in srgb, var(--dt-midground) 18%, transparent);
+  }
+
+  .scrollbar-fade:hover::-webkit-scrollbar-thumb:hover,
+  .scrollbar-dt .scrollbar-fade:hover::-webkit-scrollbar-thumb:hover {
+    background-color: color-mix(in srgb, var(--dt-midground) 40%, transparent);
   }
 
   /* Variant for portaled overlays (Radix DropdownMenu, Popover, etc.) that
@@ -1190,6 +1225,15 @@ code {
     .scrollbar-overlay {
       scrollbar-width: thin;
       scrollbar-color: color-mix(in srgb, var(--dt-midground) 28%, transparent) transparent;
+    }
+
+    /* No transition — Firefox doesn't animate scrollbar-color. */
+    .scrollbar-fade {
+      scrollbar-color: transparent transparent;
+    }
+
+    .scrollbar-fade:hover {
+      scrollbar-color: color-mix(in srgb, var(--dt-midground) 18%, transparent) transparent;
     }
   }
 }
@@ -2844,6 +2888,23 @@ button[data-slot='aui_msg-reactions'] svg {
 
 [data-hud-shell]:has([data-slot='composer-rich-input']:focus) [data-hud-exit]:hover {
   opacity: 1;
+}
+
+/* The corner resize handle — a hot corner, not a button. The window is created
+   non-resizable (the transparent-frameless Windows drag-growth bug), so this
+   is the one sanctioned way to change the HUD's size; it drives
+   `hermes:hud:set-bounds`, which flips resizable on for the call.
+
+   Deliberately invisible chrome: no glyph, no border — the corner of the bar
+   reads as the affordance, and painting a handle on a surface that lives over
+   other apps would be a stray UI fragment. It opts in to pointer events the
+   same way every other HUD control does (the shell defaults to none). */
+[data-hud-shell] [data-hud-resize] {
+  width: 1.25rem;
+  height: 1.25rem;
+  cursor: nwse-resize;
+  pointer-events: auto;
+  touch-action: none;
 }
 
 /* The composer's drop target is a full-window dashed sheet sized for the app's

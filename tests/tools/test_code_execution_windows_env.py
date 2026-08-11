@@ -191,10 +191,11 @@ class TestScrubChildEnvPassthroughInteraction:
         assert "OPENAI_API_KEY" not in scrubbed
 
 
-@pytest.mark.skipif(
-    sys.platform != "win32",
-    reason="Winsock-specific regression — only meaningful on Windows",
-)
+# ``windows_only`` rather than ``skipif(sys.platform != "win32")``: the
+# dedicated Windows CI job selects its files by grepping for the marker, so a
+# bare skipif is invisible to it — the file is never imported there and these
+# tests run on no host at all.
+@pytest.mark.windows_only
 class TestWindowsSocketSmokeTest:
     """Integration-ish smoke test: spawn a child Python with a scrubbed
     env and confirm it can create an AF_INET socket.  This is the
@@ -479,10 +480,7 @@ class TestSandboxWritesUtf8:
         finally:
             os.unlink(tmp_path)
 
-    @pytest.mark.skipif(
-        sys.platform != "win32",
-        reason="cp1252 default-encoding regression is Windows-specific",
-    )
+    @pytest.mark.windows_only
     def test_windows_default_encoding_would_have_failed(self):
         """Negative control: prove that on Windows, writing the stub
         *without* ``encoding="utf-8"`` would corrupt the file.  If this
@@ -616,10 +614,7 @@ class TestChildStdioIsUtf8:
         assert "\u2192" in decoded, f"arrow missing from output: {decoded!r}"
         assert "\U0001f680" in decoded, f"emoji missing from output: {decoded!r}"
 
-    @pytest.mark.skipif(
-        sys.platform != "win32",
-        reason="cp1252 stdout default is Windows-specific",
-    )
+    @pytest.mark.windows_only
     def test_windows_child_without_utf8_env_would_fail(self):
         """Negative control: spawn a Python child *without* our env
         overrides and prove that on Windows, printing non-ASCII fails.

@@ -113,3 +113,47 @@ def test_workflow_watch_list_names_a_workflow_that_exists():
             known.add(doc["name"])
 
     assert set(watched) <= known, f"unknown workflow names: {set(watched) - known}"
+
+
+def test_poller_never_watches_its_own_workflow():
+    """The poller's own run must never gate completion.
+
+    ``runs_all_completed`` waits until every relevant run is completed.
+    The poller's run is in progress for as long as it polls, so watching
+    itself would make the loop wait for itself and only ever exit on
+    timeout.
+    """
+    yaml = pytest.importorskip("yaml")
+    root = Path(__file__).resolve().parents[2]
+    doc = yaml.safe_load(
+        (root / ".github/workflows/ci-review-comment.yml").read_text(encoding="utf-8")
+    )
+    own_name = doc["name"]
+    step = next(
+        s for s in doc["jobs"]["comment"]["steps"]
+        if "WATCH_WORKFLOWS" in (s.get("env") or {})
+    )
+    watched = _mod.parse_watch_workflows(step["env"]["WATCH_WORKFLOWS"])
+    assert own_name not in watched
+
+
+# ─── runs_all_completed ───────────────────────────────────────────────
+
+
+def test_runs_all_completed_true_only_when_every_run_finished():
+    done = {"status": "completed"}
+    running = {"status": "in_progress"}
+    queued = {"status": "queued"}
+    assert _mod.runs_all_completed([done])
+    assert _mod.runs_all_completed([done, done])
+    assert not _mod.runs_all_completed([done, running])
+    assert not _mod.runs_all_completed([queued])
+
+
+def test_runs_all_completed_empty_list_is_not_done():
+    """No run info at all must not read as 'everything passed'."""
+    assert not _mod.runs_all_completed([])
+
+
+def test_runs_all_completed_missing_status_is_not_done():
+    assert not _mod.runs_all_completed([{}])

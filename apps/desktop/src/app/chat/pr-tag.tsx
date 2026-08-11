@@ -37,6 +37,10 @@ export function PrTag({ className, pr }: { className?: string; pr: HermesBranchP
           style.className,
           className
         )}
+        // Marks the chip as a live link for the row's hover rule: while the
+        // pointer is on it, the row keeps its metadata and holds the kebab back
+        // (see session-row) so the click can actually land.
+        data-pr-link
         onClick={event => {
           // The row underneath opens the session on click and pins on
           // shift-click; the chip is its own target and keeps the press.

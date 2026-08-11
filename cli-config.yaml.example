@@ -19,6 +19,16 @@ database:
   # journal_size_limit: 67108864 # cap the WAL/journal file size in bytes
 
 # =============================================================================
+# Runtime Limits
+# =============================================================================
+# Long-running Hermes server processes raise their RLIMIT_NOFILE soft limit to
+# this value when the operating system permits it. The value is clamped to the
+# hard limit and never lowers an already higher soft limit. Set to 0, false, or
+# null to disable the adjustment. Default: 4096.
+runtime:
+  nofile_soft_limit: 4096
+
+# =============================================================================
 # Model Configuration
 # =============================================================================
 model:
@@ -213,6 +223,16 @@ model:
 #
 # worktree_sync: true   # Default — branch from the fetched remote tip
 # worktree_sync: false  # Branch from local HEAD (offline / pinned base)
+
+# =============================================================================
+# Kanban Review Dispatch
+# =============================================================================
+# First-class review tasks are dispatched automatically by default. The worker
+# is spawned with the bundled sdlc-review skill and can approve, request changes
+# back to the original implementer, or escalate a genuine external blocker.
+# Disable this only when every review is performed manually from the dashboard.
+kanban:
+  review_dispatch: true
 
 # =============================================================================
 # Terminal Tool Configuration
@@ -1327,6 +1347,10 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  #                                           # Cost tip: keep the parent on a frontier model and pin
+  #                                           # delegation.model to an inexpensive one — children carry the
+  #                                           # vast majority of tokens, so this is where spend is cut while
+  #                                           # planning quality stays with the frontier parent.
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

@@ -162,7 +162,21 @@ def _(rid, params: dict) -> dict:
         # the upgrade resumes the child's transcript as a normal conversation.
         if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
             return _err(rid, 4009, "subagent still running — wait for it to finish")
+        # confirm_truncate with no target is malformed: the flag is consent for
+        # a specific cut, and a client that sends it bare has leaked rewind
+        # state onto an ordinary submit (#82756). Fail fast instead of quietly
+        # ignoring the flag so the broken client state is surfaced.
+        if is_truthy_value(params.get("confirm_truncate")) and truncate_user_ordinal is None:
+            return _err(
+                rid,
+                4004,
+                "confirm_truncate requires truncate_before_user_ordinal",
+            )
         if truncate_user_ordinal is not None:
+            # bool is an int subclass: a JSON `true` would coerce via int() to
+            # ordinal 1 and aim a confirmed rewind at the second user turn.
+            if isinstance(truncate_user_ordinal, bool):
+                return _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
             try:
                 ordinal = int(truncate_user_ordinal)
             except (TypeError, ValueError):
@@ -257,8 +271,18 @@ def _(rid, params: dict) -> dict:
                     # class #80216 fixed for /retry. On an uncompacted session
                     # all rows are active=1, so this is behaviorally identical
                     # to the full replace.
+                    # archive_dropped: a rewind overwrites turns the user may
+                    # not have meant to drop, and this write is the last step
+                    # before they are gone — three reported incidents ended
+                    # here with nothing to restore from (#70516, #80763,
+                    # #82756). Soft-archiving keeps them on disk (active=0) and
+                    # in the FTS index, so a mis-aimed cut is recoverable
+                    # instead of terminal. The live transcript is unchanged.
                     db.replace_messages(
-                        session["session_key"], truncated, active_only=True
+                        session["session_key"],
+                        truncated,
+                        active_only=True,
+                        archive_dropped=True,
                     )
                 except Exception as exc:
                     logger.error(

@@ -367,6 +367,7 @@ export const zh: Translations = {
         search: '搜索插件…',
         noMatches: '没有匹配的插件。',
         toggleFailed: (name: string) => `无法切换 ${name}`,
+        updateBackendToManage: '请更新 Hermes 后端以便在桌面端管理此插件。',
         sources: { bundled: '内置', user: '用户', git: 'git', project: '项目', entrypoint: 'pip' }
       }
     },

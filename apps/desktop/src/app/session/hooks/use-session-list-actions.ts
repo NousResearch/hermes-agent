@@ -32,6 +32,7 @@ import {
   setMessagingSessions,
   setMessagingTruncated,
   setSessionProfilesTruncated,
+  setSessionProfilesUsage,
   setSessions,
   setSessionsLoading
 } from '@/store/session'
@@ -223,6 +224,19 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
             ? prev
             : next
         })
+        // Same identity gate: these totals only move when a session bills, and
+        // a fresh object every refresh would repaint every profile header.
+        setSessionProfilesUsage(prev => {
+          const next = recents.profiles_usage ?? {}
+          const prevKeys = Object.keys(prev)
+
+          return prevKeys.length === Object.keys(next).length &&
+            prevKeys.every(
+              key => prev[key]?.tokens === next[key]?.tokens && prev[key]?.cost_usd === next[key]?.cost_usd
+            )
+            ? prev
+            : next
+        })
 
         // Cron section: latest N cron sessions (kept so a pinned cron run still
         // resolves via sessionByAnyId), signature-gated like above.
@@ -282,37 +296,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     [refreshSessions]
   )
 
-  // ALL-profiles view pages one profile at a time: fetch that profile's next
-  // page and merge it in place, leaving every other profile's rows untouched.
-  const loadMoreSessionsForProfile = useCallback(async (profile: string) => {
-    const key = normalizeProfileKey(profile)
-    const inKey = (s: SessionInfo) => normalizeProfileKey(s.profile) === key
-    const loaded = $sessions.get().filter(inKey).length
-
-    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', key, {
-      excludeSources: SIDEBAR_EXCLUDED_SOURCES
-    })
-
-    const keep = sessionsToKeep(key)
-
-    setSessions(prev => [
-      ...prev.filter(s => !inKey(s)),
-      ...mergeSessionPage(prev.filter(inKey), result.sessions, keep)
-    ])
-
-    // A full window back means the profile still has more on disk — but pinned
-    // rows arrive as a back-fill PAST the limit, so counting them fakes a full
-    // page and the "Load more" never goes away (it re-fetches the same rows
-    // forever). Only unpinned rows count toward the window.
-    const unpinned = result.sessions.filter(s => !s.pinned).length
-    const truncated = unpinned >= loaded + SIDEBAR_SESSIONS_PAGE_SIZE
-    setSessionProfilesTruncated(prev => ({ ...prev, [key]: truncated }))
-  }, [])
-
   return {
     loadMoreMessagingForPlatform,
     loadMoreSessions,
-    loadMoreSessionsForProfile,
     refreshCronJobs,
     refreshMessagingSessions,
     refreshSessions

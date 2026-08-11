@@ -157,3 +157,104 @@ class TestTuiPromptTruncationPreservesArchives:
             if m.get("role") in ("user", "assistant")
         ]
         assert [m["content"] for m in live] == ["kept head"]
+
+
+class TestArchiveDroppedIsRecoverable:
+    """`active_only=True` protects rows archived EARLIER; it still DELETEs the
+    live ones it replaces.
+
+    That is the last write standing between a mis-aimed rewind and permanent
+    loss, and all three reported incidents (#70516, #80763, #82756) ended
+    there with an empty WAL, no `active=0` rows and an FTS entry dropped in
+    sync. `archive_dropped=True` keeps the replaced turns on disk under the
+    same "the user took it back" marking `rewind_to_message` uses.
+    """
+
+    def test_dropped_turns_survive_as_inactive_rows(self, state_db):
+        sid = "archive-dropped"
+        state_db.create_session(sid, "test")
+        state_db.append_messages_batch(
+            sid,
+            [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "first reply"},
+                {"role": "user", "content": "second"},
+                {"role": "assistant", "content": "second reply"},
+            ],
+        )
+
+        state_db.replace_messages(
+            sid,
+            [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "first reply"},
+            ],
+            active_only=True,
+            archive_dropped=True,
+        )
+
+        # The live transcript is exactly what a destructive replace would leave.
+        live = [
+            m for m in state_db.get_messages_as_conversation(sid)
+            if m.get("role") in ("user", "assistant")
+        ]
+        assert [m["content"] for m in live] == ["first", "first reply"]
+
+        # …but the dropped turns are still readable instead of gone.
+        recovered = [
+            m["content"]
+            for m in state_db.get_messages(sid, include_inactive=True)
+            if not m["active"]
+        ]
+        assert "second" in recovered
+        assert "second reply" in recovered
+
+    def test_archived_rows_use_rewind_marking_not_compaction(self, state_db):
+        """compacted=0 keeps abandoned turns out of session search results.
+
+        `archive_and_compact` marks its rows compacted=1 precisely so they stay
+        discoverable; a rewound turn is one the user took back, so it must
+        carry the `rewind_to_message` marking instead.
+        """
+        sid = "archive-marking"
+        state_db.create_session(sid, "test")
+        state_db.append_messages_batch(
+            sid,
+            [
+                {"role": "user", "content": "keep"},
+                {"role": "assistant", "content": "drop me"},
+            ],
+        )
+
+        state_db.replace_messages(
+            sid,
+            [{"role": "user", "content": "keep"}],
+            active_only=True,
+            archive_dropped=True,
+        )
+
+        archived = [
+            m for m in state_db.get_messages(sid, include_inactive=True)
+            if not m["active"]
+        ]
+        assert archived, "the replaced rows must still be on disk"
+        assert all(not m.get("compacted") for m in archived)
+
+    def test_default_stays_destructive(self, state_db):
+        """The other three callers must be untouched by the new parameter."""
+        sid = "archive-default"
+        state_db.create_session(sid, "test")
+        state_db.append_messages_batch(
+            sid,
+            [
+                {"role": "user", "content": "gone"},
+                {"role": "assistant", "content": "also gone"},
+            ],
+        )
+
+        state_db.replace_messages(sid, [{"role": "user", "content": "fresh"}])
+
+        assert not [
+            m for m in state_db.get_messages(sid, include_inactive=True)
+            if not m["active"]
+        ]

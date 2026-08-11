@@ -8,6 +8,7 @@ import { type Codec, Codecs, persistentAtom } from '@/lib/persisted'
 import { arraysEqual, insertUniqueId, readKey } from '@/lib/storage'
 
 import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride, togglePane } from './panes'
+import { $showAllProfiles, setShowAllProfiles } from './profile'
 import type { PullRequestBucket } from './pull-requests'
 import type { SessionStatusBucket } from './session-dot-state'
 
@@ -33,11 +34,13 @@ const SIDEBAR_MESSAGING_OPEN_STORAGE_KEY = 'hermes.desktop.sidebarMessagingOpen'
 const SIDEBAR_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.sessionOrder'
 const SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY = 'hermes.desktop.sessionOrder.manual'
 const SIDEBAR_GROUPING_STORAGE_KEY = 'hermes.desktop.sidebarGrouping'
+const SIDEBAR_ALL_PROFILES_GROUPING_STORAGE_KEY = 'hermes.desktop.sidebarGrouping.allProfiles'
 const SIDEBAR_SORT_KEY_STORAGE_KEY = 'hermes.desktop.sidebarSortKey'
 const SIDEBAR_ROW_META_STORAGE_KEY = 'hermes.desktop.sidebarRowMeta'
 const SIDEBAR_STATUS_FILTER_STORAGE_KEY = 'hermes.desktop.sidebarStatusFilter'
 const SIDEBAR_SHOW_ARCHIVED_STORAGE_KEY = 'hermes.desktop.sidebarShowArchived'
 const SIDEBAR_PROJECT_FILTER_STORAGE_KEY = 'hermes.desktop.sidebarProjectFilter'
+const SIDEBAR_PROFILE_FILTER_STORAGE_KEY = 'hermes.desktop.sidebarProfileFilter'
 const SIDEBAR_PR_FILTER_STORAGE_KEY = 'hermes.desktop.sidebarPrFilter'
 const SIDEBAR_WORKSPACE_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceOrder'
 const SIDEBAR_WORKSPACE_PARENT_ORDER_STORAGE_KEY = 'hermes.desktop.workspaceParentOrder'
@@ -201,8 +204,9 @@ export const $sidebarMessagingOpenIds = persistentAtom(
 export const $sidebarAgentsGrouped = persistentAtom(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, false, Codecs.bool)
 
 /** How the recents list is divided. `date` is the sidebar's long-standing
- *  default (Today / Yesterday / Last week dividers). */
-export type SidebarGrouping = 'date' | 'project' | 'status'
+ *  default (Today / Yesterday / Last week dividers). `profile` only means
+ *  anything while the sidebar is showing every profile at once. */
+export type SidebarGrouping = 'date' | 'profile' | 'project' | 'status'
 /** What ranks rows within whatever grouping is active. */
 export type SidebarOrdering = 'cost' | 'created' | 'manual' | 'status' | 'tokens' | 'updated'
 /** The sort keys the menu offers; `manual` is entered by dragging, not picked. */
@@ -239,13 +243,40 @@ const $sidebarFlatGrouping = persistentAtom<SidebarGrouping>(
   oneOf(['date', 'status'], 'date')
 )
 
+// All-profiles keeps its own grouping: `profile` only means anything there, and
+// a shared atom would either drag it into a scope where it means nothing or
+// reset the choice every time the user flips the rail. Both scopes still ship
+// by day — grouping by owner is something you go and pick.
+const $sidebarAllProfilesGrouping = persistentAtom<SidebarGrouping>(
+  SIDEBAR_ALL_PROFILES_GROUPING_STORAGE_KEY,
+  'date',
+  oneOf(['date', 'profile', 'status'], 'date')
+)
+
+// The sidebar as it ships. Declared once so the atoms below, "Reset to
+// defaults" and the "has this view been customized?" check can't drift apart —
+// they used to inline the same literals in three places.
+const SIDEBAR_DEFAULT_GROUPING: SidebarGrouping = 'date'
+const SIDEBAR_DEFAULT_ORDERING: SidebarOrdering = 'updated'
+const SIDEBAR_DEFAULT_ROW_META: SidebarRowMeta[] = ['updated']
+
 const $sidebarSortKey = persistentAtom<SidebarSortKey>(
   SIDEBAR_SORT_KEY_STORAGE_KEY,
   'updated',
   oneOf(SIDEBAR_SORT_KEYS, 'updated')
 )
 
-export const $sidebarRowMeta = persistentAtom<SidebarRowMeta[]>(SIDEBAR_ROW_META_STORAGE_KEY, [], listOf(ROW_META))
+export const $sidebarRowMeta = persistentAtom<SidebarRowMeta[]>(
+  SIDEBAR_ROW_META_STORAGE_KEY,
+  SIDEBAR_DEFAULT_ROW_META,
+  listOf(ROW_META)
+)
+
+/** Order-insensitive: the menu appends in click order, so ['tokens','updated']
+ *  and ['updated','tokens'] are the same view. */
+function sameRowMeta(a: SidebarRowMeta[], b: SidebarRowMeta[]): boolean {
+  return a.length === b.length && a.every(id => b.includes(id))
+}
 
 // Archived sessions are a separate backend query (`archived: 'only'`), so this
 // flag both filters the list and drives the fetch.
@@ -265,6 +296,14 @@ export const $sidebarProjectFilter = persistentAtom(
   Codecs.stringArray
 )
 
+// Profile names, as `normalizeProfileKey` reports them. Only bites while the
+// sidebar is showing every profile — scoped to one, the scope is the filter.
+export const $sidebarProfileFilter = persistentAtom(
+  SIDEBAR_PROFILE_FILTER_STORAGE_KEY,
+  [] as string[],
+  Codecs.stringArray
+)
+
 // Whether a session's branch has a PR, and in what state. Fetched per repo via
 // `gh` (see store/pull-requests), so this is empty on backends without a local
 // checkout — the menu hides the submenu rather than offering a dead filter.
@@ -275,8 +314,8 @@ export const $sidebarPrFilter = persistentAtom<PullRequestBucket[]>(
 )
 
 export const $sidebarGrouping: ReadableAtom<SidebarGrouping> = computed(
-  [$sidebarAgentsGrouped, $sidebarFlatGrouping],
-  (grouped, grouping) => (grouped ? 'project' : grouping)
+  [$sidebarAgentsGrouped, $sidebarFlatGrouping, $sidebarAllProfilesGrouping, $showAllProfiles],
+  (grouped, flat, allProfiles, showAll) => (grouped ? 'project' : showAll ? allProfiles : flat)
 )
 
 // A hand-dragged order outranks any sort key — dragging IS how you pick manual,
@@ -287,8 +326,9 @@ export const $sidebarOrdering: ReadableAtom<SidebarOrdering> = computed(
 )
 
 export const $sidebarFiltersActive: ReadableAtom<boolean> = computed(
-  [$sidebarStatusFilter, $sidebarProjectFilter, $sidebarPrFilter, $sidebarShowArchived],
-  (statuses, projects, prs, archived) => statuses.length > 0 || projects.length > 0 || prs.length > 0 || archived
+  [$sidebarStatusFilter, $sidebarProjectFilter, $sidebarProfileFilter, $sidebarPrFilter, $sidebarShowArchived],
+  (statuses, projects, profiles, prs, archived) =>
+    statuses.length > 0 || projects.length > 0 || profiles.length > 0 || prs.length > 0 || archived
 )
 
 /** Anything at all moved off the shipped view — what makes a reset worth
@@ -297,7 +337,10 @@ export const $sidebarFiltersActive: ReadableAtom<boolean> = computed(
 export const $sidebarViewCustomized: ReadableAtom<boolean> = computed(
   [$sidebarGrouping, $sidebarOrdering, $sidebarRowMeta, $sidebarFiltersActive],
   (grouping, ordering, rowMeta, filtersActive) =>
-    grouping !== 'date' || ordering !== 'updated' || rowMeta.length > 0 || filtersActive
+    grouping !== SIDEBAR_DEFAULT_GROUPING ||
+    ordering !== SIDEBAR_DEFAULT_ORDERING ||
+    !sameRowMeta(rowMeta, SIDEBAR_DEFAULT_ROW_META) ||
+    filtersActive
 )
 
 // When true, the sessions sidebar moves to the right and the file browser +
@@ -494,9 +537,27 @@ export function setSidebarAgentsGrouped(grouped: boolean) {
 export function setSidebarGrouping(grouping: SidebarGrouping) {
   setSidebarAgentsGrouped(grouping === 'project')
 
-  if (grouping !== 'project') {
-    $sidebarFlatGrouping.set(grouping)
+  if (grouping === 'project') {
+    return
   }
+
+  // Grouping by owner is a request to see every owner, so it turns the
+  // all-profiles view on rather than drawing one group around one profile.
+  // (The flat scope's atom can't hold 'profile' at all.)
+  if (grouping === 'profile') {
+    setShowAllProfiles(true)
+    $sidebarAllProfilesGrouping.set(grouping)
+
+    return
+  }
+
+  if ($showAllProfiles.get()) {
+    $sidebarAllProfilesGrouping.set(grouping)
+
+    return
+  }
+
+  $sidebarFlatGrouping.set(grouping)
 }
 
 export function setSidebarOrdering(ordering: SidebarOrdering) {
@@ -535,6 +596,10 @@ export function toggleSidebarProjectFilter(projectId: string) {
   toggleIn($sidebarProjectFilter, projectId)
 }
 
+export function toggleSidebarProfileFilter(profile: string) {
+  toggleIn($sidebarProfileFilter, profile)
+}
+
 export function toggleSidebarPrFilter(bucket: PullRequestBucket) {
   toggleIn($sidebarPrFilter, bucket)
 }
@@ -542,17 +607,21 @@ export function toggleSidebarPrFilter(bucket: PullRequestBucket) {
 function clearSidebarFilters() {
   $sidebarStatusFilter.set([])
   $sidebarProjectFilter.set([])
+  $sidebarProfileFilter.set([])
   $sidebarPrFilter.set([])
   $sidebarShowArchived.set(false)
 }
 
-/** Every knob the filter menu owns, back to the sidebar as it ships: date
- *  groups, newest first, no extra row metadata, no filters. Ordering goes
- *  through its setter so a hand-dragged sequence is dropped along with it. */
+/** Every knob the filter menu owns, back to the sidebar as it ships. Ordering
+ *  goes through its setter so a hand-dragged sequence is dropped along with it. */
 export function resetSidebarView() {
-  setSidebarGrouping('date')
-  setSidebarOrdering('updated')
-  $sidebarRowMeta.set([])
+  setSidebarGrouping(SIDEBAR_DEFAULT_GROUPING)
+  // Both scopes, not just the one on screen: each keeps its own grouping, so a
+  // reset that left the other customized would hand it back on the next flip.
+  $sidebarFlatGrouping.set(SIDEBAR_DEFAULT_GROUPING)
+  $sidebarAllProfilesGrouping.set(SIDEBAR_DEFAULT_GROUPING)
+  setSidebarOrdering(SIDEBAR_DEFAULT_ORDERING)
+  $sidebarRowMeta.set(SIDEBAR_DEFAULT_ROW_META)
   clearSidebarFilters()
 }
 

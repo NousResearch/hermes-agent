@@ -309,6 +309,20 @@ def recover_if_needed(
         if not (root / "pyproject.toml").is_file():
             return
 
+        # Pending core install (.update-incomplete) — complete it NOW, before
+        # any native extension can be imported by this process.  The lazy
+        # import-probe path below only proves main.py is importable; the core
+        # install here guarantees the WHOLE dependency set is replaced while
+        # nothing pins venv .pyd files yet (#83569 self-lock: deferring the
+        # install to main()'s post-import recovery re-locks it on Windows).
+        # Bounded retries: a persistently failing install must not hammer
+        # every launch, so attempts past the ceiling are left for main.py's
+        # post-import recovery path (which can safely probe-import after this
+        # process already holds whatever extensions it needs).
+        if core_marker.exists():
+            _complete_pending_core_install(root, core_marker)
+            return
+
         broken = _probe_broken_packages()
         if not broken:
             # Imports are fine — main.py will load and run full recovery.
@@ -357,4 +371,128 @@ def recover_if_needed(
                 pass
     except Exception:
         # Never block launch — the import of main.py will surface the truth.
+        pass
+
+
+# Cap on automatic early-pass install retries.  A persistently failing
+# install (e.g. network down, index unreachable) must not reinstall-hammer
+# every `hermes` launch: past this many attempts the early pass hands the
+# marker to main.py's post-import recovery, which presents the manual
+# recovery command.  The counter lives inside the marker file itself (JSON
+# body) and is bumped on each failed attempt.
+_EARLY_CORE_INSTALL_MAX_ATTEMPTS = 3
+
+
+def _claim_recovery_lock(root: Path) -> bool:
+    """Single-flight claim on the shared recovery lock.  Never raises."""
+    lock_path = root / ".update-incomplete.lock"
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, f"{os.getpid()}\n".encode())
+        os.close(fd)
+        return True
+    except FileExistsError:
+        try:
+            if time.time() - lock_path.stat().st_mtime > 3600:
+                lock_path.unlink()
+        except OSError:
+            pass
+        return False
+    except OSError:
+        # Read-only fs / perms — proceed unlocked; the install itself
+        # surfaces the real problem.  Recoverable.
+        return True
+
+
+def _release_recovery_lock(root: Path) -> None:
+    """Best-effort release of the shared recovery lock."""
+    try:
+        (root / ".update-incomplete.lock").unlink()
+    except OSError:
+        pass
+
+
+def _complete_pending_core_install(root: Path, core_marker: Path) -> None:
+    """Run the pending core install BEFORE main.py can import native modules.
+
+    ``recover_if_needed`` invokes this when ``.update-incomplete`` exists —
+    a prior ``hermes update`` (or the self-lock preflight, #83569) left the
+    dependency sync deliberately unfinished.  Completing it here matters on
+    Windows: the deferral exists precisely because the process that wrote the
+    marker had a native venv extension mapped; this process, running before
+    ``hermes_cli.main``'s third-party imports, maps nothing yet, so the
+    installer can replace ``.pyd`` files without hitting the lock.
+
+    Marker lifecycle: cleared on success; kept (attempts counter bumped) on
+    failure for the next launch or main.py's post-import recovery.  An
+    attempts ceiling caps automatic retries so a persistent installer
+    failure does not block every launch (``hermes acp`` included).
+
+    Never raises: any failure leaves the marker for the post-import path.
+    """
+    try:
+        from hermes_cli import _install_repair as ir
+
+        # Retry backoff: read current attempts before claiming the lock so a
+        # persistently-failing install stops hammering early.  After the
+        # increment the counter reflects THIS attempt.
+        attempts = 0
+        try:
+            raw = core_marker.read_text(encoding="utf-8", errors="replace").strip()
+            if raw:
+                import json as _json
+
+                try:
+                    attempts = int(_json.loads(raw).get("attempts", 0))
+                except (ValueError, AttributeError):
+                    attempts = 0
+        except OSError:
+            attempts = 0
+
+        if attempts >= _EARLY_CORE_INSTALL_MAX_ATTEMPTS:
+            print(
+                "⚠ Pending interrupted-update install has already failed "
+                f"{attempts} times in the early pass — leaving it for the "
+                "post-import recovery path.",
+                file=sys.stderr,
+            )
+            return
+
+        if not _claim_recovery_lock(root):
+            return
+
+        try:
+            print(
+                "⚠ A previous `hermes update` was interrupted mid-install — "
+                "finishing dependency installation now (before any native "
+                "extensions load)...",
+                file=sys.stderr,
+            )
+            ir.run_core_install(root)
+        except Exception as exc:
+            new_attempts = ir.bump_marker_attempts(core_marker)
+            print(
+                f"  ✗ Early interrupted-install completion failed (attempt "
+                f"{new_attempts}/{_EARLY_CORE_INSTALL_MAX_ATTEMPTS}): {exc}",
+                file=sys.stderr,
+            )
+            print(
+                "  The next launch will retry; hermes will keep working from "
+                "the current venv in the meantime.",
+                file=sys.stderr,
+            )
+            return
+        finally:
+            _release_recovery_lock(root)
+
+        try:
+            core_marker.unlink()
+        except OSError:
+            pass
+        print(
+            "  ✓ Dependency installation completed in the early pass.",
+            file=sys.stderr,
+        )
+    except Exception:
+        # Never block launch — the marker stays for the post-import path.
         pass

@@ -327,6 +327,167 @@ def test_externally_managed_detection(tmp_path, monkeypatch):
     assert er._base_interpreter_is_externally_managed() is True
 
 
+# ---------------------------------------------------------------------------
+# Pending core install (.update-incomplete) — completed BEFORE native imports
+# (#83569 review: a deferred update must not re-lock itself on the next launch)
+# ---------------------------------------------------------------------------
+
+def test_core_marker_triggers_install_before_any_native_import(
+    tmp_path, monkeypatch
+):
+    """The reviewer's exact case (comment 5254279935): ``.update-incomplete``
+    present, venv HEALTHY (import probes would pass).  The early pass must
+    STILL run the core install — crucially while no native extension module
+    is loaded in this process — because deferring to main()'s post-import
+    recovery lets a recurring eager import remap the .pyd first."""
+    root = _project(tmp_path)
+    core_marker = root / ".update-incomplete"
+    core_marker.write_text('{"attempts": 0}', encoding="utf-8")
+
+    from hermes_cli import _install_repair as ir
+
+    calls: list[dict] = []
+
+    def fake_install(project_root):
+        calls.append(
+            {
+                "root": project_root,
+                "native_loaded_at_call": sorted(
+                    m for m in sys.modules if m.startswith("cryptography")
+                ),
+            }
+        )
+
+    monkeypatch.setattr(ir, "run_core_install", fake_install)
+    # Early recovery imports _install_repair lazily inside the helper; make
+    # sure the lazy import resolves to the SAME monkeypatched module object.
+    import hermes_cli._install_repair  # noqa: F401  (pre-import for patch)
+
+    er.recover_if_needed(project_root=root, argv=[])
+
+    assert len(calls) == 1, "core install must run when the marker exists"
+    assert calls[0]["root"] == root
+    assert calls[0]["native_loaded_at_call"] == [], (
+        "install must run BEFORE any cryptography module is loaded "
+        "(that is the whole point of the early pass)"
+    )
+    assert not core_marker.exists(), "marker cleared on success"
+    # And the lazy import-probe repair path must NOT also fire:
+    # (no probe repair attempted — cryptography is irrelevant to this branch)
+
+
+def test_core_marker_marks_attempts_and_keeps_marker_on_install_failure(
+    tmp_path, monkeypatch
+):
+    root = _project(tmp_path)
+    core_marker = root / ".update-incomplete"
+    core_marker.write_text('{"attempts": 0}', encoding="utf-8")
+
+    from hermes_cli import _install_repair as ir
+
+    def boom(_project_root):
+        raise RuntimeError("simulated install failure")
+
+    monkeypatch.setattr(ir, "run_core_install", boom)
+    import hermes_cli._install_repair  # noqa: F401
+
+    er.recover_if_needed(project_root=root, argv=[])
+
+    assert core_marker.exists(), "failure keeps the marker for the next try"
+    import json
+
+    body = json.loads(core_marker.read_text(encoding="utf-8"))
+    assert body["attempts"] == 1
+    # Recovery lock released even on failure (next launch may retry).
+    assert not (root / ".update-incomplete.lock").exists()
+
+
+def test_core_marker_retry_ceiling_hands_off_to_late_recovery(
+    tmp_path, monkeypatch
+):
+    """A persistently failing install must not reinstall-hammer every launch."""
+    root = _project(tmp_path)
+    core_marker = root / ".update-incomplete"
+    core_marker.write_text(
+        f'{{"attempts": {er._EARLY_CORE_INSTALL_MAX_ATTEMPTS}}}', encoding="utf-8"
+    )
+
+    from hermes_cli import _install_repair as ir
+
+    monkeypatch.setattr(
+        ir,
+        "run_core_install",
+        lambda _r: (_ for _ in ()).throw(
+            AssertionError("install must NOT run past the attempts ceiling")
+        ),
+    )
+    import hermes_cli._install_repair  # noqa: F401
+
+    er.recover_if_needed(project_root=root, argv=[])
+
+    assert core_marker.exists(), "marker retained for main.py's late recovery"
+    # Counter not bumped further by the skipped attempt.
+
+
+def test_lazy_marker_alone_does_not_trigger_core_install(tmp_path, monkeypatch):
+    """Invariant guard: a lone ``.lazy-refresh-incomplete`` must NOT trigger
+    the core-install branch (lazy repair has its own narrow probe path and
+    must NEVER clear the core marker per #58004)."""
+    root = _project(tmp_path)
+    (root / ".lazy-refresh-incomplete").write_text("x", encoding="utf-8")
+
+    from hermes_cli import _install_repair as ir
+
+    monkeypatch.setattr(
+        ir,
+        "run_core_install",
+        lambda _r: (_ for _ in ()).throw(
+            AssertionError("core install must not run for the lazy marker")
+        ),
+    )
+    import hermes_cli._install_repair  # noqa: F401
+
+    # Healthy probes → early pass does nothing (preserves existing behavior).
+    monkeypatch.setattr(er, "_probe_broken_packages", lambda: [])
+
+    er.recover_if_needed(project_root=root, argv=[])
+
+
+def test_core_marker_skipped_when_user_is_running_update(tmp_path, monkeypatch):
+    """A launch of `hermes update` itself must not race its own markers."""
+    root = _project(tmp_path)
+    core_marker = root / ".update-incomplete"
+    core_marker.write_text('{"attempts": 0}', encoding="utf-8")
+
+    from hermes_cli import _install_repair as ir
+
+    monkeypatch.setattr(
+        ir,
+        "run_core_install",
+        lambda _r: (_ for _ in ()).throw(
+            AssertionError("install must not run for `hermes update` argv")
+        ),
+    )
+    import hermes_cli._install_repair  # noqa: F401
+
+    er.recover_if_needed(project_root=root, argv=["update"])
+    assert core_marker.exists()
+
+
+def test_bump_marker_attempts_handles_missing_and_corrupt_bodies(tmp_path):
+    from hermes_cli import _install_repair as ir
+
+    m = tmp_path / ".update-incomplete"
+    m.write_text("", encoding="utf-8")
+    assert ir.bump_marker_attempts(m) == 1
+
+    m.write_text("not json", encoding="utf-8")
+    assert ir.bump_marker_attempts(m) == 1
+
+    m.write_text('{"attempts": 2}', encoding="utf-8")
+    assert ir.bump_marker_attempts(m) == 3
+
+
 
 
 

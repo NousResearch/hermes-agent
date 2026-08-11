@@ -3586,7 +3586,18 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         # keys the managed layer pins — see docs/design/managed-scope.md §4.1.
         managed_config = managed_scope.load_managed_config()
         if managed_config:
-            managed_expanded = _expand_env_vars(managed_config)
+            # Normalize the managed overlay through the same canonicalization as
+            # the user config BEFORE merging (parity with
+            # managed_scope.apply_managed_overlay): a dict-valued
+            # ``model.default`` (``{provider: ..., model: ...}``) or a bare
+            # ``model: <string>`` must be flattened to a string ``default``
+            # paired with ``provider`` so the merged result never exposes a
+            # nested dict to status/fallback/runtime readers.
+            managed_normalized = _normalize_root_model_keys(managed_config)
+            if isinstance(managed_normalized.get("model"), str):
+                managed_normalized = dict(managed_normalized)
+                managed_normalized["model"] = {"default": managed_normalized["model"]}
+            managed_expanded = _expand_env_vars(managed_normalized)
             expanded = _deep_merge(expanded, managed_expanded)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_sig is not None:

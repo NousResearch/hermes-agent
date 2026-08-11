@@ -3183,7 +3183,7 @@ function Install-BrowserUseCli {
     $ErrorActionPreference = "Continue"
     try {
         # UV_TOOL_BIN_DIR keeps the binary inside Hermes' managed bin dir,
-        # where the browser tool resolves it — no reliance on the user PATH.
+        # where the browser tool resolves it -- no reliance on the user PATH.
         $env:UV_TOOL_BIN_DIR = $managedBin
         $env:UV_NO_CONFIG = "1"
         & $script:UvCmd tool install browser-use 2>&1 | Out-Null

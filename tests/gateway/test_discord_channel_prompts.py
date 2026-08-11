@@ -131,7 +131,7 @@ async def test_retry_preserves_channel_prompt(monkeypatch):
     runner = _make_runner()
     runner.session_store = SimpleNamespace(
         get_or_create_session=lambda source: SimpleNamespace(session_id="session-1", last_prompt_tokens=10),
-        load_transcript=lambda session_id: [
+        load_transcript=lambda session_id, **kwargs: [
             {"role": "user", "content": "original message"},
             {"role": "assistant", "content": "old reply"},
         ],

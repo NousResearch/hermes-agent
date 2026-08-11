@@ -9830,6 +9830,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         messages: List[Dict[str, Any]],
         active_only: bool = False,
         archive_dropped: bool = False,
+        expected_active_ids: Optional[List[int]] = None,
     ) -> None:
         """Atomically replace the stored messages for a session.
 
@@ -9851,19 +9852,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         archived. ``message_count``/``tool_call_count`` then track the live set,
         matching :meth:`archive_and_compact`.
 
-        Pass ``archive_dropped=True`` to SOFT-archive the live rows instead of
-        DELETEing them: the replaced turns stay on disk with ``active = 0``,
-        ``compacted = 0`` — the same "the user took it back" marking
-        :meth:`rewind_to_message` applies — and stay readable via
-        :meth:`get_messages` with ``include_inactive=True``. This is the mode a
-        rewind/edit/regenerate must use: those flows overwrite a transcript the
-        user may not have meant to drop, and a plain DELETE also evicts the rows
-        from the FTS index, leaving nothing to recover from (#82756). It implies
-        active-only handling — already-archived rows are never touched — so
-        ``active_only`` is redundant with it. The rewritten set is inserted as
-        fresh active rows exactly as in the destructive path, so the live view
-        is identical either way; only the durability of the dropped turns
-        differs.
+        Pass ``archive_dropped=True`` for a prefix-preserving durable rewind.
+        The retained prefix keeps its existing row ids; only the active suffix
+        absent from ``messages`` is marked ``active = 0, compacted = 0``. This
+        avoids copying retained rows into both inactive and active history.
+        ``messages`` must therefore be an exact prefix of the active transcript.
+        ``expected_active_ids`` optionally pins the complete active snapshot so
+        a concurrent append/rewrite fails closed instead of being rewound by a
+        stale request. Both validation and the suffix update happen in the same
+        write transaction.
         """
 
         active_clause = " AND active = 1" if active_only else ""
@@ -9880,16 +9877,76 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ):
                 raise CompressionSessionClosedError(session_id)
             if archive_dropped:
-                # Content-preserving UPDATE: the rows keep their FTS entries
-                # (the messages_fts triggers fire on INSERT / DELETE / UPDATE
-                # of content columns, not on `active`), so the replaced turns
-                # stay readable via get_messages(include_inactive=True) and
-                # searchable with include_inactive=True after the rewrite.
-                conn.execute(
-                    "UPDATE messages SET active = 0 "
-                    "WHERE session_id = ? AND active = 1",
+                rows = conn.execute(
+                    f"SELECT {self._CONVERSATION_ROW_COLUMNS} "
+                    "FROM messages WHERE session_id = ? AND active = 1 ORDER BY id",
                     (session_id,),
+                ).fetchall()
+                active_ids = [int(row["id"]) for row in rows]
+                if expected_active_ids is not None and active_ids != expected_active_ids:
+                    raise RuntimeError(
+                        "active transcript changed during durable rewrite"
+                    )
+
+                projected = self._rows_to_conversation(
+                    rows,
+                    session_id=session_id,
+                    include_ancestors=False,
+                    repair_alternation=False,
+                    include_row_ids=True,
                 )
+                projected_ids = [msg.get("_row_id") for msg in projected]
+                if projected_ids != active_ids:
+                    raise RuntimeError(
+                        "active transcript cannot be mapped losslessly for durable rewrite"
+                    )
+                if len(messages) > len(projected):
+                    raise ValueError("durable rewrite is not an active transcript prefix")
+
+                ignored_keys = {
+                    "id",
+                    "session_id",
+                    "active",
+                    "compacted",
+                    "token_count",
+                }
+                for index, expected in enumerate(messages):
+                    actual = projected[index]
+                    row_id = expected.get("_row_id")
+                    if row_id is not None and row_id != actual.get("_row_id"):
+                        raise RuntimeError(
+                            "durable rewrite retained prefix identity changed"
+                        )
+                    for key, value in expected.items():
+                        if key == "_row_id" or key in ignored_keys:
+                            continue
+                        if actual.get(key) != value:
+                            raise ValueError(
+                                "durable rewrite is not an active transcript prefix"
+                            )
+
+                dropped_ids = active_ids[len(messages) :]
+                if dropped_ids:
+                    placeholders = ",".join("?" for _ in dropped_ids)
+                    # Preserve content/FTS entries while marking only the suffix
+                    # as user-abandoned retry history, not compacted history.
+                    conn.execute(
+                        f"UPDATE messages SET active = 0, compacted = 0 "
+                        f"WHERE id IN ({placeholders})",
+                        dropped_ids,
+                    )
+
+                tool_call_count = sum(
+                    len(msg["tool_calls"])
+                    for msg in projected[: len(messages)]
+                    if isinstance(msg.get("tool_calls"), list)
+                )
+                conn.execute(
+                    "UPDATE sessions SET message_count = ?, tool_call_count = ? "
+                    "WHERE id = ?",
+                    (len(messages), tool_call_count, session_id),
+                )
+                return
             else:
                 conn.execute(
                     f"DELETE FROM messages WHERE session_id = ?{active_clause}",

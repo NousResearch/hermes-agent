@@ -182,32 +182,81 @@ class TestArchiveDroppedIsRecoverable:
                 {"role": "assistant", "content": "second reply"},
             ],
         )
+        original = state_db.get_messages(sid)
 
+        retained = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "first reply"},
+        ]
         state_db.replace_messages(
             sid,
-            [
-                {"role": "user", "content": "first"},
-                {"role": "assistant", "content": "first reply"},
-            ],
+            retained,
             active_only=True,
             archive_dropped=True,
         )
 
-        # The live transcript is exactly what a destructive replace would leave.
-        live = [
-            m for m in state_db.get_messages_as_conversation(sid)
-            if m.get("role") in ("user", "assistant")
-        ]
-        assert [m["content"] for m in live] == ["first", "first reply"]
+        all_rows = state_db.get_messages(sid, include_inactive=True)
+        live = [m for m in all_rows if m["active"]]
+        inactive = [m for m in all_rows if not m["active"]]
 
-        # …but the dropped turns are still readable instead of gone.
-        recovered = [
-            m["content"]
-            for m in state_db.get_messages(sid, include_inactive=True)
-            if not m["active"]
+        # Retained rows keep their durable identity; they are not archived and
+        # reinserted as duplicates. Only the actual suffix delta is inactive.
+        assert [(m["id"], m["content"]) for m in live] == [
+            (original[0]["id"], "first"),
+            (original[1]["id"], "first reply"),
         ]
-        assert "second" in recovered
-        assert "second reply" in recovered
+        assert [(m["id"], m["content"]) for m in inactive] == [
+            (original[2]["id"], "second"),
+            (original[3]["id"], "second reply"),
+        ]
+        assert all(m["compacted"] == 0 for m in inactive)
+
+        # Reapplying the same durable prefix is storage-idempotent: no retained
+        # copies and no duplicate inactive suffix appear.
+        state_db.replace_messages(
+            sid,
+            retained,
+            active_only=True,
+            archive_dropped=True,
+        )
+        repeated = state_db.get_messages(sid, include_inactive=True)
+        assert [(m["id"], m["active"]) for m in repeated] == [
+            (original[0]["id"], 1),
+            (original[1]["id"], 1),
+            (original[2]["id"], 0),
+            (original[3]["id"], 0),
+        ]
+
+    def test_stale_snapshot_fails_closed_without_partial_rewind(self, state_db):
+        sid = "archive-race"
+        state_db.create_session(sid, "test")
+        state_db.append_messages_batch(
+            sid,
+            [
+                {"role": "user", "content": "first"},
+                {"role": "assistant", "content": "first reply"},
+                {"role": "user", "content": "retry me"},
+                {"role": "assistant", "content": "old reply"},
+            ],
+        )
+        snapshot = state_db.get_messages_as_conversation(sid, include_row_ids=True)
+        expected_ids = [m["_row_id"] for m in snapshot]
+
+        # Simulate an append after /retry loaded history but before its write.
+        state_db.append_message(sid, role="user", content="concurrent turn")
+        before = state_db.get_messages(sid, include_inactive=True)
+
+        with pytest.raises(RuntimeError, match="active transcript changed"):
+            state_db.replace_messages(
+                sid,
+                snapshot[:2],
+                active_only=True,
+                archive_dropped=True,
+                expected_active_ids=expected_ids,
+            )
+
+        assert state_db.get_messages(sid, include_inactive=True) == before
+        assert all(m["active"] for m in before)
 
     def test_archived_rows_use_rewind_marking_not_compaction(self, state_db):
         """compacted=0 keeps abandoned turns out of session search results.

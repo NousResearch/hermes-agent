@@ -411,7 +411,9 @@ class TestSessionStoreRewriteTranscript:
 
     def test_rewrite_replaces_transcript(self, store, tmp_path):
         session_id = "test_session_1"
-        store._db.create_session(session_id=session_id, source="test")
+        db = store._db
+        assert db is not None
+        db.create_session(session_id=session_id, source="test")
         # Write initial transcript
         for msg in [
             {"role": "user", "content": "hello"},
@@ -431,6 +433,11 @@ class TestSessionStoreRewriteTranscript:
         assert len(reloaded) == 2
         assert reloaded[0]["content"] == "hello"
         assert reloaded[1]["content"] == "hi"
+        assert not [
+            message
+            for message in db.get_messages(session_id, include_inactive=True)
+            if not message["active"]
+        ]
 
 
 class TestLoadTranscriptDBOnly:

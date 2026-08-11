@@ -2637,7 +2637,9 @@ class GatewaySlashCommandsMixin:
         """Handle /retry command - re-send the last user message."""
         source = event.source
         session_entry = await self.async_session_store.get_or_create_session(source)
-        history = await self.async_session_store.load_transcript(session_entry.session_id)
+        history = await self.async_session_store.load_transcript(
+            session_entry.session_id, include_row_ids=True
+        )
         
         # Find the last *real* user message. Timeline bookkeeping rows carry
         # role=user + display_kind (model_switch / async_delegation_complete /
@@ -2668,10 +2670,20 @@ class GatewaySlashCommandsMixin:
         # a bare rewrite (active_only=False) would DELETE them (same class as
         # #61145). /retry never intends to purge archived history, so avoid a
         # separate existence probe: it could fail open or race with the write.
+        # It is also a user-initiated rewind, so keep the superseded live turn
+        # recoverable instead of hard-deleting its assistant/tool trail.
         truncated = history[:last_user_idx]
-        await self.async_session_store.rewrite_transcript(
-            session_entry.session_id, truncated, active_only=True
+        persisted = await self.async_session_store.rewrite_transcript(
+            session_entry.session_id,
+            truncated,
+            active_only=True,
+            archive_dropped=True,
+            expected_active_ids=[
+                msg["_row_id"] for msg in history if "_row_id" in msg
+            ],
         )
+        if not persisted:
+            return "Retry failed: conversation history could not be persisted."
         # Reset stored token count — transcript was truncated
         session_entry.last_prompt_tokens = 0
 

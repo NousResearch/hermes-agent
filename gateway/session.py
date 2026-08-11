@@ -3923,6 +3923,8 @@ class SessionStore:
         session_id: str,
         messages: List[Dict[str, Any]],
         active_only: bool = False,
+        archive_dropped: bool = False,
+        expected_active_ids: Optional[List[int]] = None,
     ) -> bool:
         """Replace the entire transcript for a session with new messages.
 
@@ -3937,6 +3939,10 @@ class SessionStore:
         may carry archived rows must pass ``active_only=True`` so only the
         live rows are replaced.
 
+        Pass ``archive_dropped=True`` for a user-initiated rewind that must
+        keep the replaced live rows recoverable. The default stays destructive
+        for callers such as compression and intentional content redaction.
+
         Returns ``True`` when the write lands (or there is no DB to write to)
         and ``False`` when the canonical write fails. Most callers can ignore
         the result, but callers that would otherwise commit a destructive state
@@ -3948,13 +3954,21 @@ class SessionStore:
             return True
         self._clear_dirty_transcript(session_id)
         try:
-            self._db.replace_messages(session_id, messages, active_only=active_only)
+            self._db.replace_messages(
+                session_id,
+                messages,
+                active_only=active_only,
+                archive_dropped=archive_dropped,
+                expected_active_ids=expected_active_ids,
+            )
             return True
         except Exception as e:
             logger.debug("Failed to rewrite transcript in DB: %s", e)
             return False
 
-    def load_transcript(self, session_id: str) -> List[Dict[str, Any]]:
+    def load_transcript(
+        self, session_id: str, *, include_row_ids: bool = False
+    ) -> List[Dict[str, Any]]:
         """Load all messages from a session's transcript.
 
         state.db is the canonical store. The legacy JSONL fallback was removed
@@ -3991,7 +4005,9 @@ class SessionStore:
             # would otherwise re-trigger the pre-request repair on every
             # request forever — heal it once at the restore boundary.
             return self._db.get_messages_as_conversation(
-                session_id, repair_alternation=True
+                session_id,
+                repair_alternation=True,
+                include_row_ids=include_row_ids,
             )
         except Exception as e:
             # A failed read must be distinguishable from an empty transcript:

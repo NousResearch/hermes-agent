@@ -728,6 +728,34 @@ def _internal_event_envelope(delegation_id: Any) -> Dict[str, Any]:
     }
 
 
+def internal_event_persistence(event: Any) -> Tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Return validated transcript projection fields for one internal event.
+
+    The formatted completion text may still be sent through a model-facing
+    ``user`` turn for provider role alternation. Persistence must use the
+    canonical envelope, never infer authorship from that text. Malformed or
+    partial metadata fails closed as an ordinary row rather than stamping a
+    spoofable internal-event identity.
+    """
+    if not isinstance(event, dict):
+        return None, None
+    delegation_id = str(event.get("delegation_id") or "").strip()
+    if not delegation_id:
+        return None, None
+    expected = _internal_event_envelope(delegation_id)
+    if any(event.get(key) != value for key, value in expected.items()):
+        return None, None
+    return expected["display_kind"], {
+        "event_schema": expected["event_schema"],
+        "event_id": expected["event_id"],
+        "event_kind": expected["event_kind"],
+        "workflow_id": expected["workflow_id"],
+        "delegation_id": delegation_id,
+        "user_originated": expected["user_originated"],
+        "terminal": expected["terminal"],
+    }
+
+
 def _prune_completed_locked() -> None:
     """Drop the oldest completed records beyond the retention cap.
 

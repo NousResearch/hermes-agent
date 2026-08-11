@@ -199,6 +199,7 @@ async def test_inject_watch_notification_routes_from_session_store_origin(monkey
     evt = {
         "session_id": "proc_watch",
         "session_key": "agent:main:telegram:group:-100:42",
+        "delegation_id": "deleg_full",
         "event_schema": "hermes.internal_event.v1",
         "event_id": "async_delegation:deleg_full:terminal",
         "event_kind": "workflow.async_delegation.terminal",
@@ -221,6 +222,7 @@ async def test_inject_watch_notification_routes_from_session_store_origin(monkey
     assert synth_event.source.user_name == "Emiliyan"
     assert synth_event.metadata["event_id"] == evt["event_id"]
     assert synth_event.metadata["workflow_id"] == evt["workflow_id"]
+    assert synth_event.metadata["delegation_id"] == "deleg_full"
     assert synth_event.metadata["user_originated"] is False
     assert synth_event.metadata["terminal"] is True
 

@@ -123,6 +123,81 @@ class TestForceFullRedraw:
         assert events[:3] == ["erase", "scrollback_wipe", "replay"]
         assert events.index("scrollback_wipe") < events.index("original_resize")
 
+    def test_same_width_sigwinch_is_left_untouched(self, bare_cli, monkeypatch):
+        """Same-width SIGWINCH (tmux attach, benign focus/tab signals) must not
+        clear the viewport or replay: a 2J without replay erases the visible
+        transcript, and a replay duplicates it (#65293). The tmux-attach
+        stale-paint crash is handled by _hermes_call_output_screen_diff's
+        retry instead (#83874)."""
+        app = MagicMock()
+        events = []
+        app.renderer.output.erase_screen.side_effect = lambda: events.append("erase")
+        app.renderer.output.write_raw.side_effect = lambda *_: events.append("scrollback_wipe")
+        original_on_resize = lambda: events.append("original_resize")
+
+        bare_cli._status_bar_suppressed_after_resize = False
+        bare_cli._last_resize_width = 120
+        monkeypatch.setattr(bare_cli, "_get_tui_terminal_width", lambda: 120)
+        monkeypatch.setattr(bare_cli, "_schedule_status_bar_unsuppress", lambda *_: None)
+        monkeypatch.setattr(cli_mod, "_replay_output_history", lambda: events.append("replay"))
+
+        bare_cli._recover_after_resize(app, original_on_resize)
+
+        assert "erase" not in events
+        assert "replay" not in events
+        assert "scrollback_wipe" not in events
+        assert events == ["original_resize"]
+        assert bare_cli._last_resize_width == 120
+        assert bare_cli._status_bar_suppressed_after_resize is True
+
+    def test_output_screen_diff_retries_on_corrupt_previous_screen(self, bare_cli):
+        """Corrupt previous_screen must not wedge the paint loop.
+
+        After tmux attach, _output_screen_diff can raise AttributeError
+        ('cell' object has no attribute 'char'). Retry with previous_screen=None.
+        """
+        calls = []
+
+        def fake_osd(
+            app, output, screen, current_pos, color_depth,
+            previous_screen, last_style, is_done, full_screen,
+            attrs_for_style_string, style_string_has_style,
+            size, previous_width,
+        ):
+            calls.append((previous_screen, previous_width, last_style))
+            if previous_screen is not None:
+                # Exact failure mode from the classic CLI event loop.
+                raise AttributeError("'cell' object has no attribute 'char'")
+            return ("ok", current_pos, last_style)
+
+        screen = MagicMock()
+        screen.height = 10
+        previous = MagicMock()
+        previous.height = 8
+
+        result = cli_mod._hermes_call_output_screen_diff(
+            fake_osd,
+            app=None,
+            output=None,
+            screen=screen,
+            current_pos=None,
+            color_depth=None,
+            previous_screen=previous,
+            last_style="style",
+            is_done=False,
+            full_screen=False,
+            attrs_for_style_string=None,
+            style_string_has_style=None,
+            size=None,
+            previous_width=80,
+        )
+
+        assert result[0] == "ok"
+        assert len(calls) == 2
+        assert calls[0][0] is previous
+        assert previous.height == 10  # height inflate still applied first
+        assert calls[1] == (None, 0, None)
+
     def test_resize_recovery_is_debounced(self, bare_cli, monkeypatch):
         timers = []
         calls = []

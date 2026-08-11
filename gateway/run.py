@@ -6059,6 +6059,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self.delivery_router = DeliveryRouter(self.config)
         self._running = False
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
+        # Host-owned plugin injection router for headless plugin contexts
+        # (see inject_plugin_message). Registered at construction; the loop
+        # reference is bound when the gateway starts.
+        try:
+            from hermes_cli.plugins import register_injection_router as _register_router
+
+            _register_router("gateway", self._inject_plugin_router_sync)
+        except Exception:
+            logger.debug("gateway injection router registration skipped", exc_info=True)
         self._shutdown_event = asyncio.Event()
         self._exit_cleanly = False
         self._exit_with_failure = False
@@ -7926,6 +7935,138 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
         else:
             pending_slot[session_key] = queued_event
+
+    # ------------------------------------------------------------------
+    # Plugin message injection (host-owned seam)
+    # ------------------------------------------------------------------
+
+    def _plugin_gateway_injection_allowed(self, plugin_id: str) -> bool:
+        """Return True when ``allow_gateway_injection`` is set for the plugin.
+
+        Gateway injection is disabled per plugin by default; the operator
+        must explicitly set ``plugins.entries.<plugin_id>.allow_gateway_injection:
+        true`` in config.yaml. Any config error fails closed.
+        """
+        if not plugin_id:
+            return False
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config() or {}
+        except Exception:
+            return False
+        entries = (cfg.get("plugins") or {}).get("entries") or {}
+        entry = entries.get(plugin_id) or {}
+        return bool(entry.get("allow_gateway_injection", False))
+
+    def _resolve_route_adapter(self, entry: Any):
+        """Return the live adapter serving the entry's stored route, or None.
+
+        The gateway only injects into sessions whose authorised platform
+        route is live — it never fabricates a synthetic route.
+        """
+        platform = getattr(entry, "platform", None)
+        if platform is None:
+            return None
+        try:
+            transport = resolve_delivery_transport(
+                platform, self.config, self.adapters
+            )
+        except Exception:
+            return None
+        if transport is None:
+            return None
+        return getattr(transport, "adapter", None)
+
+    async def inject_plugin_message(
+        self,
+        content: str,
+        role: str = "user",
+        *,
+        mode: str = "queue",
+        target_session: str | None = None,
+        plugin_id: str = "",
+    ) -> bool:
+        """Inject a plugin message into one exact gateway session (public seam).
+
+        - Disabled per plugin unless
+          ``plugins.entries.<plugin_id>.allow_gateway_injection: true``.
+        - Reuses the existing authorised route (live adapter); never a
+          synthetic platform route.
+        - Busy target: queued behind active work (session FIFO) — the active
+          tool is never interrupted.
+        - Idle target: dispatched as a synthetic internal turn, which skips
+          auth and command routing (conversational input only).
+        - Unknown, closed, rotated or unauthorised targets fail closed.
+
+        Only ``mode="queue"`` is supported on the gateway in v1; other modes
+        return ``False``.
+        """
+        if mode != "queue":
+            return False
+        if not target_session:
+            return False
+        if not self._plugin_gateway_injection_allowed(plugin_id):
+            return False
+
+        entry = self.session_store._entries.get(target_session)
+        if entry is None or entry.origin is None:
+            return False
+        if self.session_store._is_session_ended_in_db(entry.session_id):
+            return False
+
+        adapter = self._resolve_route_adapter(entry)
+        if adapter is None:
+            return False
+
+        text = content if role == "user" else f"[{role}] {content}"
+        event = MessageEvent(text=text, source=entry.origin, internal=True, non_control=True)
+
+        state = self._peek_session_state(target_session)
+        busy = state is not None and state.turn.agent is not None
+        if busy or target_session in getattr(adapter, "_active_sessions", set()):
+            # Queue behind active work at the safe boundary.
+            self._enqueue_fifo(target_session, event, adapter)
+            return True
+
+        try:
+            await self._handle_message(event)
+        except Exception:
+            return False
+        return True
+
+    def _inject_plugin_router_sync(
+        self,
+        content: str,
+        role: str = "user",
+        *,
+        mode: str = "queue",
+        target_session: str | None = None,
+        plugin_id: str = "",
+    ) -> bool:
+        """Sync bridge from ``PluginContext.inject_message`` to the event loop.
+
+        Uses the gateway's running loop when available; fails closed
+        otherwise. Bounded by a 5 s wait so a wedged loop cannot hang a
+        plugin call indefinitely.
+        """
+        loop = getattr(self, "_gateway_loop", None)
+        if loop is None or loop.is_closed():
+            return False
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self.inject_plugin_message(
+                    content,
+                    role=role,
+                    mode=mode,
+                    target_session=target_session,
+                    plugin_id=plugin_id,
+                ),
+                loop,
+            )
+            return bool(future.result(timeout=5))
+        except Exception:
+            return False
 
     def _promote_queued_event(
         self,
@@ -15335,7 +15476,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
 
         # Check for commands
-        command = event.get_command()
+        # Plugin-injected events (peer messages, marked non_control=True) are
+        # conversational input only: they must never reach command dispatch
+        # (H-107 inert-control guarantee — no slash commands, approvals or
+        # confirmation answers from peer text). All other internal events
+        # keep their existing behaviour. The `is True` test guards against
+        # mock/test objects that auto-create truthy attributes.
+        command = None if getattr(event, "non_control", False) is True else event.get_command()
 
         from hermes_cli.commands import (
             GATEWAY_KNOWN_COMMANDS,
@@ -15857,14 +16004,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Plugin-registered slash commands
         if command:
             try:
-                from hermes_cli.plugins import get_plugin_command_handler
+                from hermes_cli.plugins import dispatch_plugin_command, get_plugin_command_handler
                 # Normalize underscores to hyphens so Telegram's underscored
                 # autocomplete form matches plugin commands registered with
                 # hyphens. See hermes_cli/commands.py:_build_telegram_menu.
                 plugin_handler = get_plugin_command_handler(command.replace("_", "-"))
                 if plugin_handler:
                     user_args = event.get_command_args().strip()
-                    result = plugin_handler(user_args)
+                    result = dispatch_plugin_command(
+                        get_plugin_manager(),
+                        command.replace("_", "-"),
+                        user_args,
+                        session_id=str(getattr(event, "session_id", "") or getattr(source, "session_id", "") or ""),
+                        platform=str(source.platform.value if getattr(source, "platform", None) else ""),
+                    )
                     if asyncio.iscoroutine(result):
                         result = await result
                     return str(result) if result else None

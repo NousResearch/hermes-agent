@@ -43,6 +43,7 @@ import os
 import sys
 import threading
 import types
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
@@ -165,6 +166,11 @@ VALID_HOOKS: Set[str] = {
     #   None / {"action": "allow"} -> continue unchanged
     "pre_user_message",
     "api_request_error",
+    # Host-open lifecycle: fired once when a live addressable session is
+    # created/resumed and registered, BEFORE its first model turn. Distinct
+    # from on_session_start (which today means "turn activity begins") so a
+    # peer registration can exist while the session is idle (REM-304/306).
+    "on_session_open",
     "on_session_start",
     "on_session_end",
     "on_session_finalize",
@@ -540,31 +546,77 @@ class PluginContext:
 
     # -- message injection --------------------------------------------------
 
-    def inject_message(self, content: str, role: str = "user") -> bool:
-        """Inject a message into the active conversation.
+    def inject_message(
+        self,
+        content: str,
+        role: str = "user",
+        *,
+        mode: str = "queue",
+        target_session=None,
+    ) -> bool:
+        """Inject a message into a live conversation (public plugin seam).
 
-        If the agent is idle (waiting for user input), this starts a new turn.
-        If the agent is running, this interrupts and injects the message.
+        The message is delivered through host-owned queues only: the plugin
+        never reaches into private CLI/gateway/TUI fields.
 
-        This enables plugins (e.g. remote control viewers, messaging bridges)
-        to send messages into the conversation from external sources.
+        - ``mode="queue"`` (default): idle target starts a new turn; a busy
+          target queues at the safe boundary and its active tool is never
+          interrupted.
+        - ``mode="steer"``: explicit mid-turn steering where the host
+          supports it.
+        - ``mode="interrupt"``: legacy hard-interrupt behaviour, retained
+          for compatibility.
 
-        Returns True if the message was queued successfully.
+        ``target_session`` is an opaque exact-session token captured from the
+        host lifecycle; ``None`` means the caller's own session. Unknown,
+        closed, rotated or unauthorised targets fail closed (``False``).
+
+        Gateway injection is disabled per plugin unless
+        ``plugins.entries.<plugin_id>.allow_gateway_injection: true`` is set
+        in config.yaml.
+
+        Injected text is conversational input only: it cannot invoke slash
+        commands, approve tools or answer protected confirmation prompts.
+
+        Returns ``True`` when the host accepted the message.
         """
-        cli = self._manager._cli_ref
-        if cli is None:
-            logger.warning("inject_message: no CLI reference (not available in gateway mode)")
+        if mode not in ("queue", "steer", "interrupt"):
             return False
 
-        msg = content if role == "user" else f"[{role}] {content}"
+        cli = self._manager._cli_ref
+        if cli is not None:
+            try:
+                return bool(
+                    cli.inject_message(
+                        content,
+                        role=role,
+                        mode=mode,
+                        target_session=target_session,
+                    )
+                )
+            except Exception:
+                return False
 
-        if getattr(cli, "_agent_running", False):
-            # Agent is mid-turn — interrupt with the message
-            cli._interrupt_queue.put(msg)
-        else:
-            # Agent is idle — queue as next input
-            cli._pending_input.put(msg)
-        return True
+        # No CLI attached (gateway, TUI/dashboard, headless serve): route via
+        # the host-owned routers registered by each surface. Dashboard takes
+        # precedence in serving processes, then the gateway.
+        for surface in ("tui", "gateway"):
+            router = _INJECTION_ROUTERS.get(surface)
+            if router is None:
+                continue
+            try:
+                plugin_id = self.manifest.key or self.manifest.name
+                if router(
+                    content,
+                    role=role,
+                    mode=mode,
+                    target_session=target_session,
+                    plugin_id=plugin_id,
+                ):
+                    return True
+            except Exception:
+                return False
+        return False
 
     # -- user interaction (AskUserQuestion-style overlay) ----------------------
 
@@ -2470,7 +2522,97 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
 
     Returns a list of non-``None`` return values from plugin callbacks.
     """
-    return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+    try:
+        return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+    finally:
+        # Host-open idempotence is scoped to an ACTIVE lifecycle, not the
+        # process lifetime. Finalize/reset callbacks must observe the session
+        # before its key is released so the same durable ID can later resume.
+        if hook_name == "on_session_finalize":
+            _release_session_open(kwargs.get("session_id"))
+        elif hook_name == "on_session_reset":
+            _release_session_open(kwargs.get("old_session_id"))
+
+
+# Host-open calls can converge from more than one host seam (for example a
+# resumed gateway session whose cached agent was rebuilt). Keep the boundary
+# idempotent and bounded rather than asking each plugin to defend against a
+# duplicate registration independently.
+_SESSION_OPEN_LIMIT = 4096
+_session_open_lock = threading.RLock()
+_session_open_seen: OrderedDict[tuple[str, str], None] = OrderedDict()
+
+
+def _release_session_open(session_id: object) -> bool:
+    """Release every host-surface key for one closed durable session."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return False
+    with _session_open_lock:
+        keys = [key for key in _session_open_seen if key[1] == sid]
+        for key in keys:
+            _session_open_seen.pop(key, None)
+    return bool(keys)
+
+
+def notify_session_open(session_id: object, platform: object) -> bool:
+    """Fire ``on_session_open`` once per active addressable-session lifecycle.
+
+    Returns ``True`` only for the call that emitted the hook. Empty IDs fail
+    closed and repeated active ``(platform, session_id)`` boundaries are
+    no-ops. Finalize/reset releases the old ID so it can later resume.
+    """
+    sid = str(session_id or "").strip()
+    surface = str(platform or "unknown").strip() or "unknown"
+    if not sid:
+        logger.warning("Refusing on_session_open for an empty session id")
+        return False
+    key = (surface, sid)
+    with _session_open_lock:
+        if key in _session_open_seen:
+            _session_open_seen.move_to_end(key)
+            return False
+        _session_open_seen[key] = None
+        while len(_session_open_seen) > _SESSION_OPEN_LIMIT:
+            _session_open_seen.popitem(last=False)
+    try:
+        invoke_hook("on_session_open", session_id=sid, platform=surface)
+    except Exception:
+        with _session_open_lock:
+            _session_open_seen.pop(key, None)
+        raise
+    return True
+# ---------------------------------------------------------------------------
+# Headless injection routers (TUI/dashboard and gateway hosts)
+# ---------------------------------------------------------------------------
+
+#: surface name -> sync router callable.  Hosts register themselves at
+#: import/startup; ``PluginContext.inject_message`` routes through them when
+#: no CLI reference is attached (gateway, dashboard, headless serve).
+#: Router signature: ``router(content, role, *, mode, target_session,
+#: plugin_id) -> bool``.  Registered routers are host-owned code; plugins
+#: never register here.
+_INJECTION_ROUTERS: Dict[str, Callable] = {}
+
+
+def register_injection_router(surface: str, router: Callable) -> None:
+    """Register a host-owned injection router for one surface.
+
+    ``surface`` is a short host name (``"tui"`` or ``"gateway"``).  The
+    router must be a plain sync callable with signature
+    ``(content, role, *, mode, target_session, plugin_id) -> bool`` and must
+    fail closed (return ``False``) for unknown or unauthorised targets.
+    """
+    if not surface or not callable(router):
+        logger.warning("register_injection_router: invalid surface/router ignored")
+        return
+    _INJECTION_ROUTERS[surface] = router
+    logger.debug("Registered injection router for surface %r", surface)
+
+
+def clear_injection_routers() -> None:
+    """Remove all registered injection routers (test isolation helper)."""
+    _INJECTION_ROUTERS.clear()
 
 
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:
@@ -2787,6 +2929,53 @@ def get_plugin_command_handler(name: str) -> Optional[Callable]:
     """Return the handler for a plugin-registered slash command, or ``None``."""
     entry = _ensure_plugins_discovered()._plugin_commands.get(name)
     return entry["handler"] if entry else None
+
+
+def dispatch_plugin_command(
+    manager,
+    name: str,
+    raw_args: str,
+    *,
+    session_id: Optional[str] = None,
+    platform: Optional[str] = None,
+    session_target: Any = None,
+) -> Any:
+    """Dispatch one plugin slash command with generic host context (REM-302/303).
+
+    Backwards-compatible public seam: legacy one-argument handlers
+    ``fn(raw_args)`` are called exactly as before (one positional arg, no
+    injected kwargs). An opt-in handler that declares keyword-only
+    ``session_id``/``platform``/``session_target`` (or accepts ``**kwargs``)
+    receives the exact host context so it can bind its action to the invoking
+    session. The wrapper inspects the handler signature once and passes
+    context ONLY when the handler accepts it — a legacy handler never sees an
+    unexpected keyword.
+
+    Returns the handler's resolved result (async handlers awaited per
+    ``resolve_plugin_command_result``) or ``None`` for an unknown command.
+    """
+    entry = manager._plugin_commands.get(name) if hasattr(manager, "_plugin_commands") else None
+    if entry is None:
+        return None
+    handler = entry["handler"]
+
+    # Inspect the handler's accepted keyword names.
+    try:
+        sig = inspect.signature(handler)
+        params = sig.parameters
+    except (TypeError, ValueError):
+        params = {}
+    accepts_kwargs = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+    context_kwargs: Dict[str, Any] = {}
+    if accepts_kwargs or "session_id" in params:
+        context_kwargs["session_id"] = session_id
+    if accepts_kwargs or "platform" in params:
+        context_kwargs["platform"] = platform
+    if accepts_kwargs or "session_target" in params:
+        context_kwargs["session_target"] = session_target
+
+    result = handler(raw_args, **context_kwargs) if context_kwargs else handler(raw_args)
+    return resolve_plugin_command_result(result)
 
 
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0

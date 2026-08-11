@@ -2348,6 +2348,11 @@ class MessageEvent:
     # Applied at API call time and never persisted to transcript history.
     channel_prompt: Optional[str] = None
 
+    # Plugin-injected (peer) messages are conversational input only: the host
+    # skips command dispatch for events marked non_control (H-107
+    # inert-control guarantee). Set ONLY by the plugin injection path.
+    non_control: bool = False
+
     # Channel context recovered by history backfill (e.g. messages between
     # bot turns that were missed due to require_mention).  Kept separate
     # from ``text`` so the sender-prefix logic in run.py can operate on the

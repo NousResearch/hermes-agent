@@ -4702,6 +4702,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._agent_running = False
         self._pending_input = queue.Queue()
         self._interrupt_queue = queue.Queue()
+        # Conversational input injected by hosts/plugins (peer messages).
+        # Drained by process_loop BEFORE user input and never routed through
+        # the slash-command / bang-shell / file-drop paths — injected text is
+        # conversational input only (H-107 inert-control guarantee).
+        self._injected_input = queue.Queue()
         # Tracks whether the turn that just finished was interrupted via
         # Ctrl+C. Consumed by _maybe_continue_goal_after_turn so /goal loops
         # don't auto-queue another continuation on top of a user-cancelled
@@ -8397,20 +8402,31 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         flush_tool_summary()
         _cli_visible_print()
     
-    def _notify_session_boundary(self, event_type: str) -> None:
+    def _notify_session_boundary(self, event_type: str, old_session_id: Optional[str] = None) -> None:
         """Fire a session-boundary plugin hook (on_session_finalize or on_session_reset).
 
         Non-blocking — errors are caught and logged.  Safe to call from any
-        lifecycle point (shutdown, /new, /reset).
+        lifecycle point (shutdown, /new, /reset). ``old_session_id`` is
+        threaded through on_session_reset so plugins can finalise exactly the
+        rotated session (REM-307).
         """
         try:
-            from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _invoke_hook(
-                event_type,
-                session_id=self.agent.session_id if self.agent else None,
-                platform=getattr(self, "platform", None) or "cli",
-                reason="new_session" if event_type == "on_session_reset" else "session_boundary",
-            )
+            from hermes_cli.lifecycle import finalize_session, invoke_hook
+
+            context = {
+                "session_id": self.agent.session_id if self.agent else None,
+                "platform": getattr(self, "platform", None) or "cli",
+                "reason": (
+                    "new_session"
+                    if event_type == "on_session_reset"
+                    else "session_boundary"
+                ),
+            }
+            if event_type == "on_session_finalize":
+                finalize_session(**context)
+            else:
+                context["old_session_id"] = old_session_id
+                invoke_hook(event_type, **context)
         except Exception:
             pass
 
@@ -8686,7 +8702,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         )
             except Exception:
                 pass
-            self._notify_session_boundary("on_session_reset")
+            self._notify_session_boundary("on_session_reset", old_session_id=old_session_id)
 
         if not silent:
             if title:
@@ -10249,6 +10265,74 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             print(f"    2. Or configure settings in {display_hermes_home()}/config.yaml")
             print()
     
+    # ------------------------------------------------------------------
+    # Public plugin message-injection seam (host-owned queues)
+    # ------------------------------------------------------------------
+
+    def inject_message(
+        self,
+        content: str,
+        role: str = "user",
+        *,
+        mode: str = "queue",
+        target_session: str | None = None,
+    ) -> bool:
+        """Inject a message into this CLI conversation (public plugin seam).
+
+        This is the host-owned counterpart of ``PluginContext.inject_message``
+        and the only supported way for hosts/plugins to deliver external text
+        into the interactive loop. It never exposes the private pending or
+        interrupt queues to callers.
+
+        Modes:
+
+        - ``queue`` (default): idle → the message starts a new turn; busy →
+          queued at the safe boundary (delivered after the active turn ends).
+          Never touches ``_interrupt_queue`` and never cancels an active tool.
+        - ``steer``: explicit mid-turn steering via ``agent.steer()`` when the
+          agent is running; degrades to a queued next-turn message when idle.
+        - ``interrupt``: legacy hard-interrupt behaviour (busy → interrupt
+          queue; the agent loop drains it mid-turn).
+
+        ``target_session`` must be ``None`` (this session) or this CLI's own
+        ``session_id``; any other value fails closed with ``False``.
+
+        Returns ``True`` when the message was accepted by the host.
+        """
+        if mode not in ("queue", "steer", "interrupt"):
+            return False
+        if target_session is not None and str(target_session) != str(self.session_id):
+            return False
+
+        msg = content if role == "user" else f"[{role}] {content}"
+
+        if mode == "interrupt":
+            if self._agent_running:
+                # Legacy hard-interrupt behaviour: the agent loop drains the
+                # interrupt queue mid-turn as conversational input.
+                self._interrupt_queue.put(msg)
+            else:
+                self._injected_input.put(msg)
+            return True
+
+        if mode == "steer":
+            agent = getattr(self, "agent", None)
+            if self._agent_running and agent is not None and hasattr(agent, "steer"):
+                try:
+                    return bool(agent.steer(msg))
+                except Exception:
+                    return False
+            # Idle (or steer unsupported): degrade to the next turn as
+            # conversational input.
+            self._injected_input.put(msg)
+            return True
+
+        # mode == "queue" — the safe default; never interrupts. Injected text
+        # is conversational input only: it bypasses the slash-command,
+        # bang-shell and file-drop paths in process_loop.
+        self._injected_input.put(msg)
+        return True
+
     def process_command(self, command: str) -> bool:
         """
         Process a slash command.
@@ -10835,15 +10919,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # Check for plugin-registered slash commands
             elif base_cmd.lstrip("/") in _get_plugin_cmd_handler_names():
                 from hermes_cli.plugins import (
+                    dispatch_plugin_command,
                     get_plugin_command_handler,
-                    resolve_plugin_command_result,
                 )
                 plugin_handler = get_plugin_command_handler(base_cmd.lstrip("/"))
                 if plugin_handler:
                     user_args = cmd_original[len(base_cmd):].strip()
                     try:
-                        result = resolve_plugin_command_result(
-                            plugin_handler(user_args)
+                        result = dispatch_plugin_command(
+                            get_plugin_manager(),
+                            base_cmd.lstrip("/"),
+                            user_args,
+                            session_id=str(getattr(self, "session_id", "") or ""),
+                            platform=str(getattr(self, "platform", None) or "cli"),
                         )
                         if result:
                             _cprint(str(result))
@@ -15596,6 +15684,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if not self._claim_active_session("cli"):
             return
 
+        # Host-open lifecycle (REM-304/306): the session is live and
+        # addressable; fire on_session_open so plugins can register a peer
+        # BEFORE the first model turn. Distinct from on_session_start.
+        try:
+            from hermes_cli.plugins import invoke_hook
+            invoke_hook(
+                "on_session_open",
+                session_id=str(getattr(self, "session_id", "") or ""),
+                platform="cli",
+            )
+        except Exception:
+            pass
+
         # Detect light/dark terminal mode now (before pt grabs the tty).
         # Caches the result so subsequent _hex_to_ansi / style calls
         # don't risk re-querying mid-render.
@@ -18207,9 +18308,19 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         def process_loop():
             while not self._should_exit:
                 try:
+                    # Injected (plugin/peer) conversational input is drained
+                    # first and is NEVER treated as a command, shell line or
+                    # file drop — see H-107 inert-control guarantee.
+                    try:
+                        injected = self._injected_input.get_nowait()
+                    except queue.Empty:
+                        injected = None
                     # Check for pending input with timeout
                     try:
-                        user_input = self._pending_input.get(timeout=0.1)
+                        if injected is not None:
+                            user_input = injected
+                        else:
+                            user_input = self._pending_input.get(timeout=0.1)
                     except queue.Empty:
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
@@ -18221,6 +18332,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                             except Exception:
                                 pass
                         continue
+                    is_injected_input = injected is not None
 
                     # Voice-transcribed messages arrive wrapped in a sentinel
                     # so only genuine STT output gets the voice prefix (#65827).
@@ -18257,12 +18369,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # path, so submitted input is never voice here.
                     is_voice_input = False
 
-                    if not is_voice_input and self._typed_voice_stop(user_input):
+                    if (
+                        not is_injected_input
+                        and not is_voice_input
+                        and self._typed_voice_stop(user_input)
+                    ):
                         continue
                     
                     # Check for commands — but detect dragged/pasted file paths first.
-                    # See _detect_file_drop() for details.
-                    _file_drop = _detect_file_drop(user_input) if isinstance(user_input, str) else None
+                    # See _detect_file_drop() for details. Injected input skips
+                    # file-drop detection (peer text must not attach local files).
+                    _file_drop = (
+                        _detect_file_drop(user_input)
+                        if (not is_injected_input and isinstance(user_input, str))
+                        else None
+                    )
                     if _file_drop:
                         _drop_path = _file_drop["path"]
                         _remainder = _file_drop["remainder"]
@@ -18279,9 +18400,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
                     # A bare number right after a bare `/resume` prompt selects
                     # that session (see #34584). Checked before chat routing so
-                    # the digit isn't sent to the agent as a message.
+                    # the digit isn't sent to the agent as a message. Injected
+                    # input never participates in resume selection.
                     if (
-                        not _file_drop
+                        not is_injected_input
+                        and not _file_drop
                         and self._pending_resume_sessions
                         and isinstance(user_input, str)
                         and self._consume_pending_resume_selection(user_input)
@@ -18291,15 +18414,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     # `!<command>` shell mode — run it here and loop back to
                     # idle. Checked BEFORE slash routing and before the chat
                     # path so nothing enters conversation history and no model
-                    # turn is spent. See handle_bang_shell().
+                    # turn is spent. See handle_bang_shell(). Injected input
+                    # is conversational only: it can never run a shell line.
                     if (
-                        not _file_drop
+                        not is_injected_input
+                        and not _file_drop
                         and isinstance(user_input, str)
                         and self.handle_bang_shell(user_input)
                     ):
                         continue
 
-                    if not _file_drop and isinstance(user_input, str) and _looks_like_slash_command(user_input):
+                    if (
+                        not is_injected_input
+                        and not _file_drop
+                        and isinstance(user_input, str)
+                        and _looks_like_slash_command(user_input)
+                    ):
                         _cprint(f"\n⚙️  {user_input}")
                         try:
                             if not self.process_command(user_input):

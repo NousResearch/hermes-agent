@@ -188,13 +188,13 @@ When you upgrade to a version of Hermes that has opt-in plugins (config schema v
 
 ## Available hooks
 
-Plugins can register the 24 lifecycle events currently accepted by `hermes_cli.plugins.VALID_HOOKS`. The **[Event Hooks catalog](/user-guide/features/hooks#shipped-plugin-hook-catalog)** is canonical for exact timing, return handling, payload fields, and privacy notes.
+Plugins can register the 25 lifecycle events currently accepted by `hermes_cli.plugins.VALID_HOOKS`. The **[Event Hooks catalog](/user-guide/features/hooks#shipped-plugin-hook-catalog)** is canonical for exact timing, return handling, payload fields, and privacy notes.
 
 | Descriptive category | Shipped hooks |
 |---|---|
 | **Directive/control** | `pre_tool_call`, `pre_llm_call`, `pre_verify`, `pre_gateway_dispatch` |
 | **Transform** | `transform_tool_result`, `transform_terminal_output`, `transform_llm_output` |
-| **Observer** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
+| **Observer** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `on_session_start`, `on_session_open`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
 
 These categories describe current behavior rather than defining future naming rules. Plugin middleware remains a separate registry/surface.
 ## Plugin types
@@ -317,25 +317,84 @@ In a running session, `/plugins` shows which plugins are currently loaded.
 
 ## Injecting Messages
 
-Plugins can inject messages into the active conversation using `ctx.inject_message()`:
+Plugins can inject messages into a live conversation using `ctx.inject_message()`:
 
 ```python
 ctx.inject_message("New data arrived from the webhook", role="user")
+# Safe default: queue — busy sessions are never interrupted.
+ctx.inject_message("Please check the new schema", mode="queue")
 ```
 
-**Signature:** `ctx.inject_message(content: str, role: str = "user") -> bool`
+**Signature:** `ctx.inject_message(content: str, role: str = "user", *, mode: str = "queue", target_session=None) -> bool`
+
+The `mode` argument selects the delivery behaviour:
+
+- `"queue"` (default): an **idle** target starts a new turn; a **busy** target
+  queues the message at the safe boundary (after the active turn ends). The
+  active tool is **never** interrupted.
+- `"steer"`: explicit mid-turn steering where the host supports it
+  (CLI and dashboard). Falls back to queueing when unsupported or idle.
+- `"interrupt"`: the legacy hard-interrupt behaviour, retained for
+  compatibility. Use only when the caller genuinely needs to stop the
+  active turn.
+
+`target_session` is an opaque exact-session token captured from the host
+lifecycle. `None` means the caller's own session. Unknown, closed, rotated
+or unauthorised targets **fail closed** and return `False`.
 
 How it works:
 
-- If the agent is **idle** (waiting for user input), the message is queued as the next input and starts a new turn.
-- If the agent is **mid-turn** (actively running), the message interrupts the current operation — the same as a user typing a new message and pressing Enter.
+- If the agent is **idle**, the message is queued as the next input and starts a new turn.
+- If the agent is **mid-turn** and `mode="queue"`, the message is held until the safe boundary — it does not interrupt the current operation.
 - For non-`"user"` roles, the content is prefixed with `[role]` (e.g. `[system] ...`).
-- Returns `True` if the message was queued successfully, `False` if no CLI reference is available (e.g. in gateway mode).
+- Injected text is **conversational input only**: it can never invoke slash
+  commands, approve tools, run shell lines or answer protected
+  confirmation/clarification prompts.
+- Returns `True` if the host accepted the message, `False` otherwise.
 
-This enables plugins like remote control viewers, messaging bridges, or webhook receivers to feed messages into the conversation from external sources.
+Surfaces:
+
+- **CLI sessions** are supported directly.
+- **TUI/dashboard sessions** (`hermes serve`, the desktop app) are supported
+  with exact-session targeting.
+- **Gateway sessions** are supported but disabled per plugin by default: set
+  `plugins.entries.<plugin-id>.allow_gateway_injection: true` in
+  `config.yaml` to enable. Injection reuses the session's existing authorised
+  platform route and never fabricates a synthetic route.
+
+This enables plugins like remote control viewers, messaging bridges, or
+webhook receivers to feed messages into the conversation from external
+sources.
 
 :::note
-`inject_message` is only available in CLI mode. In gateway mode, there is no CLI reference and the method returns `False`.
+Older Hermes builds without the `mode`/`target_session` parameters behave as
+before: CLI-only, busy sessions interrupted. Feature-detect by inspecting the
+signature if your plugin must support both.
 :::
+
+## Exact session context for slash commands
+
+Plugin slash commands registered with `ctx.register_command()` historically
+received only the raw argument string. Hermes now threads **exact host
+context** to handlers that opt in, while legacy one-argument handlers keep
+their exact old contract (no unexpected-keyword failures).
+
+A handler may declare any of these keyword-only parameters (or `**kwargs`) to
+receive the invoking session's context:
+
+```python
+def on_peer_name(raw: str, *, session_id: str | None = None, platform: str | None = None, session_target=None) -> str:
+    ...
+```
+
+- `session_id` — the exact host conversation id that invoked the command.
+- `platform` — the surface (`"cli"`, `"gateway"`, `"tui"`, ...).
+- `session_target` — an opaque host-owned routing token (set only where the
+  surface exposes one).
+
+The host inspects the handler signature once and passes context ONLY when the
+handler accepts it. A legacy `fn(raw_args)` handler is called exactly as
+before. This lets a plugin bind every command action to the invoking session
+instead of a process-global first peer.
 
 See the **[full guide](/developer-guide/plugins)** for handler contracts, schema format, hook behavior, error handling, and common mistakes.

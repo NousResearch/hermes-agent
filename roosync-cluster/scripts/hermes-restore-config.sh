@@ -141,6 +141,16 @@ if [ -z "$MCP_AUTH" ]; then echo "ERROR: MCP_AUTH_TOKEN not set (add to .env.sec
 cat >> "$DATA/config.yaml" << EOF
 
 # --- RooSync deployment config (2026-05-16) ---
+# Memory char-limit tuning (anti-livelock, incident 2026-08-11). Upstream
+# defaults 2200/1375 are too tight for a coordinator bot that accrues one
+# durable entry per incident/decision. Near-full MEMORY.md + a normal batch
+# overflowed -> write rejected -> bot reinterpreted as "consolidate first"
+# -> livelock (~20 min, ~30 leaked Telegram messages). Raising 2x gives
+# headroom so a normal batch no longer overflows -> no rejection -> no loop.
+memory:
+  memory_char_limit: 4400
+  user_char_limit: 2750
+
 # All auxiliary tasks use z.ai provider (openrouter/nous cause 401 in gateway)
 auxiliary:
   compression:

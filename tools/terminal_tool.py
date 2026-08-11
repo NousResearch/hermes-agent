@@ -1522,6 +1522,37 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
 _terminal_config_bridge_attempted = False
 
 
+def _terminal_backend_identity(
+    raw_config: Optional[Dict[str, Any]] = None,
+) -> tuple[Optional[str], str]:
+    """Return the profile's canonical and effective terminal backends.
+
+    An explicit ``terminal.backend`` belongs to the active Hermes profile and
+    wins over a process-global ``TERMINAL_ENV`` value. This matters for a
+    multiplexed gateway, where concurrent turns carry different profile-home
+    ContextVars but share ``os.environ``. Profiles without an explicit backend
+    retain the launcher/environment selection and the historical local default.
+    """
+    config = raw_config
+    if config is None:
+        try:
+            from hermes_cli.config import read_raw_config
+
+            config = read_raw_config()
+        except Exception:
+            config = {}
+
+    terminal_config = config.get("terminal") if isinstance(config, dict) else None
+    canonical = None
+    if isinstance(terminal_config, dict) and "backend" in terminal_config:
+        canonical = (
+            str(terminal_config.get("backend") or "").strip().lower() or None
+        )
+
+    env_backend = str(os.environ.get("TERMINAL_ENV") or "").strip().lower()
+    return canonical, canonical or env_backend or "local"
+
+
 def _ensure_terminal_env_bridged() -> None:
     """Backfill TERMINAL_* env vars from config.yaml when no launcher did.
 
@@ -1574,7 +1605,7 @@ def _get_env_config() -> Dict[str, Any]:
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
     _ensure_terminal_env_bridged()
-    env_type = os.getenv("TERMINAL_ENV", "local")
+    _, env_type = _terminal_backend_identity()
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
     container_backend = env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}

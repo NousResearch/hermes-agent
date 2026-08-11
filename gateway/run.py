@@ -25888,14 +25888,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # value as well as canonical terminal.backend so both config.yaml
         # edits and legacy TERMINAL_ENV reloads rebuild the agent before the
         # next turn instead of retaining a stale local/remote schema.
-        effective_backend = (
-            os.environ.get("TERMINAL_ENV")
-            or out.get("terminal.backend")
-            or "local"
-        )
-        out["terminal.effective_backend"] = (
-            str(effective_backend).strip().lower() or "local"
-        )
+        try:
+            from tools.terminal_tool import _terminal_backend_identity
+
+            _, effective_backend = _terminal_backend_identity(cfg)
+        except Exception:
+            effective_backend = (
+                out.get("terminal.backend")
+                or os.environ.get("TERMINAL_ENV")
+                or "local"
+            )
+        out["terminal.effective_backend"] = str(effective_backend).strip().lower() or "local"
         try:
             from tools.registry import registry
 

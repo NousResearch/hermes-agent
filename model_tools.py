@@ -316,26 +316,12 @@ _TOOL_DEFS_CACHE_MAX = 8
 def _terminal_backend_cache_fingerprint() -> tuple[Optional[str], str]:
     """Return canonical and effective backends for schema cache isolation.
 
-    An explicit ``terminal.backend`` config value wins over ``TERMINAL_ENV``
-    when terminal_tool bridges config into the process. Without that explicit
-    key, preserve the environment selection and historical local default.
-    ``execute_code`` uses this same backend distinction to withhold local-only
-    deferred bridges from remote transports.
+    Use terminal_tool's runtime resolver so cache identity and execution cannot
+    disagree when multiplexed profiles share the process environment.
     """
-    canonical = None
-    try:
-        from hermes_cli.config import read_raw_config
+    from tools.terminal_tool import _terminal_backend_identity
 
-        raw = read_raw_config()
-        terminal_cfg = raw.get("terminal") if isinstance(raw, dict) else None
-        if isinstance(terminal_cfg, dict) and "backend" in terminal_cfg:
-            canonical = str(terminal_cfg.get("backend") or "").strip().lower() or None
-    except (ImportError, OSError, TypeError, ValueError):
-        canonical = None
-
-    configured_env = str(os.environ.get("TERMINAL_ENV") or "").strip().lower()
-    effective = canonical or configured_env or "local"
-    return canonical, effective
+    return _terminal_backend_identity()
 
 
 def _clear_tool_defs_cache() -> None:

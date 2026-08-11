@@ -212,6 +212,18 @@ class TestExtractCacheBustingConfig:
         assert local_keys["terminal.effective_backend"] == "local"
         assert ssh_keys["terminal.effective_backend"] == "ssh"
 
+    def test_explicit_terminal_backend_wins_stale_process_env(self, monkeypatch):
+        """Gateway cache identity must match terminal runtime precedence."""
+        from gateway.run import GatewayRunner
+
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        keys = GatewayRunner._extract_cache_busting_config(
+            {"terminal": {"backend": "local"}}
+        )
+
+        assert keys["terminal.backend"] == "local"
+        assert keys["terminal.effective_backend"] == "local"
+
 
 class TestAgentCacheLifecycle:
     """End-to-end cache behavior with real AIAgent construction."""

@@ -191,6 +191,14 @@ def _read_allowlist_env(env_var: str) -> str:
     (``get_env_path()`` honors the profile-home override) and, under
     multiplexing, the in-process publish updates the installed scope mapping
     rather than the shared ``os.environ`` (#88441).
+
+    NOTE: profile-scoped callers must NOT use this helper — the dashboard
+    approval path does not install the requested profile's secret scope, so
+    this read falls back to the process environment (the root allowlist) and
+    the subsequent profile-scoped write copies that root value into the
+    profile's ``.env``, clobbering the profile's own allowlist. Use
+    :func:`_read_profile_allowlist_env` so read and write resolve the same
+    scope (``#77490`` follow-up review).
     """
     try:
         from agent.secret_scope import UnscopedSecretError, get_secret
@@ -202,6 +210,36 @@ def _read_allowlist_env(env_var: str) -> str:
     except Exception:
         pass
     return (os.getenv(env_var) or "").strip()
+
+
+def _profile_home_dir(profile: str) -> Path:
+    """Resolve a profile's home directory the same way ``PairingStore`` does.
+
+    Uses ``get_default_hermes_root()`` (not ``get_hermes_home()``) so the
+    resolution stays correct even when the current process ``HERMES_HOME`` is
+    itself a profile home — nesting ``profiles`` under a profile home would
+    silently write to the wrong ``.env`` (``#77490``).
+    """
+    root = get_default_hermes_root()
+    return root if profile == "default" else root / "profiles" / profile
+
+
+def _read_profile_allowlist_env(env_var: str, profile: str) -> str:
+    """Read an allowlist env var from a profile's OWN ``.env`` file.
+
+    The grant mirror WRITES into the profile ``.env``, so the starting value
+    must come from the same file — not the process environment / installed
+    secret scope, which may hold the root (or another profile's) allowlist.
+    Reading and writing different scopes is exactly the cross-profile grant
+    leak ``#77490`` follow-up flagged.
+    """
+    try:
+        from agent.secret_scope import load_env_file
+
+        secrets = load_env_file(_profile_home_dir(profile) / ".env")
+        return (secrets.get(env_var) or "").strip()
+    except Exception:
+        return ""
 
 
 def _sync_allowlist_add(
@@ -223,7 +261,14 @@ def _sync_allowlist_add(
     env_var = _allowlist_env_for_platform(platform)
     if not env_var:
         return
-    current = _read_allowlist_env(env_var)
+    if profile:
+        # Read AND write must resolve the same profile scope. The dashboard
+        # approval path does not install the profile's secret scope, so the
+        # unscoped read would fall back to the process/root allowlist and copy
+        # root grants into the profile .env (#77490 follow-up review).
+        current = _read_profile_allowlist_env(env_var, profile)
+    else:
+        current = _read_allowlist_env(env_var)
     if not current:
         return  # No allowlist configured — leave the gateway open (option i).
     ids = _split_allowlist(current)
@@ -234,9 +279,7 @@ def _sync_allowlist_add(
         from hermes_cli.config import save_env_value
 
         if profile:
-            hermes_home = get_hermes_home()
-            profile_home = hermes_home / "profiles" / profile
-            token = set_hermes_home_override(str(profile_home))
+            token = set_hermes_home_override(str(_profile_home_dir(profile)))
             try:
                 save_env_value(env_var, ",".join(ids))
             finally:
@@ -358,7 +401,14 @@ def _sync_allowlist_remove(
     env_var = _allowlist_env_for_platform(platform)
     if not env_var:
         return
-    current = _read_allowlist_env(env_var)
+    if profile:
+        # Read AND write must resolve the same profile scope (see
+        # _sync_allowlist_add) — otherwise the unscoped read falls back to
+        # the process/root allowlist and the profile write removes the wrong
+        # entries / copies root grants across the boundary (#77490).
+        current = _read_profile_allowlist_env(env_var, profile)
+    else:
+        current = _read_allowlist_env(env_var)
     if not current:
         return  # No allowlist configured — do not touch config-only snapshots.
     ids = _split_allowlist(current)
@@ -379,9 +429,7 @@ def _sync_allowlist_remove(
                 remove_env_value(env_var)
 
         if profile:
-            hermes_home = get_hermes_home()
-            profile_home = hermes_home / "profiles" / profile
-            token = set_hermes_home_override(str(profile_home))
+            token = set_hermes_home_override(str(_profile_home_dir(profile)))
             try:
                 _write(bool(remaining))
             finally:

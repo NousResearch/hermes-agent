@@ -13769,8 +13769,12 @@ def _default_spawn(
     # when enabled so non-goal tasks keep a clean env.
     if task.goal_mode:
         env["HERMES_KANBAN_GOAL_MODE"] = "1"
-        if task.goal_max_turns is not None:
-            env["HERMES_KANBAN_GOAL_MAX_TURNS"] = str(int(task.goal_max_turns))
+        # NOTE: goal_max_turns is NOT exported via env — the worker's goal
+        # loop reads the task field directly (cli.py _run_kanban_goal_loop_q
+        # → task.goal_max_turns). A previous HERMES_KANBAN_GOAL_MAX_TURNS
+        # export here was dead code (never consumed) and was removed on
+        # 2026-08-11 to avoid the false impression that it controls the
+        # worker's budget.
     terminal_timeout = _worker_terminal_timeout_env(
         task.max_runtime_seconds,
         env.get("TERMINAL_TIMEOUT"),

@@ -117,6 +117,41 @@ def test_board_override_is_isolated_per_concurrent_call(kanban_home, monkeypatch
 
 
 # ---------------------------------------------------------------------------
+
+
+def test_kanban_create_with_subcommand_board_flag(kanban_home):
+    """`create --board <slug> --json` accepts the board flag in the
+    subcommand position and routes the card to that board."""
+    kb.create_board("gamma")
+
+    payload = json.loads(kc.run_slash("create --board gamma --json t1"))
+    assert payload["id"] is not None
+    assert payload["title"] == "t1"
+
+    with kb.connect_closing(board="gamma") as conn:
+        titles = [row.title for row in kb.list_tasks(conn, limit=100)]
+    assert "t1" in titles
+
+
+def test_kanban_create_with_global_board_flag_still_works(kanban_home):
+    """Top-level `--board delta create --json ...` continues to work
+    (regression test for the original global flag)."""
+    kb.create_board("delta")
+
+    payload = json.loads(kc.run_slash("--board delta create --json t2"))
+    assert payload["id"] is not None
+    assert payload["title"] == "t2"
+
+    with kb.connect_closing(board="delta") as conn:
+        titles = [row.title for row in kb.list_tasks(conn, limit=100)]
+    assert "t2" in titles
+
+
+def test_kanban_create_board_flag_rejects_nonexistent_board(kanban_home):
+    # run_slash captures stdout/stderr into its return value
+    result = kc.run_slash("create --board nope --json t3")
+    assert "nope" in result or "board" in result.lower()
+
 # Integration with the COMMAND_REGISTRY
 # ---------------------------------------------------------------------------
 

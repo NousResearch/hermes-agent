@@ -1,0 +1,237 @@
+<!doctype html>
+<!--
+  Quiet shim page for the desktop update hand-off (Windows + POSIX).
+
+  Served over loopback by the orchestrator (windows.ps1 / posix.sh) into a
+  chromeless browser app window. Pure veneer: polls /progress for `done` or
+  `error` and reacts; owns nothing (relaunch, result file, marker hygiene
+  all live in the orchestrator, which runs identically with no UI at all).
+
+  The visual is PR #75895's update hand-off screen, ported verbatim:
+  - Loader: the desktop's "Fourier Flow" curve. Math + tuning lifted from
+    apps/bootstrap-installer/src/components/loader.tsx (itself lifted from
+    apps/desktop/src/components/ui/loader.tsx 'fourier-flow'). Keep the
+    constants in sync if the desktop's curve is retuned.
+  - Layout: loader (size-20) + one title + one muted line. No progress bar,
+    no stage list, no log pane, no cancel (see #75895 for the arguments).
+  - Appearance follows the OS. Dark seeds are the installer's neutral
+    charcoal (#232323 base, foreground #d6d6d6) — never brand blue.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Hermes</title>
+<style>
+  :root {
+    --background: #ffffff;
+    --foreground: #1a1a1a;
+    --muted-foreground: #737373;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --background: #232323;
+      --foreground: #d6d6d6;
+      --muted-foreground: #8a8a8a;
+    }
+  }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: system-ui, 'Segoe UI', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+    cursor: default;
+    overflow: hidden;
+  }
+  /* UpdateScreen: flex h-full flex-col items-center justify-center gap-4
+     px-6 text-center (routes/progress.tsx) */
+  .wrap {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 0 24px;
+    box-sizing: border-box;
+    text-align: center;
+  }
+  @keyframes hermes-fade-in {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .wrap { animation: hermes-fade-in 0.45s ease-out both; }
+  /* Loader size-20 (5rem); svg overflow-visible; curve path opacity .1 */
+  #loader { width: 80px; height: 80px; color: var(--foreground); }
+  #loader svg { width: 100%; height: 100%; overflow: visible; }
+  #glyph {
+    width: 80px;
+    height: 80px;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    font-size: 44px;
+    line-height: 1;
+  }
+  /* text-lg font-semibold tracking-tight */
+  h2 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+    letter-spacing: -0.025em;
+  }
+  /* text-xs text-muted-foreground */
+  p {
+    margin: 0;
+    max-width: 80%;
+    font-size: 12px;
+    line-height: 1.5;
+    color: var(--muted-foreground);
+  }
+  p code {
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 11px;
+    color: var(--foreground);
+  }
+  body.done #loader, body.error #loader { display: none; }
+  body.done #glyph, body.error #glyph { display: flex; }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div id="loader" role="status" aria-label="Updating"></div>
+    <div id="glyph"></div>
+    <h2 id="title">Updating Hermes</h2>
+    <p id="line">Hermes will open once done.</p>
+  </div>
+<script>
+  /* ── Fourier Flow loader, ported verbatim from loader.tsx ─────────────── */
+  const TWO_PI = Math.PI * 2
+
+  const CURVE = {
+    durationMs: 2200,
+    particleCount: 92,
+    pulseDurationMs: 2000,
+    strokeWidth: 4.2,
+    trailSpan: 0.31,
+    point(progress, detailScale) {
+      const t = progress * TWO_PI
+      const mix = 1 + detailScale * 0.16
+      const x = 17 * Math.cos(t) + 7.5 * Math.cos(3 * t + 0.6 * mix) + 3.2 * Math.sin(5 * t - 0.4)
+      const y = 15 * Math.sin(t) + 8.2 * Math.sin(2 * t + 0.25) - 4.2 * Math.cos(4 * t - 0.5 * mix)
+
+      return { x: 50 + x, y: 50 + y }
+    }
+  }
+
+  const PATH_STEPS = 240
+  const norm = progress => ((progress % 1) + 1) % 1
+
+  function detailScaleFor(time, phaseOffset) {
+    const p = ((time + phaseOffset * CURVE.pulseDurationMs) % CURVE.pulseDurationMs) / CURVE.pulseDurationMs
+
+    return 0.52 + ((Math.sin(p * TWO_PI + 0.55) + 1) / 2) * 0.48
+  }
+
+  function buildPath(detailScale, steps) {
+    return Array.from({ length: steps + 1 }, (_, i) => {
+      const { x, y } = CURVE.point(i / steps, detailScale)
+
+      return `${i === 0 ? 'M' : 'L'} ${x.toFixed(2)} ${y.toFixed(2)}`
+    }).join(' ')
+  }
+
+  function particleFor(index, progress, detailScale) {
+    const tail = index / (CURVE.particleCount - 1)
+    const { x, y } = CURVE.point(norm(progress - tail * CURVE.trailSpan), detailScale)
+    const fade = (1 - tail) ** 0.56
+
+    return { x, y, opacity: 0.04 + fade * 0.96, radius: 0.9 + fade * 2.7 }
+  }
+
+  const SVG_NS = 'http://www.w3.org/2000/svg'
+  const svg = document.createElementNS(SVG_NS, 'svg')
+  svg.setAttribute('viewBox', '0 0 100 100')
+  svg.setAttribute('fill', 'none')
+  svg.setAttribute('aria-hidden', 'true')
+  const curvePath = document.createElementNS(SVG_NS, 'path')
+  curvePath.setAttribute('opacity', '0.1')
+  curvePath.setAttribute('stroke', 'currentColor')
+  curvePath.setAttribute('stroke-linecap', 'round')
+  curvePath.setAttribute('stroke-linejoin', 'round')
+  curvePath.setAttribute('stroke-width', String(CURVE.strokeWidth))
+  svg.appendChild(curvePath)
+  const particles = Array.from({ length: CURVE.particleCount }, () => {
+    const c = document.createElementNS(SVG_NS, 'circle')
+    c.setAttribute('fill', 'currentColor')
+    svg.appendChild(c)
+
+    return c
+  })
+  document.getElementById('loader').appendChild(svg)
+
+  let frame = 0
+  const startedAt = performance.now()
+  const phaseOffset = Math.random()
+
+  function render(now) {
+    const time = now - startedAt
+    const progress = ((time + phaseOffset * CURVE.durationMs) % CURVE.durationMs) / CURVE.durationMs
+    const detailScale = detailScaleFor(time, phaseOffset)
+
+    curvePath.setAttribute('d', buildPath(detailScale, PATH_STEPS))
+    particles.forEach((node, index) => {
+      const p = particleFor(index, progress, detailScale)
+      node.setAttribute('cx', p.x.toFixed(2))
+      node.setAttribute('cy', p.y.toFixed(2))
+      node.setAttribute('r', p.radius.toFixed(2))
+      node.setAttribute('opacity', p.opacity.toFixed(3))
+    })
+
+    frame = window.requestAnimationFrame(render)
+  }
+
+  render(performance.now())
+
+  /* ── Event listener: done | error, nothing else ───────────────────────── */
+  const titleEl = document.getElementById('title')
+  const lineEl = document.getElementById('line')
+  const glyphEl = document.getElementById('glyph')
+  let settled = false
+
+  function settle(state) {
+    settled = true
+    window.cancelAnimationFrame(frame)
+    document.body.className = state
+  }
+
+  function apply(state) {
+    if (settled) return
+    if (state.status === 'done') {
+      settle('done')
+      glyphEl.textContent = '\u2713'
+      lineEl.textContent = 'Opening Hermes\u2026'
+    } else if (state.status === 'error') {
+      settle('error')
+      glyphEl.textContent = '\u2715'
+      titleEl.textContent = 'Failed to update'
+      lineEl.innerHTML = 'Run <code>hermes debug share</code> in a terminal to send a report.'
+    }
+  }
+
+  async function poll() {
+    try {
+      const res = await fetch('/progress', { cache: 'no-store' })
+      if (res.ok) apply(await res.json())
+    } catch {
+      // Server gone: hold the last known state. The orchestrator owns
+      // closing this window; the relaunched Desktop owns the result.
+    }
+    if (!settled) setTimeout(poll, 400)
+  }
+  poll()
+</script>
+</body>
+</html>

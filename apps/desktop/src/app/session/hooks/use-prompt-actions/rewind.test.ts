@@ -81,6 +81,7 @@ describe('rebindSurvivorRowIds', () => {
     ...(rowId !== undefined ? { rowId } : {}),
     ...(hidden ? { hidden } : {})
   })
+
   const assistant = (id: string, rowId?: number): ChatMessage => ({
     id,
     role: 'assistant',

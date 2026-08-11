@@ -10,6 +10,13 @@ const manifest = readFileSync(
   path.join(desktopRoot, 'flatpak', 'com.nousresearch.Hermes.yml'),
   'utf8',
 )
+const metainfo = readFileSync(
+  path.join(desktopRoot, 'flatpak', 'com.nousresearch.Hermes.metainfo.xml'),
+  'utf8',
+)
+const desktopPackage = JSON.parse(readFileSync(path.join(desktopRoot, 'package.json'), 'utf8'))
+const projectToml = readFileSync(path.join(desktopRoot, '..', '..', 'pyproject.toml'), 'utf8')
+const projectVersion = projectToml.match(/^version = "([^"]+)"$/m)?.[1]
 
 const finishArgs = manifest
   .slice(manifest.indexOf('finish-args:'), manifest.indexOf('modules:'))
@@ -17,6 +24,13 @@ const finishArgs = manifest
   .map(line => line.trim())
   .filter(line => line.startsWith('- '))
   .map(line => line.slice(2))
+
+describe('Flatpak release metadata', () => {
+  test('uses the canonical Hermes package version', () => {
+    expect(desktopPackage.version).toBe(projectVersion)
+    expect(metainfo).toContain(`<release version="${projectVersion}"`)
+  })
+})
 
 describe('Flatpak sandbox permissions', () => {
   test('keeps the Electron defaults without broad host filesystem access', () => {

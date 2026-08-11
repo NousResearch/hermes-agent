@@ -1,6 +1,6 @@
 name: hermes-desktop
 title: Hermes Desktop
-version: '0.17.0'
+version: '0.20.0'
 summary: Native desktop shell for Hermes Agent
 description: |
   Hermes Desktop is the native Electron-based desktop application for Hermes Agent.

@@ -110,6 +110,27 @@ class TestBuildChannelDirectoryOffload:
         assert builder_threads
         assert all(tid != loop_thread for tid in builder_threads)
 
+    def test_directory_write_runs_off_event_loop_thread(self, tmp_path):
+        """The persist step calls os.fsync, which blocks the loop until the write
+        reaches stable storage. #60794 moved the builders off the loop; the write
+        stayed on it."""
+        from gateway.config import Platform
+
+        cache_file = tmp_path / "channel_directory.json"
+        loop_thread = threading.get_ident()
+        write_threads = []
+
+        def fake_write(path, data, *args, **kwargs):
+            write_threads.append(threading.get_ident())
+
+        with patch("gateway.channel_directory.atomic_json_write", side_effect=fake_write), \
+             patch("gateway.channel_directory._build_discord", return_value=[]), \
+             patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            asyncio.run(build_channel_directory({Platform.DISCORD: object()}))
+
+        assert write_threads
+        assert all(tid != loop_thread for tid in write_threads)
+
 
 class TestResolveChannelName:
     def _setup(self, tmp_path, platforms):

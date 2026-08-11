@@ -170,6 +170,37 @@ def check_api_response(
         compression_attempts = 0
         return _verdict("break")
 
+    if finish_reason == "malformed_function_call":
+        normalized = agent._get_transport().normalize_response(response)
+        detail = (normalized.content or "").strip() or "provider rejected a malformed function call"
+        agent._invoke_api_request_error_hook(
+            task_id=effective_task_id, turn_id=turn_id, api_request_id=api_request_id,
+            api_call_count=api_call_count, api_start_time=api_start_time, api_kwargs=api_kwargs,
+            error_type="MalformedFunctionCall", error_message=detail, status_code=None,
+            retry_count=retry_count, max_retries=max_retries, retryable=False,
+            reason="malformed_function_call",
+        )
+        if agent._try_activate_fallback():
+            from agent.conversation_loop import _arm_fallback_restart
+            active_system_prompt = _arm_fallback_restart(
+                agent, api_messages, active_system_prompt, _retry,
+            )
+            retry_count = compression_attempts = 0
+            return _verdict("break")
+        agent._flush_status_buffer()
+        final_response = (
+            "The provider rejected a malformed function call from the model. "
+            "This is not a safety refusal. Try again or switch models."
+        )
+        agent._cleanup_task_resources(effective_task_id)
+        agent._persist_session(messages, conversation_history)
+        return _verdict("return", {
+            "final_response": final_response, "messages": messages,
+            "api_calls": api_call_count, "completed": False, "failed": True,
+            "error": f"malformed_function_call: {detail}",
+            "turn_exit_reason": "malformed_function_call",
+        })
+
     if finish_reason == "length":
         _tv = recover_from_truncation(
             agent, response, finish_reason, _retry, messages=messages,

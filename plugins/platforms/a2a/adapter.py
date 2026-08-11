@@ -780,11 +780,21 @@ class A2AAdapter(BasePlatformAdapter):
         """Fulfil the oldest pending reply Future for this context (``chat_id`` = A2A context id).
         Only sends carrying ``metadata['notify']`` (the base adapter's final-reply marker) satisfy
         the caller; progress/status/preview sends must not."""
+        message_id = str(int(time.time() * 1000))
         if not (metadata or {}).get("notify"):
-            logger.debug("A2A: ignoring non-final send for context %s", chat_id)
-        elif not self._resolve_oldest_for_context(chat_id, protocol.STATE_COMPLETED, content or ""):
-            logger.debug("A2A: send() for context %s had no pending waiter", chat_id)  # late chunk / out-of-band
-        return SendResult(success=True, message_id=str(int(time.time() * 1000)))
+            # A2A's request/reply Future has no editable preview surface.  A
+            # successful result here tells GatewayStreamConsumer that this
+            # prefix is visible and editable; it then computes the terminal
+            # fallback as only the missing suffix.  Since we actually drop the
+            # preview, that loses the start of the reply.  Report the delivery
+            # truthfully so the consumer retains the full accumulated buffer
+            # for the notify-marked terminal send.
+            logger.debug("A2A: deferring non-final send for context %s", chat_id)
+            return SendResult(success=False, error="A2A defers non-final previews")
+        if not self._resolve_oldest_for_context(chat_id, protocol.STATE_COMPLETED, content or ""):
+            # No waiter (e.g. a late chunk or out-of-band send) — drop it.
+            logger.debug("A2A: send() for context %s had no pending waiter", chat_id)
+        return SendResult(success=True, message_id=message_id)
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         return None

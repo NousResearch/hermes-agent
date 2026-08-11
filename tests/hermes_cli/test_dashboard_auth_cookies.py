@@ -103,7 +103,7 @@ def test_session_cookies_use_bare_name_on_http():
     )
     # No Secure flag (HTTP).
     at = next(c for c in cookies if c.startswith(f"{SESSION_AT_COOKIE}="))
-    assert "Secure" not in at
+    assert "; Secure" not in at
 
 
 
@@ -158,7 +158,7 @@ def test_pkce_cookie_https_is_samesite_none_secure():
     cookies = r.headers.get_list("set-cookie")
     pkce = next(c for c in cookies if c.startswith(f"__Host-{PKCE_COOKIE}="))
     assert "samesite=none" in pkce.lower()
-    assert "Secure" in pkce
+    assert "; Secure" in pkce
     assert "HttpOnly" in pkce
 
 
@@ -170,7 +170,7 @@ def test_pkce_cookie_http_stays_lax_without_secure():
     cookies = r.headers.get_list("set-cookie")
     pkce = next(c for c in cookies if c.startswith(f"{PKCE_COOKIE}="))
     assert "samesite=lax" in pkce.lower()
-    assert "Secure" not in pkce
+    assert "; Secure" not in pkce
 
 
 def test_clear_pkce_cookie_https_matches_set_shape():
@@ -183,7 +183,7 @@ def test_clear_pkce_cookie_https_matches_set_shape():
         deletion = next(c for c in cookies if c.startswith(f'{name}="'))
         assert "Max-Age=0" in deletion
         assert "samesite=none" in deletion.lower()
-        assert "Secure" in deletion
+        assert "; Secure" in deletion
 
 
 def test_clear_pkce_cookie_http_bare_deletion_is_insecure_lax():
@@ -201,11 +201,11 @@ def test_clear_pkce_cookie_http_bare_deletion_is_insecure_lax():
     )
     assert "Max-Age=0" in bare
     assert "samesite=lax" in bare.lower()
-    assert "Secure" not in bare
+    assert "; Secure" not in bare
     for name in (f"__Host-{PKCE_COOKIE}", f"__Secure-{PKCE_COOKIE}"):
         deletion = next(c for c in cookies if c.startswith(f'{name}="'))
         assert "Max-Age=0" in deletion
-        assert "Secure" in deletion
+        assert "; Secure" in deletion
 
 
 def test_clear_session_cookies_prefixed_deletions_carry_secure():
@@ -217,15 +217,15 @@ def test_clear_session_cookies_prefixed_deletions_carry_secure():
     cookies = client.get("/clear").headers.get_list("set-cookie")
     for name in (SESSION_AT_COOKIE, SESSION_RT_COOKIE, SESSION_PROVIDER_COOKIE):
         host = next(c for c in cookies if c.startswith(f'__Host-{name}="'))
-        assert "Secure" in host
+        assert "; Secure" in host
         assert "Path=/;" in host or host.rstrip().endswith("Path=/")
         secure = next(c for c in cookies if c.startswith(f'__Secure-{name}="'))
-        assert "Secure" in secure
+        assert "; Secure" in secure
         bare = next(
             c for c in cookies
             if c.startswith(f'{name}="') and not c.startswith("__")
         )
         # Bare-name deletion mirrors the bare setter (Lax, no Secure) so
         # it still works on plain-HTTP origins.
-        assert "Secure" not in bare
+        assert "; Secure" not in bare
         assert "Max-Age=0" in bare

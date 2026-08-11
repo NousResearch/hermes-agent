@@ -401,6 +401,13 @@ def build_session_context_prompt(context: SessionContext, *, redact_pii: bool = 
             "only. Do not assume unresolved references are about other Matrix rooms or projects "
             "unless the user explicitly says so."
         )
+        if src.chat_type != "dm":
+            lines.append(
+                "**Matrix shared-room participation:** You do not have to answer every "
+                "message. When there is nothing useful, warm, or interesting to add, "
+                "respond with exactly `NO_REPLY`; the gateway will preserve the turn in "
+                "context without sending the marker to the room."
+            )
 
     # Shared multi-user sessions: never pin one user name in the system prompt (changes per turn ->
     # busts the prompt cache); sender names are prefixed on each user message instead.

@@ -530,7 +530,7 @@ async def auth_callback(
         # Clear the PKCE cookie (its job is done) but set NO session cookies:
         # the desktop is not a browser session, it redeems the code for a
         # bearer token it stores itself.
-        clear_pkce_cookie(resp, prefix=_prefix(request))
+        clear_pkce_cookie(resp, use_https=detect_https(request), prefix=_prefix(request))
         clear_sso_attempt_cookie(resp, prefix=_prefix(request))
         return resp
 
@@ -551,7 +551,7 @@ async def auth_callback(
         prefix=_prefix(request),
         provider=session.provider,
     )
-    clear_pkce_cookie(resp, prefix=_prefix(request))
+    clear_pkce_cookie(resp, use_https=detect_https(request), prefix=_prefix(request))
     # Clear the one-shot auto-SSO loop-guard marker now that login succeeded,
     # so it never lingers to suppress a future silent attempt after logout.
     clear_sso_attempt_cookie(resp, prefix=_prefix(request))
@@ -766,7 +766,7 @@ async def auth_logout(request: Request):
     prefix = _prefix(request)
     resp = RedirectResponse(url=f"{prefix}/login", status_code=302)
     clear_session_cookies(resp, prefix=prefix)
-    clear_pkce_cookie(resp, prefix=prefix)
+    clear_pkce_cookie(resp, use_https=detect_https(request), prefix=prefix)
     return resp
 
 

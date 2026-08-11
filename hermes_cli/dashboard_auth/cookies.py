@@ -237,6 +237,19 @@ def clear_session_cookies(response: Response, *, prefix: str = "") -> None:
         )
 
 
+def _pkce_attrs(*, use_https: bool, prefix: str) -> dict:
+    """Cookie attributes for the PKCE cookie's set AND clear paths.
+
+    Single source of truth so a deletion always matches the shape the
+    setter emitted for the same origin — a shape mismatch means the
+    browser silently keeps the stale cookie.
+    """
+    attrs = _common_attrs(use_https=use_https, prefix=prefix)
+    if use_https:
+        attrs["samesite"] = "none"
+    return attrs
+
+
 def set_pkce_cookie(
     response: Response, *, payload: str, use_https: bool, prefix: str = "",
 ) -> None:
@@ -249,25 +262,45 @@ def set_pkce_cookie(
     # sidesteps the bug — these cookies are explicitly designed for cross-site
     # delivery and Chromium processes them reliably during redirects.
     # Loopback HTTP degrades to Lax (SameSite=None requires Secure).
-    attrs = _common_attrs(use_https=use_https, prefix=prefix)
-    if use_https:
-        attrs["samesite"] = "none"
     response.set_cookie(
         _resolved_name(PKCE_COOKIE, use_https=use_https, prefix=prefix),
         payload,
         max_age=_PKCE_MAX_AGE,
-        **attrs,
+        **_pkce_attrs(use_https=use_https, prefix=prefix),
     )
 
 
-def clear_pkce_cookie(response: Response, *, prefix: str = "") -> None:
+def clear_pkce_cookie(
+    response: Response, *, use_https: bool, prefix: str = "",
+) -> None:
+    """Emit Max-Age=0 deletions for every plausible PKCE cookie variant.
+
+    A deletion is only honoured when its shape is acceptable to the
+    browser on the current origin: a ``Secure`` deletion can be dropped
+    on a plain-HTTP origin, while the ``__Host-``/``__Secure-`` name
+    variants REQUIRE ``Secure`` to be valid at all. So the bare-name
+    deletion mirrors the setter's shape for the active origin (Lax
+    without ``Secure`` over HTTP; ``SameSite=None; Secure`` over HTTPS,
+    matching :func:`set_pkce_cookie`), and the prefixed variants — which
+    can only ever have been set on an HTTPS origin — always carry
+    ``Secure; SameSite=None``.
+    """
     path = _cookie_path(prefix)
     for variant in _NAME_VARIANTS:
-        response.set_cookie(
-            f"{variant}{PKCE_COOKIE}", "", max_age=0,
-            path=path, httponly=True, samesite="none",
-            secure=True,
-        )
+        if variant:
+            # __Host-/__Secure- cookies only exist over HTTPS, and a
+            # deletion for a prefixed name must itself be Secure or the
+            # browser rejects the header outright.
+            response.set_cookie(
+                f"{variant}{PKCE_COOKIE}", "", max_age=0,
+                path=path, httponly=True, samesite="none",
+                secure=True,
+            )
+        else:
+            response.set_cookie(
+                f"{variant}{PKCE_COOKIE}", "", max_age=0,
+                **_pkce_attrs(use_https=use_https, prefix=prefix),
+            )
 
 
 def _read_with_fallback(

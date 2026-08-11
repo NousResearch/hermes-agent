@@ -13,6 +13,7 @@ import logging
 import os
 import shutil
 import sqlite3
+import stat
 import sys
 import tempfile
 import threading
@@ -913,6 +914,15 @@ def _extract_member_atomically(
     delegate to the shared ``utils`` helpers rather than being re-derived here.
     The temp file is removed on any failure so a partial import leaves no
     residue.
+
+    The one bit of the old file *not* carried across is setuid/setgid.  The
+    replacement bytes come out of the zip, so preserving those would let an
+    archive take over the identity an existing privileged file executes as —
+    and unlike the other ``utils`` writers, which re-serialize content this
+    process produced, the trust boundary here is an untrusted archive.  The
+    mask is applied once, before the temp file is chmod'd, so neither the
+    pre-replace ``fchmod`` nor the post-replace restore can re-elevate the
+    target.
     """
     # ``_preserve_file_mode`` returns None when the target does not exist (or
     # cannot be stat'd), in which case the umask-derived create-mode applies —
@@ -921,6 +931,17 @@ def _extract_member_atomically(
     owner = _preserve_file_owner(target)
     if mode is None:
         mode = new_file_mode
+    else:
+        # Deliberately NOT a faithful mode copy: setuid/setgid are dropped.
+        # ``_preserve_file_mode`` returns ``stat.S_IMODE``, i.e. all twelve
+        # bits, and the content replacing this file comes from the archive.
+        # Carrying the elevated bits across would let archive-controlled bytes
+        # take over an existing setuid/setgid file, so ``hermes import`` would
+        # hand whoever produced the zip the identity that file runs as.  Nothing
+        # constrains that to Hermes' own state either: the ``_external/`` branch
+        # of ``run_import`` publishes members anywhere under ``$HOME``.  The
+        # sticky bit is kept — it is inert on a regular file.
+        mode &= ~(stat.S_ISUID | stat.S_ISGID)
 
     # Truncate the stem: mkstemp adds ~16 characters, and a member already near
     # NAME_MAX would otherwise fail here on a write that used to succeed.
@@ -946,8 +967,10 @@ def _extract_member_atomically(
             dst.flush()
             os.fsync(dst.fileno())
         real_path = Path(atomic_replace(tmp_name, target))
-        # Owner first: chown clears setuid/setgid, so the mode restore below is
-        # what puts those bits back.  Ordering mirrors ``atomic_yaml_write``.
+        # Owner first, mode second — the ordering ``atomic_yaml_write`` uses,
+        # because chown drops setuid/setgid and a mode restore that ran first
+        # would be partly undone.  Here ``mode`` no longer carries those bits,
+        # so the two agree: neither step can re-elevate the restored file.
         _restore_file_owner(real_path, owner)
         _restore_file_mode(real_path, mode)
     except BaseException:

@@ -498,6 +498,19 @@ class TestSetupWizardDeploymentShape:
         assert host["userPeerAliases"] == {"7654321": "eri"}
 
 
+    def test_mapping_step_points_at_peers_map(self, monkeypatch, tmp_path, capsys):
+        answers = [
+            "cloud",           # deployment
+            "",                # api key (keep)
+            "eri",             # peer name
+            "hermetika",       # ai peer
+            "hermes",          # workspace
+            "s",               # tree: skip
+        ]
+        self._run_setup(monkeypatch, tmp_path, answers=answers)
+        out = capsys.readouterr().out
+        assert "hermes honcho peers map" in out
+
     def test_host_pin_user_peer_true_is_detected_as_single(self, monkeypatch, tmp_path):
         """Host-level ``pinUserPeer: true`` must classify as ``single``.
 

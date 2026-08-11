@@ -251,7 +251,13 @@ export function installWindowRendererLifecycle(
     log(describeRendererLifecycleEvent({ kind, event: 'unresponsive' }))
   }
 
-  const onDidFailLoad = (_event: unknown, errorCode: unknown, _errorDescription: unknown, validatedURL: unknown, isMainFrame?: unknown) => {
+  const onDidFailLoad = (
+    _event: unknown,
+    errorCode: unknown,
+    _errorDescription: unknown,
+    validatedURL: unknown,
+    isMainFrame?: unknown
+  ) => {
     if (isMainFrame === true) {
       log(
         describeRendererLifecycleEvent({

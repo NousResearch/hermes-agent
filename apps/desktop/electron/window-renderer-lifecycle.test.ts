@@ -92,14 +92,12 @@ test('pushReloadTime records the timestamp', () => {
 })
 
 test('shouldReloadAfterRendererGone reloads crashed/oom on a live window', () => {
-  assert.deepEqual(
-    shouldReloadAfterRendererGone({ reason: 'crashed', isDestroyed: false, recentReloadTimes: [] }),
-    { reload: true }
-  )
-  assert.deepEqual(
-    shouldReloadAfterRendererGone({ reason: 'oom', isDestroyed: false, recentReloadTimes: [] }),
-    { reload: true }
-  )
+  assert.deepEqual(shouldReloadAfterRendererGone({ reason: 'crashed', isDestroyed: false, recentReloadTimes: [] }), {
+    reload: true
+  })
+  assert.deepEqual(shouldReloadAfterRendererGone({ reason: 'oom', isDestroyed: false, recentReloadTimes: [] }), {
+    reload: true
+  })
 })
 
 test('shouldReloadAfterRendererGone never reloads expected teardown or unknown reasons', () => {
@@ -115,14 +113,20 @@ test('shouldReloadAfterRendererGone never reloads expected teardown or unknown r
     reload: false,
     suppressedReason: 'unrecoverable-reason'
   })
-  assert.deepEqual(shouldReloadAfterRendererGone({ reason: 'launch-failed', isDestroyed: false, recentReloadTimes: [] }), {
-    reload: false,
-    suppressedReason: 'unrecoverable-reason'
-  })
-  assert.deepEqual(shouldReloadAfterRendererGone({ reason: 'unknown-reason', isDestroyed: false, recentReloadTimes: [] }), {
-    reload: false,
-    suppressedReason: 'unrecoverable-reason'
-  })
+  assert.deepEqual(
+    shouldReloadAfterRendererGone({ reason: 'launch-failed', isDestroyed: false, recentReloadTimes: [] }),
+    {
+      reload: false,
+      suppressedReason: 'unrecoverable-reason'
+    }
+  )
+  assert.deepEqual(
+    shouldReloadAfterRendererGone({ reason: 'unknown-reason', isDestroyed: false, recentReloadTimes: [] }),
+    {
+      reload: false,
+      suppressedReason: 'unrecoverable-reason'
+    }
+  )
   assert.deepEqual(shouldReloadAfterRendererGone({ reason: undefined, isDestroyed: false, recentReloadTimes: [] }), {
     reload: false,
     suppressedReason: 'unrecoverable-reason'
@@ -303,7 +307,11 @@ test('console-message events are NOT handled here (renderer-log.ts is the single
 
   // OAuth/portal windows install this helper for process events; their pages
   // must not be able to spill console output (tokens/PII) into desktop.log.
-  win.webContents.emit('console-message', {}, { level: 3, message: 'boom', sourceUrl: 'file:///app.js', lineNumber: 42 })
+  win.webContents.emit(
+    'console-message',
+    {},
+    { level: 3, message: 'boom', sourceUrl: 'file:///app.js', lineNumber: 42 }
+  )
 
   assert.equal(win.webContents.listenerCount('console-message'), 0)
   assert.equal(logs.length, 0)
@@ -368,10 +376,27 @@ test('dispose removes every listener (no stacking on window recreation)', () => 
 })
 
 test('describeRendererLifecycleEvent sanitizes unknown fields', () => {
-  assert.equal(describeRendererLifecycleEvent({ kind: 'secondary', event: 'render-process-gone' }), '[renderer:secondary] render-process-gone reason=? exitCode=?')
-  assert.equal(describeRendererLifecycleEvent({ kind: 'secondary', event: 'render-process-gone', reason: 'crashed', exitCode: undefined }), '[renderer:secondary] render-process-gone reason=crashed exitCode=?')
   assert.equal(
-    describeRendererLifecycleEvent({ kind: 'main', event: 'render-process-gone', reason: 'killed', exitCode: 1, isDestroyed: true }),
+    describeRendererLifecycleEvent({ kind: 'secondary', event: 'render-process-gone' }),
+    '[renderer:secondary] render-process-gone reason=? exitCode=?'
+  )
+  assert.equal(
+    describeRendererLifecycleEvent({
+      kind: 'secondary',
+      event: 'render-process-gone',
+      reason: 'crashed',
+      exitCode: undefined
+    }),
+    '[renderer:secondary] render-process-gone reason=crashed exitCode=?'
+  )
+  assert.equal(
+    describeRendererLifecycleEvent({
+      kind: 'main',
+      event: 'render-process-gone',
+      reason: 'killed',
+      exitCode: 1,
+      isDestroyed: true
+    }),
     '[renderer:main] render-process-gone reason=killed exitCode=1 (expected teardown)'
   )
 })

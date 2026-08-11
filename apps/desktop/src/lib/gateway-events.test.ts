@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest'
 
-import { gatewayEventRequiresSessionId, resolveGatewayEventSessionId } from './gateway-events'
+import { approvalReplaySessionId, gatewayEventRequiresSessionId, resolveGatewayEventSessionId } from './gateway-events'
 
 describe('gateway event routing', () => {
+  it('rehydrates pending approvals on reconnect ready and resumed session info', () => {
+    expect(approvalReplaySessionId('gateway.ready', 'active-1', null)).toBe('active-1')
+    expect(approvalReplaySessionId('session.info', 'active-1', 'routed-1')).toBe('routed-1')
+    expect(approvalReplaySessionId('message.delta', 'active-1', 'routed-1')).toBeNull()
+  })
+
   it('drops only unscoped subagent events (genuinely background work)', () => {
     expect(gatewayEventRequiresSessionId('subagent.progress')).toBe(true)
     expect(gatewayEventRequiresSessionId('subagent.start')).toBe(true)

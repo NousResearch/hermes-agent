@@ -274,6 +274,66 @@ def test_late_prompt_response_is_idempotent(server, method, value_key):
     assert response["result"] == {"status": "expired"}
 
 
+def test_approval_pending_replays_unresolved_requests(server, monkeypatch):
+    from tools import approval
+
+    server._sessions["ui-1"] = {"session_key": "agent-1", "history": []}
+    pending = [{"request_id": "req-1", "command": "danger"}]
+    monkeypatch.setattr(approval, "list_gateway_approvals", lambda key: pending if key == "agent-1" else [])
+
+    response = server.handle_request(
+        {"id": "r1", "method": "approval.pending", "params": {"session_id": "ui-1"}}
+    )
+
+    assert response["result"] == {"approvals": pending}
+
+
+def test_approval_received_acknowledges_exact_request(server, monkeypatch):
+    from tools import approval
+
+    server._sessions["ui-1"] = {"session_key": "agent-1", "history": []}
+    calls = []
+    monkeypatch.setattr(
+        approval,
+        "ack_gateway_approval",
+        lambda key, request_id: calls.append((key, request_id)) or True,
+    )
+
+    response = server.handle_request(
+        {
+            "id": "r2",
+            "method": "approval.received",
+            "params": {"session_id": "ui-1", "request_id": "req-1"},
+        }
+    )
+
+    assert response["result"] == {"acknowledged": True}
+    assert calls == [("agent-1", "req-1")]
+
+
+def test_approval_response_correlates_request_id(server, monkeypatch):
+    from tools import approval
+
+    server._sessions["ui-1"] = {"session_key": "agent-1", "history": []}
+    calls = []
+    monkeypatch.setattr(
+        approval,
+        "resolve_gateway_approval",
+        lambda key, choice, **kwargs: calls.append((key, choice, kwargs)) or 1,
+    )
+
+    response = server.handle_request(
+        {
+            "id": "r3",
+            "method": "approval.respond",
+            "params": {"session_id": "ui-1", "request_id": "req-1", "choice": "once"},
+        }
+    )
+
+    assert response["result"] == {"resolved": 1}
+    assert calls == [("agent-1", "once", {"resolve_all": False, "request_id": "req-1"})]
+
+
 def test_clear_pending(server):
     ev = threading.Event()
     # _pending values are (sid, Event) tuples

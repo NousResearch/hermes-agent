@@ -12,7 +12,7 @@ import { translateNow } from '@/i18n'
 import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
-import { resolveGatewayEventSessionId } from '@/lib/gateway-events'
+import { approvalReplaySessionId, resolveGatewayEventSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
@@ -42,7 +42,13 @@ import { revealDesktopPane } from '@/store/pane-focus'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { followActiveSessionCwd } from '@/store/projects'
-import { clearAllPrompts, setApprovalRequest, setSecretRequest, setSudoRequest } from '@/store/prompts'
+import {
+  clearAllPrompts,
+  receiveApprovalRequest,
+  replayPendingApproval,
+  setSecretRequest,
+  setSudoRequest
+} from '@/store/prompts'
 import { recordAgentReaction } from '@/store/reactions-local'
 import {
   $currentCwd,
@@ -315,6 +321,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
       const sessionId = route.sessionId
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
+
+      const replaySessionId = approvalReplaySessionId(event.type, activeSessionIdRef.current, sessionId)
+      if (replaySessionId) {
+        void replayPendingApproval($gateway.get(), replaySessionId).catch(() => undefined)
+      }
 
       // Mid-turn compaction does not emit another message.start. The first
       // model output or tool event proves summarization has finished and the
@@ -1024,7 +1035,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const command = typeof payload?.command === 'string' ? payload.command : ''
         const description = typeof payload?.description === 'string' ? payload.description : 'dangerous command'
 
-        setApprovalRequest({
+        void receiveApprovalRequest($gateway.get(), {
           // false only when a tirith warning forbids it; backend omits the field otherwise.
           allowPermanent: payload?.allow_permanent !== false,
           choices: Array.isArray(payload?.choices)
@@ -1032,9 +1043,10 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             : undefined,
           command,
           description,
+          requestId: typeof payload?.request_id === 'string' ? payload.request_id : undefined,
           sessionId: sessionId ?? null,
           smartDenied: payload?.smart_denied === true
-        })
+        }).catch(() => undefined)
 
         if (sessionId) {
           updateSessionState(sessionId, state => ({ ...state, needsInput: true }))

@@ -70,6 +70,20 @@ export interface GatewayEventSessionRoute {
   sessionId: null | string
 }
 
+export function approvalReplaySessionId(
+  eventType: string | undefined,
+  activeSessionId: null | string,
+  routedSessionId: null | string
+): null | string {
+  if (eventType === 'gateway.ready') {
+    return activeSessionId
+  }
+  if (eventType === 'session.info') {
+    return routedSessionId
+  }
+  return null
+}
+
 /**
  * Resolve which runtime session owns a gateway event.
  *

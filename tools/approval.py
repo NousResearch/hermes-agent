@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+import uuid
 from typing import Optional
 from hermes_cli.config import cfg_get
 
@@ -2562,11 +2563,13 @@ def _denial_breaker_addendum(session_key: str) -> str:
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason")
+    __slots__ = ("event", "data", "result", "reason", "acknowledged")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
-        self.data = data          # command, description, pattern_keys, …
+        self.data = dict(data)
+        self.data.setdefault("request_id", uuid.uuid4().hex)
+        self.acknowledged = False
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
         # Optional free-text reason supplied with an explicit deny
         # (``/deny <reason>``) so the agent can adapt instead of only
@@ -2605,7 +2608,8 @@ def unregister_gateway_notify(session_key: str) -> None:
 
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
-                             reason: Optional[str] = None) -> int:
+                             reason: Optional[str] = None,
+                             request_id: Optional[str] = None) -> int:
     """Called by the gateway's /approve or /deny handler to unblock
     waiting agent thread(s).
 
@@ -2623,7 +2627,12 @@ def resolve_gateway_approval(session_key: str, choice: str,
         queue = _gateway_queues.get(session_key)
         if not queue:
             return 0
-        if resolve_all:
+        if request_id:
+            targets = [entry for entry in queue if entry.data.get("request_id") == request_id]
+            if not targets:
+                return 0
+            queue[:] = [entry for entry in queue if entry not in targets]
+        elif resolve_all:
             targets = list(queue)
             queue.clear()
         else:
@@ -2637,6 +2646,22 @@ def resolve_gateway_approval(session_key: str, choice: str,
             entry.reason = reason
         entry.event.set()
     return len(targets)
+
+
+def list_gateway_approvals(session_key: str) -> list[dict]:
+    """Return replay-safe snapshots of unresolved approvals for one session."""
+    with _lock:
+        return [dict(entry.data) for entry in _gateway_queues.get(session_key, [])]
+
+
+def ack_gateway_approval(session_key: str, request_id: str) -> bool:
+    """Record that a client received a particular pending approval request."""
+    with _lock:
+        for entry in _gateway_queues.get(session_key, []):
+            if entry.data.get("request_id") == request_id:
+                entry.acknowledged = True
+                return True
+    return False
 
 
 def has_blocking_approval(session_key: str) -> bool:
@@ -3930,7 +3955,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
     # Notify the user (bridges sync agent thread → async gateway)
     try:
-        notify_cb(approval_data)
+        notify_cb(dict(entry.data))
     except Exception as exc:
         logger.warning("Gateway approval notify failed: %s", exc)
         _drop_entry()

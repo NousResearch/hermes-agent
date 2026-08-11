@@ -1347,6 +1347,38 @@ def _(rid, params: dict) -> dict:
     return _respond(rid, params, "value", allow_expired=True)
 
 
+@method("approval.pending")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    try:
+        from tools.approval import list_gateway_approvals
+
+        return _ok(rid, {"approvals": list_gateway_approvals(session["session_key"])})
+    except Exception as e:
+        return _err(rid, 5004, str(e))
+
+
+@method("approval.received")
+def _(rid, params: dict) -> dict:
+    session, err = _sess(params, rid)
+    if err:
+        return err
+    request_id = params.get("request_id")
+    if not isinstance(request_id, str) or not request_id:
+        return _err(rid, 4006, "request_id required")
+    try:
+        from tools.approval import ack_gateway_approval
+
+        return _ok(
+            rid,
+            {"acknowledged": ack_gateway_approval(session["session_key"], request_id)},
+        )
+    except Exception as e:
+        return _err(rid, 5004, str(e))
+
+
 @method("approval.respond")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
@@ -1362,6 +1394,7 @@ def _(rid, params: dict) -> dict:
                     session["session_key"],
                     params.get("choice", "deny"),
                     resolve_all=params.get("all", False),
+                    request_id=params.get("request_id"),
                 )
             },
         )

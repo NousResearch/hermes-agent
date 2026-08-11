@@ -10,6 +10,8 @@ import {
   clearApprovalRequest,
   clearSecretRequest,
   clearSudoRequest,
+  receiveApprovalRequest,
+  replayPendingApproval,
   setApprovalRequest,
   setSecretRequest,
   setSudoRequest
@@ -66,6 +68,61 @@ describe('approval prompt store', () => {
     })
 
     expect($approvalRequest.get()?.allowPermanent).toBe(false)
+  })
+
+  it('correlates clearing to the exact approval request id', () => {
+    setApprovalRequest({ command: 'x', description: 'd', requestId: 'r1', sessionId: 's1' })
+
+    clearApprovalRequest('s1', 'stale')
+    expect($approvalRequest.get()?.requestId).toBe('r1')
+    clearApprovalRequest('s1', 'r1')
+    expect($approvalRequest.get()).toBeNull()
+  })
+
+  it('acknowledges an approval only after parking it', async () => {
+    const calls: Array<[string, Record<string, unknown>]> = []
+    const gateway = {
+      request: async (method: string, params: Record<string, unknown>) => {
+        calls.push([method, params])
+        return { acknowledged: true }
+      }
+    }
+
+    await receiveApprovalRequest(gateway, {
+      command: 'x',
+      description: 'd',
+      requestId: 'r1',
+      sessionId: 's1'
+    })
+
+    expect($approvalRequest.get()?.requestId).toBe('r1')
+    expect(calls).toEqual([['approval.received', { request_id: 'r1', session_id: 's1' }]])
+  })
+
+  it('replays and acknowledges the oldest unresolved approval after reconnect', async () => {
+    const calls: Array<[string, Record<string, unknown>]> = []
+    const gateway = {
+      request: async (method: string, params: Record<string, unknown>) => {
+        calls.push([method, params])
+        if (method === 'approval.pending') {
+          return {
+            approvals: [
+              { command: 'first', description: 'd1', request_id: 'r1' },
+              { command: 'second', description: 'd2', request_id: 'r2' }
+            ]
+          }
+        }
+        return { acknowledged: true }
+      }
+    }
+
+    await replayPendingApproval(gateway, 's1')
+
+    expect($approvalRequest.get()?.requestId).toBe('r1')
+    expect(calls).toEqual([
+      ['approval.pending', { session_id: 's1' }],
+      ['approval.received', { request_id: 'r1', session_id: 's1' }]
+    ])
   })
 })
 

@@ -885,7 +885,6 @@ _honcho_client_slot: SingletonSlot = SingletonSlot()
 import threading as _threading
 
 _client_slots: dict[tuple, SingletonSlot] = {}
-_client_slot_timeouts: dict[tuple, float] = {}
 _client_slots_lock = _threading.Lock()
 
 
@@ -1017,7 +1016,6 @@ def _slot_for(key: tuple) -> SingletonSlot:
             ]
             for k in stale:
                 _client_slots.pop(k, None)
-                _client_slot_timeouts.pop(k, None)
             slot = SingletonSlot()
             _client_slots[key] = slot
         return slot
@@ -1285,8 +1283,6 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         if resolved_timeout is not None:
             kwargs["timeout"] = resolved_timeout
 
-        with _client_slots_lock:
-            _client_slot_timeouts[key] = resolved_timeout
         return Honcho(**kwargs)
 
     return slot.get(_build)
@@ -1296,6 +1292,5 @@ def reset_honcho_client() -> None:
     """Reset all cached Honcho clients (tests, OAuth re-login)."""
     with _client_slots_lock:
         _client_slots.clear()
-        _client_slot_timeouts.clear()
     _honcho_client_slot.reset()
     _honcho_json_timeout_memo.clear()

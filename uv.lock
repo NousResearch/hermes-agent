@@ -12,12 +12,13 @@ exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for 
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
+h2 = false
 vercel = false
 aiohttp = false
 cryptography = false
 nemo-relay = false
 huggingface-hub = false
-h2 = false
+honcho-ai = { timestamp = "0001-01-01T00:00:00Z", span = "PT0S" }
 
 [manifest]
 overrides = [

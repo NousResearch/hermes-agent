@@ -2706,13 +2706,20 @@ ensure_browser() {
         return 1
     fi
 
-    log_info "Installing agent-browser..."
+    # agent-browser itself is intentionally NOT installed here (#43564 /
+    # PR #44772 review): it resolves lazily via `npx agent-browser` instead,
+    # which every consumer (tools/browser_tool.py, `hermes update`'s npx
+    # cache warm) already goes through. Eagerly npm-installing a second,
+    # separately version-pinned copy here -- only reachable via this
+    # explicit --ensure browser fallback in the first place -- was redundant
+    # complexity and an extra credential/supply-chain surface for a path
+    # npx already covers.
+    log_info "Installing camofox browser server..."
     local log_file
     log_file="$(mktemp)"
     # Time-boxed (#39219): a stalled npm registry fetch here would otherwise
     # hang the installer with no progress, same class as the desktop build.
     if ! run_with_timeout "$NODE_DEPS_TIMEOUT" "$npm_bin" install -g --prefix "$HERMES_HOME/node" --silent --ignore-scripts \
-        "agent-browser@^0.26.0" \
         "@askjo/camofox-browser@^1.5.2" \
         >"$log_file" 2>&1; then
         log_error "npm install failed or timed out:"
@@ -2728,31 +2735,7 @@ ensure_browser() {
     sys_browser="$(find_system_browser 2>/dev/null || true)"
     if [ -n "$sys_browser" ]; then
         configure_browser_env_from_system_browser "$sys_browser"
-        log_info "Explicit browser override set -- skipping bundled Chromium download"
-        return 0
-    fi
-
-    log_info "Installing Chromium via agent-browser install..."
-    local ab_bin="$HERMES_HOME/node/bin/agent-browser"
-    if [ -x "$ab_bin" ]; then
-        "$ab_bin" install 2>/dev/null || {
-            log_warn "Chromium install failed. Browser tools may not work without a system browser."
-
-            # OS-specific hints (detect_os sets $DISTRO)
-            case "${DISTRO:-unknown}" in
-                ubuntu|debian)
-                    log_info "Try: sudo apt-get install -y chromium-browser"
-                    ;;
-                arch)
-                    log_info "Try: sudo pacman -S chromium"
-                    ;;
-                fedora|rhel|centos)
-                    log_info "Try: sudo dnf install -y chromium"
-                    ;;
-            esac
-        }
-    else
-        log_warn "agent-browser not found at $ab_bin"
+        log_info "Explicit browser override set -- Chromium download will be skipped when agent-browser installs on demand"
     fi
 
     return 0

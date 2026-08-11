@@ -653,14 +653,21 @@ function Write-BrowserEnv {
 }
 
 function Install-AgentBrowser {
-    param([switch]$SkipChromium)
     $npm = Resolve-NpmCmd
     if (-not $npm) {
         Write-Err "npm not found -- install Node.js first"
         throw "npm not found"
     }
 
-    Write-Info "Installing agent-browser via npm -g --prefix..."
+    # agent-browser itself is intentionally NOT installed here (#43564 /
+    # PR #44772 review): it resolves lazily via `npx agent-browser` instead,
+    # which every consumer (tools/browser_tool.py, `hermes update`'s npx
+    # cache warm) already goes through. Eagerly npm-installing a second,
+    # separately version-pinned copy here -- only reachable via this
+    # explicit -Ensure browser fallback in the first place -- was redundant
+    # complexity and an extra credential/supply-chain surface for a path
+    # npx already covers.
+    Write-Info "Installing camofox browser server..."
     $prefixDir = Join-Path $HermesHome "node"
     if (-not (Test-Path $prefixDir)) {
         New-Item -ItemType Directory -Path $prefixDir -Force | Out-Null
@@ -668,7 +675,7 @@ function Install-AgentBrowser {
     $npmLog = [System.IO.Path]::GetTempFileName()
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & $npm install -g --prefix $prefixDir --silent --ignore-scripts "agent-browser@^0.26.0" "@askjo/camofox-browser@^1.5.2" 2>&1 | Tee-Object -FilePath $npmLog | Out-Null
+    & $npm install -g --prefix $prefixDir --silent --ignore-scripts "@askjo/camofox-browser@^1.5.2" 2>&1 | Tee-Object -FilePath $npmLog | Out-Null
     $npmExit = $LASTEXITCODE
     $ErrorActionPreference = $prevEAP
     if ($npmExit -ne 0) {
@@ -683,30 +690,10 @@ function Install-AgentBrowser {
     }
     Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
 
-    if (-not $SkipChromium) {
-        $sysBrowser = Find-SystemBrowser
-        if ($sysBrowser) {
-            Write-BrowserEnv -BrowserPath $sysBrowser
-            Write-Info "Explicit browser override set -- skipping bundled Chromium download"
-        } else {
-            $abExe = Join-Path $prefixDir "agent-browser.cmd"
-            if (Test-Path $abExe) {
-                Write-Info "Installing Chromium via agent-browser install..."
-                $abLog = [System.IO.Path]::GetTempFileName()
-                $prevEAP = $ErrorActionPreference
-                $ErrorActionPreference = "Continue"
-                & $abExe install 2>&1 | Tee-Object -FilePath $abLog | Out-Null
-                $abExit = $LASTEXITCODE
-                $ErrorActionPreference = $prevEAP
-                if ($abExit -ne 0) {
-                    $abDetail = Get-Content $abLog -Raw -ErrorAction SilentlyContinue
-                    Write-Warn "Chromium install failed (exit $abExit): $abDetail"
-                }
-                Remove-Item $abLog -Force -ErrorAction SilentlyContinue
-            } else {
-                Write-Warn "agent-browser.cmd not found at $abExe"
-            }
-        }
+    $sysBrowser = Find-SystemBrowser
+    if ($sysBrowser) {
+        Write-BrowserEnv -BrowserPath $sysBrowser
+        Write-Info "Explicit browser override set -- Chromium download will be skipped when agent-browser installs on demand"
     }
     Write-Success "Agent-browser ready"
 }

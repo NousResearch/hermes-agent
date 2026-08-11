@@ -1,7 +1,7 @@
 /**
  * Consume the detached update hand-off's result file (#82328 follow-up).
  *
- * scripts/desktop-update.ps1 runs hidden/detached — the user never sees its
+ * scripts/desktop-update/windows.ps1 runs hidden/detached — the user never sees its
  * console. It writes HERMES_HOME/.hermes-update-result.json on every exit
  * path; the relaunched Desktop reads it exactly once on boot and surfaces
  * failures (a silent failed update looks identical to "nothing happened",

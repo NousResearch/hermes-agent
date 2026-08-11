@@ -314,6 +314,11 @@ fi
 HERMES_BIN="$INSTALL_ROOT/venv/bin/hermes"
 [ -x "$HERMES_BIN" ] || { FINAL_CODE=3 FINAL_MSG="Update aborted: $HERMES_BIN is missing. The install needs repair (run the Hermes installer or hermes doctor)."; log "$FINAL_MSG"; exit 3; }
 
+# Run FROM the install root: `hermes update` resolves the tree it mutates
+# from the working directory, and we inherit the Desktop's cwd (which can be
+# an unrelated repo — updating THAT instead of the install is the failure
+# the sandbox repro caught). The in-app path always passed cwd:updateRoot.
+cd "$INSTALL_ROOT"
 export PYTHONUNBUFFERED=1
 log "running: hermes update --yes --gateway --branch $BRANCH"
 OUT="$("$HERMES_BIN" update --yes --gateway --branch "$BRANCH" 2>&1)"; CODE=$?

@@ -46,8 +46,10 @@ ensure_sandbox_install() {
   mkdir -p "$SANDBOX"
   # The literal user path: install.sh against a clone of THIS checkout, so
   # the repro reproduces what you're about to ship, not origin/main.
+  # </dev/null = non-TTY stdin, which install.sh treats as non-interactive
+  # (it has no --no-interactive flag); --skip-setup skips the config wizard.
   git clone --quiet "$REPO_ROOT" "$SANDBOX_ROOT"
-  HERMES_HOME="$SANDBOX" bash "$SANDBOX_ROOT/scripts/install.sh" --no-interactive
+  HERMES_HOME="$SANDBOX" bash "$SANDBOX_ROOT/scripts/install.sh" --skip-setup --hermes-home "$SANDBOX" < /dev/null
 }
 
 case "$MODE" in

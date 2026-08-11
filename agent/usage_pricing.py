@@ -526,16 +526,25 @@ def _pricing_entry_from_metadata(
         return None
     pricing = metadata[model_id].get("pricing") or {}
 
-    def per_million(key: str, *aliases: str) -> Optional[Decimal]:
+    def rate(key: str, *aliases: str) -> Optional[Decimal]:
         raw = pricing.get(key)
         for alias in aliases:  # alias chain is truthiness-based (``a or b or c``)
             raw = raw or pricing.get(alias)
         value = _to_decimal(raw)
+        # A negative rate is a "pricing varies" sentinel (OpenRouter publishes "-1" for
+        # openrouter/auto), not a price: priced through, it books huge negative session costs.
+        if value is not None and value < 0:
+            logger.debug("Ignoring negative %s rate %s for %s (variable-pricing sentinel)", key, raw, model_id)
+            return None
+        return None if value is None else value.copy_abs()  # copy_abs folds "-0" to 0
+
+    def per_million(key: str, *aliases: str) -> Optional[Decimal]:
+        value = rate(key, *aliases)
         return None if value is None else value * _ONE_MILLION
 
     prompt = per_million("prompt")
     completion = per_million("completion")
-    request = _to_decimal(pricing.get("request"))
+    request = rate("request")
     if prompt is None and completion is None and request is None:
         return None
     return PricingEntry(

@@ -82,6 +82,9 @@ _END = object()  # stream-exhausted marker for _advance_stream_iterator
 _TOOL_CHOICE_MODES = {"auto": "AUTO", "required": "ANY", "none": "NONE"}
 _FINISH_REASON_MAP = {
     "STOP": "stop", "MAX_TOKENS": "length", "SAFETY": "content_filter", "RECITATION": "content_filter", "OTHER": "stop",
+    # Tool-call rejection is a failed turn, not an empty stop or safety refusal.
+    "MALFORMED_FUNCTION_CALL": "malformed_function_call",
+    "UNEXPECTED_TOOL_CALL": "malformed_function_call",
 }
 _HTTP_ERROR_CODES = {401: "gemini_unauthorized", 429: "gemini_rate_limited", 404: "gemini_model_not_found"}
 _MISSING_KEY_ERROR = (
@@ -633,7 +636,9 @@ def translate_gemini_response(resp: Dict[str, Any], model: str) -> SimpleNamespa
             pieces[is_thought].append(text)
         elif fc := _part_function_call(part):
             tool_calls.append(_tool_call_ns(str(fc["name"]), _dump_call_args(fc), index, _new_call_id(fc), _tool_call_extra_from_part(part)))
-    finish_reason = "tool_calls" if tool_calls else _FINISH_REASON_MAP.get(str((cand or {}).get("finishReason") or "").upper(), "stop")
+    finish_reason = _FINISH_REASON_MAP.get(str((cand or {}).get("finishReason") or "").upper(), "stop")
+    if tool_calls and finish_reason != "malformed_function_call":
+        finish_reason = "tool_calls"
     usage = _usage_from_metadata((resp.get("usageMetadata") or {}) if cand is not None else {})
     reasoning = "".join(pieces[True]) or None
     message = SimpleNamespace(role="assistant", content="".join(pieces[False]) if pieces[False] else ("" if cand is None else None),
@@ -748,7 +753,9 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
                      "arguments": args_str[len(last_arguments):] if args_str.startswith(last_arguments) else args_str}
             chunks.append(_make_stream_chunk(model=model, tool_call_delta=delta))
     if finish_reason_raw := str(cand.get("finishReason") or ""):
-        finish_reason = "tool_calls" if tool_call_indices else _FINISH_REASON_MAP.get(finish_reason_raw.upper(), "stop")
+        finish_reason = _FINISH_REASON_MAP.get(finish_reason_raw.upper(), "stop")
+        if tool_call_indices and finish_reason != "malformed_function_call":
+            finish_reason = "tool_calls"
         finish_chunk = _make_stream_chunk(model=model, finish_reason=finish_reason)
         if usage_meta := event.get("usageMetadata") or {}:  # rides on the finish chunk so the stream loop records tokens
             finish_chunk.usage = _usage_from_metadata(usage_meta)

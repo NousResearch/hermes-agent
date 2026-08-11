@@ -187,6 +187,10 @@ function IdleView({
   }
 
   if (!status.supported) {
+    if (status.command) {
+      return <ManualView command={status.command} message={status.message} onDone={onLater} />
+    }
+
     return (
       <CenteredStatus
         body={status.message ?? u.unsupportedMessage}

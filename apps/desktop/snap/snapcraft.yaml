@@ -76,6 +76,7 @@ parts:
       #!/bin/sh
       set -eu
       export HERMES_HOME="${HOME}/.hermes"
+      export HERMES_DESKTOP_SNAP=1
       # Ensure the native backend can find system tools
       export PATH="/usr/bin:/bin:/usr/local/bin:${PATH}"
       cd "$HOME"

@@ -429,6 +429,8 @@ export interface DesktopUpdateStatus {
   currentBranch?: string
   reason?: string
   message?: string
+  /** Exact host package-manager command when a packaged client cannot self-update. */
+  command?: string
   error?: string
   behind?: number
   currentSha?: string

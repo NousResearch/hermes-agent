@@ -159,6 +159,7 @@ import {
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { resolvePackageUpdate } from './package-update'
 import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
@@ -2520,6 +2521,18 @@ async function resolveHealedBranch(updateRoot, branch) {
 }
 
 async function checkUpdates() {
+  const packageUpdate = resolvePackageUpdate(process.env)
+
+  if (packageUpdate) {
+    return {
+      supported: false,
+      reason: `${packageUpdate.kind}-managed`,
+      message: packageUpdate.message,
+      command: packageUpdate.command,
+      fetchedAt: Date.now()
+    }
+  }
+
   const updateRoot = resolveUpdateRoot()
   let { branch } = readDesktopUpdateConfig()
   const gitDir = path.join(updateRoot, '.git')
@@ -2879,6 +2892,12 @@ async function releaseBackendLock(updateRoot, tag) {
 // Detection (checkUpdates / commit changelog / "N behind") stays in the UI;
 // only this apply action changed.
 async function applyUpdates(opts = {}) {
+  const packageUpdate = resolvePackageUpdate(process.env)
+
+  if (packageUpdate) {
+    return { ok: true, manual: true, command: packageUpdate.command, message: packageUpdate.message }
+  }
+
   if (updateInFlight) {
     throw new Error('An update is already in progress.')
   }

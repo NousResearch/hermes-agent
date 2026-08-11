@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { HermesGateway } from '@/hermes'
-import { $gateway, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
+import { $gateway, acquireGatewayRequestLease, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState, setConnection } from '@/store/session'
 
@@ -144,5 +144,10 @@ export function useGatewayRequest() {
     [ensureGatewayOpen]
   )
 
-  return { connectionRef, gateway, gatewayRef, requestGateway }
+  const bindGatewayRequest = useCallback(
+    (gateway: HermesGateway, profile: string) => acquireGatewayRequestLease(gateway, profile),
+    []
+  )
+
+  return { bindGatewayRequest, connectionRef, gateway, gatewayRef, requestGateway }
 }

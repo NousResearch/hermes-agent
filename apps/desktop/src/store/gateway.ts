@@ -1,4 +1,10 @@
-import { type ConnectionState, type GatewayEvent, registryBackendScopeKey, resolveGatewayWsUrl } from '@hermes/shared'
+import {
+  type ConnectionState,
+  type GatewayEvent,
+  isGatewayReauthRequired,
+  registryBackendScopeKey,
+  resolveGatewayWsUrl
+} from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
@@ -48,12 +54,13 @@ interface Secondary {
   connection: HermesConnection | null
   gateway: HermesGateway
   activeRequests: number
-  connectPromise: Promise<void> | null
+  commandLeases: number
   offEvent: () => void
   offState: () => void
+  openPromise: Promise<void> | null
   reconnectTimer: ReturnType<typeof setTimeout> | null
   reconnectAttempt: number
-  reconnecting: boolean
+  reconnecting: Promise<void> | null
   /** True when a foreground/prewarmed consumer owns this entry beyond one RPC. */
   retained: boolean
   // While true the entry auto-reconnects on drop; pruning flips it off so a
@@ -94,6 +101,7 @@ interface GatewayRegistryState {
   activeKey: string
   activationEpoch: number
   secondaries: Map<string, Secondary>
+  primaryReconnect: { gateway: HermesGateway; profile: string; promise: Promise<void> } | null
   $gateway: ReturnType<typeof atom<HermesGateway | null>>
   $activeProfile: ReturnType<typeof atom<string>>
 }
@@ -108,6 +116,7 @@ function createRegistryState(): GatewayRegistryState {
     activeKey: 'default',
     activationEpoch: 0,
     secondaries: new Map<string, Secondary>(),
+    primaryReconnect: null,
     // The active gateway instance, exposed for inline message-stream
     // components (inline ClarifyTool, model overlays) that call gateway
     // methods without the instance threaded down through props.
@@ -141,6 +150,18 @@ function gatewayState(): GatewayRegistryState {
 }
 
 const g = gatewayState()
+
+// Keep HMR-surviving entries compatible when this module's registry shape grows.
+g.primaryReconnect ??= null
+
+for (const entry of g.secondaries.values()) {
+  entry.commandLeases ??= 0
+  entry.openPromise ??= null
+
+  if (typeof entry.reconnecting === 'boolean') {
+    entry.reconnecting = null
+  }
+}
 
 // Re-exported as a stable binding: the atom instance lives in `g`, so every hot
 // reload of this module hands back the SAME atom subscribers are already wired
@@ -296,27 +317,24 @@ function clearTimer(entry: Secondary): void {
 }
 
 async function openSecondary(entry: Secondary): Promise<void> {
-  const desktop = window.hermesDesktop
-
-  if (!desktop) {
-    return
+  if (entry.openPromise) {
+    return entry.openPromise
   }
 
-  if (entry.connectPromise) {
-    await entry.connectPromise
+  const attempt = (async () => {
+    const desktop = window.hermesDesktop
 
-    return
-  }
+    if (!desktop) {
+      return
+    }
 
-  const pending = (async () => {
     // Registry-scoped entries dial through getConnectionFor when the bridge has
-    // it. Local/legacy entries retain the existing getConnection path.
+    // it (feature-detected: an older Electron main lacks the door and those
+    // entries simply can't exist yet — createSecondary guards creation).
     const conn =
       entry.connectionId && desktop.getConnectionFor
         ? await desktop.getConnectionFor({ connectionId: entry.connectionId, profile: entry.profile })
         : await desktop.getConnection(entry.profile)
-
-    entry.connection = conn
 
     const wsDeps =
       entry.connectionId && desktop.getGatewayWsUrlFor
@@ -330,9 +348,16 @@ async function openSecondary(entry: Secondary): Promise<void> {
 
     const wsUrl = await resolveGatewayWsUrl(wsDeps, conn)
 
+    // Profile switches and teardown can run while descriptor/ticket lookup
+    // awaits. Never resurrect an entry that was already disposed or replaced.
+    if (!entry.wantOpen || g.secondaries.get(entry.scope) !== entry) {
+      return
+    }
+
+    entry.connection = conn
     await entry.gateway.connect(wsUrl)
 
-    if (!entry.wantOpen) {
+    if (!entry.wantOpen || g.secondaries.get(entry.scope) !== entry) {
       entry.gateway.close()
 
       return
@@ -345,13 +370,13 @@ async function openSecondary(entry: Secondary): Promise<void> {
     void desktop.touchBackend?.(entry.scope).catch(() => undefined)
   })()
 
-  entry.connectPromise = pending
+  entry.openPromise = attempt
 
   try {
-    await pending
+    await attempt
   } finally {
-    if (entry.connectPromise === pending) {
-      entry.connectPromise = null
+    if (entry.openPromise === attempt) {
+      entry.openPromise = null
     }
   }
 }
@@ -372,52 +397,50 @@ function scheduleReconnect(entry: Secondary): void {
 }
 
 async function reconnectSecondary(entry: Secondary): Promise<void> {
-  if (entry.reconnecting || !entry.wantOpen || isOpen(entry.gateway)) {
+  if (!entry.wantOpen || isOpen(entry.gateway)) {
     return
   }
 
-  entry.reconnecting = true
+  if (entry.reconnecting) {
+    return entry.reconnecting
+  }
 
-  try {
-    await openSecondary(entry)
-    entry.reconnectAttempt = 0
-    // The re-dialed backend may have respawned and re-minted runtime ids —
-    // busy flags recorded from THIS socket's pre-drop events would then never
-    // receive their terminal busy:false, leaving the session's running arc
-    // armed forever (#53902/#73082 stale-flag half). Scoped: only runtimes
-    // whose events arrived on this connection are reconciled; live work on
-    // other sockets is untouched, and a genuinely live turn here re-asserts
-    // busy on its next event. Lazy import: a static edge here closes a module
-    // cycle (session-states → … → gateway) that leaves nanostores atoms
-    // undefined at init for whichever module loads second. Best-effort catch:
-    // under partial vi.mock('@/hermes') harnesses the transitive graph can
-    // fail to load — a skipped reconcile there must not surface as an
-    // unhandled rejection (the real graph always loads in production).
-    void import('@/store/session-states')
-      .then(({ reconcileBusyStatesOnReconnect }) => reconcileBusyStatesOnReconnect(entry.scope))
-      .catch(() => undefined)
-  } catch (error) {
-    // The registry no longer knows this connection (removed while we were
-    // backing off), or Electron's deletion guard reports the profile itself
-    // gone/mid-delete. Both are permanent for this scoped socket — retrying
-    // forever can never succeed and hammers the spawn guard every backoff
-    // tick (#88769). Fail-stop: dispose the entry and evict it instead of an
-    // infinite 15s-cap retry loop.
-    if ((entry.connectionId && isMissingConnectionError(error)) || isMissingProfileError(error)) {
-      entry.reconnecting = false
-      disposeSecondary(entry)
+  const reconnecting = (async () => {
+    try {
+      await openSecondary(entry)
+        void import('@/store/session-states')
+          .then(({ reconcileBusyStatesOnReconnect }) => reconcileBusyStatesOnReconnect(entry.scope))
+          .catch(() => undefined)
+      } catch (error) {
+        // The registry no longer knows this connection (removed while we were
+        // backing off), or Electron's deletion guard reports the profile itself
+        // gone/mid-delete. Both are permanent for this scoped socket — retrying
+        // forever can never succeed and hammers the spawn guard every backoff
+        // tick (#88769). Fail-stop: dispose the entry and evict it instead of an
+        // infinite 15s-cap retry loop.
+        if ((entry.connectionId && isMissingConnectionError(error)) || isMissingProfileError(error)) {
+          disposeSecondary(entry)
 
-      if (g.secondaries.get(entry.scope) === entry) {
-        g.secondaries.delete(entry.scope)
+          if (g.secondaries.get(entry.scope) === entry) {
+            g.secondaries.delete(entry.scope)
+          }
+
+          restoreActiveToPrimaryIfEvicted()
+
+          return
+        }
+        // Other transport failure → fall through to the backoff below.
       }
+    })()
 
-      restoreActiveToPrimaryIfEvicted()
+    entry.reconnecting = reconnecting
 
-      return
+    try {
+      await reconnecting
+    } finally {
+    if (entry.reconnecting === reconnecting) {
+      entry.reconnecting = null
     }
-    // Other transport failure → fall through to the backoff below.
-  } finally {
-    entry.reconnecting = false
 
     if (entry.wantOpen && !isOpen(entry.gateway)) {
       scheduleReconnect(entry)
@@ -455,12 +478,13 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     connection: null,
     gateway,
     activeRequests: 0,
-    connectPromise: null,
+    commandLeases: 0,
     offEvent: () => {},
     offState: () => {},
+    openPromise: null,
     reconnectTimer: null,
     reconnectAttempt: 0,
-    reconnecting: false,
+    reconnecting: null,
     retained: false,
     wantOpen: true,
     activationLeaseUntil: 0
@@ -858,6 +882,166 @@ export async function ensureActiveGatewayOpen(): Promise<HermesGateway | null> {
 // activation before reporting the gateway as unavailable.
 const ACTIVE_GATEWAY_OPEN_WAIT_MS = 8_000
 
+export type GatewayRequester = <T>(
+  method: string,
+  params?: Record<string, unknown>,
+  timeoutMs?: number,
+  signal?: AbortSignal
+) => Promise<T>
+
+export interface GatewayRequestLease {
+  request: GatewayRequester
+  release(): void
+}
+
+interface LeasedGatewayOwner {
+  gateway: HermesGateway
+  profile: string
+  secondary: Secondary | null
+}
+
+function ownerStillRegistered(owner: LeasedGatewayOwner): boolean {
+  return owner.secondary
+    ? owner.secondary.commandLeases > 0 &&
+        owner.secondary.wantOpen &&
+        g.secondaries.get(owner.secondary.scope) === owner.secondary &&
+        owner.secondary.gateway === owner.gateway
+    : g.primaryGateway === owner.gateway && g.primaryProfile === owner.profile
+}
+
+async function reconnectPrimary(owner: LeasedGatewayOwner): Promise<void> {
+  const current = g.primaryReconnect
+
+  if (current?.gateway === owner.gateway && current.profile === owner.profile) {
+    return current.promise
+  }
+
+  const attempt = (async () => {
+    const desktop = window.hermesDesktop
+
+    if (!desktop || !ownerStillRegistered(owner)) {
+      return
+    }
+
+    const conn = await desktop.getConnection(owner.profile)
+    const wsUrl = await resolveGatewayWsUrl(desktop, conn)
+
+    if (!ownerStillRegistered(owner)) {
+      return
+    }
+
+    await owner.gateway.connect(wsUrl)
+  })()
+
+  const reconnect = { gateway: owner.gateway, profile: owner.profile, promise: attempt }
+  g.primaryReconnect = reconnect
+
+  try {
+    await attempt
+  } finally {
+    if (g.primaryReconnect === reconnect) {
+      g.primaryReconnect = null
+    }
+  }
+}
+
+async function recoverLeasedGateway(owner: LeasedGatewayOwner): Promise<HermesGateway | null> {
+  if (!ownerStillRegistered(owner)) {
+    return null
+  }
+
+  if (isOpen(owner.gateway)) {
+    return owner.gateway
+  }
+
+  if (owner.secondary) {
+    clearTimer(owner.secondary)
+    owner.secondary.reconnectAttempt = 0
+    await reconnectSecondary(owner.secondary)
+  } else {
+    await reconnectPrimary(owner)
+  }
+
+  return ownerStillRegistered(owner) && isOpen(owner.gateway) ? owner.gateway : null
+}
+
+/**
+ * Pin a concrete profile/socket for one async command. The lease is acquired
+ * synchronously, so profile-switch pruning cannot dispose the source transport
+ * while an earlier metadata lookup is pending. Requests retain the normal
+ * disconnected → exact-owner reconnect → one retry semantics without ever
+ * consulting the newly active gateway.
+ */
+export function acquireGatewayRequestLease(gateway: HermesGateway, profile: string): GatewayRequestLease {
+  const key = normKey(profile)
+  // A profile can now have multiple registry-scoped sockets. The concrete
+  // gateway captured by the invocation is the authority; the bare profile is
+  // only validation/metadata and must never redirect the lease to another scope.
+  const secondary =
+    [...g.secondaries.values()].find(entry => entry.gateway === gateway && normKey(entry.profile) === key) ?? null
+  const owner: LeasedGatewayOwner = { gateway, profile: key, secondary }
+
+  if (
+    (secondary && secondary.gateway !== gateway) ||
+    (!secondary && (g.primaryGateway !== gateway || g.primaryProfile !== key))
+  ) {
+    throw new Error('Hermes source gateway unavailable')
+  }
+
+  if (secondary) {
+    secondary.commandLeases += 1
+  }
+
+  let released = false
+
+  return {
+    request: async <T>(method: string, params = {}, timeoutMs?: number, signal?: AbortSignal): Promise<T> => {
+      if (released || !ownerStillRegistered(owner)) {
+        throw new Error('Hermes source gateway unavailable')
+      }
+
+      try {
+        return await gateway.request<T>(method, params, timeoutMs, signal)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+
+        if (!/not connected|connection closed/i.test(message)) {
+          throw error
+        }
+
+        let recovered: HermesGateway | null
+
+        try {
+          recovered = await recoverLeasedGateway(owner)
+        } catch (reconnectError) {
+          if (isGatewayReauthRequired(reconnectError)) {
+            throw reconnectError
+          }
+
+          throw error
+        }
+
+        if (!recovered || released || !ownerStillRegistered(owner)) {
+          throw error
+        }
+
+        return recovered.request<T>(method, params, timeoutMs, signal)
+      }
+    },
+    release: () => {
+      if (released) {
+        return
+      }
+
+      released = true
+
+      if (secondary) {
+        secondary.commandLeases = Math.max(0, secondary.commandLeases - 1)
+      }
+    }
+  }
+}
+
 // Wake signal (sleep/network/visibility): nudge every live secondary back open.
 export function reconnectSecondaryGateways(): void {
   for (const entry of g.secondaries.values()) {
@@ -927,7 +1111,8 @@ export function pruneSecondaryGateways(keep: Set<string>): void {
       // during its cold spawn disposed the entry and the click died silently
       // (#89622). Number guard: dev-HMR entries predate the field. Bounded:
       // an orphaned lease expires on its own.
-      (Number.isFinite(entry.activationLeaseUntil) && entry.activationLeaseUntil > now)
+      (Number.isFinite(entry.activationLeaseUntil) && entry.activationLeaseUntil > now) ||
+      entry.commandLeases > 0
     ) {
       continue
     }

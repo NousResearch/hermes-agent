@@ -1395,6 +1395,8 @@ type SessionRuntimeStatePatch = Partial<
 >
 
 interface ApplyRuntimeInfoOptions {
+  /** Explicit owner for profile-scoped runtime metadata (for example approvals). */
+  profile?: null | string
   /**
    * Whether this runtime belongs to the session the MAIN pane is showing.
    * Foreground (the default) mirrors into the composer atoms every main-pane
@@ -1461,8 +1463,10 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
 
 export function applyRuntimeInfo(
   info: SessionRuntimeInfo | undefined,
-  { foreground = true }: ApplyRuntimeInfoOptions = {}
+  options: ApplyRuntimeInfoOptions = {}
 ): SessionRuntimeStatePatch | null {
+  const { foreground = true } = options
+
   if (!info) {
     return null
   }
@@ -1472,7 +1476,11 @@ export function applyRuntimeInfo(
   reportBackendContract(info.desktop_contract)
 
   if (info.approval_mode !== undefined) {
-    reconcileApprovalModeForProfile($activeGatewayProfile.get(), info.approval_mode)
+    const approvalProfile = Object.hasOwn(options, 'profile')
+      ? normalizeProfileKey(options.profile)
+      : normalizeProfileKey($activeGatewayProfile.get())
+
+    reconcileApprovalModeForProfile(approvalProfile, info.approval_mode)
   }
 
   requestDesktopOnboardingForCredentialWarning(info.credential_warning)

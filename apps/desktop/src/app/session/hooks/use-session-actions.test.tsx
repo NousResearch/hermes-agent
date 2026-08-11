@@ -15,7 +15,9 @@ import {
   type SessionResumeResponse
 } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { $approvalModes, approvalModeForProfile, reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { clearSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import type { GatewayRequestLease } from '@/store/gateway'
 import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile } from '@/store/profile'
 import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
@@ -101,6 +103,16 @@ function gatewayWithRequest(
   return { request } as unknown as HermesGateway
 }
 
+function directGatewayLease(gateway: HermesGateway): GatewayRequestLease {
+  return {
+    request: <T,>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) =>
+      timeoutMs !== undefined || signal !== undefined
+        ? gateway.request<T>(method, params, timeoutMs, signal)
+        : gateway.request<T>(method, params),
+    release: vi.fn()
+  }
+}
+
 type HarnessHandle = Pick<
   ReturnType<typeof useSessionActions>,
   'createBackendSessionForSend' | 'selectSidebarItem' | 'startFreshSessionDraft'
@@ -139,6 +151,7 @@ function Harness({
   const actions = useSessionActions({
     activeSessionId: null,
     activeSessionIdRef: ref<string | null>(null),
+    bindGatewayRequest: directGatewayLease,
     busyRef: ref(false),
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
@@ -178,6 +191,7 @@ function StoredIdRotationHarness({
   useSessionActions({
     activeSessionId: activeSessionIdRef.current,
     activeSessionIdRef,
+    bindGatewayRequest: directGatewayLease,
     busyRef: ref(false),
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
@@ -643,6 +657,7 @@ function ResumeHarness({
   const actions = useSessionActions({
     activeSessionId: null,
     activeSessionIdRef: ref<string | null>(null),
+    bindGatewayRequest: directGatewayLease,
     busyRef: ref(false),
     creatingSessionRef: ref(false),
     ensureSessionState: () => ({}) as ClientSessionState,
@@ -1264,6 +1279,7 @@ describe('session.resume turn timer contract', () => {
 
 function BranchHarness({
   activeSessionId = null,
+  bindGatewayRequest = directGatewayLease,
   busy = false,
   gatewayRef,
   navigate = vi.fn(),
@@ -1275,6 +1291,7 @@ function BranchHarness({
   sessionStateByRuntimeIdRef
 }: {
   activeSessionId?: string | null
+  bindGatewayRequest?: (gateway: HermesGateway, profile: string) => GatewayRequestLease
   busy?: boolean
   gatewayRef?: MutableRefObject<HermesGateway | null>
   navigate?: ReturnType<typeof vi.fn>
@@ -1298,6 +1315,7 @@ function BranchHarness({
   const actions = useSessionActions({
     activeSessionId,
     activeSessionIdRef,
+    bindGatewayRequest,
     busyRef: ref(busy),
     creatingSessionRef: ref(false),
     ensureSessionState: (sessionId, storedSessionId) => {
@@ -1344,6 +1362,7 @@ function BranchHarness({
 describe('branchStoredSession desktop source tagging', () => {
   afterEach(() => {
     cleanup()
+    $approvalModes.set({})
     $activeGatewayProfile.set('default')
     setFreshDraftReady(false)
     setSessions([])
@@ -1581,8 +1600,17 @@ describe('branchStoredSession desktop source tagging', () => {
     })
   })
 
-  it('keeps a tile branch on its invocation gateway across deferred profile resolution', async () => {
+  it('uses the leased source requester and applies a delayed runtime response only to its owner profile', async () => {
     const profileLookup = deferred<SessionInfo>()
+
+    const branchRpc = deferred<{
+      info: { approval_mode: 'off'; cwd: string }
+      message_count: number
+      messages: never[]
+      session_id: string
+      stored_session_id: string
+      title: string
+    }>()
 
     const tileMessages: ClientSessionState['messages'] = [
       { id: 'tile-q', role: 'user', parts: [{ type: 'text', text: 'tile question' }] },
@@ -1601,7 +1629,9 @@ describe('branchStoredSession desktop source tagging', () => {
       ])
     }
 
-    setSessions([storedSession({ id: 'foreground-stored', profile: 'default' })])
+    $activeGatewayProfile.set('work')
+    reconcileApprovalModeForProfile('other', 'manual')
+    setSessions([storedSession({ id: 'foreground-stored', profile: 'work' })])
     vi.mocked(getSession).mockImplementation(async () => profileLookup.promise)
 
     const branchResponse = {
@@ -1610,17 +1640,28 @@ describe('branchStoredSession desktop source tagging', () => {
       title: 'Branch',
       message_count: 2,
       messages: [],
-      info: { cwd: '/tile/workspace' }
+      info: { approval_mode: 'off' as const, cwd: '/tile/workspace' }
     }
 
-    const sourceGatewayRequest = vi.fn(async (_method: string, _params?: Record<string, unknown>) => branchResponse)
+    const rawSourceGatewayRequest = vi.fn(async (_method: string, _params?: Record<string, unknown>) => {
+      throw new Error('raw source request bypassed lease recovery')
+    })
+
+    const leasedSourceRequest = vi.fn(async () => branchRpc.promise)
+    const release = vi.fn()
+
+    const bindGatewayRequest = vi.fn((): GatewayRequestLease => ({
+      request: leasedSourceRequest as GatewayRequestLease['request'],
+      release
+    }))
 
     const switchedGatewayRequest = vi.fn(async (_method: string, _params?: Record<string, unknown>) => branchResponse)
 
-    let activeGatewayRequest = sourceGatewayRequest
+    let activeGatewayRequest: (method: string, params?: Record<string, unknown>) => Promise<unknown> =
+      rawSourceGatewayRequest
 
     const sourceGatewayRef: MutableRefObject<HermesGateway | null> = {
-      current: gatewayWithRequest(sourceGatewayRequest)
+      current: gatewayWithRequest(rawSourceGatewayRequest)
     }
 
     const requestGateway = async <T,>(method: string, params?: Record<string, unknown>) =>
@@ -1630,6 +1671,7 @@ describe('branchStoredSession desktop source tagging', () => {
     render(
       <BranchHarness
         activeSessionId="foreground-runtime"
+        bindGatewayRequest={bindGatewayRequest}
         gatewayRef={sourceGatewayRef}
         onCurrentReady={branch => (branchCurrentSession = branch)}
         onReady={() => undefined}
@@ -1642,11 +1684,20 @@ describe('branchStoredSession desktop source tagging', () => {
 
     const result = branchCurrentSession!(undefined, 'tile-runtime')
 
+    expect(bindGatewayRequest).toHaveBeenCalledWith(sourceGatewayRef.current, 'work')
     await waitFor(() => expect(getSession).toHaveBeenCalledWith('tile-stored'))
+    profileLookup.resolve(storedSession({ id: 'tile-stored', profile: 'work' }))
+    await waitFor(() =>
+      expect(leasedSourceRequest).toHaveBeenCalledWith('session.branch', {
+        session_id: 'tile-runtime',
+        count: 2
+      })
+    )
+
     activeGatewayRequest = switchedGatewayRequest
     sourceGatewayRef.current = gatewayWithRequest(switchedGatewayRequest)
     $activeGatewayProfile.set('other')
-    profileLookup.resolve(storedSession({ id: 'tile-stored', profile: 'work' }))
+    branchRpc.resolve(branchResponse)
 
     await expect(result).resolves.toBe(true)
 
@@ -1655,11 +1706,66 @@ describe('branchStoredSession desktop source tagging', () => {
       closeSessionTile('branch-stored-race')
     }
 
-    expect(sourceGatewayRequest).toHaveBeenCalledWith('session.branch', {
-      session_id: 'tile-runtime',
-      count: 2
-    })
+    expect(rawSourceGatewayRequest).not.toHaveBeenCalled()
     expect(switchedGatewayRequest).not.toHaveBeenCalled()
+    expect(approvalModeForProfile('work')).toBe('off')
+    expect(approvalModeForProfile('other')).toBe('manual')
+    expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('releases the source lease after a terminal branch failure', async () => {
+    $activeGatewayProfile.set('work')
+
+    const tileMessages: ClientSessionState['messages'] = [
+      { id: 'tile-q', role: 'user', parts: [{ type: 'text', text: 'tile question' }] }
+    ]
+
+    const sessionStateByRuntimeIdRef = {
+      current: new Map<string, ClientSessionState>([
+        [
+          'tile-runtime',
+          {
+            ...createClientSessionState('tile-stored', tileMessages),
+            cwd: '/tile/workspace'
+          }
+        ]
+      ])
+    }
+
+    const rawSourceGatewayRequest = vi.fn(async () => ({ unexpected: true }))
+    const terminal = new Error('branch rejected')
+
+    const leasedSourceRequest = vi.fn(async () => {
+      throw terminal
+    })
+
+    const release = vi.fn()
+
+    const bindGatewayRequest = vi.fn((): GatewayRequestLease => ({
+      request: leasedSourceRequest as GatewayRequestLease['request'],
+      release
+    }))
+
+    setSessions([storedSession({ id: 'tile-stored', profile: 'work' })])
+
+    let branchCurrentSession: ((messageId?: string, targetSessionId?: string) => Promise<boolean>) | null = null
+    render(
+      <BranchHarness
+        activeSessionId="foreground-runtime"
+        bindGatewayRequest={bindGatewayRequest}
+        gatewayRef={{ current: gatewayWithRequest(rawSourceGatewayRequest) }}
+        onCurrentReady={branch => (branchCurrentSession = branch)}
+        onReady={() => undefined}
+        requestGateway={vi.fn(async () => ({}) as never)}
+        sessionStateByRuntimeIdRef={sessionStateByRuntimeIdRef}
+      />
+    )
+    await waitFor(() => expect(branchCurrentSession).not.toBeNull())
+
+    await expect(branchCurrentSession!(undefined, 'tile-runtime')).resolves.toBe(false)
+    expect(leasedSourceRequest).toHaveBeenCalledOnce()
+    expect(rawSourceGatewayRequest).not.toHaveBeenCalled()
+    expect(release).toHaveBeenCalledOnce()
   })
 
   it('does not reveal a completed tile branch after focus moves to another tile', async () => {

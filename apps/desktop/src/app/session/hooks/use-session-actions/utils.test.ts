@@ -68,6 +68,15 @@ describe('applyRuntimeInfo approval mode', () => {
     expect(approvalModeForProfile('work')).toBe('smart')
     expect(approvalModeForProfile('default')).toBe('smart')
   })
+
+  it('keeps background runtime approval metadata on its explicit owner profile', () => {
+    $activeGatewayProfile.set('other')
+
+    applyRuntimeInfo({ approval_mode: 'off' }, { foreground: false, profile: 'work' })
+
+    expect(approvalModeForProfile('work')).toBe('off')
+    expect(approvalModeForProfile('other')).toBe('smart')
+  })
 })
 
 const initialOnboardingState = $desktopOnboarding.get()

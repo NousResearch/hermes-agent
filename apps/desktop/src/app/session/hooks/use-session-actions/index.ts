@@ -19,7 +19,12 @@ import { setSessionYolo } from '@/lib/yolo-session'
 import { normalizeChoices, setClarifyRequest } from '@/store/clarify'
 import { migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
-import { openGatewayForAgent, openGatewayForProfile } from '@/store/gateway'
+import {
+  type GatewayRequester,
+  type GatewayRequestLease,
+  openGatewayForAgent,
+  openGatewayForProfile
+} from '@/store/gateway'
 import { $gatewaySwitching } from '@/store/gateway-switch'
 import { $pinnedSessionIds } from '@/store/layout'
 import { clearNotifications, notify, notifyError } from '@/store/notifications'
@@ -126,6 +131,7 @@ import {
 interface SessionActionsOptions {
   activeSessionId: string | null
   activeSessionIdRef: MutableRefObject<string | null>
+  bindGatewayRequest: (gateway: HermesGateway, profile: string) => GatewayRequestLease
   busyRef: MutableRefObject<boolean>
   creatingSessionRef: MutableRefObject<boolean>
   ensureSessionState: (sessionId: string, storedSessionId?: string | null) => ClientSessionState
@@ -292,6 +298,7 @@ function normalizeNewChatWorkspaceTarget(target: NewChatWorkspaceTarget): NewCha
 export function useSessionActions({
   activeSessionId,
   activeSessionIdRef,
+  bindGatewayRequest,
   busyRef,
   creatingSessionRef,
   ensureSessionState,
@@ -1529,7 +1536,7 @@ export function useSessionActions({
       parentStoredId: null | string,
       cwd?: string,
       profile?: null | string,
-      sourceGateway?: HermesGateway | null,
+      sourceRequest?: GatewayRequester,
       uiIntent?: BranchUiIntent,
       branchCount?: number
     ): Promise<boolean> => {
@@ -1553,11 +1560,11 @@ export function useSessionActions({
         let branched: SessionCreateResponse
 
         if (sourceSessionId) {
-          if (!sourceGateway) {
+          if (!sourceRequest) {
             throw new Error('Hermes gateway unavailable')
           }
 
-          branched = await sourceGateway.request<SessionCreateResponse>('session.branch', {
+          branched = await sourceRequest<SessionCreateResponse>('session.branch', {
             session_id: sourceSessionId,
             ...(branchCount !== undefined ? { count: branchCount } : {})
           })
@@ -1611,7 +1618,9 @@ export function useSessionActions({
 
         // The branch opens as its own tile in the parent's worktree, not as the
         // primary session — keep its runtime out of the main composer atoms.
-        const runtimeInfo = applyRuntimeInfo(branched.info, { foreground: false })
+        const resolvedUiIntent = targetUiIntent ?? captureBranchUiIntent()
+        const runtimeInfoOwner = profile?.trim() || resolvedUiIntent.profile
+        const runtimeInfo = applyRuntimeInfo(branched.info, { foreground: false, profile: runtimeInfoOwner })
         patchSessionWorkspace(routedSessionId, runtimeInfo?.cwd)
 
         if (runtimeInfo) {
@@ -1622,8 +1631,6 @@ export function useSessionActions({
         // If the user moved elsewhere while either lookup/RPC was pending, do
         // not publish it into the newer profile's tile set or steal focus. The
         // inactive placement resumes its runtime when that profile is revisited.
-        const resolvedUiIntent = targetUiIntent ?? captureBranchUiIntent()
-
         const openedInActiveProfile = openSessionTileForProfile(
           routedSessionId,
           resolvedUiIntent.profile,
@@ -1705,85 +1712,97 @@ export function useSessionActions({
 
       // Preserve the foreground branch path exactly as it was: the shared view
       // carries the latest optimistic transcript. Only an offscreen target reads
-      // its isolated runtime cache.
+      // its isolated runtime cache. Everything below is invocation-owned and is
+      // captured before profile/transcript resolution can yield.
       const messages = isForeground ? $messages.get() : targetState!.messages
       const startingActiveSessionId = activeSessionIdRef.current
       const parentStoredId = isForeground ? selectedStoredSessionIdRef.current : targetState!.storedSessionId
       const startingRouteToken = getRouteToken()
       const startingCwd = isForeground ? $currentCwd.get().trim() : targetState!.cwd.trim()
-      // Pin transport and UI intent before profile/transcript resolution yields.
-      // A delayed command must never inherit a newer foreground socket or layout.
       const sourceGateway = gatewayRef.current
       const uiIntent = captureBranchUiIntent()
+      let sourceLease: GatewayRequestLease | null = null
 
-      // The live atom may be a compacted model projection. Read the durable
-      // display projection before choosing the branch prefix so a whole-chat
-      // branch does not inherit only the summary/tail. If the backend is
-      // temporarily unavailable, retain the local snapshot and let the branch
-      // RPC make its own authoritative read.
-      let authoritativeMessages: ChatMessage[] | null = null
-      const profile = await resolveSessionProfile(parentStoredId)
-
-      if (isForeground && parentStoredId) {
-        try {
-          const persisted = await getAllSessionMessages(parentStoredId, profile)
-          const hydrated = toChatMessages(persisted.messages)
-
-          if (hydrated.length) {
-            authoritativeMessages = hydrated
-          }
-        } catch {
-          // The branch RPC has a backend-side display projection fallback.
+      // Pin transport, source profile, and UI intent before profile resolution
+      // yields. The command lease keeps a background source registered across
+      // the production profile-switch pruning policy; its requester reconnects
+      // and retries only on this exact owner.
+      try {
+        if (!sourceGateway) {
+          throw new Error('Hermes gateway unavailable')
         }
-      }
 
-      const drift = sessionContextDrift({
-        startRouteToken: startingRouteToken,
-        nowRouteToken: getRouteToken(),
-        startSelectedStoredId: parentStoredId,
-        nowSelectedStoredId: selectedStoredSessionIdRef.current
-      })
+        sourceLease = bindGatewayRequest(sourceGateway, uiIntent.profile)
+        const resolvedProfile = await resolveSessionProfile(parentStoredId)
+        const profile = normalizeProfileKey(resolvedProfile ?? uiIntent.profile)
 
-      const runtimeChanged = activeSessionIdRef.current !== startingActiveSessionId
-      const selectionChanged = selectedStoredSessionIdRef.current !== parentStoredId
+        // The live atom may be a compacted model projection. Read the durable
+        // display projection before choosing the branch prefix so a whole-chat
+        // branch does not inherit only the summary/tail. Offscreen targets keep
+        // their isolated live cache and never hydrate through foreground state.
+        let authoritativeMessages: ChatMessage[] | null = null
 
-      if (isForeground && (drift || runtimeChanged || selectionChanged)) {
-        console.warn('[branch-drift-abort]', drift ?? 'runtime-or-selection-changed', {
-          phase: 'transcript-hydration'
+        if (isForeground && parentStoredId) {
+          try {
+            const persisted = await getAllSessionMessages(parentStoredId, profile)
+            const hydrated = toChatMessages(persisted.messages)
+
+            if (hydrated.length) {
+              authoritativeMessages = hydrated
+            }
+          } catch {
+            // The branch RPC has a backend-side display projection fallback.
+          }
+        }
+
+        const drift = sessionContextDrift({
+          startRouteToken: startingRouteToken,
+          nowRouteToken: getRouteToken(),
+          startSelectedStoredId: parentStoredId,
+          nowSelectedStoredId: selectedStoredSessionIdRef.current
         })
+        const runtimeChanged = activeSessionIdRef.current !== startingActiveSessionId
+        const selectionChanged = selectedStoredSessionIdRef.current !== parentStoredId
+
+        if (isForeground && (drift || runtimeChanged || selectionChanged)) {
+          console.warn('[branch-drift-abort]', drift ?? 'runtime-or-selection-changed', {
+            phase: 'transcript-hydration'
+          })
+
+          return false
+        }
+
+        const branchMessages = selectBranchMessages(messages, authoritativeMessages, messageId)
+
+        if (!branchMessages.length) {
+          notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNoText })
+
+          return false
+        }
+
+        clearNotifications()
+
+        return await forkBranch(
+          branchMessages,
+          sessionId,
+          parentStoredId,
+          startingCwd,
+          profile,
+          sourceLease.request,
+          uiIntent,
+          messageId || !isForeground ? branchMessages.length : undefined
+        )
+      } catch (err) {
+        notifyError(err, copy.branchFailed)
 
         return false
+      } finally {
+        sourceLease?.release()
       }
-
-      const branchMessages = selectBranchMessages(messages, authoritativeMessages, messageId)
-
-      if (!branchMessages.length) {
-        notify({ kind: 'warning', title: copy.nothingToBranch, message: copy.branchNoText })
-
-        return false
-      }
-
-      clearNotifications()
-
-      // The open chat's owning profile, NOT the picker's / launch profile —
-      // /profile only retargets new chats, so a branch of an existing thread
-      // must stay on that thread's backend (cache hit for an open session).
-      // Use the invocation transport and intent captured before asynchronous
-      // profile/transcript resolution.
-
-      return forkBranch(
-        branchMessages,
-        sessionId,
-        parentStoredId,
-        startingCwd,
-        profile,
-        sourceGateway,
-        uiIntent,
-        messageId || !isForeground ? branchMessages.length : undefined
-      )
     },
     [
       activeSessionIdRef,
+      bindGatewayRequest,
       busyRef,
       captureBranchUiIntent,
       copy,

@@ -48,11 +48,25 @@ def test_actual_aliases_and_profile_metadata():
 
 
 def test_actual_base_url_normalization():
-    assert normalize_actual_base_url("https://api.actual.inc") == DEFAULT_ACTUAL_BASE_URL
-    assert normalize_actual_base_url("https://api.actual.inc/v1") == DEFAULT_ACTUAL_BASE_URL
-    assert normalize_actual_base_url("http://127.0.0.1:8080") == DEFAULT_ACTUAL_LOCAL_BASE_URL
-    assert normalize_actual_base_url("http://127.0.0.1:8080/v1") == DEFAULT_ACTUAL_LOCAL_BASE_URL
-    assert normalize_actual_base_url("http://localhost:8080/") == "http://localhost:8080/v1"
+    assert (
+        normalize_actual_base_url("https://api.actual.inc") == DEFAULT_ACTUAL_BASE_URL
+    )
+    assert (
+        normalize_actual_base_url("https://api.actual.inc/v1")
+        == DEFAULT_ACTUAL_BASE_URL
+    )
+    assert (
+        normalize_actual_base_url("http://127.0.0.1:8080")
+        == DEFAULT_ACTUAL_LOCAL_BASE_URL
+    )
+    assert (
+        normalize_actual_base_url("http://127.0.0.1:8080/v1")
+        == DEFAULT_ACTUAL_LOCAL_BASE_URL
+    )
+    assert (
+        normalize_actual_base_url("http://localhost:8080/")
+        == "http://localhost:8080/v1"
+    )
 
 
 def test_actual_credentials_default_to_hosted_api(monkeypatch):
@@ -187,7 +201,9 @@ def test_actual_profile_fetch_models_normalizes_env_base_url(monkeypatch):
     assert seen["timeout"] == 1.5
 
 
-def test_actual_profile_fetch_models_drops_credential_on_cross_origin_redirect(monkeypatch):
+def test_actual_profile_fetch_models_sends_credential_only_to_original_origin(
+    monkeypatch,
+):
     """fetch_models must route through the shared redirect-credential guard.
 
     ActualProfile overrides ProviderProfile.fetch_models with its own
@@ -205,11 +221,12 @@ def test_actual_profile_fetch_models_drops_credential_on_cross_origin_redirect(m
     _clear_actual_env(monkeypatch)
     profile = get_provider_profile("actual")
 
-    received_auth_headers: list[str | None] = []
+    source_auth_headers: list[str | None] = []
+    target_auth_headers: list[str | None] = []
 
     class _RedirectTargetHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
-            received_auth_headers.append(self.headers.get("Authorization"))
+            target_auth_headers.append(self.headers.get("Authorization"))
             body = json.dumps({"data": [{"id": "should-not-be-trusted"}]}).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -227,6 +244,7 @@ def test_actual_profile_fetch_models_drops_credential_on_cross_origin_redirect(m
 
     class _RedirectingHandler(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
+            source_auth_headers.append(self.headers.get("Authorization"))
             self.send_response(302)
             self.send_header("Location", f"http://127.0.0.1:{target_port}/models")
             self.end_headers()
@@ -235,7 +253,9 @@ def test_actual_profile_fetch_models_drops_credential_on_cross_origin_redirect(m
             pass
 
     redirect_server = http.server.HTTPServer(("127.0.0.1", 0), _RedirectingHandler)
-    redirect_thread = threading.Thread(target=redirect_server.serve_forever, daemon=True)
+    redirect_thread = threading.Thread(
+        target=redirect_server.serve_forever, daemon=True
+    )
     redirect_thread.start()
     redirect_port = redirect_server.server_address[1]
 
@@ -254,7 +274,8 @@ def test_actual_profile_fetch_models_drops_credential_on_cross_origin_redirect(m
     assert result == ["should-not-be-trusted"], (
         "sanity check: the redirect must actually have been followed"
     )
-    assert received_auth_headers == [None], (
+    assert source_auth_headers == ["Bearer actual-secret-token"]
+    assert target_auth_headers == [None], (
         "Authorization header leaked to a different origin after a redirect"
     )
 
@@ -264,13 +285,41 @@ def test_actual_provider_model_ids_use_local_profile_catalog(monkeypatch):
     monkeypatch.setenv("ACTUAL_BASE_URL", "http://127.0.0.1:8080")
     profile = get_provider_profile("actual")
 
-    with patch.object(profile, "fetch_models", return_value=["actual/local-model"]) as fetch:
+    with patch.object(
+        profile, "fetch_models", return_value=["actual/local-model"]
+    ) as fetch:
         assert provider_model_ids("actual") == ["actual/local-model"]
 
     fetch.assert_called_once_with(
         api_key=ACTUAL_LOCAL_NOAUTH_PLACEHOLDER,
         base_url=DEFAULT_ACTUAL_LOCAL_BASE_URL,
     )
+
+
+def test_actual_hosted_model_ids_send_resolved_credential(monkeypatch):
+    _clear_actual_env(monkeypatch)
+    monkeypatch.setenv("ACTUAL_API_KEY", "actual-test-key")
+    profile = get_provider_profile("actual")
+
+    with patch.object(
+        profile, "fetch_models", return_value=["actual/hosted-model"]
+    ) as fetch:
+        assert provider_model_ids("actual") == ["actual/hosted-model"]
+
+    fetch.assert_called_once_with(
+        api_key="actual-test-key",
+        base_url=DEFAULT_ACTUAL_BASE_URL,
+    )
+
+
+def test_actual_hosted_model_ids_do_not_probe_without_credentials(monkeypatch):
+    _clear_actual_env(monkeypatch)
+    profile = get_provider_profile("actual")
+
+    with patch.object(profile, "fetch_models") as fetch:
+        assert provider_model_ids("actual") == []
+
+    fetch.assert_not_called()
 
 
 def test_actual_codex_transport_clamps_reasoning_effort():

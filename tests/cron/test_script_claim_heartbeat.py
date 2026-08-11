@@ -146,7 +146,7 @@ def test_no_agent_forwards_cancel_event_to_script_runner(monkeypatch):
         _script_runner,
     )
 
-    success, _output, _response, error = scheduler.run_job(
+    success, _output, _response, error, _ = scheduler.run_job(
         {
             "id": "cancel-aware-script",
             "name": "cancel aware",
@@ -252,7 +252,7 @@ def test_long_running_script_refreshes_owned_claim_in_profile_store(
         jobs.use_cron_store(profile_home),
         patch("hermes_state_registry.acquire", return_value=MagicMock()),
     ):
-        success, _doc, _response, error = scheduler.run_job(claimed_job)
+        success, _doc, _response, error, _ = scheduler.run_job(claimed_job)
         profile_claim = jobs.get_job("long-script")["run_claim"]
 
     assert success is True
@@ -386,7 +386,7 @@ def test_lost_fire_claim_stops_stale_delivery(monkeypatch):
     ):
         assert execution_id == job["execution_id"]
         assert lost_seen.wait(timeout=2)
-        return True, "stale output", "stale response", None
+        return True, "stale output", "stale response", None, None
 
     job = {
         "id": "reclaimed-agent",
@@ -433,7 +433,7 @@ def _run_claimed_job_with_mid_run_action(
         time.sleep(0.3)
         if crash is not None:
             raise crash
-        return True, "saved output", "D1 is promoting", None
+        return True, "saved output", "D1 is promoting", None, None
 
     delivered = MagicMock(return_value=None)
     finished = MagicMock()
@@ -704,7 +704,7 @@ def test_terminal_owner_cas_failure_marks_ledger_ownership_lost(monkeypatch):
     monkeypatch.setattr(
         scheduler,
         "run_job",
-        lambda *_args, **_kwargs: (True, "output", "response", None),
+        lambda *_args, **_kwargs: (True, "output", "response", None, None),
     )
     monkeypatch.setattr(scheduler, "fire_claim_fence", owned_fence, raising=False)
     monkeypatch.setattr(scheduler, "save_job_output", lambda *_args: "output.md")

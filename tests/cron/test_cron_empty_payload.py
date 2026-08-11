@@ -264,7 +264,7 @@ def test_run_job_fails_closed_and_never_builds_an_agent(hermes_env):
             raise AssertionError("AIAgent must not be constructed for an empty job")
 
     with patch("run_agent.AIAgent", _Boom):
-        success, doc, final, error = scheduler.run_job(job)
+        success, doc, final, error, _ = scheduler.run_job(job)
 
     assert success is False
     assert "nothing to run" in error
@@ -316,7 +316,7 @@ def test_run_job_pauses_a_legacy_no_agent_job_without_a_script(hermes_env, scrip
 
     job = _legacy_no_agent_scriptless_job(hermes_env, script_value)
 
-    success, doc, final, error = scheduler.run_job(job)
+    success, doc, final, error, _ = scheduler.run_job(job)
 
     assert success is False
     assert "no_agent=True requires a script" in error
@@ -352,7 +352,7 @@ def test_run_job_does_not_block_a_valid_no_agent_job(hermes_env):
     script.write_text("echo hello\n")
 
     job = dict(_legacy_empty_job(hermes_env), script="w.sh", no_agent=True)
-    success, doc, final, error = scheduler.run_job(job)
+    success, doc, final, error, _ = scheduler.run_job(job)
 
     assert success is True
     assert error is None

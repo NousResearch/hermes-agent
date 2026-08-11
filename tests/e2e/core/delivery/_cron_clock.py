@@ -192,8 +192,8 @@ class FakeAgent:
         _append_jsonl(self.control.runs, dict(record, event="end", ended_at=self.clock.now_ts()))
         output = f"# {name}\n\nexec={execution_id}\n"
         if behavior.get("agent") == "fail":
-            return False, output, "", f"simulated provider outage exec={execution_id}"
-        return True, output, f"report for {name} exec={execution_id}", None
+            return False, output, "", f"simulated provider outage exec={execution_id}", None
+        return True, output, f"report for {name} exec={execution_id}", None, None
 
 
 class FakeSink:

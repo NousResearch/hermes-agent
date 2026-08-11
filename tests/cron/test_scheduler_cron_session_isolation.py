@@ -118,7 +118,7 @@ def test_run_job_cron_execute_code_deny_does_not_pollute_later_gateway_execute_c
         cron_scheduler, "_guard_job_credential_exfil", lambda _job: None
     )
 
-    success, _output, final_response, error = cron_scheduler.run_job(
+    success, _output, final_response, error, run_metadata = cron_scheduler.run_job(
         {
             "id": "ctx-isolation",
             "name": "Context Isolation",
@@ -129,7 +129,9 @@ def test_run_job_cron_execute_code_deny_does_not_pollute_later_gateway_execute_c
 
     assert success is True
     assert error is None
-    assert final_response == "cron execute_code blocked"
+    # Fork behavior: run-stats footer is appended to cron output, so the deny
+    # message leads rather than equalling the whole response (2026-08-02).
+    assert final_response.startswith("cron execute_code blocked")
     assert os.environ.get("HERMES_CRON_SESSION") is None
     assert get_session_env("HERMES_CRON_SESSION") == ""
 

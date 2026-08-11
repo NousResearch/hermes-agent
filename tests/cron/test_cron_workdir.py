@@ -151,7 +151,7 @@ class TestTickWorkdirPartition:
             with calls_lock:
                 calls.append((job["id"], threading.current_thread().name))
             barrier.wait()
-            return True, "output", "response", None
+            return True, "output", "response", None, None
 
         monkeypatch.setattr(sched, "run_job", fake_run_job)
         monkeypatch.setattr(sched, "save_job_output", lambda _jid, _o: None)

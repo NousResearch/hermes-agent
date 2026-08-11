@@ -588,6 +588,9 @@ def _build_result_entry(
 
     _cost = getattr(child, "session_estimated_cost_usd", 0.0)
     _cost_status = getattr(child, "session_cost_status", None)
+    _cache_read_tokens = getattr(child, "session_cache_read_tokens", 0)
+    _cache_write_tokens = getattr(child, "session_cache_write_tokens", 0)
+    _reasoning_tokens = getattr(child, "session_reasoning_tokens", 0)
     # Result entry contract: see the _run_single_child docstring.
     entry: Dict[str, Any] = {
         "task_index": task_index,
@@ -604,6 +607,13 @@ def _build_result_entry(
             "input": _num(getattr(child, "session_prompt_tokens", 0)),
             "output": _num(getattr(child, "session_completion_tokens", 0)),
         },
+        # Cache/reasoning counters ride at entry level (kept out of the tokens
+        # sub-dict for shape compatibility); consumed by the parent's token
+        # rollup (delegate_tool_results._rollup_children_tokens) so cron
+        # run-statistics reflect the child's full spend.
+        "cache_read_tokens": _num(_cache_read_tokens),
+        "cache_write_tokens": _num(_cache_write_tokens),
+        "reasoning_tokens": _num(_reasoning_tokens),
         "tool_trace": _build_tool_trace(result.get("messages") or []),
         # Captured before the finally block calls child.close() so the parent thread can fire subagent_stop with the
         # correct role; stripped before the dict is serialised back to the model (as is _child_cost_usd, folded into

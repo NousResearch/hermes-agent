@@ -112,13 +112,13 @@ class TestSessionDbInitTimeout:
                 mock_agent.run_conversation.return_value = {"final_response": "ok"}
                 mock_agent_cls.return_value = mock_agent
 
-                success, _output, final_response, error = run_job(job)
+                success, _output, final_response, error, _ = run_job(job)
         finally:
             reset_hermes_home_override(profile_token)
 
         assert success is True
         assert error is None
-        assert final_response == "ok"
+        assert final_response.startswith("ok")
         assert observed_homes == [profile_home]
 
     def test_run_job_does_not_hang_when_sessiondb_init_wedges(self, tmp_path, monkeypatch):
@@ -145,13 +145,13 @@ class TestSessionDbInitTimeout:
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
 
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error, _ = run_job(job)
 
         # Env-resolved bound was passed to Future.result — not the 10s default,
         # and not an unbounded call.
         assert timeouts == [0.2]
         assert success is True
-        assert final_response == "ok"
+        assert final_response.startswith("ok")
         assert mock_agent_cls.call_args.kwargs["session_db"] is None
 
 
@@ -186,7 +186,7 @@ class TestSessionDbInitTimeout:
             mock_agent.run_conversation.return_value = {"final_response": "ok"}
             mock_agent_cls.return_value = mock_agent
 
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error, _ = run_job(job)
 
         # Config value was passed through — not the 10s default.
         assert timeouts == [0.2]
@@ -301,7 +301,7 @@ class TestLateSessionDbClosedAfterTimeout:
                 mock_agent.run_conversation.return_value = {"final_response": "ok"}
                 mock_agent_cls.return_value = mock_agent
 
-                success, output, final_response, error = run_job(job)
+                success, output, final_response, error, _ = run_job(job)
                 # run_job returned promptly after the timeout; session_db is None
                 assert success is True
 
@@ -350,7 +350,7 @@ class TestSessionDbInitAfterEarlyReturns:
                  return_value=(True, '{"wakeAgent": false}'),
              ), \
              patch("run_agent.AIAgent") as mock_agent_cls:
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error, _ = run_job(job)
 
         assert success is True
         mock_db_cls.assert_not_called()

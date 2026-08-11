@@ -184,6 +184,149 @@ def test_marker_plus_broken_probe_repairs_with_pinned_specs(tmp_path, monkeypatc
     assert not (root / ".update-incomplete.lock").exists()
 
 
+# ---------------------------------------------------------------------------
+# _run_repair_install: uv-managed base interpreters (#83569)
+# ---------------------------------------------------------------------------
+
+def test_repair_install_prefers_uv_when_base_is_externally_managed(
+    tmp_path, monkeypatch
+):
+    """uv-managed base Pythons carry EXTERNALLY-MANAGED: plain
+    ``python -m pip`` aborts, so the repair must go through ``uv pip`` with
+    VIRTUAL_ENV pointed at the project venv."""
+    root = _project(tmp_path)
+    monkeypatch.setattr(er, "_base_interpreter_is_externally_managed", lambda: True)
+    monkeypatch.setattr(er, "_find_uv_binary", lambda: "/fake/uv")
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+
+        class R:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        return R()
+
+    monkeypatch.setattr(er.subprocess, "run", fake_run)
+
+    assert er._run_repair_install(["cryptography==50.0.0"], root) is True
+
+    assert len(calls) == 1
+    cmd = calls[0]
+    assert cmd[:3] == ["/fake/uv", "pip", "install"]
+    assert "--force-reinstall" in cmd
+    assert "cryptography==50.0.0" in cmd
+
+
+def test_repair_install_uv_sets_virtual_env_to_project_venv(tmp_path, monkeypatch):
+    root = _project(tmp_path)
+    monkeypatch.setattr(er, "_base_interpreter_is_externally_managed", lambda: True)
+    monkeypatch.setattr(er, "_find_uv_binary", lambda: "/fake/uv")
+
+    seen_env = {}
+
+    def fake_run(cmd, **kwargs):
+        seen_env.update(kwargs.get("env") or {})
+
+        class R:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        return R()
+
+    monkeypatch.setattr(er.subprocess, "run", fake_run)
+
+    assert er._run_repair_install(["PyYAML==6.0.2"], root) is True
+    assert seen_env.get("VIRTUAL_ENV") == str(root / "venv")
+    # A leaked PYTHONHOME/PYTHONPATH from the parent shell must not steer
+    # uv's venv resolution.
+    assert "PYTHONHOME" not in seen_env
+    assert "PYTHONPATH" not in seen_env
+
+
+def test_repair_install_falls_back_to_break_system_packages_without_uv(
+    tmp_path, monkeypatch
+):
+    """No uv anywhere: still attempt the repair with pip's PEP 668 override
+    instead of no-oping behind externally-managed-environment."""
+    root = _project(tmp_path)
+    monkeypatch.setattr(er, "_base_interpreter_is_externally_managed", lambda: True)
+    monkeypatch.setattr(er, "_find_uv_binary", lambda: None)
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+
+        class R:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        return R()
+
+    monkeypatch.setattr(er.subprocess, "run", fake_run)
+
+    assert er._run_repair_install(["cryptography==50.0.0"], root) is True
+
+    pip_calls = [c for c in calls if "pip" in c]
+    assert pip_calls, calls
+    assert any("--break-system-packages" in c for c in pip_calls)
+
+
+def test_repair_install_uses_plain_pip_when_not_externally_managed(
+    tmp_path, monkeypatch
+):
+    """Self-contained venvs (no PEP 668 marker) keep the original behaviour:
+    ensurepip + plain pip, no uv lookup, no override flag."""
+    root = _project(tmp_path)
+    monkeypatch.setattr(
+        er, "_base_interpreter_is_externally_managed", lambda: False
+    )
+    monkeypatch.setattr(
+        er, "_find_uv_binary", lambda: pytest.fail("uv must not be consulted")
+    )
+
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+
+        class R:
+            returncode = 0
+            stderr = ""
+            stdout = ""
+
+        return R()
+
+    monkeypatch.setattr(er.subprocess, "run", fake_run)
+
+    assert er._run_repair_install(["cryptography==50.0.0"], root) is True
+
+    flat = [part for cmd in calls for part in cmd]
+    assert "--break-system-packages" not in flat
+    assert any("ensurepip" in part for part in flat)
+
+
+def test_externally_managed_detection(tmp_path, monkeypatch):
+    """The probe keys off the EXTERNALLY-MANAGED marker next to the stdlib."""
+    import sysconfig
+
+    real_get_path = sysconfig.get_path
+    monkeypatch.setattr(
+        sysconfig,
+        "get_path",
+        lambda key: str(tmp_path) if key == "stdlib" else real_get_path(key),
+    )
+    assert er._base_interpreter_is_externally_managed() is False
+    (tmp_path / "EXTERNALLY-MANAGED").write_text("", encoding="utf-8")
+    assert er._base_interpreter_is_externally_managed() is True
+
+
 
 
 

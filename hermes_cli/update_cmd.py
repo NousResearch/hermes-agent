@@ -3038,6 +3038,61 @@ def _detect_venv_python_processes(
         matches.append((int(pid), str(name), cmdline_raw))
     return matches
 
+# Native-extension modules that pin files inside the venv once imported.  If
+# the updater process itself has any of these loaded, the dependency sync
+# below cannot rewrite the backing ``.pyd``/``.dll`` — Windows blocks REPLACE
+# on a mapped image — and the update dies with ``os error 5`` between
+# uninstall and reinstall, stranding the venv half-updated (#83569).
+# ``cryptography`` is the canonical case: ``hermes_cli.main`` imports it at
+# startup while resolving external secret sources, so EVERY CLI-driven
+# ``hermes update`` used to self-lock before that import was made lazy.
+# Keep this guard as defence-in-depth against future eager imports (new
+# secret sources, plugins absorbed into core, refactors of the startup
+# order).  Keys are module prefixes in ``sys.modules``; values are display
+# names.
+_SELF_LOCKING_NATIVE_MODULES: dict[str, str] = {
+    "cryptography.hazmat.bindings._rust": "cryptography (_rust.pyd)",
+}
+
+
+def _detect_self_loaded_native_modules() -> list[str]:
+    """Native venv extensions already loaded into THIS updater process.
+
+    Returns display names (empty off Windows — POSIX lets a running process
+    keep using an unlinked inode, so self-locking is a Windows-only hazard).
+    Never raises.
+    """
+    if not _m()._is_windows():
+        return []
+    found = [
+        display
+        for prefix, display in _SELF_LOCKING_NATIVE_MODULES.items()
+        if prefix in sys.modules
+    ]
+    return sorted(set(found))
+
+
+def _defer_update_for_self_lock(loaded: list[str]) -> None:
+    """Bail out before the dependency sync when the updater holds a lock.
+
+    The install cannot win this race from inside the locked process — even
+    killing threads would not unmap the image — so defer it: drop the
+    update-incomplete marker (next launch's fresh process completes the
+    install before importing anything heavy), explain, and exit 2 like the
+    other preflight refusals.
+    """
+    print("✗ This updater process has already loaded native venv modules that")
+    print("  the dependency sync must replace:")
+    for name in loaded:
+        print(f"    {name}")
+    print()
+    print("  On Windows a mapped extension cannot be replaced by the process")
+    print("  holding it. The update has been deferred: the next `hermes` launch")
+    print("  will complete it in a fresh process before anything imports these")
+    print("  modules.")
+    _m()._write_update_incomplete_marker()
+
+
 def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> str:
     """Explain which venv processes block the update and how to clear them."""
     lines = [
@@ -4051,6 +4106,20 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print(_format_venv_python_holders_message(_venv_holders))
             _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
             sys.exit(2)
+
+    # Self-lock preflight: the venv-holder sweep above excludes this process
+    # by design (a CLI `hermes update` IS the venv python), so an updater
+    # that has already imported a native venv extension would sail through
+    # and lock its own dependency sync — the #83569 failure mode. Refuse
+    # before touching the checkout; the marker makes the next fresh launch
+    # finish the install. Deliberately not bypassed by --force-venv: that
+    # escape hatches external holders; it cannot unmap an image from the
+    # running process.
+    _self_locked = _m()._detect_self_loaded_native_modules()
+    if _self_locked:
+        _m()._defer_update_for_self_lock(_self_locked)
+        _m()._resume_windows_gateways_after_update(_windows_gateway_resume)
+        sys.exit(2)
 
     # Try git-based update first, fall back to ZIP download on Windows
     # when git file I/O is broken (antivirus, NTFS filter drivers, etc.)

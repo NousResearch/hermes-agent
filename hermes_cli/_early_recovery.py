@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -139,12 +140,96 @@ def _probe_broken_packages() -> list[str]:
     return broken
 
 
+def _find_uv_binary() -> str | None:
+    """Locate a ``uv`` binary without importing third-party modules.
+
+    uv-managed base interpreters carry an ``EXTERNALLY-MANAGED`` marker, so
+    the stdlib ``pip`` fallback below refuses to touch them.  In that state
+    the only sanctioned installer is uv itself, which Hermes already vendors
+    (``~/.hermes/bin/uv.exe``) or the user has on PATH.  Stdlib-only.
+    """
+    exe = "uv.exe" if sys.platform == "win32" else "uv"
+    candidates = [
+        Path.home() / ".hermes" / "bin" / exe,
+        Path.home() / ".local" / "bin" / exe,
+        Path.home() / ".cargo" / "bin" / exe,
+    ]
+    for path in candidates:
+        if path.is_file():
+            return str(path)
+    return shutil.which(exe)
+
+
+def _base_interpreter_is_externally_managed() -> bool:
+    """True when ``sys.executable`` is a uv/standalone-builds managed install.
+
+    Those interpreters ship an ``EXTERNALLY-MANAGED`` marker next to their
+    stdlib (PEP 668), so ``python -m pip install`` aborts with
+    ``externally-managed-environment``.  The early repair must then go
+    through uv (or explicitly override pip) or the reinstall no-ops and the
+    venv stays broken (#83569).
+    """
+    try:
+        import sysconfig
+
+        stdlib = Path(sysconfig.get_path("stdlib"))
+        if (stdlib / "EXTERNALLY-MANAGED").exists():
+            return True
+        # uv 0.5+ moved the marker into a ``_uv_managed`` sentinel dir…
+        if (stdlib.parent / "EXTERNALLY-MANAGED").exists():
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _run_repair_install(specs: list[str], project_root: Path) -> bool:
-    """ensurepip + ``pip install --force-reinstall`` the given specs.
+    """``uv pip`` (or stdlib ``pip``) force-reinstall of the given specs.
 
     Streams nothing to stdout (``hermes acp`` speaks JSON-RPC on stdout);
     output is captured and replayed to stderr only on failure.  Never raises.
+
+    Two installer paths, in priority order:
+
+    1. ``uv pip install`` with ``VIRTUAL_ENV`` pointed at the project venv —
+       required when the base interpreter is uv-managed (Windows git checkouts
+       install exactly this way: uv's Python declares PEP 668
+       ``EXTERNALLY-MANAGED`` and plain ``python -m pip`` refuses to run).
+    2. ``sys.executable -m pip`` as before, for self-contained venvs whose
+       interpreter carries no PEP 668 marker.
     """
+    externally_managed = _base_interpreter_is_externally_managed()
+    if externally_managed:
+        uv = _find_uv_binary()
+        if uv:
+            env = {**os.environ, "VIRTUAL_ENV": str(project_root / "venv")}
+            env.pop("PYTHONHOME", None)
+            env.pop("PYTHONPATH", None)
+            try:
+                result = subprocess.run(
+                    [uv, "pip", "install", "--force-reinstall", *specs],
+                    cwd=project_root,
+                    capture_output=True,
+                    text=True, encoding="utf-8", errors="replace",
+                    env=env,
+                )
+                if result.returncode == 0:
+                    return True
+                tail = (result.stderr or result.stdout or "")[-2000:]
+                if tail:
+                    print(tail, file=sys.stderr)
+                return False
+            except Exception as exc:
+                print(f"  ✗ Early venv repair could not run uv: {exc}", file=sys.stderr)
+                return False
+        # No uv available: fall through to pip with the PEP 668 override so
+        # the repair at least attempts to fix the venv instead of no-oping.
+        print(
+            "  ⚠ Base interpreter is externally managed and no uv binary was "
+            "found; retrying repair via pip with PEP 668 override.",
+            file=sys.stderr,
+        )
+
     try:
         subprocess.run(
             [sys.executable, "-m", "ensurepip", "--upgrade", "--default-pip"],
@@ -153,9 +238,13 @@ def _run_repair_install(specs: list[str], project_root: Path) -> bool:
         )
     except Exception:
         pass
+    pip_cmd = [sys.executable, "-m", "pip", "install", "--force-reinstall"]
+    if externally_managed:
+        pip_cmd.append("--break-system-packages")
+    pip_cmd.extend(specs)
     try:
         result = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--force-reinstall", *specs],
+            pip_cmd,
             cwd=project_root,
             capture_output=True,
             text=True, encoding="utf-8", errors="replace",

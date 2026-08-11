@@ -464,10 +464,96 @@ def _iter_command_segments(command: str) -> Iterator[list[str]]:
             yield segment
 
 
+def _executable_name(token: str) -> str:
+    """Return the command name for a tokenized executable token.
+
+    ``Path(token).name`` is right for real paths (``/usr/bin/bash`` →
+    ``bash``), but pathlib has no name component for the pure-path tokens
+    ``.``, ``..`` and ``/``, so it returns "" for them. The POSIX
+    dot-source builtin is spelled ``.``, so keying the sourced-script
+    branch on ``Path(token).name`` alone made it unreachable: ``source
+    ./helper.sh`` was scanned but its exact synonym ``. ./helper.sh`` was
+    not, letting a referenced script carrying a lifecycle command through
+    both the cron guard and the in-gateway terminal guard. Fall back to the
+    raw token so ``.`` survives.
+    """
+    return Path(token).name or token
+
+
+# Prefixes that hand execution straight to their argument tail: the command
+# that actually runs sits further right. A guard that reads only the first
+# token sees `sudo`/`env`/`nohup` and never inspects what they run, so
+# `sudo bash ~/restart.sh` walked past the same walk that stops
+# `bash ~/restart.sh`, and `sudo launchctl submit ...` past the
+# label-independent submit block (#62891). `_PIPE_TO_INTERPRETER` above
+# already reads `sudo ` this way for the pipe case; this generalises that
+# reading to the command position.
+_TRANSPARENT_COMMAND_PREFIXES = frozenset({
+    "sudo", "doas", "env", "nohup", "setsid", "nice", "ionice", "stdbuf",
+    "timeout", "exec", "command", "builtin", "eatmydata",
+})
+
+# Options of those wrappers that consume the NEXT token as their value, so a
+# value is never mistaken for the wrapped command (`sudo -u deploy bash x.sh`).
+_TRANSPARENT_PREFIX_VALUE_OPTIONS = {
+    "sudo": {"-u", "-g", "-U", "-C", "-p", "-r", "-t", "-T",
+             "--user", "--group", "--prompt"},
+    "doas": {"-u", "-C"},
+    "env": {"-u", "--unset", "-S", "--split-string", "-C", "--chdir"},
+    "nice": {"-n", "--adjustment"},
+    "ionice": {"-c", "-n", "-p", "--class", "--classdata"},
+    "stdbuf": {"-i", "-o", "-e", "--input", "--output", "--error"},
+    "timeout": {"-s", "-k", "--signal", "--kill-after"},
+}
+
+# Wrappers whose first non-option operand is a VALUE, not the command
+# (`timeout 60 bash x.sh`).
+_TRANSPARENT_PREFIX_OPERANDS = {"timeout": 1}
+
+_ENV_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+
+# Bound the walk: a pathological token run must not spin here.
+_MAX_PREFIX_PEELS = 8
+
+
+def _peel_transparent_prefixes(segment: list[str], index: int) -> int:
+    """Return the index of the command a wrapper chain actually executes.
+
+    Returns *index* unchanged when the token there is not a wrapper, and may
+    return ``len(segment)`` when a wrapper has no operand — callers must
+    bounds-check before indexing.
+    """
+    for _ in range(_MAX_PREFIX_PEELS):
+        if index >= len(segment):
+            return index
+        name = _executable_name(segment[index])
+        if name not in _TRANSPARENT_COMMAND_PREFIXES:
+            return index
+        value_options = _TRANSPARENT_PREFIX_VALUE_OPTIONS.get(name, frozenset())
+        index += 1
+        while index < len(segment):
+            token = segment[index]
+            if token == "--":
+                # POSIX end-of-options: the command starts at the next token.
+                index += 1
+                break
+            if token in value_options:
+                index += 2
+                continue
+            if token.startswith("-") or _ENV_ASSIGNMENT.match(token):
+                index += 1
+                continue
+            break
+        for _ in range(_TRANSPARENT_PREFIX_OPERANDS.get(name, 0)):
+            if index < len(segment) and not segment[index].startswith("-"):
+                index += 1
+    return index
+
+
 def _command_token_index(segment: list[str]) -> Optional[int]:
     """Return the executable token index after simple env assignments."""
     for index, token in enumerate(segment):
-        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", token):
+        if _ENV_ASSIGNMENT.match(token):
             continue
         return index
     return None
@@ -487,7 +573,10 @@ def contains_launchctl_submit_command(command: str) -> bool:
         index = _command_token_index(segment)
         if index is None:
             continue
-        if Path(segment[index]).name == "launchctl":
+        index = _peel_transparent_prefixes(segment, index)
+        if index >= len(segment):
+            continue
+        if _executable_name(segment[index]) == "launchctl":
             arguments = segment[index + 1 :]
             if arguments and arguments[0].lower() in {"submit", "bootstrap"}:
                 return True
@@ -628,73 +717,93 @@ def _resolve_terminal_script_path(candidate: str, cwd: Optional[str]) -> Optiona
     return path
 
 
+def _references_at(
+    segment: list[str], index: int, cwd: Optional[str]
+) -> Iterator[Path]:
+    """Yield the scripts the token at *index* executes, if any."""
+    if index >= len(segment):
+        return
+    executable = segment[index]
+    executable_name = _executable_name(executable)
+
+    if executable_name in {".", "source"}:
+        if len(segment) > index + 1:
+            resolved = _resolve_terminal_script_path(segment[index + 1], cwd)
+            if resolved is not None:
+                yield resolved
+        return
+
+    if executable_name in _SHELL_EXECUTABLES:
+        arguments = segment[index + 1 :]
+        arg_index = 0
+        while arg_index < len(arguments):
+            argument = arguments[arg_index]
+            if argument == "--":
+                arg_index += 1
+                break
+            if argument in {"-c", "--command"}:
+                break
+            if argument in _SHELL_OPTIONS_WITH_VALUES:
+                arg_index += 2
+                continue
+            if argument.startswith("-"):
+                arg_index += 1
+                continue
+            break
+        if arg_index < len(arguments) and arguments[arg_index] not in {
+            "-c",
+            "--command",
+        }:
+            resolved = _resolve_terminal_script_path(arguments[arg_index], cwd)
+            if resolved is not None:
+                yield resolved
+        return
+
+    # A bare "/" token is pathlib's division operator in Python sources
+    # (e.g. `Path.home() / ".hermes"`), not an executable reference.
+    # Resolving it walks to the filesystem root and fails the
+    # regular-file check below, hard-blocking innocent .py scripts
+    # (#77131). Skip pure-separator tokens.
+    if executable.strip("/"):
+        if "/" in executable or executable.endswith((".sh", ".bash", ".zsh")):
+            resolved = _resolve_terminal_script_path(executable, cwd)
+            if resolved is not None:
+                yield resolved
+
+
 def _iter_referenced_shell_scripts(
     command: str,
     *,
     cwd: Optional[str] = None,
 ) -> Iterator[Path]:
-    """Yield scripts executed directly or through a POSIX shell."""
+    """Yield scripts executed directly or through a POSIX shell.
+
+    Each segment is read twice: once at the token the walk has always used,
+    and again at the command a wrapper chain hands off to. Additive on
+    purpose — peeling must never REMOVE a reference the un-peeled read would
+    have found. A local script named ``./timeout`` is a script, not the
+    coreutils wrapper, and reading only the peeled index would skip it.
+    """
     for segment in _iter_command_segments(command):
         index = _command_token_index(segment)
         if index is None:
             continue
-        executable = segment[index]
-        executable_name = Path(executable).name
-
-        # Compare the RAW token as well as the basename: `Path(".").name` is the
-        # empty string, so a basename-only test silently misses the dot operator
-        # while still catching `source`. `. ./restart.sh` is exactly equivalent
-        # to `source ./restart.sh`, so both must reach the referenced-script scan.
-        if executable in {".", "source"} or executable_name == "source":
-            if len(segment) > index + 1:
-                resolved = _resolve_terminal_script_path(segment[index + 1], cwd)
-                if resolved is not None:
-                    yield resolved
-            continue
-
-        if executable_name in _SHELL_EXECUTABLES:
-            arguments = segment[index + 1 :]
-            arg_index = 0
-            while arg_index < len(arguments):
-                argument = arguments[arg_index]
-                if argument == "--":
-                    arg_index += 1
-                    break
-                if argument in {"-c", "--command"}:
-                    break
-                if argument in _SHELL_OPTIONS_WITH_VALUES:
-                    arg_index += 2
-                    continue
-                if argument.startswith("-"):
-                    arg_index += 1
-                    continue
-                break
-            if arg_index < len(arguments) and arguments[arg_index] not in {
-                "-c",
-                "--command",
-            }:
-                resolved = _resolve_terminal_script_path(arguments[arg_index], cwd)
-                if resolved is not None:
-                    yield resolved
-            continue
-
-        # A bare "/" token is pathlib's division operator in Python sources
-        # (e.g. `Path.home() / ".hermes"`), not an executable reference.
-        # Resolving it walks to the filesystem root and fails the
-        # regular-file check below, hard-blocking innocent .py scripts
-        # (#77131). Skip pure-separator tokens.
-        if executable.strip("/"):
-            if "/" in executable or executable.endswith((".sh", ".bash", ".zsh")):
-                resolved = _resolve_terminal_script_path(executable, cwd)
-                if resolved is not None:
-                    yield resolved
+        yield from _references_at(segment, index, cwd)
+        peeled = _peel_transparent_prefixes(segment, index)
+        if peeled != index:
+            yield from _references_at(segment, peeled, cwd)
 
 
 def _iter_shell_command_payloads(command: str) -> Iterator[str]:
     """Yield code passed through ``sh|bash|... -c`` for recursive scanning."""
     for segment in _iter_command_segments(command):
         index = _command_token_index(segment)
-        if index is None or Path(segment[index]).name not in _SHELL_EXECUTABLES:
+        if index is None:
+            continue
+        index = _peel_transparent_prefixes(segment, index)
+        if index >= len(segment):
+            continue
+        if _executable_name(segment[index]) not in _SHELL_EXECUTABLES:
             continue
         arguments = segment[index + 1 :]
         for arg_index, argument in enumerate(arguments[:-1]):

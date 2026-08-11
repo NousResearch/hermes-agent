@@ -1464,6 +1464,146 @@ class TestLifecycleGuardModule:
 # Defense 2 (chokepoint): cron.jobs.create_job blocks the AGENT model-tool path
 # ---------------------------------------------------------------------------
 
+class TestDotSourceIsScannedLikeSource:
+    """`.` and `source` are the same POSIX builtin and must scan alike.
+
+    `Path(".").name` is "" — pathlib has no name component for a pure-path
+    token — so keying the sourced-script branch on it left the `.` spelling
+    unreachable. `source ./helper.sh` was scanned while `. ./helper.sh`
+    walked straight past both the cron guard and the in-gateway terminal
+    guard, carrying whatever the sourced script contained.
+    """
+
+    def _scan(self, command, cwd):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        return contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=cwd
+        )
+
+    @pytest.fixture
+    def helper(self, tmp_path):
+        script = tmp_path / "helper.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        return script
+
+    @pytest.mark.parametrize("form", [". {path}", "source {path}"])
+    def test_both_spellings_block_a_referenced_script(self, tmp_path, helper, form):
+        assert self._scan(form.format(path=helper), cwd=str(tmp_path)) is True
+
+    @pytest.mark.parametrize("form", [". ./helper.sh", "source ./helper.sh"])
+    def test_both_spellings_block_a_relative_reference(self, tmp_path, helper, form):
+        assert self._scan(form, cwd=str(tmp_path)) is True
+
+    def test_env_assignment_prefix_does_not_hide_dot_source(self, tmp_path, helper):
+        assert self._scan(f"FOO=1 . {helper}", cwd=str(tmp_path)) is True
+
+    def test_dot_source_nested_in_shell_c_is_blocked(self, tmp_path, helper):
+        assert self._scan(f"sh -c '. {helper}'", cwd=str(tmp_path)) is True
+
+    @pytest.mark.parametrize("command", [
+        # `.` as a plain path argument is not a source and must stay allowed —
+        # this is the #77131 false-positive class the guard already carries
+        # scar tissue for.
+        "find . -name '*.py'",
+        "git add .",
+        "cd . && make",
+        "tar -czf out.tgz .",
+        "cp -r . /tmp/backup",
+    ])
+    def test_dot_as_an_argument_is_not_treated_as_a_source(self, tmp_path, command):
+        assert self._scan(command, cwd=str(tmp_path)) is False
+
+    def test_sourcing_a_clean_script_is_allowed(self, tmp_path):
+        clean = tmp_path / "ok.sh"
+        clean.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+        assert self._scan(f". {clean}", cwd=str(tmp_path)) is False
+
+
+class TestTransparentWrapperPrefixes:
+    """`sudo`/`env`/`nohup`/... exec their argument tail, so the command that
+    actually runs sits further right. Reading only the first token made the
+    referenced-script walk, the `sh -c` payload walk and the label-independent
+    `launchctl submit` block (#62891) all miss a wrapped invocation:
+    `sudo bash ~/restart.sh` sailed past a guard that stops
+    `bash ~/restart.sh`."""
+
+    def _scan(self, command, cwd=None):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        return contains_gateway_lifecycle_command_or_referenced_script(
+            command, cwd=cwd
+        )
+
+    @pytest.fixture
+    def helper(self, tmp_path):
+        script = tmp_path / "helper.sh"
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        return script
+
+    @pytest.mark.parametrize("prefix", [
+        "sudo", "doas", "env", "nohup", "setsid", "nice", "eatmydata",
+        "exec", "command", "stdbuf -o0", "nice -n 5", "sudo -u deploy",
+        "env FOO=bar", "timeout 60", "timeout -k 5 60", "sudo --",
+    ])
+    def test_wrapped_script_reference_is_scanned(self, tmp_path, helper, prefix):
+        assert self._scan(f"{prefix} bash {helper}", cwd=str(tmp_path)) is True
+
+    @pytest.mark.parametrize("prefix", ["sudo", "env", "nohup", "timeout 60"])
+    def test_wrapped_dot_source_is_scanned(self, tmp_path, helper, prefix):
+        assert self._scan(f"{prefix} . {helper}", cwd=str(tmp_path)) is True
+
+    @pytest.mark.parametrize("prefix", ["sudo", "env", "nohup"])
+    def test_wrapped_shell_c_payload_is_scanned(self, tmp_path, helper, prefix):
+        assert self._scan(
+            f"{prefix} sh -c 'bash {helper}'", cwd=str(tmp_path)
+        ) is True
+
+    @pytest.mark.parametrize("prefix", ["sudo", "env", "nohup", "setsid"])
+    def test_wrapped_launchctl_submit_is_blocked(self, prefix):
+        from cron.lifecycle_guard import contains_launchctl_submit_command
+
+        assert contains_launchctl_submit_command(
+            f"{prefix} launchctl submit -l com.example.helper -- /usr/bin/true"
+        ) is True
+
+    @pytest.mark.parametrize("command", [
+        # Wrappers around ordinary work must stay allowed — peeling must not
+        # invent a script reference where there is none.
+        "sudo apt-get update",
+        "env FOO=bar python3 script.py",
+        "timeout 60 curl https://example.com",
+        "nohup python3 -m http.server &",
+        "sudo -u postgres psql -c 'SELECT 1'",
+        "nice -n 10 make -j4",
+        "env",
+        "sudo",
+    ])
+    def test_wrapped_benign_commands_are_allowed(self, tmp_path, command):
+        assert self._scan(command, cwd=str(tmp_path)) is False
+
+    @pytest.mark.parametrize("name", ["timeout", "env", "nice", "command"])
+    def test_local_script_named_like_a_wrapper_is_still_scanned(
+        self, tmp_path, name
+    ):
+        """`./timeout` is a script in the cwd, not the coreutils wrapper.
+        Peeling is additive precisely so it cannot swallow the reference the
+        un-peeled read finds."""
+        script = tmp_path / name
+        script.write_text("#!/bin/sh\nhermes gateway restart\n", encoding="utf-8")
+        assert self._scan(f"./{name}", cwd=str(tmp_path)) is True
+        assert self._scan(str(script), cwd=str(tmp_path)) is True
+
+    def test_wrapped_clean_script_is_allowed(self, tmp_path):
+        clean = tmp_path / "ok.sh"
+        clean.write_text("#!/bin/sh\necho hi\n", encoding="utf-8")
+        assert self._scan(f"sudo bash {clean}", cwd=str(tmp_path)) is False
+
+
 class TestCreateJobBlocksLifecycleCommands:
     """The regression the CLI-layer-only guard could not catch: the agent's
     `cronjob` model tool calls cron.jobs.create_job directly, bypassing

@@ -1915,15 +1915,13 @@ def _configured_plugin_inputs(
     try:
         with config_path.open("rb") as config_file:
             config = tomllib.load(config_file)
-        legacy_dynamic_plugins = _dynamic_plugin_specs(config, config_path)
-        plugins_section = config.get("plugins")
-        if plugins_section is not None and legacy_dynamic_plugins:
+        if "dynamic_plugins" in config:
             raise ValueError(
-                "configure either Relay [[plugins.dynamic]] records or Hermes "
-                "[[dynamic_plugins]] activation specs, not both"
+                "Hermes [[dynamic_plugins]] records are unsupported; use Relay "
+                "[[plugins.dynamic]] records"
             )
-
-        dynamic_plugins = legacy_dynamic_plugins
+        plugins_section = config.get("plugins")
+        dynamic_plugins: list[Any] = []
         if plugins_section:
             plugin_mod = getattr(relay, "plugin", None)
             load_dynamic_plugins = getattr(
@@ -1938,7 +1936,6 @@ def _configured_plugin_inputs(
                 )
             dynamic_plugins = load_dynamic_plugins(config_path)
         plugin_config = dict(config)
-        plugin_config.pop("dynamic_plugins", None)
         plugin_config.pop("plugins", None)
         return plugin_config, dynamic_plugins
     except Exception:
@@ -1949,74 +1946,6 @@ def _configured_plugin_inputs(
             exc_info=True,
         )
         return None
-
-
-def _dynamic_plugin_specs(
-    config: dict[str, Any],
-    config_path: Path,
-) -> list[dict[str, Any]]:
-    """Validate Hermes worker activation specs pending Relay lifecycle loading."""
-    plugins_section = config.get("plugins")
-    if plugins_section is not None and not isinstance(plugins_section, dict):
-        raise ValueError("[plugins] must be a table")
-
-    raw_specs = config.get("dynamic_plugins")
-    if raw_specs is None:
-        return []
-    if not isinstance(raw_specs, list):
-        raise ValueError("dynamic_plugins must be an array of tables")
-
-    specs: list[dict[str, Any]] = []
-    for index, raw_spec in enumerate(raw_specs):
-        if not isinstance(raw_spec, dict):
-            raise ValueError(f"dynamic_plugins[{index}] must be a table")
-        plugin_id = raw_spec.get("plugin_id")
-        kind = raw_spec.get("kind")
-        manifest_ref = raw_spec.get("manifest_ref")
-        environment_ref = raw_spec.get("environment_ref")
-        plugin_config = raw_spec.get("config", {})
-        if not isinstance(plugin_id, str) or not plugin_id.strip():
-            raise ValueError(f"dynamic_plugins[{index}].plugin_id is required")
-        if kind not in {"rust_dynamic", "worker"}:
-            raise ValueError(
-                f"dynamic_plugins[{index}].kind must be rust_dynamic or worker"
-            )
-        if not isinstance(manifest_ref, str) or not manifest_ref.strip():
-            raise ValueError(f"dynamic_plugins[{index}].manifest_ref is required")
-        if not isinstance(plugin_config, dict):
-            raise ValueError(f"dynamic_plugins[{index}].config must be a table")
-        if environment_ref is not None and (
-            not isinstance(environment_ref, str) or not environment_ref.strip()
-        ):
-            raise ValueError(
-                f"dynamic_plugins[{index}].environment_ref must be a non-empty string"
-            )
-
-        spec: dict[str, Any] = {
-            "plugin_id": plugin_id.strip(),
-            "kind": kind,
-            "manifest_ref": _config_relative_path(
-                manifest_ref.strip(),
-                config_path,
-            ),
-            "config": plugin_config,
-        }
-        if environment_ref is not None:
-            spec["environment_ref"] = _config_relative_path(
-                environment_ref.strip(),
-                config_path,
-            )
-        specs.append(spec)
-    return specs
-
-
-def _config_relative_path(value: str, config_path: Path) -> str:
-    """Resolve one activation path relative to its physical TOML file."""
-    path = Path(value).expanduser()
-    if path.is_absolute():
-        return str(path)
-    return str((config_path.resolve().parent / path).resolve())
-
 
 def _flush_relay_subscribers(relay: Any) -> None:
     """Flush Relay without blocking a 0.7 asyncio event-loop thread."""

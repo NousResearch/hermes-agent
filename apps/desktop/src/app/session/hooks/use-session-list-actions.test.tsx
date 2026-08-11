@@ -4,11 +4,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SessionInfo, SidebarSessionsResponse } from '@/hermes'
 import {
   $cronSessions,
+  $messagingPlatformTotals,
   $messagingSessions,
   $sessions,
   $sessionsLoading,
   setCronSessions,
+  setMessagingPlatformTotals,
   setMessagingSessions,
+  setMessagingTruncated,
   setSessions,
   setSessionsLoading
 } from '@/store/session'
@@ -55,6 +58,21 @@ const sidebar = (
 const listSidebarSessions = vi.fn()
 const listAllProfileSessions = vi.fn()
 
+interface Deferred<T> {
+  promise: Promise<T>
+  resolve: (value: T) => void
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void
+
+  const promise = new Promise<T>(done => {
+    resolve = done
+  })
+
+  return { promise, resolve }
+}
+
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
   getCronJobs: vi.fn(async () => []),
@@ -77,6 +95,8 @@ beforeEach(() => {
   setSessions([])
   setCronSessions([])
   setMessagingSessions([])
+  setMessagingPlatformTotals({})
+  setMessagingTruncated(false)
   setSessionsLoading(false)
 })
 
@@ -84,6 +104,8 @@ afterEach(() => {
   setSessions([])
   setCronSessions([])
   setMessagingSessions([])
+  setMessagingPlatformTotals({})
+  setMessagingTruncated(false)
   setSessionsLoading(false)
 })
 
@@ -281,5 +303,106 @@ describe('refreshSessions batches slices into one request', () => {
     })
 
     expect(getCronJobs).toHaveBeenLastCalledWith('all')
+  })
+})
+
+describe('messaging profile scope', () => {
+  it('refreshes messaging sessions only for the active profile', async () => {
+    listAllProfileSessions.mockResolvedValue({
+      sessions: [row('m1', { profile: 'work', source: 'signal' })],
+      total: 1
+    })
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'work' }))
+
+    await act(async () => {
+      await result.current.refreshMessagingSessions()
+    })
+
+    expect(listAllProfileSessions).toHaveBeenCalledWith(
+      expect.any(Number),
+      1,
+      'exclude',
+      'recent',
+      'work',
+      expect.objectContaining({ excludeSources: expect.any(Array) })
+    )
+    expect($messagingSessions.get().map(s => s.id)).toEqual(['m1'])
+  })
+
+  it('keeps the explicit all-profiles view unified', async () => {
+    listAllProfileSessions.mockResolvedValue({ sessions: [], total: 0 })
+    const { result } = renderHook(() => useSessionListActions({ profileScope: '__all__' }))
+
+    await act(async () => {
+      await result.current.refreshMessagingSessions()
+    })
+
+    expect(listAllProfileSessions.mock.calls[0][4]).toBe('all')
+  })
+
+  it('keeps per-platform pagination on the active profile', async () => {
+    setMessagingSessions([row('m1', { profile: 'work', source: 'signal' })])
+    listAllProfileSessions.mockResolvedValue({
+      sessions: [row('m1', { profile: 'work', source: 'signal' }), row('m2', { profile: 'work', source: 'signal' })],
+      total: 2
+    })
+    const { result } = renderHook(() => useSessionListActions({ profileScope: 'work' }))
+
+    await act(async () => {
+      await result.current.loadMoreMessagingForPlatform('signal')
+    })
+
+    expect(listAllProfileSessions.mock.calls[0][4]).toBe('work')
+    expect($messagingSessions.get().map(s => s.id)).toEqual(['m1', 'm2'])
+  })
+
+  it('ignores an in-flight response after the active profile changes', async () => {
+    const work = deferred<{ sessions: SessionInfo[]; total: number }>()
+    const personal = deferred<{ sessions: SessionInfo[]; total: number }>()
+
+    listAllProfileSessions.mockImplementation((_limit, _min, _archived, _order, profile) =>
+      profile === 'work' ? work.promise : personal.promise
+    )
+
+    const { rerender, result } = renderHook(({ profileScope }) => useSessionListActions({ profileScope }), {
+      initialProps: { profileScope: 'work' }
+    })
+
+    const workRefresh = result.current.refreshMessagingSessions()
+    rerender({ profileScope: 'personal' })
+    const personalRefresh = result.current.refreshMessagingSessions()
+
+    await act(async () => {
+      personal.resolve({
+        sessions: [row('personal-message', { profile: 'personal', source: 'telegram' })],
+        total: 1
+      })
+      await personalRefresh
+      work.resolve({ sessions: [row('work-message', { profile: 'work', source: 'signal' })], total: 1 })
+      await workRefresh
+    })
+
+    expect(listAllProfileSessions.mock.calls.map(call => call[4])).toEqual(['work', 'personal'])
+    expect($messagingSessions.get().map(session => session.id)).toEqual(['personal-message'])
+  })
+
+  it('does not let a callback captured before a profile switch clear current totals', async () => {
+    listAllProfileSessions.mockResolvedValue({ sessions: [], total: 0 })
+    setMessagingPlatformTotals({ signal: 12 })
+
+    const { rerender, result } = renderHook(({ profileScope }) => useSessionListActions({ profileScope }), {
+      initialProps: { profileScope: 'work' }
+    })
+
+    const staleRefresh = result.current.refreshMessagingSessions
+
+    rerender({ profileScope: 'personal' })
+
+    await act(async () => {
+      await staleRefresh()
+    })
+
+    expect(listAllProfileSessions).not.toHaveBeenCalled()
+    expect($messagingPlatformTotals.get()).toEqual({ signal: 12 })
   })
 })

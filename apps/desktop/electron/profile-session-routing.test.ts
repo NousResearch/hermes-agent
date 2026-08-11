@@ -3,10 +3,40 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
+  buildSidebarSessionSliceParams,
   fetchPrimaryProfileSessions,
   fetchRemoteProfileSessions,
   mergeProfileSessionWindow
 } from './profile-session-routing'
+
+test('remote sidebar slices all follow the selected profile', () => {
+  const slices = buildSidebarSessionSliceParams(
+    new URLSearchParams({
+      recents_profile: 'work-vps',
+      recents_limit: '30',
+      cron_limit: '40',
+      messaging_limit: '50',
+      recents_exclude: 'cron,signal',
+      messaging_exclude: 'desktop,cron'
+    })
+  )
+
+  assert.equal(slices.recents.get('profile'), 'work-vps')
+  assert.equal(slices.cron.get('profile'), 'work-vps')
+  assert.equal(slices.messaging.get('profile'), 'work-vps')
+  assert.equal(slices.recents.get('exclude_sources'), 'cron,signal')
+  assert.equal(slices.cron.get('source'), 'cron')
+  assert.equal(slices.messaging.get('exclude_sources'), 'desktop,cron')
+})
+
+test('remote sidebar slices preserve the explicit all-profiles scope', () => {
+  const slices = buildSidebarSessionSliceParams(new URLSearchParams({ recents_profile: 'all' }))
+
+  assert.deepEqual(
+    Object.values(slices).map(params => params.get('profile')),
+    ['all', 'all', 'all']
+  )
+})
 
 test('primary session reads use the profile-aware request path', async () => {
   const calls: Array<{ profile: string | null; path: string }> = []

@@ -96,21 +96,47 @@ interface UseSessionListActionsArgs {
   profileScope: string
 }
 
+const sessionProfileForScope = (profileScope: string): string =>
+  profileScope === ALL_PROFILES ? 'all' : normalizeProfileKey(profileScope)
+
 /** Owns the sidebar's session-list fetching + paging: recents, cron runs/jobs,
  *  and the per-platform messaging slices. Returns the callbacks the controller
  *  wires into the sidebar and refresh effects. */
 export function useSessionListActions({ profileScope }: UseSessionListActionsArgs) {
+  const profileScopeRef = useRef(profileScope)
+  const refreshMessagingSessionsRequestRef = useRef(0)
   const refreshSessionsRequestRef = useRef(0)
+  profileScopeRef.current = profileScope
 
   // Messaging-platform sessions as their own slice, fetched separately from
   // local recents so each platform renders a self-managed section and never
-  // competes with local chats for the recents page budget. One combined fetch
-  // seeds every platform; the sidebar splits the rows per source.
+  // competes with local chats for the recents page budget. Keep the fetch on
+  // the sidebar's profile scope; otherwise a remote-profile switch leaks one
+  // instance's Telegram/Signal sections into another instance's workspace.
   const refreshMessagingSessions = useCallback(async () => {
+    const sessionProfile = sessionProfileForScope(profileScope)
+
+    // A callback captured before a profile switch may still be queued by an
+    // event subscription. Do not let it start a request or clear current totals.
+    if (sessionProfileForScope(profileScopeRef.current) !== sessionProfile) {
+      return
+    }
+
+    const requestId = refreshMessagingSessionsRequestRef.current + 1
+    refreshMessagingSessionsRequestRef.current = requestId
+    setMessagingPlatformTotals({})
+
     try {
-      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', 'all', {
+      const result = await listAllProfileSessions(MESSAGING_SECTION_LIMIT, 1, 'exclude', 'recent', sessionProfile, {
         excludeSources: MESSAGING_EXCLUDED_SOURCES
       })
+
+      if (
+        refreshMessagingSessionsRequestRef.current !== requestId ||
+        sessionProfileForScope(profileScopeRef.current) !== sessionProfile
+      ) {
+        return
+      }
 
       // Drop any non-messaging source the broad exclude didn't catch (custom
       // sources) — those stay in local recents, not a platform section.
@@ -123,29 +149,50 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     } catch {
       // Non-fatal: the messaging sections just stay empty/stale.
     }
-  }, [])
+  }, [profileScope])
 
   // Page a single platform's section independently (mirrors the per-profile
   // pager): fetch that source's next window and merge it back in place, leaving
   // every other platform's rows untouched. Resolves the platform's exact total.
-  const loadMoreMessagingForPlatform = useCallback(async (platform: string) => {
-    const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform
-    const loaded = $messagingSessions.get().filter(inPlatform).length
+  const loadMoreMessagingForPlatform = useCallback(
+    async (platform: string) => {
+      const sessionProfile = sessionProfileForScope(profileScope)
 
-    const result = await listAllProfileSessions(loaded + SIDEBAR_SESSIONS_PAGE_SIZE, 1, 'exclude', 'recent', 'all', {
-      source: platform
-    })
+      if (sessionProfileForScope(profileScopeRef.current) !== sessionProfile) {
+        return
+      }
 
-    const incoming = dropTombstoned(result.sessions.filter(s => normalizeSessionSource(s.source) === platform))
+      const inProfile = (s: SessionInfo) =>
+        sessionProfile === 'all' || normalizeProfileKey(s.profile) === sessionProfile
 
-    setMessagingSessions(prev => [
-      ...prev.filter(s => !inPlatform(s)),
-      ...mergeSessionPage(prev.filter(inPlatform), incoming, sessionsToKeep())
-    ])
+      const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform && inProfile(s)
+      const loaded = $messagingSessions.get().filter(inPlatform).length
 
-    const total = result.total ?? incoming.length
-    setMessagingPlatformTotals(prev => ({ ...prev, [platform]: Math.max(total, incoming.length) }))
-  }, [])
+      const result = await listAllProfileSessions(
+        loaded + SIDEBAR_SESSIONS_PAGE_SIZE,
+        1,
+        'exclude',
+        'recent',
+        sessionProfile,
+        { source: platform }
+      )
+
+      if (sessionProfileForScope(profileScopeRef.current) !== sessionProfile) {
+        return
+      }
+
+      const incoming = dropTombstoned(result.sessions.filter(inPlatform))
+
+      setMessagingSessions(prev => [
+        ...prev.filter(s => !inPlatform(s)),
+        ...mergeSessionPage(prev.filter(inPlatform), incoming, sessionsToKeep())
+      ])
+
+      const total = result.total ?? incoming.length
+      setMessagingPlatformTotals(prev => ({ ...prev, [platform]: Math.max(total, incoming.length) }))
+    },
+    [profileScope]
+  )
 
   // Cron *jobs* drive the sidebar "Cron jobs" section. Jobs are created
   // synchronously (agent tool call or the cron UI), so refreshing here right
@@ -156,7 +203,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
   // own jobs; ALL_PROFILES keeps the unified view.
   const refreshCronJobs = useCallback(async () => {
     try {
-      await refreshCronJobsStore(profileScope === ALL_PROFILES ? 'all' : profileScope)
+      await refreshCronJobsStore(sessionProfileForScope(profileScope))
     } catch {
       // Non-fatal: the cron section just keeps its last-known jobs.
     }
@@ -184,11 +231,11 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       // Unified cross-profile list (served read-only off each profile's
       // state.db; no per-profile backend is spawned). Single-profile users get
       // the same rows tagged profile="default".
-      // Scope recents to the active profile (not always 'all') so a profile
+      // Scope every sidebar slice to the active profile (not always 'all') so a profile
       // with few recent sessions isn't windowed out of the cross-profile
-      // recency page — the empty-history-on-profile-switch bug. Cron + messaging
-      // stay cross-profile.
-      const sessionProfile = profileScope === ALL_PROFILES ? 'all' : profileScope
+      // recency page and never inherits another profile's cron or messaging
+      // sections. ALL_PROFILES remains the explicit unified view.
+      const sessionProfile = sessionProfileForScope(profileScope)
 
       // Batched: one request opens each profile DB once and returns all three
       // source-scoped slices, instead of three separate listAllProfileSessions

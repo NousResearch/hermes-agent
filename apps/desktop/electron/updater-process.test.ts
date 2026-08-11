@@ -170,7 +170,7 @@ test('resolveStagedUpdaterBinary returns null on Windows when nothing is staged'
 
 test('resolveUpdateScriptHandoff prefers the repo script on Windows when present', () => {
   const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
-  const expected = path.join(root, 'scripts', 'desktop-update.ps1')
+  const expected = path.join(root, 'scripts', 'desktop-update', 'windows.ps1')
 
   const handoff = resolveUpdateScriptHandoff(root, {
     isWindows: true,
@@ -181,6 +181,19 @@ test('resolveUpdateScriptHandoff prefers the repo script on Windows when present
   assert.equal(handoff.command, 'powershell')
   assert.equal(handoff.scriptPath, expected)
   assert.deepEqual(handoff.args, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', expected])
+})
+
+test('resolveUpdateScriptHandoff falls back to the pre-reorg flat path', () => {
+  const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
+  const legacy = path.join(root, 'scripts', 'desktop-update.ps1')
+
+  const handoff = resolveUpdateScriptHandoff(root, {
+    isWindows: true,
+    fileExists: candidate => candidate === legacy
+  })
+
+  assert.ok(handoff)
+  assert.equal(handoff.scriptPath, legacy)
 })
 
 test('resolveUpdateScriptHandoff returns null when the checkout predates the script', () => {
@@ -203,7 +216,7 @@ test('resolveUpdateScriptHandoff is Windows-only (POSIX updates in place)', () =
 
 test('wrapHandoffForDetachedConsole routes through cmd start with own console', () => {
   const root = String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`
-  const expected = path.join(root, 'scripts', 'desktop-update.ps1')
+  const expected = path.join(root, 'scripts', 'desktop-update', 'windows.ps1')
 
   const handoff = resolveUpdateScriptHandoff(root, {
     isWindows: true,

@@ -27,7 +27,7 @@ export interface UpdateScriptHandoff {
  * updater-side fix only reaches users when a new binary is built, signed and
  * published — which historically lags main by months and strands users on
  * long-fixed bugs (cache resolver #67369, marker self-adopt #74782; the
- * 2026-08-09 incident chain). `scripts/desktop-update.ps1` lives in the repo
+ * 2026-08-09 incident chain). `scripts/desktop-update/windows.ps1` lives in the repo
  * checkout instead: every `hermes update` refreshes the code that drives the
  * NEXT update, and only PowerShell itself is frozen.
  *
@@ -47,7 +47,50 @@ export function resolveUpdateScriptHandoff(
     return null
   }
 
-  const scriptPath = path.join(updateRoot, 'scripts', 'desktop-update.ps1')
+  const exists = deps.fileExists ?? stagedFileExists
+
+  // Current layout first, then the pre-reorg flat path — an updated asar can
+  // meet a checkout from either side of the move (the checkout also ships a
+  // forwarder at the legacy path for the inverse skew).
+  for (const candidate of [
+    path.join(updateRoot, 'scripts', 'desktop-update', 'windows.ps1'),
+    path.join(updateRoot, 'scripts', 'desktop-update.ps1')
+  ]) {
+    if (exists(candidate)) {
+      return {
+        command: 'powershell',
+        args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', candidate],
+        scriptPath: candidate
+      }
+    }
+  }
+
+  return null
+}
+
+/**
+ * Repo-owned POSIX update hand-off (the mac/linux twin of the above).
+ *
+ * Replaces the in-app posix updater: the Desktop spawns the script detached
+ * and QUITS, the script waits it out, runs `hermes update`, swaps/relaunches
+ * the app, and writes .hermes-update-result.json. With the app gone before
+ * the update starts, the HERMES_DESKTOP_CHILD_PID reaper-exclusion dance is
+ * unnecessary — there are no live desktop backends to spare.
+ *
+ * Null when the checkout predates the script (caller surfaces the manual
+ * `hermes update` card — old checkouts pull the script on their next update).
+ */
+export function resolvePosixScriptHandoff(
+  updateRoot: string,
+  deps: ResolveUpdateScriptHandoffDeps = {}
+): UpdateScriptHandoff | null {
+  const isWindows = deps.isWindows ?? process.platform === 'win32'
+
+  if (isWindows) {
+    return null
+  }
+
+  const scriptPath = path.join(updateRoot, 'scripts', 'desktop-update', 'posix.sh')
   const exists = deps.fileExists ?? stagedFileExists
 
   if (!exists(scriptPath)) {
@@ -55,8 +98,8 @@ export function resolveUpdateScriptHandoff(
   }
 
   return {
-    command: 'powershell',
-    args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
+    command: '/bin/bash',
+    args: [scriptPath],
     scriptPath
   }
 }

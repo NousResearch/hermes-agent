@@ -19,6 +19,7 @@ import time
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Callable, ClassVar, Dict, Optional, Any, Tuple, List
+from urllib.parse import urlsplit, urlunsplit
 
 import aiohttp
 
@@ -153,6 +154,11 @@ _SLACK_VERBATIM_RICH_TEXT_TYPES = ("rich_text_quote", "rich_text_preformatted")
 # matched, so a lone stray backtick in prose strips nothing. Triple-backtick
 # runs are consumed by the fence handling in _extract_mention_tokens.
 _SLACK_MRKDWN_INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
+
+_SLACK_AUTHORED_URL_RE = re.compile(
+    r"(?<![<\w])https?://[^\s<>]+|<(?P<mrkdwn>https?://[^>|]+)(?:\|[^>]*)?>",
+    re.IGNORECASE,
+)
 
 # Cap on how many thread-root images are downloaded and delivered when the
 # bot is mentioned mid-thread (cold-start hydrate). Prior thread messages'
@@ -396,21 +402,33 @@ def _extract_mention_tokens(value: str) -> list:
     tokens: list = []
     in_fence = False
     for line in value.split("\n"):
-        stripped = line.lstrip()
-        if stripped.startswith("```"):
-            # An odd number of runs opens or closes the fence; an even number
-            # (```code```) opens and closes on this line, leaving state as-is.
-            # Either way the line itself is code, so nothing is harvested.
-            if stripped.count("```") % 2:
-                in_fence = not in_fence
+        if line.lstrip().startswith(_SLACK_BLOCKQUOTE_PREFIXES):
             continue
-        if in_fence:
-            continue
-        if stripped.startswith(_SLACK_BLOCKQUOTE_PREFIXES):
-            continue
-        scanned = _SLACK_MRKDWN_INLINE_CODE_RE.sub(" ", line)
+
+        visible: list[str] = []
+        cursor = 0
+        while cursor < len(line):
+            fence = line.find("```", cursor)
+            if fence < 0:
+                if not in_fence:
+                    visible.append(line[cursor:])
+                break
+            if not in_fence:
+                visible.append(line[cursor:fence])
+            in_fence = not in_fence
+            cursor = fence + 3
+
+        scanned = _SLACK_MRKDWN_INLINE_CODE_RE.sub(" ", "".join(visible))
         tokens.extend(f"<@{uid}>" for uid in _SLACK_USER_MENTION_RE.findall(scanned))
     return tokens
+
+
+def _strip_slack_user_mention(value: str, user_id: str) -> str:
+    """Remove bare or labelled mentions of ``user_id`` from Slack text."""
+    if not value or not user_id:
+        return value
+    pattern = re.compile(rf"<@{re.escape(user_id)}(?:\|[^>]*)?>")
+    return pattern.sub("", value)
 
 
 def _collect_slack_block_mentions(blocks: list) -> list:
@@ -464,7 +482,7 @@ def _collect_slack_block_mentions(blocks: list) -> list:
             if child is None:
                 continue
             if isinstance(child, str):
-                if not verbatim:
+                if not verbatim and node_type != "plain_text":
                     mentions.extend(_extract_mention_tokens(child))
                 continue
             _walk(child, verbatim)
@@ -476,7 +494,9 @@ def _collect_slack_block_mentions(blocks: list) -> list:
     return mentions
 
 
-def _collect_slack_attachment_mentions(attachments: list) -> list:
+def _collect_slack_attachment_mentions(
+    attachments: list, authored_urls: Optional[set[str]] = None
+) -> list:
     """Return ``<@UID>`` mention tokens authored in legacy ``attachments``.
 
     Alertmanager, Grafana, PagerDuty and CI bots post with an empty top-level
@@ -498,7 +518,7 @@ def _collect_slack_attachment_mentions(attachments: list) -> list:
     for att in attachments:
         if not isinstance(att, dict):
             continue
-        if att.get("is_msg_unfurl") or att.get("is_share"):
+        if _classify_slack_attachment(att, authored_urls or set()) != "content":
             continue
         # Per-attachment so one malformed sibling cannot discard the genuine
         # mentions already collected from the attachments before it.
@@ -508,14 +528,16 @@ def _collect_slack_attachment_mentions(attachments: list) -> list:
                 for key in ("pretext", "title", "text")
                 if isinstance(att.get(key), str)
             ]
-            for field in att.get("fields") or []:
-                if not isinstance(field, dict):
-                    continue
-                strings += [
-                    field[key]
-                    for key in ("title", "value")
-                    if isinstance(field.get(key), str)
-                ]
+            fields = att.get("fields")
+            if isinstance(fields, (list, tuple)):
+                for field in fields:
+                    if not isinstance(field, dict):
+                        continue
+                    strings += [
+                        field[key]
+                        for key in ("title", "value")
+                        if isinstance(field.get(key), str)
+                    ]
             for value in strings:
                 mentions.extend(_extract_mention_tokens(value))
             nested = att.get("blocks")
@@ -543,7 +565,9 @@ def _slack_recovered_mentions(event: dict) -> list:
         mentions += _collect_slack_block_mentions(blocks)
     attachments = event.get("attachments")
     if attachments:
-        mentions += _collect_slack_attachment_mentions(attachments)
+        mentions += _collect_slack_attachment_mentions(
+            attachments, _collect_slack_authored_urls(event)
+        )
     # The same user is often addressed in more than one carrier (a section
     # block and an attachment mirroring it), so dedupe.
     return list(dict.fromkeys(mentions))
@@ -661,7 +685,9 @@ def _extract_text_from_slack_blocks(blocks: list) -> str:
     return "\n".join(parts)
 
 
-def _extract_text_from_slack_attachments(attachments: list) -> str:
+def _extract_text_from_slack_attachments(
+    attachments: list, authored_urls: Optional[set[str]] = None
+) -> str:
     """Extract readable text from legacy Slack message ``attachments``.
 
     Apps such as Alertmanager, Grafana, PagerDuty, and CI bots post messages
@@ -681,6 +707,8 @@ def _extract_text_from_slack_attachments(attachments: list) -> str:
     lines: list[str] = []
     for att in attachments:
         if not isinstance(att, dict):
+            continue
+        if _classify_slack_attachment(att, authored_urls or set()) == "unfurl":
             continue
         got: list[str] = [
             str(att[key]) for key in ("pretext", "title", "text") if att.get(key)
@@ -830,6 +858,89 @@ def _extract_urls_from_slack_blocks(blocks: list) -> list[str]:
 
     _walk(blocks)
     return found
+
+
+def _normalize_slack_http_url(value: Any) -> Optional[str]:
+    """Return a minimally normalized HTTP(S) URL, or ``None`` if invalid."""
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return None
+    try:
+        parsed = urlsplit(candidate)
+        if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+            return None
+        hostname = parsed.hostname.lower()
+        if ":" in hostname and not hostname.startswith("["):
+            hostname = f"[{hostname}]"
+        userinfo = ""
+        if "@" in parsed.netloc:
+            userinfo = parsed.netloc.rsplit("@", 1)[0] + "@"
+        port = parsed.port
+        netloc = f"{userinfo}{hostname}{f':{port}' if port is not None else ''}"
+        path = parsed.path.rstrip("/")
+        return urlunsplit((parsed.scheme.lower(), netloc, path, parsed.query, parsed.fragment))
+    except (TypeError, ValueError):
+        return None
+
+
+def _collect_slack_authored_urls(event: dict) -> set[str]:
+    """Collect HTTP(S) URLs authored in top-level text and Block Kit only."""
+    urls: set[str] = set()
+    if not isinstance(event, dict):
+        return urls
+
+    text = event.get("text")
+    if isinstance(text, str):
+        for match in _SLACK_AUTHORED_URL_RE.finditer(text):
+            raw = match.group("mrkdwn") or match.group(0)
+            # Trim common prose punctuation from bare URLs. Slack mrkdwn URLs
+            # are captured without their closing ``>`` and need no trimming.
+            if not match.group("mrkdwn"):
+                raw = raw.rstrip(".,;:!?")
+                for opener, closer in (("(", ")"), ("[", "]"), ("{", "}")):
+                    while raw.endswith(closer) and raw.count(closer) > raw.count(opener):
+                        raw = raw[:-1]
+            normalized = _normalize_slack_http_url(raw)
+            if normalized:
+                urls.add(normalized)
+
+    blocks = event.get("blocks")
+    if isinstance(blocks, list):
+        for raw in _extract_urls_from_slack_blocks(blocks):
+            normalized = _normalize_slack_http_url(raw)
+            if normalized:
+                urls.add(normalized)
+    return urls
+
+
+def _classify_slack_attachment(attachment: Any, authored_urls: set[str]) -> str:
+    """Classify a Slack attachment as content, share, or automatic unfurl.
+
+    Explicit Slack flags are authoritative. Otherwise URL provenance must tie
+    the attachment back to a URL authored outside the attachment; uncertain
+    legacy attachments fail open as content. Shares cannot contribute control
+    mentions, but remain visible to the agent as user-provided context.
+    """
+    if not isinstance(attachment, dict):
+        return "content"
+    if attachment.get("is_share"):
+        return "share"
+    if attachment.get("is_app_unfurl") or attachment.get("is_msg_unfurl"):
+        return "unfurl"
+    if not authored_urls:
+        return "content"
+    # Legacy alert/CI attachments commonly link their subject to the same URL
+    # authored in top-level blocks. Structured alert content is positive
+    # evidence that this is the message body, not Slack-generated preview data.
+    if any(key in attachment for key in ("pretext", "fields", "blocks")):
+        return "content"
+    for key in ("original_url", "from_url", "title_link"):
+        normalized = _normalize_slack_http_url(attachment.get(key))
+        if normalized and normalized in authored_urls:
+            return "unfurl"
+    return "content"
 
 
 def _apply_slack_proxy(client: Any, proxy_url: Optional[str]) -> None:
@@ -5880,7 +5991,7 @@ class SlackAdapter(BasePlatformAdapter):
             ):
                 # Remember the thread so later replies skip the fetch.
                 if not self._slack_strict_mention():
-                    self._register_mentioned_thread(event_thread_ts)
+                    self._register_mentioned_thread(event_thread_ts, team_id=team_id)
                 return True
         return False
 
@@ -5974,6 +6085,8 @@ class SlackAdapter(BasePlatformAdapter):
         # a bot *user* id — probe users.info for suspicious unlabeled events:
         # real human-authored Slack messages normally carry client_msg_id;
         # bot/app-originated events that slip past the markers often do not.
+        event_team_id = self._event_team_id(event, payload)
+        event_bot_uid = self._team_bot_user_ids.get(event_team_id, self._bot_user_id)
         msg_user = event.get("user", "")
         sender_is_bot = self._event_declares_bot_sender(event)
         if not sender_is_bot and msg_user and not event.get("client_msg_id"):
@@ -5988,18 +6101,18 @@ class SlackAdapter(BasePlatformAdapter):
                 return
             elif allow_bots == "mentions":
                 # Include block/attachment-only mentions, not just flat text (#52387)
-                if self._bot_user_id and not self._slack_event_mentions_bot(
-                    event, self._bot_user_id
+                if event_bot_uid and not self._slack_event_mentions_bot(
+                    event, event_bot_uid
                 ):
                     logger.debug(
                         "[Slack] Dropping bot message under allow_bots=mentions: "
                         "no <@%s> mention in flat text, blocks or attachments",
-                        self._bot_user_id,
+                        event_bot_uid,
                     )
                     return
             # "all" falls through to process the message
             # Always ignore our own messages to prevent echo loops
-            if msg_user and self._bot_user_id and msg_user == self._bot_user_id:
+            if msg_user and event_bot_uid and msg_user == event_bot_uid:
                 return
 
         # Ignore message deletions. Edits are normalized above so an @mention
@@ -6067,18 +6180,18 @@ class SlackAdapter(BasePlatformAdapter):
         # Without reading these, the agent never sees shared link previews.
         slack_attachments = event.get("attachments") or []
         if slack_attachments:
+            authored_urls = _collect_slack_authored_urls(event)
             att_parts: list[str] = []
             for att in slack_attachments:
+                if not isinstance(att, dict):
+                    continue
+                if _classify_slack_attachment(att, authored_urls) == "unfurl":
+                    continue
                 att_title = att.get("title", "")
                 att_url = att.get("title_link", "") or att.get("from_url", "")
                 att_text = att.get("text", "")
                 att_footer = att.get("footer", "")
                 att_fallback = att.get("fallback", "")
-
-                # Skip message-type attachments (e.g. Slack bot messages with
-                # is_msg_unfurl) to avoid echoing our own content.
-                if att.get("is_msg_unfurl"):
-                    continue
 
                 # Build a readable representation.
                 if att_title and att_url:
@@ -6378,14 +6491,14 @@ class SlackAdapter(BasePlatformAdapter):
 
         if is_mentioned:
             # Strip the bot mention from the text
-            text = text.replace(f"<@{bot_uid}>", "").strip()
+            text = _strip_slack_user_mention(text, bot_uid).strip()
             # Re-run command normalization against the canonical Slack text,
             # not the block-augmented agent text. Otherwise quoted/forwarded
             # rich-text payload can become accidental command arguments.
             # Handles both ``@bot !cmd`` (bang hidden behind the mention when
             # the first probe ran) and ``@bot /cmd`` (typed slash addressed
             # at the bot).
-            mention_stripped = original_text.replace(f"<@{bot_uid}>", "").strip()
+            mention_stripped = _strip_slack_user_mention(original_text, bot_uid).strip()
             if mention_stripped.startswith("/"):
                 command_text = mention_stripped
             else:
@@ -7790,7 +7903,7 @@ class SlackAdapter(BasePlatformAdapter):
         """
         msg_text = (msg.get("text") or "").strip()
         if bot_uid:
-            msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
+            msg_text = _strip_slack_user_mention(msg_text, bot_uid).strip()
 
         blocks = msg.get("blocks")
         extras: list[str] = []
@@ -7810,7 +7923,7 @@ class SlackAdapter(BasePlatformAdapter):
         # apps often post with an empty ``text`` and the real content in
         # attachment fields or attachment-nested blocks.
         attachments_text = _extract_text_from_slack_attachments(
-            msg.get("attachments") or []
+            msg.get("attachments") or [], _collect_slack_authored_urls(msg)
         ).strip()
         if attachments_text and attachments_text not in msg_text and all(
             attachments_text not in e for e in extras
@@ -8057,7 +8170,7 @@ class SlackAdapter(BasePlatformAdapter):
 
             # Strip bot mentions from context messages
             if bot_uid:
-                msg_text = msg_text.replace(f"<@{bot_uid}>", "").strip()
+                msg_text = _strip_slack_user_mention(msg_text, bot_uid).strip()
 
             if is_parent:
                 parent_text = msg_text
@@ -8241,7 +8354,7 @@ class SlackAdapter(BasePlatformAdapter):
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
             text = self._render_message_text(parent, bot_uid=bot_uid or "")
             if bot_uid:
-                text = text.replace(f"<@{bot_uid}>", "").strip()
+                text = _strip_slack_user_mention(text, bot_uid).strip()
             return text
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("[Slack] Failed to render thread parent text: %s", exc)
@@ -9031,7 +9144,10 @@ class SlackAdapter(BasePlatformAdapter):
         if not bot_uid:
             return False
         token = f"<@{bot_uid}>"
-        if token in (event.get("text") or ""):
+        top_level_text = event.get("text")
+        if isinstance(top_level_text, str) and token in _extract_mention_tokens(
+            top_level_text
+        ):
             return True
         return token in _slack_recovered_mentions(event)
 

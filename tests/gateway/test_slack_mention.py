@@ -654,13 +654,6 @@ def _mrkdwn_section(text):
             }]},
         ),
         (
-            "header text",
-            {"text": "", "blocks": [{
-                "type": "header",
-                "text": {"type": "plain_text", "text": f"<@{BOT_USER_ID}> incident"},
-            }]},
-        ),
-        (
             "context elements",
             {"text": "", "blocks": [{
                 "type": "context",
@@ -688,6 +681,19 @@ def _mrkdwn_section(text):
 def test_recovered_mentions_cover_mrkdwn_token_carriers(carrier, event):
     """Every carrier an app can author a mention in must reach the gates."""
     assert f"<@{BOT_USER_ID}>" in _slack_recovered_mentions(event), carrier
+
+
+def test_plain_text_block_does_not_recover_literal_mention():
+    event = {
+        "text": "incident payload",
+        "blocks": [
+            {
+                "type": "header",
+                "text": {"type": "plain_text", "text": f"literal <@{BOT_USER_ID}>"},
+            }
+        ],
+    }
+    assert _slack_recovered_mentions(event) == []
 
 
 def test_recovered_mentions_normalize_labelled_mention():
@@ -767,7 +773,17 @@ def test_attachment_mentions_survive_a_malformed_sibling():
     assert f"<@{BOT_USER_ID}>" in _slack_recovered_mentions(event)
 
 
-@pytest.mark.parametrize("quote_key", ["is_msg_unfurl", "is_share"])
+def test_attachment_mention_survives_malformed_fields_on_same_attachment():
+    event = {
+        "text": "",
+        "attachments": [{"text": f"<@{BOT_USER_ID}> disk 91%", "fields": 3}],
+    }
+    assert _slack_recovered_mentions(event) == [f"<@{BOT_USER_ID}>"]
+
+
+@pytest.mark.parametrize(
+    "quote_key", ["is_app_unfurl", "is_msg_unfurl", "is_share"]
+)
 def test_quoted_attachment_mention_does_not_wake_the_bot(quote_key):
     """A pasted permalink / forwarded share carries someone else's mention."""
     event = {
@@ -775,6 +791,85 @@ def test_quoted_attachment_mention_does_not_wake_the_bot(quote_key):
         "attachments": [{quote_key: True, "text": f"<@{BOT_USER_ID}> deploy prod"}],
     }
     assert _slack_recovered_mentions(event) == []
+
+
+@pytest.mark.parametrize("url_key", ["original_url", "from_url", "title_link"])
+@pytest.mark.parametrize(
+    "authored",
+    [
+        "review https://example.com/report",
+        "review <https://example.com/report|the report>",
+    ],
+)
+def test_matching_authored_url_attachment_mention_does_not_wake(url_key, authored):
+    event = {
+        "text": authored,
+        "attachments": [
+            {url_key: "https://EXAMPLE.com/report/", "text": f"<@{BOT_USER_ID}> old ping"}
+        ],
+    }
+    assert _slack_recovered_mentions(event) == []
+
+
+def test_matching_structured_block_url_attachment_mention_does_not_wake():
+    event = {
+        "text": "review the report",
+        "blocks": [
+            {
+                "type": "section",
+                "accessory": {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "Open"},
+                    "url": "https://example.com/report",
+                },
+            }
+        ],
+        "attachments": [
+            {"from_url": "https://example.com/report", "text": f"<@{BOT_USER_ID}> old ping"}
+        ],
+    }
+    assert _slack_recovered_mentions(event) == []
+
+
+def test_unmatched_attachment_url_fails_open_for_mentions():
+    event = {
+        "text": "review this",
+        "attachments": [
+            {"original_url": "https://example.com/report", "text": f"<@{BOT_USER_ID}> page me"}
+        ],
+    }
+    assert _slack_recovered_mentions(event) == [f"<@{BOT_USER_ID}>"]
+
+
+def test_preview_and_genuine_attachment_only_collect_genuine_mention():
+    event = {
+        "text": "https://example.com/report",
+        "attachments": [
+            {"from_url": "https://example.com/report", "text": "preview <@U_OTHER>"},
+            {"title": "Alert", "text": f"owner <@{BOT_USER_ID}>"},
+        ],
+    }
+    assert _slack_recovered_mentions(event) == [f"<@{BOT_USER_ID}>"]
+
+
+def test_malformed_attachment_url_does_not_hide_genuine_sibling_mention():
+    event = {
+        "text": "https://example.com/report",
+        "attachments": [
+            {"original_url": {"bad": "type"}, "text": "broken preview"},
+            {"title_link": "http://[invalid", "text": "also malformed"},
+            {"text": f"owner <@{BOT_USER_ID}>"},
+        ],
+    }
+    assert _slack_recovered_mentions(event) == [f"<@{BOT_USER_ID}>"]
+
+
+def test_same_line_closed_fence_preserves_following_mention():
+    event = {
+        "text": "",
+        "blocks": [_mrkdwn_section(f"```payload``` <@{BOT_USER_ID}> investigate")],
+    }
+    assert _slack_recovered_mentions(event) == [f"<@{BOT_USER_ID}>"]
 
 
 def test_mrkdwn_blockquote_mention_does_not_wake_the_bot():
@@ -890,6 +985,21 @@ def test_text_after_a_closed_fence_still_yields_a_mention():
         "blocks": [_mrkdwn_section(f"```\nsome log\n```\n<@{BOT_USER_ID}> please look")],
     }
     assert _slack_recovered_mentions(event) == [f"<@{BOT_USER_ID}>"]
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        f"`payload <@{BOT_USER_ID}>`",
+        f"```\npayload <@{BOT_USER_ID}>\n```",
+        f"> <@{BOT_USER_ID}> old request",
+        f"&gt; <@{BOT_USER_ID}> old request",
+    ],
+)
+def test_top_level_verbatim_mention_does_not_wake(text):
+    adapter = _make_adapter()
+    event = {"text": text}
+    assert adapter._slack_event_mentions_bot(event, BOT_USER_ID) is False
 
 
 def test_mention_beside_an_inline_code_span_still_counts():

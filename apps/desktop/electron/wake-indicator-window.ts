@@ -2,6 +2,7 @@ import { pathToFileURL } from 'node:url'
 
 import { BrowserWindow, screen } from 'electron'
 
+import { attachRendererConsoleCapture } from './renderer-log'
 import {
   normalizeWakeIndicatorState,
   selectWakeIndicatorDisplay,
@@ -106,6 +107,9 @@ export function createWakeIndicatorWindowController({
     // Log-only renderer lifecycle (#81290): the wake cue is ambient and
     // macOS-only; its loss belongs in desktop.log, never resurrected.
     installWindowRendererLifecycle(next, { kind: 'wake', callbacks: { log } })
+    // Console errors go through the shared capture (renderer-log.ts owns
+    // console-message; the lifecycle helper deliberately does not).
+    attachRendererConsoleCapture(next, 'wake', log)
 
     next.webContents.on('did-finish-load', sendState)
     next.once('ready-to-show', () => {

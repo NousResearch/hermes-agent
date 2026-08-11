@@ -3,7 +3,6 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import {
-  consoleMessageLog,
   describeRendererLifecycleEvent,
   installWindowRendererLifecycle,
   pruneReloadTimes,
@@ -296,21 +295,18 @@ test('did-fail-load on the main frame is logged, not reloaded', () => {
   assert.equal(logs.length, 1)
 })
 
-test('console-message at error level is logged, lower levels ignored', () => {
+test('console-message events are NOT handled here (renderer-log.ts is the single owner)', () => {
   const win = makeFakeWindow()
   const { logs, options } = makeOptions(win, 'secondary')
 
   installWindowRendererLifecycle(win, options)
 
-  // Modern shape: (event, messageDetails).
+  // OAuth/portal windows install this helper for process events; their pages
+  // must not be able to spill console output (tokens/PII) into desktop.log.
   win.webContents.emit('console-message', {}, { level: 3, message: 'boom', sourceUrl: 'file:///app.js', lineNumber: 42 })
-  // Deprecated positional shape: (event, level, message, line, sourceId).
-  win.webContents.emit('console-message', {}, 3, 'legacy boom', 7, 'file:///legacy.js')
-  win.webContents.emit('console-message', {}, { level: 1, message: 'info', sourceUrl: 'file:///app.js', lineNumber: 1 })
 
-  assert.equal(logs.length, 2)
-  assert.match(logs[0], /\[renderer:secondary console\] boom \(file:\/\/\/app\.js:42\)/)
-  assert.match(logs[1], /\[renderer:secondary console\] legacy boom \(file:\/\/\/legacy\.js:7\)/)
+  assert.equal(win.webContents.listenerCount('console-message'), 0)
+  assert.equal(logs.length, 0)
 })
 
 test('onCrashLoopSuppressed fires when the budget trips (main sandbox-relaunch hook)', async () => {
@@ -369,16 +365,6 @@ test('dispose removes every listener (no stacking on window recreation)', () => 
   assert.equal(win.reloadCalls.length, 0)
   assert.equal(logs.length, 0)
   assert.equal(win.webContents.listenerCount('render-process-gone'), before - 1)
-})
-
-test('consoleMessageLog parses both Electron argument shapes', () => {
-  const modern = consoleMessageLog([{}, { level: 3, message: 'm', sourceUrl: 's', lineNumber: 1 }])
-
-  assert.deepEqual(modern, { level: 3, message: 'm', sourceUrl: 's', lineNumber: 1 })
-
-  const legacy = consoleMessageLog([{}, 3, 'm', 7, 's'])
-
-  assert.deepEqual(legacy, { level: 3, message: 'm', sourceUrl: 's', lineNumber: 7 })
 })
 
 test('describeRendererLifecycleEvent sanitizes unknown fields', () => {

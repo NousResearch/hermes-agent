@@ -9538,6 +9538,9 @@ function spawnHudWindow(sessionId, profile) {
   })
 
   attachRendererConsoleCapture(win, 'hud', rememberLog)
+  // Log-only lifecycle (#81290): the HUD is a compact auxiliary surface the
+  // user can re-toggle; a dead renderer should be diagnosable, not resurrected.
+  installWindowRendererLifecycle(win, { kind: 'hud', callbacks: { log: rememberLog } })
   loadWindowUrl(win, hudUrl(sessionId, profile), 'HUD')
 
   return win

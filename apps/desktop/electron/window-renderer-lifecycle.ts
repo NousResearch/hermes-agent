@@ -22,8 +22,12 @@
 // - `did-fail-load` on the MAIN frame → log only (no blind reload: a repeatable
 //   startup failure would boot-loop; the backend startup path already surfaces
 //   the actionable error).
-// - `console-message` at error level → log renderer console errors, same as the
-//   primary window did.
+//
+// Console-message capture is deliberately NOT here: renderer-log.ts owns it
+// (per-window labels, boundary-report formatting). Keeping one owner avoids
+// double-logging on windows that have both, and keeps third-party pages
+// (OAuth/portal windows, which install this helper for process events) from
+// spilling their console output — potentially tokens/PII — into desktop.log.
 
 export interface RendererLifecycleDetails {
   reason?: string
@@ -33,7 +37,7 @@ export interface RendererLifecycleDetails {
 
 export interface RendererLifecycleEvent {
   kind: string
-  event: 'render-process-gone' | 'unresponsive' | 'did-fail-load' | 'console-message'
+  event: 'render-process-gone' | 'unresponsive' | 'did-fail-load'
   reason?: string
   exitCode?: number | string | undefined
   isDestroyed?: boolean
@@ -43,12 +47,6 @@ export interface RendererLifecycleEvent {
   errorCode?: number | string | undefined
   /** did-fail-load: the URL that failed. */
   url?: string
-  /** console-message: renderer error text. */
-  message?: string
-  /** console-message: source URL of the console message. */
-  sourceUrl?: string
-  /** console-message: line number of the console message. */
-  lineNumber?: number | string | undefined
 }
 
 export interface ReloadPolicyDecision {
@@ -160,13 +158,6 @@ export function shouldReloadAfterRendererGone(details: {
 export function describeRendererLifecycleEvent(event: RendererLifecycleEvent): string {
   const kind = String(event.kind || '?')
 
-  if (event.event === 'console-message') {
-    const src = String(event.sourceUrl || '?')
-    const line = event.lineNumber === undefined ? '?' : String(event.lineNumber)
-
-    return `[renderer:${kind} console] ${String(event.message || '(empty)')} (${src}:${line})`
-  }
-
   if (event.event === 'unresponsive') {
     return `[renderer:${kind}] webContents became unresponsive`
   }
@@ -183,35 +174,6 @@ export function describeRendererLifecycleEvent(event: RendererLifecycleEvent): s
   const teardown = event.isDestroyed && reason === 'killed' ? ' (expected teardown)' : ''
 
   return `[renderer:${kind}] render-process-gone reason=${reason} exitCode=${exitCode}${teardown}`
-}
-
-// Electron ≥36 passes (event, messageDetails); older/deprecated shape is
-// (event, level, message, line, sourceId). Handle both, matching the primary
-// window's previous console-message handling.
-export function consoleMessageLog(args: readonly unknown[]): {
-  level: number
-  message: string
-  sourceUrl: string
-  lineNumber: number | string | undefined
-} {
-  const details = args[1] && typeof args[1] === 'object' ? (args[1] as Record<string, unknown>) : null
-  const level = details ? Number(details.level ?? 0) : Number(args[1] ?? 0)
-  const modernLine = details?.lineNumber
-
-  return {
-    level,
-    message: details ? String(details.message ?? '') : String(args[2] ?? ''),
-    sourceUrl: details ? String(details.sourceUrl ?? '') : String(args[4] ?? ''),
-    lineNumber: details
-      ? typeof modernLine === 'number'
-        ? modernLine
-        : modernLine === undefined
-          ? undefined
-          : String(modernLine)
-      : typeof args[3] === 'number'
-        ? args[3]
-        : String(args[3] ?? '')
-  }
 }
 
 /**
@@ -302,28 +264,9 @@ export function installWindowRendererLifecycle(
     }
   }
 
-  const onConsoleMessage = (...args: unknown[]) => {
-    const parsed = consoleMessageLog(args)
-
-    if (parsed.level !== 3) {
-      return
-    }
-
-    log(
-      describeRendererLifecycleEvent({
-        kind,
-        event: 'console-message',
-        message: parsed.message,
-        sourceUrl: parsed.sourceUrl,
-        lineNumber: parsed.lineNumber
-      })
-    )
-  }
-
   contents.on('render-process-gone', onRendererGone)
   contents.on('unresponsive', onUnresponsive)
   contents.on('did-fail-load', onDidFailLoad)
-  contents.on('console-message', onConsoleMessage)
 
   let disposed = false
 
@@ -338,7 +281,6 @@ export function installWindowRendererLifecycle(
       contents.removeListener('render-process-gone', onRendererGone)
       contents.removeListener('unresponsive', onUnresponsive)
       contents.removeListener('did-fail-load', onDidFailLoad)
-      contents.removeListener('console-message', onConsoleMessage)
     }
   }
 }

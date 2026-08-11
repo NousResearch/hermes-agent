@@ -2832,6 +2832,7 @@ def terminal_tool(
         # Force run after user confirmation
         # Note: force parameter is internal only, not exposed to model API
     """
+    config = None
     try:
         if not isinstance(command, str):
             logger.warning(
@@ -3806,7 +3807,17 @@ def terminal_tool(
         #   warn (default) — return a structured degraded result the model
         #                    can act on (reason + retry hint, no traceback).
         #   fail           — preserve the historical error+traceback result.
-        degraded_mode = _get_env_config().get("degraded_mode", "warn")
+        if config is not None:
+            degraded_mode = config.get("degraded_mode", "warn")
+        else:
+            try:
+                degraded_mode = str(
+                    _terminal_env_snapshot().get("TERMINAL_DEGRADED_MODE", "warn")
+                ).strip().lower()
+            except Exception:
+                degraded_mode = str(
+                    os.getenv("TERMINAL_DEGRADED_MODE", "warn")
+                ).strip().lower()
         if degraded_mode == "fail":
             import traceback
             tb_str = traceback.format_exc()

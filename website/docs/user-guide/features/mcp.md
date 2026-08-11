@@ -789,6 +789,23 @@ mcp_servers:
 
 The 5-minute default timeout mirrors the gateway approval default so users on async surfaces have time to respond before the server gives up. Per-server metrics (requests, accepted, declined, errors) are tracked on the handler.
 
+When Hermes uses the **Codex app-server runtime**, MCP servers are migrated
+into Codex and their confirmation requests return through the Codex bridge.
+Opt in each trusted server explicitly to route binary confirmations through
+the same Hermes approval surface:
+
+```yaml
+mcp_servers:
+  todoist:
+    url: "https://ai.todoist.net/mcp"
+    elicitation:
+      approval: prompt
+```
+
+The Codex bridge stays fail-closed when this setting is absent or invalid.
+It prompts only for binary confirmations (form mode with no requested input);
+URL elicitations and forms that require the user to supply values are declined.
+
 ## Running Hermes as an MCP server
 
 In addition to connecting **to** MCP servers, Hermes can also **be** an MCP server. This lets other MCP-capable agents (Claude Code, Cursor, Codex, or any MCP client) use Hermes's messaging capabilities — list conversations, read message history, and send messages across all your connected platforms.

@@ -4468,6 +4468,7 @@ def request_elicitation_consent(
     *,
     timeout_seconds: int | None = None,
     surface: str = "mcp-elicitation",
+    approval_callback=None,
 ) -> str:
     """Route an MCP elicitation request to whichever approval surface owns
     the active session and return a normalized result.
@@ -4475,7 +4476,9 @@ def request_elicitation_consent(
     Gateway sessions (Telegram, Slack, Discord, etc.) go through
     ``_await_gateway_decision`` so the notify_cb posts a message and the
     agent thread blocks until the user responds via the platform UI.
-    CLI/TUI sessions go through ``prompt_dangerous_approval``.
+    CLI/TUI sessions go through ``prompt_dangerous_approval``. When supplied,
+    ``approval_callback`` preserves the active CLI/TUI's registered input
+    handler instead of falling back to direct prompt_toolkit input.
 
     Always fails closed: missing notify_cb in a gateway session, timeouts,
     and exceptions all map to ``"decline"`` so a server treats them as
@@ -4533,6 +4536,7 @@ def request_elicitation_consent(
             description,
             timeout_seconds=timeout_seconds,
             allow_permanent=False,
+            approval_callback=approval_callback,
         )
     except Exception as exc:
         logger.error(

@@ -1156,6 +1156,8 @@ platform_toolsets:
 #     Lower it below the server's session TTL for servers that expire idle
 #     sessions quickly (e.g. Unreal Engine editor MCP, ~15s), otherwise idle
 #     tool calls hit an expired session and pay a slow reconnect. Floored at 5s.
+#   elicitation.approval: set to "prompt" to opt this server into Hermes
+#     approval prompts when using the Codex app-server runtime (default: deny)
 #
 # mcp_servers:
 #   time:
@@ -1166,6 +1168,10 @@ platform_toolsets:
 #     args: ["-y", "@modelcontextprotocol/server-filesystem", "/home/user"]
 #   notion:
 #     url: https://mcp.notion.com/mcp
+#   todoist:
+#     url: https://ai.todoist.net/mcp
+#     elicitation:
+#       approval: prompt
 #   github:
 #     command: npx
 #     args: ["-y", "@modelcontextprotocol/server-github"]

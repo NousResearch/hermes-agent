@@ -11718,7 +11718,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             claim = claim_event_delivery(event, consumer)
             if claim is None:
                 continue
-            display_kind, display_metadata = internal_event_persistence(event)
+            display_kind, display_metadata = internal_event_persistence(
+                event,
+                trusted_internal=True,
+            )
             if display_kind is not None and display_metadata is not None:
                 self._pending_input.put(
                     _InternalEventInput(

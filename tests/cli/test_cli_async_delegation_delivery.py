@@ -2,7 +2,7 @@
 
 import queue
 
-from cli import HermesCLI
+from cli import HermesCLI, _InternalEventInput
 
 
 def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):
@@ -42,7 +42,11 @@ def test_cli_completion_drain_uses_visible_session_identity(monkeypatch):
     cli._drain_process_notifications("cli-idle")
 
     assert calls == [("visible-session", True)]
-    assert cli._pending_input.get_nowait() == "completion payload"
+    queued = cli._pending_input.get_nowait()
+    assert isinstance(queued, _InternalEventInput)
+    assert queued.text == "completion payload"
+    assert queued.display_kind == "internal_event"
+    assert queued.display_metadata["user_originated"] is False
     assert claimed == [(event, "cli-idle")]
     assert completed == [(event, "claim-token")]
 

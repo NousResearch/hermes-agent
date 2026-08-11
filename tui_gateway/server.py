@@ -9434,20 +9434,22 @@ def _run_notification_prompt(
     text: str,
 ) -> None:
     """Submit one notification turn with validated durable projection metadata."""
-    if event.get("type") == "async_delegation":
-        from tools.async_delegation import internal_event_persistence
+    from tools.async_delegation import internal_event_persistence
 
-        display_kind, display_metadata = internal_event_persistence(event)
-        if display_kind is not None and display_metadata is not None:
-            _run_prompt_submit(
-                rid,
-                sid,
-                session,
-                text,
-                display_kind=display_kind,
-                display_metadata=display_metadata,
-            )
-            return
+    display_kind, display_metadata = internal_event_persistence(
+        event,
+        trusted_internal=True,
+    )
+    if display_kind is not None and display_metadata is not None:
+        _run_prompt_submit(
+            rid,
+            sid,
+            session,
+            text,
+            display_kind=display_kind,
+            display_metadata=display_metadata,
+        )
+        return
     _run_prompt_submit(rid, sid, session, text)
 
 
@@ -9519,7 +9521,17 @@ def _notification_poller_loop(
                     rid = f"__notif__{int(time.time() * 1000)}"
                     try:
                         _emit("message.start", sid)
-                        _run_prompt_submit(rid, sid, session, "\n".join(_batch))
+                        _run_notification_prompt(
+                            rid,
+                            sid,
+                            session,
+                            {
+                                "type": "kanban_notification",
+                                "session_id": sid,
+                                "items": list(_batch),
+                            },
+                            "\n".join(_batch),
+                        )
                     except Exception as exc:
                         print(
                             f"[tui_gateway] kanban notification dispatch failed: "

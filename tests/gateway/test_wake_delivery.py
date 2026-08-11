@@ -77,6 +77,8 @@ def test_deliver_wake_non_push_self_posts_raw_session_id(monkeypatch):
 
     async def handler(request):
         seen["session_id"] = request.headers.get("X-Hermes-Session-Id")
+        seen["internal"] = request.headers.get("X-Hermes-Internal-Event")
+        seen["event_id"] = request.headers.get("X-Hermes-Internal-Event-Id")
         seen["auth"] = request.headers.get("Authorization")
         seen["body"] = await request.json()
         return web.json_response({"choices": [{"message": {"content": "ok"}}]})
@@ -91,6 +93,8 @@ def test_deliver_wake_non_push_self_posts_raw_session_id(monkeypatch):
 
     asyncio.run(run())
     assert seen["session_id"] == "raw-sid-42"
+    assert seen["internal"] == "1"
+    assert seen["event_id"].startswith("internal_wake:")
     assert seen["auth"] == "Bearer sekrit"
     assert seen["body"]["stream"] is False
     assert seen["body"]["messages"] == [
@@ -123,5 +127,38 @@ def test_deliver_wake_retries_429_then_succeeds(monkeypatch):
 
     asyncio.run(run())
     assert calls["n"] == 2
+
+
+def test_api_server_internal_projection_requires_authenticated_internal_header():
+    from gateway.platforms.api_server import _trusted_internal_request_projection
+
+    assert _trusted_internal_request_projection(
+        {},
+        api_key_configured=True,
+        session_id="sid",
+        user_message="wake",
+    ) == (None, None)
+
+    headers = {
+        "X-Hermes-Internal-Event": "1",
+        "X-Hermes-Internal-Event-Id": "internal_wake:stable",
+    }
+    with pytest.raises(PermissionError):
+        _trusted_internal_request_projection(
+            headers,
+            api_key_configured=False,
+            session_id="sid",
+            user_message="wake",
+        )
+
+    display_kind, metadata = _trusted_internal_request_projection(
+        headers,
+        api_key_configured=True,
+        session_id="sid",
+        user_message="wake",
+    )
+    assert display_kind == "internal_event"
+    assert metadata["event_id"] == "internal_wake:stable"
+    assert metadata["user_originated"] is False
 
 

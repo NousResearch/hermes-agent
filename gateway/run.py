@@ -18118,8 +18118,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             try:
                 from tools.async_delegation import internal_event_persistence
 
+                internal_metadata = dict(
+                    getattr(event, "metadata", None) or {}
+                )
+                internal_metadata.setdefault("type", "gateway_internal")
+                internal_metadata.setdefault(
+                    "source",
+                    source.platform.value if source.platform else "gateway",
+                )
+                internal_metadata.setdefault(
+                    "message_id",
+                    str(getattr(event, "message_id", "") or ""),
+                )
+                internal_metadata.setdefault(
+                    "text",
+                    str(getattr(event, "text", "") or ""),
+                )
                 internal_display_kind, internal_display_metadata = (
-                    internal_event_persistence(getattr(event, "metadata", None))
+                    internal_event_persistence(
+                        internal_metadata,
+                        trusted_internal=True,
+                    )
                 )
                 if internal_display_kind is not None:
                     persist_user_display_kind = internal_display_kind

@@ -1588,13 +1588,11 @@ class TestWebServerEndpoints:
         so every custom provider silently landed in the default profile and
         never appeared for the profile the user was actually configuring.
         """
-        from hermes_constants import (
-            set_hermes_home_override,
-            reset_hermes_home_override,
-        )
         from hermes_cli import profiles as profiles_mod
-        from hermes_cli.config import load_config
+        from hermes_cli.config import custom_endpoint_key_env
+        from hermes_constants import get_hermes_home
 
+        default_home = get_hermes_home()
         worker_home = profiles_mod.get_profile_dir("worker")
         worker_home.mkdir(parents=True)
 
@@ -1605,19 +1603,25 @@ class TestWebServerEndpoints:
                 "name": "Worker Proxy",
                 "base_url": "https://llm.worker.example/v1",
                 "model": "worker/model-1",
+                "api_key": "sk-worker-secret",
             },
         ).status_code == 200
 
-        # The default (dashboard) profile must NOT have received the endpoint.
-        assert "worker-proxy" not in (load_config().get("providers") or {})
+        # Assert against the files on disk rather than load_config()/
+        # get_env_value(): save_env_value also mirrors the key into the shared
+        # os.environ, so a reader-based check can't tell WHICH profile's store
+        # actually received the write.
+        env_var = custom_endpoint_key_env("worker-proxy")
 
-        # The worker profile's own config.yaml must carry it.
-        token = set_hermes_home_override(str(worker_home))
-        try:
-            worker_cfg = load_config()
-        finally:
-            reset_hermes_home_override(token)
-        assert "worker-proxy" in (worker_cfg.get("providers") or {})
+        worker_cfg = (worker_home / "config.yaml").read_text()
+        assert "worker-proxy" in worker_cfg
+        assert env_var in worker_cfg
+        assert "sk-worker-secret" in (worker_home / ".env").read_text()
+
+        for leaked in (default_home / "config.yaml", default_home / ".env"):
+            text = leaked.read_text() if leaked.exists() else ""
+            assert "worker-proxy" not in text, f"endpoint leaked into default profile ({leaked.name})"
+            assert "sk-worker-secret" not in text, f"credential leaked into default profile ({leaked.name})"
 
         # And it comes back through the scoped GET, not the unscoped one.
         scoped = self.client.get("/api/providers/custom-endpoints?profile=worker").json()

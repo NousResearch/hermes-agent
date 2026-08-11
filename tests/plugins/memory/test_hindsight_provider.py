@@ -260,6 +260,8 @@ class TestConfig:
         assert provider._retain_every_n_turns == 1
         assert provider._recall_max_tokens == 4096
         assert provider._recall_max_input_chars == 800
+        assert provider._recall_query_strategy == "prefix"
+        assert provider._recall_query_head_chars == 200
         assert provider._tags is None
         assert provider._observation_scopes is None
         assert provider._recall_tags is None
@@ -298,6 +300,8 @@ class TestConfig:
             recall_types=["world", "experience"],
             recall_prompt_preamble="Custom preamble:",
             recall_max_input_chars=500,
+            recall_query_strategy="head_tail",
+            recall_query_head_chars=125,
             bank_mission="Test agent mission",
         )
         assert p._tags == ["tag1", "tag2"]
@@ -316,6 +320,8 @@ class TestConfig:
         assert p._recall_types == ["world", "experience"]
         assert p._recall_prompt_preamble == "Custom preamble:"
         assert p._recall_max_input_chars == 500
+        assert p._recall_query_strategy == "head_tail"
+        assert p._recall_query_head_chars == 125
         assert p._bank_mission == "Test agent mission"
 
     def test_retain_source_defaults_empty(self, provider):
@@ -552,6 +558,133 @@ class TestPrefetch:
         p.queue_prefetch("test")
         # Should not start a thread
         assert p._prefetch_thread is None
+
+    @pytest.mark.parametrize("strategy", ["prefix", "head_tail"])
+    def test_recall_query_at_or_below_cap_is_unchanged(
+        self, provider_with_config, strategy
+    ):
+        p = provider_with_config(
+            recall_max_input_chars=8,
+            recall_query_strategy=strategy,
+            recall_query_head_chars=3,
+        )
+
+        assert p._compose_recall_query("12345678") == "12345678"
+        assert p._compose_recall_query("short") == "short"
+
+    def test_prefix_strategy_preserves_legacy_truncation(self, provider_with_config):
+        p = provider_with_config(
+            recall_max_input_chars=8,
+            recall_query_strategy="prefix",
+            recall_query_head_chars=3,
+        )
+
+        assert p._compose_recall_query("abcdefghijk") == "abcdefgh"
+
+    def test_head_tail_preserves_start_and_trailing_intent(self, provider_with_config):
+        p = provider_with_config(
+            recall_max_input_chars=80,
+            recall_query_strategy="head_tail",
+            recall_query_head_chars=20,
+        )
+        query = (
+            "Project Zephyr context"
+            + (" unrelated-background" * 30)
+            + " What is Project Zephyr's rollback code?"
+        )
+
+        composed = p._compose_recall_query(query)
+
+        assert composed.startswith(query[:20])
+        assert composed.endswith("What is Project Zephyr's rollback code?")
+        assert len(composed) == 80
+
+    @pytest.mark.parametrize(
+        ("cap", "expected"),
+        [
+            (1, "f"),
+            (2, "af"),
+            (3, "abf"),
+        ],
+    )
+    def test_head_tail_handles_tiny_caps(
+        self, provider_with_config, cap, expected
+    ):
+        p = provider_with_config(
+            recall_max_input_chars=cap,
+            recall_query_strategy="head_tail",
+            recall_query_head_chars=200,
+        )
+
+        assert p._compose_recall_query("abcdef") == expected
+
+    def test_head_tail_counts_cjk_emoji_and_code_as_python_characters(
+        self, provider_with_config
+    ):
+        p = provider_with_config(
+            recall_max_input_chars=60,
+            recall_query_strategy="head_tail",
+            recall_query_head_chars=18,
+        )
+        query = (
+            "背景😀\n```python\n"
+            + ("print('noise')\n" * 20)
+            + "```\n问题：项目 Zephyr 的回滚码是什么？🔐"
+        )
+
+        composed = p._compose_recall_query(query)
+
+        assert composed.startswith(query[:18])
+        assert composed.endswith("问题：项目 Zephyr 的回滚码是什么？🔐")
+        assert len(composed) == 60
+
+    def test_head_tail_covers_head_and_tail_topics_but_not_middle_noise(
+        self, provider_with_config
+    ):
+        p = provider_with_config(
+            recall_max_input_chars=72,
+            recall_query_strategy="head_tail",
+            recall_query_head_chars=30,
+        )
+        query = (
+            "Topic A: which deploy failed? "
+            + ("head filler " * 20)
+            + "MIDDLE_ONLY_QUESTION "
+            + ("tail filler " * 20)
+            + "Topic B: what rollback code should I use?"
+        )
+
+        composed = p._compose_recall_query(query)
+
+        assert "Topic A: which deploy failed?" in composed
+        assert "Topic B: what rollback code should I use?" in composed
+        assert "MIDDLE_ONLY_QUESTION" not in composed
+        assert len(composed) <= 72
+
+    def test_memory_manager_production_caller_sends_composed_query(
+        self, provider_with_config
+    ):
+        from agent.memory_manager import MemoryManager
+
+        p = provider_with_config(
+            recall_max_input_chars=64,
+            recall_query_strategy="head_tail",
+            recall_query_head_chars=16,
+            prefetch_waits_for_retain=False,
+        )
+        manager = MemoryManager()
+        manager.add_provider(p)
+        query = "Zephyr logs: " + ("x" * 200) + " Which rollback code is active?"
+
+        manager.queue_prefetch_all(query, session_id="test-session")
+        assert manager.flush_pending(timeout=5.0)
+        assert p._prefetch_thread is not None
+        p._prefetch_thread.join(timeout=5.0)
+
+        sent_query = p._client.arecall.call_args.kwargs["query"]
+        assert sent_query.startswith(query[:16])
+        assert sent_query.endswith("Which rollback code is active?")
+        assert len(sent_query) == 64
 
     def test_prefetch_waits_for_pending_retain_before_recall(self, provider):
         """The background prefetch must wait for queued retains to drain so the
@@ -1243,6 +1376,7 @@ class TestConfigSchema:
             "auto_recall", "auto_retain",
             "retain_every_n_turns", "retain_async", "retain_context",
             "recall_max_tokens", "recall_max_input_chars",
+            "recall_query_strategy", "recall_query_head_chars",
             "recall_prompt_preamble",
         }
         assert expected_keys.issubset(keys), f"Missing: {expected_keys - keys}"

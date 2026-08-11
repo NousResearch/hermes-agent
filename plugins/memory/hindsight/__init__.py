@@ -857,6 +857,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_types: list[str] = ["observation"]
         self._recall_prompt_preamble = ""
         self._recall_max_input_chars = 800
+        self._recall_query_strategy = "prefix"
+        self._recall_query_head_chars = 200
 
         # Bank
         self._bank_mission = ""
@@ -1203,6 +1205,8 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "retain_context", "description": "Context label for retained memories", "default": "conversation between Hermes Agent and the User"},
             {"key": "recall_max_tokens", "description": "Maximum tokens for recall results", "default": 4096},
             {"key": "recall_max_input_chars", "description": "Maximum input query length for auto-recall", "default": 800},
+            {"key": "recall_query_strategy", "description": "How long auto-recall queries are capped: 'prefix' preserves legacy prefix-only truncation; 'head_tail' keeps the configured prefix plus the trailing intent", "default": "prefix", "choices": ["prefix", "head_tail"]},
+            {"key": "recall_query_head_chars", "description": "Characters reserved for the start of a truncated head_tail auto-recall query; the remaining cap is taken from the end", "default": 200},
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
@@ -1722,7 +1726,20 @@ class HindsightMemoryProvider(MemoryProvider):
         # Companion retain indicator: "👁️ Hindsight — saving to memory…" emitted
         # when a turn is dispatched to the writer. Same off switch rationale.
         self._retain_indicator = bool(self._config.get("retain_indicator", True))
-        self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
+        self._recall_max_input_chars = max(
+            0, int(self._config.get("recall_max_input_chars", 800))
+        )
+        strategy = str(self._config.get("recall_query_strategy", "prefix")).strip().lower()
+        if strategy not in {"prefix", "head_tail"}:
+            logger.warning(
+                "Unknown Hindsight recall_query_strategy %r; using 'prefix'.",
+                strategy,
+            )
+            strategy = "prefix"
+        self._recall_query_strategy = strategy
+        self._recall_query_head_chars = max(
+            0, int(self._config.get("recall_query_head_chars", 200))
+        )
         self._retain_async = self._config.get("retain_async", True)
         self._prefetch_waits_for_retain = self._config.get("prefetch_waits_for_retain", True)
         self._prefetch_retain_drain_timeout = float(
@@ -1742,9 +1759,11 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
                          self._platform, self._user_id, self._bank_id)
         logger.debug("Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
-                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
+                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, "
+                     "recall_query_strategy=%s, recall_query_head_chars=%d, tags=%s, recall_tags=%s",
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
                      self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
+                     self._recall_query_strategy, self._recall_query_head_chars,
                      self._tags, self._recall_tags)
 
         # For local mode, start the embedded daemon in the background so it
@@ -1947,6 +1966,32 @@ class HindsightMemoryProvider(MemoryProvider):
             return None
         return RecallStatus(provider_label="Hindsight", count=self._last_recall_count, glyph=_HINDSIGHT_GLYPH)
 
+    def _compose_recall_query(self, query: str) -> str:
+        """Apply the configured deterministic auto-recall query cap."""
+        cap = self._recall_max_input_chars
+        original_len = len(query)
+        if not cap or original_len <= cap:
+            composed = query
+        elif self._recall_query_strategy == "head_tail":
+            if cap == 1:
+                composed = query[-1:]
+            else:
+                head_chars = min(self._recall_query_head_chars, cap - 1)
+                tail_chars = cap - head_chars
+                composed = query[:head_chars] + query[-tail_chars:]
+        else:
+            composed = query[:cap]
+
+        logger.debug(
+            "Prefetch query composed: strategy=%s, original_query_len=%d, "
+            "sent_query_len=%d, truncated=%s",
+            self._recall_query_strategy,
+            original_len,
+            len(composed),
+            len(composed) < original_len,
+        )
+        return composed
+
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         # In synchronous mode prefetch() does a live recall each turn, so
         # there's nothing to prime in the background.
@@ -1954,6 +1999,7 @@ class HindsightMemoryProvider(MemoryProvider):
             return
         if self._recall_disabled():
             return
+        query = self._compose_recall_query(query)
 
         def _run():
             # Ensure the just-completed turn's retain is recall-visible on the

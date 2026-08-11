@@ -82,6 +82,12 @@ CASES = {
     # otherwise shows up as a blocking "uv.lock out of sync" red X.
     "docs → no uv_lock": (["website/docs/user-guide/profiles.md"], _lanes(site=True)),
     "frontend → no uv_lock": (["apps/desktop/src/store/profile.ts"], _lanes(frontend=True)),
+    # The published CIMD document is asserted about by the Python suite, so a
+    # lone edit there must not skip the lane that would catch a bad edit.
+    "cimd document → python + site": (
+        ["website/static/oauth/client-metadata.json"],
+        _lanes(python=True, site=True),
+    ),
     # SKILL.md reads like docs, but the skill-doc tests read skills/, so a
     # skill edit must still run Python.
     "skill md → python + site": (["skills/github/SKILL.md"], _lanes(python=True, site=True)),

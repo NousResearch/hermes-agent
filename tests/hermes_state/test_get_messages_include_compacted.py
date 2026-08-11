@@ -205,3 +205,47 @@ class TestDisplayDedupe:
         page = db.get_messages(sid, include_compacted=True, limit=2, offset=2)
         assert [m["id"] for m in page] == all_ids[2:]
         assert len(page) == 2
+
+    def test_distinct_tool_calls_with_same_content_are_not_merged(self, db):
+        """Two real tool messages that happen to share role/content/timestamp
+        must stay separate: the dedupe key includes the tool fields, so only
+        genuine compaction copies (which copy those fields verbatim) collapse.
+        """
+        sid = "s1"
+        db.create_session(sid, source="cli")
+
+        def _seed_tool_rows(conn):
+            ts = 1700000000.0
+            for cid in ("call-1", "call-2"):
+                conn.execute(
+                    "INSERT INTO messages (session_id, role, content, tool_call_id,"
+                    " tool_name, timestamp, active, compacted)"
+                    " VALUES (?, ?, ?, ?, ?, ?, 1, 0)",
+                    (sid, "tool", "identical result", cid, "search", ts),
+                )
+
+        db._execute_write(_seed_tool_rows)
+        msgs = db.get_messages(sid, include_compacted=True)
+        assert len(msgs) == 2
+        assert {m["tool_call_id"] for m in msgs} == {"call-1", "call-2"}
+
+    def test_compaction_copies_of_tool_messages_still_collapse(self, db):
+        """Tool rows copied by a compaction epoch (identical tool fields) are
+        deduped like any other message, not split by the widened key."""
+        sid = "s1"
+        db.create_session(sid, source="cli")
+
+        def _seed_tool_row(conn):
+            conn.execute(
+                "INSERT INTO messages (session_id, role, content, tool_call_id,"
+                " tool_name, timestamp, active, compacted)"
+                " VALUES (?, ?, ?, ?, ?, ?, 1, 0)",
+                (sid, "tool", "result", "call-1", "search", 1700000000.0),
+            )
+
+        db._execute_write(_seed_tool_row)
+        orig = _row_ids(db, sid)
+        self._copy_tail_as_new_generation(db, sid, orig)
+        msgs = db.get_messages(sid, include_compacted=True)
+        assert len(msgs) == 1
+        assert msgs[0]["tool_call_id"] == "call-1"

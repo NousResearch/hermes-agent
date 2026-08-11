@@ -9219,7 +9219,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 all_rows = cursor.fetchall()
             seen: dict = {}
             for row in all_rows:
-                key = (row["role"], row["content"], row["timestamp"])
+                # Tool fields participate in the dedupe key: compaction copies
+                # them verbatim, so identical tool messages across generations
+                # still collapse, while distinct tool calls that happen to
+                # share role/content/timestamp are never merged.
+                key = (
+                    row["role"],
+                    row["content"],
+                    row["timestamp"],
+                    row["tool_call_id"],
+                    row["tool_calls"],
+                    row["tool_name"],
+                )
                 cur = seen.get(key)
                 if cur is None or (row["active"], row["id"]) > (cur["active"], cur["id"]):
                     seen[key] = row

@@ -1945,6 +1945,45 @@ class TestWebServerEndpoints:
         contents = [m["content"] for m in resp.json()["messages"]]
         assert contents == ["old q", "old a", "summary", "live q", "live a"]
 
+    def test_get_session_messages_latest_page_with_compacted_rows(self):
+        """The desktop's real read path (getLatestSessionMessages: limit +
+        order=latest + include_compacted=true) pages back from the newest
+        message and returns the window in chronological order.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="compacted-latest", source="cli")
+            db.append_messages_batch(
+                "compacted-latest",
+                [
+                    {"role": "user", "content": "old q"},
+                    {"role": "assistant", "content": "old a"},
+                ],
+            )
+            db.archive_and_compact(
+                "compacted-latest",
+                [
+                    {"role": "assistant", "content": "summary"},
+                    {"role": "user", "content": "live q"},
+                    {"role": "assistant", "content": "live a"},
+                ],
+            )
+        finally:
+            db.close()
+
+        # Display history: old q, old a, summary, live q, live a (5 rows).
+        resp = self.client.get(
+            "/api/sessions/compacted-latest/messages"
+            "?include_compacted=true&limit=2&offset=1&order=latest"
+        )
+        assert resp.status_code == 200
+        contents = [m["content"] for m in resp.json()["messages"]]
+        # Newest-first window of 2, skipping the newest (live a):
+        # summary, live q — chronological order, matching the non-compacted path.
+        assert contents == ["summary", "live q"]
+
     def test_get_session_messages_omitted_limit_defaults_to_500(self):
         """The dashboard must never load an entire unbounded transcript."""
         from hermes_state import SessionDB

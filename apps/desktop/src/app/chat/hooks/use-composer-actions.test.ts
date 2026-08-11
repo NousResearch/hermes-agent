@@ -1,5 +1,7 @@
+import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { ComposerAttachment } from '@/store/composer'
 import { $connection } from '@/store/session'
 
 import {
@@ -7,7 +9,8 @@ import {
   type DroppedFile,
   extractDroppedFiles,
   HERMES_PATHS_MIME,
-  partitionDroppedFiles
+  partitionDroppedFiles,
+  useComposerActions
 } from './use-composer-actions'
 
 // A Finder/Explorer drop carries a native File handle; an in-app drag (project
@@ -242,5 +245,76 @@ describe('attachmentPreviewDataUrl', () => {
     $connection.set({ mode: 'remote' } as never)
 
     await expect(attachmentPreviewDataUrl('/home/gateway/shot.png')).resolves.toBe(REMOTE_PREVIEW)
+  })
+})
+
+describe('useComposerActions native image drops', () => {
+  afterEach(() => {
+    Reflect.deleteProperty(window, 'hermesDesktop')
+    vi.unstubAllGlobals()
+    vi.clearAllMocks()
+  })
+
+  it('copies dropped screenshot bytes before trusting a transient macOS path', async () => {
+    const transientPath =
+      '/var/folders/x7/example/T/TemporaryItems/NSIRD_screencaptureui_4roSuW/Screen Shot 2026-08-11.png'
+
+    const durablePath = '/Users/test/Library/Application Support/Hermes/composer-images/composer_saved.png'
+    const previewUrl = 'data:image/png;base64,c2NyZWVuc2hvdA=='
+
+    const screenshot = new File([new Uint8Array([1, 2, 3])], 'Screen Shot 2026-08-11.png', {
+      type: 'image/png'
+    })
+
+    const saveImageBuffer = vi.fn(async () => durablePath)
+
+    const readFileDataUrl = vi.fn(async (path: string) => {
+      if (path === transientPath) {
+        throw new Error('temporary screenshot path disappeared')
+      }
+
+      return previewUrl
+    })
+
+    const add = vi.fn<(attachment: ComposerAttachment) => void>()
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: {
+        readFileDataUrl,
+        saveImageBuffer
+      }
+    })
+
+    const { result } = renderHook(() =>
+      useComposerActions({
+        activeSessionId: null,
+        currentCwd: '/Users/test/project',
+        requestGateway: vi.fn(),
+        scope: {
+          add,
+          remove: vi.fn(() => null),
+          target: 'test-composer'
+        }
+      })
+    )
+
+    let attached = false
+
+    await act(async () => {
+      attached = await result.current.attachDroppedItems([{ file: screenshot, path: transientPath }])
+    })
+
+    expect(attached).toBe(true)
+    expect(saveImageBuffer).toHaveBeenCalledOnce()
+    expect(readFileDataUrl).toHaveBeenCalledWith(durablePath)
+    expect(readFileDataUrl).not.toHaveBeenCalledWith(transientPath)
+    expect(add).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'image',
+        path: durablePath,
+        previewUrl
+      })
+    )
   })
 })

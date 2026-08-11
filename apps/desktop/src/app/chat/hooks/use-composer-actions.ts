@@ -644,7 +644,14 @@ export function useComposerActions({
         const isImage = file.type.startsWith('image/') || isImagePath(file.name) || (filePath && isImagePath(filePath))
 
         if (isImage) {
-          if ((filePath && (await attachImagePath(filePath))) || (await attachImageBlob(file))) {
+          // Finder may expose a dropped screenshot through a short-lived
+          // TemporaryItems/NSIRD_screencaptureui path even when the visible
+          // file has already landed on Desktop. Reading that path for the
+          // preview can succeed, then image.attach fails after macOS removes
+          // it before submit. Persist the File bytes into Desktop's durable
+          // composer-image cache first; keep the native path as a compatibility
+          // fallback for older shells that cannot save the buffer.
+          if ((await attachImageBlob(file)) || (filePath && (await attachImagePath(filePath)))) {
             attached = true
 
             continue

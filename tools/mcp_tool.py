@@ -5476,53 +5476,6 @@ def _interrupted_call_result() -> str:
 # Config loading
 # ---------------------------------------------------------------------------
 
-def _load_mcp_server_env(config: dict) -> Dict[str, str]:
-    """Load one MCP server's optional env file into an isolated mapping."""
-    from pathlib import Path
-
-    raw_path = config.get("env_file")
-    if not isinstance(raw_path, str) or not raw_path.strip():
-        return {}
-
-    interpolated_path = _interpolate_env_vars(raw_path.strip())
-    if not isinstance(interpolated_path, str):
-        return {}
-
-    env_path = os.path.expanduser(interpolated_path)
-    if not os.path.isabs(env_path):
-        terminal_cwd = (os.environ.get("TERMINAL_CWD") or "").strip()
-        if not (os.path.isabs(terminal_cwd) and os.path.isdir(terminal_cwd)):
-            terminal_cwd = os.getcwd()
-        env_path = os.path.abspath(os.path.join(terminal_cwd, env_path))
-
-    env_path_obj = Path(env_path)
-    if not env_path_obj.is_file():
-        logger.warning(
-            "MCP env_file does not exist; falling back to profile/process secrets"
-        )
-        return {}
-    if not os.access(env_path_obj, os.R_OK):
-        logger.warning(
-            "MCP env_file is not readable; falling back to profile/process secrets"
-        )
-        return {}
-
-    try:
-        from agent.secret_scope import load_env_file
-
-        return load_env_file(env_path_obj)
-    except Exception as exc:
-        logger.warning("Failed to load MCP env file: %s", exc)
-        return {}
-
-
-def _resolve_mcp_server_config(config: dict) -> dict:
-    """Resolve one server config using its isolated env-file overlay."""
-    server_env = _load_mcp_server_env(config)
-    resolved = _interpolate_env_vars(config, server_env)
-    return resolved if isinstance(resolved, dict) else config
-
-
 def _interpolate_env_vars(value, env_overrides: Optional[Dict[str, str]] = None):
     """Recursively resolve ``${VAR}`` placeholders.
 

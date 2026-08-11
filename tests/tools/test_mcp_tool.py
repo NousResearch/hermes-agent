@@ -3153,7 +3153,8 @@ class TestRedirectHeaderStripper:
         assert next_request.headers["x-tenant"] == "t"
 
 
-def test_missing_server_env_file_warns_and_falls_back(
+class TestLoadMCPConfigEnvFile:
+    def test_missing_server_env_file_warns_and_falls_back(
         self, tmp_path, monkeypatch, caplog
     ):
         """A missing file is visible to operators but does not disable the server."""
@@ -3182,7 +3183,7 @@ def test_missing_server_env_file_warns_and_falls_back(
         assert "process-token" not in caplog.text
 
 
-def test_relative_server_env_file_uses_terminal_cwd(self, tmp_path, monkeypatch):
+    def test_relative_server_env_file_uses_terminal_cwd(self, tmp_path, monkeypatch):
         """Relative env files resolve from the active terminal working directory."""
         gateway_cwd = tmp_path / "gateway"
         project_cwd = tmp_path / "project"
@@ -3216,7 +3217,7 @@ def test_relative_server_env_file_uses_terminal_cwd(self, tmp_path, monkeypatch)
         assert os.environ["MCP_TEST_TOKEN"] == "process-token"
 
 
-def test_server_env_file_is_isolated_and_overrides_profile_scope(
+    def test_server_env_file_is_isolated_and_overrides_profile_scope(
         self, tmp_path, monkeypatch
     ):
         """A server env file wins locally without leaking into sibling servers."""
@@ -3255,7 +3256,7 @@ def test_server_env_file_is_isolated_and_overrides_profile_scope(
         assert os.environ["MCP_TEST_TOKEN"] == "process-token"
 
 
-def test_unreadable_server_env_file_warns_without_leaking_secret(
+    def test_unreadable_server_env_file_warns_without_leaking_secret(
         self, tmp_path, monkeypatch, caplog
     ):
         """Unreadable files fall back without logging their secret contents."""
@@ -3287,7 +3288,7 @@ def test_unreadable_server_env_file_warns_without_leaking_secret(
         assert "process-token" not in caplog.text
 
 
-def test_invalid_server_entry_does_not_drop_healthy_sibling(self, caplog):
+    def test_invalid_server_entry_does_not_drop_healthy_sibling(self, caplog):
         servers = {
             "broken": "not-a-server-config",
             "healthy": {"url": "https://mcp.example.com/mcp"},

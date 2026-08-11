@@ -3867,7 +3867,8 @@ def _for_each_systemd_gateway_unit(
     process_unit,
     on_unit_timeout,
 ) -> None:
-    """Process each ``hermes-gateway*.service`` from ``systemctl list-units``.
+    """Process each ``hermes-gateway*.service``/``hermes-serve*.service`` unit
+    from ``systemctl list-units``.
 
     ``subprocess.TimeoutExpired`` raised by ``process_unit`` is isolated to
     that unit via ``on_unit_timeout`` so one wedged systemctl call cannot
@@ -3881,14 +3882,26 @@ def _for_each_systemd_gateway_unit(
         if not unit.endswith(".service"):
             continue
         # list-units is already pattern-filtered, but keep the name gate so a
-        # stray non-gateway line cannot enter the restart path.
-        if not unit.startswith("hermes-gateway"):
+        # stray non-gateway/serve line cannot enter the restart path.
+        if not (unit.startswith("hermes-gateway") or unit.startswith("hermes-serve")):
             continue
         svc_name = unit.removesuffix(".service")
         try:
             process_unit(svc_name)
         except subprocess.TimeoutExpired as exc:
             on_unit_timeout(svc_name, exc)
+
+def _service_unit_supports_graceful_sigusr1_restart(svc_name: str) -> bool:
+    """Whether *svc_name* wires SIGUSR1 to a graceful drain-then-restart.
+
+    Only ``hermes-gateway*`` units run ``gateway/run.py``, which installs the
+    SIGUSR1 handler. ``hermes-serve*`` units (#83438) don't, so sending them
+    SIGUSR1 would just invoke the default terminate action and burn the full
+    drain budget waiting for an exit that was never graceful — go straight to
+    the blunt ``systemctl restart`` path for those instead.
+    """
+    return svc_name.startswith("hermes-gateway")
+
 
 def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
     """Print an explicit incomplete-update warning for unrestarted units."""
@@ -3903,7 +3916,7 @@ def _warn_incomplete_gateway_fleet_restart(failed_units: list) -> None:
         seen.add(name)
         ordered.append(name)
     print()
-    print("⚠ Update incomplete — some gateway units were not restarted:")
+    print("⚠ Update incomplete — some units were not restarted:")
     for name in ordered:
         print(f"    - {name}")
     print("  Skipped units may still be running pre-update code (mixed")
@@ -5857,7 +5870,8 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 _pre_restart_gateway_pids = None
 
             # --- Systemd services (Linux) ---
-            # Discover all hermes-gateway* units (default + profiles)
+            # Discover all hermes-gateway* units (default + profiles) plus
+            # hermes-serve* units (the Desktop app's backend, #83438).
             if supports_systemd_services():
                 try:
                     _ensure_user_systemd_env()
@@ -5874,6 +5888,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                             + [
                                 "list-units",
                                 "hermes-gateway*",
+                                "hermes-serve*",
                                 "--plain",
                                 "--no-legend",
                                 "--no-pager",
@@ -5920,27 +5935,33 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         # The gateway's SIGUSR1 handler calls
                         # request_restart(via_service=True) → drain →
                         # exit; systemd's Restart=always respawns the unit.
+                        # hermes-serve has no such handler (it isn't
+                        # gateway/run.py), so skip straight to the blunt
+                        # restart below rather than sending it an unhandled
+                        # signal and waiting out the drain budget for
+                        # nothing.
                         _main_pid = 0
-                        try:
-                            _show = subprocess.run(
-                                scope_cmd
-                                + [
-                                    "show",
-                                    svc_name,
-                                    "--property=MainPID",
-                                    "--value",
-                                ],
-                                capture_output=True,
-                                text=True, encoding="utf-8", errors="replace",
-                                timeout=5,
-                            )
-                            _main_pid = int((_show.stdout or "").strip() or 0)
-                        except (
-                            ValueError,
-                            subprocess.TimeoutExpired,
-                            FileNotFoundError,
-                        ):
-                            _main_pid = 0
+                        if _service_unit_supports_graceful_sigusr1_restart(svc_name):
+                            try:
+                                _show = subprocess.run(
+                                    scope_cmd
+                                    + [
+                                        "show",
+                                        svc_name,
+                                        "--property=MainPID",
+                                        "--value",
+                                    ],
+                                    capture_output=True,
+                                    text=True, encoding="utf-8", errors="replace",
+                                    timeout=5,
+                                )
+                                _main_pid = int((_show.stdout or "").strip() or 0)
+                            except (
+                                ValueError,
+                                subprocess.TimeoutExpired,
+                                FileNotFoundError,
+                            ):
+                                _main_pid = 0
 
                         _graceful_ok = False
                         if _main_pid > 0:

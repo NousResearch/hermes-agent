@@ -220,6 +220,7 @@ class TestFindAgentBrowser:
         with patch("shutil.which", side_effect=mock_which), \
              patch("os.path.isdir", return_value=False), \
              patch.object(Path, "exists", mock_path_exists), \
+             patch("tools.browser_tool.node_tool_runnable", return_value=True), \
              patch(
                  "tools.browser_tool._discover_homebrew_node_dirs",
                  return_value=[],
@@ -399,10 +400,11 @@ class TestRunBrowserCommandPathConstruction:
                 _run_browser_command("test-task", "navigate", ["https://example.com"])
 
         assert captured_cmd is not None
-        assert captured_cmd[:4] == [
-            "/opt/hermes/node/bin/npx", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC,
+        assert captured_cmd[:5] == [
+            "/opt/hermes/node/bin/npx", "--ignore-scripts", "--prefer-offline", "-y",
+            AGENT_BROWSER_NPX_SPEC,
         ]
-        assert captured_cmd[4:8] == ["--session", "test-session", "--json", "navigate"]
+        assert captured_cmd[5:9] == ["--session", "test-session", "--json", "navigate"]
 
     def test_subprocess_path_includes_termux_fallback_dirs(self, tmp_path):
         """Termux fallback dirs should survive browser PATH rebuilding."""
@@ -484,9 +486,95 @@ class TestRunChromeFallbackCommandNpxResolution:
 
         assert captured_cmds, "expected at least one Popen call for the chrome-fallback session"
         first_cmd = captured_cmds[0]
-        assert first_cmd[:4] == [
-            "/opt/hermes/node/bin/npx", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC,
+        assert first_cmd[:5] == [
+            "/opt/hermes/node/bin/npx", "--ignore-scripts", "--prefer-offline", "-y",
+            AGENT_BROWSER_NPX_SPEC,
         ]
-        assert first_cmd[4] == "--engine" and first_cmd[5] == "chrome"
-        assert first_cmd[6] == "--session" and first_cmd[7].startswith("h_cfb_")
-        assert first_cmd[8] == "--json"
+        assert first_cmd[5] == "--engine" and first_cmd[6] == "chrome"
+        assert first_cmd[7] == "--session" and first_cmd[8].startswith("h_cfb_")
+        assert first_cmd[9] == "--json"
+
+
+class TestResolveNpxBinPriority:
+    """The extended/managed search must be checked before a bare ambient
+    PATH lookup, so a broken/unexpected system npx can't shadow a healthy
+    Hermes-managed one — and each candidate must be validated (actually
+    runs) before being trusted, mirroring _find_agent_browser's own
+    validation discipline for agent-browser itself."""
+
+    def test_prefers_managed_extended_path_over_bare_path(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_merge_browser_path", lambda _p: "/hermes/node/bin")
+        monkeypatch.setattr(
+            bt.shutil, "which",
+            lambda cmd, path=None: (
+                "/hermes/node/bin/npx" if path == "/hermes/node/bin"
+                else "/usr/local/bin/npx"
+            ),
+        )
+        monkeypatch.setattr(bt, "node_tool_runnable", lambda p: True)
+
+        assert bt._resolve_npx_bin() == "/hermes/node/bin/npx"
+
+    def test_falls_back_to_bare_path_when_managed_candidate_is_broken(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_merge_browser_path", lambda _p: "/hermes/node/bin")
+        monkeypatch.setattr(
+            bt.shutil, "which",
+            lambda cmd, path=None: (
+                "/hermes/node/bin/npx" if path == "/hermes/node/bin"
+                else "/usr/local/bin/npx"
+            ),
+        )
+        monkeypatch.setattr(bt, "node_tool_runnable", lambda p: p == "/usr/local/bin/npx")
+
+        assert bt._resolve_npx_bin() == "/usr/local/bin/npx"
+
+    def test_returns_none_when_nothing_runnable(self, monkeypatch):
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_merge_browser_path", lambda _p: "")
+        monkeypatch.setattr(bt.shutil, "which", lambda cmd, path=None: "/usr/local/bin/npx")
+        monkeypatch.setattr(bt, "node_tool_runnable", lambda p: False)
+
+        assert bt._resolve_npx_bin() is None
+
+    def test_skips_extended_lookup_when_merge_browser_path_returns_empty(self, monkeypatch):
+        """_merge_browser_path("") returning a falsy string (no extended
+        candidate dirs found on disk) must short-circuit straight to the
+        bare-PATH rung — shutil.which must not be called with a path=""
+        kwarg (which would silently mean "search cwd only" on some
+        platforms rather than "no extended search"), and node_tool_runnable
+        must only be asked about the one real candidate."""
+        import tools.browser_tool as bt
+
+        which_calls = []
+
+        def fake_which(cmd, path=None):
+            which_calls.append((cmd, path))
+            return "/usr/bin/npx" if path is None else None
+
+        monkeypatch.setattr(bt, "_merge_browser_path", lambda _p: "")
+        monkeypatch.setattr(bt.shutil, "which", fake_which)
+        monkeypatch.setattr(bt, "node_tool_runnable", lambda p: p == "/usr/bin/npx")
+
+        assert bt._resolve_npx_bin() == "/usr/bin/npx"
+        assert which_calls == [("npx", None)]
+
+    def test_falls_back_to_bare_path_when_extended_dir_has_no_npx(self, monkeypatch):
+        """A non-empty extended search PATH that simply doesn't contain an
+        npx binary (shutil.which returns None there) must fall through to
+        the bare-PATH rung rather than treating "no extended npx" the same
+        as "extended npx found but broken"."""
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_merge_browser_path", lambda _p: "/hermes/node/bin")
+        monkeypatch.setattr(
+            bt.shutil, "which",
+            lambda cmd, path=None: None if path == "/hermes/node/bin" else "/usr/bin/npx",
+        )
+        monkeypatch.setattr(bt, "node_tool_runnable", lambda p: True)
+
+        assert bt._resolve_npx_bin() == "/usr/bin/npx"

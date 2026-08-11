@@ -384,6 +384,8 @@ class TestAgentBrowserPostSetup:
 
     def test_chromium_already_installed_skips_subprocess(self):
         with patch("shutil.which", return_value="/usr/bin/npx"), patch(
+            "tools.browser_tool.node_tool_runnable", return_value=True
+        ), patch(
             "subprocess.run"
         ) as run, patch(
             "tools.browser_tool._chromium_installed", return_value=True
@@ -398,6 +400,8 @@ class TestAgentBrowserPostSetup:
 
     def test_docker_with_missing_chromium_warns_instead_of_installing(self):
         with patch("shutil.which", return_value="/usr/bin/npx"), patch(
+            "tools.browser_tool.node_tool_runnable", return_value=True
+        ), patch(
             "subprocess.run"
         ) as run, patch(
             "tools.browser_tool._chromium_installed", return_value=False
@@ -440,7 +444,11 @@ class TestAgentBrowserPostSetup:
         string as a single argv element)."""
         with patch(
             "shutil.which",
-            side_effect=lambda name: "/usr/bin/npx" if name == "npx" else None,
+            # accepts the `path=` kwarg _resolve_npx_bin's extended-path rung
+            # calls shutil.which with, not just the bare-PATH positional form.
+            side_effect=lambda name, path=None: "/usr/bin/npx" if name == "npx" else None,
+        ), patch(
+            "tools.browser_tool.node_tool_runnable", return_value=True
         ), patch("subprocess.run") as run, patch(
             "tools.browser_tool._chromium_installed", return_value=False
         ), patch(
@@ -455,7 +463,7 @@ class TestAgentBrowserPostSetup:
 
         run.assert_called_once()
         assert run.call_args.args[0] == [
-            "/usr/bin/npx", "-y", AGENT_BROWSER_NPX_SPEC, "install", "--with-deps",
+            "/usr/bin/npx", "--ignore-scripts", "-y", AGENT_BROWSER_NPX_SPEC, "install", "--with-deps",
         ]
 
     def test_installs_chromium_via_npx_resolved_only_through_extended_path(self):
@@ -483,7 +491,7 @@ class TestAgentBrowserPostSetup:
 
         run.assert_called_once()
         assert run.call_args.args[0] == [
-            hermes_npx, "-y", AGENT_BROWSER_NPX_SPEC, "install", "--with-deps",
+            hermes_npx, "--ignore-scripts", "-y", AGENT_BROWSER_NPX_SPEC, "install", "--with-deps",
         ]
 
     def test_warns_instead_of_crashing_when_npx_unresolvable_after_all(self):
@@ -537,6 +545,8 @@ class TestAgentBrowserPostSetup:
         import tools.browser_tool as _bt
 
         with patch("shutil.which", return_value="/usr/bin/npx"), patch(
+            "tools.browser_tool.node_tool_runnable", return_value=True
+        ), patch(
             "subprocess.run",
             return_value=SimpleNamespace(returncode=0, stdout="", stderr=""),
         ), patch(
@@ -560,6 +570,8 @@ class TestAgentBrowserPostSetup:
         import tools.browser_tool as _bt
 
         with patch("shutil.which", return_value="/usr/bin/npx"), patch(
+            "tools.browser_tool.node_tool_runnable", return_value=True
+        ), patch(
             "subprocess.run",
             return_value=SimpleNamespace(
                 returncode=1, stdout="", stderr="line1\nline2\nfatal: network error"
@@ -586,6 +598,8 @@ class TestAgentBrowserPostSetup:
 
     def test_install_timeout_warns_without_raising(self):
         with patch("shutil.which", return_value="/usr/bin/npx"), patch(
+            "tools.browser_tool.node_tool_runnable", return_value=True
+        ), patch(
             "subprocess.run",
             side_effect=subprocess.TimeoutExpired(cmd=["npx"], timeout=600),
         ), patch(

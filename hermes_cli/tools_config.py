@@ -1721,7 +1721,7 @@ def _run_post_setup(post_setup_key: str):
                     "    npx not found - install Chromium manually: npx agent-browser install --with-deps"
                 )
                 return
-            install_cmd = [npx_bin, "-y", AGENT_BROWSER_NPX_SPEC, "install", "--with-deps"]
+            install_cmd = [npx_bin, "--ignore-scripts", "-y", AGENT_BROWSER_NPX_SPEC, "install", "--with-deps"]
         else:
             install_cmd = [browser_cmd, "install", "--with-deps"]
 

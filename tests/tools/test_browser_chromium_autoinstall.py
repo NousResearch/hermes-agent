@@ -64,6 +64,7 @@ class TestInstall:
         monkeypatch.setattr(bt, "_build_browser_env", lambda: {})
         monkeypatch.setattr(bt, "_chromium_installed", lambda: True)
         monkeypatch.setattr(bt.shutil, "which", lambda _, path=None: "/usr/bin/npx")
+        monkeypatch.setattr(bt, "node_tool_runnable", lambda p: True)
 
         captured = {}
         monkeypatch.setattr(
@@ -72,7 +73,9 @@ class TestInstall:
         )
 
         assert bt._maybe_autoinstall_chromium() is True
-        assert captured["cmd"] == ["/usr/bin/npx", "-y", bt.AGENT_BROWSER_NPX_SPEC, "install"]
+        assert captured["cmd"] == [
+            "/usr/bin/npx", "--ignore-scripts", "-y", bt.AGENT_BROWSER_NPX_SPEC, "install",
+        ]
         assert "--with-deps" not in captured["cmd"]
 
     def test_nonzero_exit_returns_false(self, monkeypatch):

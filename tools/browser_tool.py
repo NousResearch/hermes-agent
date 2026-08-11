@@ -54,6 +54,7 @@ import functools
 import json
 import logging
 import os
+import signal
 import re
 import subprocess
 import shutil
@@ -70,6 +71,7 @@ from hermes_constants import (
     get_hermes_home,
     get_hermes_home_override,
     hermes_home_key,
+    node_tool_runnable,
 )
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
@@ -1237,7 +1239,10 @@ def _run_chrome_fallback_command(
     # WinError 193.
     if _is_npx_agent_browser_sentinel(browser_cmd):
         _npx_bin = _resolve_npx_bin() or "npx"
-        cmd_prefix = [_npx_bin, "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
+        # --ignore-scripts: AGENT_BROWSER_NPX_SPEC is a floating ^0.26.0 range,
+        # not an exact pin — a compromised future 0.26.x patch must not get to
+        # run its own install-time lifecycle scripts on this machine.
+        cmd_prefix = [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
     else:
         cmd_prefix = [browser_cmd]
     base_args = cmd_prefix + ["--engine", "chrome", "--session", tmp_session, "--json"]
@@ -2371,19 +2376,23 @@ def _agent_browser_candidate_present(path: str | None) -> bool:
 
 
 def _resolve_npx_bin() -> Optional[str]:
-    """Resolve the npx binary via the same PATH + extended-PATH cascade
-    _find_agent_browser uses, so callers that need npx's actual path
-    (rather than the "npx agent-browser" sentinel) can't diverge from what
-    _find_agent_browser itself would have found. A bare ``shutil.which("npx")``
-    misses Hermes-managed-Node-only setups where npx only resolves via the
-    extended fallback PATH (Homebrew, $HERMES_HOME/node, etc.).
+    """Resolve a runnable npx binary, preferring the Hermes-managed/Homebrew
+    extended search over a bare ambient PATH lookup.
+
+    Checking bare PATH first would let a broken or unrelated system npx
+    shadow a healthy Hermes-managed one with no recovery — every candidate
+    is therefore validated with ``node_tool_runnable`` (the same check
+    ``find_hermes_node_executable`` uses to self-heal a managed Node tree)
+    before being trusted, falling through to the next candidate otherwise.
     """
-    npx_path = shutil.which("npx")
-    if npx_path:
-        return npx_path
     extended_path = _merge_browser_path("")
     if extended_path:
-        return shutil.which("npx", path=extended_path)
+        extended_npx = shutil.which("npx", path=extended_path)
+        if extended_npx and node_tool_runnable(extended_npx):
+            return extended_npx
+    npx_path = shutil.which("npx")
+    if npx_path and node_tool_runnable(npx_path):
+        return npx_path
     return None
 
 
@@ -2508,6 +2517,68 @@ def _find_agent_browser(*, validate: bool = True) -> str:
     )
 
 
+def _kill_process_tree(proc: "subprocess.Popen") -> None:
+    """Best-effort kill of *proc* and any descendants it spawned.
+
+    ``Popen.kill()`` only signals the direct child PID. npm/npx routinely
+    fork further processes (registry-fetch helpers, npm's own lifecycle
+    runner, agent-browser's own detached daemon grandchild) that can survive
+    a plain ``kill()`` of the top-level PID and keep a ``capture_output``-style
+    pipe open, hanging the caller's ``communicate()`` past the nominal
+    timeout — the same orphaned-pipe hazard already hit in production on
+    POSIX (see ``tools/process_registry.py``'s ``_reader_loop``, issue
+    #68915: a backgrounded grandchild inheriting a pipe's write end kept it
+    from ever reaching EOF). That hazard is cross-platform, not
+    Windows-specific; what *is* Windows-specific is the lack of a remedy
+    other than killing the tree — anonymous pipes there don't support
+    overlapped I/O, so there's no ``select()``-style non-blocking read to
+    poll around a stuck grandchild the way POSIX can. Killing the whole
+    process group/tree the child was launched into reaches those
+    descendants on both platforms.
+
+    Fires SIGTERM then SIGKILL back-to-back with no grace period between
+    them (unlike ``tools/mcp_stdio_watchdog.py``'s ``_terminate_process_group``,
+    which waits between signals because it's reacting to a live daemon being
+    orphaned). By the time this is called, the caller has already burned its
+    full timeout budget waiting for a graceful exit — there's nothing to gain
+    from waiting again here, only more delay on an already-timed-out call.
+    """
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                check=False,
+                capture_output=True,
+                stdin=subprocess.DEVNULL,
+            )
+        except Exception:
+            pass
+        return
+    # os.killpg/signal.SIGKILL don't exist on Windows; this branch is
+    # POSIX-only (the `os.name == "nt"` check above already returns first
+    # on Windows), but resolve them defensively via getattr anyway so an
+    # accidental future refactor that drops that guard degrades to a plain
+    # kill() instead of AttributeError — same discipline as
+    # tools/mcp_stdio_watchdog.py's _terminate_process_group.
+    killpg = getattr(os, "killpg", None)
+    if killpg is None:  # windows-footgun: ok - non-POSIX fallback
+        try:
+            proc.kill()
+        except Exception:
+            pass
+        return
+    try:
+        pgid = os.getpgid(proc.pid)
+    except (ProcessLookupError, OSError):
+        return
+    sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
+    for sig in (signal.SIGTERM, sigkill):
+        try:
+            killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError, OSError):
+            return
+
+
 def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
     """Best-effort pre-fetch of the agent-browser npm package via npx.
 
@@ -2521,6 +2592,16 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
     property agent-browser had while it was an eager root dependency —
     without re-entangling it with the workspace graph.
 
+    Runs a credential-scrubbed, PATH-propagated environment matching every
+    other agent-browser subprocess spawn (see ``_build_browser_env``) —
+    this used to inherit the full parent environment, including every
+    provider/gateway credential Hermes holds, while running registry-fetched
+    npm code on every ``hermes update`` (the GHSA-m4m8-xjp4-5rmm class of
+    risk ``_build_browser_env`` exists specifically to prevent). Runs in its
+    own process group and kills the *whole* group — not just the top-level
+    npx PID — on timeout, since a surviving descendant can otherwise hold a
+    capture pipe open past the nominal deadline (see ``_kill_process_tree``).
+
     Fire-and-forget: never raises, always safe to call opportunistically.
     Returns True only if npx actually ran successfully (npx unavailable,
     a timeout, or a nonzero exit all return False silently).
@@ -2528,21 +2609,53 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
     npx_bin = _resolve_npx_bin()
     if not npx_bin:
         return False
+
+    env = _build_browser_env()
+    env["PATH"] = _merge_browser_path(env.get("PATH", ""))
+
+    popen_kwargs: dict = {
+        "stdout": subprocess.PIPE,
+        "stderr": subprocess.PIPE,
+        "text": True,
+        "env": env,
+        "creationflags": windows_hide_flags(),
+    }
+    if os.name == "posix":
+        popen_kwargs["start_new_session"] = True
+    else:
+        popen_kwargs["creationflags"] |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+
+    cmd = [
+        npx_bin,
+        # --ignore-scripts: AGENT_BROWSER_NPX_SPEC is a floating ^0.26.0
+        # range, not an exact pin — a compromised future 0.26.x patch must
+        # not get to run its own install-time lifecycle scripts here.
+        "--ignore-scripts",
+        # --prefer-offline: once cached, repeat `hermes update`/`doctor
+        # --fix` runs shouldn't hit the registry just to re-confirm
+        # "latest" is still latest — that would defeat the point of
+        # warming the cache in the first place.
+        "--prefer-offline",
+        "-y",
+        AGENT_BROWSER_NPX_SPEC,
+        "--version",
+    ]
     try:
-        result = subprocess.run(
-            # --prefer-offline: once cached, repeat `hermes update`/`doctor
-            # --fix` runs shouldn't hit the registry just to re-confirm
-            # "latest" is still latest — that would defeat the point of
-            # warming the cache in the first place.
-            [npx_bin, "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC, "--version"],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            check=False,
-            creationflags=windows_hide_flags(),
-        )
-        return result.returncode == 0
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, **popen_kwargs)
     except Exception:
+        return False
+    try:
+        proc.communicate(timeout=timeout)
+        return proc.returncode == 0
+    except subprocess.TimeoutExpired:
+        _kill_process_tree(proc)
+        try:
+            proc.communicate(timeout=5)
+        except Exception:
+            pass
+        return False
+    except Exception:
+        _kill_process_tree(proc)
         return False
 
 
@@ -2671,7 +2784,8 @@ def _run_browser_command(
     # shutil.which("npx") is wrong here).
     if _is_npx_agent_browser_sentinel(browser_cmd):
         _npx_bin = _resolve_npx_bin() or "npx"
-        cmd_prefix = [_npx_bin, "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
+        # --ignore-scripts: see _run_chrome_fallback_command's identical comment.
+        cmd_prefix = [_npx_bin, "--ignore-scripts", "--prefer-offline", "-y", AGENT_BROWSER_NPX_SPEC]
     else:
         cmd_prefix = [browser_cmd]
 
@@ -4989,7 +5103,9 @@ def _maybe_autoinstall_chromium() -> bool:
         return False
 
     if _is_npx_agent_browser_sentinel(browser_cmd):
-        install_cmd = [_resolve_npx_bin() or "npx", "-y", AGENT_BROWSER_NPX_SPEC, "install"]
+        install_cmd = [
+            _resolve_npx_bin() or "npx", "--ignore-scripts", "-y", AGENT_BROWSER_NPX_SPEC, "install",
+        ]
     else:
         install_cmd = [browser_cmd, "install"]
 

@@ -1604,6 +1604,57 @@ class TestTransparentWrapperPrefixes:
         assert self._scan(f"sudo bash {clean}", cwd=str(tmp_path)) is False
 
 
+class TestRelativePathDoesNotDisableDataExemption:
+    """A leading dot disables the data-sink exemption because sqlite3 spells
+    its escapes as dot-commands (`.shell`). `.`, `./x` and `../x` are plain
+    path operands, so `grep -r <pattern> .` — the most ordinary recursive
+    search there is — was blocked outright when the pattern happened to be a
+    lifecycle string."""
+
+    def _scan(self, command):
+        from cron.lifecycle_guard import (
+            contains_gateway_lifecycle_command_or_referenced_script,
+        )
+
+        return contains_gateway_lifecycle_command_or_referenced_script(command)
+
+    @pytest.mark.parametrize("command", [
+        "grep -r 'systemctl restart hermes-gateway' .",
+        "grep -rn 'hermes gateway restart' ./logs",
+        "rg 'hermes gateway restart' ../archive",
+        "grep -c 'systemctl stop hermes-gateway' ./var/log/syslog",
+        "sqlite3 ./stats.db \"SELECT restart_reason FROM hermes_gateway_restarts\"",
+    ])
+    def test_relative_path_operands_keep_the_exemption(self, command):
+        assert self._scan(command) is False
+
+    @pytest.mark.parametrize("command", [
+        # Narrowing the dot test must not open an execution route: every
+        # escape hatch still fires with a relative-path operand present.
+        'sqlite3 ./db ".shell hermes gateway restart"',
+        'sqlite3 ./db ".system systemctl restart hermes-gateway"',
+        'psql ./x -c "\\! systemctl restart hermes-gateway"',
+        "grep -r 'hermes gateway restart' . | sh",
+        "grep -r 'hermes gateway restart' ./logs | bash",
+        "grep -r 'hermes gateway restart' . | sudo sh",
+        "grep -r 'x' . ; hermes gateway restart",
+        "grep -r 'x' . && systemctl restart hermes-gateway",
+        'grep -r "$(hermes gateway restart)" .',
+        "rg 'x' ./logs | xargs systemctl restart hermes-gateway",
+    ])
+    def test_relative_path_does_not_open_an_execution_route(self, command):
+        assert self._scan(command) is True
+
+    @pytest.mark.parametrize("command", [
+        # Real dot-commands must still defeat the exemption.
+        'sqlite3 db ".shell hermes gateway restart"',
+        'sqlite3 db ".system systemctl restart hermes-gateway"',
+        'psql -c "\\! systemctl restart hermes-gateway"',
+    ])
+    def test_dot_commands_still_block(self, command):
+        assert self._scan(command) is True
+
+
 class TestCreateJobBlocksLifecycleCommands:
     """The regression the CLI-layer-only guard could not catch: the agent's
     `cronjob` model tool calls cron.jobs.create_job directly, bypassing

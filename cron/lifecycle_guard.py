@@ -334,6 +334,14 @@ _DATA_SINK_EXECUTABLES = frozenset(
 # psql backslash escapes (`\! ...`). Any hit disables masking for the whole
 # segment — fail closed to the plain regex verdict.
 _UNSAFE_DATA_ARG_MARKERS = ("`", "$(", "<(", ">(", "\\!")
+# A leading dot also disables masking, because sqlite3 spells its escapes as
+# dot-commands (`.shell`, `.system`, `.import`). But `.`, `./x` and `../x`
+# are ordinary path operands, and `grep -r <pattern> .` is a far more common
+# shape than any dot-command — treating those as escapes disabled the
+# exemption for the single most ordinary way to run a recursive search,
+# blocking `grep -r 'systemctl restart hermes-gateway' .` outright. Require a
+# dot followed by a NAME character so a relative path stays a path.
+_DOT_COMMAND_ARGUMENT = re.compile(r"^\.[A-Za-z]")
 # A data sink piped into a shell/interpreter can feed matched lines straight
 # to execution (`grep 'systemctl restart hermes-gateway' f | sh`); never mask
 # such a line.
@@ -643,7 +651,7 @@ def _mask_data_sink_arguments(text: str) -> str:
             if index is not None and Path(segment[index]).name in _DATA_SINK_EXECUTABLES:
                 arguments = segment[index + 1 :]
                 if not any(
-                    argument.startswith(".")
+                    _DOT_COMMAND_ARGUMENT.match(argument)
                     or any(marker in argument for marker in _UNSAFE_DATA_ARG_MARKERS)
                     for argument in arguments
                 ):

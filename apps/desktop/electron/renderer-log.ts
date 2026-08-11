@@ -43,6 +43,7 @@ export function formatRendererConsoleLine(
 ): string | null {
   const details =
     detailsOrLevel && typeof detailsOrLevel === 'object' ? (detailsOrLevel as ConsoleMessageDetails) : null
+
   const level = details ? details.level : detailsOrLevel
 
   if (level !== 3) {
@@ -84,6 +85,7 @@ export function formatRendererBoundaryReport(
   const head = `[renderer crash:${clamp(label, 64) || 'unknown'}] [error-boundary:${clamp(boundary, 64) || 'unknown'}] ${
     clamp(message, 2000) || '(no message)'
   }`
+
   const stack = clamp(componentStack, 4000).trim()
 
   return stack ? `${head}\n${stack}` : head

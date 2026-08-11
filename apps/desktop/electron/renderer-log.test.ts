@@ -30,6 +30,7 @@ describe('attachRendererConsoleCapture', () => {
   it('logs error-level messages and skips the rest', () => {
     const log = vi.fn()
     let handler: ((...args: unknown[]) => void) | undefined
+
     const win = {
       webContents: {
         on: (_event: string, listener: (...args: unknown[]) => void) => {

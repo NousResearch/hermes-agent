@@ -53,6 +53,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     const label = this.props.label ?? ''
     const tag = label ? `[error-boundary:${label}]` : '[error-boundary]'
     console.error(tag, error, info.componentStack)
+
     // Persist to desktop.log via Electron (#79428): console.error only reaches
     // the main process for windows with a console hook, is minified, and loses
     // the component stack. This survives the window and names the component.
@@ -66,6 +67,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     } catch {
       // Logging must never take the boundary down with it.
     }
+
     this.props.onError?.(error, info)
 
     if (this.props.label === 'root' && isTransientAssistantUiLookupError(error) && this.takeAutoRecoveryAttempt()) {

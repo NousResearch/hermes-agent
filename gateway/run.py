@@ -8953,13 +8953,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return text
         return (enriched_text or text).strip()
 
+    def _is_user_authorized_scoped(self, source: SessionSource) -> bool:
+        """Authorize under the routed profile's secret scope when multiplexed.
+
+        Cold-path message handlers already enter ``_profile_runtime_scope``
+        before calling ``_is_user_authorized``. Busy-session handling, startup
+        resume validation, and adapter authorization callbacks can run *before*
+        that scope is installed. Without this wrapper a scoped miss falls
+        through to process-global allowlists and a foreign profile's value can
+        authorize the wrong profile (issues #72348 / #80026 residual bypass).
+        """
+        if not getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            return self._is_user_authorized(source)
+        try:
+            profile_home = self._resolve_profile_home_for_source(source)
+        except Exception:
+            return self._is_user_authorized(source)
+        with _profile_runtime_scope(profile_home):
+            return self._is_user_authorized(source)
+
     async def _handle_active_session_busy_message(self, event: MessageEvent, session_key: str) -> bool:
         # --- Authorization gate (#17775) ---
         # The cold path (_handle_message) checks _is_user_authorized before
         # creating a session.  The busy path must enforce the same check;
         # otherwise unauthorized users in shared threads (Slack/Telegram/Discord)
         # can inject messages into an active session they don't own.
-        if not self._is_user_authorized(event.source):
+        # Under multiplex the shared busy callback is not installed inside a
+        # profile message-handler scope, so use the scoped auth helper.
+        if not self._is_user_authorized_scoped(event.source):
             logger.warning(
                 "Dropping message from unauthorized user in active session: "
                 "user=%s (%s), platform=%s, session=%s",
@@ -10757,8 +10778,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # before the owner was removed from it, must not silently
             # receive a full agent response on gateway restart just
             # because it has a resume-pending marker (issue #23778).
+            # Under multiplex this check runs before the scoped message
+            # handler, so use the profile-scoped helper — otherwise a
+            # foreign process allowlist can resume a revoked owner.
             try:
-                if not self._is_user_authorized(source):
+                if not self._is_user_authorized_scoped(source):
                     logger.warning(
                         "Skipping auto-resume for %s: session owner is no "
                         "longer authorized under the current allowlist",
@@ -11360,7 +11384,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_message_handler(self._primary_message_handler())
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
-            adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+            adapter.set_busy_session_handler(self._primary_busy_session_handler())
             _set_reaction = getattr(adapter, "set_reaction_handler", None)
             if callable(_set_reaction):
                 _set_reaction(self._handle_reaction_event)
@@ -12743,7 +12767,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_message_handler(self._primary_message_handler())
                     adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
                     adapter.set_session_store(self.session_store)
-                    adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+                    adapter.set_busy_session_handler(self._primary_busy_session_handler())
                     _set_reaction = getattr(adapter, "set_reaction_handler", None)
                     if callable(_set_reaction):
                         _set_reaction(self._handle_reaction_event)
@@ -13712,7 +13736,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             self._make_profile_fatal_error_handler(profile_name, platform)
         )
         adapter.set_session_store(self.session_store)
-        adapter.set_busy_session_handler(self._handle_active_session_busy_message)
+        adapter.set_busy_session_handler(
+            self._make_profile_busy_session_handler(profile_name)
+        )
         _set_reaction = getattr(adapter, "set_reaction_handler", None)
         if callable(_set_reaction):
             _set_reaction(self._handle_reaction_event)
@@ -13917,6 +13943,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return _handler
 
+    def _make_profile_busy_session_handler(self, profile_name: str):
+        """Return a busy-session handler bound to a secondary profile.
+
+        The shared busy callback is installed on adapters outside the cold-path
+        message-handler wrapper. Stamp ``source.profile`` and enter the
+        profile's runtime scope so authorization reads that profile's allowlist
+        rather than a foreign process-global value.
+        """
+        from hermes_cli.profiles import get_profile_dir
+
+        try:
+            profile_home = get_profile_dir(profile_name)
+        except Exception:
+            profile_home = None
+
+        async def _handler(event, session_key: str):
+            try:
+                if getattr(event, "source", None) is not None and not event.source.profile:
+                    event.source.profile = profile_name
+            except Exception:
+                pass
+            if profile_home is not None:
+                with _profile_runtime_scope(profile_home):
+                    return await self._handle_active_session_busy_message(
+                        event, session_key
+                    )
+            return await self._handle_active_session_busy_message(event, session_key)
+
+        return _handler
+
     def _make_default_profile_message_handler(self):
         """Scope a multiplexed default-profile message from ingress onward."""
         profile_home = Path(get_hermes_home())
@@ -13927,11 +13983,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return _handler
 
+    def _make_default_profile_busy_session_handler(self):
+        """Scope a multiplexed default-profile busy-session callback."""
+        profile_home = Path(get_hermes_home())
+
+        async def _handler(event, session_key: str):
+            with _profile_runtime_scope(profile_home):
+                return await self._handle_active_session_busy_message(
+                    event, session_key
+                )
+
+        return _handler
+
     def _primary_message_handler(self):
         """Return the correctly scoped handler for a primary adapter."""
         if getattr(self.config, "multiplex_profiles", False):
             return self._make_default_profile_message_handler()
         return self._handle_message
+
+    def _primary_busy_session_handler(self):
+        """Return the correctly scoped busy-session handler for a primary adapter."""
+        if getattr(self.config, "multiplex_profiles", False):
+            return self._make_default_profile_busy_session_handler()
+        return self._handle_active_session_busy_message
 
     @staticmethod
     def _adapter_credential_claim(
@@ -14158,9 +14232,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         senders as unverified in LLM context, mitigating indirect prompt
         injection from third parties in shared threads/channels.
 
-        The returned callback delegates to :meth:`_is_user_authorized` so the
-        full auth chain — platform allowlists, group allowlists, pairing
-        store, allow-all flags — stays the single source of truth.
+        The returned callback delegates to :meth:`_is_user_authorized_scoped`
+        so the full auth chain — platform allowlists, group allowlists, pairing
+        store, allow-all flags — stays the single source of truth *and* runs
+        under the bound profile's secret scope under multiplex.
 
         ``profile_name`` binds the callback to the secondary adapter's own
         multiplex profile, so its ``SessionSource`` resolves that profile's
@@ -14180,7 +14255,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 user_id=user_id,
                 profile=profile_name,
             )
-            return self._is_user_authorized(source)
+            return self._is_user_authorized_scoped(source)
         return check
 
 

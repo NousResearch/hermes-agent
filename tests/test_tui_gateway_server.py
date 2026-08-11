@@ -6861,7 +6861,7 @@ def test_config_set_approval_mode_persists_three_way_value_and_emits_live_status
         server._sessions.clear()
 
     assert resp["result"] == {"key": "approvals.mode", "value": "manual"}
-    assert yaml.safe_load((tmp_path / "config.yaml").read_text())["approvals"]["mode"] == "manual"
+    assert yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))["approvals"]["mode"] == "manual"
     assert emitted and emitted[0][0:2] == ("session.info", "sid")
     assert emitted[0][2]["approval_mode"] == "manual"
 

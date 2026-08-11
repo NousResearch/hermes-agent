@@ -349,6 +349,10 @@ def _(rid, params: dict) -> dict:
         # claim so this prompt starts normally instead of being stranded in a
         # queue whose drain already ran.
 
+    # Filled when this submit performed a truncation against a durable session:
+    # the fresh post-rewrite row ids of the surviving user turns, for client
+    # rowId rebinding (see comment at the assignment site).
+    survivor_user_row_ids = None
     with session["history_lock"]:
         # A watch session's run lives in the PARENT turn, so its own running
         # flag is False — without this, typing mid-run builds a second agent
@@ -586,6 +590,22 @@ def _(rid, params: dict) -> dict:
                     )
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1
+            if db is not None:
+                # replace_messages re-inserted the surviving prefix as NEW rows
+                # and stamped fresh _row_id values onto these same dicts.
+                # Surface the surviving user-turn ids (in visible-user-ordinal
+                # order) so the client can rebind its cached rowId stamps —
+                # otherwise a second rewind targeting an older surviving turn
+                # sends the pre-rewind id and the fail-closed resolver refuses
+                # it with 4018 (#83202 review: consecutive-rewind staleness).
+                # Ordinal order matches the client's visible-user filter the
+                # same way truncate ordinals already do. Entries are None when
+                # a row somehow has no stamp — the client must drop its cached
+                # id for that turn rather than keep a stale one.
+                survivor_user_row_ids = [
+                    _message_row_id(truncated[i])
+                    for i in _history_user_indices(truncated)
+                ]
         session["running"] = True
         session["_turn_cancel_requested"] = False
         session["last_active"] = time.time()
@@ -594,6 +614,13 @@ def _(rid, params: dict) -> dict:
     if turn_isolation:
         isolated_response = _submit_prompt_to_compute_host(rid, sid, session, text)
         if not isolated_response.get("error"):
+            if survivor_user_row_ids is not None:
+                # The truncation already happened inline above (memory + DB),
+                # before compute-host dispatch — the rebind payload applies to
+                # this path exactly as it does to the inline one.
+                isolated_response["result"][
+                    "survivor_user_row_ids"
+                ] = survivor_user_row_ids
             return isolated_response
         logger.warning(
             "compute-host dispatch failed for session %s; falling back inline: %s",
@@ -678,7 +705,17 @@ def _(rid, params: dict) -> dict:
     # `running` flag (a turn that died without clearing it) and recover the latter.
     session["_run_thread"] = run_thread
     run_thread.start()
-    return _ok(rid, {"status": "streaming"})
+    return _ok(
+        rid,
+        {
+            "status": "streaming",
+            **(
+                {"survivor_user_row_ids": survivor_user_row_ids}
+                if survivor_user_row_ids is not None
+                else {}
+            ),
+        },
+    )
 
 
 @method("clipboard.paste")

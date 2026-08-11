@@ -27,6 +27,61 @@ import {
 type RequestGateway = <T = unknown>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
 
 /**
+ * Post-rewrite durable ids of the surviving visible user turns, in visible-user
+ * ordinal order — the gateway's `survivor_user_row_ids` on a truncating
+ * `prompt.submit`. A rewind's `replace_messages` re-inserts the kept prefix as
+ * NEW SQLite rows, so every pre-rewind `ChatMessage.rowId` on a surviving
+ * bubble is stale the moment the rewind lands; targeting one on the next
+ * rewind/edit/regenerate gets a fail-closed 4018 from the gateway. `null`
+ * means that turn has no durable id (drop the cached one, don't keep a stale
+ * one). Absent entirely = the submit didn't truncate a durable session (or an
+ * older gateway) — leave state untouched.
+ */
+export type SurvivorUserRowIds = readonly (null | number)[]
+
+interface PromptSubmitResult {
+  status?: string
+  survivor_user_row_ids?: unknown
+}
+
+export function survivorRowIdsFrom(result: PromptSubmitResult | undefined): SurvivorUserRowIds | undefined {
+  const raw = result?.survivor_user_row_ids
+
+  if (!Array.isArray(raw)) {
+    return undefined
+  }
+
+  return raw.map(entry => (typeof entry === 'number' && Number.isInteger(entry) ? entry : null))
+}
+
+/**
+ * Rebind the surviving visible user turns to their authoritative post-rewind
+ * row ids (positional, same visible-user filter `visibleUserOrdinal` uses —
+ * the exact parity truncate ordinals already rely on). Turns past the end of
+ * the survivor list — the resubmitted turn itself, whose durable id doesn't
+ * exist yet — and `null` entries get their cached rowId cleared instead: a
+ * stale id now addresses an archived row and would be refused with 4018.
+ */
+export function rebindSurvivorRowIds(messages: ChatMessage[], survivorRowIds: SurvivorUserRowIds): ChatMessage[] {
+  let ordinal = 0
+
+  return messages.map(message => {
+    if (message.role !== 'user' || message.hidden) {
+      return message
+    }
+
+    const next = ordinal < survivorRowIds.length ? survivorRowIds[ordinal] : null
+    ordinal += 1
+
+    if (typeof next === 'number') {
+      return message.rowId === next ? message : { ...message, rowId: next }
+    }
+
+    return message.rowId === undefined ? message : { ...message, rowId: undefined }
+  })
+}
+
+/**
  * Build `prompt.submit` truncation params. `confirm_truncate` states that this
  * submit really is a rewind/edit/regenerate: the gateway drops history only for
  * a submit that says so, so a leftover ordinal riding along on an ordinary send
@@ -70,6 +125,10 @@ export function truncateSubmitParams(
  * / `truncate_before_message_id` / `truncate_before_row_id` (drops that user turn + everything after).
  * Idle rewinds submit directly; live/stuck turns interrupt first, and a raced
  * "session busy" response interrupts + retries through the shared busy gate.
+ *
+ * Resolves with the gateway's post-rewrite survivor row ids (see
+ * `SurvivorUserRowIds`) so the caller can rebind surviving bubbles, or
+ * undefined when the submit didn't truncate a durable transcript.
  */
 export async function runRewindSubmit(
   requestGateway: RequestGateway,
@@ -80,7 +139,7 @@ export async function runRewindSubmit(
   interruptFirst: boolean,
   recovery?: { storedSessionId?: null | string; onSessionRecovered?: (sessionId: string) => void },
   truncateRowId?: number
-): Promise<void> {
+): Promise<SurvivorUserRowIds | undefined> {
   // Recovery may rebind the live id mid-flight; interrupt/submit must both
   // follow it rather than pinning the dead one.
   let liveSessionId = sessionId
@@ -94,7 +153,7 @@ export async function runRewindSubmit(
   }
 
   const submitFor = (targetId: string) =>
-    requestGateway(
+    requestGateway<PromptSubmitResult>(
       'prompt.submit',
       {
         session_id: targetId,
@@ -105,15 +164,22 @@ export async function runRewindSubmit(
     )
 
   const submit = async () => {
-    const { sessionId: usedId } = await withSessionNotFoundResume(liveSessionId, recovery?.storedSessionId, submitFor, {
-      requestGateway,
-      onRecovered: recoveredId => {
-        liveSessionId = recoveredId
-        recovery?.onSessionRecovered?.(recoveredId)
+    const { result, sessionId: usedId } = await withSessionNotFoundResume(
+      liveSessionId,
+      recovery?.storedSessionId,
+      submitFor,
+      {
+        requestGateway,
+        onRecovered: recoveredId => {
+          liveSessionId = recoveredId
+          recovery?.onSessionRecovered?.(recoveredId)
+        }
       }
-    })
+    )
 
     liveSessionId = usedId
+
+    return survivorRowIdsFrom(result)
   }
 
   if (interruptFirst) {
@@ -121,14 +187,15 @@ export async function runRewindSubmit(
   }
 
   try {
-    await submit()
+    return await submit()
   } catch (err) {
     if (!isSessionBusyError(err)) {
       throw err
     }
 
     await interrupt()
-    await withSessionBusyRetry(submit)
+
+    return await withSessionBusyRetry(submit)
   }
 }
 

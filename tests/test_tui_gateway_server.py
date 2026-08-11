@@ -17820,3 +17820,105 @@ def test_prompt_submit_row_id_db_fallback_ordinal_mapping_verifies_content(
         assert len(sess["history"]) == 5
     finally:
         server._sessions.pop(sid, None)
+
+
+def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
+    monkeypatch, tmp_path
+):
+    """#83202 review (consecutive-rewind staleness): replace_messages re-inserts
+    the surviving prefix as NEW rows, so the pre-rewind client row ids die on
+    the first rewind. The submit response must return the fresh survivor ids,
+    and a second rewind using them must succeed where the stale id fail-closes.
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "rowid-consec.db")
+    session_key = "real-db-consec-rewind"
+    db.create_session(session_key, "cli")
+    msgs = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "reply 1"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "reply 2"},
+        {"role": "user", "content": "third"},
+        {"role": "assistant", "content": "reply 3"},
+    ]
+    with db._lock:
+        db._insert_message_rows(db._conn, session_key, msgs)
+        db._conn.commit()
+    original_row_ids = [m["_row_id"] for m in msgs]
+
+    sess = _session(history=[dict(m) for m in msgs], session_key=session_key)
+    sid = "real-db-consec-rewind-sid"
+    server._sessions[sid] = sess
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
+
+    try:
+        # Rewind 1: cut before "third" (last user turn). Survivors: turns
+        # "first" + "second" (+ assistant replies) — re-inserted as NEW rows.
+        resp1 = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": sid,
+                    "text": "rewound third",
+                    "truncate_before_row_id": original_row_ids[4],
+                    "truncate_before_user_ordinal": 2,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert resp1.get("error") is None, resp1
+        survivors = resp1["result"].get("survivor_user_row_ids")
+        # Fresh ids for the two surviving user turns, in visible-user order.
+        assert isinstance(survivors, list) and len(survivors) == 2
+        assert all(isinstance(r, int) for r in survivors)
+        # They must be NEW rows — the old ids are archived (active=0) now.
+        assert set(survivors).isdisjoint(set(original_row_ids))
+        sess["running"] = False
+
+        # Rewind 2a: the STALE pre-rewind id for "second" must fail closed.
+        stale_resp = server.handle_request(
+            {
+                "id": "2",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": sid,
+                    "text": "rewound second (stale id)",
+                    "truncate_before_row_id": original_row_ids[2],
+                    "truncate_before_user_ordinal": 1,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert stale_resp.get("error") is not None
+        assert stale_resp["error"]["code"] == 4018
+        assert len(sess["history"]) == 4  # nothing cut
+
+        # Rewind 2b: the RETURNED survivor id for "second" must succeed.
+        resp2 = server.handle_request(
+            {
+                "id": "3",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": sid,
+                    "text": "rewound second (fresh id)",
+                    "truncate_before_row_id": survivors[1],
+                    "truncate_before_user_ordinal": 1,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert resp2.get("error") is None, resp2
+        assert len(sess["history"]) == 2
+        assert sess["history"][0]["content"] == "first"
+        active = db.get_messages_as_conversation(session_key)
+        assert [m["content"] for m in active] == ["first", "reply 1"]
+        # And the second response rebinds again: one surviving user turn.
+        survivors2 = resp2["result"].get("survivor_user_row_ids")
+        assert isinstance(survivors2, list) and len(survivors2) == 1
+    finally:
+        server._sessions.pop(sid, None)

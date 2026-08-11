@@ -41,7 +41,10 @@ import {
   planEdit,
   planReload,
   planRestore,
+  rebindSurvivorRowIds,
   runRewindSubmit,
+  type SurvivorUserRowIds,
+  survivorRowIdsFrom,
   truncateSubmitParams
 } from '../session/hooks/use-prompt-actions/rewind'
 import { useSubmitPrompt } from '../session/hooks/use-prompt-actions/submit'
@@ -391,6 +394,22 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
     [requestGateway]
   )
 
+  // After a durable rewind the surviving bubbles' cached rowIds are stale (the
+  // gateway re-inserted the kept prefix as new SQLite rows). Rebind them to the
+  // authoritative post-rewrite ids so the NEXT rewind/edit/regenerate doesn't
+  // send a dead id and get refused with 4018 (consecutive-rewind staleness,
+  // #83202 review).
+  const applySurvivorRowIds = useCallback(
+    (survivorRowIds: SurvivorUserRowIds | undefined) => {
+      if (!survivorRowIds) {
+        return
+      }
+
+      update(state => ({ ...state, messages: rebindSurvivorRowIds(state.messages, survivorRowIds) }))
+    },
+    [update]
+  )
+
   const reloadFromMessage = useCallback(
     async (parentId: string | null) => {
       const state = readState()
@@ -408,7 +427,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       update(current => applyReloadOptimistic(current, plan))
 
       try {
-        await requestGateway(
+        const result = await requestGateway<{ survivor_user_row_ids?: unknown }>(
           'prompt.submit',
           {
             session_id: runtimeIdRef.current,
@@ -417,12 +436,14 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
           },
           PROMPT_SUBMIT_REQUEST_TIMEOUT_MS
         )
+
+        applySurvivorRowIds(survivorRowIdsFrom(result))
       } catch (err) {
         update(current => ({ ...current, busy: false, awaitingResponse: false }))
         notifyError(err, copy.regenerateFailed)
       }
     },
-    [copy.regenerateFailed, readState, requestGateway, update]
+    [applySurvivorRowIds, copy.regenerateFailed, readState, requestGateway, update]
   )
 
   const restoreToMessage = useCallback(
@@ -440,13 +461,15 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       update(state => applyRewindOptimistic(state, plan.sourceIndex))
 
       try {
-        await submitRewind(plan.text, plan.truncateOrdinal, wasBusy, plan.truncateMessageId, plan.truncateRowId)
+        applySurvivorRowIds(
+          await submitRewind(plan.text, plan.truncateOrdinal, wasBusy, plan.truncateMessageId, plan.truncateRowId)
+        )
       } catch (err) {
         update(state => ({ ...state, busy: false, awaitingResponse: false, messages }))
         throw err
       }
     },
-    [readMessages, readState, submitRewind, update]
+    [applySurvivorRowIds, readMessages, readState, submitRewind, update]
   )
 
   const editMessage = useCallback(
@@ -469,13 +492,15 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       update(state => applyRewindOptimistic(state, plan.sourceIndex, plan.editedMessage))
 
       try {
-        await submitRewind(plan.text, plan.truncateOrdinal, wasBusy, plan.truncateMessageId, plan.truncateRowId)
+        applySurvivorRowIds(
+          await submitRewind(plan.text, plan.truncateOrdinal, wasBusy, plan.truncateMessageId, plan.truncateRowId)
+        )
       } catch (err) {
         update(state => ({ ...state, busy: false, awaitingResponse: false, messages }))
         notifyError(err, copy.editFailed)
       }
     },
-    [copy.editFailed, readMessages, readState, submitRewind, update]
+    [applySurvivorRowIds, copy.editFailed, readMessages, readState, submitRewind, update]
   )
 
   // Branch-visibility sync (assistant-ui hides non-active branches).

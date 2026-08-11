@@ -9,7 +9,7 @@ import asyncio
 import logging
 import time
 from typing import Dict, List, Optional, Tuple
-from tools.mcp_tool_common import _core, _parse_boolish, _sanitize_error
+from tools.mcp_tool_common import _exc_str, _core, _parse_boolish, _sanitize_error
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_lifecycle as _lifecycle
@@ -95,7 +95,7 @@ def _request_lazy_reconnect(server_name: str, server: _core.MCPServerTask) -> bo
         return bool(_loop._run_on_mcp_loop(_await_ready, timeout=_core._RECYCLED_RECONNECT_TIMEOUT))
     except Exception as exc:
         logger.warning("MCP server '%s': lazy reconnect after stdio recycle failed: %s", server_name,
-                       _sanitize_error(_errors._exc_str(exc), getattr(server, "_redaction_values", ())))
+                       _sanitize_error(_exc_str(exc), getattr(server, "_redaction_values", ())))
         return False
 
 

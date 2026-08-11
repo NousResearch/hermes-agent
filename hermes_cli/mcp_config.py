@@ -251,7 +251,7 @@ def _resolve_mcp_server_config(config: dict) -> dict:
 def _sanitize_mcp_probe_error(exc: object, config: dict) -> str:
     """Redact known patterns and exact per-server env-file values from errors."""
     from tools.mcp_tool_config import _load_mcp_server_env
-    from tools.mcp_tool_errors import _sanitize_error
+    from tools.mcp_tool_common import _sanitize_error
 
     return _sanitize_error(
         str(exc),

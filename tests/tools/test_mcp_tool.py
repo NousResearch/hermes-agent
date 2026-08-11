@@ -15,6 +15,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from tools import mcp_tool_config as _mcp_config
+from tools import mcp_tool_handlers as _mcp_handlers
+from tools import mcp_tool_discovery as _mcp_discovery
+from tools import mcp_tool_loop as _mcp_loop
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -220,7 +225,7 @@ class TestLoadMCPConfig:
         ), patch("hermes_cli.env_loader.load_hermes_dotenv"), caplog.at_level(
             logging.WARNING, logger="tools.mcp_tool"
         ):
-            from tools.mcp_tool import _load_mcp_config
+            from tools.mcp_tool_config import _load_mcp_config
 
             result = _load_mcp_config()
 
@@ -250,7 +255,7 @@ class TestLoadMCPConfig:
         ), patch("hermes_cli.env_loader.load_hermes_dotenv"), caplog.at_level(
             logging.WARNING, logger="tools.mcp_tool"
         ):
-            from tools.mcp_tool import _load_mcp_config
+            from tools.mcp_tool_config import _load_mcp_config
 
             result = _load_mcp_config()
 
@@ -763,12 +768,12 @@ class TestToolHandler:
         )
         server = _make_mock_server("test_srv", session=mock_session)
         server._redaction_values = tuple(
-            mcp_tool._load_mcp_server_env({"env_file": str(env_file)}).values()
+            _mcp_config._load_mcp_server_env({"env_file": str(env_file)}).values()
         )
         mcp_tool._servers["test_srv"] = server
 
         try:
-            handler = mcp_tool._make_tool_handler("test_srv", "explode", 120)
+            handler = _mcp_handlers._make_tool_handler("test_srv", "explode", 120)
             with self._patch_mcp_loop():
                 result = handler({})
             assert secret not in result
@@ -804,13 +809,13 @@ class TestToolHandler:
         mcp_tool._servers["test_srv"] = server
 
         factories = {
-            "list_resources": mcp_tool._make_list_resources_handler,
-            "read_resource": mcp_tool._make_read_resource_handler,
-            "list_prompts": mcp_tool._make_list_prompts_handler,
-            "get_prompt": mcp_tool._make_get_prompt_handler,
+            "list_resources": _mcp_handlers._make_list_resources_handler,
+            "read_resource": _mcp_handlers._make_read_resource_handler,
+            "list_prompts": _mcp_handlers._make_list_prompts_handler,
+            "get_prompt": _mcp_handlers._make_get_prompt_handler,
         }
         handler = (
-            mcp_tool._make_tool_handler("test_srv", "explode", 120)
+            _mcp_handlers._make_tool_handler("test_srv", "explode", 120)
             if operation == "tool"
             else factories[operation]("test_srv", 120)
         )
@@ -1305,15 +1310,15 @@ class TestToolsetInjection:
         ), patch.object(mcp_mod, "_server_connect_retry_after", {}), patch.object(
             mcp_mod, "_server_connect_failures", {}
         ), patch.object(
-            mcp_mod, "_load_mcp_config", return_value=fake_config
+            _mcp_config, "_load_mcp_config", return_value=fake_config
         ), patch.object(
-            mcp_mod, "_discover_and_register_server", side_effect=fail_discovery
+            _mcp_discovery, "_discover_and_register_server", side_effect=fail_discovery
         ), patch.object(
-            mcp_mod, "_ensure_mcp_loop"
+            _mcp_loop, "_ensure_mcp_loop"
         ), patch.object(
-            mcp_mod, "_run_on_mcp_loop", side_effect=run_on_loop
+            _mcp_loop, "_run_on_mcp_loop", side_effect=run_on_loop
         ), caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
-            assert mcp_mod.discover_mcp_tools() == []
+            assert _mcp_discovery.discover_mcp_tools() == []
 
         assert "server-secret-value" not in caplog.text
         assert "server-secret-value" not in connect_errors["private"]
@@ -1631,7 +1636,7 @@ class TestSanitizeError:
         assert result == "normal error message"
 
     def test_redacts_explicit_server_values(self):
-        from tools.mcp_tool import _sanitize_error
+        from tools.mcp_tool_common import _sanitize_error
 
         result = _sanitize_error(
             "request failed at /server-secret-value with PIN 123",
@@ -3366,7 +3371,8 @@ class TestRedirectHeaderStripper:
         assert next_request.headers["x-tenant"] == "t"
 
 
-def test_missing_server_env_file_warns_and_falls_back(
+class TestLoadMCPConfigEnvFile:
+    def test_missing_server_env_file_warns_and_falls_back(
         self, tmp_path, monkeypatch, caplog
     ):
         """A missing file is visible to operators but does not disable the server."""
@@ -3386,7 +3392,7 @@ def test_missing_server_env_file_warns_and_falls_back(
         ), patch("hermes_cli.env_loader.load_hermes_dotenv"), caplog.at_level(
             logging.WARNING, logger="tools.mcp_tool"
         ):
-            from tools.mcp_tool import _load_mcp_config
+            from tools.mcp_tool_config import _load_mcp_config
 
             result = _load_mcp_config()
 
@@ -3395,7 +3401,7 @@ def test_missing_server_env_file_warns_and_falls_back(
         assert "process-token" not in caplog.text
 
 
-def test_relative_server_env_file_uses_terminal_cwd(self, tmp_path, monkeypatch):
+    def test_relative_server_env_file_uses_terminal_cwd(self, tmp_path, monkeypatch):
         """Relative env files resolve from the active terminal working directory."""
         gateway_cwd = tmp_path / "gateway"
         project_cwd = tmp_path / "project"
@@ -3421,7 +3427,7 @@ def test_relative_server_env_file_uses_terminal_cwd(self, tmp_path, monkeypatch)
             "hermes_cli.config.load_config",
             return_value={"mcp_servers": servers},
         ), patch("hermes_cli.env_loader.load_hermes_dotenv"):
-            from tools.mcp_tool import _load_mcp_config
+            from tools.mcp_tool_config import _load_mcp_config
 
             result = _load_mcp_config()
 
@@ -3429,7 +3435,7 @@ def test_relative_server_env_file_uses_terminal_cwd(self, tmp_path, monkeypatch)
         assert os.environ["MCP_TEST_TOKEN"] == "process-token"
 
 
-def test_server_env_file_is_isolated_and_overrides_profile_scope(
+    def test_server_env_file_is_isolated_and_overrides_profile_scope(
         self, tmp_path, monkeypatch
     ):
         """A server env file wins locally without leaking into sibling servers."""
@@ -3457,7 +3463,7 @@ def test_server_env_file_is_isolated_and_overrides_profile_scope(
                 "hermes_cli.config.load_config",
                 return_value={"mcp_servers": servers},
             ), patch("hermes_cli.env_loader.load_hermes_dotenv"):
-                from tools.mcp_tool import _load_mcp_config
+                from tools.mcp_tool_config import _load_mcp_config
 
                 result = _load_mcp_config()
         finally:
@@ -3468,15 +3474,13 @@ def test_server_env_file_is_isolated_and_overrides_profile_scope(
         assert os.environ["MCP_TEST_TOKEN"] == "process-token"
 
 
-def test_unreadable_server_env_file_warns_without_leaking_secret(
+    def test_unreadable_server_env_file_warns_without_leaking_secret(
         self, tmp_path, monkeypatch, caplog
     ):
         """Unreadable files fall back without logging their secret contents."""
-        import tools.mcp_tool as mcp_tool
-
         env_file = tmp_path / "unreadable.env"
         env_file.write_text("MCP_TEST_TOKEN=file-secret\n", encoding="utf-8")
-        monkeypatch.setattr(mcp_tool.os, "access", lambda _path, _mode: False)
+        monkeypatch.setattr(_mcp_config.os, "access", lambda _path, _mode: False)
         monkeypatch.setenv("MCP_TEST_TOKEN", "process-token")
         servers = {
             "project": {
@@ -3492,7 +3496,7 @@ def test_unreadable_server_env_file_warns_without_leaking_secret(
         ), patch("hermes_cli.env_loader.load_hermes_dotenv"), caplog.at_level(
             logging.WARNING, logger="tools.mcp_tool"
         ):
-            result = mcp_tool._load_mcp_config()
+            result = _mcp_config._load_mcp_config()
 
         assert result["project"]["headers"]["Authorization"] == "Bearer process-token"
         assert "MCP env_file is not readable" in caplog.text
@@ -3500,7 +3504,7 @@ def test_unreadable_server_env_file_warns_without_leaking_secret(
         assert "process-token" not in caplog.text
 
 
-def test_invalid_server_entry_does_not_drop_healthy_sibling(self, caplog):
+    def test_invalid_server_entry_does_not_drop_healthy_sibling(self, caplog):
         servers = {
             "broken": "not-a-server-config",
             "healthy": {"url": "https://mcp.example.com/mcp"},
@@ -3512,7 +3516,7 @@ def test_invalid_server_entry_does_not_drop_healthy_sibling(self, caplog):
         ), patch("hermes_cli.env_loader.load_hermes_dotenv"), caplog.at_level(
             logging.WARNING, logger="tools.mcp_tool"
         ):
-            from tools.mcp_tool import _load_mcp_config
+            from tools.mcp_tool_config import _load_mcp_config
 
             result = _load_mcp_config()
 

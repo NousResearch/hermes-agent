@@ -572,7 +572,7 @@ class TestProbeEnvResolution:
         async def _must_not_connect(*_args, **_kwargs):
             raise AssertionError("suspicious config reached the connector")
 
-        monkeypatch.setattr("tools.mcp_tool._connect_server", _must_not_connect)
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _must_not_connect)
 
         with pytest.raises(ValueError, match="network egress"):
             mc._probe_single_server("suspicious", {

@@ -10,7 +10,7 @@ from typing import Iterable, Optional
 from tools.mcp_tool_errors import _is_method_not_found_error, _unwrap_exception_group
 from tools.mcp_tool_schema import mcp_prefixed_tool_name
 from tools.mcp_tool_registration import _forget_mcp_tool_server
-from tools.mcp_tool_common import _core
+from tools.mcp_tool_common import _core, _exc_str, _sanitize_error
 from tools import mcp_tool_registration as _registration
 
 logger = logging.getLogger("tools.mcp_tool")
@@ -216,6 +216,7 @@ class MCPServerHealthMixin:
         The NEXT call verifies via :meth:`ensure_healthy` and recycles the transport if the probe fails,
         instead of the connection silently staying poisoned until process restart (#81051/#77765/#84132).
         """
+        reason = _sanitize_error(reason, self._redaction_values) if reason else reason
         if self._suspect_reason is None and reason:
             logger.warning("MCP server '%s': connection marked suspect (%s); next call will health-check it",
                            self.name, reason)
@@ -238,7 +239,8 @@ class MCPServerHealthMixin:
             root = _unwrap_exception_group(exc)
             logger.warning("MCP server '%s': suspect connection (%s) failed health check (%s: %s) — "
                            "requesting reconnect (state: suspect → degraded)",
-                           self.name, reason, type(root).__name__, root)
+                           self.name, reason, type(root).__name__,
+                           _sanitize_error(_exc_str(root), self._redaction_values))
             self._suspect_reason = None
             self.mark_suspect(f"health check failed after {reason}")
             self.session = None

@@ -183,7 +183,7 @@ def test_oauth_worker_error_redacts_server_env_file_values(tmp_path):
     ):
         token_storage.return_value.snapshot.return_value = object()
         get_manager.return_value.remove.return_value = None
-        web_server._run_dashboard_mcp_oauth(flow, cfg)
+        _web_server_mcp._run_dashboard_mcp_oauth(flow, cfg)
 
     assert flow.status == "error"
     assert flow.error is not None

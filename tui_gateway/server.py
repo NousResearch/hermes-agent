@@ -4128,6 +4128,20 @@ def _is_model_switch_marker(entry: Any) -> bool:
     return isinstance(content, str) and content.startswith(_MODEL_SWITCH_MARKER_PREFIX)
 
 
+def _is_pivot_marker(entry: Any) -> bool:
+    """Whether a history entry is a marker the gateway splices in mid-turn.
+
+    Model switches and personality changes both inject a ``role=user`` pivot
+    into the live history from the RPC thread while a turn may be running, so
+    either one can be the sole reason turn-start and current history differ.
+    Only the model-switch marker is self-replacing, which is why the dedup in
+    :func:`_append_model_switch_marker` stays narrower than this.
+    """
+    if _is_model_switch_marker(entry):
+        return True
+    return isinstance(entry, dict) and entry.get("display_kind") == "personality_switch"
+
+
 def _append_model_switch_marker(session: dict | None, *, model: str, provider: str) -> None:
     """Record a real system-history pivot after a live model switch.
 
@@ -10632,10 +10646,15 @@ def _run_prompt_submit(
                             session["history_version"] = history_version + 1
                         else:
                             # History mutated externally during the turn.
-                            # Check if the only mutation was a model-switch
-                            # marker inserted mid-turn (#76870).  If so the
-                            # agent output is still valid — merge it into the
-                            # current history that now contains the marker.
+                            # Check if the only mutation was a pivot marker
+                            # the gateway itself inserted mid-turn (#76870).
+                            # If so the agent output is still valid — merge it
+                            # into the current history that now contains the
+                            # marker. A personality change counts here too:
+                            # unlike a model switch it has no pending queue, so
+                            # `/personality` during a running turn lands
+                            # immediately and used to read as a genuine desync,
+                            # dropping the finished turn (#82756).
                             #
                             # _append_model_switch_marker strips prior markers
                             # in-place then appends a new one, so the delta
@@ -10643,19 +10662,19 @@ def _run_prompt_submit(
                             # content, not indices.
                             current_history = list(session["history"])
                             history_no_markers = [
-                                e for e in history if not _is_model_switch_marker(e)
+                                e for e in history if not _is_pivot_marker(e)
                             ]
                             current_no_markers = [
-                                e for e in current_history if not _is_model_switch_marker(e)
+                                e for e in current_history if not _is_pivot_marker(e)
                             ]
-                            model_switch_only = (
+                            pivot_only = (
                                 current_no_markers == history_no_markers
                                 and any(
-                                    _is_model_switch_marker(e)
+                                    _is_pivot_marker(e)
                                     for e in current_history
                                 )
                             )
-                            if model_switch_only:
+                            if pivot_only:
                                 # The agent's new messages start after the
                                 # turn-start history.  Guard against
                                 # auto-compression making result["messages"]

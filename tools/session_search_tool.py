@@ -916,7 +916,7 @@ def _discover(
     return json.dumps(_final_payload, ensure_ascii=False)
 
 
-def session_search(
+def _session_search_impl(
     query: str = "",
     role_filter: str = None,
     limit: int = 3,
@@ -930,6 +930,8 @@ def session_search(
     sort: str = None,
     # Cross-profile (any shape)
     profile: str = None,
+    *,
+    _owned_dbs: Optional[List[Any]] = None,
 ) -> str:
     """Single-shape tool. Mode inferred from which args are set.
 
@@ -942,15 +944,6 @@ def session_search(
     ``@session:<profile>/<id>`` link). Scroll wins over read/discovery when an
     anchor is set — the agent has asked for a specific slice.
     """
-    if db is None:
-        try:
-            from hermes_state import SessionDB
-            db = SessionDB()
-        except Exception:
-            logging.debug("SessionDB unavailable for session_search", exc_info=True)
-            from hermes_state import format_session_db_unavailable
-            return tool_error(format_session_db_unavailable(), success=False)
-
     # Normalise a raw `@session:<profile>/<id>` link value passed as session_id.
     # Session ids never contain "/", so a slash unambiguously means profile/id —
     # always strip the prefix off the id, and adopt the embedded profile only
@@ -973,6 +966,8 @@ def session_search(
             return tool_error(f"profile '{profile}': {e}", success=False)
         if profile_db is not None:
             db = profile_db
+            if _owned_dbs is not None:
+                _owned_dbs.append(profile_db)
             current_session_id = None
 
     # Scroll shape takes precedence — explicit anchor beats any query.
@@ -1039,6 +1034,57 @@ def session_search(
         current_session_id=current_session_id,
         link_profile=profile,
     )
+
+
+def session_search(
+    query: str = "",
+    role_filter: str = None,
+    limit: int = 3,
+    db=None,
+    current_session_id: str = None,
+    # Scroll shape
+    session_id: str = None,
+    around_message_id: int = None,
+    window: int = 5,
+    # Discovery shape
+    sort: str = None,
+    # Cross-profile (any shape)
+    profile: str = None,
+) -> str:
+    """Run session search and close databases opened by this invocation."""
+    owned_dbs: List[Any] = []
+    if db is None:
+        try:
+            from hermes_state import SessionDB
+
+            db = SessionDB()
+            owned_dbs.append(db)
+        except Exception:
+            logging.debug("SessionDB unavailable for session_search", exc_info=True)
+            from hermes_state import format_session_db_unavailable
+
+            return tool_error(format_session_db_unavailable(), success=False)
+
+    try:
+        return _session_search_impl(
+            query=query,
+            role_filter=role_filter,
+            limit=limit,
+            db=db,
+            current_session_id=current_session_id,
+            session_id=session_id,
+            around_message_id=around_message_id,
+            window=window,
+            sort=sort,
+            profile=profile,
+            _owned_dbs=owned_dbs,
+        )
+    finally:
+        for owned_db in reversed(owned_dbs):
+            try:
+                owned_db.close()
+            except Exception:
+                logging.debug("Failed to close session_search SessionDB", exc_info=True)
 
 
 def check_session_search_requirements() -> bool:

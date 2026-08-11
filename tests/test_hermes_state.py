@@ -3,6 +3,7 @@
 import sqlite3
 import time
 import json
+import threading
 from pathlib import Path
 from unittest import mock
 
@@ -103,6 +104,114 @@ def _no_fts_rebuild_throttle(monkeypatch):
 
 
 class TestConnectionLifecycle:
+    def test_failed_writable_open_does_not_leak_tracked_connection(
+        self, tmp_path, monkeypatch
+    ):
+        """A failed schema init must close the connection opened before it."""
+        from hermes_cli.sqlite_safe_read import has_live_connection
+
+        db_path = tmp_path / "state.db"
+        opened = []
+        real_connect = hermes_state._connect_tracked_db
+
+        def capture_connect(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            opened.append(conn)
+            return conn
+
+        monkeypatch.setattr(hermes_state, "_connect_tracked_db", capture_connect)
+        monkeypatch.setattr(
+            SessionDB,
+            "_init_schema",
+            mock.Mock(side_effect=RuntimeError("schema init failed")),
+        )
+
+        try:
+            with pytest.raises(RuntimeError, match="schema init failed"):
+                SessionDB(db_path=db_path)
+            assert has_live_connection(db_path) is False
+        finally:
+            for conn in opened:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    def test_failed_wal_read_open_does_not_leak_tracked_connection(
+        self, tmp_path, monkeypatch
+    ):
+        """A post-open read setup failure must close its unregistered conn."""
+        from hermes_cli import sqlite_safe_read
+
+        db_path = tmp_path / "state.db"
+        db = SessionDB(db_path=db_path)
+        opened = []
+        real_connect = hermes_state._connect_tracked_db
+        real_pragmas = hermes_state.apply_database_pragmas
+
+        def capture_connect(*args, **kwargs):
+            conn = real_connect(*args, **kwargs)
+            opened.append(conn)
+            return conn
+
+        def fail_pragmas(*args, **kwargs):
+            raise RuntimeError("read setup failed")
+
+        monkeypatch.setattr(hermes_state, "_connect_tracked_db", capture_connect)
+        monkeypatch.setattr(hermes_state, "apply_database_pragmas", fail_pragmas)
+        before = dict(sqlite_safe_read._live_connections)
+        db._wal_active = True
+
+        try:
+            with pytest.raises(RuntimeError, match="read setup failed"):
+                db._get_read_conn()
+            assert sqlite_safe_read._live_connections == before
+        finally:
+            monkeypatch.setattr(
+                hermes_state, "apply_database_pragmas", real_pragmas
+            )
+            for conn in opened:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+            db.close()
+
+    def test_close_closes_wal_read_connection_created_on_worker_thread(
+        self, tmp_path
+    ):
+        """SessionDB.close() must drain read conns created by other threads."""
+        from hermes_cli.sqlite_safe_read import has_live_connection
+
+        db_path = tmp_path / "state.db"
+        db = SessionDB(db_path=db_path)
+        db._wal_active = True
+        opened = threading.Event()
+        release = threading.Event()
+        errors = []
+
+        def open_read_connection():
+            try:
+                assert db._get_read_conn() is not None
+                opened.set()
+                release.wait(timeout=10)
+            except BaseException as exc:
+                errors.append(exc)
+                opened.set()
+
+        worker = threading.Thread(target=open_read_connection)
+        worker.start()
+        assert opened.wait(timeout=10)
+        assert not errors
+
+        db.close()
+        assert has_live_connection(db_path) is False
+
+        release.set()
+        worker.join(timeout=10)
+        assert not worker.is_alive()
+        assert not errors
+
     def test_read_only_close_never_requests_wal_checkpoint(self, tmp_path):
         db_path = tmp_path / "state.db"
         writable = SessionDB(db_path=db_path)

@@ -1437,6 +1437,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # in-flight run by run_id.
         self._run_approval_sessions: Dict[str, str] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._session_dbs: Dict[str, Any] = {}
+        self._session_db_cache_lock = threading.Lock()
+        self._session_db_cache_closed = False
         # Last-known-good resolved model per session (keyed by gateway_session_key
         # ONLY — never session_id, which rotates/is ephemeral for one-off API
         # server requests; "*" is the process-wide fallback), mirroring
@@ -2182,15 +2185,29 @@ class APIServerAdapter(BasePlatformAdapter):
         from hermes_state import SessionDB
 
         key = str(home)
-        cache = getattr(self, "_session_dbs", None)
-        if cache is None:
-            cache = {}
-            self._session_dbs = cache
-        db = cache.get(key)
-        if db is None:
-            db = SessionDB(db_path=home / "state.db")
-            cache[key] = db
-        return db
+        with self._session_db_cache_lock:
+            if self._session_db_cache_closed:
+                return None
+            db = self._session_dbs.get(key)
+            if db is None:
+                db = SessionDB(db_path=home / "state.db")
+                self._session_dbs[key] = db
+            return db
+
+    def _close_cached_session_dbs(self) -> None:
+        """Close SessionDB handles owned by this adapter's profile cache."""
+        with self._session_db_cache_lock:
+            self._session_db_cache_closed = True
+            cached = list(self._session_dbs.values())
+            self._session_dbs.clear()
+        shared_db = getattr(self, "_session_db", None)
+        for db in cached:
+            if db is shared_db:
+                continue
+            try:
+                db.close()
+            except Exception:
+                logger.debug("Failed to close API-server SessionDB", exc_info=True)
 
     def _ensure_session_db(self):
         """Lazily initialise and return the SessionDB for the active profile home.
@@ -2232,15 +2249,17 @@ class APIServerAdapter(BasePlatformAdapter):
 
             home = get_hermes_home()
             key = str(home)
-            cache = getattr(self, "_session_dbs", None)
-            if cache is not None and cache.get(key) is not None:
-                return cache[key]
+            with self._session_db_cache_lock:
+                cached = self._session_dbs.get(key)
+            if cached is not None:
+                return cached
             if self._session_db_lock is None:
                 self._session_db_lock = asyncio.Lock()
             async with self._session_db_lock:
-                cache = getattr(self, "_session_dbs", None)
-                if cache is not None and cache.get(key) is not None:
-                    return cache[key]
+                with self._session_db_cache_lock:
+                    cached = self._session_dbs.get(key)
+                if cached is not None:
+                    return cached
                 return await asyncio.to_thread(self._open_and_cache_session_db, home)
         except Exception as e:
             logger.debug("SessionDB unavailable for API server: %s", e)
@@ -7368,6 +7387,9 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.warning("[%s] aiohttp not installed", self.name)
             return False
 
+        with self._session_db_cache_lock:
+            self._session_db_cache_closed = False
+
         if not self._api_key_passes_startup_guard():
             # A rejected API_SERVER_KEY is a configuration error, not a
             # transient blip — the key will not become valid on its own. A
@@ -7538,13 +7560,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug(
                     "Failed to close response store for %s", self.name, exc_info=True,
                 )
-        if self._site:
-            await self._site.stop()
-            self._site = None
-        if self._runner:
-            await self._runner.cleanup()
-            self._runner = None
-        self._app = None
+        try:
+            if self._site:
+                await self._site.stop()
+                self._site = None
+            if self._runner:
+                await self._runner.cleanup()
+                self._runner = None
+        finally:
+            self._close_cached_session_dbs()
+            self._app = None
         logger.info("[%s] API server stopped", self.name)
 
     async def send(

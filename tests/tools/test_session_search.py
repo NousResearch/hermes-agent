@@ -94,6 +94,50 @@ class TestFormatTimestamp:
 # =========================================================================
 
 class TestBrowseShape:
+    def test_lazy_database_is_closed_after_search(self, monkeypatch):
+        class _DB:
+            closed = 0
+
+            def list_sessions_rich(self, **_kwargs):
+                return []
+
+            def close(self):
+                self.closed += 1
+
+        db = _DB()
+        monkeypatch.setattr("hermes_state.SessionDB", lambda: db)
+
+        result = json.loads(session_search())
+
+        assert result["success"] is True
+        assert db.closed == 1
+
+    def test_cross_profile_database_is_closed_but_shared_database_is_not(
+        self, monkeypatch
+    ):
+        class _DB:
+            def __init__(self):
+                self.closed = 0
+
+            def list_sessions_rich(self, **_kwargs):
+                return []
+
+            def close(self):
+                self.closed += 1
+
+        shared_db = _DB()
+        profile_db = _DB()
+        monkeypatch.setattr(
+            "tools.session_search_tool._resolve_profile_db",
+            lambda _profile: profile_db,
+        )
+
+        result = json.loads(session_search(db=shared_db, profile="work"))
+
+        assert result["success"] is True
+        assert profile_db.closed == 1
+        assert shared_db.closed == 0
+
     def test_no_args_returns_recent_sessions(self, db):
         _seed_modpack_sessions(db)
         result = json.loads(session_search(db=db))

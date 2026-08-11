@@ -4208,13 +4208,14 @@ class AIAgent:
         )
 
     def shutdown_memory_provider(self, messages: list = None) -> None:
-        """Shut down the memory provider and context engine — call at actual session boundaries.
+        """Shut down the memory provider and context engine at session end.
 
-        This calls on_session_end() then shutdown_all() on the memory
-        manager, and on_session_end() on the context engine.
-        NOT called per-turn — only at CLI exit, /reset, gateway
-        session expiry, etc.
+        Idempotent: gateway cleanup and AIAgent.close() may share this
+        ownership boundary.
         """
+        if getattr(self, "_memory_provider_shutdown", False):
+            return
+        self._memory_provider_shutdown = True
         if self._memory_manager:
             try:
                 self._memory_manager.on_session_end(messages or [])
@@ -4399,6 +4400,17 @@ class AIAgent:
         Safe to call multiple times (idempotent).  Each cleanup step is
         independently guarded so a failure in one does not prevent the rest.
         """
+        # AIAgent.close() is the hard owner boundary. Gateway cleanup may
+        # call shutdown_memory_provider() first; its idempotence prevents
+        # duplicate extraction while direct callers cannot skip provider close.
+        try:
+            session_messages = getattr(self, "_session_messages", None)
+            self.shutdown_memory_provider(
+                session_messages if isinstance(session_messages, list) else None
+            )
+        except Exception:
+            pass
+
         task_id = getattr(self, "session_id", None) or ""
 
         # 1. Kill background processes for this task

@@ -103,6 +103,39 @@ class TestSkipsRemoteBackends:
         monkeypatch.setenv("TERMINAL_ENV", "ssh")
         assert env_probe.get_environment_probe_line() == ""
 
+    def test_remote_profile_ignores_cached_local_probe(self, monkeypatch):
+        from tools import terminal_tool
+
+        with env_probe._CACHE_LOCK:
+            env_probe._CACHED_LINE = "Python toolchain: host-only."
+            env_probe._PROBE_DONE.set()
+        monkeypatch.setattr(
+            terminal_tool,
+            "_terminal_backend_identity",
+            lambda: ("ssh", "ssh"),
+        )
+
+        assert env_probe.get_environment_probe_line() == ""
+
+    def test_remote_profile_does_not_start_local_probe_worker(self, monkeypatch):
+        from tools import terminal_tool
+
+        starts = []
+        monkeypatch.setattr(
+            terminal_tool,
+            "_terminal_backend_identity",
+            lambda: ("ssh", "ssh"),
+        )
+        monkeypatch.setattr(
+            env_probe,
+            "_ensure_probe_started",
+            lambda: starts.append(True),
+        )
+
+        env_probe.warm_environment_probe_async()
+
+        assert starts == []
+
 
 class TestCaching:
     """The probe runs once per process — the result is deterministic for
@@ -128,6 +161,17 @@ class TestCaching:
         # Only the first call probes — caller-counting confirms it.
         # Two calls (python3 + python) on first invocation, zero after.
         assert len(calls) == 2
+
+    def test_worker_inherits_profile_context(self, monkeypatch):
+        import contextvars
+
+        profile = contextvars.ContextVar("profile", default="default")
+        token = profile.set("active-profile")
+        monkeypatch.setattr(env_probe, "_build_probe_line", profile.get)
+        try:
+            assert env_probe.get_environment_probe_line() == "active-profile"
+        finally:
+            profile.reset(token)
 
 
 class TestRobustness:

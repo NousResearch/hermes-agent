@@ -351,6 +351,40 @@ def test_webhook_draft_is_parked_in_triage_with_source_metadata(board):
         assert task.metadata["draft"] is True
 
 
+def test_external_webhook_review_routes_changes_to_dev_on_same_pr(board):
+    with board as conn:
+        task_id = kb.ingest_pull_request(
+            conn,
+            repository="acme/repo",
+            number=77,
+            head_sha="e" * 40,
+            title="External PR",
+            reviewer="reviewer",
+            checks_passed=False,
+            mergeable=False,
+        )
+        assert task_id is not None
+        review = kb.claim_review_task(conn, task_id, claimer="worker:reviewer")
+        assert review is not None
+        remediation_id = kb.request_review_changes(
+            conn,
+            task_id,
+            summary="Fix failing check and merge conflict on the existing PR branch",
+            metadata={"findings": [{"severity": "high", "path": "src/app.py"}]},
+            expected_run_id=review.current_run_id,
+        )
+        assert remediation_id == task_id
+        task = kb.get_task(conn, task_id)
+        assert task is not None
+        assert task.assignee == "dev"
+        assert task.status == "ready"
+        assert task.metadata["original_implementer"] == "dev"
+        assert task.metadata["canonical"] is True
+        assert task.metadata["lane"] == "DEV"
+        assert task.metadata["coding_agent"] == "codex"
+        assert task.metadata["existing_pr_remediation"] is True
+
+
 
 def test_webhook_replay_preserves_native_review_claim(board):
     with board as conn:
@@ -485,6 +519,7 @@ def test_webhook_same_head_refreshes_live_metadata_and_status(board):
             conn, repository="acme/repo", number=112, head_sha="d" * 40,
             title="Draft PR", draft=True, reviewer="reviewer",
         )
+        assert task_id is not None
         assert kb.get_task(conn, task_id).metadata["draft"] is True
 
         promoted_id = kb.ingest_pull_request(
@@ -499,13 +534,15 @@ def test_webhook_same_head_refreshes_live_metadata_and_status(board):
         assert promoted.metadata["mergeable"] is True
         assert promoted.metadata["head_sha"] == "d" * 40
 
-        blocked_id = kb.ingest_pull_request(
+        review_id = kb.ingest_pull_request(
             conn, repository="acme/repo", number=112, head_sha="d" * 40,
             title="Promoted PR", draft=False, mergeable=False, reviewer="reviewer",
         )
-        assert blocked_id == task_id
-        assert kb.get_task(conn, task_id).status == "blocked"
-        assert kb.get_task(conn, task_id).metadata["mergeable"] is False
+        assert review_id == task_id
+        refreshed = kb.get_task(conn, task_id)
+        assert refreshed is not None
+        assert refreshed.status == "review"
+        assert refreshed.metadata["mergeable"] is False
 
 
 def test_webhook_same_head_replay_is_idempotent_after_metadata_refresh(board):

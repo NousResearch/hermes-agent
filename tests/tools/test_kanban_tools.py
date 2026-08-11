@@ -292,6 +292,86 @@ def test_block_happy_path(worker_env):
         conn.close()
 
 
+def _make_review_worker_env(monkeypatch, tmp_path):
+    """Create a genuinely reviewer-claimed card for block-guard tests."""
+    from pathlib import Path as _Path
+    from hermes_cli import kanban_db as kb
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_PROFILE", "reviewer")
+    monkeypatch.setattr(_Path, "home", lambda: tmp_path)
+    kb._INITIALIZED_PATHS.clear()
+    kb.init_db()
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(
+            conn, title="Review PR #9", assignee="reviewer", initial_status="review",
+            metadata={"review_identity": "github-pr:acme/repo:9:" + "a" * 40},
+        )
+        run = kb.claim_review_task(conn, tid, claimer="worker:reviewer")
+        assert run is not None
+    finally:
+        conn.close()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run.current_run_id))
+    return tid
+
+
+def test_review_findings_cannot_use_generic_block(monkeypatch, tmp_path):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    tid = _make_review_worker_env(monkeypatch, tmp_path)
+    out = json.loads(kt._handle_block({"reason": "failed check and missing tests"}))
+    assert "error" in out
+    assert "kanban_review_changes" in out["error"]
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+
+
+def test_review_self_review_rejection_stays_dev_actionable(monkeypatch, tmp_path):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    tid = _make_review_worker_env(monkeypatch, tmp_path)
+    out = json.loads(kt._handle_block({
+        "reason": "GitHub permission rejected self-review/request-changes",
+        "kind": "capability",
+    }))
+    assert "error" in out
+    conn = kb.connect()
+    try:
+        assert kb.get_task(conn, tid).status == "running"
+    finally:
+        conn.close()
+
+
+def test_review_external_human_gate_remains_blockable(monkeypatch, tmp_path):
+    from tools import kanban_tools as kt
+    from hermes_cli import kanban_db as kb
+
+    tid = _make_review_worker_env(monkeypatch, tmp_path)
+    reason = "Human gate: owner approval required for production signing"
+    out = json.loads(kt._handle_block({"reason": reason, "kind": "needs_input"}))
+    assert out["ok"] is True
+    conn = kb.connect()
+    try:
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        event = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id=? AND kind='blocked' ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert json.loads(event["payload"])["reason"] == reason
+    finally:
+        conn.close()
+
+
 def _make_goal_mode_worker_env(monkeypatch, tmp_path):
     """Set up an isolated HERMES_HOME with one claimed goal_mode task,
     matching the pattern used by the kanban_complete judge gate tests."""

@@ -82,17 +82,19 @@ def test_submit_review_cli_defaults_reviewer_and_requires_metadata(kanban_home):
     assert task.assignee == "orion"
 
 
-def test_ingest_pr_failed_checks_are_blocked(kanban_home):
+def test_ingest_pr_failed_checks_still_enter_review(kanban_home):
     raw = kc.run_slash(
         "ingest-pr --repository acme/widget --number 8 --head-sha " + "b" * 40 + " "
         "--title 'Broken checks' --checks-passed false --json"
     )
-    assert json.loads(raw)["status"] == "blocked"
+    assert json.loads(raw)["status"] == "review"
 
 
 def test_ingest_pr_same_head_updates_review_after_checks_pass(kanban_home):
     key = "--repository acme/widget --number 9 --head-sha " + "c" * 40 + " --title 'Checks' --json"
-    assert json.loads(kc.run_slash(f"ingest-pr {key} --checks-passed false"))["status"] == "blocked"
+    failed = json.loads(kc.run_slash(f"ingest-pr {key} --checks-passed false"))
+    assert failed["status"] == "review"
+    assert failed["metadata"]["checks_passed"] is False
     updated = json.loads(kc.run_slash(f"ingest-pr {key} --checks-passed true --mergeable true --action synchronize"))
     assert updated["status"] == "review"
 

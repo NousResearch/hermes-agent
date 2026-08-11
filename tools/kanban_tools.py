@@ -31,6 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import Any, Optional
 
 from agent.redact import redact_sensitive_text
@@ -876,6 +877,37 @@ def _handle_complete(args: dict, **kw) -> str:
         return tool_error(f"kanban_complete: {e}")
 
 
+_REVIEW_HUMAN_GATE_RE = re.compile(
+    r"\b(?:human\s+gate|external\s+gate|control[- ]plane|credentials?|"
+    r"auth(?:entication|orization)?|owner\s+approval|sign(?:ing|ature)|"
+    r"permission|billing|infrastructure|infra)\b",
+    re.IGNORECASE,
+)
+_REVIEW_REMEDIATION_RE = re.compile(
+    r"\b(?:finding|defect|bug|conflict|failed?\s+check|check\s+failed|"
+    r"missing\s+tests?|test\s+fail(?:ure|ed)?|self[- ]review|"
+    r"request[_ -]?changes?|implementation|code\s+change)\b",
+    re.IGNORECASE,
+)
+
+
+def _review_lane_for_block_guard(task) -> bool:
+    """Use the coding gate's durable Review-lane classifier at runtime."""
+    from tools.coding_kanban_gate import _task_is_review_lane
+
+    return bool(_task_is_review_lane(task))
+
+
+def _review_block_is_human_gate(reason: str, kind: Optional[str]) -> bool:
+    """Allow Review to block only for an explicit external/control-plane gate."""
+    text = str(reason or "")
+    if _REVIEW_REMEDIATION_RE.search(text):
+        return False
+    if kind not in {None, "needs_input", "capability"}:
+        return False
+    return bool(_REVIEW_HUMAN_GATE_RE.search(text))
+
+
 def _handle_block(args: dict, **kw) -> str:
     """Transition the task to blocked with a reason a human will read."""
     delegated_err = _reject_delegated_child_mutation("kanban_block")
@@ -913,6 +945,19 @@ def _handle_block(args: dict, **kw) -> str:
         # and `transient` (or an unset kind) route back through
         # kanban_complete, which the judge now gates.
         task = kb.get_task(conn, tid)
+        if (
+            task
+            and _review_lane_for_block_guard(task)
+            and not _review_block_is_human_gate(reason, kind)
+        ):
+            conn.close()
+            return tool_error(
+                "kanban_block refused for Review findings: implementation defects, "
+                "conflicts, failed checks, missing tests, and self-review/request-"
+                "changes failures remain DEV-actionable. Call kanban_review_changes "
+                "with repository/PR/head-SHA findings. kanban_block is reserved "
+                "for an explicitly named external/control-plane human gate."
+            )
         if (
             task
             and task.goal_mode

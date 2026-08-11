@@ -239,6 +239,29 @@ class TestIsSatisfiedVersionAware:
         assert ld._is_satisfied(spec) is True
         assert ld.feature_missing("tool.trace_upload") == ()
 
+    def test_firecrawl_newer_install_not_force_downgraded(self, monkeypatch):
+        """#83852: the firecrawl pin is a range, not an exact pin.
+
+        When a newer firecrawl-py is already installed (e.g. 4.32.1 from an
+        unpinned base-image install), an exact ``==4.17.0`` pin makes
+        ``_is_satisfied`` return False and ``ensure`` then tries to install
+        the older version, which fails with ResolutionImpossible against core
+        constraints. A floor-and-ceiling range keeps the security lower-bound
+        while not forcing a downgrade of an already-working newer install."""
+        spec = ld.LAZY_DEPS["search.firecrawl"][0]
+        assert "==" not in ld._specifier_from_spec(spec)  # must be a range, not exact
+        self._fake_version(monkeypatch, {"firecrawl-py": "4.32.1"})
+        assert ld._is_satisfied(spec) is True
+        assert ld.feature_missing("search.firecrawl") == ()
+
+    def test_firecrawl_below_floor_still_flagged(self, monkeypatch):
+        """The range still enforces the security floor: an older version is
+        not silently accepted."""
+        spec = ld.LAZY_DEPS["search.firecrawl"][0]
+        self._fake_version(monkeypatch, {"firecrawl-py": "4.10.0"})
+        assert ld._is_satisfied(spec) is False
+        assert ld.feature_missing("search.firecrawl") == (spec,)
+
     @pytest.mark.parametrize(
         ("feature", "installed_versions", "expected_repairs"),
         [

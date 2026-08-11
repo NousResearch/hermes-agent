@@ -5,10 +5,27 @@ The old ``GatewayRunner.start()`` loop awaited each platform's connect()
 Telegram behind a dead proxy) therefore delayed every later platform's
 connect by a full timeout window, cascading one platform's failure onto
 WeChat/QQ/etc. These tests prove the connects now run concurrently.
+
+Why event-order, not wall-clock timings
+---------------------------------------
+An earlier version of this test recorded ``time.monotonic()`` around each
+connect() and asserted ``slow_start < fast_end``. That assertion is true in
+BOTH the serial and the parallel world, so it proved nothing:
+
+  serial:   slow_start=0, slow_end=0.300, fast_start=0.300, fast_end=0.300
+            -> 0 < 0.300  (passes, but it's serial!)
+  parallel: slow_start=0, fast_start=0,    fast_end=0.001, slow_end=0.300
+            -> 0 < 0.001  (passes)
+
+The only assertion that distinguishes them is ``fast_end`` occurring *before*
+``slow_end`` (true only when the two connects overlap). We record the
+connect start/end events in arrival order, which is fully independent of clock
+resolution -- ``time.monotonic()`` has only ~15 ms resolution on Windows
+(GetTickCount64), so parallel connects can land on the same tick and defeat any
+wall-clock comparison. Event ordering cannot be defeated by a coarse clock.
 """
 
 import asyncio
-import time
 
 import pytest
 
@@ -17,25 +34,38 @@ from gateway.platforms.base import BasePlatformAdapter
 from gateway.run import GatewayRunner
 
 
+class _OrderRecorder:
+    """Collects connect start/end events in arrival order (clock-agnostic)."""
+
+    events: list = []
+
+    @classmethod
+    def reset(cls) -> None:
+        cls.events = []
+
+    @classmethod
+    def index_of(cls, platform_value: str, kind: str) -> int:
+        for i, (name, evt) in enumerate(cls.events):
+            if name == platform_value and evt == kind:
+                return i
+        return -1
+
+
 class _TimingAdapter(BasePlatformAdapter):
-    """Adapter whose ``connect()`` records start/end wall time and sleeps.
+    """Adapter whose ``connect()`` records an event and sleeps.
 
     Used to prove the startup connect loop launches every platform's
     connect() concurrently rather than serially.
     """
-
-    _connect_timings: dict = {}
 
     def __init__(self, platform: Platform, sleep: float):
         super().__init__(PlatformConfig(enabled=True, token="***"), platform)
         self._sleep = sleep
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
-        start = time.monotonic()
-        _TimingAdapter._connect_timings[self.platform.value] = (start, None)
+        _OrderRecorder.events.append((self.platform.value, "start"))
         await asyncio.sleep(self._sleep)
-        _start, _ = _TimingAdapter._connect_timings[self.platform.value]
-        _TimingAdapter._connect_timings[self.platform.value] = (_start, time.monotonic())
+        _OrderRecorder.events.append((self.platform.value, "end"))
         return True
 
     async def disconnect(self) -> None:
@@ -53,11 +83,14 @@ async def test_startup_connects_platforms_concurrently(monkeypatch, tmp_path):
     """A slow platform must not block a later platform at startup (#83791).
 
     "slow" (Telegram) is listed first so a serial loop would fully block
-    "fast" (Discord). We prove the connect calls overlap: the slow platform's
-    connect starts before the fast platform's connect finishes.
+    "fast" (Discord). We prove the connect calls overlap by recording the
+    order in which connects finish: under a serial loop the slow platform's
+    connect ends *before* the fast one even begins, so the fast platform's
+    end can never precede the slow platform's end. Only parallel execution
+    puts ``fast_end`` before ``slow_end``.
     """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    _TimingAdapter._connect_timings = {}
+    _OrderRecorder.reset()
 
     config = GatewayConfig(
         platforms={
@@ -78,18 +111,18 @@ async def test_startup_connects_platforms_concurrently(monkeypatch, tmp_path):
 
     await runner.start()
 
-    timings = _TimingAdapter._connect_timings
-    assert timings, "no connect() timing was recorded"
-    slow_start, slow_end = timings[Platform.TELEGRAM.value]
-    _fast_start, fast_end = timings[Platform.DISCORD.value]
+    events = _OrderRecorder.events
+    assert events, "no connect() event was recorded"
 
-    # Overlap: slow platform began connecting before the fast one finished.
-    assert slow_start < fast_end, (
-        f"connects did not overlap (serial loop?): slow_start={slow_start}, "
-        f"fast_end={fast_end}"
+    fast_end = _OrderRecorder.index_of(Platform.DISCORD.value, "end")
+    slow_end = _OrderRecorder.index_of(Platform.TELEGRAM.value, "end")
+    assert fast_end != -1 and slow_end != -1, f"missing end events: {events}"
+
+    # Overlap proof: the fast platform finished before the slow one did,
+    # which is only possible if the two connects ran at the same time.
+    assert fast_end < slow_end, (
+        f"connects did not overlap (serial loop?): events={events}"
     )
-    # Sanity: the slow connect actually ran for ~its sleep duration.
-    assert (slow_end - slow_start) >= 0.25
     # Both platforms should be registered once startup settles.
     assert Platform.TELEGRAM in runner.adapters
     assert Platform.DISCORD in runner.adapters
@@ -123,6 +156,7 @@ async def test_startup_one_failing_platform_does_not_block_others(monkeypatch, t
             return {"id": chat_id}
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _OrderRecorder.reset()
 
     config = GatewayConfig(
         platforms={

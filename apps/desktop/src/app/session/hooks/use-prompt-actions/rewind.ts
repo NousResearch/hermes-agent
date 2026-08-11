@@ -39,8 +39,8 @@ export function truncateSubmitParams(
   truncateMessageId?: string,
   truncateRowId?: number
 ): Record<string, unknown> {
-  const hasOrdinal = typeof truncateOrdinal === 'number' && Number.isInteger(truncateOrdinal) && truncateOrdinal >= 0;
-  const hasRowId = typeof truncateRowId === 'number' && Number.isInteger(truncateRowId);
+  const hasOrdinal = typeof truncateOrdinal === 'number' && Number.isInteger(truncateOrdinal) && truncateOrdinal >= 0
+  const hasRowId = typeof truncateRowId === 'number' && Number.isInteger(truncateRowId)
   // Renderer ids are ephemeral (`${timestamp}-${index}-${role}` from
   // chat-messages.ts, plus older `user-…` / `assistant-…` shapes). Gateway
   // history never carries them — only durable `row_id` / platform message_id.
@@ -50,7 +50,7 @@ export function truncateSubmitParams(
       truncateMessageId.startsWith('assistant-') ||
       truncateMessageId.includes('-synthetic-') ||
       /^\d+-\d+-(user|assistant|tools)\b/.test(truncateMessageId))
-  const hasMessageId = typeof truncateMessageId === 'string' && truncateMessageId.length > 0 && !isSyntheticId;
+  const hasMessageId = typeof truncateMessageId === 'string' && truncateMessageId.length > 0 && !isSyntheticId
 
   if (!hasOrdinal && !hasMessageId && !hasRowId) {
     return {}

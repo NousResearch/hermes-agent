@@ -17,6 +17,7 @@ const buildOverlayState = (): OverlayState => ({
   pager: null,
   petPicker: false,
   pluginsHub: false,
+  skinPicker: false,
   secret: null,
   sessions: false,
   skillsHub: false,
@@ -39,6 +40,7 @@ export const $isBlocked = computed(
     pager,
     petPicker,
     pluginsHub,
+    skinPicker,
     secret,
     sessions,
     skillsHub,
@@ -57,6 +59,7 @@ export const $isBlocked = computed(
       pager ||
       petPicker ||
       pluginsHub ||
+      skinPicker ||
       secret ||
       sessions ||
       skillsHub ||
@@ -123,6 +126,7 @@ export const hasFloatingPanel = (overlay: OverlayState): boolean =>
     overlay.pager ||
     overlay.petPicker ||
     overlay.pluginsHub ||
+    overlay.skinPicker ||
     overlay.sessions ||
     overlay.skillsHub
   )
@@ -158,6 +162,7 @@ export const resetFlowOverlays = () =>
     modelPicker: $overlayState.get().modelPicker,
     petPicker: $overlayState.get().petPicker,
     pluginsHub: $overlayState.get().pluginsHub,
+    skinPicker: $overlayState.get().skinPicker,
     sessions: $overlayState.get().sessions,
     skillsHub: $overlayState.get().skillsHub
   })

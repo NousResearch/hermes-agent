@@ -3327,25 +3327,32 @@ def _clear_pending(sid: str | None = None) -> None:
 # ── Agent factory ────────────────────────────────────────────────────
 
 
-def resolve_skin() -> dict:
-    try:
-        from hermes_cli.skin_engine import init_skin_from_config, get_active_skin
+def _skin_payload(skin) -> dict:
+    return {
+        "name": skin.name,
+        "colors": skin.colors,
+        # Paired palettes: the TUI detects the terminal's polarity and
+        # prefers the matching hand-tuned block over adapting `colors`.
+        "light_colors": skin.light_colors,
+        "dark_colors": skin.dark_colors,
+        "branding": skin.branding,
+        "banner_logo": skin.banner_logo,
+        "banner_hero": skin.banner_hero,
+        "tool_prefix": skin.tool_prefix,
+        "help_header": (skin.branding or {}).get("help_header", ""),
+    }
 
-        init_skin_from_config(_load_cfg())
-        skin = get_active_skin()
-        return {
-            "name": skin.name,
-            "colors": skin.colors,
-            # Paired palettes: the TUI detects the terminal's polarity and
-            # prefers the matching hand-tuned block over adapting `colors`.
-            "light_colors": skin.light_colors,
-            "dark_colors": skin.dark_colors,
-            "branding": skin.branding,
-            "banner_logo": skin.banner_logo,
-            "banner_hero": skin.banner_hero,
-            "tool_prefix": skin.tool_prefix,
-            "help_header": (skin.branding or {}).get("help_header", ""),
-        }
+
+def resolve_skin(name: str | None = None) -> dict:
+    try:
+        from hermes_cli.skin_engine import get_active_skin, init_skin_from_config, load_skin
+
+        if name is None:
+            init_skin_from_config(_load_cfg())
+            skin = get_active_skin()
+        else:
+            skin = load_skin(name)
+        return _skin_payload(skin)
     except Exception:
         return {}
 

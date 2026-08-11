@@ -136,7 +136,7 @@ const paintTerminalDefaults = (theme: Theme) => {
   setTerminalForeground(isPaintableHex(background) ? themeToneHex(theme.color.text) : '')
 }
 
-const applySkin = (s: GatewaySkin) => {
+export const applySkinPreview = (s: GatewaySkin) => {
   lastSkin = s
   const theme = themeForSkin(s)
 
@@ -613,7 +613,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
   const handleReady = (skin?: GatewaySkin) => {
     if (skin) {
-      applySkin(skin)
+      applySkinPreview(skin)
     }
 
     // Kick off the config fetch once the gateway is actually ready. If handler
@@ -729,7 +729,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
       case 'skin.changed':
         if (ev.payload) {
-          applySkin(ev.payload)
+          applySkinPreview(ev.payload)
         }
 
         return

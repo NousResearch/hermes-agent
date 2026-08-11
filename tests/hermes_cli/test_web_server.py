@@ -1578,6 +1578,53 @@ class TestWebServerEndpoints:
         assert not get_env_value(env_var), "deleted endpoint's key still in .env"
 
 
+    def test_custom_endpoint_save_scopes_to_the_requested_profile(self):
+        """``?profile=<name>`` must write into that profile's config.yaml.
+
+        The desktop settings UI targets the active profile, so a custom
+        endpoint saved while a non-default profile is selected has to land in
+        that profile's config — not the dashboard process's default home.
+        Before this fix the handlers ran bare ``load_config``/``save_config``,
+        so every custom provider silently landed in the default profile and
+        never appeared for the profile the user was actually configuring.
+        """
+        from hermes_constants import (
+            set_hermes_home_override,
+            reset_hermes_home_override,
+        )
+        from hermes_cli import profiles as profiles_mod
+        from hermes_cli.config import load_config
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+
+        assert self.client.post(
+            "/api/providers/custom-endpoints?profile=worker",
+            json={
+                "id": "worker-proxy",
+                "name": "Worker Proxy",
+                "base_url": "https://llm.worker.example/v1",
+                "model": "worker/model-1",
+            },
+        ).status_code == 200
+
+        # The default (dashboard) profile must NOT have received the endpoint.
+        assert "worker-proxy" not in (load_config().get("providers") or {})
+
+        # The worker profile's own config.yaml must carry it.
+        token = set_hermes_home_override(str(worker_home))
+        try:
+            worker_cfg = load_config()
+        finally:
+            reset_hermes_home_override(token)
+        assert "worker-proxy" in (worker_cfg.get("providers") or {})
+
+        # And it comes back through the scoped GET, not the unscoped one.
+        scoped = self.client.get("/api/providers/custom-endpoints?profile=worker").json()
+        assert any(e["id"] == "worker-proxy" for e in scoped["endpoints"])
+        default_list = self.client.get("/api/providers/custom-endpoints").json()
+        assert not any(e["id"] == "worker-proxy" for e in default_list["endpoints"])
+
 
     def test_custom_endpoint_save_keeps_the_api_key_out_of_config(self):
         """The key belongs in .env behind key_env, never in config.yaml (#69449)."""

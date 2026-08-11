@@ -656,6 +656,11 @@ def _map_gemini_finish_reason(reason: str) -> str:
         "MAX_TOKENS": "length",
         "SAFETY": "content_filter",
         "RECITATION": "content_filter",
+        # Provider rejected the model's tool-call shape — not a safety
+        # refusal. Dedicated finish_reason so the agent loop can fail the
+        # turn instead of treating empty content as a successful stop.
+        "MALFORMED_FUNCTION_CALL": "malformed_function_call",
+        "UNEXPECTED_TOOL_CALL": "malformed_function_call",
         "OTHER": "stop",
     }
     return mapping.get(str(reason or "").upper(), "stop")

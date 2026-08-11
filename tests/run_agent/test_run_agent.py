@@ -5050,6 +5050,72 @@ class TestRetryExhaustion:
         # exactly one API call, no empty-response retry loop.
         assert agent.client.chat.completions.create.call_count == 1
 
+    def test_malformed_function_call_surfaced_not_retried(self, agent):
+        """Gemini MALFORMED_FUNCTION_CALL must fail the turn, not succeed empty.
+
+        Regression #83869: native Gemini returns HTTP 200 with
+        ``finish_reason=malformed_function_call`` and empty content. That used
+        to fall through to empty-content retries and be saved as a successful
+        ``(empty)`` trajectory. Surface it as a failed, non-completed turn
+        without treating it as a safety refusal.
+        """
+        self._setup_agent(agent)
+        malformed_resp = _mock_response(
+            content=None, finish_reason="malformed_function_call",
+        )
+        agent.client.chat.completions.create.return_value = malformed_resp
+        with (
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("please call a tool")
+        assert result.get("completed") is False
+        assert result.get("failed") is True
+        assert "malformed_function_call" in result.get("error", "")
+        assert result.get("turn_exit_reason") == "malformed_function_call"
+        final = result.get("final_response") or ""
+        assert "malformed function call" in final.lower()
+        assert "not a safety refusal" in final.lower()
+        assert "content_policy_blocked" not in result.get("error", "")
+        assert "(empty)" not in final
+        # Deterministic for the unchanged prompt — not retried as empty.
+        assert agent.client.chat.completions.create.call_count == 1
+
+    def test_malformed_function_call_tries_fallback_once(self, agent):
+        """A pending fallback may recover from a Gemini malformed tool call."""
+        self._setup_agent(agent)
+        agent._fallback_chain = [
+            {"provider": "openrouter", "model": "anthropic/claude-sonnet-4.7"},
+        ]
+        agent._fallback_index = 0
+        malformed_resp = _mock_response(
+            content=None, finish_reason="malformed_function_call",
+        )
+        fallback_resp = _mock_response(
+            content="Recovered on fallback", finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            malformed_resp, fallback_resp,
+        ]
+
+        def _fake_activate(reason=None):
+            agent._fallback_index = len(agent._fallback_chain)
+            return True
+
+        with (
+            patch.object(agent, "_try_activate_fallback", side_effect=_fake_activate) as mock_fallback,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("please call a tool")
+
+        assert result.get("completed") is True
+        assert result.get("final_response") == "Recovered on fallback"
+        mock_fallback.assert_called_once_with()
+        assert agent.client.chat.completions.create.call_count == 2
+
 
     def test_build_api_kwargs_error_no_unbound_local(self, agent):
         """When _build_api_kwargs raises, except handler must not crash with UnboundLocalError.

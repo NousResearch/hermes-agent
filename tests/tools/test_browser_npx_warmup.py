@@ -58,6 +58,23 @@ def test_invokes_npx_with_ignore_scripts_prefer_offline_and_pinned_spec():
     ]
 
 
+def test_stdin_is_explicitly_devnull_not_inherited():
+    """Every subprocess call in tools/ must set stdin= explicitly
+    (scripts/check_subprocess_stdin.py) — in the TUI gateway, an inherited
+    stdin fd can be consumed by a child and cause the gateway's own
+    JSON-RPC stdin read to see a premature EOF (issue #14036). This call
+    has no reason to read from stdin at all, so it must be DEVNULL, not
+    merely "present in kwargs somewhere" (the checker is a literal-argument
+    textual scan, so stdin= folded into a shared kwargs dict wouldn't
+    satisfy it either — it must appear as a literal keyword on the call)."""
+    with patch("tools.browser_tool._resolve_npx_bin", return_value="/usr/bin/npx"), \
+         patch("subprocess.Popen", return_value=_mock_proc()) as mock_popen:
+        warm_agent_browser_npx_cache()
+
+    _args, kwargs = mock_popen.call_args
+    assert kwargs.get("stdin") == subprocess.DEVNULL
+
+
 def test_captures_stdout_and_stderr_instead_of_inheriting_parent_fds():
     """The npx registry fetch runs on every `hermes update` — its stdout/
     stderr must not bleed into the caller's own output (and, on POSIX, an
@@ -225,6 +242,36 @@ class TestKillProcessTree:
             raise ProcessLookupError()
 
         monkeypatch.setattr("os.getpgid", _raise)
+
+        _kill_process_tree(proc)  # must not raise
+
+    def test_posix_missing_killpg_attribute_falls_back_to_proc_kill(self, monkeypatch):
+        """Some POSIX-like environments may lack os.killpg entirely (the
+        implementation resolves it defensively via
+        ``getattr(os, "killpg", None)`` — flagged by
+        scripts/check-windows-footguns.py against a bare ``os.killpg``
+        reference). When that resolution comes back None, the fallback must
+        be a plain ``proc.kill()`` of just the top-level PID, not an
+        AttributeError."""
+        import os as os_module
+
+        proc = MagicMock()
+        proc.pid = 999
+        monkeypatch.setattr("os.name", "posix")
+        monkeypatch.delattr(os_module, "killpg", raising=False)
+
+        _kill_process_tree(proc)
+
+        proc.kill.assert_called_once()
+
+    def test_posix_missing_killpg_fallback_proc_kill_failure_does_not_raise(self, monkeypatch):
+        import os as os_module
+
+        proc = MagicMock()
+        proc.pid = 999
+        proc.kill.side_effect = OSError("already reaped")
+        monkeypatch.setattr("os.name", "posix")
+        monkeypatch.delattr(os_module, "killpg", raising=False)
 
         _kill_process_tree(proc)  # must not raise
 

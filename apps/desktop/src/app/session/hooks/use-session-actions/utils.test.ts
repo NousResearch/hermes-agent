@@ -8,9 +8,11 @@ import { $activeGatewayProfile } from '@/store/profile'
 import {
   $currentBranch,
   $currentCwd,
+  $sessions,
   setCurrentBranch,
   setCurrentCwd,
   setSelectedStoredSessionId,
+  setSessions,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
 import type { SessionInfo, SessionResumeResponse } from '@/types/hermes'
@@ -33,7 +35,8 @@ import {
   selectBranchMessages,
   sessionMatchesStoredId,
   sessionShouldHaveTranscript,
-  toBranchMessages
+  toBranchMessages,
+  upsertOptimisticSession
 } from './utils'
 
 const msg = (id: string, role: ChatMessage['role'], text: string, extra: Partial<ChatMessage> = {}): ChatMessage =>
@@ -76,6 +79,35 @@ describe('applyRuntimeInfo approval mode', () => {
 
     expect(approvalModeForProfile('work')).toBe('off')
     expect(approvalModeForProfile('other')).toBe('smart')
+  })
+})
+
+describe('upsertOptimisticSession explicit context', () => {
+  afterEach(() => {
+    $activeGatewayProfile.set('default')
+    setCurrentCwd('')
+    setSessions([])
+  })
+
+  it('preserves an explicitly empty offscreen cwd instead of borrowing the foreground workspace', () => {
+    $activeGatewayProfile.set('foreground')
+    setCurrentCwd('/foreground/workspace')
+
+    upsertOptimisticSession(
+      { session_id: 'branch-runtime', stored_session_id: 'branch-stored' },
+      'branch-stored',
+      'Branch',
+      null,
+      'tile-stored',
+      undefined,
+      { cwd: '', profile: 'work' }
+    )
+
+    expect($sessions.get().find(session => session.id === 'branch-stored')).toMatchObject({
+      cwd: null,
+      parent_session_id: 'tile-stored',
+      profile: 'work'
+    })
   })
 })
 
@@ -143,7 +175,10 @@ describe('applyRuntimeInfo foreground scoping', () => {
   })
 
   it('keeps a background runtime out of the composer atoms but still returns its patch', () => {
-    const patch = applyRuntimeInfo({ branch: 'bb/tile', cwd: '/other-worktree' }, { foreground: false })
+    const patch = applyRuntimeInfo(
+      { branch: 'bb/tile', cwd: '/other-worktree' },
+      { foreground: false, profile: 'work' }
+    )
 
     // The main pane's rail must stay on its own tree.
     expect($currentCwd.get()).toBe('/main-repo')

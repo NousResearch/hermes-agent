@@ -21,8 +21,10 @@ import {
   disposeSecondariesForConnection,
   ensureGatewayForProfile,
   gatewayActivationEpoch,
+  invalidatePrimaryGatewayGeneration,
   isActivePrimary,
   pruneSecondaryGateways,
+  reconnectPrimaryGateway,
   reconnectSecondaryGateways,
   reportPrimaryGatewayState,
   setPrimaryGateway,
@@ -209,20 +211,12 @@ export function useGatewayBoot({
       reconnecting = true
 
       try {
-        // Drop a stale REMOTE backend cache before re-dialing. After sleep/wake a
-        // remote backend can become unreachable, but it has no child process
-        // whose 'exit' would clear the main process's cached descriptor — without
-        // this the renderer re-dials the same dead endpoint forever and stays on
-        // "Starting Hermes…". The probe is a no-op for a healthy or local backend.
-        await desktop.revalidateConnection?.().catch(() => undefined)
+        // Boot, ordinary requests, and pinned commands all join the registry's
+        // exact primary owner/generation reconnect cohort. This keeps descriptor
+        // lookup, OAuth ticket minting, and connect() from racing independently.
+        const conn = await reconnectPrimaryGateway(gateway)
 
-        // Primary sleep/wake reconnect must dial the WINDOW-owned primary backend
-        // (same as boot/softSwitch). Passing $activeGatewayProfile would retarget
-        // this primary socket at a secondary profile's backend after a live swap.
-        // Secondaries reconnect via reconnectSecondaryGateways().
-        const conn = await desktop.getConnection()
-
-        if (cancelled) {
+        if (cancelled || !conn) {
           return
         }
 
@@ -231,21 +225,6 @@ export function useGatewayBoot({
         // mode/baseUrl and break image.attach / fs / media routing (#46651).
         if (isActivePrimary()) {
           publish(conn)
-        }
-
-        // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
-        // with a short TTL, so the ticket baked into the cached conn.wsUrl is
-        // dead on every reconnect after the initial boot — reusing it surfaces
-        // as an opaque "Could not connect to Hermes gateway". resolveGatewayWsUrl
-        // mints a fresh ticket rather than connecting with a stale one. An
-        // explicit auth rejection asks for sign-in; transport failures stay in
-        // this reconnect loop. For local/token gateways the URL carries a
-        // long-lived token and the re-mint is a cheap no-op.
-        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
-        await gateway.connect(wsUrl)
-
-        if (cancelled) {
-          return
         }
 
         reconnectAttempt = 0
@@ -378,6 +357,7 @@ export function useGatewayBoot({
       wipeSessionListsForGatewaySwitch()
 
       try {
+        invalidatePrimaryGatewayGeneration(gateway)
         gateway.close()
         closeSecondaryGateways()
 
@@ -824,6 +804,7 @@ export function useGatewayBoot({
       }
 
       closeSecondaryGateways()
+      invalidatePrimaryGatewayGeneration(gateway)
       gateway.close()
       publish(null)
       callbacksRef.current.onGatewayReady(null)

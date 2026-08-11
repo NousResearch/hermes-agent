@@ -1,14 +1,17 @@
-import { isGatewayReauthRequired, resolveGatewayWsUrl } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef } from 'react'
 
 import type { HermesGateway } from '@/hermes'
-import { $gateway, acquireGatewayRequestLease, ensureActiveGatewayOpen, isActivePrimary } from '@/store/gateway'
-import { $activeGatewayProfile } from '@/store/profile'
-import { $gatewayState, setConnection } from '@/store/session'
+import {
+  $gateway,
+  acquireGatewayRequestLease,
+  ensureActiveGatewayOpen,
+  isActivePrimary,
+  reconnectPrimaryGateway
+} from '@/store/gateway'
+import { setConnection } from '@/store/session'
 
 export function useGatewayRequest() {
-  const gatewayState = useStore($gatewayState)
   // Reactive companion to `gatewayRef`. The ref exists so `requestGateway`
   // keeps a stable identity and always reaches the live socket, but it is only
   // populated by the subscription effect below — i.e. AFTER the first render.
@@ -22,18 +25,6 @@ export function useGatewayRequest() {
   const connectionRef = useRef<Awaited<ReturnType<NonNullable<typeof window.hermesDesktop>['getConnection']>> | null>(
     null
   )
-
-  const gatewayStateRef = useRef(gatewayState)
-  const reconnectingRef = useRef<Promise<HermesGateway | null> | null>(null)
-  // Holds the reauth error from the most recent failed reconnect so
-  // requestGateway can surface the gateway's "session expired, sign in again"
-  // message instead of the opaque "connection closed" that triggered the retry.
-  const reauthErrorRef = useRef<unknown>(null)
-
-  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
-  useEffect(() => {
-    gatewayStateRef.current = gatewayState
-  }, [gatewayState])
 
   // Track the active gateway (primary or a background profile's socket) so
   // outbound requests and overlay props always target the focused profile.
@@ -52,55 +43,23 @@ export function useGatewayRequest() {
       return null
     }
 
-    if (gatewayStateRef.current === 'open') {
+    if (existing.connectionState === 'open') {
       return existing
     }
 
-    if (reconnectingRef.current) {
-      return reconnectingRef.current
+    const conn = await reconnectPrimaryGateway(existing)
+
+    if (!conn) {
+      connectionRef.current = null
+      setConnection(null)
+
+      return null
     }
 
-    reconnectingRef.current = (async () => {
-      const desktop = window.hermesDesktop
+    connectionRef.current = conn
+    setConnection(conn)
 
-      if (!desktop) {
-        return null
-      }
-
-      reauthErrorRef.current = null
-
-      try {
-        // Reconnect to whichever profile the gateway is currently routed to (not
-        // always the primary), so a sleep/wake reconnect keeps the user on the
-        // profile they were chatting in.
-        const conn = await desktop.getConnection($activeGatewayProfile.get())
-        connectionRef.current = conn
-        setConnection(conn)
-        // Re-mint the WS URL before reconnecting. OAuth tickets are single-use
-        // and short-lived, so the cached conn.wsUrl ticket is dead here;
-        // resolveGatewayWsUrl() never connects with a stale ticket. An explicit
-        // auth rejection becomes a reauth error; transport failures remain
-        // retryable. Stash only the former so requestGateway can show the
-        // actionable "sign in again" message.
-        const wsUrl = await resolveGatewayWsUrl(desktop, conn)
-        await existing.connect(wsUrl)
-
-        return existing
-      } catch (error) {
-        if (isGatewayReauthRequired(error)) {
-          reauthErrorRef.current = error
-        }
-
-        connectionRef.current = null
-        setConnection(null)
-
-        return null
-      } finally {
-        reconnectingRef.current = null
-      }
-    })()
-
-    return reconnectingRef.current
+    return existing
   }, [])
 
   const requestGateway = useCallback(
@@ -116,7 +75,7 @@ export function useGatewayRequest() {
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
 
-        if (!/not connected|connection closed/i.test(message)) {
+        if (gateway.connectionState === 'open' || !/not connected|connection closed/i.test(message)) {
           throw error
         }
 
@@ -126,15 +85,6 @@ export function useGatewayRequest() {
         const recovered = isActivePrimary() ? await ensureGatewayOpen() : await ensureActiveGatewayOpen()
 
         if (!recovered) {
-          // Prefer the reauth error from the failed reconnect (OAuth session
-          // expired) over the generic transport error that triggered the retry.
-          const reauthError = reauthErrorRef.current
-          reauthErrorRef.current = null
-
-          if (reauthError) {
-            throw reauthError
-          }
-
           throw error
         }
 

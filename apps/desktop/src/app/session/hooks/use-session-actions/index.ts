@@ -87,7 +87,6 @@ import {
   $sessionTiles,
   closeSessionTile,
   dropSessionState,
-  openSessionTile,
   openSessionTileForProfile,
   patchSessionTile,
   publishSessionState,
@@ -597,12 +596,14 @@ export function useSessionActions({
   const openNewSessionTile = useCallback(
     async (dir: TileDock = 'right', options?: { cwd?: null | string; listed?: boolean }) => {
       const listed = options?.listed ?? true
+      const sourceProfile = normalizeProfileKey($activeGatewayProfile.get())
+      const requestedCwd = (options?.cwd || resolveNewSessionCwd()).trim()
 
       try {
         // Fresh tile → the caller's workspace when one was named (the sidebar
         // "+" on a project/worktree lane), else the resolved new-session cwd
         // (project scope → configured default).
-        const params = await desktopSessionCreateParams((options?.cwd || resolveNewSessionCwd()).trim())
+        const params = await desktopSessionCreateParams(requestedCwd)
         const created = await requestGateway<SessionCreateResponse>('session.create', params)
         const stored = created.stored_session_id
 
@@ -620,7 +621,10 @@ export function useSessionActions({
         // unlisted (draft) tab stays out of the session list until its first
         // turn persists and a refresh surfaces it.
         if (listed) {
-          upsertOptimisticSession(created, stored, null, null)
+          upsertOptimisticSession(created, stored, null, null, null, undefined, {
+            cwd: requestedCwd,
+            profile: sourceProfile
+          })
         }
 
         // A tile lives in its OWN worktree, so it must not run the full
@@ -629,18 +633,27 @@ export function useSessionActions({
         // so the right rail kept showing the previous session's tree when a
         // Project "+" created a session while the main chat was occupied
         // (#76696). Split/side tiles deliberately stay isolated.
-        const runtimeInfo = applyRuntimeInfo(created.info, { foreground: false })
-        updateSessionState(created.session_id, state => (runtimeInfo ? { ...state, ...runtimeInfo } : state), stored)
+        const runtimeInfo = applyRuntimeInfo(created.info, { foreground: false, profile: sourceProfile })
+        updateSessionState(
+          created.session_id,
+          state => ({ ...state, cwd: requestedCwd, ...(runtimeInfo ?? {}) }),
+          stored
+        )
 
-        openSessionTile(stored, dir)
-        patchSessionTile(stored, { runtimeId: created.session_id })
+        const openedInActiveProfile = openSessionTileForProfile(stored, sourceProfile, dir)
 
-        if (dir === 'center' && runtimeInfo?.cwd) {
+        if (openedInActiveProfile) {
+          patchSessionTile(stored, { runtimeId: created.session_id })
+        }
+
+        if (openedInActiveProfile && dir === 'center' && runtimeInfo?.cwd) {
           setCurrentCwdTransient(runtimeInfo.cwd)
           setWorkspaceCwdOwner(stored)
         }
 
-        revealTreePane(`session-tile:${stored}`)
+        if (openedInActiveProfile) {
+          revealTreePane(`session-tile:${stored}`)
+        }
 
         if (listed) {
           broadcastSessionsChanged()
@@ -1538,9 +1551,12 @@ export function useSessionActions({
       profile?: null | string,
       sourceRequest?: GatewayRequester,
       uiIntent?: BranchUiIntent,
-      branchCount?: number
+      branchCount?: number,
+      ownsForegroundRoute = false
     ): Promise<boolean> => {
-      creatingSessionRef.current = true
+      if (ownsForegroundRoute) {
+        creatingSessionRef.current = true
+      }
 
       try {
         let targetUiIntent = uiIntent
@@ -1609,6 +1625,7 @@ export function useSessionActions({
           branched.session_id,
           state => ({
             ...state,
+            ...(cwd !== undefined ? { cwd } : {}),
             messages: effectiveBranchMessages.map(({ source }) => source),
             busy: false,
             awaitingResponse: false
@@ -1662,9 +1679,11 @@ export function useSessionActions({
 
         return false
       } finally {
-        window.setTimeout(() => {
-          creatingSessionRef.current = false
-        }, 0)
+        if (ownsForegroundRoute) {
+          window.setTimeout(() => {
+            creatingSessionRef.current = false
+          }, 0)
+        }
       }
     },
     [
@@ -1790,7 +1809,8 @@ export function useSessionActions({
           profile,
           sourceLease.request,
           uiIntent,
-          messageId || !isForeground ? branchMessages.length : undefined
+          messageId || !isForeground ? branchMessages.length : undefined,
+          isForeground
         )
       } catch (err) {
         notifyError(err, copy.branchFailed)

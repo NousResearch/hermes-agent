@@ -1226,7 +1226,7 @@ export function selectBranchMessages(
 }
 
 interface OptimisticSessionContext {
-  cwd?: string
+  cwd?: null | string
   profile?: null | string
 }
 
@@ -1244,7 +1244,10 @@ export function upsertOptimisticSession(
   // otherwise use the live gateway profile. This keeps cross-profile runtime
   // operations on their source socket without misfiling the optimistic row.
   const profileKey = normalizeProfileKey(context?.profile ?? $activeGatewayProfile.get())
-  const fallbackCwd = context?.cwd?.trim() || $currentCwd.get().trim() || null
+
+  const fallbackCwd = Object.hasOwn(context ?? {}, 'cwd')
+    ? context?.cwd?.trim() || null
+    : $currentCwd.get().trim() || null
 
   const session: SessionInfo = {
     // Seed cwd so the grouped sidebar can place the new row in its repo/worktree
@@ -1394,23 +1397,21 @@ type SessionRuntimeStatePatch = Partial<
   >
 >
 
-interface ApplyRuntimeInfoOptions {
-  /** Explicit owner for profile-scoped runtime metadata (for example approvals). */
-  profile?: null | string
-  /**
-   * Whether this runtime belongs to the session the MAIN pane is showing.
-   * Foreground (the default) mirrors into the composer atoms every main-pane
-   * surface reads.
-   *
-   * A tile or a background branch must pass `false`: it owns a different
-   * worktree, and writing its cwd into `$currentCwd` re-pointed the main
-   * composer's coding rail (and the persisted workspace cwd) at the tile's
-   * repo — the main rail painted a branch from a tree its session was never
-   * in. The returned patch still carries every field, so the caller's own
-   * per-session state is unaffected.
-   */
-  foreground?: boolean
-}
+/**
+ * Foreground (the default) mirrors runtime metadata into the composer atoms.
+ * A tile or background branch must declare both `foreground: false` and its
+ * immutable owner profile so delayed metadata cannot bleed into the profile
+ * that happens to be active when the response arrives.
+ */
+type ApplyRuntimeInfoOptions =
+  | {
+      foreground?: true
+      profile?: null | string
+    }
+  | {
+      foreground: false
+      profile: null | string
+    }
 
 /** Mirror a session's runtime state into the composer atoms the MAIN pane
  *  renders from. Foreground sessions only — see ApplyRuntimeInfoOptions. */

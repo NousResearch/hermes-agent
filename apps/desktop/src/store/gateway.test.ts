@@ -74,10 +74,13 @@ import { HermesGateway } from '@/hermes'
 
 import {
   acquireGatewayRequestLease,
+  activeGateway,
   closeSecondaryGateways,
   ensureGatewayForProfile,
+  invalidatePrimaryGatewayGeneration,
   openGatewayForProfile,
   pruneSecondaryGateways,
+  reconnectPrimaryGateway,
   setPrimaryGateway
 } from './gateway'
 
@@ -202,7 +205,6 @@ describe('profile-scoped gateway request leases', () => {
     expect(source.request.mock.calls[1]).toEqual(['session.branch', params, 1234, signal])
 
     lease.release()
-    pruneSecondaryGateways(new Set())
 
     expect(source.close).toHaveBeenCalledOnce()
     await expect(lease.request('session.branch', params)).rejects.toThrow('Hermes source gateway unavailable')
@@ -267,6 +269,26 @@ describe('profile-scoped gateway request leases', () => {
     lease.release()
   })
 
+  it('does not replay an open-transport domain error whose message contains not connected', async () => {
+    const source = await createSecondary()
+    const lease = acquireGatewayRequestLease(source as unknown as HermesGateway, 'source')
+    const domainError = new Error('model provider not connected')
+
+    source.requestImplementation = async () => {
+      throw domainError
+    }
+
+    getConnection.mockClear()
+    source.connect.mockClear()
+
+    await expect(lease.request('session.branch', { session_id: 'source' })).rejects.toBe(domainError)
+    expect(source.request).toHaveBeenCalledOnce()
+    expect(getConnection).not.toHaveBeenCalled()
+    expect(source.connect).not.toHaveBeenCalled()
+
+    lease.release()
+  })
+
   it('propagates the exact terminal retry error without a third attempt', async () => {
     const source = await createSecondary()
     const lease = acquireGatewayRequestLease(source as unknown as HermesGateway, 'source')
@@ -320,5 +342,82 @@ describe('profile-scoped gateway request leases', () => {
     expect(source.request).toHaveBeenCalledOnce()
 
     lease.release()
+  })
+
+  it('invalidates a primary lease before the same gateway object is softly re-homed', async () => {
+    const primary = fakes.instances[0]
+    const lease = acquireGatewayRequestLease(primary as unknown as HermesGateway, 'default')
+
+    invalidatePrimaryGatewayGeneration(primary as unknown as HermesGateway)
+    primary.setState('closed')
+
+    primary.requestImplementation = async () => {
+      throw new Error('Hermes gateway connection closed')
+    }
+
+    await expect(lease.request('session.branch', { session_id: 'old-runtime' })).rejects.toThrow(
+      'Hermes source gateway unavailable'
+    )
+    expect(primary.request).not.toHaveBeenCalled()
+    expect(primary.connect).not.toHaveBeenCalled()
+
+    lease.release()
+  })
+
+  it('coalesces primary lease and ordinary reconnect callers through one owner generation', async () => {
+    const primary = fakes.instances[0]
+    const reconnect = deferred<void>()
+    const lease = acquireGatewayRequestLease(primary as unknown as HermesGateway, 'default')
+
+    primary.setState('closed')
+
+    primary.requestImplementation = async () => {
+      if (primary.connectionState !== 'open') {
+        throw new Error('Hermes gateway connection closed')
+      }
+
+      return { ok: true }
+    }
+
+    primary.connectImplementation = async () => reconnect.promise
+    getConnection.mockClear()
+    primary.connect.mockClear()
+
+    const leasedRequest = lease.request('session.branch', { session_id: 'primary-runtime' })
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalledOnce())
+    const ordinaryReconnect = reconnectPrimaryGateway(primary as unknown as HermesGateway)
+
+    await vi.waitFor(() => expect(primary.connect).toHaveBeenCalledOnce())
+
+    reconnect.resolve()
+
+    await expect(Promise.all([leasedRequest, ordinaryReconnect])).resolves.toEqual([
+      { ok: true },
+      connection('default')
+    ])
+    expect(getConnection).toHaveBeenCalledOnce()
+    expect(primary.connect).toHaveBeenCalledOnce()
+
+    lease.release()
+  })
+})
+
+describe('profile activation ownership', () => {
+  it('keeps an activating profile registered while it joins a deferred prewarm', async () => {
+    const lookup = deferred<ReturnType<typeof connection>>()
+    getConnection.mockImplementationOnce(async () => lookup.promise)
+
+    const prewarm = openGatewayForProfile('activation-source')
+    await vi.waitFor(() => expect(getConnection).toHaveBeenCalledWith('activation-source'))
+    const source = latestGateway()
+
+    const activation = ensureGatewayForProfile('activation-source')
+    pruneSecondaryGateways(new Set())
+    lookup.resolve(connection('activation-source'))
+
+    await Promise.all([prewarm, activation])
+
+    expect(source.close).not.toHaveBeenCalled()
+    expect(activeGateway()).toBe(source)
   })
 })

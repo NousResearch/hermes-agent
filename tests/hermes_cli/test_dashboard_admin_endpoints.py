@@ -951,6 +951,10 @@ def test_spawn_hermes_action_scrubs_gateway_loop_guard_env(monkeypatch, tmp_path
 
     monkeypatch.setenv("_HERMES_GATEWAY", "1")
     monkeypatch.setattr(ws, "_ACTION_LOG_DIR", tmp_path)
+    # Isolate the module-global proc registry: _spawn_hermes_action stores
+    # _FakeProc (no poll()) in _ACTION_PROCS, and later tests' lifespan
+    # shutdown (_terminate_desktop_managed_gateway) would trip over it.
+    monkeypatch.setattr(ws, "_ACTION_PROCS", {})
 
     captured = {}
 

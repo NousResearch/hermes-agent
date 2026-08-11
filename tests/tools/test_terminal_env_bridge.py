@@ -7,6 +7,8 @@ config.yaml.
 """
 
 import os
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 
@@ -31,7 +33,7 @@ def _reset_bridge_state(monkeypatch):
 def _write_config(text: str) -> None:
     home = get_hermes_home()
     home.mkdir(parents=True, exist_ok=True)
-    (home / "config.yaml").write_text(text)
+    (home / "config.yaml").write_text(text, encoding="utf-8")
 
 
 def test_unset_terminal_env_backfills_backend_from_config():
@@ -135,6 +137,46 @@ def test_bridge_only_attempted_once(monkeypatch):
     terminal_tool._get_env_config()
 
     assert len(calls) == 1
+
+
+def test_profile_scoped_backends_do_not_share_process_terminal_env(
+    tmp_path,
+    monkeypatch,
+):
+    """Concurrent profile turns must resolve their own configured backend."""
+    from hermes_constants import (
+        reset_hermes_home_override,
+        set_hermes_home_override,
+    )
+
+    homes = {}
+    for name, backend in (("local-profile", "local"), ("ssh-profile", "ssh")):
+        home = tmp_path / name
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            f"terminal:\n  backend: {backend}\n",
+            encoding="utf-8",
+        )
+        homes[name] = home
+
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", True)
+    barrier = Barrier(2)
+
+    def resolve(profile_name):
+        token = set_hermes_home_override(homes[profile_name])
+        try:
+            barrier.wait(timeout=2)
+            return terminal_tool._get_env_config()["env_type"]
+        finally:
+            reset_hermes_home_override(token)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        local_future = pool.submit(resolve, "local-profile")
+        ssh_future = pool.submit(resolve, "ssh-profile")
+
+    assert local_future.result() == "local"
+    assert ssh_future.result() == "ssh"
 
 
 def test_bridge_config_failure_does_not_crash(monkeypatch):

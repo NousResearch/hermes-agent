@@ -1877,6 +1877,74 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         assert resp.json()["pagination"]["limit"] == 500
 
+    def test_get_session_messages_default_hides_compacted_rows(self):
+        """The endpoint default matches get_messages: active rows only.
+
+        Guards the #80680 contract — display reads opt into compacted history
+        explicitly; the dashboard default view stays as it was.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="compacted-default", source="cli")
+            db.append_messages_batch(
+                "compacted-default",
+                [
+                    {"role": "user", "content": "old q"},
+                    {"role": "assistant", "content": "old a"},
+                ],
+            )
+            db.archive_and_compact(
+                "compacted-default",
+                [
+                    {"role": "assistant", "content": "summary"},
+                    {"role": "user", "content": "live q"},
+                    {"role": "assistant", "content": "live a"},
+                ],
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/compacted-default/messages")
+        assert resp.status_code == 200
+        contents = [m["content"] for m in resp.json()["messages"]]
+        assert contents == ["summary", "live q", "live a"]
+
+    def test_get_session_messages_include_compacted_surfaces_archived_rows(self):
+        """include_compacted=true returns the full display history: archived
+        (active=0, compacted=1) rows plus live rows, in insertion order.
+        """
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="compacted-visible", source="cli")
+            db.append_messages_batch(
+                "compacted-visible",
+                [
+                    {"role": "user", "content": "old q"},
+                    {"role": "assistant", "content": "old a"},
+                ],
+            )
+            db.archive_and_compact(
+                "compacted-visible",
+                [
+                    {"role": "assistant", "content": "summary"},
+                    {"role": "user", "content": "live q"},
+                    {"role": "assistant", "content": "live a"},
+                ],
+            )
+        finally:
+            db.close()
+
+        resp = self.client.get(
+            "/api/sessions/compacted-visible/messages?include_compacted=true"
+        )
+        assert resp.status_code == 200
+        contents = [m["content"] for m in resp.json()["messages"]]
+        assert contents == ["old q", "old a", "summary", "live q", "live a"]
+
     def test_get_session_messages_omitted_limit_defaults_to_500(self):
         """The dashboard must never load an entire unbounded transcript."""
         from hermes_state import SessionDB

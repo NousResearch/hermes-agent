@@ -684,7 +684,7 @@ export function getSession(id: string, profile?: string | null): Promise<Session
 export function getSessionMessages(
   id: string,
   profile?: string | null,
-  page: { limit?: number; offset?: number; order?: 'latest' | 'oldest' } = {}
+  page: { limit?: number; offset?: number; order?: 'latest' | 'oldest'; includeCompacted?: boolean } = {}
 ): Promise<SessionMessagesResponse> {
   const query = new URLSearchParams()
 
@@ -704,6 +704,10 @@ export function getSessionMessages(
     query.set('order', page.order)
   }
 
+  if (page.includeCompacted !== undefined) {
+    query.set('include_compacted', String(page.includeCompacted))
+  }
+
   const suffix = query.size ? `?${query.toString()}` : ''
 
   return window.hermesDesktop.api<SessionMessagesResponse>({
@@ -713,7 +717,10 @@ export function getSessionMessages(
 }
 
 export function getLatestSessionMessages(id: string, profile?: string | null): Promise<SessionMessagesResponse> {
-  return getSessionMessages(id, profile, { limit: 500, order: 'latest' })
+  // includeCompacted: durable display history must include rows preserved by
+  // in-place compaction (active=0, compacted=1); without them the transcript
+  // silently ends at the compaction boundary and earlier turns are unreachable.
+  return getSessionMessages(id, profile, { limit: 500, order: 'latest', includeCompacted: true })
 }
 
 export async function getAllSessionMessages(
@@ -732,7 +739,8 @@ export async function getAllSessionMessages(
     const page = await getSessionMessages(id, profile, {
       limit: pageSize,
       offset,
-      order: 'oldest'
+      order: 'oldest',
+      includeCompacted: true
     })
 
     resolvedSessionId = page.session_id

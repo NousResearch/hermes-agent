@@ -1,0 +1,3 @@
+[12:00:01] tool skills_list -> [xlsx: 'Create/read/edit Excel spreadsheets', ...]
+[12:00:02] tool skill_view name='xlsx' -> full SKILL.md (frontmatter name=xlsx, description, body steps)
+[12:00:03] agent executed documented steps -> produced output.xlsx

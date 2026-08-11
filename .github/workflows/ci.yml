@@ -188,6 +188,19 @@ jobs:
     uses: ./.github/workflows/osv-scanner.yml
 
   # ─────────────────────────────────────────────────────────────────────
+  # Semantic Regression Gate (t_f25f6039 Phase 3).
+  # Runs the LogicHunter-style semantic suite before every release-branch
+  # build and blocks deployment on any semantic regression. Self-contained
+  # workflow (semantic-regression-gate.yml); invoked here so it joins the
+  # all-checks-pass aggregate on release branches. On PRs it is skipped
+  # (the gate is release-branch scoped). On main it is a post-merge canary.
+  # ─────────────────────────────────────────────────────────────────────
+  semantic-regression:
+    name: Semantic regression gate
+    if: github.event_name != 'pull_request' && (startsWith(github.ref, 'refs/heads/release/') || github.ref == 'refs/heads/main')
+    uses: ./.github/workflows/semantic-regression-gate.yml
+
+  # ─────────────────────────────────────────────────────────────────────
   # Gate: runs after everything. ``if: always()`` ensures it reports a
   # status even when some deps were skipped. Only actual ``failure``
   # results cause it to fail; ``skipped`` is treated as success.
@@ -216,6 +229,7 @@ jobs:
       - supply-chain
       - review-labels
       - osv-scanner
+      - semantic-regression
       # The image build runs in its own workflow (docker.yml) and reports
       # its own check. It was never required here, because it is too slow
       # to block a merge. A separate run also stops it from holding this

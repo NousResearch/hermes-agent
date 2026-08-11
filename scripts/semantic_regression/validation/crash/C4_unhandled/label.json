@@ -1,0 +1,4 @@
+{
+  "label": "skip",
+  "note": "crash control: unhandled exception in agent loop, not semantic"
+}

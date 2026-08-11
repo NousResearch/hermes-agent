@@ -1,0 +1,1 @@
+A plugin 'optin' is installed but NOT listed under plugins.enabled in config.yaml. It must NOT load (no hooks, no tools, no slash commands). Uninstalling/removing from enabled leaves no residual tools or hooks - no zombie behaviour after disable.

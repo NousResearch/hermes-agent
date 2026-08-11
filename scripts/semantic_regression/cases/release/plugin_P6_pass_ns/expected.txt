@@ -1,0 +1,1 @@
+A plugin bundles a skill via ctx.register_skill() named 'myhelper'. It is discoverable via skill_view(name='plugin:myhelper') and does NOT collide with a same-named user skill. A bare skill_view(name='myhelper') resolves to the user/global skill, not the plugin one.

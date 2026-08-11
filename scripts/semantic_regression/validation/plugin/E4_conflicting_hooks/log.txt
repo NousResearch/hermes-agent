@@ -1,0 +1,4 @@
+[12:00:01] plugin demo registered pre_user_message hook -> prefix [demo]
+[12:00:02] plugin other registered pre_user_message hook -> prefix [other]
+[12:00:03] BOTH hooks fired but in non-deterministic order across two runs; run1 [demo][other], run2 [other][demo]
+[12:00:04] agent saw different prefixes across runs (flaky hook ordering)

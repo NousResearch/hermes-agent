@@ -1,0 +1,87 @@
+name: Semantic Regression Gate
+
+# Runs the LogicHunter-style semantic regression suite (17 Hermes scenarios +
+# crash controls) as a release quality gate. Blocks the release if any semantic
+# regression is found (verdict == "fail"), per the t_f25f6039 integration.
+#
+# Triggers:
+#   * push to release/* branches  -> mandatory gate (blocks the release)
+#   * push to main                -> post-merge canary (never blocks main)
+#
+# The gate needs an LLM judge credential. Supply OLLAMA_API_KEY (and optionally
+# OLLAMA_BASE_URL) as repository secrets. On release branches the job FAILS
+# CLOSED if the credential is missing (a release that cannot be judged must not
+# ship). On main the job reports a warning and passes (post-merge canary).
+
+on:
+  push:
+    branches:
+      - 'release/**'
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  semantic-regression-gate:
+    name: Semantic regression gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15   # well above the <=10 min budget AC
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python 3.11
+        uses: ./.github/actions/retry
+        with:
+          command: uv python install 3.11
+
+      - name: Install dependencies (stdlib-only runner needs no extras)
+        uses: ./.github/actions/retry
+        with:
+          command: uv sync --locked --python 3.11 --extra dev
+
+      - name: Run semantic regression gate
+        id: gate
+        env:
+          OLLAMA_BASE_URL: ${{ secrets.OLLAMA_BASE_URL }}
+          OLLAMA_API_KEY: ${{ secrets.OLLAMA_API_KEY }}
+          HERMES_HOME: ${{ runner.temp }}/hermes
+        run: |
+          set -uo pipefail
+          if [ -z "$OLLAMA_API_KEY" ]; then
+            if [ "${{ github.ref }}" = "refs/heads/main" ]; then
+              echo "::warning::OLLAMA_API_KEY not configured; semantic gate skipped on main canary."
+              echo "skipped=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::OLLAMA_API_KEY not configured on release branch; release gate fails closed."
+            exit 2
+          fi
+          source .venv/bin/activate
+          python3 scripts/semantic_release_gate.py \
+            --report-dir semantic-reports
+          rc=$?
+          echo "gate_rc=$rc" >> "$GITHUB_OUTPUT"
+          exit $rc
+
+      - name: Upload gate report
+        if: always() && steps.gate.outputs.skipped != 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: semantic-gate-report
+          path: semantic-reports/
+          retention-days: 30
+
+      - name: Summarise gate verdict
+        if: always() && steps.gate.outputs.skipped != 'true'
+        env:
+          GATE_RC: ${{ steps.gate.outputs.gate_rc }}
+        run: |
+          if [ "${GATE_RC:-1}" = "0" ]; then
+            echo "✅ Semantic regression gate: ALLOWED" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "❌ Semantic regression gate: BLOCKED (see report artifact)" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi

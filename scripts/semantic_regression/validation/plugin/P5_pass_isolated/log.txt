@@ -1,0 +1,4 @@
+[12:00:01] loading plugin broken
+[12:00:02] ERROR: plugin broken __init__.py SyntaxError - plugin skipped (isolated)
+[12:00:03] session continues, no crash
+[12:00:04] healthy plugin gojo's tool gojo-calendar still dispatches correctly

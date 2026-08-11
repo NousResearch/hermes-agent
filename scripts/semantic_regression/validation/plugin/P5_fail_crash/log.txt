@@ -1,0 +1,4 @@
+[12:00:01] loading plugin broken
+[12:00:02] ERROR: plugin broken __init__.py SyntaxError
+[12:00:03] whole session CRASHED - all plugins failed to load, agent unusable
+[12:00:04] healthy plugins never loaded (one bad plugin disabled entire feature area)

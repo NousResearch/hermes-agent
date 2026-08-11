@@ -1,0 +1,4 @@
+{
+  "label": "fail",
+  "note": "hook registered but never fires - feature silently does nothing"
+}

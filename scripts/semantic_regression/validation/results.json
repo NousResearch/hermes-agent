@@ -1,0 +1,698 @@
+{
+  "model": "deepseek-v4-flash",
+  "total_cases": 50,
+  "exact_match_accuracy": 1.0,
+  "correct_set_count": 25,
+  "correct_behaviour_accuracy": 1.0,
+  "false_positives": [],
+  "crash_controls_flagged_as_regression": [],
+  "regression_set_count": 25,
+  "regression_accuracy": 1.0,
+  "false_negatives": [],
+  "crash_filter_routing": {
+    "correct_routed": 4,
+    "crash_cases": 4
+  },
+  "passes_ac_threshold": true,
+  "results": [
+    {
+      "id": "C1_traceback",
+      "area": "crash",
+      "expected": "skip",
+      "verdict": "skip",
+      "confidence": 1.0,
+      "crash_related": true,
+      "reasoning": [
+        "crash_related: Crash-related failure detected (covered by existing crash suite): traceback, unhandled"
+      ]
+    },
+    {
+      "id": "C2_segfault",
+      "area": "crash",
+      "expected": "skip",
+      "verdict": "skip",
+      "confidence": 1.0,
+      "crash_related": true,
+      "reasoning": [
+        "crash_related: Crash-related failure detected (covered by existing crash suite): unhandled, bad_exit"
+      ]
+    },
+    {
+      "id": "C3_oom",
+      "area": "crash",
+      "expected": "skip",
+      "verdict": "skip",
+      "confidence": 1.0,
+      "crash_related": true,
+      "reasoning": [
+        "crash_related: Crash-related failure detected (covered by existing crash suite): unhandled"
+      ]
+    },
+    {
+      "id": "C4_unhandled",
+      "area": "crash",
+      "expected": "skip",
+      "verdict": "skip",
+      "confidence": 1.0,
+      "crash_related": true,
+      "reasoning": [
+        "crash_related: Crash-related failure detected (covered by existing crash suite): unhandled"
+      ]
+    },
+    {
+      "id": "E3_conflicting_outputs",
+      "area": "plugin",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "Expected gojo-calendar to be dispatched with date=2026-08-15, time=14:00, title=Standup, but actual dispatch used date='2026-08-16' and time='09:00' (wrong parameters).",
+        "The tool result was surfaced as success, but it was based on incorrect parameters, so the expected event (2026-08-15 14:00 Standup) was not created.",
+        "No evidence of a tool-name collision test in the log, so that clause is not exercised; the primary dispatch clause is violated."
+      ]
+    },
+    {
+      "id": "E4_conflicting_hooks",
+      "area": "plugin",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 0.95,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: the demo plugin's pre_user_message hook fires before the message reaches the agent, so the agent sees '[demo]<msg>'.",
+        "Actual: both the demo and an unrelated 'other' plugin's pre_user_message hooks fired, and their order was non-deterministic across runs (run1 [demo][other], run2 [other][demo]).",
+        "Because the order is flaky, the agent sometimes sees '[other][demo]<msg>' instead of the required '[demo]<msg>', violating the expected prefix and ordering.",
+        "The presence of an extra pre_user_message hook from the 'other' plugin is not part of the expected scenario and interferes with the demo hook's guaranteed prefix.",
+        "The scenario also requires that an unrelated transform_llm_output hook must NOT fire on pre_user_message; the log does not confirm it fired, but the core expected behaviour (demo prefix always first) is already violated."
+      ]
+    },
+    {
+      "id": "P1_fail_hook_not_fired",
+      "area": "plugin",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 0.98,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: pre_user_message hook fires BEFORE the message reaches the agent, so the agent sees '[demo]<msg>'.",
+        "Actual: agent received 'Hello' with no [demo] prefix, and the log explicitly states 'hook never fired'.",
+        "The clause 'hook fires before the message reaches the agent' is violated; the hook was registered but never invoked.",
+        "The unrelated transform_llm_output hook not firing is consistent with expectations, but the primary required behaviour is missing."
+      ]
+    },
+    {
+      "id": "P1_pass",
+      "area": "plugin",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: demo plugin registers pre_user_message hook that prefixes user message with [demo]. Log shows hook registered.",
+        "Expected: hook fires BEFORE message reaches agent. Log shows hook fired at 12:00:03, agent received at 12:00:04, so ordering is correct.",
+        "Expected: agent sees '[demo]<msg>'. Log shows agent received '[demo]Hello'.",
+        "Expected: transform_llm_output must NOT fire on pre_user_message. Log explicitly states it was NOT invoked."
+      ]
+    },
+    {
+      "id": "P1_pass_ordering",
+      "area": "plugin",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: plugin registers pre_user_message hook - log shows plugin A and plugin B both registered pre_user_message.",
+        "Expected: hook ordering deterministic when two plugins register same event - log shows registration order 1 and 2.",
+        "Expected: log shows registration order and no dropped hook - log explicitly states 'hooks fired in registration order: A then B, both invoked, none dropped'.",
+        "Expected: message transformed by hooks in registration order - log confirms hooks fired in registration order A then B."
+      ]
+    },
+    {
+      "id": "P2_fail_collision",
+      "area": "plugin",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 0.98,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: on collision, dispatch must fail loudly, not silently route to whichever loaded first. Actual: dispatch silently routed gojo-calendar to 'rival' with no loud collision error.",
+        "Expected: gojo-calendar dispatched with date=2026-08-15 time=14:00 title=Standup. Actual: wrong plugin's calendar logic ran, so the correct tool/params were not executed.",
+        "Expected: tool result surfaced from the correct plugin. Actual: wrong plugin's logic ran, so the surfaced result would be incorrect."
+      ]
+    },
+    {
+      "id": "P2_fail_wrong_tool",
+      "area": "plugin",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: agent dispatches gojo-calendar with date=2026-08-15, time=14:00, title=Standup. Actual: agent used built-in write_file tool instead.",
+        "Expected: no other tool is dispatched. Actual: write_file was dispatched, violating this clause.",
+        "Expected: tool result surfaced. Actual: result was 'file written, no calendar event created', which is not the gojo-calendar result.",
+        "The plugin tool gojo-calendar was never invoked, so the core expected behaviour is violated."
+      ]
+    },
+    {
+      "id": "P2_pass",
+      "area": "plugin",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "Plugin 'gojo' registered tool 'gojo-calendar' as expected.",
+        "User request triggered dispatch of gojo-calendar with date='2026-08-15', time='14:00', title='Standup' \u2014 all parameters match the expected values.",
+        "Tool result was surfaced to the user.",
+        "No other tool was dispatched, satisfying the 'no other tool' clause.",
+        "The collision clause is conditional ('if two plugins collide') and no collision occurred in this run, so it is not violated."
+      ]
+    },
+    {
+      "id": "P3_fail_fallthrough",
+      "area": "plugin",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: typing '/gif-search sunset' invokes the plugin handler with query='sunset'.",
+        "Actual: log states 'no plugin handler invoked' at 12:00:03, so the plugin handler was never called.",
+        "Expected: the command must NOT fall through to a generic chat reply.",
+        "Actual: agent replied generically 'How can I help with sunset?' (command fell through to chat), violating the expected behaviour.",
+        "The plugin slash command registration succeeded, but the dispatch to the plugin handler failed, so the core contract is violated."
+      ]
+    },
+    {
+      "id": "P3_pass",
+      "area": "plugin",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 0.95,
+      "crash_related": false,
+      "reasoning": [
+        "Plugin registered slash command /gif-search as expected.",
+        "User typed '/gif-search sunset' and the plugin handler was invoked with query='sunset', matching the expected parameter.",
+        "No evidence of the built-in browser/web path or a generic chat reply being used.",
+        "Command stdout (gif result) was returned to the session as expected."
+      ]
+    },
+    {
+      "id": "P4_fail_zombie",
+      "area": "plugin",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 0.98,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: plugin 'optin' not listed under plugins.enabled must NOT load (no hooks, no tools, no slash commands).",
+        "Expected: after removing from enabled, no residual tools or hooks (no zombie behaviour).",
+        "Actual: after plugins.enabled removed 'optin', session still shows optin's tool 'optin-helper' registered.",
+        "Actual: optin's pre_user_message hook STILL fires after disable.",
+        "Both observations directly violate the expected no-load and no-residual clauses; zombie behaviour persists."
+      ]
+    },
+    {
+      "id": "P4_pass_disabled",
+      "area": "plugin",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: plugin 'optin' not listed under plugins.enabled -> log confirms it is not included.",
+        "Expected: plugin must NOT load (no hooks, no tools, no slash commands) -> log confirms 'optin plugin NOT loaded: no hooks, no tools, no slash commands registered'.",
+        "Expected: no residual/zombie behaviour after disable -> log shows no residual tools or hooks, and enabled plugins loaded normally."
+      ]
+    },
+    {
+      "id": "P5_fail_crash",
+      "area": "plugin",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 0.98,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: broken plugin is skipped/isolated and does not crash the session. Actual: 'whole session CRASHED - all plugins failed to load, agent unusable' directly violates this.",
+        "Expected: healthy plugins still load after the failed load. Actual: 'healthy plugins never loaded (one bad plugin disabled entire feature area)' directly violates this.",
+        "Expected: error is logged. Actual: 'ERROR: plugin broken __init__.py SyntaxError' is logged, satisfying this clause.",
+        "Expected: healthy plugin's tool still dispatches after the failed load. Actual: no dispatch occurs because healthy plugins never loaded, violating this clause."
+      ]
+    },
+    {
+      "id": "P5_pass_isolated",
+      "area": "plugin",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: broken plugin fails to load but is skipped/isolated. Actual: 'ERROR: plugin broken __init__.py SyntaxError - plugin skipped (isolated)' confirms isolation.",
+        "Expected: error is logged. Actual: ERROR line logged at 12:00:02.",
+        "Expected: session does not crash. Actual: 'session continues, no crash' at 12:00:03.",
+        "Expected: healthy plugin's tool still dispatches after failed load. Actual: 'healthy plugin gojo's tool gojo-calendar still dispatches correctly' at 12:00:04."
+      ]
+    },
+    {
+      "id": "P6_fail_shadow",
+      "area": "plugin",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 0.95,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: bare skill_view(name='myhelper') must resolve to the user/global skill, not the plugin skill.",
+        "Actual: skill_view(name='myhelper') returned PLUGIN skill content, shadowing the user skill.",
+        "Expected: the plugin skill must not collide with a same-named user skill; actual log shows the user's same-named skill became unreachable, i.e. a collision occurred.",
+        "The log does not show skill_view(name='plugin:myhelper') being exercised, but the observed shadowing already violates the core non-collision contract."
+      ]
+    },
+    {
+      "id": "P6_pass_ns",
+      "area": "plugin",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "Plugin registered skill via ctx.register_skill() named 'myhelper' (log: 'plugin registered skill plugin:myhelper').",
+        "skill_view(name='plugin:myhelper') returns the plugin skill (log: 'returns plugin skill (full content)').",
+        "Bare skill_view(name='myhelper') resolves to the user/global skill, not the plugin one (log: 'returns user/global skill (different content)').",
+        "No collision: namespacing resolves both correctly (log: 'namespacing resolves both correctly')."
+      ]
+    },
+    {
+      "id": "E5_partial_dropped",
+      "area": "skill",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 0.95,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: agent must report the partial failure EXPLICITLY, flagging which steps succeeded and which failed.",
+        "Actual final message: 'Skill done. Steps 1 and 3 completed.' This only lists the successful steps and does not explicitly state that step 2 failed.",
+        "Log explicitly notes: 'agent silently dropped step 2 with no mention of the failure', confirming the failure was not flagged.",
+        "The agent did not fabricate step 2's output (good), but the explicit failure reporting requirement was violated."
+      ]
+    },
+    {
+      "id": "S1_fail_guess",
+      "area": "skill",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: agent calls skills_list() and identifies 'xlsx' as relevant. Actual: skills_list was called and xlsx identified \u2014 satisfied.",
+        "Expected: agent calls skill_view(name='xlsx') to retrieve the full SKILL.md. Actual: skill_view was never called (log shows no skill_view invocation). Clause violated.",
+        "Expected: agent executes the documented steps from the skill to produce a .xlsx. Actual: agent produced the .xlsx by guessing without loading the skill content, so the documented steps were not followed. Clause violated.",
+        "The final claim 'I used the xlsx skill' is fabricated because the skill was never viewed/loaded."
+      ]
+    },
+    {
+      "id": "S1_pass",
+      "area": "skill",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 0.95,
+      "crash_related": false,
+      "reasoning": [
+        "skills_list() was called and returned name+description for 'xlsx', matching the expected first step.",
+        "skill_view(name='xlsx') returned the full SKILL.md including frontmatter (name=xlsx, description) and body steps, satisfying the requirement that skill_view preserves name, description, and required frontmatter.",
+        "The agent executed the documented steps and produced output.xlsx, matching the expected final outcome.",
+        "No wrong tool, wrong parameters, missing output, or fabricated result was observed."
+      ]
+    },
+    {
+      "id": "S2_fail_fabricate",
+      "area": "skill",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: agent must report the partial failure EXPLICITLY, not present the skill as fully successful. Actual: final message says 'Skill completed successfully - all 3 steps done.' which presents the skill as fully successful.",
+        "Expected: must not fabricate the failed step's output. Actual: the log shows 'fabricated step 2 output' for the failed step 2.",
+        "Expected: may complete remaining independent steps but must flag which succeeded/failed. Actual: no explicit flagging of step 2 failure; instead a blanket success claim."
+      ]
+    },
+    {
+      "id": "S2_pass_idempotent_rerun",
+      "area": "skill",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 0.9,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: agent must report partial failure explicitly, not present as fully successful. Log states 'reported partial' on both runs, satisfying this clause.",
+        "Expected: agent may complete remaining independent steps but must flag which succeeded/failed. Log lists step1 ok, step2 fail (network), step3 ok, explicitly flagging each step's outcome.",
+        "Expected: must not fabricate the failed step's output. Log shows step2 fail (network) and 'consistent partial-failure result' with 'no state corruption', indicating no fabricated output for the failed step.",
+        "No crash-related events (no stack traces or unhandled exceptions) appear in the log."
+      ]
+    },
+    {
+      "id": "S2_pass_reported",
+      "area": "skill",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: agent must report partial failure explicitly, not present skill as fully successful. Actual final message states 'Partial failure' and lists which steps succeeded/failed.",
+        "Expected: may complete remaining independent steps. Actual step 3 (independent) completed successfully.",
+        "Expected: must flag which succeeded/failed. Actual final message explicitly says 'Steps 1 and 3 succeeded; step 2 failed (network error)'.",
+        "Expected: must not fabricate the failed step's output. Actual log shows step 2 failed with a transient network error and no fabricated output was produced."
+      ]
+    },
+    {
+      "id": "S3_fail_wrong",
+      "area": "skill",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 0.95,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: a qualified skill_view(name='gifsearch:search') must resolve to the plugin skill and execute its instructions.",
+        "Actual: the agent called skill_view with name='search' (namespace dropped), which caused the GLOBAL 'search' skill to execute instead of gifsearch:search.",
+        "The namespace was not preserved, so the disambiguation contract was violated and the wrong skill's procedure ran."
+      ]
+    },
+    {
+      "id": "S3_pass",
+      "area": "skill",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "Qualified skill_view(name='gifsearch:search') resolved to the plugin gif skill content, matching the expected resolution to the plugin skill.",
+        "Bare skill_view(name='search') resolved to the global 'search' skill content, confirming namespace disambiguation as expected.",
+        "The agent executed the plugin skill's procedure (gif search) and returned a gif, satisfying the 'executes per its instructions' clause."
+      ]
+    },
+    {
+      "id": "S4_fail_suggest",
+      "area": "skill",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 0.98,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: macos-only (platforms:[macos]) must be hidden from skills_list on Linux. Actual: macos-only is LISTED and suggested on Linux host, violating the platform-gating clause.",
+        "Expected: needs-vision (requires_tools:[vision_analyze]) must only be surfaced when the vision toolset is enabled. Actual: with vision disabled, needs-vision is auto-suggested, violating the tool-gating clause.",
+        "Expected: same config yields same visibility across sessions. Actual: the agent attempted macos-only and it failed at runtime, indicating inconsistent/incorrect visibility handling rather than stable gating.",
+        "The runtime failure of the macos-only skill is a semantic consequence of wrongly surfacing it, not a crash; it stays in scope."
+      ]
+    },
+    {
+      "id": "S4_pass",
+      "area": "skill",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 0.95,
+      "crash_related": false,
+      "reasoning": [
+        "Clause 1: macos-only hidden from skills_list on Linux \u2014 log shows macos-only NOT listed and not suggested, matching expected.",
+        "Clause 2: needs-vision only surfaced when vision toolset enabled \u2014 log shows vision toolset disabled and needs-vision NOT auto-suggested, matching expected.",
+        "Clause 3: same config yields same visibility across sessions \u2014 log shows second session with same config produced identical visibility, matching expected."
+      ]
+    },
+    {
+      "id": "S4_pass_consistent",
+      "area": "skill",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "macos-only is hidden on Linux (expected: hidden on non-macOS) - satisfied.",
+        "needs-vision is hidden when vision toolset is off (expected: only surfaced when vision enabled) - satisfied.",
+        "Same config yields identical visibility across sessions (session A and B both show [xlsx] with same hidden skills) - satisfied.",
+        "No flaky visibility observed - consistent with expected deterministic behaviour."
+      ]
+    },
+    {
+      "id": "S5_fail_nop",
+      "area": "skill",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 0.95,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: a patch with a non-existent old_string must return an explicit 'not found' error (no silent no-op). Actual: skill_manage patch old_string=does-not-exist returned success and reported applied, i.e. a silent no-op.",
+        "The log does not show the skill_view or delete steps, but the patch contract violation alone is decisive for a fail verdict."
+      ]
+    },
+    {
+      "id": "S5_pass",
+      "area": "skill",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "skill_manage create created the scratch skill (name=scratchskill, content=<SKILL.md>).",
+        "skill_view immediately after create returned content, satisfying 'Created skill is immediately viewable'.",
+        "skill_manage patch with non-existent old_string returned explicit error 'old_string not found', satisfying the no-silent-no-op contract.",
+        "skill_manage delete removed the skill, and subsequent skill_view reported missing, satisfying 'delete removes it so skill_view reports missing'.",
+        "No crashes or unhandled exceptions; all expected clauses are satisfied."
+      ]
+    },
+    {
+      "id": "E1_ambiguous_answer",
+      "area": "tool",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 0.95,
+      "crash_related": false,
+      "reasoning": [
+        "Clause 'dispatches web_search(query=..., limit in [1,100])' satisfied: web_search called with query 'Python 3.13 latest stable version' and limit=5.",
+        "Clause 'tool returns a JSON result set with {url,title,description} entries' satisfied: returned two entries with url, title, description.",
+        "Clause 'No other tool is dispatched' satisfied: only web_search appears in the log.",
+        "Clause 'final answer cites at least one returned URL' violated: the final answer ('Latest is either 3.13 or 3.12, I am not sure.') does not mention or cite any of the returned URLs (https://www.python.org/downloads/ or https://legacy.example.com/3.12)."
+      ]
+    },
+    {
+      "id": "E2_wrong_order",
+      "area": "tool",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 0.95,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: agent returns lines 1-50 as the first lines. Actual: final presented offset-51 content (lines 51-100) as 'first lines', which is the wrong content.",
+        "Expected: two reads at offset=1 and offset=51 return non-overlapping contiguous content. The reads themselves are non-overlapping, but the final presentation mislabels the offset-51 block as the first lines, violating the expected output.",
+        "The agent did use read_file (not shell fallback) and preserved line-number prefixes, but the order confusion and wrong final labeling constitute a semantic regression."
+      ]
+    },
+    {
+      "id": "T1_fail_limit",
+      "area": "tool",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 0.98,
+      "crash_related": false,
+      "reasoning": [
+        "Expected web_search called with limit in [1,100]; actual call used limit=500, violating the parameter constraint.",
+        "The tool returned 500 entries instead of being clamped to the allowed range, confirming the out-of-range limit was not handled.",
+        "The final answer does cite a returned URL (https://www.python.org/downloads/), satisfying the citation clause, but the limit violation is a semantic failure."
+      ]
+    },
+    {
+      "id": "T1_fail_no_cite",
+      "area": "tool",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 0.98,
+      "crash_related": false,
+      "reasoning": [
+        "Clause 'dispatches web_search(query=..., limit in [1,100])' satisfied: web_search called with query 'Python 3.13 latest stable version' and limit=5.",
+        "Clause 'tool returns JSON result set with {url,title,description}' satisfied: returned one entry with url, title, description.",
+        "Clause 'No other tool is dispatched' satisfied: only web_search was called.",
+        "Clause 'final answer cites at least one returned URL' violated: final answer 'Latest stable is Python 3.13.' contains no URL from the returned set."
+      ]
+    },
+    {
+      "id": "T1_pass",
+      "area": "tool",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "web_search dispatched with query='Python 3.13 latest stable version' and limit=5, which is within [1,100].",
+        "Tool returned a JSON result set with {url,title,description} entries.",
+        "No other tool was dispatched.",
+        "Final answer cites at least one returned URL (both python.org/downloads and docs.python.org/3.13/)."
+      ]
+    },
+    {
+      "id": "T2_fail_cat",
+      "area": "tool",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "Expected the agent to dispatch read_file(path=<~/.hermes/config.yaml>, offset=1, limit=50); actual log shows it invoked terminal command 'cat ~/.hermes/config.yaml | head -50' instead.",
+        "Expected explicit prohibition on falling back to shell cat/head; actual behaviour did exactly that, violating the contract.",
+        "Expected result to preserve line-number prefixes; actual terminal output had no line-number prefixes.",
+        "Expected two reads at offset=1 and offset=51 returning non-overlapping contiguous content; actual log contains only a single read, so the second read and contiguity check never happened."
+      ]
+    },
+    {
+      "id": "T2_fail_drift",
+      "area": "tool",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 0.98,
+      "crash_related": false,
+      "reasoning": [
+        "Clause 1: read_file(path=~/.hermes/config.yaml, offset=1, limit=50) returns lines 1-50 \u2014 satisfied (log shows 1..50).",
+        "Clause 2: read_file(path=~/.hermes/config.yaml, offset=51, limit=50) must return non-overlapping contiguous content (lines 51-100) \u2014 violated (log shows 10..59, overlapping with the first read).",
+        "Clause 3: no cache/offset drift \u2014 violated (second read shows offset drift, returning 10..59 instead of 51..100)."
+      ]
+    },
+    {
+      "id": "T2_pass",
+      "area": "tool",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 0.95,
+      "crash_related": false,
+      "reasoning": [
+        "Clause 1: read_file called with path=~/.hermes/config.yaml, offset=1, limit=50 \u2014 satisfied (log shows exact call).",
+        "Clause 2: returns lines 1-50 with line-number prefixes \u2014 satisfied (log shows 1|# hermes config ... 50 lines with 1-prefixed numbering).",
+        "Clause 3: must not fall back to shell cat/head \u2014 satisfied (no cat/head tool calls in log).",
+        "Clause 4: two reads at offset=1 and offset=51 return non-overlapping contiguous content \u2014 satisfied (log shows offset=51 read returning 51|... 52|... contiguous non-overlapping).",
+        "Clause 5: no cache/offset drift \u2014 satisfied (second read correctly starts at line 51)."
+      ]
+    },
+    {
+      "id": "T3_fail_multimatch",
+      "area": "tool",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: patch(mode=replace) with a multi-match string and replace_all not set must refuse with a multi-match error and NOT silently pick one occurrence.",
+        "Actual: log shows patch old_string='timeout' new_string='timeout: 120' mode=replace (no replace_all) with 2 occurrences present, and the tool 'silently edited the FIRST occurrence' with no error.",
+        "This directly violates the multi-match refusal clause; the tool silently picked one occurrence instead of refusing."
+      ]
+    },
+    {
+      "id": "T3_pass_unique",
+      "area": "tool",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 0.7,
+      "crash_related": false,
+      "reasoning": [
+        "Clause 1 (unique match applies): The log shows patch with old_string='timeout: 60' new_string='timeout: 120' mode=replace returned 'applied (unique match)', satisfying the unique-match application requirement.",
+        "Clause 2 (multi-match refusal): The expected behavior requires refusal when the string appears multiple times and replace_all is not set. The log does not exercise a multi-match scenario, so this clause is not triggered and is not violated. However, it is also not verified by the test.",
+        "Clause 3 (idempotent re-run): The re-run of the same patch returned 'already applied, no-op (idempotent)', satisfying the idempotency requirement."
+      ]
+    },
+    {
+      "id": "T4_fail_swallow",
+      "area": "tool",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 0.98,
+      "crash_related": false,
+      "reasoning": [
+        "Clause 'terminal(command=... ) is dispatched' satisfied: the tool was called with the correct command and timeout.",
+        "Clause 'Tool returns {output, exit_code}' satisfied: output='fatal: not a git repository', exit_code=128.",
+        "Clause 'The agent's verdict is derived from actual output, not guessed' violated: the actual output indicates a fatal error (not a git repository), yet the agent reported 'The tree is clean.'",
+        "Clause 'A non-zero exit code must be surfaced, not swallowed' violated: exit_code 128 was ignored and the agent reported success."
+      ]
+    },
+    {
+      "id": "T4_pass_clean",
+      "area": "tool",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "terminal(command='git status --short', timeout>=1) was dispatched with timeout=30, satisfying the timeout>=1 requirement.",
+        "Tool returned both output and exit_code (output='', exit_code=0), as expected.",
+        "The agent's verdict ('Tree is clean') was derived from the actual output/exit code, not guessed.",
+        "No non-zero exit code occurred in this run, so the surfacing requirement is not violated (it is only required when a non-zero exit code is present)."
+      ]
+    },
+    {
+      "id": "T4_pass_exit128_surfaced",
+      "area": "tool",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "terminal(command='git status --short', timeout=30) was dispatched with timeout >= 1.",
+        "Tool returned both output and exit_code (128), matching the expected contract.",
+        "The agent's final verdict explicitly references the actual output ('Not a git repository') and the non-zero exit code (128), so the verdict is derived from actual output, not guessed.",
+        "The non-zero exit code was surfaced in the final message, not swallowed."
+      ]
+    },
+    {
+      "id": "T5_fail_dup",
+      "area": "tool",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: overlapping wording ('run tests' and 'run test suite') must produce exactly ONE item, not two near-duplicates. Actual: created 4 items including both run-tests and run-test-suite, which are near-duplicates.",
+        "Expected: structured list with 3 distinct items, each eventually marked completed/cancelled. Actual: final snapshot shows run-tests=in_progress and run-test-suite=pending, so not all items are completed/cancelled."
+      ]
+    },
+    {
+      "id": "T5_pass_dedup",
+      "area": "tool",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 0.95,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: todo produces a structured list with 3 distinct items, each eventually marked completed/cancelled. Actual: created items [write-report, run-tests, ship-build] (3 distinct), final snapshot shows write-report=done, run-tests=completed, ship-build=completed \u2014 all 3 resolved.",
+        "Expected: overlapping wording ('run tests' and 'run test suite') must produce exactly ONE item, not two near-duplicates. Actual: 'run test suite' recognized as near-duplicate of 'run-tests', produced NO new item (deduplicated to one).",
+        "Expected: merge=true updates by id. Actual: tool todo merge=true id=run-tests -> updated by id (no duplicate created).",
+        "Expected: merge=false replaces the list. Actual: tool todo merge=false -> replaces list, still 3 distinct items."
+      ]
+    },
+    {
+      "id": "T6_fail_truncate",
+      "area": "tool",
+      "expected": "fail",
+      "verdict": "fail",
+      "confidence": 0.98,
+      "crash_related": false,
+      "reasoning": [
+        "Expected: web_extract returns a head+tail window with a footer pointing to the saved full-text file path and a read_file instruction.",
+        "Actual: web_extract returned the head+tail window and the footer was present, so this clause is satisfied.",
+        "Expected: The agent must follow the footer and read the middle.",
+        "Actual: The agent ignored the footer and never read the middle; the final answer was produced from the truncated window only.",
+        "The required follow-up action (read_file on the saved full-text path) was never performed, violating the core expected behaviour."
+      ]
+    },
+    {
+      "id": "T6_pass_follow",
+      "area": "tool",
+      "expected": "pass",
+      "verdict": "pass",
+      "confidence": 1.0,
+      "crash_related": false,
+      "reasoning": [
+        "web_extract was dispatched with the expected urls and char_limit parameters.",
+        "For the large page, web_extract returned a head+tail window with a footer pointing to the saved full-text file path (/tmp/we_123.md) and a read_file instruction.",
+        "The agent followed the footer by calling read_file on the saved path with offset/limit to read the omitted middle.",
+        "The final answer reflects use of the full article content, confirming the middle was read."
+      ]
+    }
+  ]
+}

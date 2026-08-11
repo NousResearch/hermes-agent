@@ -1,0 +1,3 @@
+[12:00:01] plugin registered skill plugin:myhelper
+[12:00:02] tool skill_view name='myhelper' -> returned PLUGIN skill content (shadowed user skill)
+[12:00:03] user's same-named skill unreachable

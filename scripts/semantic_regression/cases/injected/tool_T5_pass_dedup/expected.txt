@@ -1,0 +1,1 @@
+The agent issues todo producing a structured list with 3 distinct items, each eventually marked completed/cancelled. Overlapping wording ('run tests' and 'run test suite') must produce exactly ONE item, not two near-duplicates. merge=false replaces the list; merge=true updates by id.

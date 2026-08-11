@@ -1,0 +1,4 @@
+{
+  "label": "fail",
+  "note": "called built-in write_file instead of plugin gojo-calendar"
+}

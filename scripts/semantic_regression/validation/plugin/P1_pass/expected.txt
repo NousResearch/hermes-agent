@@ -1,0 +1,1 @@
+A stub plugin 'demo' registers a pre_user_message hook that prefixes every user message with [demo]. On the next user message the hook fires BEFORE the message reaches the agent, and the agent sees '[demo]<msg>'. An unrelated plugin hook transform_llm_output must NOT fire on pre_user_message.

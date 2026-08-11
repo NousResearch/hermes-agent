@@ -1,0 +1,5 @@
+[12:00:01] plugin gojo registered tool gojo-calendar
+[12:00:02] user: 'create a calendar event on 2026-08-15 at 14:00 called Standup'
+[12:00:03] tool gojo-calendar date='2026-08-15' time='14:00' title='Standup'
+[12:00:04] result surfaced to user
+[12:00:05] no other tool dispatched

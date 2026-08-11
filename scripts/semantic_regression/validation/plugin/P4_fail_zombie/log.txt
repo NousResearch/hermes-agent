@@ -1,0 +1,3 @@
+[12:00:01] plugins.enabled removed 'optin', but...
+[12:00:02] session still shows optin's tool 'optin-helper' registered (zombie behaviour persists)
+[12:00:03] optin's pre_user_message hook STILL fires after disable

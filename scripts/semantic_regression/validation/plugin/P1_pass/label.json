@@ -1,0 +1,4 @@
+{
+  "label": "pass",
+  "note": "hook fires with correct prefix, unrelated hook does not fire"
+}

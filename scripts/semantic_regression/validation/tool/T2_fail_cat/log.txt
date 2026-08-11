@@ -1,0 +1,3 @@
+[12:00:01] tool terminal command='cat ~/.hermes/config.yaml | head -50'
+[12:00:02] terminal -> full file dumped, no line-number prefixes
+[12:00:03] final: 'Here are the first 50 lines.'

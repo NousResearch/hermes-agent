@@ -1,0 +1,4 @@
+{
+  "label": "fail",
+  "note": "patch silently no-oped instead of explicit not-found error"
+}

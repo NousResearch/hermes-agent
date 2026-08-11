@@ -1,0 +1,1 @@
+The agent dispatches read_file(path=<~/.hermes/config.yaml>, offset=1, limit=50) and returns lines 1-50. It must not fall back to shell cat/head. Result preserves line-number prefixes. Two reads at offset=1 and offset=51 return non-overlapping contiguous content (no cache/offset drift).

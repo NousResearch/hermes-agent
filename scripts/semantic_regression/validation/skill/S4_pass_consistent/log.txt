@@ -1,0 +1,3 @@
+[12:00:01] skills_list session A -> [xlsx], macos-only hidden, needs-vision hidden (vision off)
+[12:00:02] skills_list session B (same config) -> [xlsx], identical visibility
+[12:00:03] no flaky visibility

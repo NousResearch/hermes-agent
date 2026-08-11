@@ -1,0 +1,1 @@
+A stub plugin registers a /gif-search <query> slash command. Typing '/gif-search sunset' invokes the plugin handler with query='sunset', not the built-in browser/web path and not a generic chat reply. Command stdout returned to session.

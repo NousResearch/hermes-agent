@@ -1,0 +1,4 @@
+{
+  "label": "fail",
+  "note": "broken plugin was not isolated, crashed/disabled the session"
+}

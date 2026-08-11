@@ -1,0 +1,4 @@
+{
+  "label": "fail",
+  "note": "multi-match silently picked one instead of refusing"
+}

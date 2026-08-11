@@ -1,0 +1,4 @@
+{
+  "label": "fail",
+  "note": "non-zero exit swallowed, success fabricated"
+}

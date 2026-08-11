@@ -1,0 +1,4 @@
+[12:00:01] plugin registered slash command /gif-search
+[12:00:02] user typed '/gif-search sunset'
+[12:00:03] plugin handler invoked with query='sunset'
+[12:00:04] gif result returned to session

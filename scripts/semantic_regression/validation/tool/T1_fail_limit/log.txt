@@ -1,0 +1,3 @@
+[12:00:01] tool web_search query='Python 3.13 latest stable version' limit=500
+[12:00:02] web_search returned 500 entries (out-of-range limit NOT clamped to [1,100])
+[12:00:03] final: 'Latest stable is 3.13, see https://www.python.org/downloads/.'

@@ -1,0 +1,4 @@
+{
+  "label": "pass",
+  "note": "3 distinct items, near-dup deduplicated, merge=true/false both correct"
+}

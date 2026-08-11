@@ -1,0 +1,1 @@
+The agent dispatches web_search(query="Python 3.13 latest stable version", limit=N in [1,100]). The tool returns a JSON result set with {url,title,description} entries. No other tool is dispatched. The agent's final answer cites at least one returned URL.

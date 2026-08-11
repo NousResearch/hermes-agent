@@ -38,25 +38,50 @@ WINDOW_HOURS = 3  # Look back 3 hours for review transitions
 
 # --- Tasks that Gate 0 applies to ---
 TIER_KEYWORDS = {
-    "backend": ["backend", "api", "db ", "database", "migration", "server", "model", "logic"],
+    "backend": ["backend", "api", "db", "database", "migration", "server", "model", "logic"],
     "frontend": ["frontend", "ui", "ux", "component", "style", "layout", "mobile", "react", "screen"],
     "security": ["auth", "credential", "token", "key", "password", "security", "encrypt", "jwt"],
-    "new-feature": ["feature", "integration", "new ", "add ", "implement"],
+    "new-feature": ["feature", "integration", "new", "add", "implement"],
 }
+
+
+def _kw_pattern(keywords) -> re.Pattern | None:
+    """Compile keywords into one case-insensitive regex with word boundaries.
+
+    Short tokens like 'ui' must NOT match inside ordinary words
+    ('requirements', 'guidelines', 'repository') — that produced walls of
+    false 'frontend' flags on legitimately completed tasks (2026-08-11).
+    Multi-word phrases are matched as literal substrings.
+    """
+    parts = []
+    for kw in keywords:
+        kw = kw.strip()
+        if not kw:
+            continue
+        if " " in kw:
+            parts.append(re.escape(kw))
+        else:
+            parts.append(rf"\b{re.escape(kw)}\b")
+    if not parts:
+        return None
+    return re.compile("|".join(parts), re.IGNORECASE)
+
+
+SKIP_KEYWORDS = ["content", "post", "copy", "draft", "article", "config", "cron edit", "skill activation"]
+SKIP_PATTERN = _kw_pattern(SKIP_KEYWORDS)
+TIER_PATTERNS = {tier: _kw_pattern(kws) for tier, kws in TIER_KEYWORDS.items()}
 
 
 def _should_require_gate0(title: str, body: str) -> str | None:
     """Return tier name if this task should have Gate 0, else None."""
     combined = (title or "") + " " + (body or "")
-    combined_lower = combined.lower()
 
     # Skip content/config/infra outright
-    skip_kw = ["content", "post", "copy", "draft", "article", "config", "cron edit", "skill activation"]
-    if any(k in combined_lower for k in skip_kw):
+    if SKIP_PATTERN and SKIP_PATTERN.search(combined):
         return None
 
-    for tier, keywords in TIER_KEYWORDS.items():
-        if any(k in combined_lower for k in keywords):
+    for tier, pat in TIER_PATTERNS.items():
+        if pat and pat.search(combined):
             return tier
     return None
 
@@ -78,7 +103,7 @@ def _scan_boards():
                        created_at, completed_at,
                        COALESCE(completed_at, started_at, created_at) AS updated_at
                 FROM tasks
-                WHERE status IN ('review', 'running', 'done')
+                WHERE status IN ('review', 'running')
                   AND COALESCE(completed_at, started_at, created_at) >= ?
                 ORDER BY COALESCE(completed_at, started_at, created_at) DESC
                 """,
@@ -100,7 +125,7 @@ def _scan_boards():
 
 
 def _has_hermaguard_evidence(task_id: str, db_path: Path) -> bool:
-    """Check if task_events has any hermaguard or adversarial review entry."""
+    """Check if task_events or task_comments has hermaguard/adversarial review entry."""
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
 
@@ -119,6 +144,30 @@ def _has_hermaguard_evidence(task_id: str, db_path: Path) -> bool:
         (task_id,),
     ).fetchall()
 
+    # Gate 0 evidence often lives in a review comment (2026-08-11: 4 tasks
+    # had hermaguard/adversarial evidence in task_comments that the gate
+    # missed — fixed by checking comments too). Guard the table: some
+    # boards/schemas don't carry task_comments (e.g. test fixtures).
+    comments = []
+    has_comments_table = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='task_comments'"
+    ).fetchone()
+    if has_comments_table:
+        comments = conn.execute(
+            """
+            SELECT body FROM task_comments
+            WHERE task_id = ?
+              AND (
+                LOWER(body) LIKE '%hermaguard%'
+                OR LOWER(body) LIKE '%adversarial%'
+                OR LOWER(body) LIKE '%gate 0%'
+                OR LOWER(body) LIKE '%gate0%'
+              )
+            LIMIT 5
+            """,
+            (task_id,),
+        ).fetchall()
+
     conn.close()
 
     # Also check if result field contains hermaguard mention
@@ -136,6 +185,11 @@ def _has_hermaguard_evidence(task_id: str, db_path: Path) -> bool:
     for r in rows:
         payload = (r["payload"] or "").lower()
         if "hermaguard" in payload or "adversarial" in payload:
+            return True
+
+    for c in comments:
+        text = (c["body"] or "").lower()
+        if "hermaguard" in text or "adversarial" in text or "gate 0" in text or "gate0" in text:
             return True
 
     return False

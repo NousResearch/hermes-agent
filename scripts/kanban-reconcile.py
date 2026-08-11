@@ -41,7 +41,7 @@ SUCCESS_OUTCOMES = {"completed", "done"}
 TERMINAL_STATUSES = {"done", "completed", "archived"}
 # Review-flow tasks may legitimately close without a successful run
 # (the review itself is the deliverable, recorded as a comment).
-REVIEW_PREFIXES = ("review:", "[review]", "clean up:", "investigate:")
+REVIEW_PREFIXES = ("review:", "[review]", "clean up:", "investigate:", "audit:")
 
 # Manual closure signal: a non-empty status_reason that wasn't written by
 # this script means a human deliberately closed the task with an explanation.
@@ -139,6 +139,39 @@ def is_manual_closure(status_reason: str | None) -> bool:
     return not status_reason.startswith(RECONCILE_REASON_PREFIX)
 
 
+def is_deliberate_close(conn: sqlite3.Connection, task: dict) -> bool:
+    """A terminal task is NOT drift when its event stream shows a legitimate
+    closure signal. The system closes tasks through several paths that never
+    set status_reason, so classification must read the event history:
+      - 'completed' event carrying denji_review_signal=true (review-flow close)
+      - a human-authored comment (author='default' = Sahil's session)
+      - a 'decomposed' event (parent split into children IS the completion)
+      - status_reason from a human (existing check)
+    task_runs success is only one of several legitimate close paths.
+    """
+    if is_manual_closure(task.get("status_reason")):
+        return True
+    for ev in get_events(conn, task["id"]):
+        kind = ev["kind"]
+        if kind == "completed":
+            try:
+                payload = json.loads(ev["payload"] or "{}")
+            except Exception:
+                payload = {}
+            if payload.get("denji_review_signal") is True:
+                return True
+        elif kind == "commented":
+            try:
+                payload = json.loads(ev["payload"] or "{}")
+            except Exception:
+                payload = {}
+            if payload.get("author") == "default":
+                return True
+        elif kind == "decomposed":
+            return True
+    return False
+
+
 def reopen_task(conn: sqlite3.Connection, task_id: str, reason: str) -> bool:
     """Reopen a drifted task: set status=triage, log event."""
     if _DRY_RUN:
@@ -147,9 +180,9 @@ def reopen_task(conn: sqlite3.Connection, task_id: str, reason: str) -> bool:
     cur = conn.execute(
         "UPDATE tasks SET status = 'triage', status_reason = ?, "
         "claim_lock = NULL, claim_expires = NULL, worker_pid = NULL, "
-        "current_run_id = NULL, updated_at = ? "
+        "current_run_id = NULL "
         "WHERE id = ? AND status IN ('done', 'completed')",
-        (reason[:500], now, task_id),
+        (reason[:500], task_id),
     )
     if cur.rowcount == 0:
         return False
@@ -195,8 +228,10 @@ def scan_board(name: str, db_path: Path) -> list[dict]:
 
         # Manual closures (human housekeeping with an explanation) are
         # NOT drift. Skip them so the circuit breaker doesn't trip on
-        # legitimate bulk cleanup sessions.
-        if is_manual_closure(task.get("status_reason")):
+        # legitimate bulk cleanup sessions. A task is deliberate when the
+        # event stream shows a review signal, human comment, decomposition,
+        # or a human status_reason — not just when status_reason is set.
+        if is_deliberate_close(conn, task):
             continue
 
         runs = get_runs(conn, tid)

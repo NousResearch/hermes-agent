@@ -5473,8 +5473,13 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             _mark_proven = getattr(server, "_mark_session_proven", None)
             if _mark_proven is not None:
                 _mark_proven()
-            # MCP CallToolResult has .content (list of content blocks) and .isError
-            if result.isError:
+            # MCP CallToolResult has .content (list of content blocks) and
+            # .isError (SDK 1.x camelCase) / .is_error (SDK 2.x snake_case).
+            # The field was renamed in mcp 2.0.0; access defensively so a
+            # drift between the pinned SDK and the installed SDK (seen
+            # 2026-08-11: pyproject pins 1.28.1, venv has 2.0.0) can never
+            # crash the mail/other MCP tools with AttributeError.
+            if getattr(result, "is_error", getattr(result, "isError", False)):
                 error_text = ""
                 for block in (result.content or []):
                     if getattr(block, "text", None):

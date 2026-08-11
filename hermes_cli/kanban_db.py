@@ -8302,11 +8302,22 @@ def decompose_triage_task(
                 child_ws_path = root_ws_path
             else:
                 child_ws_path = None
+            # Decomposed children default to goal-mode: an implementation
+            # slice split out of a proposal is exactly the "keep working
+            # until a judge agrees it's done" shape the goal loop exists
+            # for, and without it a complex child dies on the single-shot
+            # per-turn iteration cap (V9 incident 2026-08-11: "Iteration
+            # budget exhausted (30/30)" on sanitizer/regression/skill
+            # scoring tasks). A child dict can still opt out with
+            # goal_mode=False or tune turns via goal_max_turns.
+            child_goal_mode = child.get("goal_mode", True)
+            child_goal_max_turns = child.get("goal_max_turns")
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by, tier) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?)",
+                " workspace_path, tenant, created_at, created_by, tier, "
+                " goal_mode, goal_max_turns) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     new_id,
                     title,
@@ -8318,6 +8329,8 @@ def decompose_triage_task(
                     now,
                     (author or "decomposer"),
                     parent_tier,
+                    1 if child_goal_mode else 0,
+                    child_goal_max_turns,
                 ),
             )
             _append_event(

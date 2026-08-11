@@ -9,7 +9,8 @@ import {
   messageCreatedAt,
   optimisticAttachmentRef,
   parseCommandDispatch,
-  parseSlashCommand
+  parseSlashCommand,
+  toRuntimeMessage
 } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
@@ -236,5 +237,17 @@ describe('messageCreatedAt', () => {
   it('treats a zero / non-finite timestamp as absent', () => {
     expect(messageCreatedAt({ timestamp: 0 }, NOW).getTime()).toBe(NOW)
     expect(messageCreatedAt({ timestamp: Number.NaN }, NOW).getTime()).toBe(NOW)
+  })
+})
+
+describe('toRuntimeMessage timeline metadata', () => {
+  it('does not expose a fabricated visible timestamp for timestamp-less history', () => {
+    const runtime = toRuntimeMessage({
+      id: 'old-message',
+      parts: [{ text: 'old', type: 'text' }],
+      role: 'assistant'
+    })
+
+    expect((runtime.metadata?.custom as { timelineTimestamp?: number }).timelineTimestamp).toBeUndefined()
   })
 })

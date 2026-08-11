@@ -2,6 +2,7 @@ import { MessagePrimitive, useAuiState } from '@assistant-ui/react'
 import { type FC } from 'react'
 
 import { messageContentText } from '@/components/assistant-ui/thread/content'
+import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'
 import { SCAFFOLD_LABEL_CLASS } from '@/components/chat/scaffold-row'
 import { Codicon } from '@/components/ui/codicon'
 import { ToolIcon } from '@/components/ui/tool-icon'
@@ -60,6 +61,7 @@ export const SystemMessage: FC = () => {
         <span className="text-muted-foreground/55">steered</span>
         <span className="text-muted-foreground/35">·</span>
         <span className="whitespace-pre-wrap">{steerNote.groups.text.trim()}</span>
+        <MessageTimelineTimestamp />
       </MessagePrimitive.Root>
     )
   }
@@ -91,6 +93,7 @@ export const SystemMessage: FC = () => {
             <LinkifiedText className="whitespace-pre-wrap" explicitOnly pretty={false} text={output} />
           </>
         )}
+        <MessageTimelineTimestamp className={cn(multiline ? 'mt-0.5 block' : 'ml-1.5')} />
       </MessagePrimitive.Root>
     )
   }
@@ -107,6 +110,7 @@ export const SystemMessage: FC = () => {
       data-slot="aui_system-message-root"
     >
       <LinkifiedText className="whitespace-pre-wrap" explicitOnly pretty={false} text={text} />
+      <MessageTimelineTimestamp className={cn(multiline ? 'mt-0.5 block' : 'ml-1.5')} />
     </MessagePrimitive.Root>
   )
 }

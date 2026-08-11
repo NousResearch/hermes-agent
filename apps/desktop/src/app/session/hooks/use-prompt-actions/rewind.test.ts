@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest'
 
 import { type ChatMessage, textPart } from '@/lib/chat-messages'
 
-import { appendMidTurnUserMessage, rebindSurvivorRowIds, survivorRowIdsFrom, truncateSubmitParams } from './rewind'
+import {
+  appendMidTurnUserMessage,
+  finalizeInterruptedMessages,
+  rebindSurvivorRowIds,
+  survivorRowIdsFrom,
+  truncateSubmitParams
+} from './rewind'
 
 const row = (id: string, role: ChatMessage['role'], text: string, extra: Partial<ChatMessage> = {}): ChatMessage => ({
   id,
@@ -202,5 +208,56 @@ describe('rebindSurvivorRowIds', () => {
     const messages = [user('u0', 7)]
 
     expect(rebindSurvivorRowIds(messages, [7])[0]).toBe(messages[0])
+  })
+})
+
+describe('finalizeInterruptedMessages', () => {
+  it('records when a stopped assistant turn and its active part ended', () => {
+    const [message] = finalizeInterruptedMessages(
+      [
+        {
+          id: 'assistant-live',
+          role: 'assistant',
+          parts: [{ type: 'text', text: 'partial answer', timestamp: 10 }],
+          pending: true,
+          timestamp: 10
+        }
+      ],
+      'assistant-live',
+      11.25
+    )
+
+    expect(message.completedAt).toBe(11.25)
+    expect(message.parts[0].completedAt).toBe(11.25)
+    expect(message.pending).toBe(false)
+  })
+
+  it('keeps and closes a tool-only assistant turn when it is stopped', () => {
+    const [message] = finalizeInterruptedMessages(
+      [
+        {
+          id: 'assistant-tool',
+          role: 'assistant',
+          parts: [
+            {
+              args: {} as never,
+              argsText: '{}',
+              timestamp: 10,
+              toolCallId: 'call-1',
+              toolName: 'terminal',
+              type: 'tool-call'
+            }
+          ],
+          pending: true,
+          timestamp: 10
+        }
+      ],
+      'assistant-tool',
+      11.25
+    )
+
+    expect(message.parts).toHaveLength(1)
+    expect(message.parts[0].completedAt).toBe(11.25)
+    expect(message.completedAt).toBe(11.25)
   })
 })

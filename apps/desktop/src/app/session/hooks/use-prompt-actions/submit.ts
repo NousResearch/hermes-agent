@@ -319,11 +319,15 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // hands us the invocation to render instead. Everything else shows what
       // was typed.
       const bubbleText = options?.displayText ?? visibleText
+      // Keep the user-send boundary stable when later ref resolution rewrites
+      // the optimistic bubble in place.
+      const submittedAt = Date.now() / 1000
 
       const buildUserMessage = (): ChatMessage => ({
         id: optimisticId,
         role: 'user',
         parts: [textPart(bubbleText || (attachmentRefs.length ? '' : attachments.map(a => a.label).join(', ')))],
+        timestamp: submittedAt,
         attachmentRefs
       })
 
@@ -737,6 +741,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
 
         const message = inlineErrorMessage(err, copy.promptFailed)
+        const occurredAt = Date.now() / 1000
 
         updateSessionState(
           sessionId,
@@ -749,7 +754,9 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
                 role: 'assistant',
                 parts: [],
                 error: message || copy.promptFailed,
-                branchGroupId: state.pendingBranchGroup ?? undefined
+                branchGroupId: state.pendingBranchGroup ?? undefined,
+                completedAt: occurredAt,
+                timestamp: occurredAt
               }
             ],
             busy: false,

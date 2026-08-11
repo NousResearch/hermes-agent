@@ -307,6 +307,13 @@ describe('chatPartsEquivalent', () => {
     expect(chatPartsEquivalent(partA, partB)).toBe(false)
   })
 
+  it('returns false when visible timeline boundaries change', () => {
+    const started = { type: 'text' as const, text: 'Hello', timestamp: 10 }
+    const completed = { ...started, completedAt: 11 }
+
+    expect(chatPartsEquivalent(started, completed)).toBe(false)
+  })
+
   it('returns true for identical reasoning parts', () => {
     const partA = { type: 'reasoning' as const, text: 'Thinking...' }
     const partB = { type: 'reasoning' as const, text: 'Thinking...' }
@@ -390,6 +397,13 @@ describe('chatPartsEquivalent', () => {
 describe('chatMessagesEquivalent', () => {
   it('returns true for structurally identical messages', () => {
     expect(chatMessagesEquivalent(msg('1', 'user', 'Hello'), msg('1', 'user', 'Hello'))).toBe(true)
+  })
+
+  it('returns false when a visible message timestamp changes', () => {
+    const before = { ...msg('1', 'user', 'Hello'), timestamp: 10 }
+    const after = { ...before, timestamp: 11 }
+
+    expect(chatMessagesEquivalent(before, after)).toBe(false)
   })
 
   it('returns false when text part content differs', () => {

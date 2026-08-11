@@ -219,17 +219,18 @@ interface GatewayEventDeps {
   compactedTurnRef: MutableRefObject<Set<string>>
   lastCwdInfoSessionRef: MutableRefObject<string | null>
   nativeSubagentSessionsRef: MutableRefObject<Set<string>>
-  appendAssistantDelta: (sessionId: string, delta: string) => void
-  appendReasoningDelta: (sessionId: string, delta: string, replace?: boolean) => void
+  appendAssistantDelta: (sessionId: string, delta: string, occurredAt?: number) => void
+  appendReasoningDelta: (sessionId: string, delta: string, replace?: boolean, occurredAt?: number) => void
   completeAssistantMessage: (
     sessionId: string,
     text: string,
     responsePreviewed?: boolean,
-    failure?: { error: string; partial: boolean }
+    failure?: { error: string; partial: boolean },
+    occurredAt?: number
   ) => void
-  failAssistantMessage: (sessionId: string, errorMessage: string) => void
+  failAssistantMessage: (sessionId: string, errorMessage: string, occurredAt?: number) => void
   flushQueuedDeltas: (sessionId?: string) => void
-  finalizeInterimAssistantMessage: (sessionId: string, text: string) => void
+  finalizeInterimAssistantMessage: (sessionId: string, text: string, occurredAt?: number) => void
   queryClient: QueryClient
   refreshHermesConfig: () => Promise<void>
   sessionInterrupted: (sessionId: string) => boolean
@@ -243,7 +244,8 @@ interface GatewayEventDeps {
     sessionId: string,
     payload: GatewayEventPayload | undefined,
     phase: 'running' | 'complete',
-    sourceEventType?: string
+    sourceEventType?: string,
+    occurredAt?: number
   ) => void
 }
 
@@ -309,6 +311,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
   return useCallback(
     (event: RpcEvent) => {
       const payload = event.payload as GatewayEventPayload | undefined
+
+      const occurredAt =
+        typeof payload?.timestamp === 'number' && Number.isFinite(payload.timestamp)
+          ? payload.timestamp
+          : Date.now() / 1000
+
       const explicitSid = event.session_id || ''
 
       const route = resolveGatewayEventSessionId({
@@ -601,7 +609,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
                 // finalizeInterruptedMessages un-pends kept text and drops
                 // empty placeholders; on the normal path message.complete
                 // already settled everything and this is a no-op.
-                messages: finalizeInterruptedMessages(state.messages, state.streamId),
+                messages: finalizeInterruptedMessages(state.messages, state.streamId, occurredAt),
                 pendingBranchGroup: null,
                 streamId: null,
                 turnStartedAt: null
@@ -694,7 +702,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
       } else if (event.type === 'message.delta') {
         if (sessionId) {
-          appendAssistantDelta(sessionId, coerceGatewayText(payload?.text))
+          appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt)
         }
       } else if (event.type === 'message.interim') {
         // The agent emitted interim assistant commentary (text alongside tool
@@ -706,7 +714,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           const text = coerceGatewayText(payload?.text)
 
           if (text) {
-            finalizeInterimAssistantMessage(sessionId, text)
+            finalizeInterimAssistantMessage(sessionId, text, occurredAt)
           }
         }
       } else if (event.type === 'thinking.delta') {
@@ -722,7 +730,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
       } else if (event.type === 'reasoning.delta') {
         if (sessionId) {
-          appendReasoningDelta(sessionId, coerceThinkingText(payload?.text))
+          appendReasoningDelta(sessionId, coerceThinkingText(payload?.text), false, occurredAt)
         }
 
         if (isActiveEvent) {
@@ -730,7 +738,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
       } else if (event.type === 'reasoning.available') {
         if (sessionId) {
-          appendReasoningDelta(sessionId, coerceThinkingText(payload?.text), true)
+          appendReasoningDelta(sessionId, coerceThinkingText(payload?.text), true, occurredAt)
         }
 
         if (isActiveEvent) {
@@ -752,7 +760,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           if (idx === undefined || idx <= 1) {
             // First reference: clear any stale reasoning left over from
             // before this turn's references start, same as before.
-            appendReasoningDelta(sessionId, text, true)
+            appendReasoningDelta(sessionId, text, true, occurredAt)
           } else {
             // Later references must accumulate, not replace — otherwise
             // each new reference wipes out the ones already shown (#64658).
@@ -764,7 +772,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             // already-complete text, with no concurrent token stream for the
             // reference-gathering phase, so there is no in-flight delta to
             // collide with in the shared queue bucket.
-            appendReasoningDelta(sessionId, text, false)
+            appendReasoningDelta(sessionId, text, false, occurredAt)
             flushQueuedDeltas(sessionId)
           }
         }
@@ -791,7 +799,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             ? `◇ MoA refs ${payload.refs_done}/${payload.refs_total} — ${label}\n`
             : `◇ MoA refs ${payload.refs_done}/${payload.refs_total}\n`
 
-          appendReasoningDelta(sessionId, line, payload.refs_done <= 1)
+          appendReasoningDelta(sessionId, line, payload.refs_done <= 1, occurredAt)
           flushQueuedDeltas(sessionId)
         }
 
@@ -803,7 +811,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // aggregator acting). Append a one-line marker; the first
         // moa.reference that follows replaces the whole block.
         if (sessionId && payload?.phase === 'aggregator') {
-          appendReasoningDelta(sessionId, '◇ MoA aggregating…\n', false)
+          appendReasoningDelta(sessionId, '◇ MoA aggregating…\n', false, occurredAt)
           flushQueuedDeltas(sessionId)
         }
 
@@ -845,7 +853,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
               }
             : undefined
 
-        completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure)
+        completeAssistantMessage(sessionId, finalText, payload?.response_previewed, failure, occurredAt)
 
         // Structured billing wall forwarded by the gateway (out of credits /
         // payment required) — cache it + raise a billing-specific toast.
@@ -917,7 +925,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         flushQueuedDeltas(sessionId)
-        upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type)
+        upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'running', event.type, occurredAt)
 
         if (isActiveEvent) {
           setPetActivity({ reasoning: false, toolRunning: true })
@@ -925,7 +933,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       } else if (event.type === 'tool.complete') {
         if (sessionId) {
           flushQueuedDeltas(sessionId)
-          upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type)
+          upsertToolCall(sessionId, toTodoPayload(payload) ?? payload, 'complete', event.type, occurredAt)
 
           if (isActiveEvent) {
             setPetActivity({ toolRunning: false })
@@ -1041,7 +1049,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
                 name: 'clarify',
                 tool_id: requestId
               },
-              'running'
+              'running',
+              event.type,
+              occurredAt
             )
 
             // The transcript only renders the active session, so a background
@@ -1331,8 +1341,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
               {
                 id: `review-summary-${Date.now()}`,
                 role: 'system',
-                parts: [textPart(`review:${text}`)],
-                timestamp: Math.floor(Date.now() / 1000)
+                parts: [textPart(`review:${text}`, occurredAt)],
+                timestamp: occurredAt
               }
             ]
           }))
@@ -1414,7 +1424,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (sessionId) {
           flushQueuedDeltas(sessionId)
-          failAssistantMessage(sessionId, errorMessage)
+          failAssistantMessage(sessionId, errorMessage, occurredAt)
         }
 
         if (isActiveEvent) {

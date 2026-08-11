@@ -1221,6 +1221,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
     if cached is not None:
         return cached or None
 
+    env = None
     try:
         # Build the environment the same way tools/terminal_tool.py does for a
         # live command: select the backend image, then assemble ssh/container
@@ -1244,7 +1245,8 @@ def _probe_remote_backend(env_type: str) -> str | None:
                 "user": config.get("ssh_user", ""),
                 "port": config.get("ssh_port", 22),
                 "key": config.get("ssh_key", ""),
-                "persistent": config.get("ssh_persistent", False),
+                # Prompt probes are ephemeral and must never retain a shell.
+                "persistent": False,
             }
 
         container_config = None
@@ -1253,7 +1255,9 @@ def _probe_remote_backend(env_type: str) -> str | None:
                 "container_cpu": config.get("container_cpu", 1),
                 "container_memory": config.get("container_memory", 5120),
                 "container_disk": config.get("container_disk", 51200),
-                "container_persistent": config.get("container_persistent", True),
+                # A cache miss must not leave a sandbox behind or attach to a
+                # cross-process persistent Docker environment.
+                "container_persistent": False,
                 "modal_mode": config.get("modal_mode", "auto"),
                 "docker_volumes": config.get("docker_volumes", []),
                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
@@ -1262,7 +1266,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                 "docker_extra_args": config.get("docker_extra_args", []),
                 "docker_shm_size": config.get("docker_shm_size", "1g"),
-                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+                "docker_persist_across_processes": False,
                 "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
             }
 
@@ -1297,6 +1301,12 @@ def _probe_remote_backend(env_type: str) -> str | None:
         logger.debug("Backend probe failed: %s", e)
         _BACKEND_PROBE_CACHE[cache_key] = ""
         return None
+    finally:
+        if env is not None:
+            try:
+                env.cleanup()
+            except Exception:
+                logger.debug("Backend probe cleanup failed", exc_info=True)
 
     # Parse key=value lines back into a tidy summary.
     parsed: dict[str, str] = {}

@@ -830,6 +830,7 @@ class TestEnvironmentHints:
 
         monkeypatch.setenv("TERMINAL_ENV", "docker")
         _pb._clear_backend_probe_cache()
+        cleaned = []
 
         class _FakeEnv:
             def execute(self, cmd, timeout=None):
@@ -841,10 +842,14 @@ class TestEnvironmentHints:
                     ),
                 }
 
+            def cleanup(self):
+                cleaned.append(True)
+
         created = {}
 
         def _fake_create_environment(*, env_type, **kwargs):
             created["env_type"] = env_type
+            created.update(kwargs)
             return _FakeEnv()
 
         # Patch the REAL factory in tools.terminal_tool — the probe imports it
@@ -857,6 +862,9 @@ class TestEnvironmentHints:
         assert line is not None
         assert "Linux 6.8.0" in line
         assert "root" in line
+        assert cleaned == [True]
+        assert created["container_config"]["container_persistent"] is False
+        assert created["container_config"]["docker_persist_across_processes"] is False
 
     def test_remote_probe_cache_is_scoped_by_profile_and_ssh_settings(
         self,

@@ -1949,8 +1949,15 @@ def _retire_stale_environment_for_config(
     effective_task_id: str,
     raw_task_id: Optional[str],
     config: Dict[str, Any],
+    *,
+    preserve_creation_lock: bool = False,
 ) -> None:
-    """Retire a cached nonmultiplex environment after live config changes."""
+    """Retire an environment whose stored backend fingerprint is stale.
+
+    ``preserve_creation_lock`` is required for the post-wait check performed
+    while the caller holds that lock. Removing a held lock from the registry
+    would let another waiter create a replacement lock and enter concurrently.
+    """
     expected = _terminal_backend_fingerprint(resolved_config=config)
     stale_key = None
     stale_env = None
@@ -1972,8 +1979,9 @@ def _retire_stale_environment_for_config(
         except Exception:
             logger.debug("stale environment cleanup failed", exc_info=True)
     if stale_key is not None:
-        with _creation_locks_lock:
-            _creation_locks.pop(stale_key, None)
+        if not preserve_creation_lock:
+            with _creation_locks_lock:
+                _creation_locks.pop(stale_key, None)
         try:
             from tools.file_tools import clear_file_ops_cache
 
@@ -2417,14 +2425,21 @@ def ensure_task_env(task_id: Optional[str] = None):
         task_lock = _creation_locks.setdefault(effective_task_id, threading.Lock())
 
     with task_lock:
+        _retire_stale_environment_for_config(
+            effective_task_id,
+            task_id,
+            config,
+            preserve_creation_lock=True,
+        )
         existing = get_active_env(effective_task_id)
         if existing is not None:
             return existing
         try:
+            cwd, host_cwd = _resolve_environment_cwd(config, task_id)
             new_env = _create_environment(
                 env_type=env_type,
                 image=image,
-                cwd=config["cwd"],
+                cwd=cwd,
                 timeout=config["timeout"],
                 ssh_config=_ssh_config_from_config(config) if env_type == "ssh" else None,
                 container_config=(
@@ -2433,7 +2448,7 @@ def ensure_task_env(task_id: Optional[str] = None):
                 ),
                 local_config=None,
                 task_id=effective_task_id,
-                host_cwd=_resolve_task_host_cwd(config, task_id),
+                host_cwd=host_cwd,
             )
         except Exception as exc:  # noqa: BLE001 — best-effort bring-up
             logger.warning(
@@ -3104,6 +3119,12 @@ def terminal_tool(
 
             with task_lock:
                 # Double-check after acquiring the per-task lock
+                _retire_stale_environment_for_config(
+                    effective_task_id,
+                    task_id,
+                    config,
+                    preserve_creation_lock=True,
+                )
                 with _env_lock:
                     _existing_key = _environment_lookup_key(effective_task_id, task_id)
                     if _existing_key is not None:

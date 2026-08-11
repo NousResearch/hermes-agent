@@ -906,6 +906,12 @@ def _get_or_create_env(task_id: str):
         task_lock = _creation_locks[effective_task_id]
 
     with task_lock:
+        _retire_stale_environment_for_config(
+            effective_task_id,
+            task_id,
+            config,
+            preserve_creation_lock=True,
+        )
         with _env_lock:
             if effective_task_id in _active_environments:
                 _last_activity[effective_task_id] = time.time()
@@ -1340,6 +1346,14 @@ def _execute_remote(
         stop_event.set()
         if rpc_thread is not None:
             rpc_thread.join(timeout=5)
+            if rpc_thread.is_alive() is True and not rpc_connection_errors:
+                from tools.environments.base import EnvironmentConnectionError
+
+                rpc_connection_errors.append(
+                    EnvironmentConnectionError(
+                        "RPC poller did not stop after the remote script finished"
+                    )
+                )
 
         # Clean up remote sandbox dir
         try:

@@ -194,6 +194,59 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIsInstance(errors[0], EnvironmentConnectionError)
 
+    def test_remote_execution_does_not_return_success_with_live_rpc_poller(self):
+        """A poller still blocked after join must fail closed, not report success."""
+        from tools import code_execution_tool, terminal_tool
+        from tools.environments.base import EnvironmentConnectionError
+
+        poll_started = threading.Event()
+        release_poll = threading.Event()
+
+        class LateDeadEnvironment:
+            def execute(self, command, **_kwargs):
+                if command.startswith("ls -1 "):
+                    poll_started.set()
+                    release_poll.wait(timeout=2)
+                    raise EnvironmentConnectionError("late poll connection loss")
+                if "command -v python3" in command:
+                    return {"returncode": 0, "output": "OK\n"}
+                if "python3 script.py" in command:
+                    self.assert_poll_started()
+                    return {"returncode": 0, "output": "done\n"}
+                return {"returncode": 0, "output": ""}
+
+            def assert_poll_started(self):
+                if not poll_started.wait(timeout=1):
+                    raise AssertionError("RPC poller did not start")
+
+            def cleanup(self):
+                return None
+
+        env = LateDeadEnvironment()
+        config = {
+            "env_type": "ssh",
+            "cwd": "/home/user",
+            "timeout": 60,
+            "degraded_mode": "warn",
+        }
+        try:
+            with patch.object(
+                code_execution_tool,
+                "_get_or_create_env",
+                return_value=(env, "ssh"),
+            ), patch.object(
+                terminal_tool, "_get_env_config", return_value=config,
+            ), patch.object(threading.Thread, "join", lambda *_args, **_kwargs: None):
+                result = json.loads(
+                    _execute_remote("print('done')", "late-poll-task", ["terminal"])
+                )
+        finally:
+            release_poll.set()
+            time.sleep(0.05)
+
+        self.assertEqual(result["status"], "degraded")
+        self.assertIn("RPC poller", result["reason"])
+
     def test_remote_execution_connection_failure_evicts_all_cached_state(self):
         from tools import file_tools, terminal_tool
         from tools.environments.base import EnvironmentConnectionError
@@ -241,6 +294,65 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         with file_tools._file_ops_lock:
             self.assertNotIn(task_id, file_tools._file_ops_cache)
         self.assertEqual(cleaned, [True])
+
+    def test_post_lock_check_rejects_environment_from_old_config(self):
+        """A waiter must revalidate an environment registered while it waited."""
+        from tools import code_execution_tool, terminal_tool
+
+        task_id = "config-race-task"
+        stale_cleaned = []
+
+        class FakeEnvironment:
+            def __init__(self, name):
+                self.name = name
+
+            def cleanup(self):
+                stale_cleaned.append(self.name)
+
+        stale_env = FakeEnvironment("stale")
+        fresh_env = FakeEnvironment("fresh")
+        stale_config = {
+            "env_type": "local",
+            "cwd": "/old",
+            "timeout": 60,
+            "lifetime_seconds": 300,
+        }
+        fresh_config = {**stale_config, "cwd": "/new"}
+
+        class InjectStaleEnvironmentLock:
+            def __enter__(self):
+                terminal_tool._register_active_environment(
+                    task_id, stale_env, stale_config, task_id,
+                )
+
+            def __exit__(self, *_args):
+                return False
+
+        with terminal_tool._creation_locks_lock:
+            terminal_tool._creation_locks[task_id] = (  # type: ignore[assignment]
+                InjectStaleEnvironmentLock()
+            )
+
+        try:
+            with patch.object(
+                terminal_tool, "_get_env_config", return_value=fresh_config,
+            ), patch.object(
+                terminal_tool, "_resolve_container_task_id", return_value=task_id,
+            ), patch.object(
+                terminal_tool, "_create_environment", return_value=fresh_env,
+            ):
+                env, env_type = code_execution_tool._get_or_create_env(task_id)
+        finally:
+            with terminal_tool._env_lock:
+                terminal_tool._active_environments.pop(task_id, None)
+                terminal_tool._last_activity.pop(task_id, None)
+                terminal_tool._forget_environment_key(task_id)
+            with terminal_tool._creation_locks_lock:
+                terminal_tool._creation_locks.pop(task_id, None)
+
+        self.assertIs(env, fresh_env)
+        self.assertEqual(env_type, "local")
+        self.assertEqual(stale_cleaned, ["stale"])
 
     def test_remote_creation_connection_failure_is_degraded_and_retryable(self):
         from tools import terminal_tool

@@ -1475,6 +1475,12 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
 
     with task_lock:
         # Double-check: another thread may have created it while we waited
+        _retire_stale_environment_for_config(
+            task_id,
+            raw_task_id,
+            config,
+            preserve_creation_lock=True,
+        )
         with _env_lock:
             if task_id in _active_environments:
                 _last_activity[task_id] = time.time()
@@ -1555,10 +1561,12 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             _start_cleanup_thread()
             logger.info("%s environment ready for task %s", env_type, task_id[:8])
 
-    # Build file_ops from the (guaranteed live) environment and cache it
-    file_ops = ShellFileOperations(terminal_env)
-    with _file_ops_lock:
-        _file_ops_cache[task_id] = file_ops
+        # Publish file operations before releasing the creation lock. Otherwise
+        # a waiter can retire this environment for a new fingerprint and clear
+        # the cache before this creator publishes its now-stale file wrapper.
+        file_ops = ShellFileOperations(terminal_env)
+        with _file_ops_lock:
+            _file_ops_cache[task_id] = file_ops
     return file_ops
 
 

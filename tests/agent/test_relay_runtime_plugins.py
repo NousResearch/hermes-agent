@@ -215,6 +215,32 @@ def test_malformed_explicit_config_does_not_fall_back_to_discovery(
         host.shutdown()
 
 
+def test_present_plugins_section_is_validated_even_when_falsey(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
+    config = tmp_path / "plugins.toml"
+    config.write_text("plugins = []", encoding="utf-8")
+    monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
+    relay = _FakeRelay()
+
+    def reject_invalid_plugins(_config_path):
+        raise ValueError("'plugins' must be a table")
+
+    relay.plugin.load_dynamic_plugin_activation_specs = reject_invalid_plugins
+
+    with caplog.at_level("WARNING"):
+        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+    try:
+        assert not host.managed_execution_enabled()
+        assert relay.events == []
+        assert "'plugins' must be a table" in caplog.text
+        assert "continuing without Relay plugins" in caplog.text
+    finally:
+        host.shutdown()
+
+
 def test_two_profile_hosts_initialize_once_and_clear_after_final_shutdown(
     explicit_static_config,
 ):
@@ -765,6 +791,67 @@ mode = "overwrite"
         relay_runtime._reset_for_tests()
 
     assert not (atof_dir / "events.jsonl").exists()
+
+
+def test_real_binding_layers_project_config_after_explicit_opt_in(
+    tmp_path,
+    monkeypatch,
+):
+    relay = pytest.importorskip("nemo_relay")
+    if getattr(relay, "_native", None) is None:
+        pytest.skip("NeMo Relay native binding is unavailable on this platform")
+
+    project_root = tmp_path / "project"
+    working_directory = project_root / "workspace"
+    config_directory = project_root / ".nemo-relay"
+    selected_directory = tmp_path / "selected-config"
+    atof_dir = tmp_path / "atof"
+    working_directory.mkdir(parents=True)
+    config_directory.mkdir()
+    selected_directory.mkdir()
+    (config_directory / "plugins.toml").write_text(
+        f"""
+version = 1
+
+[[components]]
+kind = "observability"
+enabled = true
+
+[components.config]
+version = 3
+
+[components.config.atof]
+enabled = true
+
+[[components.config.atof.sinks]]
+type = "file"
+output_directory = "{atof_dir}"
+filename = "events.jsonl"
+mode = "overwrite"
+""".strip(),
+        encoding="utf-8",
+    )
+    selected_config = selected_directory / "plugins.toml"
+    selected_config.write_text("version = 1", encoding="utf-8")
+    xdg_config_home = tmp_path / "xdg"
+    xdg_config_home.mkdir()
+    monkeypatch.chdir(working_directory)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg_config_home))
+    monkeypatch.setenv(
+        relay_runtime.RELAY_PLUGINS_CONFIG_ENV,
+        str(selected_config),
+    )
+    relay.plugin.clear()
+
+    host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+    try:
+        assert host.managed_execution_enabled()
+        host.ensure_session({"session_id": "native-layered-plugins"})
+    finally:
+        host.shutdown()
+        relay_runtime._reset_for_tests()
+
+    assert (atof_dir / "events.jsonl").is_file()
 
 
 def test_real_binding_loads_explicit_config_and_exports_native_activity(

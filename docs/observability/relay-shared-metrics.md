@@ -43,10 +43,15 @@ behalf.
 
 Relay plugin activation is owned by the native runtime and remains explicitly
 opt-in. Set `HERMES_NEMO_RELAY_PLUGINS_TOML` to a selected `plugins.toml` to
-activate configured middleware, exporters, or dynamic plugins. When it is
-unset, Hermes does not invoke Relay's plugin initializer or trigger Relay
-plugin configuration discovery. Invalid explicit configuration is reported
-and Hermes continues without native plugin activation.
+activate configured middleware, exporters, or dynamic plugins. When the
+variable is unset, Hermes does not invoke Relay's plugin initializer, so Relay
+does not perform plugin configuration discovery or layering. When it is set
+and the selected file loads successfully, Relay performs its normal static
+`plugins.toml` discovery and layers the selected static configuration over the
+discovered configuration. Dynamic `[[plugins.dynamic]]` records are loaded
+from the selected file only. If the selected file cannot be loaded, Hermes
+reports the error and does not invoke Relay initialization or fall back to
+ambient discovery.
 
 Hermes core owns one Relay host and one isolated Relay session scope per Hermes
 session. Core lifecycle producers use

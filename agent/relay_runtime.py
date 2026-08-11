@@ -1905,9 +1905,8 @@ def _configured_plugin_inputs(
                 "Hermes [[dynamic_plugins]] records are unsupported; use Relay "
                 "[[plugins.dynamic]] records"
             )
-        plugins_section = config.get("plugins")
         dynamic_plugins: list[Any] = []
-        if plugins_section:
+        if "plugins" in config:
             dynamic_plugins = relay.plugin.load_dynamic_plugin_activation_specs(
                 config_path
             )
@@ -1922,6 +1921,7 @@ def _configured_plugin_inputs(
             exc_info=True,
         )
         return None
+
 
 def _flush_relay_subscribers(relay: Any) -> None:
     """Flush Relay without blocking an asyncio event-loop thread."""

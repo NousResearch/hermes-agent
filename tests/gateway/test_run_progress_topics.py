@@ -59,6 +59,17 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class LiveStatusCaptureAdapter(ProgressCaptureAdapter):
+    supports_status_text = True
+
+    def __init__(self, platform=Platform.SLACK):
+        super().__init__(platform=platform)
+        self.status_texts = []
+
+    def set_status_text(self, chat_id, text):
+        self.status_texts.append({"chat_id": chat_id, "text": text})
+
+
 class DiscordProgressCaptureAdapter(ProgressCaptureAdapter):
     """Capture sends while exercising Discord's real preview formatter."""
 
@@ -329,6 +340,35 @@ class ThinkingAgent:
             "messages": [],
             "api_calls": 1,
         }
+
+
+class FencedThinkingAgent(ThinkingAgent):
+    """Emit provider reasoning containing a balanced recalled-context block."""
+
+    PRIVATE_CONTEXT = "PRIVATE_SENTINEL_81312_THINKING_PROGRESS"
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            detail = (
+                "Visible reasoning prefix\n"
+                f"<memory-context>\n{self.PRIVATE_CONTEXT}\n</memory-context>\n"
+                "Visible reasoning suffix"
+            )
+            cb("_thinking", detail)
+            cb("reasoning.available", "_thinking", detail, None)
+            time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class EmptyThinkingAgent(ThinkingAgent):
+    """Exercise the legacy thinking callback with no preview text."""
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        if cb is not None:
+            cb("_thinking", None)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
 class LongPreviewAgent:
@@ -955,14 +995,70 @@ class QueuedFailedEmptyAgent:
         }
 
 
+class QueuedFencedResponseAgent:
+    """First turn returns recalled context before a queued follow-up."""
+
+    calls = 0
+    PRIVATE_CONTEXT = "PRIVATE_SENTINEL_81312_QUEUED"
+    VISIBLE_RESPONSE = "Visible first response"
+    RAW_RESPONSE = (
+        f"<memory-context>\n{PRIVATE_CONTEXT}\n</memory-context>\n{VISIBLE_RESPONSE}"
+    )
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        type(self).calls += 1
+        return {
+            "final_response": (
+                self.RAW_RESPONSE if type(self).calls == 1 else "follow-up processed"
+            ),
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class QueuedDecoratedSilenceAgent:
+    """Raw first response is substantive even though its safe text is a marker."""
+
+    calls = 0
+    PRIVATE_CONTEXT = "PRIVATE_SENTINEL_81312_QUEUED_SILENCE_CONTROL"
+    RAW_RESPONSE = (
+        f"<memory-context>\n{PRIVATE_CONTEXT}\n</memory-context>\nNO_REPLY"
+    )
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        type(self).calls += 1
+        return {
+            "final_response": (
+                self.RAW_RESPONSE if type(self).calls == 1 else "follow-up processed"
+            ),
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class BackgroundReviewAgent:
+    PRIVATE_CONTEXT = "PRIVATE_SENTINEL_81312_BACKGROUND_REVIEW_PREVIEW"
+    RAW_NOTIFICATION = (
+        "Memory ➕ visible prefix "
+        f"<memory-context>\n{PRIVATE_CONTEXT}\n</memory-context> "
+        "visible suffix"
+    )
+    BENIGN_NOTIFICATION = "Memory ➕ benign preview"
+
     def __init__(self, **kwargs):
         self.background_review_callback = kwargs.get("background_review_callback")
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
         if self.background_review_callback:
-            self.background_review_callback("💾 Skill 'prospect-scanner' created.")
+            self.background_review_callback(self.RAW_NOTIFICATION)
+            self.background_review_callback(self.BENIGN_NOTIFICATION)
         return {
             "final_response": "done",
             "messages": [],
@@ -989,6 +1085,89 @@ class VerboseAgent:
             "messages": [],
             "api_calls": 1,
         }
+
+
+class FencedVerboseAgent(VerboseAgent):
+    """Emit provider-controlled verbose args containing recalled context."""
+
+    PRIVATE_CONTEXT = "PRIVATE_SENTINEL_81312_VERBOSE_PROGRESS"
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.started",
+            "execute_code",
+            None,
+            {
+                "code": (
+                    "visible tool prefix\n"
+                    f"<memory-context>\n{self.PRIVATE_CONTEXT}\n</memory-context>\n"
+                    "visible tool suffix"
+                )
+            },
+        )
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class FencedCompactCustomAgent(VerboseAgent):
+    PRIVATE_CONTEXT = "PRIVATE_SENTINEL_81312_COMPACT_CUSTOM"
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.started",
+            "custom_plugin_tool",
+            (
+                "visible compact prefix "
+                f"<memory-context>\n{self.PRIVATE_CONTEXT}\n</memory-context> "
+                "visible compact suffix"
+            ),
+            {},
+        )
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class FencedCompactTerminalAgent(VerboseAgent):
+    PRIVATE_CONTEXT = "PRIVATE_SENTINEL_81312_COMPACT_TERMINAL"
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        command = (
+            "echo visible-before "
+            f"<memory-context>{self.PRIVATE_CONTEXT}</memory-context> "
+            "visible-after\necho second-line"
+        )
+        self.tool_progress_callback(
+            "tool.started", "terminal", command, {"command": command}
+        )
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class WhitespaceFencedExecuteCodeAgent(VerboseAgent):
+    PRIVATE_CONTEXT = "PRIVATE_SENTINEL_81312_EXECUTE_CODE_COMPLETE"
+    CODE = (
+        "echo visible-before < memory-context >"
+        f"{PRIVATE_CONTEXT} </ memory-context > visible-after"
+    )
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.started", "execute_code", self.CODE, {"code": self.CODE}
+        )
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
+
+
+class UnterminatedWhitespaceFencedExecuteCodeAgent(VerboseAgent):
+    PRIVATE_CONTEXT = "PRIVATE_SENTINEL_81312_EXECUTE_CODE_UNTERMINATED"
+    CODE = "echo visible-before < memory-context >" + PRIVATE_CONTEXT
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.started", "execute_code", self.CODE, {"code": self.CODE}
+        )
+        time.sleep(0.35)
+        return {"final_response": "done", "messages": [], "api_calls": 1}
 
 
 async def _run_with_agent(
@@ -1055,6 +1234,143 @@ async def _run_with_agent(
         session_key=session_key,
     )
     return adapter, result
+
+
+async def _release_post_delivery_callback(adapter, session_key):
+    callback = adapter.pop_post_delivery_callback(session_key)
+    assert callback is not None
+    result = callback()
+    if result is not None:
+        await result
+    # ``safe_schedule_threadsafe`` posts each send back onto this loop. Give
+    # both the thread-safe callback and the resulting coroutine a turn.
+    await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("platform", "expect_raw"),
+    [(Platform.TELEGRAM, False), (Platform.WEBHOOK, True)],
+)
+async def test_background_review_preview_is_fenced_only_at_chat_delivery(
+    monkeypatch, tmp_path, platform, expect_raw
+):
+    chat_id = "-1001" if platform == Platform.TELEGRAM else "webhook-1"
+    session_key = f"agent:main:{platform.value}:dm:{chat_id}"
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        BackgroundReviewAgent,
+        session_id=f"sess-81312-bg-review-{platform.value}",
+        config_data={"display": {"memory_notifications": "verbose"}},
+        platform=platform,
+        chat_id=chat_id,
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    await _release_post_delivery_callback(adapter, session_key)
+
+    sent_texts = [call["content"] for call in adapter.sent]
+    assert result["final_response"] == "done"
+    assert BackgroundReviewAgent.BENIGN_NOTIFICATION in sent_texts
+    delivered = next(text for text in sent_texts if "visible prefix" in text)
+    assert (BackgroundReviewAgent.PRIVATE_CONTEXT in delivered) is expect_raw
+    assert ("memory-context" in delivered) is expect_raw
+    assert "visible suffix" in delivered
+
+
+@pytest.mark.asyncio
+async def test_queued_followup_fences_first_response_before_delivery(monkeypatch, tmp_path):
+    """Queued pending-event delivery must not bypass the completed-response fence."""
+    QueuedFencedResponseAgent.calls = 0
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedFencedResponseAgent,
+        session_id="sess-81312-queued-fence",
+        pending_text="queued follow-up",
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result["final_response"] == "follow-up processed"
+    sent_texts = [call["content"] for call in adapter.sent]
+    gateway_run = importlib.import_module("gateway.run")
+    expected = gateway_run._sanitize_gateway_final_response(
+        Platform.MATRIX, QueuedFencedResponseAgent.RAW_RESPONSE
+    )
+    assert expected.strip() in sent_texts
+    assert all(
+        QueuedFencedResponseAgent.PRIVATE_CONTEXT not in content
+        for content in sent_texts
+    )
+    assert all("memory-context" not in content for content in sent_texts)
+
+
+@pytest.mark.parametrize("reference", [" tag ", "`"], ids=["tag", "backtick"])
+def test_matrix_completed_response_drops_over_budget_inline_reference(reference):
+    """Completed Matrix delivery must not restore an oversized fence candidate."""
+    gateway_run = importlib.import_module("gateway.run")
+    private = "PRIVATE_SENTINEL_81312_INLINE_CAP_" * 200
+    raw = "visible <memory-context>" + reference + private
+
+    delivered = gateway_run._sanitize_gateway_agent_text(Platform.MATRIX, raw)
+
+    assert delivered == "visible "
+    assert private not in delivered
+
+
+@pytest.mark.asyncio
+async def test_queued_followup_classifies_silence_from_raw_first_response(
+    monkeypatch, tmp_path
+):
+    """Queued delivery must match the main path's raw-response classification."""
+    QueuedDecoratedSilenceAgent.calls = 0
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedDecoratedSilenceAgent,
+        session_id="sess-81312-queued-silence-control",
+        pending_text="queued follow-up",
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result["final_response"] == "follow-up processed"
+    sent_texts = [call["content"] for call in adapter.sent]
+    gateway_run = importlib.import_module("gateway.run")
+    expected = gateway_run._sanitize_gateway_final_response(
+        Platform.MATRIX, QueuedDecoratedSilenceAgent.RAW_RESPONSE
+    )
+    assert expected.strip() in sent_texts
+    assert all(
+        QueuedDecoratedSilenceAgent.PRIVATE_CONTEXT not in content
+        for content in sent_texts
+    )
+
+
+@pytest.mark.asyncio
+async def test_queued_followup_still_suppresses_raw_silence_marker(monkeypatch, tmp_path):
+    QueuedSilenceAgent.calls = 0
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        QueuedSilenceAgent,
+        session_id="sess-81312-queued-raw-silence",
+        pending_text="queued follow-up",
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result["final_response"] == "follow-up processed"
+    assert all(call["content"] != "NO_REPLY" for call in adapter.sent)
 
 
 @pytest.mark.asyncio
@@ -1199,6 +1515,31 @@ class TransformedStreamAgent:
             self.stream_delta_callback("original answer")
         return {
             "final_response": "original answer\n\n[plugin appended this]",
+            "response_previewed": True,
+            "response_transformed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class FencedTransformedStreamAgent:
+    """Model a plugin-transformed response containing recalled context."""
+
+    PRIVATE_CONTEXT = "PRIVATE_SENTINEL_81312_PLUGIN_EDIT"
+    VISIBLE_RESPONSE = "original answer\n\n[plugin-visible appendix]"
+    RAW_RESPONSE = (
+        f"<memory-context>\n{PRIVATE_CONTEXT}\n</memory-context>\n{VISIBLE_RESPONSE}"
+    )
+
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback("original answer")
+        return {
+            "final_response": self.RAW_RESPONSE,
             "response_previewed": True,
             "response_transformed": True,
             "messages": [],
@@ -1440,6 +1781,40 @@ async def test_base_processing_releases_post_delivery_callback_after_main_send()
     assert sent_texts == ["done", "💾 Skill 'prospect-scanner' created."]
     assert released == [True]
 
+@pytest.mark.asyncio
+async def test_transformed_response_fences_streamed_edit_payload(monkeypatch, tmp_path):
+    """The direct plugin-transformed edit must use the chat-safe payload."""
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FencedTransformedStreamAgent,
+        session_id="sess-81312-transformed-fence",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+        adapter_cls=MetadataEditProgressCaptureAdapter,
+    )
+
+    assert result["final_response"] == FencedTransformedStreamAgent.RAW_RESPONSE
+    assert result.get("already_sent") is True
+    gateway_run = importlib.import_module("gateway.run")
+    expected = gateway_run._sanitize_gateway_final_response(
+        Platform.MATRIX, FencedTransformedStreamAgent.RAW_RESPONSE
+    )
+    assert any(
+        edit["content"] == expected
+        for edit in adapter.edits
+    ), f"expected a fenced transformed edit: {adapter.edits!r}"
+    assert all(
+        FencedTransformedStreamAgent.PRIVATE_CONTEXT not in edit["content"]
+        for edit in adapter.edits
+    )
+
 
 @pytest.mark.asyncio
 async def test_base_processing_stops_typing_before_hung_post_delivery_callback(
@@ -1665,6 +2040,206 @@ async def test_verbose_mode_does_not_truncate_args_by_default(monkeypatch, tmp_p
     all_content = " ".join(call["content"] for call in adapter.sent)
     all_content += " ".join(call["content"] for call in adapter.edits)
     assert VerboseAgent.LONG_CODE in all_content
+
+
+@pytest.mark.asyncio
+async def test_thinking_progress_fences_provider_context_before_delivery(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FencedThinkingAgent,
+        session_id="sess-81312-thinking-progress",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "thinking_progress": True,
+                "interim_assistant_messages": False,
+            }
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent + adapter.edits)
+    assert "Visible reasoning prefix" in all_content
+    assert "Visible reasoning suffix" in all_content
+    assert FencedThinkingAgent.PRIVATE_CONTEXT not in all_content
+    assert "memory-context" not in all_content
+
+
+@pytest.mark.asyncio
+async def test_thinking_progress_accepts_missing_preview(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        EmptyThinkingAgent,
+        session_id="sess-81312-thinking-progress-empty",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "thinking_progress": True,
+                "interim_assistant_messages": False,
+            }
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result["final_response"] == "done"
+    assert all(call["content"] != "💬 None" for call in adapter.sent + adapter.edits)
+
+
+@pytest.mark.asyncio
+async def test_verbose_progress_fences_provider_context_before_delivery(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FencedVerboseAgent,
+        session_id="sess-81312-verbose-progress",
+        config_data={
+            "display": {
+                "tool_progress": "verbose",
+                "tool_preview_length": 0,
+                "interim_assistant_messages": False,
+            }
+        },
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent + adapter.edits)
+    assert "visible tool prefix" in all_content
+    assert "visible tool suffix" in all_content
+    assert FencedVerboseAgent.PRIVATE_CONTEXT not in all_content
+    assert "memory-context" not in all_content
+
+
+@pytest.mark.parametrize("mode", ["all", "new"])
+@pytest.mark.asyncio
+async def test_compact_custom_progress_fences_provider_context_before_queue(
+    monkeypatch, tmp_path, mode
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FencedCompactCustomAgent,
+        session_id=f"sess-81312-compact-custom-{mode}",
+        config_data={"display": {"tool_progress": mode, "tool_preview_length": 200}},
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent + adapter.edits)
+    assert "visible compact prefix" in all_content
+    assert "visible compact suffix" in all_content
+    assert FencedCompactCustomAgent.PRIVATE_CONTEXT not in all_content
+    assert "memory-context" not in all_content
+
+
+@pytest.mark.parametrize("mode", ["all", "new"])
+@pytest.mark.asyncio
+async def test_compact_terminal_preview_fences_provider_context_before_queue(
+    monkeypatch, tmp_path, mode
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FencedCompactTerminalAgent,
+        session_id=f"sess-81312-compact-terminal-{mode}",
+        config_data={"display": {"tool_progress": mode, "tool_preview_length": 200}},
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=CodeBlockProgressAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent + adapter.edits)
+    assert "echo visible-before" in all_content
+    assert "visible-after" in all_content
+    assert FencedCompactTerminalAgent.PRIVATE_CONTEXT not in all_content
+    assert "memory-context" not in all_content
+
+
+@pytest.mark.parametrize("mode", ["all", "new"])
+@pytest.mark.parametrize(
+    "agent_cls",
+    [WhitespaceFencedExecuteCodeAgent, UnterminatedWhitespaceFencedExecuteCodeAgent],
+    ids=["complete", "unterminated"],
+)
+@pytest.mark.asyncio
+async def test_compact_execute_code_fences_before_shell_summary(
+    monkeypatch, tmp_path, mode, agent_cls
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        agent_cls,
+        session_id=f"sess-81312-execute-code-{mode}-{agent_cls.__name__}",
+        config_data={"display": {"tool_progress": mode, "tool_preview_length": 200}},
+        platform=Platform.MATRIX,
+        chat_id="!room:matrix.example.org",
+        chat_type="group",
+        thread_id="$thread",
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent + adapter.edits)
+    assert "visible-before" in all_content
+    assert agent_cls.PRIVATE_CONTEXT not in all_content
+    assert "memory-context" not in all_content
+
+
+@pytest.mark.parametrize(
+    "agent_cls",
+    [WhitespaceFencedExecuteCodeAgent, UnterminatedWhitespaceFencedExecuteCodeAgent],
+    ids=["complete", "unterminated"],
+)
+@pytest.mark.asyncio
+async def test_full_live_status_fences_before_shell_summary(
+    monkeypatch, tmp_path, agent_cls
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        agent_cls,
+        session_id=f"sess-81312-live-status-{agent_cls.__name__}",
+        config_data={
+            "display": {
+                "tool_progress": "off",
+                "live_status": "full",
+                "interim_assistant_messages": False,
+            }
+        },
+        platform=Platform.SLACK,
+        chat_id="C81312",
+        chat_type="direct",
+        thread_id="1700000000.081312",
+        adapter_cls=LiveStatusCaptureAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.status_texts
+    all_status = " ".join(item["text"] or "" for item in adapter.status_texts)
+    assert "visible-before" in all_status
+    assert agent_cls.PRIVATE_CONTEXT not in all_status
+    assert "memory-context" not in all_status
 
 
 class CodeBlockProgressAdapter(ProgressCaptureAdapter):

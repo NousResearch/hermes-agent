@@ -7,9 +7,125 @@ Enhanced with UI-UX-PRO-MAX design intelligence.
 """
 
 import datetime
+import json
 import secrets
 from typing import Any, Dict, List
 from urllib.parse import quote
+
+from agent.memory_manager import sanitize_context, sanitize_context_for_transcript
+
+
+def _unique_sanitized_key(
+    key: Any, sanitizer, existing: dict, next_suffix: dict[str, int]
+) -> Any:
+    """Fence string keys without silently overwriting a sibling entry."""
+    safe_key = sanitizer(key) if isinstance(key, str) else key
+    try:
+        hash(safe_key)
+    except TypeError:
+        safe_key = str(safe_key)
+    if safe_key not in existing:
+        return safe_key
+    base = str(safe_key)
+    suffix = next_suffix.get(base, 2)
+    candidate = f"{base}#{suffix}"
+    while candidate in existing:
+        suffix += 1
+        candidate = f"{base}#{suffix}"
+    next_suffix[base] = suffix + 1
+    return candidate
+
+
+def _sanitize_tool_argument_value(value: Any) -> Any:
+    """Return a recursively fenced copy for the HTML presentation sink."""
+    try:
+        return _sanitize_tool_argument_value_inner(value)
+    except RecursionError:
+        return ""
+
+
+def _sanitize_tool_argument_value_inner(value: Any) -> Any:
+    """Recursive implementation kept behind a fail-soft public wrapper."""
+    if isinstance(value, str):
+        return sanitize_context(value)
+    if isinstance(value, dict):
+        safe: dict[Any, Any] = {}
+        next_suffix: dict[str, int] = {}
+        for key, item in value.items():
+            safe_key = _unique_sanitized_key(
+                key, sanitize_context, safe, next_suffix
+            )
+            safe[safe_key] = _sanitize_tool_argument_value_inner(item)
+        return safe
+    if isinstance(value, list):
+        return [_sanitize_tool_argument_value_inner(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_sanitize_tool_argument_value_inner(item) for item in value)
+    return value
+
+
+def _sanitize_tool_arguments_for_display(arguments: Any) -> str:
+    """Parse, recursively fence, and serialize tool args; malformed input is hidden."""
+    if not isinstance(arguments, str):
+        try:
+            return json.dumps(
+                _sanitize_tool_argument_value(arguments),
+                ensure_ascii=False,
+                default=str,
+            )
+        except Exception:
+            return ""
+    try:
+        parsed = json.loads(arguments)
+        safe = _sanitize_tool_argument_value(parsed)
+    except (json.JSONDecodeError, TypeError, ValueError):
+        # Some legacy/provider records contain a plain argument preview rather
+        # than JSON. Preserve that presentation contract when strict fencing
+        # leaves it byte-identical, but hide malformed fenced payloads instead
+        # of exposing a partially sanitized JSON fragment.
+        try:
+            return arguments if sanitize_context(arguments) == arguments else ""
+        except Exception:
+            return ""
+    if safe == parsed:
+        return arguments
+    try:
+        return json.dumps(safe, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return ""
+
+
+def _sanitize_message_content_for_html(role: Any, content: Any) -> Any:
+    """Fence provider-derived message content for the HTML display sink."""
+    try:
+        return _sanitize_message_content_for_html_inner(role, content)
+    except RecursionError:
+        return ""
+
+
+def _sanitize_message_content_for_html_inner(role: Any, content: Any) -> Any:
+    """Recursive implementation kept behind a fail-soft public wrapper."""
+    sanitizer = (
+        sanitize_context_for_transcript
+        if str(role or "") == "user"
+        else sanitize_context
+    )
+    if isinstance(content, str):
+        return sanitizer(content)
+    if isinstance(content, dict):
+        safe: dict[Any, Any] = {}
+        next_suffix: dict[str, int] = {}
+        for key, value in content.items():
+            safe_key = _unique_sanitized_key(key, sanitizer, safe, next_suffix)
+            safe[safe_key] = _sanitize_message_content_for_html_inner(role, value)
+        return safe
+    if isinstance(content, list):
+        return [_sanitize_message_content_for_html_inner(role, part) for part in content]
+    if isinstance(content, tuple):
+        return tuple(
+            _sanitize_message_content_for_html_inner(role, part) for part in content
+        )
+    return content
 
 # --- Icons (Lucide-style SVGs) ---
 ICON_USER = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-user"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>'
@@ -653,6 +769,16 @@ def _escape_html(text: str) -> str:
         text = str(text)
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;").replace("'", "&#39;")
 
+
+def _sanitize_export_title(value: Any, fallback: str) -> str:
+    """Fence a persisted/provider-derived title before HTML presentation."""
+    raw = str(value or "")
+    try:
+        safe = sanitize_context(raw).strip()
+    except Exception:
+        safe = ""
+    return safe or fallback
+
 def _format_timestamp(ts: float) -> str:
     if not ts: return "N/A"
     return datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
@@ -666,7 +792,9 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
         if role == "session_meta":
             continue
             
-        content = msg.get("content") or ""
+        content = _sanitize_message_content_for_html(
+            role, msg.get("content") or ""
+        )
         timestamp = _format_timestamp(msg.get("timestamp", 0))
         
         # Icon selection
@@ -719,6 +847,7 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
             for tc in tool_calls:
                 fn_name = tc.get("function", {}).get("name", "unknown")
                 args = tc.get("function", {}).get("arguments", "{}")
+                display_args = _sanitize_tool_arguments_for_display(args)
                 html += f'''
                 <div class="tool-call">
                     <div class="tool-call-header">
@@ -726,7 +855,7 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
                         {ICON_WRENCH} Tool Call: {_escape_html(fn_name)}
                     </div>
                     <div class="tool-call-content">
-                        <pre><code>{_escape_html(args)}</code></pre>
+                        <pre><code>{_escape_html(display_args)}</code></pre>
                     </div>
                 </div>
                 '''
@@ -740,6 +869,8 @@ def _generate_messages_html(messages: List[Dict[str, Any]]) -> str:
         
         # Reasoning
         reasoning = msg.get("reasoning") or msg.get("reasoning_content")
+        if isinstance(reasoning, str):
+            reasoning = sanitize_context(reasoning)
         if reasoning:
             html += f'''
             <div class="reasoning">
@@ -772,7 +903,9 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
         for s in sessions:
             sid = str(s.get("id", "N/A"))
             escaped_sid = _escape_html(sid)
-            title = s.get("title") or s.get("preview") or "Untitled Session"
+            title = _sanitize_export_title(
+                s.get("title") or s.get("preview"), "Untitled Session"
+            )
             if len(title) > 50: title = title[:47] + "..."
             date = _format_timestamp(s.get("started_at", 0)).split(" ")[0]
             
@@ -809,7 +942,7 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
     for s in sessions:
         sid = str(s.get("id", "N/A"))
         escaped_sid = _escape_html(sid)
-        title = s.get("title") or "Hermes Session"
+        title = _sanitize_export_title(s.get("title"), "Hermes Session")
         model = s.get("model") or "Unknown"
         started_at = _format_timestamp(s.get("started_at", 0))
         messages = s.get("messages", [])
@@ -822,6 +955,11 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
         session_view_id = f"view-{escaped_sid}"
         
         system_prompt = s.get("system_prompt")
+        if system_prompt:
+            try:
+                system_prompt = sanitize_context(str(system_prompt)).strip()
+            except Exception:
+                system_prompt = ""
         system_html = ""
         if system_prompt:
             system_html = f'''
@@ -856,7 +994,15 @@ def generate_multi_session_html_export(sessions: List[Dict[str, Any]]) -> str:
 
     script_nonce = secrets.token_urlsafe(16)
     return HTML_TEMPLATE.format(
-        page_title="Hermes Session Export" if is_multi else _escape_html(sessions[0].get("title") or "Hermes Session"),
+        page_title=(
+            "Hermes Session Export"
+            if is_multi
+            else _escape_html(
+                _sanitize_export_title(
+                    sessions[0].get("title"), "Hermes Session"
+                )
+            )
+        ),
         sidebar_html=sidebar_html,
         sessions_html="\n".join(sessions_html_list),
         main_margin="var(--sidebar-width)" if is_multi else "0",

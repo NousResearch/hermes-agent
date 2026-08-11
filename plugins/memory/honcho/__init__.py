@@ -22,7 +22,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.memory_manager import sanitize_context
+from agent.memory_manager import sanitize_context, sanitize_context_for_transcript
 from agent.memory_provider import TRIVIAL_PROMPT_RE, MemoryProvider, is_trivial_prompt
 from plugins.memory.honcho.client import spawn_context_thread
 from tools.registry import tool_error
@@ -1430,7 +1430,11 @@ class HonchoMemoryProvider(MemoryProvider):
             return
 
         msg_limit = self._config.message_max_chars if self._config else 25000
-        clean_user_content = sanitize_context(user_content or "").strip()
+        # User input is ordinary transcript prose: hide complete/block-shaped
+        # recalled fences without truncating an unmatched inline mention.
+        # Assistant/provider output stays strict and fails closed on an
+        # ambiguous unterminated opener before external memory egress.
+        clean_user_content = sanitize_context_for_transcript(user_content or "").strip()
         clean_assistant_content = sanitize_context(assistant_content or "").strip()
         # Skip only when the whole turn is empty. An interrupted or tool-only
         # turn can legitimately have an empty assistant side; the user's

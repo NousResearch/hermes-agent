@@ -15,6 +15,7 @@ from typing import Any, Dict
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
+from agent.turn_context import substitute_api_content
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
 
@@ -369,7 +370,10 @@ class ChatCompletionsTransport(ProviderTransport):
                 out_msg.pop("tool_name", None)
                 out_msg.pop("effect_disposition", None)
                 out_msg.pop("timestamp", None)  # #47868 — leak into strict providers
-                out_msg.pop("api_content", None)  # persist-what-you-send sidecar
+                # ``api_content`` is a persist-what-you-send sidecar, not a
+                # provider field. Substitute it before dropping it so tool
+                # results replay the exact bytes captured for the API too.
+                substitute_api_content(out_msg)
 
 
             # Drop all Hermes-internal scaffolding markers (``_``-prefixed).

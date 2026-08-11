@@ -777,6 +777,96 @@ def _looks_like_gateway_provider_error(text: str) -> bool:
     return bool(_GATEWAY_PROVIDER_ERROR_SHAPE_RE.search(body))
 
 
+def _sanitize_gateway_agent_text(platform: Any, text: str) -> str:
+    """Fence provider-derived text before human-facing gateway delivery."""
+    if not text:
+        return text
+    if _gateway_surface_passes_raw_text(platform):
+        return text
+
+    # Streaming responses already pass through StreamingContextScrubber, but
+    # completed agent-text lanes can reach adapters directly. Apply the same
+    # memory-context fence at their shared human-facing boundary.
+    from agent.memory_manager import sanitize_context
+
+    visible_text = sanitize_context(str(text))
+    if not visible_text.strip():
+        return ""
+    return _redact_gateway_user_facing_secrets(visible_text)
+
+
+def _sanitize_gateway_tool_display_value(platform: Any, value: Any) -> Any:
+    """Copy tool metadata with provider strings fenced for presentation.
+
+    Tool arguments remain raw for execution and programmatic gateway surfaces.
+    Human-facing progress/status rendering gets this copied view *before*
+    shell summarization, truncation, or adapter formatting can destroy the
+    memory-context delimiters while retaining their payload.
+    """
+    if _gateway_surface_passes_raw_text(platform):
+        return value
+    try:
+        if isinstance(value, str):
+            return _sanitize_gateway_agent_text(platform, value)
+        if isinstance(value, dict):
+            safe: dict[Any, Any] = {}
+            next_suffix: dict[str, int] = {}
+            for key, item in value.items():
+                safe_key = _sanitize_gateway_tool_display_value(platform, key)
+                try:
+                    hash(safe_key)
+                except TypeError:
+                    safe_key = str(safe_key)
+                if safe_key in safe:
+                    base = str(safe_key)
+                    suffix = next_suffix.get(base, 2)
+                    candidate = f"{base}#{suffix}"
+                    while candidate in safe:
+                        suffix += 1
+                        candidate = f"{base}#{suffix}"
+                    next_suffix[base] = suffix + 1
+                    safe_key = candidate
+                safe[safe_key] = _sanitize_gateway_tool_display_value(platform, item)
+            return safe
+        if isinstance(value, list):
+            return [
+                _sanitize_gateway_tool_display_value(platform, item) for item in value
+            ]
+        if isinstance(value, tuple):
+            return tuple(
+                _sanitize_gateway_tool_display_value(platform, item) for item in value
+            )
+        return value
+    except RecursionError:
+        return ""
+
+
+def _sanitize_gateway_interim_text(platform: Any, text: Any) -> str:
+    """Fence interim prose without changing meaningful outer whitespace."""
+    return _sanitize_gateway_agent_text(platform, str(text or ""))
+
+
+def _sanitize_gateway_provider_detail(
+    platform: Any,
+    detail: Any,
+    *,
+    fallback: str = "provider error",
+) -> str:
+    """Return a safe diagnostic fragment for human-facing gateway prose.
+
+    Provider exceptions and status details are often interpolated into a
+    larger, useful gateway notice. Fence the fragment before composition so a
+    fully recalled-context value cannot expose its payload or leave an empty
+    detail. Programmatic surfaces retain their established raw-text contract
+    through ``_sanitize_gateway_agent_text``.
+    """
+    raw_detail = str(detail or "").strip()
+    if not raw_detail:
+        return fallback
+    safe_detail = _sanitize_gateway_agent_text(platform, raw_detail).strip()
+    return safe_detail or fallback
+
+
 def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     """Sanitize final gateway replies before sending them to chat surfaces.
 
@@ -810,10 +900,58 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
     if str(text).strip().startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX):
         return ""
 
-    redacted = _redact_gateway_user_facing_secrets(str(text))
+    redacted = _sanitize_gateway_agent_text(platform, text)
     if _looks_like_gateway_provider_error(redacted):
         return _gateway_provider_error_reply(redacted)
     return redacted
+
+
+def _prepare_gateway_final_delivery(
+    platform: Any,
+    agent_result: Any,
+    *,
+    history_len: int = 0,
+) -> str:
+    """Return the chat-safe completed response, including an empty fallback.
+
+    A provider can return a non-empty response consisting entirely of a
+    recalled-memory fence. The low-level fence correctly returns an empty
+    string, but treating that as a successful final delivery would silently
+    drop the turn (especially on streaming and queued-message paths). Reuse
+    the existing empty-response classifier to produce its generic retry
+    notice, while preserving deliberate interrupt and exact silence-marker
+    semantics.
+
+    Raw/programmatic surfaces still return their established payload through
+    ``_sanitize_gateway_final_response`` before this helper can need a
+    fallback.
+    """
+    if not isinstance(agent_result, dict):
+        return _sanitize_gateway_final_response(platform, str(agent_result or ""))
+
+    raw_response = agent_result.get("final_response")
+    safe_response = _sanitize_gateway_final_response(platform, raw_response or "")
+    if safe_response or not raw_response:
+        return safe_response
+
+    try:
+        from gateway.response_filters import is_intentional_silence_agent_result
+
+        if is_intentional_silence_agent_result(agent_result, raw_response):
+            return ""
+    except Exception:
+        pass
+    if agent_result.get("interrupted"):
+        return ""
+
+    fallback = _normalize_empty_agent_response(
+        agent_result,
+        "",
+        history_len=history_len,
+    )
+    if not fallback:
+        return ""
+    return _sanitize_gateway_final_response(platform, fallback)
 
 
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
@@ -828,7 +966,9 @@ def _prepare_gateway_status_message(platform: Any, event_type: str, message: str
     if _gateway_surface_passes_raw_text(platform):
         return text
 
-    text = _redact_gateway_user_facing_secrets(text)
+    text = _sanitize_gateway_agent_text(platform, text).strip()
+    if not text:
+        return None
     if _TELEGRAM_NOISY_STATUS_RE.search(text):
         # Opt-in #52995: `compression.progress_notices: true` lets ROUTINE
         # compression progress statuses through to chat platforms. The
@@ -4176,6 +4316,15 @@ class TurnRunner:
     def progress_callback(self, event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
         """Callback invoked by agent on tool lifecycle events."""
         ctx = self._ctx
+        # Build a presentation-only copy before display helpers parse shell
+        # syntax or cap strings. Those transformations can erase a flexible
+        # fence delimiter while leaving its provider-controlled payload.
+        _display_args = _sanitize_gateway_tool_display_value(
+            ctx.source.platform, args
+        )
+        _display_preview = _sanitize_gateway_tool_display_value(
+            ctx.source.platform, preview
+        )
         # Live status line (Slack's assistant status): stash the current
         # tool phrase on the adapter; the _keep_typing refresh renders it
         # within a couple of seconds. Handled before every other gate
@@ -4193,8 +4342,12 @@ class TurnRunner:
                     from agent.display import build_status_phrase
                     _phrase = build_status_phrase(
                         tool_name,
-                        args if ctx._live_status_mode == "full" else None,
+                        _display_args if ctx._live_status_mode == "full" else None,
                     )
+                    if _phrase:
+                        _phrase = _sanitize_gateway_agent_text(
+                            ctx.source.platform, _phrase
+                        ).strip() or None
                     ctx._live_status_adapter.set_status_text(ctx.source.chat_id, _phrase)
                 elif event_type == "tool.completed":
                     # Between tools the model is genuinely "thinking"
@@ -4253,7 +4406,10 @@ class TurnRunner:
             if not ctx._thinking_enabled:
                 return
             thinking_text = preview if tool_name == "_thinking" else tool_name
-            msg = f"💬 {thinking_text}" if thinking_text else None
+            safe_thinking_text = _sanitize_gateway_agent_text(
+                ctx.source.platform, str(thinking_text or "")
+            ).strip()
+            msg = f"💬 {safe_thinking_text}" if safe_thinking_text else None
             if msg:
                 ctx.progress_queue.put(msg)
             return
@@ -4276,6 +4432,12 @@ class TurnRunner:
         # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
         if event_type not in {"tool.started",}:
             return
+
+        # From here onward only the copied, fenced values are formatted. The
+        # agent's original args/preview objects remain untouched for execution
+        # and internal/programmatic consumers.
+        args = _display_args
+        preview = _display_preview
 
         # Never render a progress bubble for the clarify tool.  The
         # adapter's send_clarify IS the user-facing rendering (interactive
@@ -4364,7 +4526,11 @@ class TurnRunner:
         if ctx.progress_mode == "verbose":
             if _code_block_full is not None:
                 ctx.last_was_terminal_block[0] = True
-                ctx.progress_queue.put(_code_block_full)
+                safe_code_block = _sanitize_gateway_agent_text(
+                    ctx.source.platform, _code_block_full
+                ).strip()
+                if safe_code_block:
+                    ctx.progress_queue.put(safe_code_block)
                 return
             ctx.last_was_terminal_block[0] = False
             if args:
@@ -4381,7 +4547,9 @@ class TurnRunner:
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
-            ctx.progress_queue.put(msg)
+            msg = _sanitize_gateway_agent_text(ctx.source.platform, msg).strip()
+            if msg:
+                ctx.progress_queue.put(msg)
             return
 
         # "all" / "new" modes: short preview, respects tool_preview_length
@@ -4429,6 +4597,13 @@ class TurnRunner:
         else:
             msg = f"{emoji} {tool_name}..."
             ctx.last_was_terminal_block[0] = False
+
+        # Every compact progress shape is model/provider-derived. Fence it
+        # before deduplication so neither a queued preview nor its repeat
+        # update can retain recalled context on human-facing gateways.
+        msg = _sanitize_gateway_agent_text(ctx.source.platform, msg).strip()
+        if not msg:
+            return
 
         # Dedup: collapse consecutive identical progress messages.
         # Common with execute_code where models iterate with the same
@@ -5351,11 +5526,17 @@ class TurnRunner:
         def _interim_assistant_cb(text: str, *, already_streamed: bool = False) -> None:
             if not ctx._run_still_current():
                 return
-            display_text = text
+            # Interim chat messages are complete adapter payloads, so apply
+            # the same outer framing normalization as final replies. The
+            # low-level sanitizer remains byte-preserving for stream/tool
+            # consumers and programmatic callers.
+            display_text = _sanitize_gateway_interim_text(
+                ctx.source.platform, text
+            )
             if _stream_consumer is not None:
                 if already_streamed:
                     _stream_consumer.on_segment_break()
-                else:
+                elif display_text.strip():
                     _stream_consumer.on_commentary(display_text)
                 return
             if already_streamed or not ctx._status_adapter or not str(display_text or "").strip():
@@ -5747,10 +5928,20 @@ class TurnRunner:
         def _deliver_bg_review_message(message: str) -> None:
             if not ctx._status_adapter or not ctx._run_still_current():
                 return
+            # Background-review summaries may include provider-generated
+            # memory/skill argument previews. Keep the raw summary inside the
+            # agent, but fence it at the same human-facing gateway boundary as
+            # final responses. Programmatic/local surfaces intentionally pass
+            # through unchanged via _sanitize_gateway_agent_text.
+            visible_message = _sanitize_gateway_agent_text(
+                ctx.source.platform, message
+            ).strip()
+            if not visible_message:
+                return
             safe_schedule_threadsafe(
                 ctx._status_adapter.send(
                     ctx._status_chat_id,
-                    message,
+                    visible_message,
                     metadata=_non_conversational_metadata(ctx._status_thread_metadata, platform=ctx.source.platform),
                 ),
                 ctx._loop_for_step,
@@ -5818,12 +6009,27 @@ class TurnRunner:
             if not ctx._status_adapter:
                 return ""
 
+            safe_question = _sanitize_gateway_agent_text(
+                ctx.source.platform, str(question or "")
+            ).strip()
+            if not safe_question:
+                return "[clarify prompt could not be delivered]"
+            safe_choices = []
+            for choice in choices or ():
+                safe_choice = _sanitize_gateway_agent_text(
+                    ctx.source.platform, str(choice)
+                ).strip()
+                # Preserve the provider's choice indices after fencing. A
+                # removed choice must remain selectable at its original
+                # position without exposing its contents.
+                safe_choices.append(safe_choice or "[details withheld]")
+
             clarify_id = _uuid.uuid4().hex[:10]
             _clarify_mod.register(
                 clarify_id=clarify_id,
                 session_key=ctx.session_key or "",
-                question=question,
-                choices=list(choices) if choices else None,
+                question=safe_question,
+                choices=safe_choices or None,
                 multi_select=bool(multi_select),
             )
 
@@ -5859,8 +6065,8 @@ class TurnRunner:
             fut = safe_schedule_threadsafe(
                 ctx._status_adapter.send_clarify(
                     chat_id=ctx._status_chat_id,
-                    question=question,
-                    choices=list(choices) if choices else None,
+                    question=safe_question,
+                    choices=safe_choices or None,
                     clarify_id=clarify_id,
                     session_key=ctx.session_key or "",
                     metadata=ctx._status_thread_metadata,
@@ -5994,16 +6200,13 @@ class TurnRunner:
             # Typing resumes in _handle_approve_command/_handle_deny_command.
             ctx._status_adapter.pause_typing_for_chat(ctx._status_chat_id)
 
-            cmd = approval_data.get("command", "")
+            # Keep approval_data untouched for hashing, authorization, and
+            # execution. Preserve every display byte except credentials,
+            # whose established approval-prompt redaction remains mandatory.
+            cmd = _redact_approval_command(
+                str(approval_data.get("command", "") or "")
+            )
             desc = approval_data.get("description", "dangerous command")
-
-            # Redact credentials from the command before displaying it in
-            # the approval prompt — Tirith's findings are already redacted,
-            # but the raw command string still leaks secrets to the chat
-            # platform (#48456). Applied here so BOTH the button-based
-            # (send_exec_approval) and plain-text fallback paths below use
-            # the redacted value.
-            cmd = _redact_approval_command(cmd)
 
             # Prefer button-based approval when the adapter supports it.
             # Check the *class* for the method, not the instance — avoids
@@ -6412,9 +6615,12 @@ class TurnRunner:
             final_response = _normalize_empty_agent_response(
                 result, final_response or "", history_len=len(agent_history),
             )
-            final_response = _sanitize_gateway_final_response(ctx.source.platform, final_response)
+            final_response = _sanitize_gateway_final_response(
+                ctx.source.platform, final_response
+            )
             if not final_response:
-                final_response = f"⚠️ {result['error']}" if result.get("error") else ""
+                if not final_response and result.get("error"):
+                    final_response = f"⚠️ {result['error']}"
             return {
                 "final_response": final_response,
                 "messages": result.get("messages", []),
@@ -19679,12 +19885,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                             "hygiene compression abort "
                                             "activity stamp failed",
                                         )
-                                        _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
-                                        # Force-redact: provider exception text
-                                        # may contain credentials; this message
-                                        # reaches gateway users directly.
-                                        from agent.redact import redact_sensitive_text
-                                        _err = redact_sensitive_text(_err, force=True)
+                                        _err = _sanitize_gateway_provider_detail(
+                                            source.platform,
+                                            getattr(_comp, "_last_summary_error", None),
+                                        )
                                         _warn_msg = (
                                             "⚠️ Context compression aborted "
                                             f"({_err}). No messages were dropped — "
@@ -19709,8 +19913,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                     # is something only they can fix, and
                                     # silent recovery would hide it.
                                     elif _comp is not None and getattr(_comp, "_last_aux_model_failure_model", None):
-                                        _aux_model = getattr(_comp, "_last_aux_model_failure_model", "")
-                                        _aux_err = getattr(_comp, "_last_aux_model_failure_error", None) or "unknown error"
+                                        _aux_model = _sanitize_gateway_provider_detail(
+                                            source.platform,
+                                            getattr(_comp, "_last_aux_model_failure_model", ""),
+                                            fallback="configured model",
+                                        )
+                                        _aux_err = _sanitize_gateway_provider_detail(
+                                            source.platform,
+                                            getattr(_comp, "_last_aux_model_failure_error", None),
+                                        )
                                         _aux_msg = (
                                             f"ℹ️ Configured compression model `{_aux_model}` "
                                             f"failed ({_aux_err}). Recovered using your main "
@@ -20066,7 +20277,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 response = _normalize_empty_agent_response(
                     agent_result, response, history_len=len(history),
                 )
-                response = _sanitize_gateway_final_response(source.platform, response)
+                _delivery_result = dict(agent_result)
+                _delivery_result["final_response"] = response
+                response = _prepare_gateway_final_delivery(
+                    source.platform,
+                    _delivery_result,
+                    history_len=len(history),
+                )
 
             # Ordering contract: the agent thread already updated the contextvar
             # in conversation_compression.py; propagate to SessionEntry + _save().
@@ -20124,41 +20341,55 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 last_reasoning = agent_result.get("last_reasoning")
                 if last_reasoning:
                     from gateway.stream_consumer import escape_code_fences_for_display
-                    # Collapse long reasoning to keep messages readable
-                    lines = last_reasoning.strip().splitlines()
-                    if len(lines) > 15:
-                        display_reasoning = "\n".join(lines[:15])
-                        display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
-                    else:
-                        display_reasoning = last_reasoning.strip()
-                    # Render style is per-platform: Discord defaults to "-# "
-                    # subtext (native small grey metadata text); other
-                    # platforms keep the fenced code block.
-                    try:
-                        from gateway.display_config import resolve_display_setting
-                        _reasoning_style = resolve_display_setting(
-                            _load_gateway_config(),
-                            _platform_config_key(source.platform),
-                            "reasoning_style",
-                            "code",
+                    # Fence raw provider reasoning before presentation markup.
+                    # Prefixing each line with ``-#`` or ``>`` would otherwise
+                    # hide an unmatched block opener from the boundary-aware
+                    # completed-response sanitizer.
+                    display_reasoning = _sanitize_gateway_agent_text(
+                        source.platform, str(last_reasoning)
+                    ).strip()
+                    if display_reasoning:
+                        response_before_reasoning = response
+                        # Collapse long reasoning to keep messages readable
+                        lines = display_reasoning.splitlines()
+                        if len(lines) > 15:
+                            display_reasoning = "\n".join(lines[:15])
+                            display_reasoning += f"\n_... ({len(lines) - 15} more lines)_"
+                        # Render style is per-platform: Discord defaults to "-# "
+                        # subtext (native small grey metadata text); other
+                        # platforms keep the fenced code block.
+                        try:
+                            from gateway.display_config import resolve_display_setting
+                            _reasoning_style = resolve_display_setting(
+                                _load_gateway_config(),
+                                _platform_config_key(source.platform),
+                                "reasoning_style",
+                                "code",
+                            )
+                        except Exception:
+                            _reasoning_style = "code"
+                        if _reasoning_style == "subtext":
+                            _quoted = "\n".join(
+                                f"-# {ln}" if ln else "-#" for ln in display_reasoning.splitlines()
+                            )
+                            response = f"-# 💭 Reasoning\n{_quoted}\n\n{response}"
+                        elif _reasoning_style == "blockquote":
+                            _quoted = "\n".join(
+                                f"> {ln}" if ln else ">" for ln in display_reasoning.splitlines()
+                            )
+                            response = f"> 💭 **Reasoning:**\n{_quoted}\n\n{response}"
+                        else:
+                            # Escape ``` inside reasoning so inner fences don't
+                            # break the outer code block used to render it.
+                            display_reasoning = escape_code_fences_for_display(display_reasoning)
+                            response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                        # The ordinary response was fenced above, but reasoning is
+                        # provider-derived text appended afterward. Reapply the
+                        # same platform-aware boundary to the composed reply.
+                        composed_response = _sanitize_gateway_final_response(
+                            source.platform, response
                         )
-                    except Exception:
-                        _reasoning_style = "code"
-                    if _reasoning_style == "subtext":
-                        _quoted = "\n".join(
-                            f"-# {ln}" if ln else "-#" for ln in display_reasoning.splitlines()
-                        )
-                        response = f"-# 💭 Reasoning\n{_quoted}\n\n{response}"
-                    elif _reasoning_style == "blockquote":
-                        _quoted = "\n".join(
-                            f"> {ln}" if ln else ">" for ln in display_reasoning.splitlines()
-                        )
-                        response = f"> 💭 **Reasoning:**\n{_quoted}\n\n{response}"
-                    else:
-                        # Escape ``` inside reasoning so inner fences don't
-                        # break the outer code block used to render it.
-                        display_reasoning = escape_code_fences_for_display(display_reasoning)
-                        response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
+                        response = composed_response or response_before_reasoning
 
             # Runtime-metadata footer — only on the FINAL message of the turn.
             # Off by default (display.runtime_footer.enabled=false).  When
@@ -22291,6 +22522,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             response = result.get("final_response", "") if result else ""
             if not response and result and result.get("error"):
                 response = f"Error: {result['error']}"
+            if result is not None:
+                _delivery_result = dict(result)
+                _delivery_result["final_response"] = response
+            else:
+                _delivery_result = {"final_response": response}
+            response = _prepare_gateway_final_delivery(
+                source.platform,
+                _delivery_result,
+            )
 
             # Extract media files from the response
             if response:
@@ -22375,9 +22615,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.exception("Background task %s failed", task_id)
             try:
+                safe_detail = _sanitize_gateway_agent_text(
+                    source.platform, str(e)
+                ).strip()
+                failure_message = f"❌ Background task {task_id} failed"
+                if safe_detail:
+                    failure_message = f"{failure_message}: {safe_detail}"
                 await adapter.send(
                     chat_id=source.chat_id,
-                    content=f"❌ Background task {task_id} failed: {e}",
+                    content=failure_message,
                     metadata=_thread_metadata,
                 )
             except Exception:
@@ -29155,7 +29401,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # _run_agent_task; sending the raw copy bypasses those steps.
                     _delivery_result = response if isinstance(response, dict) else (result or {})
                     _previewed = bool(_delivery_result.get("response_previewed"))
-                    first_response = _delivery_result.get("final_response", "")
+                    # Keep the task result raw for recursive/programmatic
+                    # consumers, but match and deliver only the platform-safe
+                    # completed-response payload.
+                    raw_first_response = _delivery_result.get("final_response", "")
+                    first_response = _prepare_gateway_final_delivery(
+                        source.platform,
+                        _delivery_result,
+                        history_len=len(history),
+                    )
                     _already_streamed = _stream_confirmed_final_delivery(
                         _sc,
                         first_response,
@@ -29167,7 +29421,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     try:
                         from gateway.response_filters import is_intentional_silence_agent_result
                         _intentional_silence = is_intentional_silence_agent_result(
-                            _delivery_result, first_response,
+                            _delivery_result, raw_first_response,
                         )
                     except Exception:
                         _intentional_silence = False
@@ -29413,7 +29667,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _sc = stream_consumer_holder[0]
         if isinstance(response, dict) and not response.get("failed"):
             _final = response.get("final_response") or ""
-            _is_empty_sentinel = not _final or _final == "(empty)"
+            # These branches deliver directly through ``edit_message`` and
+            # therefore bypass the caller's ordinary completed-response fence.
+            # Keep the raw result for programmatic surfaces and persistence,
+            # but reconcile and edit with the platform-aware delivery payload.
+            _delivery_final = _prepare_gateway_final_delivery(
+                source.platform,
+                response,
+                history_len=len(history),
+            )
+            _is_empty_sentinel = not _delivery_final or _delivery_final == "(empty)"
             # response_previewed means the interim_assistant_callback already
             # saw the final text, but only suppress the normal send if that
             # exact final text was delivered. Unrelated commentary/progress
@@ -29439,7 +29702,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _matcher = getattr(_sc, "delivered_final_matches", None)
                 if callable(_matcher):
                     try:
-                        _stale_finalized = _matcher(_final) is False
+                        _stale_finalized = _matcher(_delivery_final) is False
                     except Exception:
                         _stale_finalized = False
                 if _stale_finalized:
@@ -29456,7 +29719,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # response (#14238).
             _streamed = _stream_confirmed_final_delivery(
                 _sc,
-                _final,
+                _delivery_final,
                 previewed=_previewed,
             )
             if not _is_empty_sentinel and not _transformed and (_streamed or _content_delivered):
@@ -29493,7 +29756,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _reconcile_res = await _sc_adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=_sc_msg_id,
-                            content=_final,
+                            content=_delivery_final,
                             finalize=True,
                         )
                         if getattr(_reconcile_res, "success", True):
@@ -29527,7 +29790,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         await _sc.adapter.edit_message(
                             chat_id=source.chat_id,
                             message_id=_sc_msg_id,
-                            content=response["final_response"],
+                            content=_delivery_final,
                             finalize=True,
                         )
                         response["already_sent"] = True

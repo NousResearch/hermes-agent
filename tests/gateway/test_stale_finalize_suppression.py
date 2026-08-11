@@ -88,6 +88,10 @@ class FinalizeCaptureAdapter(BasePlatformAdapter):
 STREAMED_PREFIX = "The photo shows a dog on a beach"
 MISSING_TAIL = " with a red frisbee in its mouth, mid-leap over the surf."
 FULL_RESPONSE = STREAMED_PREFIX + MISSING_TAIL
+PRIVATE_CONTEXT = "PRIVATE_SENTINEL_81312_STALE_EDIT"
+FENCED_FULL_RESPONSE = (
+    f"<memory-context>\n{PRIVATE_CONTEXT}\n</memory-context>\n{FULL_RESPONSE}"
+)
 
 
 class StalePrefixAgent:
@@ -126,6 +130,24 @@ class CompleteStreamAgent:
             self.stream_delta_callback(FULL_RESPONSE)
         return {
             "final_response": FULL_RESPONSE,
+            "response_previewed": False,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class FencedStalePrefixAgent:
+    """Return internal recalled context after a stale streamed preview."""
+
+    def __init__(self, **kwargs):
+        self.stream_delta_callback = kwargs.get("stream_delta_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        if self.stream_delta_callback:
+            self.stream_delta_callback(STREAMED_PREFIX)
+        return {
+            "final_response": FENCED_FULL_RESPONSE,
             "response_previewed": False,
             "messages": [],
             "api_calls": 1,
@@ -238,6 +260,31 @@ async def test_stale_finalize_does_not_suppress_complete_response(
         assert any(
             e["content"] == FULL_RESPONSE and e["finalize"] for e in adapter.edits
         ), "already_sent=True but no edit carried the complete response"
+
+
+@pytest.mark.asyncio
+async def test_stale_finalize_reconciliation_fences_completed_edit_payload(
+    monkeypatch, tmp_path
+):
+    """A stale-finalize repair edit must not expose recalled context."""
+    adapter, result = await _run_streaming_turn(
+        monkeypatch,
+        tmp_path,
+        FencedStalePrefixAgent,
+        "sess-81312-stale-finalize-fence",
+    )
+
+    assert result["final_response"] == FENCED_FULL_RESPONSE
+    gateway_run = importlib.import_module("gateway.run")
+    expected = gateway_run._sanitize_gateway_final_response(
+        Platform.TELEGRAM, FENCED_FULL_RESPONSE
+    )
+    reconciliations = [
+        edit for edit in adapter.edits
+        if edit["finalize"] and edit["content"] == expected
+    ]
+    assert reconciliations, f"expected a fenced reconciliation edit: {adapter.edits!r}"
+    assert all(PRIVATE_CONTEXT not in edit["content"] for edit in adapter.edits)
 
 
 @pytest.mark.asyncio

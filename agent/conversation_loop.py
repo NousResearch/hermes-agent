@@ -43,6 +43,7 @@ from agent.turn_context import (
     _compression_warrants_another_preflight_pass,
     build_turn_context,
     compose_user_api_content,
+    is_api_content_replay_role,
     reanchor_current_turn_user_idx,
 )
 from agent.turn_retry_state import TurnRetryState
@@ -2191,17 +2192,18 @@ def run_conversation(
             elif (
                 isinstance(_api_content, str)
                 and _api_content
-                and msg.get("role") in ("user", "assistant")
+                and is_api_content_replay_role(msg.get("role"))
             ):
                 # Historical message: replay the exact bytes sent when it was
                 # live, so the provider prompt-cache prefix stays byte-stable
                 # instead of diverging at the injection point and
                 # re-prefilling everything after it. User rows carry the
                 # prefetch/plugin injection sidecar; user AND assistant rows
-                # can carry a sanitize-divergence sidecar (content that
-                # ``get_messages_as_conversation``'s sanitize_context/strip
-                # would rewrite on reload — see the capture in
-                # ``_flush_messages_to_session_db``).
+                # (tool rows and extension roles) can carry a
+                # sanitize-divergence sidecar
+                # (content that ``get_messages_as_conversation``'s
+                # sanitize_context/strip would rewrite on reload — see the
+                # capture in ``_flush_messages_to_session_db``).
                 api_msg["content"] = _api_content
 
             # For ALL assistant messages, pass reasoning back to the API

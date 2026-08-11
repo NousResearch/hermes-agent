@@ -16,6 +16,7 @@ import pytest
 
 class TestTuiApprovalEmitRedaction:
     def test_emit_approval_request_redacts_command_in_payload(self, monkeypatch):
+        from gateway.run import _redact_approval_command
         from tui_gateway import server as tui_server
 
         emitted = {}
@@ -25,13 +26,21 @@ class TestTuiApprovalEmitRedaction:
                 {"event": event, "sid": sid, "payload": payload}
             ),
         )
-        raw = "curl -H 'Authorization: token ghp_01...6789' https://api.github.com"
-        tui_server._emit_approval_request("sess-1", {"command": raw, "description": "x"})
+        raw = (
+            "printf '<memory-context>approval target</memory-context>' && "
+            "curl -H 'Authorization: token ghp_01...6789' https://api.github.com"
+        )
+        description = "Run <memory-context>the exact approved command</memory-context>"
+        tui_server._emit_approval_request(
+            "sess-1", {"command": raw, "description": description}
+        )
 
         assert emitted["event"] == "approval.request"
-        # credential removed, non-command field + command structure preserved
+        assert emitted["payload"]["command"] == _redact_approval_command(raw)
         assert "ghp_01...6789" not in emitted["payload"]["command"]
-        assert emitted["payload"]["description"] == "x"
         assert "github.com" in emitted["payload"]["command"]
-
-
+        assert (
+            "<memory-context>approval target</memory-context>"
+            in emitted["payload"]["command"]
+        )
+        assert emitted["payload"]["description"] == description

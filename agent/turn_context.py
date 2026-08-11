@@ -50,6 +50,20 @@ from agent.model_metadata import (
 
 logger = logging.getLogger(__name__)
 
+# ``api_content`` is a wire-byte replacement for any persisted message with a
+# real role. ``run_agent`` records the exact provider-bound string for every
+# non-user role when a display projection changes it, including provider
+# extensions such as ``system``/``developer`` and future role names. Keep the
+# historical set as a public compatibility hint, but use
+# ``is_api_content_replay_role`` at the wire boundary so extension roles do not
+# silently lose their sidecar on resume.
+API_CONTENT_REPLAY_ROLES = frozenset(("user", "assistant", "tool"))
+
+
+def is_api_content_replay_role(role: Any) -> bool:
+    """Return whether a persisted role can carry an API-content sidecar."""
+    return isinstance(role, str) and bool(role)
+
 
 def compose_user_api_content(
     content: Any,
@@ -100,10 +114,8 @@ def substitute_api_content(api_msg: Dict[str, Any]) -> Optional[str]:
     current-turn composition logic) or ``None`` when absent.
     """
     sidecar = api_msg.pop("api_content", None)
-    if (
-        isinstance(sidecar, str)
-        and sidecar
-        and api_msg.get("role") in ("user", "assistant")
+    if isinstance(sidecar, str) and sidecar and is_api_content_replay_role(
+        api_msg.get("role")
     ):
         api_msg["content"] = sidecar
     return sidecar
@@ -203,6 +215,7 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
 
     try:
         from agent.message_content import flatten_message_text
+        from agent.memory_manager import sanitize_context
         from agent.title_generator import maybe_auto_title
 
         # The turn's own user message, as text. Multimodal turns flatten to
@@ -253,6 +266,7 @@ def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
                 getattr(agent, "model", None) == _model
                 and getattr(agent, "provider", None) == _provider
             ),
+            provider_text_sanitizer=sanitize_context,
         )
     except Exception:
         logger.debug("Turn-start auto-title dispatch failed", exc_info=True)

@@ -49,6 +49,46 @@ class TestRequestToolApproval:
         res = request_tool_approval("write_file", "writing ~/.ssh/authorized_keys")
         assert res["approved"] is True
 
+    def test_cli_preserves_context_like_plugin_reason(self, monkeypatch):
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        captured = {}
+
+        def approve_once(command, description, **_kwargs):
+            captured.update(command=command, description=description)
+            return "once"
+
+        reason = "Review <memory-context>literal plugin target</memory-context>"
+        res = request_tool_approval(
+            "terminal", reason, approval_callback=approve_once
+        )
+
+        assert res["approved"] is True
+        assert captured["description"] == reason
+
+    def test_shared_gate_preserves_context_like_approval_target(self, monkeypatch):
+        monkeypatch.setattr(approval, "_is_interactive_cli", lambda: True)
+        monkeypatch.setattr(approval, "_is_gateway_approval_context", lambda: False)
+        captured = {}
+
+        def approve_once(command, description, **_kwargs):
+            captured.update(command=command, description=description)
+            return "once"
+
+        target = "printf '<memory-context>literal executable text</memory-context>'"
+        res = approval._run_approval_gate(
+            pattern_key="test:context-like-target",
+            description="Run exact command",
+            display_target=target,
+            approval_callback=approve_once,
+            cron_deny_message="cron denied",
+            single_query_deny_message="single-query denied",
+            autoapprove_log_prefix="test approval",
+        )
+
+        assert res["approved"] is True
+        assert captured["command"] == target
+
     def test_cli_deny_blocks(self, monkeypatch):
         from hermes_cli import lifecycle
 

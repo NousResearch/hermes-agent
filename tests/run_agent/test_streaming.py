@@ -350,6 +350,55 @@ class TestStreamingCallbacks:
 
         assert deltas == ["a", "b", "c"]
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_tool_adjacent_content_is_context_scrubbed_before_display_and_tts(
+        self, mock_close, mock_create
+    ):
+        """Content alongside a tool call keeps reasoning tags but not memory."""
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(
+                    index=0, tc_id="call_ctx", name="terminal", arguments='{"command":"pwd"}'
+                )
+            ]),
+            _make_stream_chunk(content="<memory-con"),
+            _make_stream_chunk(content="text>\nPRIVATE_TOOL_STREAM"),
+            _make_stream_chunk(
+                content="</memory-context><reasoning>visible plan</reasoning>"
+            ),
+            _make_stream_chunk(finish_reason="tool_calls"),
+        ]
+        displayed = []
+        spoken = []
+
+        def _display_and_tts(text):
+            displayed.append(text)
+            spoken.append(text)
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            stream_delta_callback=_display_and_tts,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        agent._interruptible_streaming_api_call({})
+
+        assert displayed == ["<reasoning>visible plan</reasoning>"]
+        assert spoken == displayed
+        assert "PRIVATE_TOOL_STREAM" not in "".join(displayed + spoken)
+
 
 
 

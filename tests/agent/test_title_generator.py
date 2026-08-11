@@ -79,6 +79,53 @@ class TestGenerateTitle:
             # leaving nothing → None.
             assert title is None
 
+    def test_fences_provider_context_from_title_input_and_output(self):
+        """Gateway callers can fence both title-model input and its response."""
+        captured = {}
+        private_input = "PRIVATE_SENTINEL_81312_TITLE_INPUT"
+        private_output = "PRIVATE_SENTINEL_81312_TITLE_OUTPUT"
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = (
+            f"<memory-context>\n{private_output}\n</memory-context>\n"
+            "Safe Conversation Title"
+        )
+
+        def _call_llm(**kwargs):
+            captured.update(kwargs)
+            return response
+
+        from agent.memory_manager import sanitize_context
+
+        with patch("agent.title_generator.call_llm", side_effect=_call_llm):
+            title = generate_title(
+                "hello",
+                f"<memory-context>\n{private_input}\n</memory-context>\nVisible answer",
+                provider_text_sanitizer=sanitize_context,
+            )
+
+        assert title == "Safe Conversation Title"
+        title_prompt = captured["messages"][1]["content"]
+        assert private_input not in title_prompt
+        assert "memory-context" not in title_prompt
+        assert "Visible answer" in title_prompt
+        assert private_output not in title
+
+    def test_title_sanitizer_preserves_raw_programmatic_contract(self):
+        """An explicit pass-through sanitizer leaves raw title I/O unchanged."""
+        raw_input = "<memory-context>\ncaller-visible input\n</memory-context>"
+        raw_title = "<memory-context>caller-visible title</memory-context>"
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message.content = raw_title
+
+        with patch("agent.title_generator.call_llm", return_value=response) as call:
+            assert generate_title(
+                "hello", raw_input, provider_text_sanitizer=lambda text: text
+            ) == raw_title
+
+        assert raw_input in call.call_args.kwargs["messages"][1]["content"]
+
 
     def test_truncates_long_titles(self):
         mock_response = MagicMock()
@@ -288,6 +335,7 @@ class TestMaybeAutoTitle:
                 main_runtime=None,
                 title_callback=None,
                 runtime_validator=None,
+                provider_text_sanitizer=None,
             )
 
     def test_writes_instant_title_before_the_model_runs(self, tmp_path):
@@ -468,6 +516,36 @@ class TestAutoTitleDuplicateHandling:
             _persist_session_title(db, "sess-1", "Some Title", source="llm") is None
         )
         db.set_session_title.assert_not_called()
+
+    def test_fences_generated_title_before_persistence_and_callback(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        db.set_auto_title_if_empty.return_value = True
+        seen = []
+        private = "PRIVATE_SENTINEL_81312_TITLE_PERSIST"
+
+        from agent.memory_manager import sanitize_context
+
+        with patch(
+            "agent.title_generator.generate_title",
+            return_value=(
+                f"<memory-context>\n{private}\n</memory-context>\n"
+                "Safe Persisted Title"
+            ),
+        ):
+            auto_title_session(
+                db,
+                "sess-1",
+                "hi",
+                "hello",
+                title_callback=lambda title, _source: seen.append(title),
+                provider_text_sanitizer=sanitize_context,
+            )
+
+        db.set_auto_title.assert_called_once_with(
+            "sess-1", "Safe Persisted Title", source="llm"
+        )
+        assert seen == ["Safe Persisted Title"]
 
 
 

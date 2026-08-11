@@ -1426,6 +1426,399 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     assert "result_text" not in events[1][2]
 
 
+def test_tui_tool_start_uses_sanitized_display_projection(monkeypatch):
+    raw_args = {
+        "command": "echo <memory-context>PRIVATE_TOOL_CONTEXT</memory-context>visible",
+        "nested": ["<memory-context>PRIVATE_TOOL_VERBOSE</memory-context>safe"],
+    }
+    events = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "tool-fence-test",
+        {"tool_progress_mode": "verbose", "tool_started_at": {}},
+    )
+
+    server._on_tool_start("tool-fence-test", "tool-1", "terminal", raw_args)
+
+    payload = events[0][2]
+    assert "PRIVATE_TOOL_CONTEXT" not in payload["context"]
+    assert "memory-context" not in payload["context"]
+    assert "PRIVATE_TOOL_VERBOSE" not in payload["args_text"]
+    assert raw_args["command"].endswith("visible")
+    assert "PRIVATE_TOOL_CONTEXT" in raw_args["command"]
+
+
+def test_tui_tool_display_copy_preserves_fenced_key_siblings_and_depth():
+    private_key = "<memory-context>PRIVATE_TUI_KEY</memory-context>"
+    projected = server._sanitize_tool_display_value(
+        {private_key: "one", "<memory-context>OTHER_TUI_KEY</memory-context>": "two"}
+    )
+    assert list(projected.values()) == ["one", "two"]
+    assert all("memory-context" not in str(key) for key in projected)
+
+    nested: object = "<memory-context>PRIVATE_TUI_DEPTH</memory-context>"
+    for _ in range(1_200):
+        nested = [nested]
+    projected_nested = server._sanitize_tool_display_value(nested)
+    assert "PRIVATE_TUI_DEPTH" not in repr(projected_nested)
+
+
+def test_tui_tool_complete_fences_args_result_and_diff(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event_type, sid, payload=None: events.append(
+            (event_type, sid, payload or {})
+        ),
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "tool-complete-fence-test",
+        {"tool_progress_mode": "all", "tool_started_at": {}},
+    )
+    raw_args = {
+        "command": "echo <memory-context>PRIVATE_COMPLETE_ARGS</memory-context>ok"
+    }
+    raw_result = "done <memory-context>PRIVATE_COMPLETE_RESULT</memory-context>"
+
+    server._on_tool_complete(
+        "tool-complete-fence-test", "tool-1", "terminal", raw_args, raw_result
+    )
+
+    payload = events[0][2]
+    assert "PRIVATE_COMPLETE_ARGS" not in repr(payload)
+    assert "PRIVATE_COMPLETE_RESULT" not in repr(payload)
+    assert "PRIVATE_COMPLETE_ARGS" in raw_args["command"]
+
+
+def test_tui_verbose_tool_complete_fences_result_text_and_todos(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event_type, sid, payload=None: events.append(
+            (event_type, sid, payload or {})
+        ),
+    )
+    monkeypatch.setitem(
+        server._sessions,
+        "tool-complete-verbose-fence-test",
+        {"tool_progress_mode": "verbose", "tool_started_at": {}},
+    )
+    raw_result = json.dumps(
+        {
+            "todos": [
+                {
+                    "content": (
+                        "<memory-context>PRIVATE_TODO_FINAL15</memory-context>visible"
+                    )
+                }
+            ]
+        }
+    )
+
+    server._on_tool_complete(
+        "tool-complete-verbose-fence-test", "tool-1", "todo", {}, raw_result
+    )
+
+    payload = events[0][2]
+    assert "PRIVATE_TODO_FINAL15" not in repr(payload)
+    assert payload["todos"] == [{"content": "visible"}]
+    assert "PRIVATE_TODO_FINAL15" in raw_result
+
+
+def test_tui_status_update_fences_provider_text(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event_type, sid, payload=None: events.append(
+            (event_type, sid, payload or {})
+        ),
+    )
+
+    server._status_update(
+        "status-fence-test",
+        "process",
+        "<memory-context>PRIVATE_STATUS_FINAL15</memory-context>ready",
+    )
+    server._status_update(
+        "status-fence-test",
+        "process",
+        "<memory-context>PRIVATE_ONLY_FINAL15</memory-context>",
+    )
+
+    assert events == [
+        ("status.update", "status-fence-test", {"kind": "process", "text": "ready"})
+    ]
+
+
+def test_tui_subagent_events_fence_presentation_without_mutating_inputs(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event_type, sid, payload=None: events.append(
+            (event_type, sid, payload or {})
+        ),
+    )
+    monkeypatch.setattr(server, "_mirror_subagent_to_child", lambda *_args: None)
+    monkeypatch.setitem(
+        server._sessions,
+        "subagent-fence-test",
+        {"tool_progress_mode": "all"},
+    )
+    fenced = "<memory-context>PRIVATE_SUBAGENT_FINAL15</memory-context>visible"
+    output_tail = [{"text": fenced}]
+
+    server._on_tool_progress(
+        "subagent-fence-test",
+        "subagent.complete",
+        preview=fenced,
+        goal=fenced,
+        summary=fenced,
+        output_tail=output_tail,
+    )
+
+    assert "PRIVATE_SUBAGENT_FINAL15" not in repr(events)
+    assert events[0][2]["goal"] == "visible"
+    assert events[0][2]["text"] == "visible"
+    assert events[0][2]["summary"] == "visible"
+    assert events[0][2]["output_tail"] == [{"text": "visible"}]
+    assert "PRIVATE_SUBAGENT_FINAL15" in output_tail[0]["text"]
+
+
+def test_tui_reasoning_and_thinking_callbacks_scrub_split_fences(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        server, "_emit", lambda event_type, sid, payload=None: events.append((event_type, payload or {}))
+    )
+    server._reset_tui_display_scrubbers("stream-fence-test")
+    callbacks = server._agent_cbs("stream-fence-test")
+
+    callbacks["reasoning_callback"]("visible <memory-con")
+    callbacks["reasoning_callback"]("text>PRIVATE_REASONING")
+    callbacks["reasoning_callback"]("</memory-context> after")
+    callbacks["thinking_callback"]("think <memory-context>PRIVATE_THINK")
+    callbacks["thinking_callback"]("</memory-context> done")
+    server._flush_tui_display_scrubbers("stream-fence-test")
+
+    visible = "".join(str(payload.get("text") or "") for _, payload in events)
+    assert "PRIVATE_REASONING" not in visible
+    assert "PRIVATE_THINK" not in visible
+    assert "memory-context" not in visible
+    assert "visible " in visible
+    assert " after" in visible
+    assert "think " in visible
+    assert " done" in visible
+
+
+def test_tui_assistant_stream_scrubs_split_fences_before_message_delta():
+    sid = "text-stream-fence-test"
+    server._reset_tui_display_scrubbers(sid)
+    try:
+        visible = "".join(
+            server._feed_tui_display_stream_delta(sid, "text", chunk)
+            for chunk in (
+                "visible <memory-con",
+                "text>PRIVATE_STREAM",
+                "</memory-context> tail",
+            )
+        )
+        visible += server._flush_tui_display_scrubbers(sid) or ""
+        assert "PRIVATE_STREAM" not in visible
+        assert "memory-context" not in visible
+        assert "visible " in visible
+        assert " tail" in visible
+    finally:
+        server._discard_tui_display_scrubbers(sid)
+
+
+def test_tui_agent_callbacks_strictly_fence_interim_assistant(monkeypatch):
+    events = []
+    monkeypatch.setattr(server, "_load_interim_assistant_messages", lambda: True)
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event_type, sid, payload=None: events.append(
+            (event_type, sid, payload or {})
+        ),
+    )
+    callback = server._agent_cbs("interim-fence-test")["interim_assistant_callback"]
+
+    callback(
+        " left <memory-context>PRIVATE_INTERIM</memory-context> right ",
+        already_streamed=True,
+    )
+    callback("<memory-context>PRIVATE_ONLY</memory-context>")
+
+    assert events == [
+        (
+            "message.interim",
+            "interim-fence-test",
+            {"text": " left  right ", "already_streamed": True},
+        )
+    ]
+
+
+def test_tui_child_watch_mirror_fences_split_text_and_thinking(monkeypatch):
+    events = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event_type, sid, payload=None: events.append(
+            (event_type, sid, payload or {})
+        ),
+    )
+    monkeypatch.setattr(
+        server,
+        "_find_live_session_by_key",
+        lambda key: ("child-watch-sid", {"agent": None})
+        if key == "child-watch-key"
+        else None,
+    )
+    server._child_mirrors.pop("child-watch-key", None)
+    common = {"child_session_id": "child-watch-key"}
+
+    server._mirror_subagent_to_child(
+        "subagent.thinking", {**common, "text": "<memory-con"}
+    )
+    server._mirror_subagent_to_child(
+        "subagent.thinking", {**common, "text": "text>PRIVATE_CHILD_THINK"}
+    )
+    server._mirror_subagent_to_child(
+        "subagent.text", {**common, "text": "<memory-con"}
+    )
+    server._mirror_subagent_to_child(
+        "subagent.text", {**common, "text": "text>PRIVATE_CHILD_TEXT"}
+    )
+    server._mirror_subagent_to_child(
+        "subagent.complete", {**common, "summary": "</memory-context>done"}
+    )
+
+    rendered = repr(events)
+    assert "PRIVATE_CHILD_THINK" not in rendered
+    assert "PRIVATE_CHILD_TEXT" not in rendered
+    assert "done" in rendered
+
+
+def test_tui_final_frame_and_title_use_strict_display_fence(monkeypatch):
+    raw_result = {
+        "final_response": "visible <memory-context>PRIVATE_FINAL",
+        "last_reasoning": "reason <memory-context>PRIVATE_FINAL_REASONING",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": "visible <memory-context>PRIVATE_FINAL",
+            }
+        ],
+    }
+
+    class _Agent:
+        model = "model"
+        provider = "provider"
+        base_url = "https://example.test"
+        api_key = "key"
+        api_mode = "chat_completions"
+
+        def run_conversation(self, *_args, **_kwargs):
+            self.interim_assistant_callback(
+                " interim <memory-context>PRIVATE_PER_TURN</memory-context> text ",
+                already_streamed=False,
+            )
+            return raw_result
+
+    events = []
+    rendered = []
+    server._sessions["final-fence-test"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event_type, sid, payload=None: events.append(
+            (event_type, sid, payload or {})
+        ),
+    )
+    monkeypatch.setattr(server, "make_stream_renderer", lambda _cols: None)
+    monkeypatch.setattr(
+        server,
+        "render_message",
+        lambda text, _cols: rendered.append(text) or "",
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: object())
+
+    with patch("agent.title_generator.maybe_auto_title") as title:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "final-fence-test", "text": "hello"},
+            }
+        )
+
+    complete = [payload for event, _, payload in events if event == "message.complete"][-1]
+    assert complete["text"] == "visible "
+    assert complete["reasoning"] == "reason "
+    assert rendered == ["visible "]
+    interim = [payload for event, _, payload in events if event == "message.interim"]
+    assert interim == [{"text": " interim  text ", "already_streamed": False}]
+    # TUI title generation runs in the shared turn prologue; this direct fixture
+    # exercises final-frame delivery without invoking that prologue.
+    assert title.call_count == 0
+    assert raw_result["final_response"].endswith("PRIVATE_FINAL")
+    assert "PRIVATE_FINAL" in server._sessions["final-fence-test"]["history"][0]["content"]
+
+
+def test_tui_history_projects_persisted_tool_args_without_mutating_raw():
+    raw_arguments = '{"query":"<memory-context>PRIVATE_HYDRATION</memory-context>visible"}'
+    history = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "function": {"name": "web_search", "arguments": raw_arguments},
+                }
+            ],
+        },
+        {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
+    ]
+
+    projected = server._history_to_messages(history)
+
+    assert projected == [{"role": "tool", "name": "web_search", "context": "visible", "args": {"query": "visible"}}]
+    assert history[0]["tool_calls"][0]["function"]["arguments"] == raw_arguments
+
+
+def test_tui_history_fails_closed_for_malformed_fenced_tool_args():
+    history = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "function": {
+                        "name": "web_search",
+                        "arguments": '{"query":"<memory-context>PRIVATE_BAD_JSON',
+                    },
+                }
+            ],
+        },
+        {"role": "tool", "content": "{}", "tool_call_id": "call_1"},
+    ]
+
+    projected = server._history_to_messages(history)
+
+    assert projected == [{"role": "tool", "name": "web_search", "context": ""}]
+    assert "PRIVATE_BAD_JSON" not in str(projected)
+
+
 def test_tui_tool_output_risk_event_exposes_metadata_without_raw_output(monkeypatch):
     events: list[tuple[str, str, dict]] = []
     monkeypatch.setattr(
@@ -2640,6 +3033,55 @@ def test_tool_start_ships_full_args(monkeypatch):
     assert events[0][2]["args"] == {"command": long_command}
     # Empty args stay omitted. Argless tools get no noise key.
     assert "args" not in events[1][2]
+
+
+def test_history_to_messages_fences_structured_assistant_display_copy():
+    fenced = "<memory-context>PRIVATE_HISTORY_FINAL15</memory-context>visible"
+    history = [
+        {
+            "role": "assistant",
+            "content": [{"type": "text", "text": fenced}],
+            "reasoning_details": [{"type": "text", "text": fenced}],
+        }
+    ]
+
+    projected = server._history_to_messages(history)
+
+    assert projected == [
+        {
+            "role": "assistant",
+            "text": "visible",
+            "reasoning_details": [{"type": "text", "text": "visible"}],
+        }
+    ]
+    assert history[0]["content"][0]["text"] == fenced
+    assert history[0]["reasoning_details"][0]["text"] == fenced
+
+
+def test_history_to_messages_fails_closed_for_sentence_shaped_close_reopen():
+    raw = (
+        "Visible </memory-context>INJECTED<memory-context>"
+        " PRIVATE TUI payload leaked."
+    )
+
+    projected = server._history_to_messages([{"role": "user", "content": raw}])
+
+    assert projected == [{"role": "user", "text": "Visible "}]
+    assert "INJECTED" not in str(projected)
+    assert "PRIVATE" not in str(projected)
+
+
+def test_history_to_messages_fails_closed_for_close_reopen_beyond_inline_cap():
+    raw = (
+        "Visible </memory-context>PRIVATE_TUI_CAP"
+        + ("x" * 513)
+        + "<memory-context>hidden</memory-context> tail"
+    )
+
+    projected = server._history_to_messages([{"role": "user", "content": raw}])
+
+    assert projected == [{"role": "user", "text": "Visible  tail"}]
+    assert "PRIVATE_TUI_CAP" not in str(projected)
 
 
 def test_tool_ctx_sends_an_arg_preview_not_a_phrased_label():
@@ -10466,6 +10908,31 @@ def test_inflight_snapshot_omits_offsets_when_not_fully_recorded():
     assert "correction_offsets" not in snapshot
 
 
+def test_inflight_snapshot_and_active_preview_fence_provider_text():
+    session = {
+        "inflight_turn": {
+            "user": "explain <memory-context>user docs</memory-context>",
+            "assistant": "visible <memory-context>PRIVATE_RESUME</memory-context> tail",
+            "error": "provider failed <memory-context>PRIVATE_ERROR</memory-context>",
+            "streaming": False,
+            "corrections": ["retry <memory-context>PRIVATE_CORRECTION</memory-context>"],
+        }
+    }
+
+    snapshot = server._inflight_snapshot(session)
+    assert snapshot is not None
+    rendered = repr(snapshot)
+    assert "PRIVATE_RESUME" not in rendered
+    assert "PRIVATE_ERROR" not in rendered
+    assert "PRIVATE_CORRECTION" not in rendered
+
+    preview = server._message_preview(
+        [{"role": "assistant", "content": "visible <memory-context>PRIVATE_PREVIEW</memory-context> tail"}]
+    )
+    assert preview == "visible tail"
+    assert "PRIVATE_PREVIEW" not in preview
+
+
 def test_inflight_snapshot_omits_corrections_when_none_recorded():
     session = {}
     server._start_inflight_turn(session, "just the prompt")
@@ -10473,6 +10940,30 @@ def test_inflight_snapshot_omits_corrections_when_none_recorded():
     snapshot = server._inflight_snapshot(session)
     assert snapshot is not None
     assert "corrections" not in snapshot
+
+
+def test_terminal_turn_error_falls_back_when_partial_is_fenced(monkeypatch):
+    events = []
+    monkeypatch.setattr(server, "_emit", lambda *args: events.append(args))
+    monkeypatch.setattr(server, "_fail_inflight_turn", lambda *_args: None)
+    monkeypatch.setattr(server, "_retire_turn_marker", lambda *_args: None)
+    monkeypatch.setattr(server, "_get_usage", lambda _agent: {})
+    monkeypatch.setattr(server, "render_message", lambda *_args: "")
+
+    session = {
+        "history_lock": threading.RLock(),
+        "inflight_turn": {
+            "assistant": "<memory-context>PRIVATE_PARTIAL</memory-context>",
+            "error": "provider failed",
+        },
+        "cols": 80,
+    }
+    server._emit_terminal_turn_error("sid", session, "provider failed")
+
+    payload = events[0][2]
+    assert payload["text"] == "Error: provider failed"
+    assert payload["error"] == "provider failed"
+    assert "PRIVATE_PARTIAL" not in repr(payload)
 
 
 def test_new_turn_does_not_inherit_prior_turn_corrections():
@@ -18219,6 +18710,94 @@ def test_clarify_callback_multi_select_hint(monkeypatch):
 
     cb("Pick one", ["a", "b"], multi_select=False)
     assert captured["payload"] == {"question": "Pick one", "choices": ["a", "b"]}
+
+    cb("Open question", None, multi_select=False)
+    assert captured["payload"] == {"question": "Open question", "choices": None}
+
+
+def test_clarify_callback_fences_complete_context_for_presentation_only(monkeypatch):
+    captured = {}
+    raw_question = (
+        "Visible question?\n"
+        "<memory-context>PRIVATE_TUI_CLARIFY_QUESTION</memory-context>"
+    )
+    raw_choices = [
+        "Visible choice",
+        "<memory-context>PRIVATE_TUI_CLARIFY_CHOICE</memory-context>",
+    ]
+
+    def fake_block(event, sid, payload, timeout=300):
+        captured.update(event=event, sid=sid, payload=payload, timeout=timeout)
+        return "raw user answer"
+
+    monkeypatch.setattr(server, "_block", fake_block)
+    cb = server._agent_cbs("sid-clarify-fence")["clarify_callback"]
+
+    assert cb(raw_question, raw_choices, multi_select=True) == "raw user answer"
+    assert captured["payload"] == {
+        "question": "Visible question?",
+        "choices": ["Visible choice", "[details withheld]"],
+        "multi_select": True,
+    }
+    assert "PRIVATE_TUI_CLARIFY_QUESTION" in raw_question
+    assert "PRIVATE_TUI_CLARIFY_CHOICE" in raw_choices[1]
+
+
+def test_clarify_callback_fences_provider_split_context_fragments(monkeypatch):
+    captured = {}
+    raw_question = "".join(
+        [
+            "Before ",
+            "<memory-con",
+            "text>PRIVATE_TUI_CLARIFY_SPLIT_QUESTION</memory-",
+            "context>",
+            " after",
+        ]
+    )
+    raw_choices = [
+        "".join(
+            [
+                "Choice ",
+                "<memory-con",
+                "text>PRIVATE_TUI_CLARIFY_SPLIT_CHOICE</memory-",
+                "context>",
+                " tail",
+            ]
+        )
+    ]
+
+    def fake_block(event, sid, payload, timeout=300):
+        captured.update(payload=payload)
+        return "answer"
+
+    monkeypatch.setattr(server, "_block", fake_block)
+
+    result = server._agent_cbs("sid-clarify-split")["clarify_callback"](
+        raw_question, raw_choices
+    )
+
+    assert result == "answer"
+    assert captured["payload"] == {
+        "question": "Before  after",
+        "choices": ["Choice  tail"],
+    }
+    assert "PRIVATE_TUI_CLARIFY_SPLIT_QUESTION" in raw_question
+    assert "PRIVATE_TUI_CLARIFY_SPLIT_CHOICE" in raw_choices[0]
+
+
+def test_clarify_callback_fails_closed_for_fully_fenced_question(monkeypatch):
+    monkeypatch.setattr(
+        server,
+        "_block",
+        lambda *_args, **_kwargs: pytest.fail("fully fenced prompt must not render"),
+    )
+
+    result = server._agent_cbs("sid-clarify-empty")["clarify_callback"](
+        "<memory-context>PRIVATE_TUI_CLARIFY_ONLY</memory-context>",
+        ["visible choice"],
+    )
+
+    assert result == "[clarify prompt could not be delivered]"
 
 
 @pytest.mark.parametrize(

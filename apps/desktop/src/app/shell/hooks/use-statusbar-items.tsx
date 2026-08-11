@@ -211,10 +211,16 @@ export function useStatusbarItems({
 
   const turnStartedAt = primaryFocused ? primaryTurnStartedAt : focusedTurnStartedAt
 
-  // A tile's cold cwd comes from its stored row (the cache only knows runtime
-  // state). Only these scalars are read off `$sessions`, so select them — a
-  // whole-list `useStore` re-ran the hook on every session-list write (title
-  // updates, poll refreshes, archives).
+  // A tile's stored row supplies the cold/fallback session-start and cwd when
+  // no focused runtime value is available. Only these scalars are read off
+  // `$sessions`, so select them — a whole-list `useStore` re-ran this hook on
+  // every session-list write (title updates, poll refreshes, archives).
+  const focusedRowStartedAt = useStoreSelector($sessions, sessions =>
+    focusedStoredSessionId
+      ? (sessions.find(s => sessionMatchesStoredId(s, focusedStoredSessionId))?.started_at ?? null)
+      : null
+  )
+
   const focusedRowCwd = useStoreSelector($sessions, sessions => {
     if (!focusedStoredSessionId) {
       return ''

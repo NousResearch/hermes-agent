@@ -7277,6 +7277,64 @@ def specify_triage_task(
     return True
 
 
+class DecomposeGraphRejected(ValueError):
+    """Invalid graph whose rejection event committed on the triage root."""
+
+    rejection_event_committed = True
+
+
+def _validate_decomposed_children(children: list[dict]) -> None:
+    """Validate a sibling dependency graph without touching durable state."""
+    for idx, child in enumerate(children):
+        if not isinstance(child, dict):
+            raise ValueError(f"child[{idx}] is not a dict")
+        title = child.get("title")
+        if not isinstance(title, str) or not title.strip():
+            raise ValueError(f"child[{idx}].title is required")
+        parents_idx = child["parents"] if "parents" in child else []
+        if not isinstance(parents_idx, list):
+            raise ValueError(f"child[{idx}].parents must be a list")
+        seen_parents: set[int] = set()
+        for parent_pos, parent_idx in enumerate(parents_idx):
+            # bool subclasses int in Python, but JSON booleans are not graph
+            # indices and must not silently become edges 0 or 1.
+            if type(parent_idx) is not int or not 0 <= parent_idx < len(children):
+                raise ValueError(
+                    f"child[{idx}].parents[{parent_pos}] is not a valid "
+                    "index into children"
+                )
+            if parent_idx == idx:
+                raise ValueError(f"child[{idx}] cannot list itself as a parent")
+            if parent_idx in seen_parents:
+                raise ValueError(
+                    f"child[{idx}] lists parent index {parent_idx} more than once"
+                )
+            seen_parents.add(parent_idx)
+
+    # Detect cycles in the sibling parent graph (Kahn's topological sort).
+    # link_tasks() calls _would_cycle() for every new edge; here we check the
+    # entire sibling graph before touching task/link rows. A cycle silently
+    # deadlocks every involved child in 'todo' because recompute_ready() can
+    # never promote them.
+    in_degree = [0] * len(children)
+    adjacency: list[list[int]] = [[] for _ in children]
+    for child_idx, child in enumerate(children):
+        for parent_idx in (child["parents"] if "parents" in child else []):
+            adjacency[parent_idx].append(child_idx)
+            in_degree[child_idx] += 1
+    queue = [idx for idx, degree in enumerate(in_degree) if degree == 0]
+    seen = 0
+    while queue:
+        node = queue.pop()
+        seen += 1
+        for neighbour in adjacency[node]:
+            in_degree[neighbour] -= 1
+            if in_degree[neighbour] == 0:
+                queue.append(neighbour)
+    if seen != len(children):
+        raise ValueError("cyclic dependency detected in decomposed children list")
+
+
 def decompose_triage_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -7306,7 +7364,11 @@ def decompose_triage_task(
     success. Returns ``None`` when:
       - The root task does not exist
       - The root task is not in ``triage``
-      - A cycle would result (caller built a bad graph)
+
+    Raises :class:`DecomposeGraphRejected` only after the caller supplied an
+    invalid dependency graph and the corresponding rejection event committed
+    on the still-current triage root. Event persistence failures propagate as
+    their original DB exception instead.
 
     Validation of titles/assignees happens inside the same write_txn as
     the inserts so a malformed entry aborts the whole decomposition
@@ -7317,57 +7379,17 @@ def decompose_triage_task(
     if root_assignee is not None:
         root_assignee = _canonical_assignee(root_assignee)
 
-    # Pre-validate the children list shape outside the txn. Cheap checks
-    # that don't need DB access. Bad input aborts before we touch the DB.
-    for idx, child in enumerate(children):
-        if not isinstance(child, dict):
-            raise ValueError(f"child[{idx}] is not a dict")
-        title = child.get("title")
-        if not isinstance(title, str) or not title.strip():
-            raise ValueError(f"child[{idx}].title is required")
-        parents_idx = child.get("parents") or []
-        if not isinstance(parents_idx, list):
-            raise ValueError(f"child[{idx}].parents must be a list")
-        for p in parents_idx:
-            if not isinstance(p, int) or p < 0 or p >= len(children):
-                raise ValueError(
-                    f"child[{idx}].parents[{p}] is not a valid index into children"
-                )
-            if p == idx:
-                raise ValueError(f"child[{idx}] cannot list itself as a parent")
-
-    # Detect cycles in the sibling parent graph (Kahn's topological sort).
-    # link_tasks() calls _would_cycle() for every new edge; here we check
-    # the entire sibling graph before touching the DB.  A cycle silently
-    # deadlocks every involved child in 'todo' because recompute_ready()
-    # can never promote them.
-    _in_deg = [0] * len(children)
-    _adj: list[list[int]] = [[] for _ in range(len(children))]
-    for _i, _c in enumerate(children):
-        for _p in (_c.get("parents") or []):
-            _adj[_p].append(_i)
-            _in_deg[_i] += 1
-    _queue = [_i for _i in range(len(children)) if _in_deg[_i] == 0]
-    _seen = 0
-    while _queue:
-        _node = _queue.pop()
-        _seen += 1
-        for _nb in _adj[_node]:
-            _in_deg[_nb] -= 1
-            if _in_deg[_nb] == 0:
-                _queue.append(_nb)
-    if _seen != len(children):
-        raise ValueError("cyclic dependency detected in decomposed children list")
-
     # We do the full decomposition in a SINGLE write_txn so it's
-    # atomic: either every child is created AND the root flips to
-    # ``todo``, or nothing changes. We deliberately do NOT call any
+    # atomic: either every child is created AND the root flips to ``todo``,
+    # or one rejection event is recorded on the unchanged triage root. We
+    # deliberately do NOT call any
     # kb helper that opens its own write_txn (create_task, link_tasks,
     # add_comment) from inside this block — see architecture.md
     # write_txn pitfalls. Instead we inline the INSERTs and
     # _append_event calls.
     now = int(time.time())
     child_ids: list[str] = []
+    rejection_reason: Optional[str] = None
     with write_txn(conn):
         root_row = conn.execute(
             "SELECT id, status, tenant, workspace_kind, workspace_path "
@@ -7378,6 +7400,23 @@ def decompose_triage_task(
             return None
         if root_row["status"] != "triage":
             return None
+        try:
+            _validate_decomposed_children(children)
+        except ValueError as exc:
+            rejection_reason = str(exc)
+            _append_event(
+                conn,
+                task_id,
+                "decompose_rejected",
+                {
+                    "class": "invalid_dependency_graph",
+                    "reason": rejection_reason,
+                    "author": author,
+                },
+            )
+            children_to_write: list[dict] = []
+        else:
+            children_to_write = children
         tenant = root_row["tenant"]
         # Children inherit the root's workspace by default so a fan-out
         # of a code-gen task lands in the parent's project dir/worktree
@@ -7390,7 +7429,7 @@ def decompose_triage_task(
         # link them under the root AFTER creation so the dispatcher
         # sees a coherent state, and recompute_ready() at the end
         # promotes parent-free children to 'ready'.
-        for idx, child in enumerate(children):
+        for idx, child in enumerate(children_to_write):
             new_id = _new_task_id()
             title = child["title"].strip()
             body = child.get("body")
@@ -7441,8 +7480,8 @@ def decompose_triage_task(
             child_ids.append(new_id)
 
         # Link children to their sibling parents (within the decomposed graph).
-        for idx, child in enumerate(children):
-            for p_idx in child.get("parents") or []:
+        for idx, child in enumerate(children_to_write):
+            for p_idx in (child["parents"] if "parents" in child else []):
                 parent_id = child_ids[p_idx]
                 child_id = child_ids[idx]
                 conn.execute(
@@ -7466,39 +7505,43 @@ def decompose_triage_task(
                 (cid, task_id),
             )
 
-        # Flip the root: triage -> todo, set assignee to the orchestrator.
-        sets = ["status = 'todo'"]
-        params: list[Any] = []
-        if root_assignee is not None:
-            sets.append("assignee = ?")
-            params.append(root_assignee)
-        params.append(task_id)
-        conn.execute(
-            f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?",
-            tuple(params),
-        )
-
-        # Audit comment + event on the root so the timeline shows the fan-out.
-        if author and author.strip():
+        if rejection_reason is None:
+            # Flip the root: triage -> todo, set assignee to the orchestrator.
+            sets = ["status = 'todo'"]
+            params: list[Any] = []
+            if root_assignee is not None:
+                sets.append("assignee = ?")
+                params.append(root_assignee)
+            params.append(task_id)
             conn.execute(
-                "INSERT INTO task_comments (task_id, author, body, created_at) "
-                "VALUES (?, ?, ?, ?)",
-                (
-                    task_id,
-                    author.strip(),
-                    "Decomposed into "
-                    + ", ".join(child_ids)
-                    + ". Root will wake when all children complete.",
-                    now,
-                ),
+                f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?",
+                tuple(params),
             )
-        _append_event(
-            conn, task_id, "decomposed",
-            {
-                "child_ids": child_ids,
-                "root_assignee": root_assignee,
-            },
-        )
+
+            # Audit comment + event on the root so the timeline shows the fan-out.
+            if author and author.strip():
+                conn.execute(
+                    "INSERT INTO task_comments (task_id, author, body, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        task_id,
+                        author.strip(),
+                        "Decomposed into "
+                        + ", ".join(child_ids)
+                        + ". Root will wake when all children complete.",
+                        now,
+                    ),
+                )
+            _append_event(
+                conn, task_id, "decomposed",
+                {
+                    "child_ids": child_ids,
+                    "root_assignee": root_assignee,
+                },
+            )
+
+    if rejection_reason is not None:
+        raise DecomposeGraphRejected(rejection_reason)
 
     # Outside the write_txn: promote parent-free children to 'ready'
     # so the dispatcher picks them up on its next tick. Same pattern

@@ -37,6 +37,12 @@ const SESSION_WINDOW_MIN_HEIGHT = 620
 // session is silent" bug. Manual voice-start worked only because the button
 // click counted as the gesture. This is a native app the user deliberately
 // launched; there is no drive-by-autoplay concern to protect against.
+//
+// `focusOnNavigation: false` keeps renderer-driven work passive. Electron's
+// default is true, so an in-page/SPA navigation can activate a blurred chat
+// window while its transcript is streaming. Explicit user actions still call
+// the main-process window focus paths (session re-open, notification/deep-link,
+// app activation), preserving intentional raises without background focus theft.
 function chatWindowWebPreferences(preloadPath: string) {
   return {
     preload: preloadPath,
@@ -45,7 +51,8 @@ function chatWindowWebPreferences(preloadPath: string) {
     sandbox: true,
     nodeIntegration: false,
     devTools: true,
-    autoplayPolicy: 'no-user-gesture-required' as const
+    autoplayPolicy: 'no-user-gesture-required' as const,
+    focusOnNavigation: false
   }
 }
 

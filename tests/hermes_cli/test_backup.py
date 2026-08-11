@@ -3,6 +3,7 @@
 import json
 import os
 import sqlite3
+import stat
 import zipfile
 from argparse import Namespace
 from pathlib import Path
@@ -911,6 +912,73 @@ class TestImportAtomicWrites:
         # Without the pre-replace chmod this reads 0o600 (mkstemp's mode).
         assert staged_modes == [0o644]
         assert (target.stat().st_mode & 0o777) == 0o644
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX setuid/setgid bits")
+    def test_restore_does_not_carry_setuid_onto_archive_content(
+        self, tmp_path, monkeypatch
+    ):
+        """An imported member must not inherit a privileged target's identity.
+
+        ``_preserve_file_mode`` returns ``stat.S_IMODE``, i.e. all twelve bits,
+        so a target sitting at 0o6755 hands setuid/setgid straight back to a
+        file whose contents now come from the zip.  Whoever produced the
+        archive would then get whatever that file executes as.  The other
+        ``utils`` writers can preserve the full mode safely because they
+        re-serialize content this process produced; ``hermes import`` is the
+        one write path where the bytes are untrusted, and it is also the path
+        that documents ``sudo`` use for owner preservation.
+
+        The sibling assertions in this class mask with ``& 0o777``, which
+        discards exactly the bits at issue, so this failure is invisible to
+        them.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        target = hermes_home / "helper.sh"
+        target.write_text("#!/bin/sh\necho original\n")
+        os.chmod(target, 0o6755)
+        if stat.S_IMODE(target.stat().st_mode) != 0o6755:
+            pytest.skip("filesystem refuses setuid/setgid on a user-owned file")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "backup.zip"
+        self._zip(
+            zip_path,
+            {"helper.sh": "#!/bin/sh\necho attacker\n", "state.db": ""},
+        )
+
+        import hermes_cli.backup as backup_mod
+
+        real_replace = backup_mod.atomic_replace
+        staged_modes: list[int] = []
+
+        def spying_replace(tmp, dst):
+            if Path(dst).name == "helper.sh":
+                staged_modes.append(stat.S_IMODE(os.stat(tmp).st_mode))
+            return real_replace(tmp, dst)
+
+        monkeypatch.setattr(backup_mod, "atomic_replace", spying_replace)
+
+        from hermes_cli.backup import run_import
+        run_import(Namespace(zipfile=str(zip_path), force=True))
+
+        published = stat.S_IMODE(target.stat().st_mode)
+        assert target.read_text() == "#!/bin/sh\necho attacker\n"
+        assert not published & stat.S_ISUID, (
+            f"archive content kept the target's setuid bit (mode 0o{published:o})"
+        )
+        assert not published & stat.S_ISGID, (
+            f"archive content kept the target's setgid bit (mode 0o{published:o})"
+        )
+        # The ordinary permission bits are still preserved — this drops the
+        # elevated bits, it does not fall back to mkstemp's 0600.
+        assert published == 0o755
+        # And there must be no transient elevation either: the temp file is
+        # chmod'd before the replace, so it must never carry the bits.
+        assert staged_modes == [0o755], (
+            f"the staged temp file was elevated before publish: {staged_modes}"
+        )
 
 
 # ---------------------------------------------------------------------------

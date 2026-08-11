@@ -2178,6 +2178,13 @@ def _update_node_dependencies() -> list[str]:
     install_args = [
         "--no-fund", "--no-audit", "--prefer-offline", "--progress=false",
         "--workspace", "ui-tui", "--workspace", "web",
+        # Root package.json's own devDependencies (the shared ESLint flat
+        # config every workspace's eslint.config.mjs imports) are otherwise
+        # pruned by this scoped install, same as agent-browser/@streamdown
+        # math used to be before they moved out of root entirely (#43564).
+        # Unlike those, root's devDependencies have nowhere else to live —
+        # this flag still excludes apps/desktop, which is never named above.
+        "--include-workspace-root",
     ]
 
     from hermes_constants import with_hermes_node_path

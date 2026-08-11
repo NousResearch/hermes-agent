@@ -881,6 +881,36 @@ class TestUpdateNodeDependencies:
 
     @patch("subprocess.Popen")
     @patch("shutil.which", return_value="/usr/bin/npm")
+    def test_install_includes_workspace_root_to_protect_root_devdependencies(
+        self, _which, mock_popen, tmp_path, monkeypatch
+    ):
+        """Root package.json still owns devDependencies (the shared ESLint
+        flat config every workspace's own eslint.config.mjs imports) even
+        though agent-browser and @streamdown/math were removed from root
+        `dependencies` (#43564). --include-workspace-root keeps them from
+        being pruned by this scoped install, while --workspace ui-tui
+        --workspace web still excludes the unnamed apps/desktop workspace
+        (confirmed empirically against npm 10.9.8 and 11.9.0 in PR #44772
+        review)."""
+        from hermes_cli import main as hm
+
+        (tmp_path / "package.json").write_text("{}")
+        (tmp_path / "package-lock.json").write_text("{}")
+        monkeypatch.setattr(hm, "PROJECT_ROOT", tmp_path)
+        monkeypatch.setattr(hm, "_npm_lockfile_changed", lambda root: True)
+        popen_calls = []
+        mock_popen.side_effect = self._make_popen(popen_calls)
+
+        hm._update_node_dependencies()
+
+        calls = self._popen_npm_calls(popen_calls)
+        assert len(calls) == 1
+        joined = " ".join(str(a) for a in calls[0])
+        assert "--include-workspace-root" in joined
+        assert "desktop" not in joined
+
+    @patch("subprocess.Popen")
+    @patch("shutil.which", return_value="/usr/bin/npm")
     def test_install_preserves_standard_flags(self, _which, mock_popen, tmp_path, monkeypatch):
         """--no-fund, --no-audit, --progress=false must survive."""
         from hermes_cli import main as hm

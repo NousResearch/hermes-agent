@@ -175,6 +175,57 @@ class TestSessionScopedMountResolution:
         cfg = self._config(host_cwd="/Users/prev/dev/oldrepo")
         assert terminal_tool._resolve_task_host_cwd(cfg, "tui:sess-new") == str(ws)
 
+    def test_terminal_maps_attached_host_workspace_to_container_cwd(
+        self, monkeypatch, tmp_path
+    ):
+        """Mount provenance, not path spelling, determines Docker's cwd."""
+        _enable_isolation(monkeypatch)
+        workspace = tmp_path / "project"
+        workspace.mkdir()
+        task_id = "tui:sess-mapped"
+        terminal_tool.register_task_env_overrides(
+            task_id, {"cwd": str(workspace), "cwd_source": "session"}
+        )
+
+        config = {
+            "env_type": "docker",
+            "docker_image": "test:latest",
+            "cwd": "/root",
+            "host_cwd": None,
+            "timeout": 60,
+            "container_persistent": False,
+            "docker_mount_cwd_to_workspace": True,
+            "docker_volumes": [],
+            "docker_forward_env": [],
+            "docker_env": {},
+            "docker_extra_args": [],
+        }
+        captured = {}
+
+        class _FakeEnv:
+            cwd = "/workspace"
+
+            def execute(self, *args, **kwargs):
+                return {"output": "", "exit_code": 0}
+
+        def _capture_environment(**kwargs):
+            captured.update(kwargs)
+            return _FakeEnv()
+
+        monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: config)
+        monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+        monkeypatch.setattr(
+            terminal_tool, "_check_all_guards", lambda *args, **kwargs: {"approved": True}
+        )
+        monkeypatch.setattr(terminal_tool, "_create_environment", _capture_environment)
+        monkeypatch.setattr(terminal_tool, "_active_environments", {})
+        monkeypatch.setattr(terminal_tool, "_last_activity", {})
+
+        terminal_tool.terminal_tool(command="pwd", task_id=task_id)
+
+        assert captured["host_cwd"] == str(workspace)
+        assert captured["cwd"] == "/workspace"
+
     def test_isolation_rejects_nonexistent_session_dir(self, monkeypatch, tmp_path):
         _enable_isolation(monkeypatch)
         terminal_tool.register_task_env_overrides(

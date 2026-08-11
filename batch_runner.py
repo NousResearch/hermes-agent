@@ -309,6 +309,7 @@ def _process_single_prompt(
         }
         if prompt_data.get("cwd"):
             overrides["cwd"] = prompt_data["cwd"]
+            overrides["cwd_source"] = "container"
         register_task_env_overrides(task_id, overrides)
         if config.get("verbose"):
             print(f"   Prompt {prompt_index}: Using container image {container_image}")

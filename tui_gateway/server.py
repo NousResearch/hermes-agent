@@ -2905,7 +2905,12 @@ def _register_session_cwd(session: dict | None) -> None:
 
         cwd, cwd_source = _terminal_task_cwd_with_source(session)
         register_task_env_overrides(
-            session["session_key"], {"cwd": cwd, "cwd_source": cwd_source}
+            session["session_key"],
+            {
+                "cwd": cwd,
+                "cwd_source": cwd_source,
+                "workspace_reset": bool(session.get("_workspace_reset")),
+            },
         )
     except Exception:
         pass
@@ -3236,7 +3241,11 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
     # A user's choice supersedes any earlier settle-adopted cwd: from here on
     # the terminal wandering must not move the workspace again.
     session["cwd_from_settle"] = False
-    _register_session_cwd(session)
+    session["_workspace_reset"] = True
+    try:
+        _register_session_cwd(session)
+    finally:
+        session.pop("_workspace_reset", None)
     # The synchronous DB write claims ordering authority; Git subprocesses stay
     # off the hot path and may publish only for that exact generation.
     _persist_session_cwd_and_schedule_git_meta(session, resolved)

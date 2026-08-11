@@ -791,8 +791,9 @@ def _get_or_create_env(task_id: str):
     from tools.terminal_tool import (
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
-        _creation_locks, _creation_locks_lock, _task_env_overrides,
-        _resolve_container_task_id, _resolve_task_host_cwd,
+        _creation_locks, _creation_locks_lock,
+        _resolve_container_task_id, _resolve_task_workspace,
+        resolve_task_overrides,
     )
 
     effective_task_id = _resolve_container_task_id(task_id)
@@ -817,7 +818,7 @@ def _get_or_create_env(task_id: str):
 
         config = _get_env_config()
         env_type = config["env_type"]
-        overrides = _task_env_overrides.get(effective_task_id, {})
+        overrides = resolve_task_overrides(task_id)
 
         if env_type == "docker":
             image = overrides.get("docker_image") or config["docker_image"]
@@ -830,7 +831,8 @@ def _get_or_create_env(task_id: str):
         else:
             image = ""
 
-        cwd = overrides.get("cwd") or config["cwd"]
+        workspace = _resolve_task_workspace(config, task_id)
+        cwd = workspace.container_cwd
 
         container_config = None
         if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
@@ -841,6 +843,9 @@ def _get_or_create_env(task_id: str):
                 "container_persistent": config.get("container_persistent", True),
                 "vercel_runtime": config.get("vercel_runtime", ""),
                 "docker_volumes": config.get("docker_volumes", []),
+                "docker_mount_cwd_to_workspace": config.get(
+                    "docker_mount_cwd_to_workspace", False
+                ),
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                 "docker_network": config.get("docker_network", True),
             }
@@ -872,7 +877,7 @@ def _get_or_create_env(task_id: str):
             container_config=container_config,
             local_config=local_config,
             task_id=effective_task_id,
-            host_cwd=_resolve_task_host_cwd(config, task_id),
+            host_cwd=workspace.host_cwd,
         )
 
         with _env_lock:

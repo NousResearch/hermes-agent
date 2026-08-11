@@ -1349,7 +1349,9 @@ def _(rid, params: dict) -> dict:
             from tools.terminal_tool import register_task_env_overrides
 
             if preview_cwd:
-                register_task_env_overrides(task_id, {"cwd": preview_cwd})
+                register_task_env_overrides(
+                    task_id, {"cwd": preview_cwd, "cwd_source": "session"}
+                )
 
             history_note = (
                 f" (with {len(parent_history)} parent-session messages of context)"

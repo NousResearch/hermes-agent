@@ -56,7 +56,10 @@ class TestCreateSession:
 
         assert captured == {
             "task_id": "session-1",
-            "overrides": {"cwd": "/mnt/e/Projects/AI/paperclip"},
+            "overrides": {
+                "cwd": "/mnt/e/Projects/AI/paperclip",
+                "cwd_source": "session",
+            },
         }
 
 

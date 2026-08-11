@@ -9426,6 +9426,31 @@ def _collect_kanban_notifications(session: dict) -> list:
     return texts
 
 
+def _run_notification_prompt(
+    rid: str,
+    sid: str,
+    session: dict,
+    event: dict,
+    text: str,
+) -> None:
+    """Submit one notification turn with validated durable projection metadata."""
+    if event.get("type") == "async_delegation":
+        from tools.async_delegation import internal_event_persistence
+
+        display_kind, display_metadata = internal_event_persistence(event)
+        if display_kind is not None and display_metadata is not None:
+            _run_prompt_submit(
+                rid,
+                sid,
+                session,
+                text,
+                display_kind=display_kind,
+                display_metadata=display_metadata,
+            )
+            return
+    _run_prompt_submit(rid, sid, session, text)
+
+
 def _notification_poller_loop(
     stop_event: threading.Event, sid: str, session: dict
 ) -> None:
@@ -9580,17 +9605,7 @@ def _notification_poller_loop(
             continue
         try:
             _emit("message.start", sid)
-            if evt.get("type") == "async_delegation":
-                _run_prompt_submit(
-                    rid,
-                    sid,
-                    session,
-                    text,
-                    display_kind="async_delegation_complete",
-                    display_metadata=_async_delegation_display_metadata(evt),
-                )
-            else:
-                _run_prompt_submit(rid, sid, session, text)
+            _run_notification_prompt(rid, sid, session, evt, text)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
             release_event_delivery(evt, _claim)
@@ -9658,17 +9673,7 @@ def _notification_poller_loop(
             continue
         try:
             _emit("message.start", sid)
-            if evt.get("type") == "async_delegation":
-                _run_prompt_submit(
-                    rid,
-                    sid,
-                    session,
-                    text,
-                    display_kind="async_delegation_complete",
-                    display_metadata=_async_delegation_display_metadata(evt),
-                )
-            else:
-                _run_prompt_submit(rid, sid, session, text)
+            _run_notification_prompt(rid, sid, session, evt, text)
             complete_event_delivery(evt, _claim)
         except Exception as exc:
             release_event_delivery(evt, _claim)
@@ -10801,7 +10806,7 @@ def _run_prompt_submit(
                     continue
                 try:
                     _emit("message.start", sid)
-                    _run_prompt_submit(rid, sid, session, synth)
+                    _run_notification_prompt(rid, sid, session, _evt, synth)
                     complete_event_delivery(_evt, _claim)
                 except Exception as _n_exc:
                     release_event_delivery(_evt, _claim)

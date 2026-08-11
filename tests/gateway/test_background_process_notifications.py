@@ -204,7 +204,7 @@ async def test_inject_watch_notification_routes_from_session_store_origin(monkey
         "event_id": "async_delegation:deleg_full:terminal",
         "event_kind": "workflow.async_delegation.terminal",
         "workflow_id": "delegation:deleg_full",
-        "display_kind": "internal_event",
+        "display_kind": "async_delegation_complete",
         "user_originated": False,
         "terminal": True,
     }

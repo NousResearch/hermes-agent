@@ -722,7 +722,7 @@ def _internal_event_envelope(delegation_id: Any) -> Dict[str, Any]:
         "event_id": f"async_delegation:{delegation_key}:terminal",
         "event_kind": "workflow.async_delegation.terminal",
         "workflow_id": f"delegation:{delegation_key}",
-        "display_kind": "internal_event",
+        "display_kind": "async_delegation_complete",
         "user_originated": False,
         "terminal": True,
     }

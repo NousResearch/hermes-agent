@@ -24,7 +24,7 @@ def test_internal_event_persistence_requires_canonical_envelope():
     event = _event()
     display_kind, metadata = internal_event_persistence(event)
 
-    assert display_kind == "internal_event"
+    assert display_kind == "async_delegation_complete"
     assert metadata == {
         "event_schema": "hermes.internal_event.v1",
         "event_id": f"async_delegation:{event['delegation_id']}:terminal",
@@ -61,11 +61,11 @@ async def test_gateway_run_wrapper_forwards_internal_projection_fields():
         history=[],
         source=SessionSource(platform=Platform.TELEGRAM, chat_id="1", chat_type="dm"),
         session_id="sid",
-        persist_user_display_kind="internal_event",
+        persist_user_display_kind="async_delegation_complete",
         persist_user_display_metadata=metadata,
     )
 
-    assert captured["persist_user_display_kind"] == "internal_event"
+    assert captured["persist_user_display_kind"] == "async_delegation_complete"
     assert captured["persist_user_display_metadata"] is metadata
 
 
@@ -98,7 +98,39 @@ def test_cli_drain_queues_internal_event_with_projection(monkeypatch):
     queued = cli._pending_input.get_nowait()
     assert isinstance(queued, _InternalEventInput)
     assert queued.text == "[ASYNC DELEGATION COMPLETE]"
-    assert queued.display_kind == "internal_event"
+    assert queued.display_kind == "async_delegation_complete"
     assert queued.display_metadata["event_id"] == event["event_id"]
     assert queued.display_metadata["user_originated"] is False
     assert completed == [(event, "claim")]
+
+
+def test_tui_notification_prompt_preserves_internal_projection(monkeypatch):
+    from tui_gateway import server
+
+    event = _event()
+    captured = {}
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda rid, sid, session, text, **kwargs: captured.update(
+            rid=rid,
+            sid=sid,
+            session=session,
+            text=text,
+            kwargs=kwargs,
+        ),
+    )
+    session = {"session_key": "sid"}
+
+    server._run_notification_prompt(
+        "rid",
+        "sid",
+        session,
+        event,
+        "[ASYNC DELEGATION COMPLETE]",
+    )
+
+    assert captured["text"] == "[ASYNC DELEGATION COMPLETE]"
+    assert captured["kwargs"]["display_kind"] == "async_delegation_complete"
+    assert captured["kwargs"]["display_metadata"]["event_id"] == event["event_id"]
+    assert captured["kwargs"]["display_metadata"]["user_originated"] is False

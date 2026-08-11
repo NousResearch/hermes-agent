@@ -71,7 +71,7 @@ def _assert_internal_event_envelope(evt):
     assert evt["event_id"] == f"async_delegation:{delegation_id}:terminal"
     assert evt["event_kind"] == "workflow.async_delegation.terminal"
     assert evt["workflow_id"] == f"delegation:{delegation_id}"
-    assert evt["display_kind"] == "internal_event"
+    assert evt["display_kind"] == "async_delegation_complete"
     assert evt["user_originated"] is False
     assert evt["terminal"] is True
 
@@ -196,7 +196,7 @@ def test_completion_event_lands_on_shared_queue_with_session_key():
     assert evt["event_id"] == f"async_delegation:{res['delegation_id']}:terminal"
     assert evt["event_kind"] == "workflow.async_delegation.terminal"
     assert evt["workflow_id"] == f"delegation:{res['delegation_id']}"
-    assert evt["display_kind"] == "internal_event"
+    assert evt["display_kind"] == "async_delegation_complete"
     assert evt["user_originated"] is False
     assert evt["terminal"] is True
 

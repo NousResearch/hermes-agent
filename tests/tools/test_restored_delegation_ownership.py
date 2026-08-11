@@ -89,7 +89,7 @@ def test_restore_stamps_restored_flag(tmp_path, monkeypatch):
     assert got["event_id"] == "async_delegation:d-old:terminal"
     assert got["event_kind"] == "workflow.async_delegation.terminal"
     assert got["workflow_id"] == "delegation:d-old"
-    assert got["display_kind"] == "internal_event"
+    assert got["display_kind"] == "async_delegation_complete"
     assert got["user_originated"] is False
     assert got["terminal"] is True
 

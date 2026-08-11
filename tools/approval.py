@@ -3574,8 +3574,22 @@ def _smart_approve(command: str, description: str) -> str:
     Inspired by OpenAI Codex's Smart Approvals guardian subagent
     (openai/codex#13860).
     """
+    _smart_t0 = time.monotonic()
     try:
-        from agent.auxiliary_client import call_llm
+        from agent.auxiliary_client import _get_task_timeout, call_llm
+
+        # Explicit timeout for the guardian call. This synchronous call gates
+        # EVERY flagged terminal command — relying on the timeout being
+        # resolved correctly inside call_llm has burned users in production:
+        # a stalled provider response silently froze the agent turn for tens
+        # of minutes with zero log output (#82846, #72500). Pass the same
+        # configured value explicitly (belt) and log the call + duration
+        # (suspenders) so a hang is visible in the logs instead of silent.
+        smart_timeout = _get_task_timeout("approval")
+        logger.debug(
+            "Smart approvals: assessing risk for command (timeout=%ss)",
+            smart_timeout,
+        )
 
         # Strip shell comments to remove the easiest injection vector.
         sanitized_command = _strip_shell_comments(command)
@@ -3632,6 +3646,11 @@ def _smart_approve(command: str, description: str) -> str:
             ],
             temperature=0,
             max_tokens=16,
+            timeout=smart_timeout,
+        )
+        logger.debug(
+            "Smart approvals: LLM call completed in %.1fs",
+            time.monotonic() - _smart_t0,
         )
 
         answer = (response.choices[0].message.content or "").strip().upper()
@@ -3644,7 +3663,15 @@ def _smart_approve(command: str, description: str) -> str:
             return "escalate"
 
     except Exception as e:
-        logger.debug("Smart approvals: LLM call failed (%s), escalating", e)
+        # WARNING (was DEBUG): a failed/blocked guardian call is a real event
+        # the operator needs to see — the whole point of #82846 is that the
+        # hang was invisible. Log the elapsed time and error class too.
+        logger.warning(
+            "Smart approvals: LLM call failed after %.1fs (%s: %s), escalating",
+            time.monotonic() - _smart_t0,
+            type(e).__name__,
+            e,
+        )
         return "escalate"
 
 

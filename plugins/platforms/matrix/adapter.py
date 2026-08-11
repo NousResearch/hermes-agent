@@ -896,6 +896,25 @@ class MatrixAdapter(BasePlatformAdapter):
         # which must not decide who approves tool calls on a secondary bot.
         self._allowed_user_ids: set[str] = _extra_csv_set(config, "allowed_users", "MATRIX_ALLOWED_USERS")
         self._allowed_room_ids: set[str] = set(self._allowed_rooms)
+        peer_agents_raw = config.extra.get("peer_agent_ids", [])
+        if isinstance(peer_agents_raw, list):
+            self._peer_agent_ids: set[str] = {
+                str(user_id).strip()
+                for user_id in peer_agents_raw
+                if str(user_id).strip()
+            }
+        else:
+            self._peer_agent_ids = {
+                user_id.strip()
+                for user_id in str(peer_agents_raw or "").split(",")
+                if user_id.strip()
+            }
+        try:
+            peer_budget = int(config.extra.get("peer_reply_budget_per_human_message", 0))
+        except (TypeError, ValueError):
+            peer_budget = 0
+        self._peer_reply_budget_per_human_message = max(0, peer_budget)
+        self._peer_reply_budget_remaining: dict[str, int] = {}
         self._ignored_user_patterns: list[re.Pattern[str]] = []
         for pattern in _csv_set(_extra_or_secret(config.extra, "ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "")):
             try:
@@ -2073,12 +2092,26 @@ class MatrixAdapter(BasePlatformAdapter):
         chat_type = "dm" if is_dm else "group"
         thread_id = _thread_root(relates_to)
         is_mentioned = mention_claimed or self._content_mentions_bot(body, source_content)
+        is_peer_agent_message = sender in self._peer_agent_ids
         if not is_dm:
             # Whitelist first: non-listed rooms are dropped even when @mentioned (DMs exempt).
             if self._allowed_rooms and room_id not in self._allowed_rooms:
                 logger.debug(
                     "Matrix: ignoring message %s in %s — room not in MATRIX_ALLOWED_ROOMS whitelist", event_id, room_id)
                 return None
+            if self._peer_agent_ids:
+                if is_peer_agent_message:
+                    if not is_mentioned:
+                        logger.debug(
+                            "Matrix: ignoring peer-agent message %s from %s — no direct @mention",
+                            event_id, sender)
+                        return None
+                    remaining = self._peer_reply_budget_remaining.get(room_id, 0)
+                    if remaining <= 0:
+                        logger.info(
+                            "Matrix: ignoring peer-agent message %s from %s — reply budget exhausted",
+                            event_id, sender)
+                        return None
             is_free_room = room_id in self._free_rooms
             in_bot_thread = bool(thread_id and thread_id in self._threads)
             if self._require_mention and not is_free_room and not in_bot_thread:
@@ -2089,14 +2122,19 @@ class MatrixAdapter(BasePlatformAdapter):
                         "Matrix: ignoring message %s in %s — no @mention "
                         "(set MATRIX_REQUIRE_MENTION=false to disable)", event_id, room_id)
                     return None
-            # thread_require_mention: even inside a bot thread require @mention — prevents
-            # infinite reply loops when several bots share one thread.
+            # Thread-level @mention gating: even in a bot-participated thread.
             elif self._thread_require_mention and in_bot_thread and not is_free_room and not is_mentioned:
                 logger.debug(
                     "Matrix: ignoring message %s in thread %s — no @mention (thread_require_mention=true)",
                     event_id, thread_id)
                 return None
-        if is_mentioned and self._require_mention:
+            # Open or consume a peer round only after all ordinary room, mention, and thread gates.
+            if self._peer_agent_ids:
+                if is_peer_agent_message:
+                    self._peer_reply_budget_remaining[room_id] -= 1
+                elif self._is_authorized_user(sender):
+                    self._peer_reply_budget_remaining[room_id] = self._peer_reply_budget_per_human_message
+        if is_mentioned and (self._require_mention or is_peer_agent_message):
             # Strip the mention from the reply text only: the quote block carries the
             # ``> <@bot:srv> ...`` reply pill, which _extract_reply_context parses later
             # for reply_to_author_id. A whole-body replace rewrote the pill to ``> <>``
@@ -3240,7 +3278,11 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
 def _apply_yaml_config(yaml_cfg: dict, matrix_cfg: dict) -> dict | None:
     """``apply_yaml_config_fn`` (#24849): config.yaml matrix: keys → MATRIX_* env (env wins; skipped under a
     multiplexed secondary profile's scope) + ``PlatformConfig.extra`` (extra-first readers)."""
-    return _apply_yaml_bridge(matrix_cfg, _YAML_BRIDGE)
+    seeded = _apply_yaml_bridge(matrix_cfg, _YAML_BRIDGE) or {}
+    for key in ("peer_agent_ids", "peer_reply_budget_per_human_message"):
+        if key in matrix_cfg:
+            seeded[key] = matrix_cfg[key]
+    return seeded or None
 
 
 

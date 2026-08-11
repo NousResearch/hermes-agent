@@ -68,11 +68,11 @@ class TestQuietModeCacheIsolation:
         try:
             monkeypatch.setenv("TERMINAL_ENV", "local")
             local_description = execute_code_description()
-            assert "tool_search(query:" in local_description
+            assert "tool_search(queries:" in local_description
 
             monkeypatch.setenv("TERMINAL_ENV", "ssh")
             remote_description = execute_code_description()
-            assert "tool_search(query:" not in remote_description
+            assert "tool_search(queries:" not in remote_description
         finally:
             registry.deregister("cache_backend_probe_deferred")
 

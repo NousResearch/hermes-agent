@@ -207,6 +207,170 @@ class TestHermesToolsGeneration(unittest.TestCase):
 
 
 class TestExecuteCodeRemoteTempDir(unittest.TestCase):
+    def test_remote_rpc_connection_failure_is_reported_to_parent(self):
+        from tools.environments.base import EnvironmentConnectionError
+
+        stop_event = threading.Event()
+        errors = []
+
+        class DeadEnvironment:
+            def execute(self, *args, **kwargs):
+                raise EnvironmentConnectionError("poll connection lost")
+
+        _rpc_poll_loop(
+            DeadEnvironment(),
+            "/tmp/rpc",
+            "rpc-dead-task",
+            [],
+            [0],
+            5,
+            frozenset({"read_file"}),
+            stop_event,
+            "rpc-token",
+            connection_errors=errors,
+        )
+
+        self.assertTrue(stop_event.is_set())
+        self.assertEqual(len(errors), 1)
+        self.assertIsInstance(errors[0], EnvironmentConnectionError)
+
+    def test_remote_execution_connection_failure_evicts_all_cached_state(self):
+        from tools import file_tools, terminal_tool
+        from tools.environments.base import EnvironmentConnectionError
+
+        cleaned = []
+
+        class DeadEnvironment:
+            def execute(self, *args, **kwargs):
+                raise EnvironmentConnectionError(
+                    "connection lost", retry_hint="retry later"
+                )
+
+            def cleanup(self):
+                cleaned.append(True)
+
+        task_id = "remote-dead-task"
+        dead_env = DeadEnvironment()
+        with terminal_tool._env_lock:
+            terminal_tool._active_environments[task_id] = dead_env
+            terminal_tool._last_activity[task_id] = time.time()
+        with terminal_tool._creation_locks_lock:
+            terminal_tool._creation_locks[task_id] = threading.Lock()
+        with file_tools._file_ops_lock:
+            file_tools._file_ops_cache[task_id] = object()
+
+        config = {
+            "env_type": "ssh",
+            "cwd": "/home/user",
+            "timeout": 60,
+            "degraded_mode": "warn",
+        }
+        with patch.object(terminal_tool, "_get_env_config", return_value=config), \
+             patch.object(
+                 terminal_tool,
+                 "_resolve_container_task_id",
+                 return_value=task_id,
+             ):
+            result = json.loads(_execute_remote("print('hi')", task_id, ["terminal"]))
+
+        self.assertEqual(result["status"], "degraded")
+        with terminal_tool._env_lock:
+            self.assertNotIn(task_id, terminal_tool._active_environments)
+        with terminal_tool._creation_locks_lock:
+            self.assertNotIn(task_id, terminal_tool._creation_locks)
+        with file_tools._file_ops_lock:
+            self.assertNotIn(task_id, file_tools._file_ops_cache)
+        self.assertEqual(cleaned, [True])
+
+    def test_remote_creation_connection_failure_is_degraded_and_retryable(self):
+        from tools import terminal_tool
+        from tools.environments.base import EnvironmentConnectionError
+
+        config = {
+            "env_type": "ssh",
+            "cwd": "/home/user",
+            "timeout": 60,
+            "ssh_host": "example.test",
+            "ssh_user": "user",
+            "degraded_mode": "warn",
+        }
+
+        with patch.object(terminal_tool, "_get_env_config", return_value=config), \
+             patch.object(
+                 terminal_tool,
+                 "_resolve_container_task_id",
+                 return_value="remote-connect-task",
+             ), \
+             patch.object(
+                 terminal_tool,
+                 "_create_environment",
+                 side_effect=EnvironmentConnectionError(
+                     "ssh unavailable", retry_hint="retry later"
+                 ),
+             ):
+            result = json.loads(
+                _execute_remote("print('hi')", "remote-connect-task", ["terminal"])
+            )
+
+        self.assertEqual(result["status"], "degraded")
+        self.assertEqual(result["reason"], "ssh unavailable")
+        self.assertEqual(result["retry_hint"], "retry later")
+        with terminal_tool._creation_locks_lock:
+            self.assertNotIn("remote-connect-task", terminal_tool._creation_locks)
+
+    def test_remote_creation_sanitizes_host_cwd_override_for_container(self):
+        from tools.code_execution_tool import _get_or_create_env
+        from tools import terminal_tool
+
+        captured = {}
+        fake_env = object()
+        config = {
+            "env_type": "docker",
+            "docker_image": "python:3.11",
+            "cwd": "/root",
+            "timeout": 60,
+            "host_cwd": None,
+        }
+
+        def fake_create_environment(**kwargs):
+            captured.update(kwargs)
+            return fake_env
+
+        with patch.object(terminal_tool, "_get_env_config", return_value=config), \
+             patch.object(
+                 terminal_tool,
+                 "resolve_task_overrides",
+                 return_value={"cwd": "/Users/me/project"},
+             ), \
+             patch.object(
+                 terminal_tool,
+                 "_resolve_container_task_id",
+                 return_value="cwd-guard-task",
+             ), \
+             patch.object(
+                 terminal_tool,
+                 "_resolve_task_host_cwd",
+                 return_value=None,
+             ), \
+             patch.object(
+                 terminal_tool,
+                 "_create_environment",
+                 side_effect=fake_create_environment,
+             ), \
+             patch.object(terminal_tool, "_start_cleanup_thread"):
+            try:
+                env, backend = _get_or_create_env("cwd-guard-task")
+            finally:
+                with terminal_tool._env_lock:
+                    terminal_tool._active_environments.pop("cwd-guard-task", None)
+                    terminal_tool._last_activity.pop("cwd-guard-task", None)
+                with terminal_tool._creation_locks_lock:
+                    terminal_tool._creation_locks.pop("cwd-guard-task", None)
+
+        self.assertIs(env, fake_env)
+        self.assertEqual(backend, "docker")
+        self.assertEqual(captured["cwd"], "/root")
+
     def test_remote_bridge_dispatch_preserves_session_toolset_scope(self):
         stop_event = threading.Event()
         request_path = "/tmp/rpc/req_000001"
@@ -491,8 +655,8 @@ print(json.dumps({"value": terminal("printf test")}))
 import json
 from hermes_tools import tool_search, tool_describe, tool_call
 
-found = tool_search("scope probe", limit=10)
-described = tool_describe("scope_probe_alpha")
+found = tool_search(["scope probe"], limit=10)
+described = tool_describe(["scope_probe_alpha"])
 alpha = tool_call("scope_probe_alpha", {})
 beta = tool_call("scope_probe_beta", {})
 print(json.dumps({
@@ -525,8 +689,11 @@ print(json.dumps({
 
         self.assertEqual(result["status"], "success")
         payload = json.loads(result["output"])
-        self.assertEqual([item["name"] for item in payload["found"]["matches"]], ["scope_probe_alpha"])
-        self.assertEqual(payload["described"]["name"], "scope_probe_alpha")
+        self.assertEqual(
+            payload["found"]["results"][0]["matches"],
+            ["scope_probe_alpha"],
+        )
+        self.assertIn("scope_probe_alpha", payload["described"]["tools"])
         self.assertEqual(
             payload["alpha"],
             {
@@ -566,8 +733,8 @@ print(json.dumps({
             item["function"] for item in definitions
             if item["function"]["name"] == "execute_code"
         )
-        self.assertIn("tool_search(query:", execute_schema["description"])
-        self.assertIn("tool_describe(name:", execute_schema["description"])
+        self.assertIn("tool_search(queries:", execute_schema["description"])
+        self.assertIn("tool_describe(names:", execute_schema["description"])
         self.assertIn("tool_call(name:", execute_schema["description"])
 
     def test_code_execution_only_schema_discloses_umbrella_direct_helpers(self):
@@ -665,8 +832,8 @@ print(json.dumps({
                 if tool["function"]["name"] == "execute_code"
             )
             description = execute_schema["description"]
-            self.assertNotIn("tool_search(query", description)
-            self.assertNotIn("tool_describe(name", description)
+            self.assertNotIn("tool_search(queries", description)
+            self.assertNotIn("tool_describe(names", description)
             self.assertNotIn("tool_call(name", description)
         finally:
             registry.deregister("schema_probe_deferred_off")
@@ -674,7 +841,7 @@ print(json.dumps({
 
     def test_local_fallback_does_not_expose_hidden_bridge_stubs(self):
         result = self._run(
-            "from hermes_tools import tool_search\nprint(tool_search('calendar'))",
+            "from hermes_tools import tool_search\nprint(tool_search(['calendar']))",
             enabled_tools=["execute_code"],
         )
 
@@ -752,6 +919,7 @@ print(terminal("echo umbrella")["output"])
             code="print('safe')",
             task_id="task-1",
             enabled_tools=["tool_search"],
+            reset=False,
             session_id="session-1",
             enabled_toolsets=["calendar"],
             disabled_toolsets=["private"],

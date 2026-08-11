@@ -110,6 +110,39 @@ def test_ssh_config_preserves_remote_tilde_cwd(monkeypatch):
     assert config["cwd"] == "~"
 
 
+def test_lazy_environment_creation_uses_task_cwd_override(monkeypatch):
+    """Lazy image bring-up must use the same per-task CWD as terminal calls."""
+    _write_config(
+        "terminal:\n"
+        "  backend: ssh\n"
+        "  cwd: '~'\n"
+        "  ssh_host: example.test\n"
+    )
+    task_id = "lazy-cwd-task"
+    terminal_tool.register_task_env_overrides(task_id, {"cwd": "/srv/repo"})
+    captured = {}
+
+    class FakeEnvironment:
+        def cleanup(self):
+            return None
+
+    def fake_create_environment(**kwargs):
+        captured.update(kwargs)
+        return FakeEnvironment()
+
+    monkeypatch.setattr(
+        terminal_tool, "_create_environment", fake_create_environment,
+    )
+
+    try:
+        assert terminal_tool.ensure_task_env(task_id) is not None
+    finally:
+        terminal_tool.clear_task_env_overrides(task_id)
+
+    assert captured["cwd"] == "/srv/repo"
+    assert captured["host_cwd"] is None
+
+
 def test_env_is_preserved_when_config_has_no_terminal_section(monkeypatch):
     _write_config("agent:\n  max_turns: 100\n")
     monkeypatch.setenv("TERMINAL_ENV", "ssh")

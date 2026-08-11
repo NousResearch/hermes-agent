@@ -5,9 +5,12 @@ import path from 'node:path'
 import { test } from 'vitest'
 
 import {
+  collectRelaunchArgs,
   MARKER_SELF_ADOPT_EPOCH_MS,
+  resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
   resolveUpdateScriptHandoff,
+  sandboxFallbackFromEnv,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker,
   wrapHandoffForDetachedConsole
@@ -245,4 +248,64 @@ test('wrapHandoffForDetachedConsole routes through cmd start with own console', 
     '-Branch',
     'main'
   ])
+})
+
+test('resolvePosixScriptHandoff returns the bash recipe when the script exists', () => {
+  const root = '/home/hermes/.hermes/hermes-agent'
+  const expected = path.join(root, 'scripts', 'desktop-update', 'posix.sh')
+
+  const handoff = resolvePosixScriptHandoff(root, {
+    isWindows: false,
+    fileExists: candidate => candidate === expected
+  })
+
+  assert.ok(handoff)
+  assert.equal(handoff.command, '/bin/bash')
+  assert.deepEqual(handoff.args, [expected])
+})
+
+test('resolvePosixScriptHandoff is null when the checkout predates the script', () => {
+  const handoff = resolvePosixScriptHandoff('/home/hermes/.hermes/hermes-agent', {
+    isWindows: false,
+    fileExists: () => false
+  })
+
+  assert.equal(handoff, null)
+})
+
+test('resolvePosixScriptHandoff is null on Windows', () => {
+  const handoff = resolvePosixScriptHandoff(String.raw`C:\Users\hermes\AppData\Local\hermes\hermes-agent`, {
+    isWindows: true,
+    fileExists: () => true
+  })
+
+  assert.equal(handoff, null)
+})
+
+test('collectRelaunchArgs drops Electron internals, keeps user/launcher args', () => {
+  const argv = [
+    '--type=renderer',
+    '--user-data-dir=/tmp/x',
+    '--enable-features=A,B',
+    '--field-trial-handle=123',
+    '--enable-logging',
+    '--log-file=/tmp/log',
+    '--lang=en-US',
+    '--inspect=9229',
+    '--remote-debugging-port=9222',
+    '--no-sandbox',
+    'hermes://open/session/abc',
+    '--profile=work'
+  ]
+
+  assert.deepEqual(collectRelaunchArgs(argv), ['--no-sandbox', 'hermes://open/session/abc', '--profile=work'])
+  assert.deepEqual(collectRelaunchArgs(undefined), [])
+})
+
+test('sandboxFallbackFromEnv: ELECTRON_DISABLE_SANDBOX / --no-sandbox opt out', () => {
+  assert.equal(sandboxFallbackFromEnv({ ELECTRON_DISABLE_SANDBOX: '1' }, []), true)
+  assert.equal(sandboxFallbackFromEnv({ ELECTRON_DISABLE_SANDBOX: 'true' }, []), true)
+  assert.equal(sandboxFallbackFromEnv({}, ['--no-sandbox']), true)
+  assert.equal(sandboxFallbackFromEnv({ ELECTRON_DISABLE_SANDBOX: '0' }, []), false)
+  assert.equal(sandboxFallbackFromEnv({}, []), false)
 })

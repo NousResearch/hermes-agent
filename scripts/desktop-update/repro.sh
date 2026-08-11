@@ -14,6 +14,9 @@
 #                          the "user who hasn't updated in a while" path
 #   repro.sh error         orchestrator against a broken install (missing
 #                          venv) -- exercises abort + result-file + shim error
+#   repro.sh gate          linux relaunch-gate decision matrix (anchoring,
+#                          sandbox preflight, opt-out fallbacks) -- asserts
+#                          every outcome without touching a real install
 #
 # The sandbox persists between runs (~/tmp is fine to nuke): fresh reuses
 # nothing, behind/error reuse the last sandbox install when present because
@@ -87,6 +90,46 @@ case "$MODE" in
     say "result file (expect ok:false, exit 3):"
     cat "$SANDBOX/.hermes-update-result.json" 2>/dev/null || echo "(none written)"
     echo
+    ;;
+  gate)
+    # Pure-decision matrix for the linux relaunch gate. Builds a fake
+    # checkout layout under /tmp; --self-test-gate prints the decision and
+    # exits without running an update.
+    G="/tmp/hermes-gate-test.$$"
+    UNPACKED="$G/hermes-agent/apps/desktop/release/linux-unpacked"
+    mkdir -p "$UNPACKED"
+    touch "$UNPACKED/hermes" && chmod +x "$UNPACKED/hermes"
+
+    fails=0
+    expect() { # name expected actual
+      if [ "$2" = "$3" ]; then printf 'ok   %s -> %s\n' "$1" "$3"
+      else printf 'FAIL %s -> %s (want %s)\n' "$1" "$3" "$2"; fails=$((fails+1)); fi
+    }
+    decide() { bash "$SCRIPT_DIR/posix.sh" --self-test-gate --install-root "$G/hermes-agent" "$@" | cut -d: -f1; }
+
+    expect "appimage (not under unpacked)"      skew     "$(decide --relaunch-target /opt/Hermes/hermes)"
+    expect "sibling-prefix dir not fooled"      skew     "$(decide --relaunch-target "$UNPACKED-evil/hermes")"
+    expect "no chrome-sandbox (namespace)"      relaunch "$(decide --relaunch-target "$UNPACKED/hermes")"
+
+    touch "$UNPACKED/chrome-sandbox"
+    expect "sandbox not root/setuid"            manual   "$(decide --relaunch-target "$UNPACKED/hermes")"
+    expect "opt-out: --sandbox-fallback"        relaunch "$(decide --relaunch-target "$UNPACKED/hermes" --sandbox-fallback)"
+    expect "opt-out: --no-sandbox launch arg"   relaunch "$(decide --relaunch-target "$UNPACKED/hermes" -- --no-sandbox)"
+    expect "opt-out: ELECTRON_DISABLE_SANDBOX"  relaunch "$(ELECTRON_DISABLE_SANDBOX=1 decide --relaunch-target "$UNPACKED/hermes")"
+
+    # Result JSON must survive hostile strings (git allows `"` in branch
+    # names; messages carry arbitrary text) -- parse it back with python.
+    QHOME="$G/qhome"; mkdir -p "$QHOME/hermes-agent"
+    bash "$SCRIPT_DIR/posix.sh" --no-ui --no-marker-cleanup --desktop-pid 0 \
+      --install-root "$QHOME/hermes-agent" --branch 'evil"branch\n$(x)' >/dev/null 2>&1 || true
+    if python3 -c "import json,sys; d=json.load(open('$QHOME/.hermes-update-result.json')); sys.exit(0 if d['branch']=='evil\"branch\\\\n\$(x)' and d['ok']==False else 1)"; then
+      printf 'ok   result JSON escapes hostile branch/message\n'
+    else
+      printf 'FAIL result JSON escaping\n'; fails=$((fails+1))
+    fi
+
+    rm -rf "$G"
+    [ "$fails" -eq 0 ] && say "gate matrix: all pass" || { say "gate matrix: $fails FAILED"; exit 1; }
     ;;
   *)
     sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'

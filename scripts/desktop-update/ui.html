@@ -212,7 +212,10 @@
     if (state.status === 'done') {
       settle('done')
       glyphEl.textContent = '\u2713'
-      lineEl.textContent = 'Opening Hermes\u2026'
+      // A done message means the update landed but Hermes will NOT reopen
+      // itself (package skew, sandbox helper) — say that, not a false
+      // "Opening Hermes…". The orchestrator leaves the window up for it.
+      lineEl.textContent = state.message || 'Opening Hermes\u2026'
     } else if (state.status === 'error') {
       settle('error')
       glyphEl.textContent = '\u2715'

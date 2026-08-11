@@ -43,6 +43,7 @@
     "update:repro:fresh": "bash ../../scripts/desktop-update/repro.sh fresh",
     "update:repro:behind": "bash ../../scripts/desktop-update/repro.sh behind",
     "update:repro:error": "bash ../../scripts/desktop-update/repro.sh error",
+    "update:repro:gate": "bash ../../scripts/desktop-update/repro.sh gate",
     "perf:serve": "node scripts/perf/serve.mjs",
     "test:desktop": "node scripts/test-desktop.mjs",
     "test:desktop:all": "node scripts/test-desktop.mjs all",

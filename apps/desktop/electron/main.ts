@@ -199,9 +199,11 @@ import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
+  collectRelaunchArgs,
   resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
   resolveUpdateScriptHandoff,
+  sandboxFallbackFromEnv,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker,
   wrapHandoffForDetachedConsole
@@ -3371,13 +3373,29 @@ async function applyUpdatesPosixHandoff(opts: any) {
   ]
 
   // Relaunch target: the running .app bundle on mac (script swaps the
-  // rebuilt bundle over it), the running binary elsewhere (script relaunches
-  // only when it actually replaced it — release/*-unpacked — and the
-  // sandbox helper is launchable; otherwise the result message says so).
+  // rebuilt bundle over it), the running binary elsewhere. The script's gate
+  // (an exact port of update-relaunch.ts's decideRelaunchOutcome) relaunches
+  // only a binary the rebuild replaced with a launchable sandbox helper —
+  // replaying the original launch context (filtered args, cwd, sandbox
+  // opt-out) so a deep-link or --no-sandbox launch survives the update.
   const targetApp = IS_MAC ? runningAppBundle() : process.execPath
 
   if (targetApp) {
     args.push('--relaunch-target', targetApp)
+  }
+
+  const relaunchArgs = collectRelaunchArgs(process.argv.slice(1))
+
+  if (!IS_MAC) {
+    args.push('--relaunch-cwd', process.cwd())
+
+    if (sandboxFallbackFromEnv(process.env, relaunchArgs)) {
+      args.push('--sandbox-fallback')
+    }
+
+    if (relaunchArgs.length) {
+      args.push('--', ...relaunchArgs)
+    }
   }
 
   const child = spawnUpdaterProcess(handoff.command, args, {

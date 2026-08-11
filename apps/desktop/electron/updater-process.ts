@@ -137,6 +137,57 @@ export function wrapHandoffForDetachedConsole(
   }
 }
 
+/**
+ * Electron/Chromium internal switches that must NOT be replayed on re-exec:
+ * runtime artifacts of THIS launch, not user intent (ported from the deleted
+ * update-relaunch.ts; #45205). `--no-sandbox` is deliberately kept — it is
+ * the user's sandbox opt-out and the signal that makes a relaunch safe when
+ * chrome-sandbox isn't setuid.
+ */
+export const INTERNAL_ARG_PREFIXES = [
+  '--type=',
+  '--user-data-dir=',
+  '--enable-features=',
+  '--disable-features=',
+  '--field-trial-handle=',
+  '--enable-logging',
+  '--log-file=',
+  '--disable-gpu-sandbox',
+  '--lang=',
+  '--inspect',
+  '--remote-debugging-port='
+]
+
+/** Filter Electron internals from process.argv.slice(1) so the relaunched
+ * app replays only user/launcher intent (deep links, app flags). */
+export function collectRelaunchArgs(argv: unknown): string[] {
+  if (!Array.isArray(argv)) {
+    return []
+  }
+
+  return argv.filter((arg): arg is string => {
+    if (typeof arg !== 'string' || arg.length === 0) {
+      return false
+    }
+
+    return !INTERNAL_ARG_PREFIXES.some(prefix =>
+      prefix.endsWith('=') ? arg.startsWith(prefix) : arg === prefix || arg.startsWith(prefix + '=')
+    )
+  })
+}
+
+/** True when the user has opted out of the SUID sandbox — the relaunch is
+ * safe even if chrome-sandbox fails preflight (ported from update-relaunch.ts). */
+export function sandboxFallbackFromEnv(env: Record<string, string | undefined>, launchArgs: string[]): boolean {
+  const disable = String(env?.ELECTRON_DISABLE_SANDBOX || '').trim()
+
+  if (disable === '1' || disable.toLowerCase() === 'true') {
+    return true
+  }
+
+  return Array.isArray(launchArgs) && launchArgs.includes('--no-sandbox')
+}
+
 export interface ResolveStagedUpdaterBinaryDeps {
   isWindows?: boolean
   fileExists?: (candidate: string) => boolean

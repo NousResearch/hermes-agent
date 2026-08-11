@@ -15,26 +15,40 @@
 #     --desktop-pid <pid>      the Electron main process to wait out
 #     [--relaunch-target <p>]  mac: running .app to swap+reopen;
 #                              linux: running binary (omit = no relaunch)
-#     [--no-ui] [--no-marker-cleanup] [--self-test-ui]
+#     [--relaunch-cwd <p>]     linux: working directory to restore on relaunch
+#     [--sandbox-fallback]     linux: the caller vouches for a sandbox opt-out
+#                              (ELECTRON_DISABLE_SANDBOX / --no-sandbox launch)
+#     [--no-ui] [--no-marker-cleanup] [--self-test-ui] [--self-test-gate]
+#     [-- <args...>]           linux: filtered launch args to replay
 #
 # The shim (ui.html in a chromeless browser app window) is decoration: it
 # polls /progress for `done` or `error` and reacts. It owns nothing --
 # relaunch, result file, marker hygiene all happen here, identically, when
 # no renderer exists. No chromium-family browser found = no UI, fine.
+#
+# ORDERING (the durable-truth rule): swap and relaunch are DECIDED AND
+# EXECUTED before the result file is written, the marker is removed, or a
+# terminal event reaches the shim. Nothing user-visible may claim an outcome
+# the filesystem hasn't already delivered.
 
 set -u
 
 INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
-NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0
+RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
+NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --install-root) INSTALL_ROOT="$2"; shift 2 ;;
     --branch) BRANCH="$2"; shift 2 ;;
     --desktop-pid) DESKTOP_PID="$2"; shift 2 ;;
     --relaunch-target) RELAUNCH_TARGET="$2"; shift 2 ;;
+    --relaunch-cwd) RELAUNCH_CWD="$2"; shift 2 ;;
+    --sandbox-fallback) SANDBOX_FALLBACK=1; shift ;;
     --no-ui) NO_UI=1; shift ;;
     --no-marker-cleanup) NO_MARKER_CLEANUP=1; shift ;;
     --self-test-ui) SELF_TEST_UI=1; shift ;;
+    --self-test-gate) SELF_TEST_GATE=1; shift ;;
+    --) shift; RELAUNCH_ARGS=("$@"); shift $# ;;
     *) echo "unknown arg: $1" >&2; exit 64 ;;
   esac
 done
@@ -51,12 +65,23 @@ STATUS="${TMPDIR:-/tmp}/hermes-update-status.$$"
 
 UI_SERVER_PID="" UI_BROWSER_PID="" FINAL_CODE=1
 FINAL_MSG="update did not complete"
+DONE_NOTE=""  # set when the update succeeded but the app will NOT reopen itself
 
 log() { echo "$(date +%Y-%m-%dT%H:%M:%S%z) $1" | tee -a "$LOG" 2>/dev/null; }
 
 # ── shim ────────────────────────────────────────────────────────────────────
+json_escape() { # minimal JSON string escape: \ " and control whitespace
+  local s=${1//\\/\\\\}
+  s=${s//\"/\\\"}
+  s=${s//$'\n'/\\n}
+  s=${s//$'\r'/\\r}
+  s=${s//$'\t'/\\t}
+  printf '%s' "$s"
+}
+
 publish() { # status message -- atomic replace; the server reads per poll
-  printf '{"status":"%s","message":"%s"}' "$1" "$2" > "$STATUS.tmp" && mv -f "$STATUS.tmp" "$STATUS" 2>/dev/null || true
+  printf '{"status":"%s","message":"%s"}' "$(json_escape "$1")" "$(json_escape "$2")" > "$STATUS.tmp" \
+    && mv -f "$STATUS.tmp" "$STATUS" 2>/dev/null || true
   [ -n "$UI_SERVER_PID" ] && sleep 1  # one poll beat to render the state
 }
 
@@ -112,60 +137,152 @@ stop_ui() { # error state leaves the window up for the user to read
 }
 
 # ── relaunch ────────────────────────────────────────────────────────────────
-relaunch() {
-  [ -n "$RELAUNCH_TARGET" ] || return 0
-  if [ "$(uname)" = "Darwin" ]; then
-    # Swap the rebuilt bundle over the running one when both resolve, then
-    # `open` (fully detached). POSIX doesn't lock running executables.
-    local rebuilt="" c
-    for c in "$INSTALL_ROOT/apps/desktop/release/mac-arm64/Hermes.app" \
-             "$INSTALL_ROOT/apps/desktop/release/mac/Hermes.app"; do
-      [ -d "$c" ] && { rebuilt="$c"; break; }
-    done
-    if [ -n "$rebuilt" ] && [ -d "$RELAUNCH_TARGET" ] && [ "$rebuilt" != "$RELAUNCH_TARGET" ]; then
-      if /usr/bin/ditto "$rebuilt" "$RELAUNCH_TARGET.new"; then
-        mv "$RELAUNCH_TARGET" "$RELAUNCH_TARGET.old" 2>/dev/null || rm -rf "$RELAUNCH_TARGET"
-        mv "$RELAUNCH_TARGET.new" "$RELAUNCH_TARGET"
-        rm -rf "$RELAUNCH_TARGET.old" 2>/dev/null || true
-        log "swapped app bundle"
-      else
+# Linux relaunch gate -- an exact port of the deleted update-relaunch.ts
+# decision (#45205/#37541), not a loosened rewrite:
+#   * the running binary must live under THIS checkout's rebuilt
+#     apps/desktop/release/linux-unpacked (anchored, path-segment-aware --
+#     proof the update we just ran replaced the selected executable);
+#   * chrome-sandbox ABSENT is fine (namespace-sandbox build; nothing to
+#     block on), PRESENT means root-owned AND setuid or Electron refuses to
+#     boot ("quit and never came back");
+#   * a user sandbox opt-out (ELECTRON_DISABLE_SANDBOX=1/true in our
+#     inherited env, --no-sandbox among the replayed launch args, or the
+#     Desktop vouching via --sandbox-fallback) makes the relaunch safe
+#     despite a failed preflight.
+# Outcomes mirror decideRelaunchOutcome: relaunch | skew | manual.
+GATE="" GATE_MSG=""
+linux_gate() {
+  local unpacked="$INSTALL_ROOT/apps/desktop/release/linux-unpacked" sb arg
+  case "$RELAUNCH_TARGET" in
+    "$unpacked"/*) ;;
+    *) GATE=skew GATE_MSG="Backend updated, but the desktop app package (AppImage/deb/rpm) was not changed. Update or reinstall it to match."; return ;;
+  esac
+
+  sb="$unpacked/chrome-sandbox"
+  if [ ! -e "$sb" ]; then GATE=relaunch; return; fi
+  if [ -u "$sb" ] && [ "$(stat -c %u "$sb" 2>/dev/null)" = "0" ]; then GATE=relaunch; return; fi
+
+  case "${ELECTRON_DISABLE_SANDBOX:-}" in 1|true|TRUE|True) GATE=relaunch; return ;; esac
+  [ "$SANDBOX_FALLBACK" -eq 1 ] && { GATE=relaunch; return; }
+  for arg in ${RELAUNCH_ARGS[@]+"${RELAUNCH_ARGS[@]}"}; do
+    [ "$arg" = "--no-sandbox" ] && { GATE=relaunch; return; }
+  done
+
+  GATE=manual GATE_MSG="Update complete, but the rebuilt app can't relaunch itself (its sandbox helper needs root ownership). Reopen Hermes to finish."
+}
+
+mac_swap() {
+  local rebuilt="" c
+  for c in "$INSTALL_ROOT/apps/desktop/release/mac-arm64/Hermes.app" \
+           "$INSTALL_ROOT/apps/desktop/release/mac/Hermes.app"; do
+    [ -d "$c" ] && { rebuilt="$c"; break; }
+  done
+
+  # Transactional swap: stage a full copy, move the old bundle aside, move
+  # the copy in. Every step checked; a failed final move ROLLS BACK so the
+  # user always has a launchable app, and the result file tells the truth.
+  if [ "$FINAL_CODE" -eq 0 ] && [ -n "$rebuilt" ] && [ -d "$RELAUNCH_TARGET" ] && [ "$rebuilt" != "$RELAUNCH_TARGET" ]; then
+    rm -rf "$RELAUNCH_TARGET.new" "$RELAUNCH_TARGET.old" 2>/dev/null || true
+    if ! /usr/bin/ditto "$rebuilt" "$RELAUNCH_TARGET.new"; then
+      rm -rf "$RELAUNCH_TARGET.new" 2>/dev/null || true
+      DONE_NOTE="Update complete, but the new app could not be staged; the previous version was kept. Run the update again."
+      log "WARNING: bundle copy failed; keeping existing app"
+    elif ! mv "$RELAUNCH_TARGET" "$RELAUNCH_TARGET.old"; then
+      rm -rf "$RELAUNCH_TARGET.new" 2>/dev/null || true
+      DONE_NOTE="Update complete, but the new app could not replace the old one; the previous version was kept. Run the update again."
+      log "WARNING: could not move old bundle aside; keeping existing app"
+    elif ! mv "$RELAUNCH_TARGET.new" "$RELAUNCH_TARGET"; then
+      if mv "$RELAUNCH_TARGET.old" "$RELAUNCH_TARGET"; then
         rm -rf "$RELAUNCH_TARGET.new" 2>/dev/null || true
-        log "WARNING: bundle copy failed; relaunching existing app"
+        DONE_NOTE="Update complete, but the new app could not be installed; the previous version was restored. Run the update again."
+        log "WARNING: bundle install failed; rolled back to the previous app"
+      else
+        FINAL_CODE=7 FINAL_MSG="The update finished but installing the new app failed and the previous app could not be restored. Reinstall Hermes (the rebuilt app is at $rebuilt)."
+        log "ERROR: bundle install failed AND rollback failed"
       fi
+    else
+      rm -rf "$RELAUNCH_TARGET.old" 2>/dev/null || true
+      log "swapped app bundle"
     fi
-    /usr/bin/xattr -dr com.apple.quarantine "$RELAUNCH_TARGET" 2>/dev/null || true
-    /usr/bin/open "$RELAUNCH_TARGET" || log "WARNING: relaunch failed"
-  else
-    # Linux: only relaunch a binary the rebuild actually replaced, with a
-    # launchable sandbox helper -- otherwise say so instead of lying (#37541).
-    case "$RELAUNCH_TARGET" in
-      */release/*-unpacked/*)
-        if [ -u "$(dirname "$RELAUNCH_TARGET")/chrome-sandbox" ] || [ -n "${HERMES_DESKTOP_NO_SANDBOX:-}" ]; then
-          (setsid "$RELAUNCH_TARGET" >/dev/null 2>&1 &) || log "WARNING: relaunch failed"
-        else
-          FINAL_MSG="Update complete. Reopen Hermes to finish (the app could not restart itself)."
-        fi ;;
-      *)
-        FINAL_MSG="Backend updated, but the desktop app package (AppImage/deb/rpm) was not changed. Update it to match." ;;
-    esac
   fi
 }
 
-finish() {
+deliver_outcome() { # the truth-determining half: swap bundles / gate the relaunch
+  [ -n "$RELAUNCH_TARGET" ] || return 0
+  if [ "$(uname)" = "Darwin" ]; then
+    mac_swap
+  else
+    linux_gate
+    if [ "$GATE" != "relaunch" ] && [ "$FINAL_CODE" -eq 0 ]; then
+      DONE_NOTE="$GATE_MSG"
+      log "no relaunch ($GATE): $GATE_MSG"
+    fi
+  fi
+}
+
+launch_app() { # runs LAST, after the result is durable (the relaunched
+  # Desktop consumes the result file on boot -- launching first races the
+  # write). Returns nonzero when a launch was due but did not happen.
+  [ -n "$RELAUNCH_TARGET" ] || return 0
+  if [ "$(uname)" = "Darwin" ]; then
+    [ -d "$RELAUNCH_TARGET" ] || return 0
+    /usr/bin/xattr -dr com.apple.quarantine "$RELAUNCH_TARGET" 2>/dev/null || true
+    /usr/bin/open "$RELAUNCH_TARGET" || { log "WARNING: relaunch failed"; return 1; }
+  elif [ "$GATE" = "relaunch" ]; then
+    # Replay the original launch context: filtered args from the Desktop
+    # (after --), its cwd, and its env (inherited through our own spawn).
+    (cd "${RELAUNCH_CWD:-/}" 2>/dev/null || cd /; setsid "$RELAUNCH_TARGET" ${RELAUNCH_ARGS[@]+"${RELAUNCH_ARGS[@]}"} >/dev/null 2>&1 &) \
+      || { log "WARNING: relaunch failed"; return 1; }
+  fi
+}
+
+write_result() {
   printf '{"ok":%s,"exit_code":%s,"message":"%s","branch":"%s","finished_at":%s}' \
-    "$([ "$FINAL_CODE" -eq 0 ] && echo true || echo false)" "$FINAL_CODE" "$FINAL_MSG" "$BRANCH" "$(date +%s)" \
-    > "$RESULT" 2>/dev/null || true
+    "$([ "$FINAL_CODE" -eq 0 ] && echo true || echo false)" "$FINAL_CODE" \
+    "$(json_escape "$FINAL_MSG")" "$(json_escape "$BRANCH")" "$(date +%s)" \
+    > "$RESULT.tmp" 2>/dev/null && mv -f "$RESULT.tmp" "$RESULT" 2>/dev/null || true
+}
+
+finish() {
+  # Ordering (helix4u's review): 1. deliver the outcome (swap/gate) so the
+  # truth exists; 2. durable result; 3. marker; 4. shim event; 5. relaunch.
+  deliver_outcome
+  [ "$FINAL_CODE" -eq 0 ] && [ -n "$DONE_NOTE" ] && FINAL_MSG="$DONE_NOTE"
+  write_result
+
   if [ "$NO_MARKER_CLEANUP" -eq 0 ] && [ "$(head -1 "$MARKER" 2>/dev/null | tr -d '[:space:]')" = "$$" ]; then
     rm -f "$MARKER" 2>/dev/null || true
   fi
-  if [ "$FINAL_CODE" -eq 0 ]; then publish "done" ""; stop_ui
-  else publish "error" "$FINAL_MSG"; stop_ui leave-window; fi
-  relaunch
+
+  if [ "$FINAL_CODE" -eq 0 ]; then
+    # A DONE_NOTE means the app will NOT reopen itself -- leave the window
+    # up showing the note instead of closing on a false "Opening Hermes…".
+    publish "done" "$DONE_NOTE"
+    if [ -n "$DONE_NOTE" ]; then stop_ui leave-window; else stop_ui; fi
+  else
+    publish "error" "$FINAL_MSG"; stop_ui leave-window
+  fi
+
+  if ! launch_app && [ "$FINAL_CODE" -eq 0 ] && [ -z "$DONE_NOTE" ]; then
+    # Launch failed after "done" went out: nothing consumed the result yet
+    # (the app never started), so make it tell the truth for the next boot.
+    FINAL_MSG="Update complete. Reopen Hermes to finish (it could not restart itself)."
+    write_result
+  fi
   rm -f "$STATUS" "$STATUS.tmp" "$LOG_DIR/desktop-update-ui-port" 2>/dev/null || true
 }
 trap finish EXIT
 
-# ── self-test: shim only, no update, touches nothing ───────────────────────
+# ── self-tests: no update, touch nothing ────────────────────────────────────
+if [ "$SELF_TEST_GATE" -eq 1 ]; then
+  # Prints the gate decision for the given --install-root/--relaunch-target
+  # and exits; scripts/desktop-update/repro.sh gate asserts the matrix.
+  trap - EXIT
+  linux_gate
+  echo "$GATE${GATE_MSG:+:$GATE_MSG}"
+  exit 0
+fi
+
 if [ "$SELF_TEST_UI" -eq 1 ]; then
   start_ui
   log "SELF-TEST: shim simulation (no update will run)"

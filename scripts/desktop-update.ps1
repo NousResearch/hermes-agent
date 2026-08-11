@@ -80,12 +80,20 @@ function Write-HandoffLog([string]$Message) {
     $line = "{0:yyyy-MM-ddTHH:mm:ssK} {1}" -f (Get-Date), $Message
     try { Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8 } catch {}
     Write-Host $line
-    if ($script:Ui) {
-        try {
-            $script:Ui.Box.AppendText($Message + "`r`n")
-            [System.Windows.Forms.Application]::DoEvents()
-        } catch {}
-    }
+}
+
+# The window is a veneer, not a participant: the update runs identically with
+# or without it (any WinForms failure degrades to log-only), it streams
+# nothing, and it matches the minimal update surfaces elsewhere -- a loader,
+# one title, one static line. Failure swaps in a one-line error state that
+# points at `hermes debug share`; the DETAIL travels through
+# .hermes-update-result.json to the relaunched Desktop, never through this
+# window.
+function Get-AppsUseLightTheme {
+    try {
+        $v = Get-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize" -Name AppsUseLightTheme -ErrorAction Stop
+        return [int]$v.AppsUseLightTheme -ne 0
+    } catch { return $true }
 }
 
 function Show-ProgressWindow {
@@ -93,31 +101,48 @@ function Show-ProgressWindow {
     try {
         Add-Type -AssemblyName System.Windows.Forms | Out-Null
         Add-Type -AssemblyName System.Drawing | Out-Null
+        $light = Get-AppsUseLightTheme
+        # Dark seeds are the settled installer palette: neutral charcoal,
+        # never brand blue.
+        if ($light) {
+            $back = [System.Drawing.Color]::White
+            $fore = [System.Drawing.ColorTranslator]::FromHtml("#1A1A1A")
+            $mute = [System.Drawing.ColorTranslator]::FromHtml("#6B6B6B")
+        } else {
+            $back = [System.Drawing.ColorTranslator]::FromHtml("#232323")
+            $fore = [System.Drawing.ColorTranslator]::FromHtml("#F5F5F5")
+            $mute = [System.Drawing.ColorTranslator]::FromHtml("#A8A8A8")
+        }
         $form = New-Object System.Windows.Forms.Form
-        $form.Text = "Hermes Update"
-        $form.Size = New-Object System.Drawing.Size(720, 420)
-        $form.StartPosition = "CenterScreen"
+        $form.Text = "Hermes"
+        $form.FormBorderStyle = "FixedSingle"
+        $form.MaximizeBox = $false
+        $form.MinimizeBox = $false
         $form.ControlBox = $false
+        $form.ClientSize = New-Object System.Drawing.Size(280, 320)
+        $form.StartPosition = "CenterScreen"
         $form.TopMost = $true
-        $label = New-Object System.Windows.Forms.Label
-        $label.Text = "Updating Hermes -- do not close this window. Hermes restarts automatically when the update finishes."
-        $label.Dock = "Top"
-        $label.Height = 34
-        $label.Padding = New-Object System.Windows.Forms.Padding(8, 8, 8, 0)
+        $form.BackColor = $back
+
         $bar = New-Object System.Windows.Forms.ProgressBar
         $bar.Style = "Marquee"
         $bar.MarqueeAnimationSpeed = 30
-        $bar.Dock = "Top"
-        $bar.Height = 18
-        $box = New-Object System.Windows.Forms.TextBox
-        $box.Multiline = $true
-        $box.ReadOnly = $true
-        $box.ScrollBars = "Vertical"
-        $box.Dock = "Fill"
-        $box.Font = New-Object System.Drawing.Font("Consolas", 9)
-        $form.Controls.Add($box)
+        $bar.SetBounds(60, 128, 160, 8)
+        $title = New-Object System.Windows.Forms.Label
+        $title.Text = "Updating Hermes"
+        $title.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 12)
+        $title.ForeColor = $fore
+        $title.TextAlign = "MiddleCenter"
+        $title.SetBounds(16, 156, 248, 28)
+        $sub = New-Object System.Windows.Forms.Label
+        $sub.Text = "Hermes restarts automatically when the update finishes."
+        $sub.Font = New-Object System.Drawing.Font("Segoe UI", 9)
+        $sub.ForeColor = $mute
+        $sub.TextAlign = "TopCenter"
+        $sub.SetBounds(24, 190, 232, 48)
         $form.Controls.Add($bar)
-        $form.Controls.Add($label)
+        $form.Controls.Add($title)
+        $form.Controls.Add($sub)
         $form.Show()
         # `cmd start /min` spawned us backgrounded; TopMost keeps the window
         # above others but does not take activation. Claim it explicitly so
@@ -127,11 +152,45 @@ function Show-ProgressWindow {
             if ($script:Win32) { [HermesHandoff.Win32]::SetForegroundWindow($form.Handle) | Out-Null }
         } catch {}
         [System.Windows.Forms.Application]::DoEvents()
-        $script:Ui = [pscustomobject]@{ Form = $form; Box = $box }
+        $script:Ui = [pscustomobject]@{ Form = $form; Bar = $bar; Title = $title; Sub = $sub }
     } catch {
         # Headless session / WinForms unavailable: degrade to log-only.
         $script:Ui = $null
     }
+}
+
+function Show-ErrorFinale {
+    # Terse by design: a title, the debug-share pointer, Close. No error
+    # text, no log tail -- `hermes debug share` uploads the real evidence and
+    # the relaunched Desktop surfaces the result message.
+    if (-not $script:Ui) { return }
+    try {
+        $ui = $script:Ui
+        $ui.Bar.Visible = $false
+        $ui.Title.Text = "Failed to update"
+        $ui.Sub.Text = "Run `"hermes debug share`" in a terminal to send a report."
+        $close = New-Object System.Windows.Forms.Button
+        $close.Text = "Close"
+        $close.SetBounds(100, 252, 80, 28)
+        $close.FlatStyle = "Flat"
+        $close.ForeColor = $ui.Title.ForeColor
+        $script:ErrorDismissed = $false
+        $close.Add_Click({ $script:ErrorDismissed = $true })
+        $ui.Form.Controls.Add($close)
+        $ui.Form.AcceptButton = $close
+        try {
+            $ui.Form.Activate()
+            if ($script:Win32) { [HermesHandoff.Win32]::SetForegroundWindow($ui.Form.Handle) | Out-Null }
+        } catch {}
+        # Hold for dismissal so the failure is actually seen, but never park
+        # forever -- the marker is already cleaned up and the relaunched
+        # Desktop re-surfaces the failure, so walking away costs nothing.
+        $deadline = (Get-Date).AddMinutes(5)
+        while (-not $script:ErrorDismissed -and (Get-Date) -lt $deadline -and $ui.Form.Visible) {
+            [System.Windows.Forms.Application]::DoEvents()
+            Start-Sleep -Milliseconds 100
+        }
+    } catch {}
 }
 
 function Close-ProgressWindow {
@@ -238,13 +297,13 @@ function Start-DesktopRelaunch {
     }
 }
 
-function Invoke-StreamedHermes([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
-    # Start-Process + output file + poll keeps the WinForms window pumping
-    # during long silent stretches (pip installs); a blocking pipeline would
-    # freeze the marquee. Returns @{ Code; Output }.
-    $outFile = Join-Path $env:TEMP ("hermes-handoff-{0}-{1}.out" -f $Tag, $PID)
-    $errFile = Join-Path $env:TEMP ("hermes-handoff-{0}-{1}.err" -f $Tag, $PID)
-    Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
+function Invoke-HermesStep([string]$Exe, [string[]]$HermesArgs, [string]$Tag) {
+    # The window shows nothing live, so no line-pump: both pipes drain
+    # asynchronously (no deadlock however chatty the child) while a small
+    # DoEvents loop keeps the marquee animating through long silent
+    # stretches (pip installs) -- the old EndOfStream pump blocked on quiet
+    # children and froze it. Full output still lands in the hand-off log
+    # afterwards, where `hermes debug share` picks it up.
     # System.Diagnostics.Process directly: Start-Process's .ExitCode is
     # unreliably $null under PS 5.1 even with the Handle-touch workaround.
     $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -257,7 +316,7 @@ function Invoke-StreamedHermes([string]$Exe, [string[]]$HermesArgs, [string]$Tag
     $psi.RedirectStandardError = $true
     # hermes update prints UTF-8 (checkmarks, arrows, box glyphs). PS 5.1
     # defaults these readers to the OEM codepage, which mangles every
-    # multi-byte glyph into mojibake in the console AND the progress box.
+    # multi-byte glyph into mojibake in the log.
     $psi.StandardOutputEncoding = [System.Text.Encoding]::UTF8
     $psi.StandardErrorEncoding = [System.Text.Encoding]::UTF8
     # And ask the child to actually EMIT UTF-8: Python decides its stdio
@@ -266,44 +325,24 @@ function Invoke-StreamedHermes([string]$Exe, [string[]]$HermesArgs, [string]$Tag
     $psi.EnvironmentVariables["PYTHONUTF8"] = "1"
     $psi.CreateNoWindow = $true
     $proc = [System.Diagnostics.Process]::Start($psi)
-    $outWriter = [System.IO.File]::CreateText($outFile)
-    $errWriter = [System.IO.File]::CreateText($errFile)
-    # Pump synchronously in small reads so the UI stays alive; stderr is
-    # drained at the end (hermes update is stdout-dominant).
+    $outTask = $proc.StandardOutput.ReadToEndAsync()
+    $errTask = $proc.StandardError.ReadToEndAsync()
     while (-not $proc.HasExited) {
-        while (-not $proc.StandardOutput.EndOfStream) {
-            $ln = $proc.StandardOutput.ReadLine()
-            if ($null -ne $ln) {
-                $outWriter.WriteLine($ln)
-                if ($ln.Trim()) { Write-HandoffLog ("{0}| {1}" -f $Tag, $ln) }
-            }
-            if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
-        }
         Start-Sleep -Milliseconds 150
         if ($script:Ui) { [System.Windows.Forms.Application]::DoEvents() }
     }
-    while (-not $proc.StandardOutput.EndOfStream) {
-        $ln = $proc.StandardOutput.ReadLine()
-        if ($null -ne $ln) {
-            $outWriter.WriteLine($ln)
-            if ($ln.Trim()) { Write-HandoffLog ("{0}| {1}" -f $Tag, $ln) }
-        }
-    }
-    $errText = $proc.StandardError.ReadToEnd()
-    if ($errText) {
-        $errWriter.Write($errText)
-        foreach ($ln in ($errText -split "`r?`n")) {
-            if ($ln.Trim()) { Write-HandoffLog ("{0}!| {1}" -f $Tag, $ln) }
-        }
-    }
-    $outWriter.Close(); $errWriter.Close()
     $proc.WaitForExit()
-    $code = $proc.ExitCode
-    $all = ""
-    try { $all = [System.IO.File]::ReadAllText($outFile) } catch {}
+    $outText = $outTask.Result
+    $errText = $errTask.Result
+    foreach ($ln in ($outText -split "`r?`n")) {
+        if ($ln.Trim()) { Write-HandoffLog ("{0}| {1}" -f $Tag, $ln) }
+    }
+    foreach ($ln in ($errText -split "`r?`n")) {
+        if ($ln.Trim()) { Write-HandoffLog ("{0}!| {1}" -f $Tag, $ln) }
+    }
+    $all = $outText
     if ($errText) { $all += "`n" + $errText }
-    Remove-Item -LiteralPath $outFile, $errFile -Force -ErrorAction SilentlyContinue
-    return @{ Code = $code; Output = $all }
+    return @{ Code = $proc.ExitCode; Output = $all }
 }
 
 $finalCode = 1
@@ -386,14 +425,14 @@ try {
     }
     $updateArgs = @("update", "--yes", "--gateway", "--force", "--branch", $Branch)
     Write-HandoffLog ("running: hermes " + ($updateArgs -join " "))
-    $res = Invoke-StreamedHermes $hermesExe $updateArgs "update"
+    $res = Invoke-HermesStep $hermesExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
 
     if ($res.Code -ne 0 -and $res.Code -ne 2) {
         # One retry for the update-boundary class (fresh code on disk, stale
         # code in memory). Exit 2 ("close all Hermes windows") is not retryable.
         Write-HandoffLog "first attempt failed; retrying once (freshly pulled fix loads on the second run)"
-        $res = Invoke-StreamedHermes $hermesExe $updateArgs "update"
+        $res = Invoke-HermesStep $hermesExe $updateArgs "update"
         Write-HandoffLog "retry exit code: $($res.Code)"
     }
 
@@ -405,7 +444,7 @@ try {
     $desktopBuildFailed = $false
     if ($res.Code -eq 0 -and $res.Output -match "Desktop build failed") {
         Write-HandoffLog "hermes update reported a desktop build failure (non-fatal there, fatal here); retrying build"
-        $rebuild = Invoke-StreamedHermes $hermesExe @("desktop", "--force-build", "--build-only") "rebuild"
+        $rebuild = Invoke-HermesStep $hermesExe @("desktop", "--force-build", "--build-only") "rebuild"
         Write-HandoffLog "desktop rebuild exit code: $($rebuild.Code)"
         if ($rebuild.Code -ne 0) { $desktopBuildFailed = $true }
     }
@@ -418,12 +457,13 @@ try {
         $finalMsg = "Code and dependencies updated, but the Desktop app REBUILD FAILED - you are running the previous build. Run `hermes desktop --force-build` from a terminal to retry."
     } else {
         $finalCode = $res.Code
-        $finalMsg = "hermes update failed (exit $($res.Code)). See logs\desktop-update-handoff.log."
+        $finalMsg = "Update failed (exit $($res.Code)). Run `hermes debug share` in a terminal to send a report."
     }
     exit $finalCode
 } finally {
     Write-Result ($finalCode -eq 0) $finalCode $finalMsg
     Remove-MarkerIfOwned
+    if ($finalCode -ne 0) { Show-ErrorFinale }
     Close-ProgressWindow
     Start-DesktopRelaunch
 }

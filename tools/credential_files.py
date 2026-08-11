@@ -505,7 +505,9 @@ def from_agent_visible_cache_path(
     auto-mounted cache directory — the caller then treats a still-container
     path as "no host file" and falls back to an in-container read.
     """
-    if os.environ.get("TERMINAL_ENV", "local") != "docker":
+    from tools.terminal_tool import _terminal_backend_identity
+
+    if _terminal_backend_identity()[1] != "docker":
         return container_path
 
     path = Path(container_path)
@@ -543,10 +545,11 @@ def to_agent_visible_cache_path(
       the host path is directly readable and translation would dangle
       (cache dirs are not remapped into that sandbox).
 
-    Backend is identified by TERMINAL_ENV (same env var
-    tools/terminal_tool.py reads in _get_environment_config).
+    Backend identity uses terminal_tool's active profile snapshot.
     """
-    backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+    from tools.terminal_tool import _terminal_backend_identity
+
+    backend = _terminal_backend_identity()[1]
     if backend in ("docker", "modal"):
         pass  # /root/.hermes default
     elif backend in ("ssh", "daytona", "vercel_sandbox"):

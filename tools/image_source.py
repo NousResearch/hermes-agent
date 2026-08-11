@@ -212,10 +212,12 @@ async def _download_to_bytes(url: str) -> bytes:
 def _is_local_terminal_backend() -> bool:
     """True when the terminal backend runs directly on the host.
 
-    Mirrors ``tools.browser_tool._is_local_backend`` and terminal_tool's own
-    dispatch, which key off ``TERMINAL_ENV``.
+    Uses terminal_tool's profile-scoped runtime snapshot so multiplexed turns
+    cannot inherit another profile's backend.
     """
-    return os.getenv("TERMINAL_ENV", "local").strip().lower() in ("local", "")
+    from tools.terminal_tool import _terminal_backend_identity
+
+    return _terminal_backend_identity()[1] == "local"
 
 
 def _media_cache_roots() -> list:

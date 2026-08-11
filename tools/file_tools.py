@@ -177,6 +177,7 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
     try:
         from tools.terminal_tool import (
             _active_environments,
+            _environment_lookup_key,
             _env_lock,
             _get_env_config,
             _resolve_container_task_id,
@@ -187,7 +188,8 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
         except Exception:
             container_key = task_id
         with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+            env_key = _environment_lookup_key(container_key, task_id)
+            env = _active_environments.get(env_key) if env_key is not None else None
         if env is not None:
             name = env.__class__.__name__.lower()
             if "local" in name:
@@ -1024,6 +1026,7 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
     try:
         from tools.terminal_tool import (
             _active_environments,
+            _environment_lookup_key,
             _env_lock,
             _get_env_config,
             _resolve_container_task_id,
@@ -1035,7 +1038,8 @@ def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | Non
 
     try:
         with _env_lock:
-            env = _active_environments.get(container_key) or _active_environments.get(task_id)
+            env_key = _environment_lookup_key(container_key, task_id)
+            env = _active_environments.get(env_key) if env_key is not None else None
 
         if env is not None:
             if env.__class__.__name__ == "DockerEnvironment" and bool(

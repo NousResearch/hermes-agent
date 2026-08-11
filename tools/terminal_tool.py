@@ -33,6 +33,7 @@ Usage:
     result = terminal_tool("python server.py", background=True)
 """
 
+import hashlib
 import importlib.util
 import json
 import logging
@@ -791,7 +792,7 @@ def _sudo_nopasswd_works() -> bool:
     cache) so an expired sudo timestamp cannot make a later command silently
     block waiting for a password.
     """
-    terminal_env = os.getenv("TERMINAL_ENV", "local").strip().lower() or "local"
+    _, terminal_env = _terminal_backend_identity()
     if terminal_env != "local":
         return False
 
@@ -1168,6 +1169,21 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
         logger.debug("Docker orphan reaper raised: %s", e)
 
 
+def _profile_state_key(task_id: Optional[str]) -> str:
+    """Key mutable terminal session state by routed profile when multiplexed."""
+    key = str(task_id or "default")
+    from agent.secret_scope import is_multiplex_active
+
+    if not is_multiplex_active():
+        return key
+
+    from hermes_constants import get_hermes_home
+
+    home = str(get_hermes_home().expanduser().resolve())
+    namespace = hashlib.sha256(home.encode("utf-8")).hexdigest()[:16]
+    return f"mpx-profile:{namespace}:{key}"
+
+
 # Per-task environment overrides registry.
 # Allows environments (e.g., TerminalBench2Env) to specify a custom Docker/Modal
 # image for a specific task_id BEFORE the agent loop starts. When the terminal or
@@ -1175,13 +1191,15 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
 # and fall back to the TERMINAL_MODAL_IMAGE (etc.) env var if no override is set.
 #
 # This is never exposed to the model -- only infrastructure code calls it.
-# Thread-safe because each task_id is unique per rollout.
+# Multiplexed profiles add a profile namespace because gateway session keys can
+# collide across routed profiles.
 _task_env_overrides: Dict[str, Dict[str, Any]] = {}
 
 # ── Per-session cwd records (cwd rearchitecture, step 1) ────────────────────
 #
 # The durable source of truth for "which directory is THIS session working
-# in". Keyed by the raw session/task key (NOT the collapsed container id):
+# in". Keyed by the session/task key (profile-scoped in multiplex mode, and
+# NOT the collapsed container id):
 # the terminal env is shared across sessions, so any cwd state stored on the
 # env is a global mutable timeshared between sessions — the root cause of the
 # wrong-worktree bug class (env.cwd_owner stamping, _last_known_cwd, and the
@@ -1203,14 +1221,15 @@ def record_session_cwd(session_key: Optional[str], cwd: Optional[str]) -> None:
     command completes (the env's post-command tracking has just parsed the
     resulting cwd) and when a surface registers a workspace cwd override.
     Empty/None session keys collapse to ``"default"`` (single-session CLI).
+    Multiplexed gateways add the active profile namespace.
     Non-string / empty cwds are ignored.
     """
     if not isinstance(cwd, str) or not cwd.strip():
         return
-    key = str(session_key or "default")
+    state_key = _profile_state_key(session_key)
     with _session_cwd_lock:
-        if _session_cwd.get(key) != cwd:
-            _session_cwd[key] = cwd
+        if _session_cwd.get(state_key) != cwd:
+            _session_cwd[state_key] = cwd
 
 
 def get_session_cwd(session_key: Optional[str]) -> Optional[str]:
@@ -1218,17 +1237,18 @@ def get_session_cwd(session_key: Optional[str]) -> Optional[str]:
 
     No fallback chain here on purpose: callers decide what an absent record
     means (config default, TERMINAL_CWD seed, process cwd). ``None``/empty
-    keys read the ``"default"`` record.
+    keys read the ``"default"`` record. Multiplexed gateways add the active
+    profile namespace.
     """
-    key = str(session_key or "default")
+    state_key = _profile_state_key(session_key)
     with _session_cwd_lock:
-        return _session_cwd.get(key)
+        return _session_cwd.get(state_key)
 
 
 def clear_session_cwd(session_key: str) -> None:
     """Drop a session's cwd record (session teardown)."""
     with _session_cwd_lock:
-        _session_cwd.pop(session_key, None)
+        _session_cwd.pop(_profile_state_key(session_key), None)
 
 
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
@@ -1247,7 +1267,7 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         task_id: The rollout's unique task identifier
         overrides: Dict of config keys to override
     """
-    _task_env_overrides[task_id] = overrides
+    _task_env_overrides[_profile_state_key(task_id)] = overrides
 
     # If a live environment already exists for this task, a freshly registered
     # ``cwd`` override (e.g. the ACP client switching the editor's project root
@@ -1266,7 +1286,8 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         # updates the originating session's env.
         container_id = _resolve_container_task_id(task_id)
         with _env_lock:
-            env = _active_environments.get(task_id) or _active_environments.get(container_id)
+            env_key = _environment_lookup_key(container_id, task_id)
+            env = _active_environments.get(env_key) if env_key is not None else None
         if env is not None and getattr(env, "cwd", None) is not None:
             env.cwd = new_cwd
 
@@ -1277,10 +1298,10 @@ def clear_task_env_overrides(task_id: str):
 
     Called during cleanup to avoid stale entries accumulating.
     """
-    _task_env_overrides.pop(task_id, None)
+    _task_env_overrides.pop(_profile_state_key(task_id), None)
     clear_session_cwd(task_id)
     with _container_alias_lock:
-        _container_aliases.pop(task_id, None)
+        _container_aliases.pop(_profile_state_key(task_id), None)
 
 
 # Subagent → parent container aliasing.  delegate_task children get their own
@@ -1303,7 +1324,9 @@ def register_container_alias(child_task_id: str, parent_task_id: Optional[str]) 
     if not child_task_id:
         return
     with _container_alias_lock:
-        _container_aliases[child_task_id] = str(parent_task_id or "default")
+        _container_aliases[_profile_state_key(child_task_id)] = str(
+            parent_task_id or "default"
+        )
 
 
 def _resolve_container_alias(task_id: str) -> str:
@@ -1311,9 +1334,12 @@ def _resolve_container_alias(task_id: str) -> str:
     seen = set()
     key = task_id
     with _container_alias_lock:
-        while key in _container_aliases and key not in seen:
+        while key not in seen:
             seen.add(key)
-            key = _container_aliases[key]
+            parent = _container_aliases.get(_profile_state_key(key))
+            if parent is None:
+                break
+            key = parent
     return key
 
 
@@ -1327,10 +1353,10 @@ def _docker_session_isolation_enabled() -> bool:
     ``container_persistent: true`` the documented ONE-long-lived-container
     contract is unchanged.
     """
-    _ensure_terminal_env_bridged()
-    if os.getenv("TERMINAL_ENV", "local") != "docker":
+    config = _get_env_config()
+    if config["env_type"] != "docker":
         return False
-    return os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() not in {"true", "1", "yes"}
+    return not config["container_persistent"]
 
 
 _ISOLATION_OVERRIDE_KEYS = frozenset({
@@ -1346,9 +1372,17 @@ def _has_isolation_overrides(task_id: Optional[str]) -> bool:
     predicate — shared by container-key resolution and container creation so
     the two can't drift.
     """
-    if not task_id or task_id not in _task_env_overrides:
+    if not task_id:
         return False
-    return bool(set(_task_env_overrides[task_id].keys()) & _ISOLATION_OVERRIDE_KEYS)
+    raw_task_id = task_id
+    if task_id.startswith("mpx:"):
+        parts = task_id.split(":", 2)
+        if len(parts) == 3:
+            raw_task_id = parts[2]
+    overrides = _task_env_overrides.get(_profile_state_key(raw_task_id))
+    if not overrides:
+        return False
+    return bool(set(overrides) & _ISOLATION_OVERRIDE_KEYS)
 
 
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
@@ -1382,18 +1416,27 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     ``delegate_task`` children keep sharing the parent's container via the
     alias registry (``register_container_alias``).
     """
-    if task_id and _has_isolation_overrides(task_id):
+    if task_id and task_id.startswith("mpx:"):
         return task_id
-    if task_id and _docker_session_isolation_enabled():
-        return _resolve_container_alias(task_id)
-    return "default"
+    if task_id and _has_isolation_overrides(task_id):
+        base_key = task_id
+    elif task_id and _docker_session_isolation_enabled():
+        base_key = _resolve_container_alias(task_id)
+    else:
+        base_key = "default"
+
+    namespace = _terminal_runtime_namespace()
+    if namespace:
+        return f"mpx:{namespace}:{base_key}"
+    return base_key
 
 
 def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
     """Return the env overrides for *task_id*, raw key first then collapsed.
 
-    ``register_task_env_overrides`` writes under the *raw* task/session id, but
-    a CWD-only override collapses (:func:`_resolve_container_task_id`) to the
+    ``register_task_env_overrides`` writes under the task/session id, with a
+    profile namespace in multiplex mode. A CWD-only override still collapses
+    (:func:`_resolve_container_task_id`) to the
     shared ``"default"`` container so per-session surfaces (ACP/gateway/
     dashboard) don't each spin up their own sandbox. Callers that need the
     override (terminal command setup, file-tool cwd resolution) must therefore
@@ -1403,7 +1446,7 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
     """
     raw = task_id or "default"
     return (
-        _task_env_overrides.get(raw)
+        _task_env_overrides.get(_profile_state_key(raw))
         or _task_env_overrides.get(_resolve_container_task_id(raw))
         or {}
     )
@@ -1435,7 +1478,9 @@ def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Op
         return None
     if not _docker_session_isolation_enabled():
         return config.get("host_cwd")
-    if _resolve_container_task_id(task_id) == "default":
+    resolved_task_id = _resolve_container_task_id(task_id)
+    base_task_id = resolved_task_id.rsplit(":", 1)[-1]
+    if base_task_id == "default":
         # Top-level CLI parent — single-session process, legacy behavior.
         return config.get("host_cwd")
     overrides = resolve_task_overrides(task_id)
@@ -1455,13 +1500,21 @@ def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Op
 
 # Configuration from environment variables
 
-def _parse_env_var(name: str, default: str, converter: Any = int, type_label: str = "integer"):
+def _parse_env_var(
+    name: str,
+    default: str,
+    converter: Any = int,
+    type_label: str = "integer",
+    *,
+    env: Optional[Dict[str, str]] = None,
+):
     """Parse an environment variable with *converter*, raising a clear error on bad values.
 
     Without this wrapper, a single malformed env var (e.g. TERMINAL_TIMEOUT=5m)
     causes an unhandled ValueError that kills every terminal command.
     """
-    raw = os.getenv(name, default)
+    source = os.environ if env is None else env
+    raw = source.get(name, default)
     try:
         return converter(raw)
     except (ValueError, json.JSONDecodeError):
@@ -1471,7 +1524,7 @@ def _parse_env_var(name: str, default: str, converter: Any = int, type_label: st
         )
 
 
-def _safe_getcwd() -> str:
+def _safe_getcwd(env: Optional[Dict[str, str]] = None) -> str:
     """Return the current working directory, tolerating a deleted CWD.
 
     ``os.getcwd()`` raises FileNotFoundError when the process's working
@@ -1482,7 +1535,8 @@ def _safe_getcwd() -> str:
     try:
         return os.getcwd()
     except FileNotFoundError:
-        return os.getenv("TERMINAL_CWD") or os.path.expanduser("~")
+        source = os.environ if env is None else env
+        return source.get("TERMINAL_CWD") or os.path.expanduser("~")
 
 
 # Path prefixes that identify a *host* working directory which cannot exist
@@ -1522,6 +1576,50 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
 _terminal_config_bridge_attempted = False
 
 
+def _terminal_env_snapshot(
+    raw_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, str]:
+    """Build terminal settings for the active profile without mutating env.
+
+    Multiplexed turns share ``os.environ`` but carry a profile-specific
+    ``HERMES_HOME`` ContextVar. Bridge config into a private mapping so every
+    terminal setting follows that profile. Process values remain fallbacks for
+    keys the profile does not configure.
+    """
+    from agent.secret_scope import is_multiplex_active
+
+    if raw_config is None and not is_multiplex_active():
+        _ensure_terminal_env_bridged()
+        return dict(os.environ)
+
+    snapshot = dict(os.environ)
+    try:
+        from agent.secret_scope import current_secret_scope
+
+        scoped_secrets = current_secret_scope()
+        if scoped_secrets:
+            snapshot.update(
+                {str(key): str(value) for key, value in scoped_secrets.items()}
+            )
+    except Exception:
+        pass
+
+    try:
+        from hermes_cli.config import apply_terminal_config_to_env
+
+        if raw_config is None:
+            apply_terminal_config_to_env(env=snapshot)
+        else:
+            apply_terminal_config_to_env(
+                env=snapshot,
+                config=raw_config,
+                override=True,
+            )
+    except Exception:
+        logger.debug("terminal config snapshot failed", exc_info=True)
+    return snapshot
+
+
 def _terminal_backend_identity(
     raw_config: Optional[Dict[str, Any]] = None,
 ) -> tuple[Optional[str], str]:
@@ -1549,7 +1647,9 @@ def _terminal_backend_identity(
             str(terminal_config.get("backend") or "").strip().lower() or None
         )
 
-    env_backend = str(os.environ.get("TERMINAL_ENV") or "").strip().lower()
+    env_backend = str(
+        _terminal_env_snapshot(raw_config).get("TERMINAL_ENV") or ""
+    ).strip().lower()
     return canonical, canonical or env_backend or "local"
 
 
@@ -1604,10 +1704,14 @@ def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
-    _ensure_terminal_env_bridged()
-    _, env_type = _terminal_backend_identity()
+    from agent.secret_scope import is_multiplex_active
+
+    if not is_multiplex_active():
+        _ensure_terminal_env_bridged()
+    env = _terminal_env_snapshot()
+    env_type = str(env.get("TERMINAL_ENV") or "local").strip().lower() or "local"
     
-    mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
+    mount_docker_cwd = env.get("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
     container_backend = env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
     docker_backend = env_type == "docker"
 
@@ -1616,20 +1720,20 @@ def _get_env_config() -> Dict[str, Any]:
     # until a backend that can consume them is selected; a stale or invalid
     # Docker value should not make local terminal/execute_code unusable.
     if container_backend:
-        container_cpu = _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number")
-        container_memory = _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120")
-        container_disk = _parse_env_var("TERMINAL_CONTAINER_DISK", "51200")
+        container_cpu = _parse_env_var("TERMINAL_CONTAINER_CPU", "1", float, "number", env=env)
+        container_memory = _parse_env_var("TERMINAL_CONTAINER_MEMORY", "5120", env=env)
+        container_disk = _parse_env_var("TERMINAL_CONTAINER_DISK", "51200", env=env)
     else:
         container_cpu = 1.0
         container_memory = 5120
         container_disk = 51200
 
     if docker_backend:
-        docker_forward_env = _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON")
-        docker_volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON")
-        docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON")
-        docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON")
-        docker_shm_size = os.getenv("TERMINAL_DOCKER_SHM_SIZE", "1g")
+        docker_forward_env = _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON", env=env)
+        docker_volumes = _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON", env=env)
+        docker_env = _parse_env_var("TERMINAL_DOCKER_ENV", "{}", json.loads, "valid JSON", env=env)
+        docker_extra_args = _parse_env_var("TERMINAL_DOCKER_EXTRA_ARGS", "[]", json.loads, "valid JSON", env=env)
+        docker_shm_size = env.get("TERMINAL_DOCKER_SHM_SIZE", "1g")
     else:
         docker_forward_env = []
         docker_volumes = []
@@ -1641,7 +1745,7 @@ def _get_env_config() -> Dict[str, Any]:
     # remote home, Vercel uses its documented workspace root, and everything
     # else starts in the backend's default root-like cwd.
     if env_type == "local":
-        default_cwd = _safe_getcwd()
+        default_cwd = _safe_getcwd(env)
     elif env_type == "ssh":
         default_cwd = "~"
     elif env_type == "vercel_sandbox":
@@ -1653,13 +1757,13 @@ def _get_env_config() -> Dict[str, Any]:
     # If Docker cwd passthrough is explicitly enabled, remap the host path to
     # /workspace and track the original host path separately. Otherwise keep the
     # normal sandbox behavior and discard host paths.
-    cwd = os.getenv("TERMINAL_CWD", default_cwd)
+    cwd = env.get("TERMINAL_CWD", default_cwd)
     from hermes_cli.config import _is_ssh_remote_tilde_cwd
     if cwd and not _is_ssh_remote_tilde_cwd(env_type, cwd):
         cwd = os.path.expanduser(cwd)
     host_cwd = None
     if env_type == "docker" and mount_docker_cwd:
-        docker_cwd_source = os.getenv("TERMINAL_CWD") or _safe_getcwd()
+        docker_cwd_source = env.get("TERMINAL_CWD") or _safe_getcwd(env)
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
             any(candidate.startswith(p) for p in _HOST_CWD_PREFIXES)
@@ -1677,41 +1781,41 @@ def _get_env_config() -> Dict[str, Any]:
 
     return {
         "env_type": env_type,
-        "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
-        "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
+        "modal_mode": coerce_modal_mode(env.get("TERMINAL_MODAL_MODE", "auto")),
+        "docker_image": env.get("TERMINAL_DOCKER_IMAGE", default_image),
         "docker_forward_env": docker_forward_env,
-        "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
-        "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
-        "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
-        "vercel_runtime": os.getenv("TERMINAL_VERCEL_RUNTIME", "").strip(),
+        "singularity_image": env.get("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
+        "modal_image": env.get("TERMINAL_MODAL_IMAGE", default_image),
+        "daytona_image": env.get("TERMINAL_DAYTONA_IMAGE", default_image),
+        "vercel_runtime": env.get("TERMINAL_VERCEL_RUNTIME", "").strip(),
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
-        "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180"),
-        "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300"),
+        "timeout": _parse_env_var("TERMINAL_TIMEOUT", "180", env=env),
+        "lifetime_seconds": _parse_env_var("TERMINAL_LIFETIME_SECONDS", "300", env=env),
         # SSH-specific config
-        "ssh_host": os.getenv("TERMINAL_SSH_HOST", ""),
-        "ssh_user": os.getenv("TERMINAL_SSH_USER", ""),
-        "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22"),
-        "ssh_key": os.getenv("TERMINAL_SSH_KEY", ""),
+        "ssh_host": env.get("TERMINAL_SSH_HOST", ""),
+        "ssh_user": env.get("TERMINAL_SSH_USER", ""),
+        "ssh_port": _parse_env_var("TERMINAL_SSH_PORT", "22", env=env),
+        "ssh_key": env.get("TERMINAL_SSH_KEY", ""),
         # Persistent shell: SSH defaults to the config-level persistent_shell
         # setting (true by default for non-local backends); local is always opt-in.
         # Per-backend env vars override if explicitly set.
-        "ssh_persistent": os.getenv(
+        "ssh_persistent": env.get(
             "TERMINAL_SSH_PERSISTENT",
-            os.getenv("TERMINAL_PERSISTENT_SHELL", "true"),
+            env.get("TERMINAL_PERSISTENT_SHELL", "true"),
         ).lower() in {"true", "1", "yes"},
-        "local_persistent": os.getenv("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
+        "local_persistent": env.get("TERMINAL_LOCAL_PERSISTENT", "false").lower() in {"true", "1", "yes"},
         # Container resource config (applies to docker, singularity, modal,
         # daytona, and vercel_sandbox -- ignored for local/ssh)
         "container_cpu": container_cpu,
         "container_memory": container_memory,     # MB (default 5GB)
         "container_disk": container_disk,        # MB (default 50GB)
-        "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
+        "container_persistent": env.get("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in {"true", "1", "yes"},
         "docker_volumes": docker_volumes,
         "docker_env": docker_env,
-        "docker_run_as_host_user": os.getenv("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
-        "docker_network": os.getenv("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
+        "docker_run_as_host_user": env.get("TERMINAL_DOCKER_RUN_AS_HOST_USER", "false").lower() in {"true", "1", "yes"},
+        "docker_network": env.get("TERMINAL_DOCKER_NETWORK", "true").lower() in {"true", "1", "yes"},
         "docker_extra_args": docker_extra_args,
         "docker_shm_size": docker_shm_size,
         # Cross-process container reuse (issue #20561).  The docs claim
@@ -1720,17 +1824,66 @@ def _get_env_config() -> Dict[str, Any]:
         # attaching to it instead of always starting a fresh one.  Set to
         # ``false`` for hard per-process isolation (no reuse, container is
         # removed on exit).
-        "docker_persist_across_processes": os.getenv(
+        "docker_persist_across_processes": env.get(
             "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"
         ).lower() in {"true", "1", "yes"},
         # Startup orphan reaper for hermes-tagged containers left behind by
         # crashed / SIGKILL'd previous processes that bypassed atexit.
         # Conservative: only sweeps Exited containers older than 2× the
         # idle-reap window AND scoped to the current profile. Issue #20561.
-        "docker_orphan_reaper": os.getenv(
+        "docker_orphan_reaper": env.get(
             "TERMINAL_DOCKER_ORPHAN_REAPER", "true"
         ).lower() in {"true", "1", "yes"},
+        "degraded_mode": env.get("TERMINAL_DEGRADED_MODE", "warn").strip().lower(),
     }
+
+
+def _terminal_runtime_namespace(
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Return a stable multiplex namespace for one profile/backend snapshot."""
+    from agent.secret_scope import is_multiplex_active
+
+    if not is_multiplex_active():
+        return None
+
+    from hermes_constants import get_hermes_home
+
+    resolved = config if config is not None else _get_env_config()
+    payload = json.dumps(
+        {
+            "profile_home": str(get_hermes_home()),
+            "terminal": resolved,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+
+
+def _environment_lookup_key(
+    effective_task_id: str,
+    raw_task_id: Optional[str] = None,
+) -> Optional[str]:
+    """Find a cached env without crossing a multiplex profile namespace.
+
+    The caller must hold ``_env_lock``. The raw-key compatibility fallback is
+    retained only for single-profile processes.
+    """
+    if effective_task_id in _active_environments:
+        return effective_task_id
+
+    from agent.secret_scope import is_multiplex_active
+
+    if (
+        not is_multiplex_active()
+        and raw_task_id
+        and raw_task_id in _active_environments
+    ):
+        return raw_task_id
+    return None
 
 
 def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
@@ -2079,7 +2232,8 @@ def get_active_env(task_id: str):
     """Return the active BaseEnvironment for *task_id*, or None."""
     lookup = _resolve_container_task_id(task_id)
     with _env_lock:
-        return _active_environments.get(lookup) or _active_environments.get(task_id)
+        key = _environment_lookup_key(lookup, task_id)
+        return _active_environments.get(key) if key is not None else None
 
 
 def ensure_task_env(task_id: Optional[str] = None):
@@ -2243,19 +2397,22 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     # Remove from tracking dicts while holding the lock, but defer the
     # actual (potentially slow) env.cleanup() call to outside the lock
     # so other tool calls aren't blocked.
+    resolved_task_id = _resolve_container_task_id(task_id)
     env = None
     with _env_lock:
-        env = _active_environments.pop(task_id, None)
-        _last_activity.pop(task_id, None)
+        env_key = _environment_lookup_key(resolved_task_id, task_id)
+        cache_key = env_key if env_key is not None else resolved_task_id
+        env = _active_environments.pop(cache_key, None)
+        _last_activity.pop(cache_key, None)
 
     # Clean up per-task creation lock
     with _creation_locks_lock:
-        _creation_locks.pop(task_id, None)
+        _creation_locks.pop(cache_key, None)
 
     # Invalidate stale file_ops cache entry
     try:
         from tools.file_tools import clear_file_ops_cache
-        clear_file_ops_cache(task_id)
+        clear_file_ops_cache(cache_key)
     except ImportError:
         pass
 
@@ -2793,10 +2950,7 @@ def terminal_tool(
             # with a CWD-only override collapse to "default" for container
             # sharing, yet an env may already be cached under the originating
             # task_id; honor it instead of spawning a duplicate.
-            _existing_key = (
-                effective_task_id if effective_task_id in _active_environments
-                else (task_id if task_id and task_id in _active_environments else None)
-            )
+            _existing_key = _environment_lookup_key(effective_task_id, task_id)
             if _existing_key is not None:
                 _last_activity[_existing_key] = time.time()
                 env = _active_environments[_existing_key]
@@ -2814,10 +2968,7 @@ def terminal_tool(
             with task_lock:
                 # Double-check after acquiring the per-task lock
                 with _env_lock:
-                    _existing_key = (
-                        effective_task_id if effective_task_id in _active_environments
-                        else (task_id if task_id and task_id in _active_environments else None)
-                    )
+                    _existing_key = _environment_lookup_key(effective_task_id, task_id)
                     if _existing_key is not None:
                         _last_activity[_existing_key] = time.time()
                         env = _active_environments[_existing_key]
@@ -3655,7 +3806,7 @@ def terminal_tool(
         #   warn (default) — return a structured degraded result the model
         #                    can act on (reason + retry hint, no traceback).
         #   fail           — preserve the historical error+traceback result.
-        degraded_mode = os.getenv("TERMINAL_DEGRADED_MODE", "warn").strip().lower()
+        degraded_mode = _get_env_config().get("degraded_mode", "warn")
         if degraded_mode == "fail":
             import traceback
             tb_str = traceback.format_exc()

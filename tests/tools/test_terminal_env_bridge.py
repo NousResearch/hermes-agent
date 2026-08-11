@@ -8,11 +8,12 @@ config.yaml.
 
 import os
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
+from threading import Barrier, Lock
 
 import pytest
 
 import tools.terminal_tool as terminal_tool
+from agent import secret_scope
 from hermes_constants import get_hermes_home
 
 
@@ -25,9 +26,12 @@ def _reset_bridge_state(monkeypatch):
         "TERMINAL_CWD",
         "TERMINAL_DOCKER_IMAGE",
         "TERMINAL_SSH_HOST",
+        "TERMINAL_SSH_USER",
     ):
         monkeypatch.delenv(name, raising=False)
+    secret_scope.set_multiplex_active(False)
     yield
+    secret_scope.set_multiplex_active(False)
 
 
 def _write_config(text: str) -> None:
@@ -139,7 +143,7 @@ def test_bridge_only_attempted_once(monkeypatch):
     assert len(calls) == 1
 
 
-def test_profile_scoped_backends_do_not_share_process_terminal_env(
+def test_profile_scoped_terminal_snapshots_do_not_share_process_env(
     tmp_path,
     monkeypatch,
 ):
@@ -150,24 +154,47 @@ def test_profile_scoped_backends_do_not_share_process_terminal_env(
     )
 
     homes = {}
-    for name, backend in (("local-profile", "local"), ("ssh-profile", "ssh")):
+    profile_configs = {
+        "local-profile": (
+            "terminal:\n"
+            "  backend: local\n"
+            "  cwd: /tmp/local-profile\n"
+        ),
+        "ssh-profile": (
+            "terminal:\n"
+            "  backend: ssh\n"
+            "  cwd: '~'\n"
+            "  ssh_host: ssh-profile.example\n"
+            "  ssh_user: profile-user\n"
+        ),
+    }
+    for name, text in profile_configs.items():
         home = tmp_path / name
         home.mkdir()
         (home / "config.yaml").write_text(
-            f"terminal:\n  backend: {backend}\n",
+            text,
             encoding="utf-8",
         )
         homes[name] = home
 
     monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_SSH_HOST", "stale-process.example")
+    monkeypatch.setenv("TERMINAL_SSH_USER", "stale-user")
     monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", True)
+    secret_scope.set_multiplex_active(True)
     barrier = Barrier(2)
 
     def resolve(profile_name):
         token = set_hermes_home_override(homes[profile_name])
         try:
             barrier.wait(timeout=2)
-            return terminal_tool._get_env_config()["env_type"]
+            config = terminal_tool._get_env_config()
+            return (
+                config["env_type"],
+                config["cwd"],
+                config["ssh_host"],
+                config["ssh_user"],
+            )
         finally:
             reset_hermes_home_override(token)
 
@@ -175,8 +202,171 @@ def test_profile_scoped_backends_do_not_share_process_terminal_env(
         local_future = pool.submit(resolve, "local-profile")
         ssh_future = pool.submit(resolve, "ssh-profile")
 
-    assert local_future.result() == "local"
-    assert ssh_future.result() == "ssh"
+    assert local_future.result()[:2] == ("local", "/tmp/local-profile")
+    assert ssh_future.result() == (
+        "ssh",
+        "~",
+        "ssh-profile.example",
+        "profile-user",
+    )
+    assert os.environ["TERMINAL_ENV"] == "local"
+    assert os.environ["TERMINAL_SSH_HOST"] == "stale-process.example"
+
+
+def test_multiplex_profiles_do_not_reuse_environment_cache_entries(
+    tmp_path,
+    monkeypatch,
+):
+    """A routed profile must not inherit another profile's cached backend."""
+    import tools.code_execution_tool as code_execution_tool
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    homes = {}
+    for name, text in {
+        "local-profile": "terminal:\n  backend: local\n",
+        "ssh-profile": (
+            "terminal:\n"
+            "  backend: ssh\n"
+            "  ssh_host: ssh-profile.example\n"
+            "  ssh_user: profile-user\n"
+        ),
+    }.items():
+        home = tmp_path / name
+        home.mkdir()
+        (home / "config.yaml").write_text(text, encoding="utf-8")
+        homes[name] = home
+
+    created = []
+
+    class FakeEnvironment:
+        def __init__(self, backend):
+            self.backend = backend
+
+    def fake_create_environment(*, env_type, **_kwargs):
+        env = FakeEnvironment(env_type)
+        created.append(env)
+        return env
+
+    monkeypatch.setattr(terminal_tool, "_create_environment", fake_create_environment)
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", True)
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    secret_scope.set_multiplex_active(True)
+
+    def resolve(profile_name):
+        token = set_hermes_home_override(homes[profile_name])
+        try:
+            return code_execution_tool._get_or_create_env("shared-task")
+        finally:
+            reset_hermes_home_override(token)
+
+    try:
+        local_env, local_backend = resolve("local-profile")
+        ssh_env, ssh_backend = resolve("ssh-profile")
+    finally:
+        with terminal_tool._env_lock:
+            terminal_tool._active_environments.clear()
+            terminal_tool._last_activity.clear()
+        with terminal_tool._creation_locks_lock:
+            terminal_tool._creation_locks.clear()
+
+    assert local_backend == "local"
+    assert ssh_backend == "ssh"
+    assert local_env is not ssh_env
+    assert [env.backend for env in created] == ["local", "ssh"]
+
+
+def test_cleanup_vm_resolves_the_active_profile_namespace(tmp_path, monkeypatch):
+    """Session teardown must remove the profile-scoped cached environment."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / "ssh-profile"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "terminal:\n"
+        "  backend: ssh\n"
+        "  ssh_host: ssh-profile.example\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", True)
+    secret_scope.set_multiplex_active(True)
+
+    cleaned = []
+
+    class FakeEnvironment:
+        def cleanup(self):
+            cleaned.append(True)
+
+    token = set_hermes_home_override(home)
+    effective_task_id = terminal_tool._resolve_container_task_id("shared-task")
+    try:
+        with terminal_tool._env_lock:
+            terminal_tool._active_environments[effective_task_id] = FakeEnvironment()
+            terminal_tool._last_activity[effective_task_id] = 1.0
+        with terminal_tool._creation_locks_lock:
+            terminal_tool._creation_locks[effective_task_id] = Lock()
+
+        terminal_tool.cleanup_vm("shared-task")
+
+        with terminal_tool._env_lock:
+            assert effective_task_id not in terminal_tool._active_environments
+            assert effective_task_id not in terminal_tool._last_activity
+        with terminal_tool._creation_locks_lock:
+            assert effective_task_id not in terminal_tool._creation_locks
+        assert cleaned == [True]
+    finally:
+        reset_hermes_home_override(token)
+        with terminal_tool._env_lock:
+            terminal_tool._active_environments.pop(effective_task_id, None)
+            terminal_tool._last_activity.pop(effective_task_id, None)
+        with terminal_tool._creation_locks_lock:
+            terminal_tool._creation_locks.pop(effective_task_id, None)
+
+
+def test_multiplex_profiles_do_not_share_session_terminal_state(tmp_path, monkeypatch):
+    """Cwd, task overrides, and child aliases belong to one routed profile."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    homes = []
+    for name in ("profile-a", "profile-b"):
+        home = tmp_path / name
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "terminal:\n  backend: local\n",
+            encoding="utf-8",
+        )
+        homes.append(home)
+
+    monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", True)
+    secret_scope.set_multiplex_active(True)
+
+    try:
+        token = set_hermes_home_override(homes[0])
+        try:
+            terminal_tool.register_task_env_overrides(
+                "shared-task",
+                {"cwd": "/profile-a", "docker_image": "profile-a:image"},
+            )
+            terminal_tool.record_session_cwd("shared-task", "/profile-a/live")
+            terminal_tool.register_container_alias("shared-child", "profile-a-parent")
+            effective_task_id = terminal_tool._resolve_container_task_id("shared-task")
+            assert terminal_tool._has_isolation_overrides(effective_task_id)
+        finally:
+            reset_hermes_home_override(token)
+
+        token = set_hermes_home_override(homes[1])
+        try:
+            assert terminal_tool.resolve_task_overrides("shared-task") == {}
+            assert terminal_tool.get_session_cwd("shared-task") is None
+            assert terminal_tool._resolve_container_alias("shared-child") == "shared-child"
+        finally:
+            reset_hermes_home_override(token)
+    finally:
+        terminal_tool._task_env_overrides.clear()
+        with terminal_tool._session_cwd_lock:
+            terminal_tool._session_cwd.clear()
+        with terminal_tool._container_alias_lock:
+            terminal_tool._container_aliases.clear()
 
 
 def test_bridge_config_failure_does_not_crash(monkeypatch):

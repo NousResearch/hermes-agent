@@ -30,6 +30,7 @@ if [[ "${BLOG_DAILY_NOOP:-}" == "1" ]]; then
   exit 0
 fi
 
+rc=0
 (
   cd "$ROOT"
   set -a

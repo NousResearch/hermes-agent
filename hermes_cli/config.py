@@ -756,6 +756,40 @@ def _phantom_sibling(container: dict, part: str) -> Optional[str]:
     return next((k for k in container if isinstance(k, str) and k.startswith(prefix)), None)
 
 
+def _split_key_path(key: str) -> list[str]:
+    """Split a dotted config-key path, honoring backslash-escaped dots.
+
+    ``hermes config set`` uses ``.`` as the nesting separator, so a key that
+    itself contains a literal dot (e.g. provider names like
+    ``qwen3.5-397b-wafer``) was silently split into bogus nested segments
+    (#84064).  A backslash escapes a dot::
+
+        _split_key_path("providers.qwen3\\.5-397b.api_key")
+            -> ["providers", "qwen3.5-397b", "api_key"]
+
+    Backslashes before any other character are preserved verbatim.  Keys
+    without escapes behave exactly as ``key.split(".")``.
+    """
+    parts: list[str] = []
+    current: list[str] = []
+    i = 0
+    while i < len(key):
+        ch = key[i]
+        if ch == "\\" and i + 1 < len(key) and key[i + 1] == ".":
+            current.append(".")
+            i += 2
+            continue
+        if ch == ".":
+            parts.append("".join(current))
+            current = []
+            i += 1
+            continue
+        current.append(ch)
+        i += 1
+    parts.append("".join(current))
+    return parts
+
+
 def _set_nested(config, dotted_key: str, value):
     """Set a value at a dotted key path, creating intermediate dicts on demand.
     Numeric segments index lists; the index must already exist (lists are never grown).

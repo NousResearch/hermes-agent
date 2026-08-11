@@ -448,6 +448,27 @@ class TestSecretRedactionInDisplay:
 # ---------------------------------------------------------------------------
 # #34067: Schema validation for unknown keys
 # ---------------------------------------------------------------------------
+# `config get` redacts resolved credentials (issue #84106)
+# ---------------------------------------------------------------------------
+
+_MCP_SECRETS_CONFIG = """\
+config_version: 34
+security:
+  redact_secrets: true
+mcp_servers:
+  demo_url:
+    url: "https://example.invalid/mcp?apikey=${FMP_API_KEY}"
+  demo_env:
+    command: demo
+    env:
+      COINGECKO_PRO_API_KEY: "${COINGECKO_PRO_API_KEY}"
+  demo_header:
+    url: "https://example.invalid/mcp"
+    headers:
+      Authorization: "Bearer ${TEST_BEARER_TOKEN}"
+"""
+
+
 
 class TestSchemaValidation:
     """#34067: ``hermes config set`` must not report bare success for

@@ -322,7 +322,16 @@ def _get_model_config() -> Dict[str, Any]:
         # Accept "model" as alias for "default" (users intuitively write model.model)
         if not cfg.get("default") and cfg.get("model"):
             cfg["default"] = cfg["model"]
-        default = (cfg.get("default") or "").strip()
+        # Handle model.default being a dict {provider: ..., model: ...} rather than a string
+        _default = cfg.get("default")
+        if isinstance(_default, dict):
+            cfg_provider = str(_default.get("provider") or model_cfg.get("provider") or "")
+            cfg_model = str(_default.get("model") or _default.get("default") or "")
+            cfg["default"] = cfg_model
+            if cfg_provider and not cfg.get("provider"):
+                cfg["provider"] = cfg_provider
+            _default = cfg_model
+        default = (str(_default or "")).strip()
         base_url = (cfg.get("base_url") or "").strip()
         is_local = base_url_hostname(base_url) in ("localhost", "127.0.0.1")
         is_fallback = not default

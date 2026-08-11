@@ -2272,7 +2272,10 @@ def init_agent(
     # overrides consistent with them and let provider metadata resolve the
     # active model's window instead.
     if _config_context_length is not None and isinstance(_model_cfg, dict):
-        _configured_default_model = str(_model_cfg.get("default") or "").strip()
+        _default = _model_cfg.get("default")
+        if isinstance(_default, dict):
+            _default = str(_default.get("model") or _default.get("default") or "")
+        _configured_default_model = str(_default or "").strip()
         _configured_default_runtime_model = _configured_default_model
         _active_runtime_model = agent.model
         if _configured_default_model:

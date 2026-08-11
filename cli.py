@@ -4565,7 +4565,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # authoritative.  This avoids conflicts in multi-agent setups where
         # env vars would stomp each other.
         _model_config = CLI_CONFIG.get("model", {})
-        _config_model = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
+        _raw_default = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
+        if isinstance(_raw_default, dict):
+            _config_model = str(_raw_default.get("model") or _raw_default.get("default") or _raw_default.get("provider") or "")
+        else:
+            _config_model = str(_raw_default or "")
         _DEFAULT_CONFIG_MODEL = ""
         # Track whether the user passed -m / --model so resume knows not to
         # clobber an explicit override with the session's stored model.
@@ -6659,7 +6663,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
 
     def _normalize_model_for_provider(self, resolved_provider: str) -> bool:
         """Normalize provider-specific model IDs and routing."""
-        current_model = (self.model or "").strip()
+        current_model = str(self.model or "").strip()
+        if isinstance(self.model, dict):
+            _m_dict = self.model
+            current_model = str(_m_dict.get("model") or _m_dict.get("default") or _m_dict.get("provider") or "").strip()
         changed = False
 
         try:
@@ -8973,11 +8980,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             CLI_CONFIG["agent"].get("service_tier", "")
         )
         _model_config = CLI_CONFIG.get("model", {})
-        _config_model = (
-            (_model_config.get("default") or _model_config.get("model") or "")
-            if isinstance(_model_config, dict)
-            else (_model_config or "")
-        )
+        _raw_default2 = (_model_config.get("default") or _model_config.get("model") or "") if isinstance(_model_config, dict) else (_model_config or "")
+        if isinstance(_raw_default2, dict):
+            _config_model = str(_raw_default2.get("model") or _raw_default2.get("default") or _raw_default2.get("provider") or "")
+        else:
+            _config_model = str(_raw_default2 or "")
         if _config_model and _config_model != getattr(self, "model", None):
             _config_provider = (
                 _model_config.get("provider", "")
@@ -14794,8 +14801,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 from hermes_cli.config import load_config
 
                 _img_mode = decide_image_input_mode(
-                    (self.provider or "").strip(),
-                    (self.model or "").strip(),
+                    str(self.provider or "").strip() if not isinstance(self.provider, dict) else str(self.provider.get("provider") or self.provider.get("default") or "").strip(),
+                    str(self.model or "").strip() if not isinstance(self.model, dict) else str(self.model.get("model") or self.model.get("default") or "").strip(),
                     load_config(),
                     requested_provider=(self.requested_provider or "").strip(),
                 )

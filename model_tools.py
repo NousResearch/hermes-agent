@@ -664,7 +664,10 @@ def _resolve_active_context_length() -> int:
         model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
         if not isinstance(model_cfg, dict):
             model_cfg = {}
-        model_id = (model_cfg.get("model") or model_cfg.get("default") or "").strip()
+        _raw_model_id = model_cfg.get("model") or model_cfg.get("default") or ""
+        if isinstance(_raw_model_id, dict):
+            _raw_model_id = _raw_model_id.get("model") or _raw_model_id.get("provider") or ""
+        model_id = str(_raw_model_id).strip()
         if not model_id:
             return 0
         from agent.model_metadata import get_model_context_length

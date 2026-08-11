@@ -973,7 +973,12 @@ def _has_any_provider_configured() -> bool:
     cfg = load_config()
     model_cfg = cfg.get("model")
     if isinstance(model_cfg, dict):
-        _model_name = (model_cfg.get("default") or "").strip()
+        _default = model_cfg.get("default")
+        if isinstance(_default, dict):
+            _model_name = (_default.get("model") or _default.get("provider") or "")
+        else:
+            _model_name = (_default or "")
+        _model_name = (str(_model_name) if not isinstance(_model_name, str) else _model_name).strip()
     elif isinstance(model_cfg, str):
         _model_name = model_cfg.strip()
     else:

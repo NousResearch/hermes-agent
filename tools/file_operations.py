@@ -646,14 +646,16 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         except ValueError:
             file_size = 0
 
-        # Byte-layer binary detection when base64 was available, else the legacy
-        # text heuristic over a plain sample (one extra round-trip, shells without base64).
+        # Prefer the compound base64 sample, then retry the lossless ``od``
+        # transport when base64 was unavailable or its output was untrustworthy.
         sample_bytes = self._decode_base64_sample(sample_seg) if sample_rc == 0 else None
+        if sample_bytes is None:
+            sample_bytes = self._sample_file_bytes(path)
         if sample_bytes is not None:
             is_binary = self._is_likely_binary_bytes(sample_bytes)
         else:
             logger.debug(
-                "read_file: no usable base64 sample for %s (base64 exit %s); "
+                "read_file: no usable byte sample for %s (base64 exit %s); "
                 "paying one extra round-trip for the text heuristic", path, sample_rc)
             sample_output = _strip_terminal_fence_leaks(self._head(path, 1000).stdout)
             is_binary = self._is_likely_binary(path, sample_output)

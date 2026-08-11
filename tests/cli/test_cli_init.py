@@ -372,6 +372,64 @@ class TestHistoryDisplay:
         )
 
 
+class TestNestedDictModelDefaultPairing:
+    """A dict-valued ``model.default`` must keep its nested provider paired.
+
+    ``model.default: {provider: ..., model: ...}`` canonicalizes to the string
+    model AND the nested provider, so ``HermesCLI`` routes the model through
+    that provider instead of discarding it and falling back to the outer
+    merged ``model.provider`` (``"auto"`` — authoritative at runtime
+    resolution, which would route the model through the wrong active
+    provider).
+    """
+
+    def test_nested_dict_default_keeps_provider_paired(self):
+        cli = _make_cli(config_overrides={
+            "model": {
+                "default": {"provider": "nous", "model": "nested-default-model"},
+                "provider": "auto",
+            },
+        })
+        assert cli.model == "nested-default-model"
+        assert cli.requested_provider == "nous"
+        assert cli.provider == "nous"
+
+    def test_nested_dict_model_alias_keeps_provider_paired(self):
+        cli = _make_cli(config_overrides={
+            "model": {
+                "model": {"provider": "openai", "model": "nested-alias-model"},
+                "provider": "auto",
+            },
+        })
+        assert cli.model == "nested-alias-model"
+        assert cli.requested_provider == "openai"
+        assert cli.provider == "openai"
+
+    def test_flat_string_default_still_uses_outer_provider(self):
+        cli = _make_cli(config_overrides={
+            "model": {
+                "default": "flat-default-model",
+                "provider": "auto",
+            },
+        })
+        assert cli.model == "flat-default-model"
+        assert cli.requested_provider == "auto"
+        assert cli.provider == "auto"
+
+    def test_nested_provider_does_not_override_explicit_provider_arg(self):
+        cli = _make_cli(
+            config_overrides={
+                "model": {
+                    "default": {"provider": "nous", "model": "nested-default-model"},
+                    "provider": "auto",
+                },
+            },
+            provider="anthropic",
+        )
+        assert cli.model == "nested-default-model"
+        assert cli.requested_provider == "anthropic"
+        assert cli.provider == "anthropic"
+
 
 class TestRootLevelProviderOverride:
     """Root-level provider/base_url in config.yaml must NOT override model.provider."""

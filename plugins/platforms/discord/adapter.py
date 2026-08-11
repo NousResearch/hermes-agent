@@ -1435,6 +1435,13 @@ class DiscordAdapter(BasePlatformAdapter):
             # each process every message, producing duplicate threads/responses.
             await self._cancel_bot_task()
             self._release_platform_lock()
+            # Always set an explicit fatal code (OOF-152): a code-less failure
+            # forces the gateway into its "no info = probably transient" guess.
+            self._set_fatal_error(
+                "discord_connect_timeout",
+                "Timed out waiting for the Discord gateway to become ready",
+                retryable=True,
+            )
             return False
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
@@ -1443,7 +1450,71 @@ class DiscordAdapter(BasePlatformAdapter):
             # step raises. Cancel it so the discarded adapter cannot connect.
             await self._cancel_bot_task()
             self._release_platform_lock()
+            # Classify by exception TYPE (OOF-152). Previously this branch set
+            # no fatal error at all, so the gateway treated every startup
+            # failure — including a revoked token or a privileged intent that
+            # was never enabled in the Developer Portal — as transient and
+            # retried it forever with zero owner signal. Auth/permission
+            # failures can never self-heal: mark them retryable=False so they
+            # drop out of the reconnect queue and surface as fatal.
+            code, message, retryable = self._classify_connect_exception(e)
+            self._set_fatal_error(code, message, retryable=retryable)
             return False
+
+    @staticmethod
+    def _classify_connect_exception(error: Exception) -> tuple:
+        """Map a Discord startup exception to ``(code, message, retryable)``.
+
+        Type-based only — never match on message text. Unknown exception
+        types stay ``retryable=True``: a false terminal on a transient error
+        would leave a recovered platform silently dead, which is the exact
+        failure mode the auto-pause removal fixed. The reconnect watcher's
+        NEEDS_ATTENTION escalation covers misclassified permanent failures.
+        """
+        name = error.__class__.__name__
+        # String-typename fallback keeps this classifiable when discord.py is
+        # mocked (tests) or the import fails; real isinstance checks follow.
+        if name == "LoginFailure":
+            return (
+                "discord_auth_error",
+                f"Discord bot token rejected: {error}. The token is invalid or "
+                "was revoked — regenerate it in the Discord Developer Portal "
+                "and update DISCORD_BOT_TOKEN.",
+                False,
+            )
+        if name == "PrivilegedIntentsRequired":
+            return (
+                "discord_intents_required",
+                "Discord privileged intents are not enabled for this bot: "
+                f"{error}. Enable 'Message Content Intent' (and any other "
+                "required privileged intents) for this application in the "
+                "Discord Developer Portal → Bot → Privileged Gateway Intents.",
+                False,
+            )
+        try:
+            import discord as _discord
+            login_failure = getattr(_discord, "LoginFailure", None)
+            intents_required = getattr(_discord, "PrivilegedIntentsRequired", None)
+            if isinstance(login_failure, type) and isinstance(error, login_failure):
+                return (
+                    "discord_auth_error",
+                    f"Discord bot token rejected: {error}. The token is invalid "
+                    "or was revoked — regenerate it in the Discord Developer "
+                    "Portal and update DISCORD_BOT_TOKEN.",
+                    False,
+                )
+            if isinstance(intents_required, type) and isinstance(error, intents_required):
+                return (
+                    "discord_intents_required",
+                    "Discord privileged intents are not enabled for this bot: "
+                    f"{error}. Enable 'Message Content Intent' for this "
+                    "application in the Discord Developer Portal → Bot → "
+                    "Privileged Gateway Intents.",
+                    False,
+                )
+        except Exception:
+            pass
+        return ("discord_connect_error", f"Discord startup failed: {error}", True)
 
     def _discord_message_admission(
         self,

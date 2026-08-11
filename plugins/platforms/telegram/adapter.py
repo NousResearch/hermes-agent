@@ -1517,6 +1517,26 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
     @staticmethod
+    def _looks_like_auth_error(error: Exception) -> bool:
+        """Return True for credential failures that can never self-heal.
+
+        InvalidToken (malformed/unknown token) and Forbidden (revoked token /
+        bot deleted) are terminal: no amount of reconnecting fixes them, so
+        connect() must classify them retryable=False (OOF-151). Deliberately
+        narrower than "not _looks_like_network_error" — BadRequest and
+        RetryAfter are non-network but transient at connect time and must
+        keep retrying. Type-based only; never match on message text.
+        """
+        name = error.__class__.__name__.lower()
+        if name in {"invalidtoken", "forbidden"}:
+            return True
+        try:
+            from telegram.error import Forbidden, InvalidToken
+            return isinstance(error, (InvalidToken, Forbidden))
+        except ImportError:
+            return False
+
+    @staticmethod
     def _looks_like_network_error(error: Exception) -> bool:
         """Return True for transient transport failures that warrant reconnect."""
         name = error.__class__.__name__.lower()
@@ -4463,8 +4483,23 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             self._release_platform_lock()
             safe_error = _redact_telegram_error_text(e)
-            message = f"Telegram startup failed: {safe_error}"
-            self._set_fatal_error("telegram_connect_error", message, retryable=True)
+            # Classify by exception TYPE (never message text): auth failures
+            # (InvalidToken / Forbidden — dead or revoked bot token) can never
+            # self-heal, so marking them retryable put agents into a silent,
+            # eternal reconnect loop (OOF-151: weeks of retries at the backoff
+            # cap with zero owner signal). _looks_like_network_error already
+            # discriminates these types for the runtime polling path — reuse
+            # it here so connect() and runtime agree on what is transient.
+            if self._looks_like_auth_error(e):
+                message = (
+                    f"Telegram bot token rejected: {safe_error}. "
+                    "The token is invalid or was revoked — generate a new one "
+                    "with @BotFather and update TELEGRAM_BOT_TOKEN."
+                )
+                self._set_fatal_error("telegram_auth_error", message, retryable=False)
+            else:
+                message = f"Telegram startup failed: {safe_error}"
+                self._set_fatal_error("telegram_connect_error", message, retryable=True)
             logger.error("[%s] Failed to connect to Telegram: %s", self.name, safe_error)
             return False
 

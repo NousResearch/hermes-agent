@@ -682,6 +682,21 @@ class EmailAdapter(BasePlatformAdapter):
             logger.info("[Email] IMAP connection test passed. %d existing messages skipped.", len(self._seen_uids))
         except Exception as e:
             logger.error("[Email] IMAP connection failed: %s", e)
+            # Always set an explicit fatal code (OOF-156): returning False
+            # with no error info made the gateway treat every IMAP failure —
+            # including permanently bad credentials — as transient, retrying
+            # forever with zero owner signal ("stuck retrying 22h").
+            # Kept retryable=True deliberately: imaplib raises the same
+            # generic IMAP4.error for bad credentials AND transient server
+            # NOs (e.g. Gmail's "too many simultaneous connections"), so a
+            # type-based terminal classification isn't safe here. Long-lived
+            # loops surface via the reconnect watcher's NEEDS_ATTENTION
+            # escalation instead.
+            self._set_fatal_error(
+                "email_imap_connect_error",
+                f"IMAP connection to {self._imap_host}:{self._imap_port} failed: {e}",
+                retryable=True,
+            )
             return False
 
         try:
@@ -692,8 +707,27 @@ class EmailAdapter(BasePlatformAdapter):
             finally:
                 smtp.quit()
             logger.info("[Email] SMTP connection test passed.")
+        except smtplib.SMTPAuthenticationError as e:
+            logger.error("[Email] SMTP authentication failed: %s", e)
+            # Typed auth failure (535 & friends): bad or revoked credentials
+            # can never self-heal, so drop out of the reconnect queue instead
+            # of retrying a dead password forever (OOF-156). Type-based only —
+            # SMTPAuthenticationError is unambiguous, unlike IMAP4.error above.
+            self._set_fatal_error(
+                "email_auth_error",
+                f"SMTP authentication failed for {self._address}: {e}. "
+                "Check EMAIL_PASSWORD (for Gmail/Outlook this must be an "
+                "app password, not the account password).",
+                retryable=False,
+            )
+            return False
         except Exception as e:
             logger.error("[Email] SMTP connection failed: %s", e)
+            self._set_fatal_error(
+                "email_smtp_connect_error",
+                f"SMTP connection to {self._smtp_host} failed: {e}",
+                retryable=True,
+            )
             return False
 
         self._running = True

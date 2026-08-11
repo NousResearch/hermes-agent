@@ -1815,7 +1815,18 @@ async function waitForUpdateToFinish() {
   try {
     const result = readAndConsumeHandoffResult(HERMES_HOME)
 
-    if (result && result.ok) {
+    if (result && result.ok && result.manual) {
+      // Update landed but the user must act (reopen/reinstall/sandbox). On
+      // machines with no shim browser and no notifier this dialog is the
+      // FIRST time the message is visible — it must not be a log line.
+      rememberLog(`[updates] detached update finished with manual action (branch ${result.branch}): ${result.message}`)
+      dialog.showMessageBox({
+        type: 'warning',
+        title: 'Hermes update',
+        message: 'The update finished, but needs one more step',
+        detail: result.message
+      })
+    } else if (result && result.ok) {
       rememberLog(`[updates] detached update finished OK (branch ${result.branch})`)
     } else if (result) {
       rememberLog(`[updates] detached update FAILED (exit ${result.exitCode}): ${result.message}`)

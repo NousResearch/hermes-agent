@@ -67,3 +67,24 @@ test('malformed JSON is consumed silently', () => {
 test('absent file returns null', () => {
   assert.equal(readAndConsumeHandoffResult(tempHome()), null)
 })
+
+test('manual flag survives the round trip and defaults false', () => {
+  const home = tempHome()
+  write(home, {
+    ok: true,
+    exit_code: 0,
+    manual: true,
+    message: 'Update complete. Reopen Hermes to finish (it could not restart itself).',
+    branch: 'main',
+    finished_at: Math.floor(Date.now() / 1000)
+  })
+
+  const result = readAndConsumeHandoffResult(home)
+
+  assert.ok(result)
+  assert.equal(result.ok, true)
+  assert.equal(result.manual, true)
+
+  write(home, { ok: true, exit_code: 0, message: 'done', branch: 'main', finished_at: Math.floor(Date.now() / 1000) })
+  assert.equal(readAndConsumeHandoffResult(home)?.manual, false, 'older writers without the field parse as manual:false')
+})

@@ -159,13 +159,13 @@ case "$MODE" in
     if [ "$(uname)" != "Darwin" ]; then
       bash "$SCRIPT_DIR/posix.sh" --no-ui --desktop-pid 0 --install-root "$L/hermes-agent" \
         --relaunch-target "$UNPACKED/hermes" >/dev/null 2>&1 || true
-      expect_msg "instant-exit relaunch downgrades to manual" "d['ok']==True and 'Reopen Hermes' in d['message']"
+      expect_msg "instant-exit relaunch downgrades to manual" "d['ok']==True and d['manual']==True and 'Reopen Hermes' in d['message']"
     else
       # mac: a SUPPLIED target that is missing is a REJECTED launch and
       # must downgrade to manual — never a clean "Update complete."
       bash "$SCRIPT_DIR/posix.sh" --no-ui --desktop-pid 0 --install-root "$L/hermes-agent" \
         --relaunch-target "$L/NoSuch.app" >/dev/null 2>&1 || true
-      expect_msg "missing bundle downgrades to manual" "d['ok']==True and 'Reopen Hermes' in d['message']"
+      expect_msg "missing bundle downgrades to manual" "d['ok']==True and d['manual']==True and 'Reopen Hermes' in d['message']"
     fi
 
     # 2. gated skew: success result carries the skew message (the manual
@@ -174,7 +174,7 @@ case "$MODE" in
     bash "$SCRIPT_DIR/posix.sh" --no-ui --desktop-pid 0 --install-root "$L/hermes-agent" \
       --relaunch-target /opt/Hermes/hermes >/dev/null 2>&1 || true
     if [ "$(uname)" != "Darwin" ]; then
-      expect_msg "skew outcome surfaces in result message" "d['ok']==True and 'was not changed' in d['message']"
+      expect_msg "skew outcome surfaces in result message" "d['ok']==True and d['manual']==True and 'was not changed' in d['message']"
     fi
 
     rm -rf "$L"

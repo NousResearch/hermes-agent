@@ -80,11 +80,13 @@ json_escape() { # minimal JSON string escape: \ " and control whitespace
 }
 
 notify_fallback() { # status message — renderer-free recovery surface.
-  # Fires only when there is no shim window: a gated/failed outcome must
-  # never be a silent disappearance (gille rounds 2-3). Each rung FALLS
-  # THROUGH on execution failure (notify-send existing but unable to reach
-  # D-Bus must not eat the message), ending at osascript on mac — present
-  # on every macOS — and at a logged last resort everywhere.
+  # Fires only when there is no shim window. BEST-EFFORT immediate channel:
+  # each rung requires EXECUTION acceptance, not existence — notify-send's
+  # exit code is its acceptance (fire-and-forget), zenity/kdialog must
+  # survive their first second (a dialog that dies instantly had no display
+  # and must not eat the message). The GUARANTEED channel is the result
+  # file: a manual/error outcome is durably marked and the next Desktop
+  # boot surfaces it in a dialog (handoff-result.ts + main.ts).
   case "$1" in manual|error) ;; *) return 0 ;; esac
   if [ "$(uname)" = "Darwin" ]; then
     /usr/bin/osascript -e "display notification \"$(printf '%s' "$2" | sed 's/"/\\"/g')\" with title \"Hermes update\"" 2>/dev/null && return 0
@@ -92,16 +94,23 @@ notify_fallback() { # status message — renderer-free recovery surface.
     if command -v notify-send >/dev/null 2>&1; then
       notify-send -u critical "Hermes update" "$2" 2>/dev/null && return 0
     fi
+    local p
     if command -v zenity >/dev/null 2>&1; then
-      (zenity --warning --title="Hermes update" --text="$2" 2>/dev/null &) && return 0
+      zenity --warning --title="Hermes update" --text="$2" 2>/dev/null &
+      p=$!; sleep 1
+      kill -0 "$p" 2>/dev/null && return 0
+      wait "$p" 2>/dev/null
     fi
     if command -v kdialog >/dev/null 2>&1; then
-      (kdialog --title "Hermes update" --sorry "$2" 2>/dev/null &) && return 0
+      kdialog --title "Hermes update" --sorry "$2" 2>/dev/null &
+      p=$!; sleep 1
+      kill -0 "$p" 2>/dev/null && return 0
+      wait "$p" 2>/dev/null
     fi
   fi
-  # Explicit contract for the no-surface case: the result file already
-  # tells the next boot the truth; log that this was the only channel.
-  log "NOTICE: no notification surface available; outcome reaches the user via the result file on next launch: $2"
+  # No immediate surface landed. The durable channel takes over: the result
+  # is marked manual/failed and the next boot shows it in a real dialog.
+  log "NOTICE: no notification surface accepted; outcome reaches the user via the result dialog on next launch: $2"
 }
 
 publish() { # status message -- atomic replace; the server reads per poll
@@ -274,9 +283,12 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
   fi
 }
 
+MANUAL=0  # 1 = update landed but the user must act (result protocol field)
+
 write_result() {
-  printf '{"ok":%s,"exit_code":%s,"message":"%s","branch":"%s","finished_at":%s}' \
+  printf '{"ok":%s,"exit_code":%s,"manual":%s,"message":"%s","branch":"%s","finished_at":%s}' \
     "$([ "$FINAL_CODE" -eq 0 ] && echo true || echo false)" "$FINAL_CODE" \
+    "$([ "$MANUAL" -eq 1 ] && echo true || echo false)" \
     "$(json_escape "$FINAL_MSG")" "$(json_escape "$BRANCH")" "$(date +%s)" \
     > "$RESULT.tmp" 2>/dev/null && mv -f "$RESULT.tmp" "$RESULT" 2>/dev/null || true
 }
@@ -293,7 +305,7 @@ finish() {
   # A rejected launch rewrites the result (nothing consumed it — the app
   # never started) so the next boot tells the truth too.
   deliver_outcome
-  [ "$FINAL_CODE" -eq 0 ] && [ -n "$DONE_NOTE" ] && FINAL_MSG="$DONE_NOTE"
+  [ "$FINAL_CODE" -eq 0 ] && [ -n "$DONE_NOTE" ] && { FINAL_MSG="$DONE_NOTE"; MANUAL=1; }
   write_result
 
   if [ "$NO_MARKER_CLEANUP" -eq 0 ] && [ "$(head -1 "$MARKER" 2>/dev/null | tr -d '[:space:]')" = "$$" ]; then
@@ -312,15 +324,21 @@ finish() {
       # mac DONE_NOTE = swap failed but the PREVIOUS bundle was kept/rolled
       # back — bring it back up; the note still tells the user to re-run.
       # A gated linux outcome (skew/manual) skips the launch BY DESIGN.
-      launch_app || true
+      if ! launch_app; then
+        # Even the kept bundle didn't come back: the durable message must
+        # carry BOTH facts (update ok, previous app not reopened).
+        FINAL_MSG="$DONE_NOTE Hermes also could not reopen itself - open it manually."
+        write_result
+      fi
     fi
-    publish "manual" "$DONE_NOTE"; stop_ui leave-window
+    publish "manual" "$FINAL_MSG"; stop_ui leave-window
   elif launch_app; then
     publish "done" ""; stop_ui
   else
     # Launch was due and did not land. Downgrade: truthful result for the
     # next boot, manual state held on screen now.
     FINAL_MSG="Update complete. Reopen Hermes to finish (it could not restart itself)."
+    MANUAL=1
     write_result
     publish "manual" "$FINAL_MSG"; stop_ui leave-window
   fi

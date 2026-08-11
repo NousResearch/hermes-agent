@@ -19,6 +19,11 @@ export const HANDOFF_RESULT_MAX_AGE_MS = 30 * 60 * 1000
 export interface HandoffResult {
   ok: boolean
   exitCode: number
+  /** Update succeeded but the user must act (reopen the app, reinstall the
+   * GUI package, fix the sandbox helper). The consumer must SURFACE these —
+   * an ok:true manual result that only gets logged never reaches the user
+   * on exactly the machines where no shim/notifier could show it live. */
+  manual: boolean
   message: string
   branch: string
 }
@@ -65,6 +70,7 @@ export function readAndConsumeHandoffResult(
   return {
     ok: Boolean(parsed?.ok),
     exitCode: Number.isFinite(Number(parsed?.exit_code)) ? Number(parsed.exit_code) : 1,
+    manual: Boolean(parsed?.manual),
     message: typeof parsed?.message === 'string' ? parsed.message : '',
     branch: typeof parsed?.branch === 'string' ? parsed.branch : ''
   }

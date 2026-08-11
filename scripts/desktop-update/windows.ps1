@@ -409,13 +409,16 @@ function Close-ProgressWindow {
     }
 }
 
-function Write-Result([bool]$Ok, [int]$Code, [string]$Message) {
+function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualAction = $false) {
     # Consumed (read + deleted) by the relaunched Desktop on boot so the
-    # user actually SEES how a detached update ended.
+    # user actually SEES how a detached update ended. $ManualAction marks an
+    # ok result the user still must act on -- the Desktop surfaces those in
+    # a dialog, not just the log (same protocol as posix.sh).
     try {
         $obj = @{
             ok         = $Ok
             exit_code  = $Code
+            manual     = $ManualAction
             message    = $Message
             branch     = $Branch
             finished_at = [int][double]::Parse((Get-Date -UFormat %s), [System.Globalization.CultureInfo]::InvariantCulture)
@@ -733,7 +736,7 @@ try {
             # Launch was due and did not verifiably land: truthful result
             # for the next boot, manual state held on screen now.
             $finalMsg = "Update complete. Reopen Hermes to finish (it could not restart itself)."
-            Write-Result $true 0 $finalMsg
+            Write-Result $true 0 $finalMsg $true
             Show-ManualFinale $finalMsg
         }
         Close-ProgressWindow

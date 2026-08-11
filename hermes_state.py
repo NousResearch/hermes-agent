@@ -4096,7 +4096,25 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        model = COALESCE(sessions.model, excluded.model),
-                       model_config = COALESCE(sessions.model_config, excluded.model_config),
+                       model_config = CASE
+                           WHEN excluded.model_config IS NOT NULL
+                                AND json_type(
+                                    sessions.model_config, '$._reset_from'
+                                ) IS NOT NULL
+                                AND json_remove(
+                                    sessions.model_config, '$._reset_from'
+                                ) = '{}'
+                           THEN json_set(
+                               excluded.model_config,
+                               '$._reset_from',
+                               json_extract(
+                                   sessions.model_config, '$._reset_from'
+                               )
+                           )
+                           ELSE COALESCE(
+                               sessions.model_config, excluded.model_config
+                           )
+                       END,
                        system_prompt_hash = COALESCE(
                            sessions.system_prompt_hash,
                            excluded.system_prompt_hash
@@ -7478,8 +7496,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         Uses a single query with correlated subqueries instead of N+2 queries.
 
-        By default, child sessions (subagent runs, compression continuations)
-        are excluded.  Pass ``include_children=True`` to include them.
+        By default, child sessions that represent implementation details
+        (subagent runs, compression continuations) are excluded. User-visible
+        branch and reset children remain listable. Pass ``include_children=True``
+        to include every child.
 
         With ``project_compression_tips=True`` (default), sessions that are
         roots of compression chains are projected forward to their latest
@@ -7528,10 +7548,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         params = []
 
         if not include_children:
-            # Show root sessions and branch sessions, while still hiding
-            # sub-agent runs and compression continuations (which also carry a
-            # parent_session_id but were spawned while the parent was still
-            # live — i.e., started_at < parent.ended_at).
+            # Show roots and user-visible branch/reset sessions, while still
+            # hiding sub-agent runs and compression continuations. All four
+            # carry parent_session_id, so the shared predicate classifies the
+            # edge from stable markers plus legacy-compatible parent metadata.
             #
             # Branch sessions are identified two ways, OR'd for robustness:
             #   1. A stable ``_branched_from`` marker in model_config, written
@@ -7599,8 +7619,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # level instead of fetching every row and sorting in Python, while
             # still surfacing old compression roots whose live tip is fresh.
             #
-            # The CTE seeds from rows the outer WHERE admits (roots + branch
-            # children), then recursively joins forward through robust
+            # The CTE seeds from rows the outer WHERE admits (roots +
+            # user-visible branch/reset children), then recursively joins through
             # compression-continuation edges. Do NOT require
             # child.started_at >= parent.ended_at here: real desktop/gateway
             # races can insert the continuation row before the parent's
@@ -9609,7 +9629,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """Count sessions, optionally filtered by source.
 
         Pass ``exclude_children=True`` to count only the conversations that
-        ``list_sessions_rich`` surfaces (root + branch sessions), hiding
+        ``list_sessions_rich`` surfaces (root + branch/reset sessions), hiding
         sub-agent runs and compression continuations. Use it whenever the count
         is paired with a ``list_sessions_rich`` page (e.g. sidebar "load more"
         totals) so the total matches the number of listable rows — otherwise the
@@ -9625,8 +9645,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
         if exclude_children:
             # Mirror list_sessions_rich's child-exclusion clause exactly so the
-            # count lines up with the rows: roots (no parent) plus branch
-            # children (parent ended with end_reason='branched').
+            # count lines up with the rows: roots plus user-visible branch/reset
+            # children.
             where_clauses.append(_LISTABLE_CHILD_SQL)
             where_clauses.append(f"{_delegate_from_json('s.model_config')} IS NULL")
         include_sources = [source] if source else list(sources or [])
@@ -9688,8 +9708,8 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ``list_sessions_rich``).
 
         ``exclude_children=True`` mirrors ``list_sessions_rich`` visibility
-        (roots + branch sessions, excluding sub-agent runs, delegates, and
-        compression continuations) so the source counts match what the
+        (roots + branch/reset sessions, excluding sub-agent runs, delegates,
+        and compression continuations) so the source counts match what the
         Sessions page actually lists.
         """
         where_clauses = []

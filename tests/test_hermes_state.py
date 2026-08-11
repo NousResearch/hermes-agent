@@ -1850,6 +1850,60 @@ class TestListSessionsRich:
         assert [session["id"] for session in sessions] == ["lane_tip"]
         assert sessions[0]["_lineage_root_id"] == "lane_root"
 
+    @pytest.mark.parametrize(
+        "end_reason",
+        [
+            "session_reset",
+            "idle",
+            "daily",
+            "suspended",
+            "resume_pending_expired",
+        ],
+    )
+    def test_rich_list_keeps_legacy_reset_children_visible(self, db, end_reason):
+        from hermes_state_common import _ephemeral_child_sql
+
+        lane_key = "agent:main:telegram:dm:lane"
+        parent_id = f"parent_{end_reason}"
+        child_id = f"child_{end_reason}"
+        db.create_session(parent_id, "telegram", session_key=lane_key)
+        db.end_session(parent_id, end_reason)
+        # No _reset_from marker: this is the on-disk shape written before the
+        # marker existed. The unchanged routing key proves a reset boundary.
+        db.create_session(
+            child_id,
+            "telegram",
+            session_key=lane_key,
+            parent_session_id=parent_id,
+        )
+
+        listed = [row["id"] for row in db.list_sessions_rich(source="telegram")]
+        assert {parent_id, child_id}.issubset(listed)
+        assert db.session_count(source="telegram", exclude_children=True) == 2
+        assert db.session_count_by_source(exclude_children=True)["telegram"] == 2
+        ephemeral = db._conn.execute(
+            f"SELECT s.id FROM sessions s WHERE {_ephemeral_child_sql('s')}"
+        ).fetchall()
+        assert child_id not in {row["id"] for row in ephemeral}
+
+    def test_reset_parent_does_not_surface_unrelated_child(self, db):
+        db.create_session(
+            "reset_parent",
+            "telegram",
+            session_key="agent:main:telegram:dm:lane",
+        )
+        db.end_session("reset_parent", "session_reset")
+        db.create_session(
+            "unrelated_child",
+            "tool",
+            session_key="delegate:other",
+            parent_session_id="reset_parent",
+        )
+
+        listed = [row["id"] for row in db.list_sessions_rich()]
+        assert "unrelated_child" not in listed
+        assert db.session_count(exclude_children=True) == 1
+
     def test_session_key_predicate_can_use_session_key_index(self, db):
         plan = db._conn.execute(
             "EXPLAIN QUERY PLAN "

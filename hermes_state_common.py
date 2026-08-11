@@ -98,19 +98,50 @@ _COMPRESSION_CHILD_SQL = (
 )
 
 
-# Rows that surface in pickers: roots + branch children (subagent runs and
-# compression continuations stay hidden).
-_LISTABLE_CHILD_SQL = f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')})"
+_RESET_END_REASONS = (
+    "session_reset",
+    "idle",
+    "daily",
+    "suspended",
+    "resume_pending_expired",
+)
+_RESET_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RESET_END_REASONS)
+
+
+# A reset starts a separate user-visible conversation even though gateway rows
+# retain parent_session_id for durable lineage. New rows carry the stable
+# marker; the same-key fallback recovers rows written before the marker existed.
+# Requiring the exact non-empty routing key keeps ordinary child/subagent rows
+# out even when their parent is later reset.
+_RESET_CHILD_SQL = (
+    "json_extract(COALESCE({a}.model_config, '{{}}'), '$._reset_from') IS NOT NULL"
+    " OR EXISTS (SELECT 1 FROM sessions p"
+    "            WHERE p.id = {a}.parent_session_id"
+    f"            AND p.end_reason IN ({_RESET_END_REASONS_SQL})"
+    "            AND {a}.session_key IS NOT NULL"
+    "            AND {a}.session_key != ''"
+    "            AND {a}.session_key = p.session_key)"
+)
+
+
+# Rows that surface in pickers: roots + branch/reset children. Subagent runs
+# and compression continuations stay hidden.
+_LISTABLE_CHILD_SQL = (
+    f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')}"
+    f" OR {_RESET_CHILD_SQL.format(a='s')})"
+)
 
 
 def _ephemeral_child_sql(alias: str = "s") -> str:
-    """Subagent runs (cascade-delete targets), not branches or compression tips."""
+    """Subagent runs, not branch, reset, or compression children."""
     branch = _BRANCH_CHILD_SQL.format(a=alias)
     compression = _COMPRESSION_CHILD_SQL.format(a=alias)
+    reset = _RESET_CHILD_SQL.format(a=alias)
     return (
         f"({alias}.parent_session_id IS NOT NULL"
         f" AND NOT ({branch})"
-        f" AND NOT ({compression}))"
+        f" AND NOT ({compression})"
+        f" AND NOT ({reset}))"
     )
 
 

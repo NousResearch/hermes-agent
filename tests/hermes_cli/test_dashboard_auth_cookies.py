@@ -206,3 +206,26 @@ def test_clear_pkce_cookie_http_bare_deletion_is_insecure_lax():
         deletion = next(c for c in cookies if c.startswith(f'{name}="'))
         assert "Max-Age=0" in deletion
         assert "Secure" in deletion
+
+
+def test_clear_session_cookies_prefixed_deletions_carry_secure():
+    """__Host-/__Secure- deletions must carry Secure (and __Host- Path=/):
+    browsers reject a prefixed Set-Cookie that violates its prefix rules,
+    so an insecure deletion for __Host-hermes_session_at is silently
+    ignored and the session cookie survives logout on HTTPS origins."""
+    client = TestClient(_build_app(use_https=True, prefix=""))
+    cookies = client.get("/clear").headers.get_list("set-cookie")
+    for name in (SESSION_AT_COOKIE, SESSION_RT_COOKIE, SESSION_PROVIDER_COOKIE):
+        host = next(c for c in cookies if c.startswith(f'__Host-{name}="'))
+        assert "Secure" in host
+        assert "Path=/;" in host or host.rstrip().endswith("Path=/")
+        secure = next(c for c in cookies if c.startswith(f'__Secure-{name}="'))
+        assert "Secure" in secure
+        bare = next(
+            c for c in cookies
+            if c.startswith(f'{name}="') and not c.startswith("__")
+        )
+        # Bare-name deletion mirrors the bare setter (Lax, no Secure) so
+        # it still works on plain-HTTP origins.
+        assert "Secure" not in bare
+        assert "Max-Age=0" in bare

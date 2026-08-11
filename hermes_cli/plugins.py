@@ -223,6 +223,18 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # MCP tool-metadata sanitization. Fired once per MCP tool immediately
+    # after the tools/list handshake (eager discovery) or schema-cache
+    # registration (lazy startup), before the tool is registered and exposed
+    # to approval dialogs or model context. Handlers receive the raw MCP tool
+    # dict (``{"name", "description", "inputSchema"}``) and may return:
+    #   {"tool": {...}}            -> use the (possibly sanitized) tool dict
+    #   {"quarantine": "<reason>"} -> drop the tool; never register/deliver it
+    #   None                       -> leave the tool unchanged
+    # First non-None return wins. Fail-safe: a raising handler is ignored by
+    # the caller (tool proceeds unsanitized, existing core checks still apply),
+    # but the shipping plugin (mcp-unicode-sanitizer) fails closed internally.
+    "sanitize_tool_metadata",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

@@ -21,7 +21,7 @@ describe('resolveSessionRowClick', () => {
     expect(resolveSessionRowClick({ ...NO_MODS, ctrlKey: true }, NO_WINDOW)).toBe('newTab')
   })
 
-  it('opens a new window on ⌘/⌃+⇧-click when supported', () => {
+  it('opens a new window on ⌘+⇧-click when supported', () => {
     expect(resolveSessionRowClick({ ...NO_MODS, metaKey: true, shiftKey: true }, WINDOW_OK)).toBe('newWindow')
   })
 
@@ -29,7 +29,16 @@ describe('resolveSessionRowClick', () => {
     expect(resolveSessionRowClick({ ...NO_MODS, ctrlKey: true, shiftKey: true }, WINDOW_OK)).toBe('archive')
   })
 
-  it('falls back to a new tab for ⌘/⌃+⇧-click when windows are unavailable (web embed)', () => {
+  it('keeps Ctrl+Shift modifier supersets on the window route', () => {
+    expect(resolveSessionRowClick({ ...NO_MODS, altKey: true, ctrlKey: true, shiftKey: true }, WINDOW_OK)).toBe(
+      'newWindow'
+    )
+    expect(resolveSessionRowClick({ ...NO_MODS, ctrlKey: true, metaKey: true, shiftKey: true }, WINDOW_OK)).toBe(
+      'newWindow'
+    )
+  })
+
+  it('falls back to a new tab for ⌘+⇧-click when windows are unavailable (web embed)', () => {
     expect(resolveSessionRowClick({ ...NO_MODS, metaKey: true, shiftKey: true }, NO_WINDOW)).toBe('newTab')
   })
 
@@ -40,6 +49,7 @@ describe('resolveSessionRowClick', () => {
   })
 
   it('archives regardless of window support (archive needs no standalone window)', () => {
+    expect(resolveSessionRowClick({ ...NO_MODS, ctrlKey: true, shiftKey: true }, NO_WINDOW)).toBe('archive')
     expect(resolveSessionRowClick({ ...NO_MODS, altKey: true, shiftKey: true }, NO_WINDOW)).toBe('archive')
   })
 

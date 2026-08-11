@@ -369,7 +369,10 @@ function PetSpriteImpl({ info, zoom = 1, stateOverride, rowOverride, pauseWhenUn
         const sx = frame * frameW
         const sy = row * frameH
         ctx.clearRect(0, 0, canvas.width, canvas.height)
-        ctx.imageSmoothingEnabled = false
+        // Smooth (bicubic) upscale: petdex sheets are illustration art, not
+        // pixel art — nearest-neighbour makes zoomed frames look blocky.
+        ctx.imageSmoothingEnabled = true
+        ctx.imageSmoothingQuality = 'high'
         ctx.drawImage(image, sx, sy, frameW, frameH, 0, 0, backingW, backingH)
         drawnFrame = frame
         drawnRow = row

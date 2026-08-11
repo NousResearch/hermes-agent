@@ -4046,6 +4046,130 @@ def _preflight_job_config(job: dict, cfg: dict) -> Optional[str]:
     return None
 
 
+def _cron_cleanup_timeout_seconds() -> float:
+    """Return the wall-clock bound for cron post-run cleanup."""
+    default = 10.0
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        cron_cfg = cfg.get("cron", {}) if isinstance(cfg, dict) else {}
+        configured = cron_cfg.get("cleanup_timeout_seconds")
+        if configured is not None:
+            timeout = float(configured)
+            if timeout >= 0:
+                return timeout
+    except Exception as exc:
+        logger.debug("Failed to load cron cleanup timeout from config: %s", exc)
+    return default
+
+
+def _run_cron_cleanup_with_timeout(
+    cleanup,
+    *,
+    job_id: str,
+    label: str,
+    timeout_seconds: Optional[float] = None,
+) -> bool:
+    """Run fallible post-run cleanup without permanently wedging a cron ID."""
+    timeout = (
+        _cron_cleanup_timeout_seconds()
+        if timeout_seconds is None
+        else float(timeout_seconds)
+    )
+    if timeout <= 0:
+        try:
+            cleanup()
+            return True
+        except (Exception, KeyboardInterrupt) as exc:
+            logger.debug("Job '%s': %s failed: %s", job_id, label, exc)
+            return False
+
+    done = threading.Event()
+    error: list[BaseException] = []
+
+    def _runner() -> None:
+        try:
+            cleanup()
+        except BaseException as exc:
+            error.append(exc)
+        finally:
+            done.set()
+
+    # A daemon thread is deliberate: unlike ThreadPoolExecutor workers it is
+    # not joined by Python's interpreter-exit hook if the cleanup target never
+    # returns. The scheduler can release its dispatch guard and the gateway can
+    # still shut down normally.
+    worker = threading.Thread(
+        target=_runner,
+        name=f"cron-cleanup-{job_id}",
+        daemon=True,
+    )
+    worker.start()
+    if not done.wait(timeout):
+        logger.error(
+            "Job '%s': %s exceeded %.1fs; abandoning cleanup so future runs remain dispatchable",
+            job_id,
+            label,
+            timeout,
+        )
+        return False
+    if error:
+        logger.debug("Job '%s': %s failed: %s", job_id, label, error[0])
+        return False
+    return True
+
+
+class _BoundedCronSessionDB:
+    """Proxy SessionDB cleanup calls through the cron cleanup timeout.
+
+    After the first failed or timed-out operation the proxy fails subsequent
+    calls immediately. A damaged SQLite connection should leak at most one
+    abandoned cleanup worker, not one worker per finalization step.
+    """
+
+    def __init__(self, session_db, job_id: str):
+        self._session_db = session_db
+        self._job_id = job_id
+        self._disabled = False
+
+    def __getattr__(self, name):
+        target = getattr(self._session_db, name)
+        if not callable(target):
+            return target
+
+        def _bounded(*args, **kwargs):
+            if self._disabled:
+                raise RuntimeError("session finalization disabled after prior cleanup failure")
+
+            result = {}
+
+            def _call():
+                try:
+                    result["value"] = target(*args, **kwargs)
+                except BaseException as exc:
+                    result["error"] = exc
+                    raise
+
+            ok = _run_cron_cleanup_with_timeout(
+                _call,
+                job_id=self._job_id,
+                label=f"session finalization ({name})",
+            )
+            if not ok:
+                error = result.get("error")
+                if error is not None:
+                    raise error
+                # No exception reached the caller and the operation still did
+                # not complete: this is the timeout path. Disable the damaged
+                # connection so later finalization steps fail immediately.
+                self._disabled = True
+                raise TimeoutError(f"session finalization method {name} timed out")
+            return result.get("value")
+
+        return _bounded
+
+
 def run_job(
     job: dict,
     *,
@@ -5374,6 +5498,9 @@ def run_job(
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:
+            # The agent turn has already returned. Bound every subsequent DB
+            # operation so storage failure cannot hold the dispatch guard.
+            _session_db = _BoundedCronSessionDB(_session_db, job_id)
             # Compression can rotate the live agent onto a continuation while
             # this run is in flight. Finalize that continuation, not the stale
             # cron id captured before AIAgent started. SessionDB is the source
@@ -5458,29 +5585,37 @@ def run_job(
             _teardown_cron_agent(agent, job_id)
 
 
-def _teardown_cron_agent(agent, job_id: str) -> None:
-    """Release an ephemeral cron agent's async resources.
+def _teardown_cron_agent(
+    agent, job_id: str, *, timeout_seconds: Optional[float] = None
+) -> None:
+    """Release an ephemeral cron agent's async resources within a hard bound.
 
     Split out of ``run_job``'s ``finally`` so a caller that defers teardown
     (to deliver first — #58720) can invoke the identical cleanup AFTER delivery.
-    Closes the agent (subprocesses, sandboxes, browser daemons, OpenAI/httpx
-    client) and reaps stale async clients whose loop has since closed. Idempotent
-    and independently guarded, matching the original inline behavior.
+    The timeout matters because this executes after ``run_conversation`` has
+    returned, outside the agent inactivity watchdog.
     """
-    try:
-        if agent is not None:
-            agent.close()
-    except (Exception, KeyboardInterrupt) as e:
-        logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
-    # Each cron run spins up a short-lived worker thread whose event loop
-    # dies as soon as the ``ThreadPoolExecutor`` shuts down. Any async
-    # httpx clients cached under that loop are now unusable — reap them
-    # so their transports don't accumulate in the process-global cache.
-    try:
-        from agent.auxiliary_client import cleanup_stale_async_clients
-        cleanup_stale_async_clients()
-    except Exception as e:
-        logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
+    def _cleanup_agent() -> None:
+        try:
+            if agent is not None:
+                agent.close()
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
+        # Each cron run spins up a short-lived worker thread whose event loop
+        # dies as soon as the ``ThreadPoolExecutor`` shuts down. Any async
+        # httpx clients cached under that loop are now unusable — reap them.
+        try:
+            from agent.auxiliary_client import cleanup_stale_async_clients
+            cleanup_stale_async_clients()
+        except Exception as e:
+            logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
+
+    _run_cron_cleanup_with_timeout(
+        _cleanup_agent,
+        job_id=job_id,
+        label="agent resource teardown",
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def _run_with_fire_claim_heartbeat(job: dict, run) -> bool:

@@ -1347,6 +1347,27 @@ def evict_stale_outbound_tool_images(api_messages: List[Dict[str, Any]]) -> int:
     return pruned
 
 
+# #83714 — the shrunk value is replayed back to the model as its OWN past
+# tool call on every subsequent turn. A bare, prose-shaped marker like
+# "...[truncated]" is exactly the kind of terse ellipsis abbreviation a
+# model is already inclined to produce, so a model conditioned on seeing
+# itself "get away with" that pattern in its own history will imitate it in
+# a *new* tool call — writing the literal marker into a file instead of the
+# real content (observed with deepseek-v4-pro; see PR #83752 for the
+# resulting file-corruption guard). This marker is deliberately NOT
+# prose-shaped: distinctive non-ASCII delimiters that don't occur in normal
+# code/text, an explicit "not real content" disclaimer, and a per-instance
+# character count that won't match the next omission point even if copied
+# verbatim — all raise the bar against a model treating this as a stylistic
+# convention worth reusing.
+_COMPRESSION_MARKER_TEMPLATE = (
+    "⟪HERMES-CONTEXT-COMPRESSION: {omitted:,} of {total:,} chars omitted here "
+    "by Hermes's context compressor. This is NOT part of the original tool "
+    "call and must never be reproduced in new output — always write full, "
+    "untruncated content.⟫"
+)
+
+
 def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
     """Shrink long string leaves in a tool-call arguments JSON blob, keeping it valid (providers 400 on malformed args)."""
     try:
@@ -1356,7 +1377,12 @@ def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
 
     def _shrink(obj: Any) -> Any:
         if isinstance(obj, str):
-            return obj[:head_chars] + "...[truncated]" if len(obj) > head_chars else obj
+            if len(obj) > head_chars:
+                marker = _COMPRESSION_MARKER_TEMPLATE.format(
+                    omitted=len(obj) - head_chars, total=len(obj)
+                )
+                return obj[:head_chars] + marker
+            return obj
         if isinstance(obj, dict):
             return {k: _shrink(v) for k, v in obj.items()}
         if isinstance(obj, list):

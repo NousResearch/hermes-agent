@@ -17675,4 +17675,204 @@ def test_prompt_submit_row_id_real_sessiondb_unknown_refuses_despite_ordinal(
         server._sessions.pop(sid, None)
 
 
+def test_prompt_submit_row_id_misaligned_memory_refuses_content_swap(
+    monkeypatch, tmp_path
+):
+    """#82959 heal-path guard: equal-length but content-misaligned live memory
+    must refuse (4018), not zip-stamp durable ids positionally and cut the
+    wrong turn. Probe 4a from the PR #83202 review.
+    """
+    from hermes_state import SessionDB
 
+    db = SessionDB(db_path=tmp_path / "rowid-misalign-content.db")
+    session_key = "real-db-row-misalign-content"
+    db.create_session(session_key, "cli")
+    msgs = [
+        {"role": "user", "content": "A"},
+        {"role": "assistant", "content": "ra"},
+        {"role": "user", "content": "B"},
+        {"role": "assistant", "content": "rb"},
+    ]
+    with db._lock:
+        db._insert_message_rows(db._conn, session_key, msgs)
+        db._conn.commit()
+    rid_b = msgs[2]["_row_id"]
+
+    # Same length + same role pattern, but content positions swapped: a
+    # positional stamp would mark live "B" with durable A's row id and the
+    # cut would keep the very turn the user rewound past.
+    live_history = [
+        {"role": "user", "content": "B"},
+        {"role": "assistant", "content": "rb"},
+        {"role": "user", "content": "A"},
+        {"role": "assistant", "content": "ra"},
+    ]
+    sess = _session(history=list(live_history), session_key=session_key)
+    sid = "misalign-content-sid"
+    server._sessions[sid] = sess
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(
+        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+    monkeypatch.setattr(
+        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+
+    n_before = len(db.get_messages_as_conversation(session_key))
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": sid,
+                    "text": "rewind B",
+                    "truncate_before_row_id": rid_b,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert resp.get("error") is not None
+        assert resp["error"]["code"] == 4018
+        # Fail-closed: nothing stamped onto the misaligned dicts, nothing cut.
+        assert all("_row_id" not in m for m in sess["history"])
+        assert len(sess["history"]) == 4
+        assert len(db.get_messages_as_conversation(session_key)) == n_before
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_prompt_submit_row_id_misaligned_memory_role_shift_targets_real_turn(
+    monkeypatch, tmp_path
+):
+    """#82959 heal-path guard: equal-length but role-misaligned live memory
+    must not be positionally stamped. The content-verified DB fallback still
+    resolves the REAL target turn in live order — the cut drops exactly the
+    addressed user turn, never a positionally mis-aimed one. Probe 4b from
+    the PR #83202 review.
+    """
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "rowid-misalign-role.db")
+    session_key = "real-db-row-misalign-role"
+    db.create_session(session_key, "cli")
+    msgs = [
+        {"role": "user", "content": "A"},
+        {"role": "assistant", "content": "ra"},
+        {"role": "user", "content": "B"},
+        {"role": "assistant", "content": "rb"},
+    ]
+    with db._lock:
+        db._insert_message_rows(db._conn, session_key, msgs)
+        db._conn.commit()
+    rid_b = msgs[2]["_row_id"]
+
+    live_history = [
+        {"role": "user", "content": "A"},
+        {"role": "assistant", "content": "ra"},
+        {"role": "assistant", "content": "rb"},
+        {"role": "user", "content": "B"},
+    ]
+    sess = _session(history=list(live_history), session_key=session_key)
+    sid = "misalign-role-sid"
+    server._sessions[sid] = sess
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(server, "_start_agent_build", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_start_inflight_turn", lambda *a, **k: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": sid,
+                    "text": "rewind B",
+                    "truncate_before_row_id": rid_b,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        assert resp.get("error") is None, resp
+        # The addressed turn ("B") is dropped exactly; earlier live turns
+        # survive untouched. Before the guard, a positional zip-stamp put a
+        # user-row id on an assistant dict and the pre-guard fallback cut at
+        # a mis-aimed index. (Fresh _row_id stamps on survivors are expected —
+        # replace_messages re-inserts and re-stamps the surviving dicts.)
+        survivors = [(m["role"], m["content"]) for m in sess["history"]]
+        assert survivors == [
+            ("user", "A"),
+            ("assistant", "ra"),
+            ("assistant", "rb"),
+        ]
+    finally:
+        server._sessions.pop(sid, None)
+
+
+def test_prompt_submit_row_id_db_fallback_ordinal_mapping_verifies_content(
+    monkeypatch,
+):
+    """#82959 db-fallback guard: when live/durable lengths differ, mapping the
+    durable user-ordinal onto live indices must verify the mapped turn shows
+    the durable target's content — a repaired user;user merge shifts ordinals
+    and would otherwise cut an extra turn silently.
+    """
+    replaced = []
+
+    # Durable transcript (repaired): the merge collapsed two user turns, so
+    # durable user-ordinal 1 ("second") maps onto a DIFFERENT live user turn.
+    durable_history = [
+        {"_row_id": 601, "role": "user", "content": "first\nfollow-up"},
+        {"_row_id": 603, "role": "assistant", "content": "reply 1"},
+        {"_row_id": 604, "role": "user", "content": "second"},
+        {"_row_id": 605, "role": "assistant", "content": "reply 2"},
+    ]
+    # Live memory (unrepaired, longer): user ordinal 1 here is "follow-up",
+    # NOT "second".
+    live_history = [
+        {"role": "user", "content": "first"},
+        {"role": "user", "content": "follow-up"},
+        {"role": "assistant", "content": "reply 1"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "reply 2"},
+    ]
+
+    class _FakeDB:
+        def replace_messages(self, key, messages, active_only=False, archive_dropped=False):
+            replaced.append((key, list(messages)))
+
+        def get_messages_as_conversation(self, key, repair_alternation=False, include_row_ids=False):
+            return [dict(m) for m in durable_history]
+
+    sess = _session(history=list(live_history), session_key="db-fallback-verify-key")
+    sid = "db-fallback-verify-sid"
+    server._sessions[sid] = sess
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(
+        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+    monkeypatch.setattr(
+        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": sid,
+                    "text": "rewind to second",
+                    "truncate_before_row_id": 604,
+                    "confirm_truncate": True,
+                },
+            }
+        )
+        # Mapped live turn ("follow-up") does not match durable target
+        # ("second") — refuse instead of cutting the wrong turn.
+        assert resp.get("error") is not None
+        assert resp["error"]["code"] == 4018
+        assert replaced == []
+        assert len(sess["history"]) == 5
+    finally:
+        server._sessions.pop(sid, None)

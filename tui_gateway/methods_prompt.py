@@ -35,6 +35,35 @@ def _message_row_id(msg: dict):
         return None
 
 
+def _mem_db_pair_agrees(mem, db_msg) -> bool:
+    """True when a live-memory entry plausibly corresponds to a durable row.
+
+    Positional trust across the live and durable lists needs evidence, not
+    just equal lengths/ordinals: roles must match, display-marker status must
+    match (a marker living only on one side shifts every later position), and
+    an addressable user turn must show the same text. Non-string (multimodal)
+    content can't be compared cheaply — role/marker agreement suffices there.
+    Self-contained on builtins: register() rebinds callers onto server
+    globals, so any helper this calls must be in that namespace too.
+    """
+    if not isinstance(mem, dict) or not isinstance(db_msg, dict):
+        return False
+    if mem.get("role") != db_msg.get("role"):
+        return False
+    if bool(mem.get("display_kind")) != bool(db_msg.get("display_kind")):
+        return False
+    if mem.get("role") == "user" and not mem.get("display_kind"):
+        mem_content = mem.get("content")
+        db_content = db_msg.get("content")
+        if (
+            isinstance(mem_content, str)
+            and isinstance(db_content, str)
+            and mem_content.strip() != db_content.strip()
+        ):
+            return False
+    return True
+
+
 def _find_user_turn_by_row_id(history: list, target_row_id: int):
     """Return ``(user_ordinal, history_index)`` for ``target_row_id``, or None."""
     for u_ord, h_idx in enumerate(_history_user_indices(history)):
@@ -88,8 +117,18 @@ def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
         return None
 
     # Heal missing in-memory stamps when the live list still lines up 1:1 with
-    # the durable transcript (common after turn-completion rewrites).
-    if len(db_history) == len(history):
+    # the durable transcript (common after turn-completion rewrites). Equal
+    # length alone is NOT proof of alignment: the durable copy above is loaded
+    # with repair_alternation=True (which can merge/drop rows) while the live
+    # list is unrepaired, and memory can carry optimistic/marker rows — so the
+    # two can coincide in length while position-shifted. A positional stamp on
+    # a misaligned pair is sticky and re-aims every later rewind at the wrong
+    # durable row. Stamp only when EVERY pair agrees (all-or-nothing): roles
+    # must match on every pair, and addressable user turns must match content.
+    if len(db_history) == len(history) and all(
+        _mem_db_pair_agrees(mem, db_msg)
+        for mem, db_msg in zip(history, db_history)
+    ):
         for mem, db_msg in zip(history, db_history):
             db_rid = _message_row_id(db_msg) if isinstance(db_msg, dict) else None
             if db_rid is not None and _message_row_id(mem) is None:
@@ -101,11 +140,19 @@ def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
     db_hit = _find_user_turn_by_row_id(db_history, target_row_id)
     if db_hit is None:
         return None
-    db_ord, _ = db_hit
+    db_ord, db_idx = db_hit
     mem_user_indices = _history_user_indices(history)
     if db_ord < 0 or db_ord >= len(mem_user_indices):
         return None
-    return db_ord, mem_user_indices[db_ord]
+    mem_idx = mem_user_indices[db_ord]
+    # Same-ordinal mapping across two lists that can diverge (the repaired
+    # durable copy may have merged a user;user pair, shifting every later
+    # user ordinal). Trust the mapping only when the mapped live turn shows
+    # the same content as the durable target — otherwise refuse (the caller
+    # returns fail-closed 4018) rather than cut the wrong turn (#82959).
+    if not _mem_db_pair_agrees(history[mem_idx], db_history[db_idx]):
+        return None
+    return db_ord, mem_idx
 
 
 def _pending_reaction_notes(session: dict) -> str:
@@ -1286,6 +1333,7 @@ def register(server) -> None:
     for helper in (
         _history_user_indices,
         _message_row_id,
+        _mem_db_pair_agrees,
         _find_user_turn_by_row_id,
         _resolve_truncate_row_id,
         _pending_reaction_notes,

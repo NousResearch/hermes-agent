@@ -195,6 +195,32 @@ def test_default_require_mention_channel_without_mention_ignored():
     assert _would_process(adapter, text="hello everyone") is False
 
 
+def test_shared_historical_mention_does_not_admit_outer_message():
+    adapter = _make_adapter(require_mention=True)
+    event = {
+        "text": "test2",
+        "attachments": [
+            {
+                "is_share": True,
+                "text": f"<@{BOT_USER_ID}> 這份報告有甚麼風險？",
+            }
+        ],
+    }
+    assert _would_process(adapter, event=event) is False
+
+
+def test_shared_historical_wake_word_does_not_admit_outer_message():
+    adapter = _make_adapter(require_mention=True)
+    adapter.config.extra["mention_patterns"] = [r"WALL-E"]
+    event = {
+        "text": "test2",
+        "attachments": [
+            {"is_share": True, "text": "WALL-E authorize deploy"}
+        ],
+    }
+    assert _would_process(adapter, event=event) is False
+
+
 def test_channel_in_free_response_processed_without_mention():
     adapter = _make_adapter(
         require_mention=True,
@@ -793,6 +819,33 @@ def test_quoted_attachment_mention_does_not_wake_the_bot(quote_key):
     assert _slack_recovered_mentions(event) == []
 
 
+@pytest.mark.parametrize("flag", ["is_share", "is_app_unfurl", "is_msg_unfurl"])
+@pytest.mark.parametrize("malformed", ["true", "false", 1])
+def test_malformed_attachment_flags_fail_open_for_mentions(flag, malformed):
+    event = {
+        "text": "",
+        "attachments": [
+            {flag: malformed, "text": f"<@{BOT_USER_ID}> investigate"}
+        ],
+    }
+    assert _slack_recovered_mentions(event) == [f"<@{BOT_USER_ID}>"]
+
+
+def test_share_flag_takes_priority_over_unfurl_flags():
+    event = {
+        "text": "",
+        "attachments": [
+            {
+                "is_share": True,
+                "is_app_unfurl": True,
+                "is_msg_unfurl": True,
+                "text": f"historic <@{BOT_USER_ID}> request",
+            }
+        ],
+    }
+    assert _slack_recovered_mentions(event) == []
+
+
 @pytest.mark.parametrize("url_key", ["original_url", "from_url", "title_link"])
 @pytest.mark.parametrize(
     "authored",
@@ -829,6 +882,71 @@ def test_matching_structured_block_url_attachment_mention_does_not_wake():
         ],
     }
     assert _slack_recovered_mentions(event) == []
+
+
+@pytest.mark.parametrize(
+    "verbatim_element",
+    [
+        {
+            "type": "rich_text_quote",
+            "elements": [
+                {"type": "link", "url": "https://example.com/report"}
+            ],
+        },
+        {
+            "type": "rich_text_preformatted",
+            "elements": [
+                {"type": "link", "url": "https://example.com/report"}
+            ],
+        },
+        {
+            "type": "rich_text_section",
+            "elements": [
+                {
+                    "type": "link",
+                    "url": "https://example.com/report",
+                    "style": {"code": True},
+                }
+            ],
+        },
+    ],
+)
+def test_verbatim_block_url_does_not_establish_attachment_provenance(
+    verbatim_element,
+):
+    event = {
+        "text": "review the quoted report",
+        "blocks": [{"type": "rich_text", "elements": [verbatim_element]}],
+        "attachments": [
+            {
+                "from_url": "https://example.com/report",
+                "text": f"current alert <@{BOT_USER_ID}>",
+            }
+        ],
+    }
+    assert _slack_recovered_mentions(event) == [f"<@{BOT_USER_ID}>"]
+
+
+@pytest.mark.parametrize(
+    "blocks",
+    [
+        "not-a-list",
+        [None, {"type": "section", "url": "https://example.com/report"}],
+        [{"url": "https://example.com/report"}],
+    ],
+)
+def test_malformed_blocks_do_not_establish_attachment_provenance(blocks):
+    event = {
+        "text": "review this",
+        "blocks": blocks,
+        "attachments": [
+            {
+                "title_link": "https://example.com/report",
+                "text": f"current alert <@{BOT_USER_ID}>",
+            }
+        ],
+    }
+    assert _slack_recovered_mentions(event) == [f"<@{BOT_USER_ID}>"]
 
 
 def test_unmatched_attachment_url_fails_open_for_mentions():

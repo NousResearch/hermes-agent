@@ -885,6 +885,55 @@ def _normalize_slack_http_url(value: Any) -> Optional[str]:
         return None
 
 
+def _extract_authored_urls_from_slack_blocks(blocks: Any) -> list[str]:
+    """Return URLs from valid, non-verbatim authored Block Kit content.
+
+    Quoted, forwarded, preformatted, and code-styled subtrees describe content
+    authored elsewhere and cannot establish provenance for sibling attachments.
+    A malformed top-level block list fails closed for provenance so arbitrary
+    nested ``url`` keys cannot hide a genuine legacy attachment as an unfurl.
+    """
+    if not isinstance(blocks, list) or any(
+        not isinstance(block, dict) or not isinstance(block.get("type"), str)
+        for block in blocks
+    ):
+        return []
+
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def _walk(node: Any, verbatim: bool = False) -> None:
+        if isinstance(node, list):
+            for item in node:
+                _walk(item, verbatim)
+            return
+        if not isinstance(node, dict):
+            return
+
+        node_type = node.get("type")
+        style = node.get("style")
+        nested_verbatim = (
+            verbatim
+            or node_type in _SLACK_VERBATIM_RICH_TEXT_TYPES
+            or (isinstance(style, dict) and style.get("code") is True)
+        )
+        if nested_verbatim:
+            return
+
+        for key in ("url", "image_url", "external_url"):
+            value = node.get(key)
+            if isinstance(value, str) and value.startswith(("http://", "https://")):
+                if value not in seen:
+                    seen.add(value)
+                    found.append(value)
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                _walk(value, nested_verbatim)
+
+    _walk(blocks)
+    return found
+
+
 def _collect_slack_authored_urls(event: dict) -> set[str]:
     """Collect HTTP(S) URLs authored in top-level text and Block Kit only."""
     urls: set[str] = set()
@@ -906,12 +955,10 @@ def _collect_slack_authored_urls(event: dict) -> set[str]:
             if normalized:
                 urls.add(normalized)
 
-    blocks = event.get("blocks")
-    if isinstance(blocks, list):
-        for raw in _extract_urls_from_slack_blocks(blocks):
-            normalized = _normalize_slack_http_url(raw)
-            if normalized:
-                urls.add(normalized)
+    for raw in _extract_authored_urls_from_slack_blocks(event.get("blocks")):
+        normalized = _normalize_slack_http_url(raw)
+        if normalized:
+            urls.add(normalized)
     return urls
 
 
@@ -925,9 +972,12 @@ def _classify_slack_attachment(attachment: Any, authored_urls: set[str]) -> str:
     """
     if not isinstance(attachment, dict):
         return "content"
-    if attachment.get("is_share"):
+    if attachment.get("is_share") is True:
         return "share"
-    if attachment.get("is_app_unfurl") or attachment.get("is_msg_unfurl"):
+    if (
+        attachment.get("is_app_unfurl") is True
+        or attachment.get("is_msg_unfurl") is True
+    ):
         return "unfurl"
     if not authored_urls:
         return "content"

@@ -1651,6 +1651,52 @@ class TestSlackAttachmentUnfurls:
         assert adapter._slack_event_mentions_bot(event, "U_BOT") is False
         assert "Forwarded incident" in adapter._render_message_text(event)
 
+    @pytest.mark.asyncio
+    async def test_outer_mention_routes_and_keeps_shared_content(self, adapter):
+        event = self._event(
+            "<@U_BOT> review this",
+            [
+                {
+                    "is_share": True,
+                    "is_app_unfurl": True,
+                    "title": "Forwarded report",
+                    "text": "Historic <@U_BOT> request",
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        delivered = adapter.handle_message.await_args.args[0]
+        assert delivered.text.startswith("review this")
+        assert "Forwarded report" in delivered.text
+        assert "Historic  request" in delivered.text
+        rendered = adapter._render_message_text(event)
+        assert "Forwarded report" in rendered
+        assert "Historic <@U_BOT> request" in rendered
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("flag", "value"),
+        [
+            ("is_share", "false"),
+            ("is_app_unfurl", "true"),
+            ("is_msg_unfurl", 1),
+        ],
+    )
+    async def test_malformed_flags_fail_open_as_content(self, adapter, flag, value):
+        event = self._event(
+            "review this",
+            [{flag: value, "title": "Current alert", "text": "Disk at 91%"}],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        delivered = adapter.handle_message.await_args.args[0]
+        assert "Current alert" in delivered.text
+        assert "Disk at 91%" in delivered.text
+        assert "Current alert" in adapter._render_message_text(event)
+
     def test_render_message_text_preserves_attachment_only_alert(self, adapter):
         rendered = adapter._render_message_text(
             {

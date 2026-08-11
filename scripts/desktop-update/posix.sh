@@ -79,30 +79,36 @@ json_escape() { # minimal JSON string escape: \ " and control whitespace
   printf '%s' "$s"
 }
 
+notify_fallback() { # status message — renderer-free recovery surface.
+  # Fires only when there is no shim window: a gated/failed outcome must
+  # never be a silent disappearance (gille rounds 2-3). Each rung FALLS
+  # THROUGH on execution failure (notify-send existing but unable to reach
+  # D-Bus must not eat the message), ending at osascript on mac — present
+  # on every macOS — and at a logged last resort everywhere.
+  case "$1" in manual|error) ;; *) return 0 ;; esac
+  if [ "$(uname)" = "Darwin" ]; then
+    /usr/bin/osascript -e "display notification \"$(printf '%s' "$2" | sed 's/"/\\"/g')\" with title \"Hermes update\"" 2>/dev/null && return 0
+  else
+    if command -v notify-send >/dev/null 2>&1; then
+      notify-send -u critical "Hermes update" "$2" 2>/dev/null && return 0
+    fi
+    if command -v zenity >/dev/null 2>&1; then
+      (zenity --warning --title="Hermes update" --text="$2" 2>/dev/null &) && return 0
+    fi
+    if command -v kdialog >/dev/null 2>&1; then
+      (kdialog --title "Hermes update" --sorry "$2" 2>/dev/null &) && return 0
+    fi
+  fi
+  # Explicit contract for the no-surface case: the result file already
+  # tells the next boot the truth; log that this was the only channel.
+  log "NOTICE: no notification surface available; outcome reaches the user via the result file on next launch: $2"
+}
+
 publish() { # status message -- atomic replace; the server reads per poll
   printf '{"status":"%s","message":"%s"}' "$(json_escape "$1")" "$(json_escape "$2")" > "$STATUS.tmp" \
     && mv -f "$STATUS.tmp" "$STATUS" 2>/dev/null || true
   [ -n "$UI_SERVER_PID" ] && sleep 1  # one poll beat to render the state
-  # Renderer-free recovery surface (gille's review, round 2): on linux a
-  # gated skew/manual outcome or a failure may be the ONLY signal the user
-  # gets — the Desktop deliberately does not reopen, and without a
-  # chromium-family browser there is no shim window. libnotify/zenity ship
-  # with every desktop environment; best-effort, never fatal, mac excluded
-  # (the shim browser list is effectively always satisfiable there and
-  # `open` reopens the app even on error).
-  if [ -z "$UI_SERVER_PID" ] && [ "$(uname)" != "Darwin" ]; then
-    case "$1" in
-      manual|error)
-        if command -v notify-send >/dev/null 2>&1; then
-          notify-send -u critical "Hermes update" "$2" 2>/dev/null || true
-        elif command -v zenity >/dev/null 2>&1; then
-          (zenity --warning --title="Hermes update" --text="$2" 2>/dev/null &) || true
-        elif command -v kdialog >/dev/null 2>&1; then
-          (kdialog --title "Hermes update" --sorry "$2" 2>/dev/null &) || true
-        fi
-        ;;
-    esac
-  fi
+  [ -z "$UI_SERVER_PID" ] && notify_fallback "$1" "$2"
 }
 
 find_browser() {
@@ -245,7 +251,9 @@ launch_app() { # attempted BEFORE the terminal event (launch acceptance is
   # was due but did not verifiably happen; caller downgrades to manual.
   [ -n "$RELAUNCH_TARGET" ] || return 0
   if [ "$(uname)" = "Darwin" ]; then
-    [ -d "$RELAUNCH_TARGET" ] || return 0
+    # A supplied target that no longer exists is a REJECTED launch (the
+    # swap failed badly or the bundle vanished) — not "no launch due".
+    [ -d "$RELAUNCH_TARGET" ] || { log "WARNING: relaunch target missing: $RELAUNCH_TARGET"; return 1; }
     /usr/bin/xattr -dr com.apple.quarantine "$RELAUNCH_TARGET" 2>/dev/null || true
     # `open` talks to launchd and FAILS LOUDLY on a broken/unlaunchable
     # bundle — its exit code IS launch acceptance here.
@@ -300,8 +308,12 @@ finish() {
   fi
 
   if [ -n "$DONE_NOTE" ]; then
-    # Gated (skew/manual): no launch will happen by design. Say so and
-    # leave the window up — it is the only surface until the next boot.
+    if [ "$(uname)" = "Darwin" ]; then
+      # mac DONE_NOTE = swap failed but the PREVIOUS bundle was kept/rolled
+      # back — bring it back up; the note still tells the user to re-run.
+      # A gated linux outcome (skew/manual) skips the launch BY DESIGN.
+      launch_app || true
+    fi
     publish "manual" "$DONE_NOTE"; stop_ui leave-window
   elif launch_app; then
     publish "done" ""; stop_ui
@@ -360,8 +372,13 @@ HERMES_BIN="$INSTALL_ROOT/venv/bin/hermes"
 # Run FROM the install root: `hermes update` resolves the tree it mutates
 # from the working directory, and we inherit the Desktop's cwd (which can be
 # an unrelated repo — updating THAT instead of the install is the failure
-# the sandbox repro caught). The in-app path always passed cwd:updateRoot.
-cd "$INSTALL_ROOT"
+# the sandbox repro caught). FAIL CLOSED: set -u without set -e means a
+# failed cd would otherwise continue in the wrong tree — the exact class
+# this correction exists to eliminate.
+cd "$INSTALL_ROOT" || {
+  FINAL_CODE=3 FINAL_MSG="Update aborted: cannot enter the install root ($INSTALL_ROOT). Nothing was changed."
+  log "$FINAL_MSG"; exit 3
+}
 export PYTHONUNBUFFERED=1
 log "running: hermes update --yes --gateway --branch $BRANCH"
 OUT="$("$HERMES_BIN" update --yes --gateway --branch "$BRANCH" 2>&1)"; CODE=$?

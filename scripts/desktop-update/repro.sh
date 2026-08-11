@@ -46,10 +46,8 @@ ensure_sandbox_install() {
   mkdir -p "$SANDBOX"
   # The literal user path: install.sh against a clone of THIS checkout, so
   # the repro reproduces what you're about to ship, not origin/main.
-  # </dev/null = non-TTY stdin, which install.sh treats as non-interactive
-  # (it has no --no-interactive flag); --skip-setup skips the config wizard.
   git clone --quiet "$REPO_ROOT" "$SANDBOX_ROOT"
-  HERMES_HOME="$SANDBOX" bash "$SANDBOX_ROOT/scripts/install.sh" --skip-setup --hermes-home "$SANDBOX" < /dev/null
+  HERMES_HOME="$SANDBOX" bash "$SANDBOX_ROOT/scripts/install.sh" --non-interactive --skip-setup --hermes-home "$SANDBOX"
 }
 
 case "$MODE" in
@@ -163,10 +161,11 @@ case "$MODE" in
         --relaunch-target "$UNPACKED/hermes" >/dev/null 2>&1 || true
       expect_msg "instant-exit relaunch downgrades to manual" "d['ok']==True and 'Reopen Hermes' in d['message']"
     else
-      # mac: `open` on a nonexistent bundle is the acceptance-failure analog
+      # mac: a SUPPLIED target that is missing is a REJECTED launch and
+      # must downgrade to manual — never a clean "Update complete."
       bash "$SCRIPT_DIR/posix.sh" --no-ui --desktop-pid 0 --install-root "$L/hermes-agent" \
         --relaunch-target "$L/NoSuch.app" >/dev/null 2>&1 || true
-      expect_msg "missing bundle -> clean result (no launch due)" "d['ok']==True"
+      expect_msg "missing bundle downgrades to manual" "d['ok']==True and 'Reopen Hermes' in d['message']"
     fi
 
     # 2. gated skew: success result carries the skew message (the manual

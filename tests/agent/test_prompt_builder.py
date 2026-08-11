@@ -858,6 +858,70 @@ class TestEnvironmentHints:
         assert "Linux 6.8.0" in line
         assert "root" in line
 
+    def test_remote_probe_cache_is_scoped_by_profile_and_ssh_settings(
+        self,
+        monkeypatch,
+        tmp_path,
+    ):
+        import agent.prompt_builder as _pb
+        import tools.terminal_tool as _tt
+        from agent import secret_scope
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+
+        homes = []
+        for name, host in (("first", "first.example"), ("second", "second.example")):
+            home = tmp_path / name
+            home.mkdir()
+            (home / "config.yaml").write_text(
+                "terminal:\n"
+                "  backend: ssh\n"
+                f"  ssh_host: {host}\n"
+                "  ssh_user: probe-user\n",
+                encoding="utf-8",
+            )
+            homes.append(home)
+
+        calls = []
+
+        class FakeEnvironment:
+            def __init__(self, host):
+                self.host = host
+
+            def execute(self, _cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": (
+                        "os=Linux\nkernel=6.8\nhome=/home/probe\n"
+                        f"cwd=/srv/{self.host}\nuser={self.host}\n"
+                    ),
+                }
+
+        def fake_create_environment(*, ssh_config, **_kwargs):
+            calls.append(ssh_config["host"])
+            return FakeEnvironment(ssh_config["host"])
+
+        monkeypatch.setattr(_tt, "_create_environment", fake_create_environment)
+        _pb._clear_backend_probe_cache()
+        secret_scope.set_multiplex_active(True)
+        results = []
+        try:
+            for home in homes:
+                token = set_hermes_home_override(home)
+                try:
+                    results.append(_pb._probe_remote_backend("ssh"))
+                finally:
+                    reset_hermes_home_override(token)
+        finally:
+            secret_scope.set_multiplex_active(False)
+            _pb._clear_backend_probe_cache()
+
+        assert calls == ["first.example", "second.example"]
+        assert "first.example" in results[0]
+        assert "second.example" in results[1]
+
 
     def test_environment_hint_from_env_var_is_appended(self, monkeypatch):
         """HERMES_ENVIRONMENT_HINT lets an embedder describe the runtime env."""

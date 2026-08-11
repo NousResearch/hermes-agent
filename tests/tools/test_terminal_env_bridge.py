@@ -8,7 +8,7 @@ config.yaml.
 
 import os
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier, Lock
+from threading import Barrier, Lock, Thread
 
 import pytest
 
@@ -32,6 +32,13 @@ def _reset_bridge_state(monkeypatch):
     secret_scope.set_multiplex_active(False)
     yield
     secret_scope.set_multiplex_active(False)
+    with terminal_tool._env_lock:
+        terminal_tool._active_environments.clear()
+        terminal_tool._last_activity.clear()
+        terminal_tool._environment_metadata.clear()
+        terminal_tool._task_environment_keys.clear()
+    with terminal_tool._creation_locks_lock:
+        terminal_tool._creation_locks.clear()
 
 
 def _write_config(text: str) -> None:
@@ -369,6 +376,100 @@ def test_multiplex_profiles_do_not_share_session_terminal_state(tmp_path, monkey
             terminal_tool._container_aliases.clear()
 
 
+def test_child_first_environment_creation_uses_parent_alias_overrides(monkeypatch):
+    import tools.code_execution_tool as code_execution_tool
+
+    config = terminal_tool._get_env_config(
+        {
+            "terminal": {
+                "backend": "docker",
+                "container_persistent": False,
+            }
+        }
+    )
+    config["container_persistent"] = False
+    created = {}
+
+    class FakeEnvironment:
+        def cleanup(self):
+            pass
+
+    def fake_create_environment(**kwargs):
+        created.update(kwargs)
+        return FakeEnvironment()
+
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda *_args: config)
+    monkeypatch.setattr(terminal_tool, "_create_environment", fake_create_environment)
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    secret_scope.set_multiplex_active(True)
+    terminal_tool.register_task_env_overrides(
+        "parent-task",
+        {
+            "docker_image": "parent/image:1",
+            "cwd": "/workspace/parent",
+        },
+    )
+    terminal_tool.register_container_alias("child-task", "parent-task")
+    try:
+        code_execution_tool._get_or_create_env("child-task")
+    finally:
+        terminal_tool.cleanup_vm("parent-task")
+        terminal_tool.clear_task_env_overrides("parent-task")
+        terminal_tool.clear_task_env_overrides("child-task")
+        secret_scope.set_multiplex_active(False)
+
+    assert created["task_id"].endswith(":parent-task")
+    assert created["image"] == "parent/image:1"
+    assert created["cwd"] == "/workspace/parent"
+
+
+def test_child_cleanup_does_not_destroy_parent_aliased_environment(monkeypatch):
+    config = terminal_tool._get_env_config(
+        {
+            "terminal": {
+                "backend": "docker",
+                "container_persistent": False,
+            }
+        }
+    )
+    config["container_persistent"] = False
+    cleaned = []
+
+    class FakeEnvironment:
+        def cleanup(self):
+            cleaned.append(True)
+
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda *_args: config)
+    secret_scope.set_multiplex_active(True)
+    terminal_tool.register_container_alias("child-task", "parent-task")
+    environment_key = terminal_tool._resolve_container_task_id("child-task")
+    terminal_tool._register_active_environment(
+        environment_key,
+        FakeEnvironment(),
+        config,
+        "child-task",
+    )
+    try:
+        terminal_tool.cleanup_vm("child-task")
+        with terminal_tool._env_lock:
+            assert environment_key in terminal_tool._active_environments
+        assert cleaned == []
+
+        terminal_tool.cleanup_vm("parent-task")
+        with terminal_tool._env_lock:
+            assert environment_key not in terminal_tool._active_environments
+        assert cleaned == [True]
+    finally:
+        secret_scope.set_multiplex_active(False)
+        with terminal_tool._env_lock:
+            terminal_tool._active_environments.clear()
+            terminal_tool._last_activity.clear()
+            terminal_tool._environment_metadata.clear()
+            terminal_tool._task_environment_keys.clear()
+        with terminal_tool._container_alias_lock:
+            terminal_tool._container_aliases.clear()
+
+
 def test_bridge_config_failure_does_not_crash(monkeypatch):
     import hermes_cli.config as config_mod
 
@@ -384,3 +485,141 @@ def test_bridge_config_failure_does_not_crash(monkeypatch):
 
     assert config["env_type"] == "ssh"
     assert config["ssh_host"] == "example.test"
+
+
+def test_nonmultiplex_config_change_retires_stale_environment(monkeypatch):
+    import tools.code_execution_tool as code_execution_tool
+
+    cleaned = []
+
+    class FakeEnvironment:
+        def __init__(self, backend):
+            self.backend = backend
+
+        def cleanup(self):
+            cleaned.append(self.backend)
+
+    def fake_create_environment(*, env_type, **_kwargs):
+        return FakeEnvironment(env_type)
+
+    monkeypatch.setattr(terminal_tool, "_create_environment", fake_create_environment)
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    _write_config("terminal:\n  backend: local\n")
+
+    local_env, local_backend = code_execution_tool._get_or_create_env("reload-task")
+    _write_config(
+        "terminal:\n"
+        "  backend: ssh\n"
+        "  ssh_host: changed.example\n"
+        "  ssh_user: changed-user\n"
+    )
+    ssh_env, ssh_backend = code_execution_tool._get_or_create_env("reload-task")
+    _write_config("terminal:\n  backend: local\n")
+    second_local_env, second_local_backend = (
+        code_execution_tool._get_or_create_env("reload-task")
+    )
+
+    assert local_backend == "local"
+    assert ssh_backend == "ssh"
+    assert second_local_backend == "local"
+    assert ssh_env is not local_env
+    assert second_local_env is not ssh_env
+    assert cleaned == ["local", "ssh"]
+
+
+def test_cleanup_vm_retires_all_profile_session_namespace_versions(
+    tmp_path,
+    monkeypatch,
+):
+    from tools import file_tools
+
+    home = tmp_path / "profile"
+    home.mkdir()
+    cleaned = []
+
+    class FakeEnvironment:
+        def __init__(self, name):
+            self.name = name
+
+        def cleanup(self):
+            cleaned.append(self.name)
+
+    monkeypatch.setattr(terminal_tool, "_profile_home_key", lambda: str(home))
+    for key, backend in (
+        ("mpx:old:default", "local"),
+        ("mpx:new:default", "ssh"),
+    ):
+        config = terminal_tool._get_env_config(
+            {
+                "terminal": {
+                    "backend": backend,
+                    "ssh_host": "changed.example",
+                    "ssh_user": "changed-user",
+                }
+            }
+        )
+        terminal_tool._register_active_environment(
+            key,
+            FakeEnvironment(key),
+            config,
+            "shared-session",
+        )
+        with terminal_tool._creation_locks_lock:
+            terminal_tool._creation_locks[key] = Lock()
+        with file_tools._file_ops_lock:
+            file_tools._file_ops_cache[key] = object()
+
+    terminal_tool.cleanup_vm("shared-session", profile_home=str(home))
+
+    assert sorted(cleaned) == ["mpx:new:default", "mpx:old:default"]
+    with terminal_tool._env_lock:
+        assert not terminal_tool._active_environments
+        assert not terminal_tool._task_environment_keys
+    with terminal_tool._creation_locks_lock:
+        assert "mpx:old:default" not in terminal_tool._creation_locks
+        assert "mpx:new:default" not in terminal_tool._creation_locks
+    with file_tools._file_ops_lock:
+        assert "mpx:old:default" not in file_tools._file_ops_cache
+        assert "mpx:new:default" not in file_tools._file_ops_cache
+
+
+def test_cleanup_inactive_envs_uses_each_environment_lifetime(monkeypatch):
+    cleaned = []
+
+    class FakeEnvironment:
+        def __init__(self, name):
+            self.name = name
+
+        def cleanup(self):
+            cleaned.append(self.name)
+
+    monkeypatch.setattr(terminal_tool.time, "time", lambda: 50.0)
+    base_config = terminal_tool._get_env_config({"terminal": {"backend": "local"}})
+    short_config = {**base_config, "lifetime_seconds": 10}
+    long_config = {**base_config, "lifetime_seconds": 100}
+    terminal_tool._register_active_environment(
+        "short-env", FakeEnvironment("short"), short_config, "short-task",
+    )
+    terminal_tool._register_active_environment(
+        "long-env", FakeEnvironment("long"), long_config, "long-task",
+    )
+    with terminal_tool._env_lock:
+        terminal_tool._last_activity["short-env"] = 0.0
+        terminal_tool._last_activity["long-env"] = 0.0
+
+    monkeypatch.setattr(
+        terminal_tool,
+        "_get_env_config",
+        lambda: (_ for _ in ()).throw(
+            AssertionError("cleanup must not read an unscoped profile config")
+        ),
+    )
+    worker = Thread(target=terminal_tool._cleanup_inactive_envs)
+    worker.start()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert cleaned == ["short"]
+    with terminal_tool._env_lock:
+        assert "short-env" not in terminal_tool._active_environments
+        assert "long-env" in terminal_tool._active_environments

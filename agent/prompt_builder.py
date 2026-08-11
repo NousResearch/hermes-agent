@@ -1142,8 +1142,7 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
 
 
 # Cache the backend probe result per process so we only pay the probe cost
-# on the first prompt build of a session. Keyed by (env_type, cwd_hint) so
-# a mid-process backend switch rebuilds the string. Kept in-module (not on
+# for one profile/backend fingerprint. Kept in-module (not on
 # disk) because the probe captures live backend state that may change
 # across Hermes restarts.
 _BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
@@ -1201,23 +1200,28 @@ def _probe_remote_backend(env_type: str) -> str | None:
     per process. Used only for non-local backends where the agent's tools
     operate on a different machine than the host Hermes runs on.
     """
-    cwd_hint = os.getenv("TERMINAL_CWD", "")
-    cache_key = (env_type, cwd_hint)
+    try:
+        # Import locally: tools/ imports are heavy and only relevant when a
+        # non-local backend is actually configured.
+        from tools.terminal_tool import (  # type: ignore
+            _create_environment,
+            _get_env_config,
+            _terminal_backend_fingerprint,
+        )
+        config = _get_env_config()
+        cache_key = (
+            env_type,
+            _terminal_backend_fingerprint(resolved_config=config),
+        )
+    except Exception as e:
+        logger.debug("Backend probe unavailable (import failed): %s", e)
+        return None
+
     cached = _BACKEND_PROBE_CACHE.get(cache_key)
     if cached is not None:
         return cached or None
 
     try:
-        # Import locally: tools/ imports are heavy and only relevant when a
-        # non-local backend is actually configured.
-        from tools.terminal_tool import _create_environment, _get_env_config  # type: ignore
-    except Exception as e:
-        logger.debug("Backend probe unavailable (import failed): %s", e)
-        _BACKEND_PROBE_CACHE[cache_key] = ""
-        return None
-
-    try:
-        config = _get_env_config()
         # Build the environment the same way tools/terminal_tool.py does for a
         # live command: select the backend image, then assemble ssh/container
         # config from the env-derived dict. (There is no `get_environment`

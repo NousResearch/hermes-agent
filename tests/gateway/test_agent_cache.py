@@ -224,6 +224,42 @@ class TestExtractCacheBustingConfig:
         assert keys["terminal.backend"] == "local"
         assert keys["terminal.effective_backend"] == "local"
 
+    def test_ssh_connection_change_busts_agent_signature(self):
+        from gateway.run import GatewayRunner
+
+        runtime = {"api_key": "k", "base_url": "u", "provider": "p"}
+        first = GatewayRunner._extract_cache_busting_config(
+            {
+                "terminal": {
+                    "backend": "ssh",
+                    "ssh_host": "first.example",
+                    "ssh_user": "user",
+                    "cwd": "/srv/first",
+                }
+            }
+        )
+        second = GatewayRunner._extract_cache_busting_config(
+            {
+                "terminal": {
+                    "backend": "ssh",
+                    "ssh_host": "second.example",
+                    "ssh_user": "user",
+                    "cwd": "/srv/second",
+                }
+            }
+        )
+
+        assert first["terminal.effective_backend"] == "ssh"
+        assert second["terminal.effective_backend"] == "ssh"
+        assert first["terminal.backend_fingerprint"] != second[
+            "terminal.backend_fingerprint"
+        ]
+        assert GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", cache_keys=first
+        ) != GatewayRunner._agent_config_signature(
+            "m", runtime, [], "", cache_keys=second
+        )
+
 
 class TestAgentCacheLifecycle:
     """End-to-end cache behavior with real AIAgent construction."""
@@ -733,6 +769,118 @@ class TestAgentCacheIdleResume:
         # Only agent_b's task_id should appear in cleanup calls.
         assert "hard-session" in vm_calls
         assert "soft-session" not in vm_calls
+
+    def test_close_restores_agent_profile_scope_for_terminal_cleanup(
+        self,
+        tmp_path,
+    ):
+        import run_agent as _ra
+        from hermes_constants import (
+            get_hermes_home,
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from run_agent import AIAgent
+
+        profile_home = tmp_path / "secondary-profile"
+        profile_home.mkdir()
+        token = set_hermes_home_override(profile_home)
+        try:
+            agent = AIAgent(
+                model="anthropic/claude-sonnet-4",
+                api_key="test",
+                base_url="https://openrouter.ai/api/v1",
+                provider="openrouter",
+                max_iterations=5,
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+                session_id="secondary-session",
+            )
+        finally:
+            reset_hermes_home_override(token)
+
+        cleanup_homes = []
+        original_vm = _ra.cleanup_vm
+        _ra.cleanup_vm = lambda _tid: cleanup_homes.append(str(get_hermes_home()))
+        try:
+            agent.close()
+        finally:
+            _ra.cleanup_vm = original_vm
+
+        assert cleanup_homes == [str(profile_home)]
+
+    def test_close_cleans_only_the_owning_profile_environment(self, tmp_path):
+        from agent import secret_scope
+        from hermes_constants import (
+            reset_hermes_home_override,
+            set_hermes_home_override,
+        )
+        from run_agent import AIAgent
+        from tools import terminal_tool
+
+        cleaned = []
+
+        class FakeEnvironment:
+            def __init__(self, owner):
+                self.owner = owner
+
+            def cleanup(self):
+                cleaned.append(self.owner)
+
+        def fake_agent(profile_home):
+            agent = AIAgent.__new__(AIAgent)
+            setattr(agent, "session_id", "shared-session")
+            setattr(agent, "_terminal_profile_home", str(profile_home))
+            setattr(agent, "_active_children_lock", threading.Lock())
+            setattr(agent, "_active_children", set())
+            setattr(agent, "client", None)
+            return agent
+
+        homes = [tmp_path / "profile-a", tmp_path / "profile-b"]
+        keys = []
+        secret_scope.set_multiplex_active(True)
+        try:
+            for name, home in zip(("a", "b"), homes):
+                home.mkdir()
+                token = set_hermes_home_override(home)
+                try:
+                    config = terminal_tool._get_env_config(
+                        {"terminal": {"backend": "local"}}
+                    )
+                    key = terminal_tool._resolve_container_task_id(
+                        "shared-session"
+                    )
+                    terminal_tool._register_active_environment(
+                        key,
+                        FakeEnvironment(name),
+                        config,
+                        "shared-session",
+                    )
+                    keys.append(key)
+                finally:
+                    reset_hermes_home_override(token)
+
+            agent_a = fake_agent(homes[0])
+            agent_b = fake_agent(homes[1])
+            agent_a.close()
+
+            with terminal_tool._env_lock:
+                assert keys[0] not in terminal_tool._active_environments
+                assert keys[1] in terminal_tool._active_environments
+            assert cleaned == ["a"]
+
+            agent_b.close()
+            with terminal_tool._env_lock:
+                assert keys[1] not in terminal_tool._active_environments
+            assert cleaned == ["a", "b"]
+        finally:
+            secret_scope.set_multiplex_active(False)
+            with terminal_tool._env_lock:
+                terminal_tool._active_environments.clear()
+                terminal_tool._last_activity.clear()
+                terminal_tool._environment_metadata.clear()
+                terminal_tool._task_environment_keys.clear()
 
 
 _FAKE_NOW = 10_000.0  # Fixed epoch for deterministic time assertions

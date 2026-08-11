@@ -885,16 +885,19 @@ def _get_or_create_env(task_id: str):
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
         _creation_locks, _creation_locks_lock, resolve_task_overrides,
-        _resolve_container_task_id, _resolve_task_host_cwd,
+        _resolve_container_task_id, _resolve_environment_cwd,
+        _register_active_environment, _retire_stale_environment_for_config,
     )
 
     effective_task_id = _resolve_container_task_id(task_id)
+    config = _get_env_config()
+    _retire_stale_environment_for_config(effective_task_id, task_id, config)
 
     # Fast path: environment already exists
     with _env_lock:
         if effective_task_id in _active_environments:
             _last_activity[effective_task_id] = time.time()
-            return _active_environments[effective_task_id], _get_env_config()["env_type"]
+            return _active_environments[effective_task_id], config["env_type"]
 
     # Slow path: create environment (same pattern as file_tools._get_file_ops)
     with _creation_locks_lock:
@@ -906,9 +909,8 @@ def _get_or_create_env(task_id: str):
         with _env_lock:
             if effective_task_id in _active_environments:
                 _last_activity[effective_task_id] = time.time()
-                return _active_environments[effective_task_id], _get_env_config()["env_type"]
+                return _active_environments[effective_task_id], config["env_type"]
 
-        config = _get_env_config()
         env_type = config["env_type"]
         overrides = resolve_task_overrides(task_id)
 
@@ -923,7 +925,7 @@ def _get_or_create_env(task_id: str):
         else:
             image = ""
 
-        cwd = overrides.get("cwd") or config["cwd"]
+        cwd, host_cwd = _resolve_environment_cwd(config, task_id)
 
         container_config = None
         if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
@@ -965,12 +967,10 @@ def _get_or_create_env(task_id: str):
             container_config=container_config,
             local_config=local_config,
             task_id=effective_task_id,
-            host_cwd=_resolve_task_host_cwd(config, task_id),
+            host_cwd=host_cwd,
         )
 
-        with _env_lock:
-            _active_environments[effective_task_id] = env
-            _last_activity[effective_task_id] = time.time()
+        _register_active_environment(effective_task_id, env, config, task_id)
 
         _start_cleanup_thread()
         logger.info("%s environment ready for execute_code task %s",
@@ -1024,6 +1024,7 @@ def _rpc_poll_loop(
     session_id: str = "",
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    connection_errors: Optional[List[Exception]] = None,
 ):
     """Poll the remote filesystem for tool call requests and dispatch them.
 
@@ -1160,6 +1161,13 @@ def _rpc_poll_loop(
                 env.execute(f"rm -f {quoted_req_file}", cwd="/", timeout=5)
 
         except Exception as e:
+            from tools.environments.base import EnvironmentConnectionError
+
+            if isinstance(e, EnvironmentConnectionError):
+                if connection_errors is not None:
+                    connection_errors.append(e)
+                stop_event.set()
+                return
             if not stop_event.is_set():
                 logger.debug("RPC poll error: %s", e, exc_info=True)
 
@@ -1206,21 +1214,25 @@ def _execute_remote(
     )
 
     effective_task_id = task_id or "default"
-    env, env_type = _get_or_create_env(effective_task_id)
-
-    sandbox_id = uuid.uuid4().hex[:12]
-    temp_dir = _env_temp_dir(env)
-    sandbox_dir = f"{temp_dir}/hermes_exec_{sandbox_id}"
-    quoted_sandbox_dir = shlex.quote(sandbox_dir)
-    quoted_rpc_dir = shlex.quote(f"{sandbox_dir}/rpc")
-
+    env = None
+    env_type = "terminal"
+    sandbox_dir = ""
+    quoted_sandbox_dir = ""
     tool_call_log: list = []
     tool_call_counter = [0]
     exec_start = time.monotonic()
     stop_event = threading.Event()
     rpc_thread = None
+    rpc_connection_errors: List[Exception] = []
 
     try:
+        env, env_type = _get_or_create_env(effective_task_id)
+        sandbox_id = uuid.uuid4().hex[:12]
+        temp_dir = _env_temp_dir(env)
+        sandbox_dir = f"{temp_dir}/hermes_exec_{sandbox_id}"
+        quoted_sandbox_dir = shlex.quote(sandbox_dir)
+        quoted_rpc_dir = shlex.quote(f"{sandbox_dir}/rpc")
+
         # Verify Python is available on the remote
         py_check = env.execute(
             "command -v python3 >/dev/null 2>&1 && echo OK",
@@ -1263,7 +1275,7 @@ def _execute_remote(
                 env, f"{sandbox_dir}/rpc", effective_task_id,
                 tool_call_log, tool_call_counter, max_tool_calls,
                 sandbox_tools, stop_event, rpc_token, _rpc_session_id,
-                enabled_toolsets, disabled_toolsets,
+                enabled_toolsets, disabled_toolsets, rpc_connection_errors,
             ),
             daemon=True,
         )
@@ -1298,6 +1310,18 @@ def _execute_remote(
             status = "interrupted"
 
     except Exception as exc:
+        from tools.environments.base import EnvironmentConnectionError
+
+        if isinstance(exc, EnvironmentConnectionError):
+            from tools.terminal_tool import (
+                _environment_connection_error_result,
+            )
+
+            return _environment_connection_error_result(
+                exc,
+                effective_task_id,
+                operation="execute_code terminal backend",
+            )
         duration = round(time.monotonic() - exec_start, 2)
         logger.error(
             "execute_code remote failed after %ss with %d tool calls: %s: %s",
@@ -1319,11 +1343,27 @@ def _execute_remote(
 
         # Clean up remote sandbox dir
         try:
-            env.execute(
-                f"rm -rf {quoted_sandbox_dir}", cwd="/", timeout=15,
-            )
+            if env is not None and sandbox_dir:
+                env.execute(
+                    f"rm -rf {quoted_sandbox_dir}", cwd="/", timeout=15,
+                )
         except Exception:
             logger.debug("Failed to clean up remote sandbox %s", sandbox_dir)
+
+    if rpc_connection_errors:
+        from tools.environments.base import EnvironmentConnectionError
+        from tools.terminal_tool import (
+            _environment_connection_error_result,
+        )
+
+        rpc_error = rpc_connection_errors[0]
+        if not isinstance(rpc_error, EnvironmentConnectionError):
+            raise rpc_error
+        return _environment_connection_error_result(
+            rpc_error,
+            effective_task_id,
+            operation="execute_code terminal backend",
+        )
 
     duration = round(time.monotonic() - exec_start, 2)
 

@@ -1091,6 +1091,8 @@ PTY: set pty=true for interactive CLIs (they hang without it). Pipe git output t
 # Global state for environment lifecycle management
 _active_environments: Dict[str, Any] = {}
 _last_activity: Dict[str, float] = {}
+_environment_metadata: Dict[str, Dict[str, Any]] = {}
+_task_environment_keys: Dict[tuple[str, str], set[str]] = {}
 _env_lock = threading.Lock()
 _creation_locks: Dict[str, threading.Lock] = {}  # Per-task locks for sandbox creation
 _creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
@@ -1432,7 +1434,7 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
 
 
 def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
-    """Return the env overrides for *task_id*, raw key first then collapsed.
+    """Return overrides for *task_id*, checking raw, aliased, then collapsed keys.
 
     ``register_task_env_overrides`` writes under the task/session id, with a
     profile namespace in multiplex mode. A CWD-only override still collapses
@@ -1440,13 +1442,16 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
     shared ``"default"`` container so per-session surfaces (ACP/gateway/
     dashboard) don't each spin up their own sandbox. Callers that need the
     override (terminal command setup, file-tool cwd resolution) must therefore
-    read the raw id FIRST and only fall back to the collapsed container id, or
-    the originating session's override is silently dropped. This is the single
-    source of that lookup so the terminal and file layers can't drift apart.
+    read the raw id FIRST, then an aliased parent's profile key, and only then
+    fall back to the collapsed container id, or a child that creates the shared
+    sandbox first silently drops the parent's image and workspace. This is the
+    single source of that lookup so the terminal and file layers can't drift.
     """
     raw = task_id or "default"
+    canonical = _resolve_container_alias(raw)
     return (
         _task_env_overrides.get(_profile_state_key(raw))
+        or _task_env_overrides.get(_profile_state_key(canonical))
         or _task_env_overrides.get(_resolve_container_task_id(raw))
         or {}
     )
@@ -1569,6 +1574,28 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
     return False
 
 
+def _resolve_environment_cwd(
+    config: Dict[str, Any], task_id: Optional[str]
+) -> tuple[str, Optional[str]]:
+    """Resolve and sanitize the cwd used when creating a task environment."""
+    overrides = resolve_task_overrides(task_id)
+    cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
+    host_cwd = _resolve_task_host_cwd(config, task_id)
+    env_type = config["env_type"]
+    if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+        remapped = "/workspace" if host_cwd else config["cwd"]
+        if cwd != remapped:
+            logger.info(
+                "Remapping host/relative cwd override %r for %s backend "
+                "(won't exist in sandbox). Using %r instead.",
+                cwd,
+                env_type,
+                remapped,
+            )
+        cwd = remapped
+    return cwd, host_cwd
+
+
 # One-shot guard for the config-fallback bridge below.  Purely an
 # optimization: after the first attempt either TERMINAL_ENV is set (bridge
 # succeeded — merged config always carries terminal.backend) or the import
@@ -1586,12 +1613,6 @@ def _terminal_env_snapshot(
     terminal setting follows that profile. Process values remain fallbacks for
     keys the profile does not configure.
     """
-    from agent.secret_scope import is_multiplex_active
-
-    if raw_config is None and not is_multiplex_active():
-        _ensure_terminal_env_bridged()
-        return dict(os.environ)
-
     snapshot = dict(os.environ)
     try:
         from agent.secret_scope import current_secret_scope
@@ -1608,8 +1629,10 @@ def _terminal_env_snapshot(
         from hermes_cli.config import apply_terminal_config_to_env
 
         if raw_config is None:
-            apply_terminal_config_to_env(env=snapshot)
-        else:
+            from hermes_cli.config import read_raw_config
+
+            raw_config = read_raw_config()
+        if isinstance(raw_config.get("terminal"), dict):
             apply_terminal_config_to_env(
                 env=snapshot,
                 config=raw_config,
@@ -1700,15 +1723,18 @@ def _ensure_terminal_env_bridged() -> None:
         logger.debug("terminal config → env fallback bridge failed", exc_info=True)
 
 
-def _get_env_config() -> Dict[str, Any]:
+def _get_env_config(
+    raw_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
-    from agent.secret_scope import is_multiplex_active
+    if raw_config is None:
+        from agent.secret_scope import is_multiplex_active
 
-    if not is_multiplex_active():
-        _ensure_terminal_env_bridged()
-    env = _terminal_env_snapshot()
+        if not is_multiplex_active():
+            _ensure_terminal_env_bridged()
+    env = _terminal_env_snapshot(raw_config)
     env_type = str(env.get("TERMINAL_ENV") or "local").strip().lower() or "local"
     
     mount_docker_cwd = env.get("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
@@ -1838,18 +1864,19 @@ def _get_env_config() -> Dict[str, Any]:
     }
 
 
-def _terminal_runtime_namespace(
-    config: Optional[Dict[str, Any]] = None,
-) -> Optional[str]:
-    """Return a stable multiplex namespace for one profile/backend snapshot."""
-    from agent.secret_scope import is_multiplex_active
-
-    if not is_multiplex_active():
-        return None
-
+def _terminal_backend_fingerprint(
+    raw_config: Optional[Dict[str, Any]] = None,
+    *,
+    resolved_config: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Return a non-secret digest of the active profile/backend settings."""
     from hermes_constants import get_hermes_home
 
-    resolved = config if config is not None else _get_env_config()
+    resolved = (
+        resolved_config
+        if resolved_config is not None
+        else _get_env_config(raw_config)
+    )
     payload = json.dumps(
         {
             "profile_home": str(get_hermes_home()),
@@ -1860,7 +1887,99 @@ def _terminal_runtime_namespace(
         default=str,
         separators=(",", ":"),
     )
-    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _terminal_runtime_namespace(
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
+    """Return a stable multiplex namespace for one profile/backend snapshot."""
+    from agent.secret_scope import is_multiplex_active
+
+    if not is_multiplex_active():
+        return None
+    return _terminal_backend_fingerprint(resolved_config=config)[:16]
+
+
+def _profile_home_key() -> str:
+    from hermes_constants import get_hermes_home
+
+    return str(get_hermes_home())
+
+
+def _register_active_environment(
+    environment_key: str,
+    env: Any,
+    config: Dict[str, Any],
+    raw_task_id: Optional[str],
+) -> None:
+    """Register an environment with the profile/session identity that owns it."""
+    profile_home = _profile_home_key()
+    owner = (profile_home, raw_task_id or "default")
+    now = time.time()
+    with _env_lock:
+        _active_environments[environment_key] = env
+        _last_activity[environment_key] = now
+        _environment_metadata[environment_key] = {
+            "profile_home": profile_home,
+            "lifetime_seconds": config.get("lifetime_seconds", 300),
+            "raw_task_id": raw_task_id or "default",
+            "fingerprint": _terminal_backend_fingerprint(
+                resolved_config=config,
+            ),
+        }
+        _task_environment_keys.setdefault(owner, set()).add(environment_key)
+        alias_owner = (
+            profile_home,
+            _resolve_container_alias(raw_task_id or "default"),
+        )
+        _task_environment_keys.setdefault(alias_owner, set()).add(environment_key)
+
+
+def _forget_environment_key(environment_key: str) -> None:
+    """Drop ownership metadata for an environment key. Caller holds _env_lock."""
+    _environment_metadata.pop(environment_key, None)
+    for owner, keys in list(_task_environment_keys.items()):
+        keys.discard(environment_key)
+        if not keys:
+            _task_environment_keys.pop(owner, None)
+
+
+def _retire_stale_environment_for_config(
+    effective_task_id: str,
+    raw_task_id: Optional[str],
+    config: Dict[str, Any],
+) -> None:
+    """Retire a cached nonmultiplex environment after live config changes."""
+    expected = _terminal_backend_fingerprint(resolved_config=config)
+    stale_key = None
+    stale_env = None
+    with _env_lock:
+        key = _environment_lookup_key(effective_task_id, raw_task_id)
+        if key is None:
+            return
+        metadata = _environment_metadata.get(key)
+        if metadata is None or metadata.get("fingerprint") == expected:
+            return
+        stale_key = key
+        stale_env = _active_environments.pop(key, None)
+        _last_activity.pop(key, None)
+        _forget_environment_key(key)
+
+    if stale_env is not None:
+        try:
+            stale_env.cleanup()
+        except Exception:
+            logger.debug("stale environment cleanup failed", exc_info=True)
+    if stale_key is not None:
+        with _creation_locks_lock:
+            _creation_locks.pop(stale_key, None)
+        try:
+            from tools.file_tools import clear_file_ops_cache
+
+            clear_file_ops_cache(stale_key)
+        except ImportError:
+            pass
 
 
 def _environment_lookup_key(
@@ -2129,8 +2248,8 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         )
 
 
-def _cleanup_inactive_envs(lifetime_seconds: int = 300):
-    """Clean up environments that have been inactive for longer than lifetime_seconds."""
+def _cleanup_inactive_envs(lifetime_seconds: Optional[int] = None):
+    """Clean each inactive environment using its owning profile's lifetime."""
     current_time = time.time()
 
     # Check the process registry -- skip cleanup for sandboxes with active
@@ -2138,7 +2257,12 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
     try:
         from tools.process_registry import process_registry
         for task_id in list(_last_activity.keys()):
-            if process_registry.has_active_processes(task_id):
+            metadata = _environment_metadata.get(task_id, {})
+            raw_task_id = metadata.get("raw_task_id", task_id)
+            if (
+                process_registry.has_active_processes(task_id)
+                or process_registry.has_active_processes(raw_task_id)
+            ):
                 _last_activity[task_id] = current_time  # Keep sandbox alive
     except ImportError:
         pass
@@ -2151,9 +2275,15 @@ def _cleanup_inactive_envs(lifetime_seconds: int = 300):
 
     with _env_lock:
         for task_id, last_time in list(_last_activity.items()):
-            if current_time - last_time > lifetime_seconds:
+            metadata = _environment_metadata.get(task_id, {})
+            task_lifetime = metadata.get(
+                "lifetime_seconds",
+                lifetime_seconds if lifetime_seconds is not None else 300,
+            )
+            if current_time - last_time > task_lifetime:
                 env = _active_environments.pop(task_id, None)
                 _last_activity.pop(task_id, None)
+                _forget_environment_key(task_id)
                 if env is not None:
                     envs_to_stop.append((task_id, env))
 
@@ -2195,8 +2325,7 @@ def _cleanup_thread_worker():
     """Background thread worker that periodically cleans up inactive environments."""
     while _cleanup_running:
         try:
-            config = _get_env_config()
-            _cleanup_inactive_envs(config["lifetime_seconds"])
+            _cleanup_inactive_envs()
         except Exception as e:
             logger.warning("Error in cleanup thread: %s", e, exc_info=True)
 
@@ -2257,6 +2386,9 @@ def ensure_task_env(task_id: Optional[str] = None):
         return None
 
     effective_task_id = _resolve_container_task_id(task_id)
+    _retire_stale_environment_for_config(
+        effective_task_id, task_id, config,
+    )
 
     # Fast path: already active — mirror terminal_tool and refresh activity.
     existing = get_active_env(effective_task_id)
@@ -2310,9 +2442,9 @@ def ensure_task_env(task_id: Optional[str] = None):
             )
             return None
 
-        with _env_lock:
-            _active_environments[effective_task_id] = new_env
-            _last_activity[effective_task_id] = time.time()
+        _register_active_environment(
+            effective_task_id, new_env, config, task_id,
+        )
         logger.info(
             "%s environment lazily initialized for task %s",
             env_type, effective_task_id[:8],
@@ -2373,7 +2505,12 @@ def cleanup_all_environments():
     return cleaned
 
 
-def cleanup_vm(task_id: str, *, force_remove: bool = False):
+def cleanup_vm(
+    task_id: str,
+    *,
+    force_remove: bool = False,
+    profile_home: Optional[str] = None,
+):
     """Manually clean up a specific environment by task_id.
 
     *force_remove* (default False) is forwarded to backends that accept it
@@ -2394,54 +2531,76 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     via this function), so persist-mode idle envs are similarly no-op'd —
     only the orphan reaper at next startup reclaims them.
     """
-    # Remove from tracking dicts while holding the lock, but defer the
-    # actual (potentially slow) env.cleanup() call to outside the lock
-    # so other tool calls aren't blocked.
-    resolved_task_id = _resolve_container_task_id(task_id)
-    env = None
+    owner_home = profile_home or _profile_home_key()
+    canonical_task_id = _resolve_container_alias(task_id)
+    if canonical_task_id != task_id:
+        # Delegated children share the parent's sandbox. Closing a child agent
+        # must drop only the child's ownership and session records; tearing down
+        # the aliased environment here would destroy the parent's workspace.
+        with _env_lock:
+            _task_environment_keys.pop((owner_home, task_id), None)
+        clear_task_env_overrides(task_id)
+        return
+
+    keys: set[str] = set()
     with _env_lock:
-        env_key = _environment_lookup_key(resolved_task_id, task_id)
-        cache_key = env_key if env_key is not None else resolved_task_id
-        env = _active_environments.pop(cache_key, None)
-        _last_activity.pop(cache_key, None)
+        keys.update(_task_environment_keys.get((owner_home, task_id), set()))
+        if task_id in _active_environments:
+            keys.add(task_id)
+
+    if not keys and profile_home is None:
+        resolved_task_id = _resolve_container_task_id(task_id)
+        with _env_lock:
+            env_key = _environment_lookup_key(resolved_task_id, task_id)
+            keys.add(env_key if env_key is not None else resolved_task_id)
+
+    envs = []
+    with _env_lock:
+        for cache_key in keys:
+            env = _active_environments.pop(cache_key, None)
+            _last_activity.pop(cache_key, None)
+            _forget_environment_key(cache_key)
+            if env is not None:
+                envs.append((cache_key, env))
 
     # Clean up per-task creation lock
     with _creation_locks_lock:
-        _creation_locks.pop(cache_key, None)
+        for cache_key in keys:
+            _creation_locks.pop(cache_key, None)
 
     # Invalidate stale file_ops cache entry
     try:
         from tools.file_tools import clear_file_ops_cache
-        clear_file_ops_cache(cache_key)
+        for cache_key in keys:
+            clear_file_ops_cache(cache_key)
     except ImportError:
         pass
 
-    if env is None:
+    if not envs:
         return
 
-    try:
-        if hasattr(env, 'cleanup'):
-            # Pass force_remove only if the env's cleanup() accepts it
-            # (DockerEnvironment after issue #20561; other backends don't).
-            import inspect
-            sig = inspect.signature(env.cleanup)
-            if "force_remove" in sig.parameters:
-                env.cleanup(force_remove=force_remove)
+    for cache_key, env in envs:
+        try:
+            if hasattr(env, 'cleanup'):
+                import inspect
+                sig = inspect.signature(env.cleanup)
+                if "force_remove" in sig.parameters:
+                    env.cleanup(force_remove=force_remove)
+                else:
+                    env.cleanup()
+            elif hasattr(env, 'stop'):
+                env.stop()
+            elif hasattr(env, 'terminate'):
+                env.terminate()
+
+            logger.info("Manually cleaned up environment for task: %s", cache_key)
+
+        except Exception as e:
+            error_str = str(e)
+            if "404" in error_str or "not found" in error_str.lower():
+                logger.info("Environment for task %s already cleaned up", cache_key)
             else:
-                env.cleanup()
-        elif hasattr(env, 'stop'):
-            env.stop()
-        elif hasattr(env, 'terminate'):
-            env.terminate()
-
-        logger.info("Manually cleaned up environment for task: %s", task_id)
-
-    except Exception as e:
-        error_str = str(e)
-        if "404" in error_str or "not found" in error_str.lower():
-            logger.info("Environment for task %s already cleaned up", task_id)
-        else:
-            logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+                logger.warning("Error cleaning up environment for task %s: %s", cache_key, e)
 
 
 def _atexit_cleanup():
@@ -2855,6 +3014,9 @@ def terminal_tool(
         # every delegate_task child share one container; only task_ids with
         # a registered env override (RL benchmarks) get isolated sandboxes.
         effective_task_id = _resolve_container_task_id(task_id)
+        _retire_stale_environment_for_config(
+            effective_task_id, task_id, config,
+        )
 
         # Check per-task overrides (set by environments like TerminalBench2Env)
         # before falling back to global env var config. ``resolve_task_overrides``
@@ -2876,33 +3038,7 @@ def terminal_tool(
         else:
             image = ""
 
-        cwd = overrides.get("cwd") or get_session_cwd(task_id) or config["cwd"]
-        # Session-scoped mount resolution (single owner: _resolve_task_host_cwd).
-        # Under per-session isolation a fresh session must not inherit the
-        # process-global TERMINAL_CWD mount left behind by a previous session.
-        host_cwd = _resolve_task_host_cwd(config, task_id)
-        # A per-task cwd override (registered by the gateway/TUI for workspace
-        # tracking, or by RL/benchmark envs) wins over config["cwd"] — but
-        # config["cwd"] was already sanitized for container backends in
-        # _get_env_config() while the override is raw. On a container backend a
-        # raw host path (e.g. a Windows desktop session's C:\Users\<user>, or a
-        # POSIX /home/<user>) reaches `docker run -w <host-path>` and the
-        # container fails to start (exit 125). Re-apply the same host/relative
-        # path guard to the *resolved* cwd so the override can't bypass it.
-        # When the host path IS this session's mounted workspace, remap it to
-        # /workspace (where the mount lands) instead of discarding it.
-        # Valid in-container override paths (RL/benchmark sandboxes that set
-        # cwd to /workspace, /root, etc.) are absolute non-host paths and pass
-        # through untouched.
-        if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
-            remapped = "/workspace" if host_cwd else config["cwd"]
-            if cwd != remapped:
-                logger.info(
-                    "Remapping host/relative cwd override %r for %s backend "
-                    "(won't exist in sandbox). Using %r instead.",
-                    cwd, env_type, remapped,
-                )
-            cwd = remapped
+        cwd, host_cwd = _resolve_environment_cwd(config, task_id)
         default_timeout = config["timeout"]
 
         # Validate an explicit timeout before it flows into deadline math.
@@ -3013,10 +3149,10 @@ def terminal_tool(
                             "status": "disabled"
                         }, ensure_ascii=False)
 
-                    with _env_lock:
-                        _active_environments[effective_task_id] = new_env
-                        _last_activity[effective_task_id] = time.time()
-                        env = new_env
+                    _register_active_environment(
+                        effective_task_id, new_env, config, task_id,
+                    )
+                    env = new_env
                     logger.info("%s environment ready for task %s", env_type, effective_task_id[:8])
 
         assert env is not None  # all creation failure paths return above
@@ -3801,53 +3937,7 @@ def terminal_tool(
             return json.dumps(result_dict, ensure_ascii=False)
 
     except EnvironmentConnectionError as e:
-        # Infrastructure/connection-class failure (SSH host down, Docker
-        # daemon unreachable) — distinct from a command failing with a
-        # nonzero exit code.  Config gate ``terminal.degraded_mode``:
-        #   warn (default) — return a structured degraded result the model
-        #                    can act on (reason + retry hint, no traceback).
-        #   fail           — preserve the historical error+traceback result.
-        if config is not None:
-            degraded_mode = config.get("degraded_mode", "warn")
-        else:
-            try:
-                degraded_mode = str(
-                    _terminal_env_snapshot().get("TERMINAL_DEGRADED_MODE", "warn")
-                ).strip().lower()
-            except Exception:
-                degraded_mode = str(
-                    os.getenv("TERMINAL_DEGRADED_MODE", "warn")
-                ).strip().lower()
-        if degraded_mode == "fail":
-            import traceback
-            tb_str = traceback.format_exc()
-            logger.error("terminal_tool exception:\n%s", tb_str)
-            # Exception text can embed the failing command line (and any
-            # secrets inline in it) — redact before returning to the model.
-            return json.dumps({
-                "output": "",
-                "exit_code": -1,
-                "error": _redact_terminal_error_text(f"Failed to execute command: {e}"),
-                "traceback": _redact_terminal_error_text(tb_str),
-                "status": "error"
-            }, ensure_ascii=False)
-
-        logger.warning("terminal backend degraded: %s", e.reason)
-        # Never keep a possibly-broken backend cached: evict it so the next
-        # call re-creates the environment from scratch and simply works once
-        # the backend is reachable again.
-        try:
-            _evict_environment_for_task(task_id)
-        except Exception:
-            logger.debug("degraded-env eviction failed", exc_info=True)
-        return json.dumps({
-            "output": "",
-            "exit_code": -1,
-            "status": "degraded",
-            "reason": e.reason,
-            "retry_hint": e.retry_hint,
-            "error": f"Terminal backend degraded: {e.reason}",
-        }, ensure_ascii=False)
+        return _environment_connection_error_result(e, task_id, config=config)
 
     except Exception as e:
         import traceback
@@ -3876,9 +3966,16 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
         keys.add(task_id)
     evicted = []
     with _env_lock:
+        keys.update(
+            _task_environment_keys.get(
+                (_profile_home_key(), task_id or "default"),
+                set(),
+            )
+        )
         for key in keys:
             env = _active_environments.pop(key, None)
             _last_activity.pop(key, None)
+            _forget_environment_key(key)
             if env is not None:
                 evicted.append(env)
     for env in evicted:
@@ -3886,6 +3983,79 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
             env.cleanup()
         except Exception:
             logger.debug("cleanup of degraded environment failed", exc_info=True)
+
+    with _creation_locks_lock:
+        for key in keys:
+            _creation_locks.pop(key, None)
+    try:
+        from tools.file_tools import clear_file_ops_cache
+
+        for key in keys:
+            clear_file_ops_cache(key)
+    except ImportError:
+        pass
+
+
+def _environment_connection_error_result(
+    exc: EnvironmentConnectionError,
+    task_id: Optional[str],
+    *,
+    config: Optional[Dict[str, Any]] = None,
+    operation: str = "Terminal backend",
+) -> str:
+    """Return the shared structured result for backend connection failures."""
+    if config is None:
+        try:
+            config = _get_env_config()
+        except Exception:
+            config = None
+    if config is not None:
+        degraded_mode = config.get("degraded_mode", "warn")
+    else:
+        try:
+            degraded_mode = str(
+                _terminal_env_snapshot().get("TERMINAL_DEGRADED_MODE", "warn")
+            ).strip().lower()
+        except Exception:
+            degraded_mode = str(
+                os.getenv("TERMINAL_DEGRADED_MODE", "warn")
+            ).strip().lower()
+
+    try:
+        _evict_environment_for_task(task_id)
+    except Exception:
+        logger.debug("degraded-env eviction failed", exc_info=True)
+
+    if degraded_mode == "fail":
+        import traceback
+
+        tb_str = traceback.format_exc()
+        logger.error("terminal backend exception:\n%s", tb_str)
+        return json.dumps(
+            {
+                "output": "",
+                "exit_code": -1,
+                "error": _redact_terminal_error_text(
+                    f"Failed to execute command: {exc}"
+                ),
+                "traceback": _redact_terminal_error_text(tb_str),
+                "status": "error",
+            },
+            ensure_ascii=False,
+        )
+
+    logger.warning("%s degraded: %s", operation.lower(), exc.reason)
+    return json.dumps(
+        {
+            "output": "",
+            "exit_code": -1,
+            "status": "degraded",
+            "reason": exc.reason,
+            "retry_hint": exc.retry_hint,
+            "error": f"{operation} degraded: {exc.reason}",
+        },
+        ensure_ascii=False,
+    )
 
 
 def check_terminal_requirements() -> bool:

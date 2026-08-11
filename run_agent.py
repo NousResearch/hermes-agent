@@ -600,6 +600,7 @@ class AIAgent:
             checkpoint_max_file_size_mb=checkpoint_max_file_size_mb,
             pass_session_id=pass_session_id,
         )
+        self._terminal_profile_home = str(get_hermes_home())
 
     def _get_session_db_for_recall(self):
         """Return a SessionDB for recall, lazily creating it if an entrypoint forgot.
@@ -4499,7 +4500,18 @@ class AIAgent:
 
         # 2. Clean terminal sandbox environments
         try:
-            cleanup_vm(task_id)
+            from hermes_constants import (
+                reset_hermes_home_override,
+                set_hermes_home_override,
+            )
+
+            token = set_hermes_home_override(
+                getattr(self, "_terminal_profile_home", None),
+            )
+            try:
+                cleanup_vm(task_id)
+            finally:
+                reset_hermes_home_override(token)
         except Exception:
             pass
 

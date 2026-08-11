@@ -16995,6 +16995,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         for platform, platform_config in profile_cfg.platforms.items():
             if not platform_config.enabled:
                 continue
+            # A platform enabled in a secondary profile's config.yaml may
+            # have no credential in that profile's secret scope — the shared
+            # YAML enables it for the default profile only (#84079). Building
+            # an adapter here would treat every credential-less profile as
+            # configured for the platform and one inbound message would fan
+            # out across all of them. Mirror the primary startup loop's
+            # credential gate and skip instead; profiles with their own
+            # credential still connect below.
+            if (
+                getattr(self.config, "multiplex_profiles", False)
+                and not _platform_has_bot_credential(platform, platform_config)
+            ):
+                logger.info(
+                    "[MULTIPLEX] Profile '%s': skipping %s - no bot credential "
+                    "in this profile's secrets",
+                    profile_name,
+                    platform.value,
+                )
+                continue
             # Relay is shared process-level ingress in multiplex mode. The
             # active profile owns the one connection; connector-stamped
             # source.profile routes inbound turns to secondary profiles.
@@ -17179,6 +17198,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     with _profile_runtime_scope(profile_home):
                         profile_config = load_gateway_config().platforms.get(platform)
                         if profile_config is None or not profile_config.enabled:
+                            return
+                        # Mirrors the startup credential gate (#84079): a
+                        # credential removed from this profile's scope must
+                        # not rebuild an adapter that would fan out turns.
+                        if not _platform_has_bot_credential(platform, profile_config):
+                            logger.info(
+                                "Secondary %s reconnect skipped: no bot credential "
+                                "(profile: %s)",
+                                platform.value,
+                                profile_name,
+                            )
                             return
                         adapter = self._create_adapter(platform, profile_config)
                         if adapter is None:

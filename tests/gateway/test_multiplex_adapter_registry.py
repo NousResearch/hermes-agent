@@ -897,3 +897,78 @@ class TestFeishuPortBindingConditional:
         assert connected == 0  # no error, just nothing connected
 
 
+class TestSecondarySkipsCredentiallessPlatforms:
+    """#84079 — multiplex must not build adapters for platforms a profile
+    has no credential for.
+
+    The shared config.yaml enables a platform once; under multiplex every
+    secondary profile reloads it inside its own secret scope, so a profile
+    whose scope lacks the platform credential resolves ``enabled=True`` with
+    an empty token. Constructing an adapter anyway treats every profile as
+    configured for the platform — one inbound message fans out across all of
+    them. These tests lock the credential gate on the secondary startup path
+    (the primary path got the same gate in #64674; the reconnect path shares
+    the helper). Also reported independently in #72313.
+    """
+
+    def _make_runner(self, monkeypatch, profile_cfg):
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._profile_adapters = {}
+        runner.adapters = {}
+        created = []
+
+        def fake_create(platform, platform_config):
+            created.append((platform, platform_config))
+            return _FakeAdapter(token=platform_config.token or None)
+
+        monkeypatch.setattr("gateway.config.load_gateway_config", lambda: profile_cfg)
+        monkeypatch.setattr(runner, "_create_adapter", fake_create)
+        monkeypatch.setattr(runner, "_configure_profile_adapter", lambda *a, **k: None)
+        monkeypatch.setattr(
+            runner,
+            "_connect_initial_adapter_with_timeout",
+            AsyncMock(return_value=True),
+        )
+        return runner, created
+
+    @pytest.mark.asyncio
+    async def test_credentialless_platform_builds_no_adapter(self, monkeypatch, tmp_path):
+        """Enabled-in-YAML but no credential in the profile scope -> no adapter."""
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        profile_cfg = GatewayConfig(multiplex_profiles=True)
+        profile_cfg.platforms = {
+            # Shared config.yaml enables Slack; profile-b's .env has no
+            # SLACK_BOT_TOKEN, so its scoped load resolves token="" but
+            # keeps enabled=True (#84079).
+            Platform.SLACK: PlatformConfig(enabled=True, token=""),
+            Platform.TELEGRAM: PlatformConfig(enabled=True, token="telegram-token-b"),
+        }
+        runner, created = self._make_runner(monkeypatch, profile_cfg)
+
+        connected = await runner._start_one_profile_adapters("profile-b", tmp_path, {})
+
+        # Only Telegram (which profile-b has its own credential for) gets an
+        # adapter; Slack is skipped instead of fanning out a turn per profile.
+        assert [p for p, _ in created] == [Platform.TELEGRAM]
+        assert connected == 1
+        assert Platform.TELEGRAM in runner._profile_adapters["profile-b"]
+        assert Platform.SLACK not in runner._profile_adapters["profile-b"]
+
+    @pytest.mark.asyncio
+    async def test_profile_with_own_credential_still_connects(self, monkeypatch, tmp_path):
+        """A profile that defines its own credential keeps its adapter."""
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+
+        profile_cfg = GatewayConfig(multiplex_profiles=True)
+        profile_cfg.platforms = {
+            Platform.SLACK: PlatformConfig(enabled=True, token="slack-token-b"),
+        }
+        runner, created = self._make_runner(monkeypatch, profile_cfg)
+
+        connected = await runner._start_one_profile_adapters("profile-b", tmp_path, {})
+
+        assert connected == 1
+        assert created == [(Platform.SLACK, profile_cfg.platforms[Platform.SLACK])]
+        assert Platform.SLACK in runner._profile_adapters["profile-b"]

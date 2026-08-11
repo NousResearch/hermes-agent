@@ -34,6 +34,48 @@ def _clear_cache():
 
 class TestQuietModeCacheIsolation:
 
+    def test_cache_key_tracks_effective_terminal_backend(self, monkeypatch):
+        """Backend changes must rebuild backend-dependent execute_code schemas."""
+        from tools.registry import registry
+        from tools.tool_search import ToolSearchConfig
+
+        registry.register(
+            name="cache_backend_probe_deferred",
+            toolset="plugin_cache_backend_probe",
+            schema={
+                "name": "cache_backend_probe_deferred",
+                "description": "Deferred backend cache probe",
+                "parameters": {"type": "object", "properties": {}},
+            },
+            handler=lambda _args, **_kwargs: '{"ok": true}',
+        )
+        monkeypatch.setattr(
+            "tools.tool_search.load_config",
+            lambda: ToolSearchConfig.from_raw({"enabled": "on"}),
+        )
+
+        def execute_code_description():
+            definitions = model_tools.get_tool_definitions(
+                enabled_toolsets=["code_execution", "plugin_cache_backend_probe"],
+                quiet_mode=True,
+            )
+            return next(
+                item["function"]["description"]
+                for item in definitions
+                if item["function"]["name"] == "execute_code"
+            )
+
+        try:
+            monkeypatch.setenv("TERMINAL_ENV", "local")
+            local_description = execute_code_description()
+            assert "tool_search(query:" in local_description
+
+            monkeypatch.setenv("TERMINAL_ENV", "ssh")
+            remote_description = execute_code_description()
+            assert "tool_search(query:" not in remote_description
+        finally:
+            registry.deregister("cache_backend_probe_deferred")
+
     def test_first_uncached_call_returns_fresh_list(self):
         """The first quiet_mode call must not alias the cached object \u2014
         otherwise a caller mutating the returned list mutates the cache."""

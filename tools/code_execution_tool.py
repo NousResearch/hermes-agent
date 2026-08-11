@@ -678,22 +678,18 @@ def _resolve_sandbox_tools(
     *,
     allow_deferred_bridges: bool = False,
 ) -> frozenset:
-    """Resolve callable stubs without exposing hidden Tool Search bridges.
+    """Resolve direct umbrella helpers plus explicitly authorized bridges.
 
-    The legacy empty-intersection fallback keeps the original direct sandbox
-    tools available to registry callers that omit ``enabled_tools``. Deferred
-    bridge helpers are different: they are only safe to expose when Tool
-    Search assembly explicitly put them in the session's model-facing list.
+    ``execute_code`` has always included the direct terminal/file/web helper
+    surface regardless of whether those tools are model-facing. Deferred Tool
+    Search bridges are stricter: expose only the bridge names assembled for
+    this session, and only on the local backend.
     """
     session_tools = set(enabled_tools) if enabled_tools else set()
-    allowed_tools = (
-        SANDBOX_ALLOWED_TOOLS if allow_deferred_bridges else DIRECT_SANDBOX_TOOLS
-    )
-    sandbox_tools = frozenset(allowed_tools & session_tools)
-    if sandbox_tools:
-        return sandbox_tools
-
-    return DIRECT_SANDBOX_TOOLS
+    sandbox_tools = set(DIRECT_SANDBOX_TOOLS)
+    if allow_deferred_bridges:
+        sandbox_tools.update(DEFERRED_BRIDGE_TOOLS & session_tools)
+    return frozenset(sandbox_tools)
 
 
 def _sandbox_dispatch_kwargs(

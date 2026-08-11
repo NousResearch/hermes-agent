@@ -289,8 +289,9 @@ _LEGACY_TOOLSET_MAP = {
 # get_tool_definitions  (the main schema provider)
 # =============================================================================
 
-# Module-level memoization for get_tool_definitions(). Keyed on
-# (profile scope, enabled/disabled toolsets, registry generation).
+# Module-level memoization for get_tool_definitions(). Keyed on toolset scope,
+# profile scope, registry generation, config identity, terminal backend identity,
+# and context flags that alter the model-facing surface.
 # Hot callers (gateway runner, AIAgent.__init__) invoke this on every turn
 # with quiet_mode=True; caching avoids ~7 ms of registry walking + schema
 # filtering + check_fn probing per call. Only active when quiet_mode=True
@@ -310,6 +311,31 @@ _tool_defs_cache_lock = threading.Lock()
 # set (the handful of distinct platform/toolset combos a gateway actually
 # serves) while keeping the cap small. (#19251)
 _TOOL_DEFS_CACHE_MAX = 8
+
+
+def _terminal_backend_cache_fingerprint() -> tuple[Optional[str], str]:
+    """Return canonical and effective backends for schema cache isolation.
+
+    An explicit ``terminal.backend`` config value wins over ``TERMINAL_ENV``
+    when terminal_tool bridges config into the process. Without that explicit
+    key, preserve the environment selection and historical local default.
+    ``execute_code`` uses this same backend distinction to withhold local-only
+    deferred bridges from remote transports.
+    """
+    canonical = None
+    try:
+        from hermes_cli.config import read_raw_config
+
+        raw = read_raw_config()
+        terminal_cfg = raw.get("terminal") if isinstance(raw, dict) else None
+        if isinstance(terminal_cfg, dict) and "backend" in terminal_cfg:
+            canonical = str(terminal_cfg.get("backend") or "").strip().lower() or None
+    except (ImportError, OSError, TypeError, ValueError):
+        canonical = None
+
+    configured_env = str(os.environ.get("TERMINAL_ENV") or "").strip().lower()
+    effective = canonical or configured_env or "local"
+    return canonical, effective
 
 
 def _clear_tool_defs_cache() -> None:
@@ -361,6 +387,7 @@ def get_tool_definitions(
             cfg_fp = (cfg_stat.st_mtime_ns, cfg_stat.st_size)
         except (FileNotFoundError, OSError, ImportError):
             cfg_fp = None
+        terminal_backend_fp = _terminal_backend_cache_fingerprint()
         profile_scope = check_fn_cache_scope()
         if profile_scope != CHECK_FN_CACHE_BYPASS:
             cache_key = (
@@ -369,6 +396,7 @@ def get_tool_definitions(
                 frozenset(disabled_toolsets) if disabled_toolsets else None,
                 registry._generation,
                 cfg_fp,
+                terminal_backend_fp,
                 bool(os.environ.get("HERMES_KANBAN_TASK")),
                 bool(skip_tool_search_assembly),
                 _is_delegated_child_context(),

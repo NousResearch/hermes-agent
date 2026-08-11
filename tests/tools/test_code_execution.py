@@ -667,7 +667,28 @@ print(json.dumps({
             ["tool_search", "tool_describe", "tool_call"],
             allow_deferred_bridges=True,
         )
-        self.assertEqual(resolved, DEFERRED_BRIDGE_TOOLS)
+        self.assertEqual(
+            resolved,
+            DIRECT_SANDBOX_TOOLS | DEFERRED_BRIDGE_TOOLS,
+        )
+
+    def test_bridge_session_keeps_direct_umbrella_stubs(self):
+        """Deferred bridge scope must not remove execute_code's direct helpers."""
+        code = """
+from hermes_tools import terminal
+print(terminal("echo umbrella")["output"])
+"""
+        with patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call):
+            result = json.loads(execute_code(
+                code=code,
+                task_id="test-direct-umbrella-with-bridges",
+                enabled_tools=["tool_search", "tool_describe", "tool_call"],
+                allow_deferred_bridges=True,
+            ))
+
+        self.assertEqual(result["status"], "success", result)
+        self.assertIn("mock output for: echo umbrella", result["output"])
+        self.assertEqual(result["tool_calls_made"], 1)
 
     def test_registry_handler_preserves_validation_and_deferred_scope(self):
         with patch("tools.code_execution_tool.execute_code", return_value="{}") as run:

@@ -10,6 +10,7 @@ read-only engine open creates -wal/-shm sidecar files next to a WAL database.
 import os
 import re
 import sqlite3
+from pathlib import Path
 
 import pytest
 
@@ -26,6 +27,11 @@ VULNERABLE = (3, 50, 4)
 FIXED_VERSIONS = [(3, 51, 3), (3, 52, 0), (3, 50, 7), (3, 44, 6)]
 
 EXPOSED_TEXT = "exposed to the WAL-reset bug"
+
+
+def _running_as_root() -> bool:
+    geteuid = getattr(os, "geteuid", None)
+    return geteuid is not None and geteuid() == 0
 
 
 def _make_db(path, journal_mode=None):
@@ -143,7 +149,7 @@ class TestReadJournalMode:
             holder.close()
 
     @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+    @pytest.mark.skipif(_running_as_root(), reason="root ignores file permissions")
     def test_read_only_directory_is_still_readable(self, tmp_path):
         db = tmp_path / "state.db"
         _make_db(db, journal_mode="WAL")
@@ -364,7 +370,8 @@ class TestReportDatabaseJournalModes:
         assert "state.db is in WAL mode" in out
         assert "projects.db: rollback journal mode" in out
         assert "kanban.db: rollback journal mode" in out
-        assert "kanban/boards/myboard/kanban.db is in WAL mode" in out
+        nested_db = str(Path("kanban") / "boards" / "myboard" / "kanban.db")
+        assert f"{nested_db} is in WAL mode" in out
 
     def test_missing_databases_are_skipped(self, tmp_path, capsys):
         doctor_platform._report_database_journal_modes(tmp_path, VULNERABLE)
@@ -388,7 +395,7 @@ class TestReportDatabaseJournalModes:
         assert "state.db: rollback journal mode" in out
 
     @pytest.mark.skipif(os.name == "nt", reason="chmod is a no-op on Windows")
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores file permissions")
+    @pytest.mark.skipif(_running_as_root(), reason="root ignores file permissions")
     def test_unreadable_database_does_not_crash(self, tmp_path, capsys):
         db = tmp_path / "state.db"
         _make_db(db)

@@ -17696,9 +17696,26 @@ def _maybe_open_browser(
     threading.Thread(target=_open, daemon=True).start()
 
 
-def _is_serve_orphaned(original_ppid: int, getppid=os.getppid) -> bool:
-    """True when this process lost its original spawning parent (ppid changed)."""
-    return getppid() != original_ppid
+def _is_serve_orphaned(desktop_pid: int, pid_exists=None) -> bool:
+    """True when the Desktop process that owns this serve backend is gone.
+
+    ``HERMES_PARENT_PID`` is the Electron Desktop PID, not necessarily this
+    Python process's immediate PPID. On Windows the venv ``hermes.exe`` launcher
+    introduces one or more shim processes, so comparing ``os.getppid()`` to the
+    Electron PID incorrectly treats a healthy backend as orphaned and exits 0.
+    Probe the recorded Desktop PID directly instead.
+
+    Any liveness-probe failure is fail-safe: keep serving rather than killing a
+    backend whose owner could not be conclusively shown to be dead.
+    """
+    try:
+        if pid_exists is None:
+            from gateway.status import _pid_exists
+
+            pid_exists = _pid_exists
+        return not bool(pid_exists(int(desktop_pid)))
+    except Exception:
+        return False
 
 
 def _start_parent_death_watchdog() -> None:
@@ -17716,7 +17733,7 @@ def _start_parent_death_watchdog() -> None:
     if not raw:
         return
     try:
-        original_ppid = int(raw)
+        desktop_pid = int(raw)
     except (TypeError, ValueError):
         return
     try:
@@ -17725,7 +17742,7 @@ def _start_parent_death_watchdog() -> None:
         poll = 2.0
 
     def _loop() -> None:
-        while not _is_serve_orphaned(original_ppid):
+        while not _is_serve_orphaned(desktop_pid):
             time.sleep(poll)
         os._exit(0)
 
@@ -17733,9 +17750,8 @@ def _start_parent_death_watchdog() -> None:
 
 
 def _demo() -> None:
-    # orphan iff current ppid differs from the recorded spawning parent
-    assert _is_serve_orphaned(999999999, getppid=lambda: 1) is True
-    assert _is_serve_orphaned(42, getppid=lambda: 42) is False
+    assert _is_serve_orphaned(999999999, pid_exists=lambda _pid: False) is True
+    assert _is_serve_orphaned(42, pid_exists=lambda _pid: True) is False
     print("web_server parent-death watchdog self-check: OK")
 
 

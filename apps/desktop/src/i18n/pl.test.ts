@@ -3,32 +3,99 @@ import { describe, expect, it } from 'vitest'
 import { en } from './en'
 import { pl, plOverrides } from './pl'
 
-function ownLeafPaths(value: unknown, prefix = ''): string[] {
+interface CatalogLeaf {
+  kind: string
+  value: unknown
+}
+
+function ownLeaves(value: unknown, prefix = ''): Map<string, CatalogLeaf> {
   if (
     typeof value === 'function' ||
     typeof value === 'string' ||
     typeof value === 'number' ||
-    typeof value === 'boolean'
+    typeof value === 'boolean' ||
+    value === null
   ) {
-    return [prefix]
+    return new Map([[prefix, { kind: value === null ? 'null' : typeof value, value }]])
   }
 
   if (Array.isArray(value)) {
-    return value.flatMap((item, index) => ownLeafPaths(item, `${prefix}[${index}]`))
+    return new Map(value.flatMap((item, index) => [...ownLeaves(item, `${prefix}[${index}]`)]))
   }
 
   if (value && typeof value === 'object') {
-    return Object.keys(value as Record<string, unknown>).flatMap(key =>
-      ownLeafPaths((value as Record<string, unknown>)[key], prefix ? `${prefix}.${key}` : key)
+    return new Map(
+      Object.keys(value as Record<string, unknown>).flatMap(key => [
+        ...ownLeaves((value as Record<string, unknown>)[key], prefix ? `${prefix}.${key}` : key)
+      ])
     )
   }
 
-  return [prefix]
+  return new Map([[prefix, { kind: typeof value, value }]])
+}
+
+const argumentPairs: ReadonlyArray<readonly [unknown, unknown]> = [
+  ['alpha', 'beta'],
+  [1, 2],
+  [false, true],
+  [null, 'value'],
+  [undefined, 'value'],
+  ['skills', 'tools'],
+  ['linux', 'windows']
+]
+
+function observesArgument(fn: (...args: never[]) => unknown, arity: number, index: number): boolean {
+  for (const fill of ['value', 1, false, null, undefined]) {
+    for (const [left, right] of argumentPairs) {
+      const leftArgs: unknown[] = Array.from({ length: arity }, () => fill)
+      const rightArgs = [...leftArgs]
+      leftArgs[index] = left
+      rightArgs[index] = right
+
+      try {
+        if (fn(...(leftArgs as never[])) !== fn(...(rightArgs as never[]))) {
+          return true
+        }
+      } catch {
+        // This vector does not match the callback's runtime input shape.
+      }
+    }
+  }
+
+  return false
 }
 
 describe('Polish desktop catalog', () => {
   it('overrides every English leaf without relying on the merge fallback', () => {
-    expect(ownLeafPaths(plOverrides).sort()).toEqual(ownLeafPaths(en).sort())
+    expect([...ownLeaves(plOverrides).keys()].sort()).toEqual([...ownLeaves(en).keys()].sort())
+  })
+
+  it('preserves runtime leaf kinds, callback arity, and argument flow', () => {
+    const englishLeaves = ownLeaves(en)
+    const polishLeaves = ownLeaves(plOverrides)
+
+    expect([...polishLeaves.keys()].sort()).toEqual([...englishLeaves.keys()].sort())
+
+    for (const [path, englishLeaf] of englishLeaves) {
+      const polishLeaf = polishLeaves.get(path)
+
+      expect(polishLeaf?.kind, path).toBe(englishLeaf.kind)
+
+      if (englishLeaf.kind !== 'function' || polishLeaf?.kind !== 'function') {
+        continue
+      }
+
+      const englishFn = englishLeaf.value as (...args: never[]) => unknown
+      const polishFn = polishLeaf.value as (...args: never[]) => unknown
+
+      expect(polishFn.length, `${path} arity`).toBe(englishFn.length)
+
+      for (let index = 0; index < englishFn.length; index += 1) {
+        expect(observesArgument(polishFn, polishFn.length, index), `${path} argument ${index}`).toBe(
+          observesArgument(englishFn, englishFn.length, index)
+        )
+      }
+    }
   })
 
   it('uses Polish for core visible actions', () => {

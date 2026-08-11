@@ -810,6 +810,68 @@ class TestAgentCacheIdleResume:
 
         assert cleanup_homes == [str(profile_home)]
 
+    def test_close_releases_active_children_before_parent_terminal_cleanup(self):
+        import run_agent as _ra
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            model="anthropic/claude-sonnet-4",
+            api_key="test",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openrouter",
+            max_iterations=5,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            session_id="parent-session",
+        )
+        events = []
+
+        class Child:
+            def close(self):
+                events.append("child")
+
+        active_children_lock = getattr(agent, "_active_children_lock")
+        active_children = getattr(agent, "_active_children")
+        with active_children_lock:
+            active_children.append(Child())
+        original_vm = _ra.cleanup_vm
+        _ra.cleanup_vm = lambda task_id, **_kwargs: events.append(f"vm:{task_id}")
+        try:
+            agent.close()
+        finally:
+            _ra.cleanup_vm = original_vm
+
+        assert events[0] == "child"
+        assert "vm:parent-session" in events
+
+    def test_close_uses_the_current_terminal_task_identity(self):
+        import run_agent as _ra
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            model="anthropic/claude-sonnet-4",
+            api_key="test",
+            base_url="https://openrouter.ai/api/v1",
+            provider="openrouter",
+            max_iterations=5,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            session_id="child-session",
+        )
+        setattr(agent, "_current_task_id", "child-task")
+        getattr(agent, "_terminal_task_ids").update({"first-task", "child-task"})
+        vm_calls = []
+        original_vm = _ra.cleanup_vm
+        _ra.cleanup_vm = lambda task_id, **_kwargs: vm_calls.append(task_id)
+        try:
+            agent.close()
+        finally:
+            _ra.cleanup_vm = original_vm
+
+        assert {"first-task", "child-task", "child-session"}.issubset(vm_calls)
+
     def test_close_cleans_only_the_owning_profile_environment(self, tmp_path):
         from agent import secret_scope
         from hermes_constants import (

@@ -48,6 +48,10 @@ _IS_WINDOWS = platform.system() == "Windows"
 from typing import Any, Collection, Dict, List, Optional, Tuple
 
 from tools.thread_context import propagate_context_to_thread
+
+
+# Keep script execution independent from RPC-poller thread injection.
+_SCRIPT_THREAD_CLASS = threading.Thread
 from agent.thread_scoped_output import thread_scoped_silence
 
 # Availability gate.  On Windows we fall back to loopback TCP for the
@@ -910,7 +914,6 @@ def _get_or_create_env(task_id: str):
             effective_task_id,
             task_id,
             config,
-            preserve_creation_lock=True,
         )
         with _env_lock:
             if effective_task_id in _active_environments:
@@ -1230,6 +1233,12 @@ def _execute_remote(
     stop_event = threading.Event()
     rpc_thread = None
     rpc_connection_errors: List[Exception] = []
+    script_done = threading.Event()
+    script_results: List[Dict[str, Any]] = []
+    script_errors: List[Exception] = []
+    stdout_text = ""
+    exit_code = -1
+    status = "error"
 
     try:
         env, env_type = _get_or_create_env(effective_task_id)
@@ -1297,23 +1306,48 @@ def _execute_remote(
         if tz:
             env_prefix += f" TZ={shlex.quote(tz)}"
 
-        # Execute the script on the remote backend
+        # Execute the script on a daemon worker so a failed RPC transport can
+        # stop the model-facing call promptly instead of leaving the generated
+        # client blocked for its full response timeout.
         logger.info("Executing code on %s backend (task %s)...",
                      env_type, effective_task_id[:8])
-        script_result = env.execute(
-            f"cd {quoted_sandbox_dir} && {env_prefix} python3 script.py",
-            timeout=timeout,
+        script_command = (
+            f"cd {quoted_sandbox_dir} && {env_prefix} python3 script.py"
         )
 
-        stdout_text = script_result.get("output", "") or ""
-        exit_code = script_result.get("returncode", -1)
-        status = "success"
+        def _run_remote_script() -> None:
+            try:
+                script_results.append(
+                    env.execute(script_command, timeout=timeout)
+                )
+            except Exception as exc:
+                script_errors.append(exc)
+            finally:
+                script_done.set()
 
-        # Check for timeout/interrupt from the backend
-        if exit_code == 124:
-            status = "timeout"
-        elif exit_code == 130:
-            status = "interrupted"
+        script_thread = _SCRIPT_THREAD_CLASS(
+            target=propagate_context_to_thread(_run_remote_script),
+            daemon=True,
+        )
+        script_thread.start()
+        while not script_done.wait(0.05):
+            if rpc_connection_errors:
+                break
+
+        if not rpc_connection_errors:
+            if script_errors:
+                raise script_errors[0]
+            script_result = script_results[0]
+
+            stdout_text = script_result.get("output", "") or ""
+            exit_code = script_result.get("returncode", -1)
+            status = "success"
+
+            # Check for timeout/interrupt from the backend
+            if exit_code == 124:
+                status = "timeout"
+            elif exit_code == 130:
+                status = "interrupted"
 
     except Exception as exc:
         from tools.environments.base import EnvironmentConnectionError
@@ -1357,7 +1391,7 @@ def _execute_remote(
 
         # Clean up remote sandbox dir
         try:
-            if env is not None and sandbox_dir:
+            if env is not None and sandbox_dir and not rpc_connection_errors:
                 env.execute(
                     f"rm -rf {quoted_sandbox_dir}", cwd="/", timeout=15,
                 )

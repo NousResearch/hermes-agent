@@ -553,6 +553,16 @@ def build_turn_context(
     # Generate unique task_id if not provided to isolate VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
+    task_ids = getattr(agent, "_terminal_task_ids", None)
+    if task_ids is None:
+        task_ids = set()
+        agent._terminal_task_ids = task_ids
+    task_ids_lock = getattr(agent, "_terminal_task_ids_lock", None)
+    if task_ids_lock is None:
+        task_ids.add(effective_task_id)
+    else:
+        with task_ids_lock:
+            task_ids.add(effective_task_id)
     turn_id = str(getattr(agent, "_relay_pending_turn_id", "") or "")
     if not turn_id:
         turn_id = (

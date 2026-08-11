@@ -886,6 +886,8 @@ def init_agent(
     agent._delegate_depth = 0        # 0 = top-level agent, incremented for children
     agent._active_children = []      # Running child AIAgents (for interrupt propagation)
     agent._active_children_lock = threading.Lock()
+    agent._terminal_task_ids = set()
+    agent._terminal_task_ids_lock = threading.Lock()
 
     # Background memory/skill review state (agent/background_review.py). Holds
     # the forked review AIAgent while its run_conversation() is in flight, so

@@ -4490,11 +4490,44 @@ class AIAgent:
             pass
 
         task_id = getattr(self, "session_id", None) or ""
+        terminal_task_ids = []
+        tracked_task_ids = getattr(self, "_terminal_task_ids", set())
+        tracked_task_ids_lock = getattr(self, "_terminal_task_ids_lock", None)
+        if tracked_task_ids_lock is None:
+            tracked_snapshot = list(tracked_task_ids)
+        else:
+            with tracked_task_ids_lock:
+                tracked_snapshot = list(tracked_task_ids)
+                tracked_task_ids.clear()
+        for candidate in (
+            getattr(self, "_current_task_id", None),
+            *tracked_snapshot,
+            task_id,
+        ):
+            if candidate and candidate not in terminal_task_ids:
+                terminal_task_ids.append(candidate)
 
-        # 1. Kill background processes for this task
+        # Children can share the parent's terminal sandbox through task aliases.
+        # Release their ownership records before tearing down the parent sandbox.
+        try:
+            active_children_lock = getattr(self, "_active_children_lock")
+            active_children = getattr(self, "_active_children")
+            with active_children_lock:
+                children = list(active_children)
+                active_children.clear()
+            for child in children:
+                try:
+                    child.close()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        # 1. Kill background processes for every task identity used by this agent.
         try:
             from tools.process_registry import process_registry
-            process_registry.kill_all(task_id=task_id)
+            for terminal_task_id in terminal_task_ids:
+                process_registry.kill_all(task_id=terminal_task_id)
         except Exception:
             pass
 
@@ -4509,7 +4542,8 @@ class AIAgent:
                 getattr(self, "_terminal_profile_home", None),
             )
             try:
-                cleanup_vm(task_id)
+                for terminal_task_id in terminal_task_ids:
+                    cleanup_vm(terminal_task_id)
             finally:
                 reset_hermes_home_override(token)
         except Exception:
@@ -4533,20 +4567,7 @@ class AIAgent:
         except Exception:
             pass
 
-        # 5. Close active child agents
-        try:
-            with self._active_children_lock:
-                children = list(self._active_children)
-                self._active_children.clear()
-            for child in children:
-                try:
-                    child.close()
-                except Exception:
-                    pass
-        except Exception:
-            pass
-
-        # 6. Close the OpenAI/httpx client
+        # 5. Close the OpenAI/httpx client
         try:
             client = getattr(self, "client", None)
             if client is not None:

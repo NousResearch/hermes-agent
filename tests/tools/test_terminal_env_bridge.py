@@ -316,6 +316,103 @@ def test_multiplex_profiles_do_not_reuse_environment_cache_entries(
     assert [env.backend for env in created] == ["local", "ssh"]
 
 
+def test_raw_mpx_task_ids_are_still_namespaced_per_profile(tmp_path, monkeypatch):
+    """A user task ID must never masquerade as an internal resolved key."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", True)
+    secret_scope.set_multiplex_active(True)
+    resolved = []
+    for name in ("profile-a", "profile-b"):
+        home = tmp_path / name
+        home.mkdir()
+        token = set_hermes_home_override(home)
+        try:
+            resolved.append(terminal_tool._resolve_container_task_id("mpx:attacker"))
+        finally:
+            reset_hermes_home_override(token)
+
+    assert resolved[0] != resolved[1]
+    assert all(key != "mpx:attacker" for key in resolved)
+
+
+def test_isolated_workspace_task_ending_default_uses_its_own_mount(
+    tmp_path,
+    monkeypatch,
+):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    monkeypatch.setattr(terminal_tool, "_docker_session_isolation_enabled", lambda: True)
+    terminal_tool.register_task_env_overrides(
+        "workspace:default",
+        {"cwd": str(workspace), "cwd_source": "session"},
+    )
+    config = {
+        "env_type": "docker",
+        "docker_mount_cwd_to_workspace": True,
+        "host_cwd": "/global/workspace",
+    }
+    try:
+        assert terminal_tool._resolve_task_host_cwd(
+            config,
+            "workspace:default",
+        ) == str(workspace)
+    finally:
+        terminal_tool.clear_task_env_overrides("workspace:default")
+
+
+def test_managed_terminal_backend_wins_in_snapshot_and_cache_identity(monkeypatch):
+    from hermes_cli import managed_scope
+
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setattr(
+        managed_scope,
+        "load_managed_config",
+        lambda: {"terminal": {"backend": "ssh"}},
+    )
+    raw = {"terminal": {"backend": "local"}}
+
+    assert terminal_tool._terminal_env_snapshot(raw)["TERMINAL_ENV"] == "ssh"
+    assert terminal_tool._terminal_backend_identity(raw)[1] == "ssh"
+
+
+def test_stale_retirement_keeps_the_stable_creation_lock():
+    task_id = "stable-lock-task"
+    config_a = {"env_type": "local", "cwd": "/a"}
+    config_b = {"env_type": "local", "cwd": "/b"}
+    with terminal_tool._creation_locks_lock:
+        lock = terminal_tool._creation_locks.setdefault(task_id, Lock())
+
+    class Environment:
+        def cleanup(self):
+            return None
+
+    terminal_tool._register_active_environment(
+        task_id,
+        Environment(),
+        config_a,
+        task_id,
+    )
+    try:
+        terminal_tool._retire_stale_environment_for_config(
+            task_id,
+            task_id,
+            config_b,
+        )
+        with terminal_tool._creation_locks_lock:
+            assert terminal_tool._creation_locks.setdefault(
+                task_id,
+                Lock(),
+            ) is lock
+    finally:
+        with terminal_tool._env_lock:
+            terminal_tool._active_environments.pop(task_id, None)
+            terminal_tool._last_activity.pop(task_id, None)
+            terminal_tool._environment_metadata.pop(task_id, None)
+        with terminal_tool._creation_locks_lock:
+            terminal_tool._creation_locks.pop(task_id, None)
+
+
 def test_cleanup_vm_resolves_the_active_profile_namespace(tmp_path, monkeypatch):
     """Session teardown must remove the profile-scoped cached environment."""
     from hermes_constants import reset_hermes_home_override, set_hermes_home_override

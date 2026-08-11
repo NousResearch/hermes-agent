@@ -33,6 +33,7 @@ Usage:
     result = terminal_tool("python server.py", background=True)
 """
 
+import copy
 import hashlib
 import importlib.util
 import json
@@ -1367,6 +1368,10 @@ _ISOLATION_OVERRIDE_KEYS = frozenset({
 })
 
 
+class _ResolvedTaskKey(str):
+    """Internal marker for a task key that already carries its runtime namespace."""
+
+
 def _has_isolation_overrides(task_id: Optional[str]) -> bool:
     """True when *task_id* registered backend-image/env_type overrides.
 
@@ -1377,7 +1382,7 @@ def _has_isolation_overrides(task_id: Optional[str]) -> bool:
     if not task_id:
         return False
     raw_task_id = task_id
-    if task_id.startswith("mpx:"):
+    if isinstance(task_id, _ResolvedTaskKey):
         parts = task_id.split(":", 2)
         if len(parts) == 3:
             raw_task_id = parts[2]
@@ -1385,6 +1390,15 @@ def _has_isolation_overrides(task_id: Optional[str]) -> bool:
     if not overrides:
         return False
     return bool(set(overrides) & _ISOLATION_OVERRIDE_KEYS)
+
+
+def _resolve_container_base_task_id(task_id: Optional[str]) -> str:
+    """Resolve aliases and isolation policy without adding a profile namespace."""
+    if task_id and _has_isolation_overrides(task_id):
+        return task_id
+    if task_id and _docker_session_isolation_enabled():
+        return _resolve_container_alias(task_id)
+    return "default"
 
 
 def _resolve_container_task_id(task_id: Optional[str]) -> str:
@@ -1418,18 +1432,13 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     ``delegate_task`` children keep sharing the parent's container via the
     alias registry (``register_container_alias``).
     """
-    if task_id and task_id.startswith("mpx:"):
+    if isinstance(task_id, _ResolvedTaskKey):
         return task_id
-    if task_id and _has_isolation_overrides(task_id):
-        base_key = task_id
-    elif task_id and _docker_session_isolation_enabled():
-        base_key = _resolve_container_alias(task_id)
-    else:
-        base_key = "default"
+    base_key = _resolve_container_base_task_id(task_id)
 
     namespace = _terminal_runtime_namespace()
     if namespace:
-        return f"mpx:{namespace}:{base_key}"
+        return _ResolvedTaskKey(f"mpx:{namespace}:{base_key}")
     return base_key
 
 
@@ -1483,8 +1492,7 @@ def _resolve_task_host_cwd(config: Dict[str, Any], task_id: Optional[str]) -> Op
         return None
     if not _docker_session_isolation_enabled():
         return config.get("host_cwd")
-    resolved_task_id = _resolve_container_task_id(task_id)
-    base_task_id = resolved_task_id.rsplit(":", 1)[-1]
+    base_task_id = _resolve_container_base_task_id(task_id)
     if base_task_id == "default":
         # Top-level CLI parent — single-session process, legacy behavior.
         return config.get("host_cwd")
@@ -1603,6 +1611,26 @@ def _resolve_environment_cwd(
 _terminal_config_bridge_attempted = False
 
 
+def _effective_terminal_raw_config(
+    raw_config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Return one expanded config with administrator-managed values applied."""
+    try:
+        from hermes_cli.config import _expand_env_vars, read_raw_config
+        from hermes_cli.managed_scope import apply_managed_overlay
+
+        source = raw_config if raw_config is not None else read_raw_config()
+        if not isinstance(source, dict):
+            source = {}
+        effective = _expand_env_vars(copy.deepcopy(source))
+        if not isinstance(effective, dict):
+            effective = {}
+        return apply_managed_overlay(effective)
+    except Exception:
+        logger.debug("effective terminal config resolution failed", exc_info=True)
+        return copy.deepcopy(raw_config) if isinstance(raw_config, dict) else {}
+
+
 def _terminal_env_snapshot(
     raw_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, str]:
@@ -1628,14 +1656,11 @@ def _terminal_env_snapshot(
     try:
         from hermes_cli.config import apply_terminal_config_to_env
 
-        if raw_config is None:
-            from hermes_cli.config import read_raw_config
-
-            raw_config = read_raw_config()
-        if isinstance(raw_config.get("terminal"), dict):
+        effective_config = _effective_terminal_raw_config(raw_config)
+        if isinstance(effective_config.get("terminal"), dict):
             apply_terminal_config_to_env(
                 env=snapshot,
-                config=raw_config,
+                config=effective_config,
                 override=True,
             )
     except Exception:
@@ -1654,14 +1679,7 @@ def _terminal_backend_identity(
     ContextVars but share ``os.environ``. Profiles without an explicit backend
     retain the launcher/environment selection and the historical local default.
     """
-    config = raw_config
-    if config is None:
-        try:
-            from hermes_cli.config import read_raw_config
-
-            config = read_raw_config()
-        except Exception:
-            config = {}
+    config = _effective_terminal_raw_config(raw_config)
 
     terminal_config = config.get("terminal") if isinstance(config, dict) else None
     canonical = None
@@ -1949,14 +1967,12 @@ def _retire_stale_environment_for_config(
     effective_task_id: str,
     raw_task_id: Optional[str],
     config: Dict[str, Any],
-    *,
-    preserve_creation_lock: bool = False,
 ) -> None:
     """Retire an environment whose stored backend fingerprint is stale.
 
-    ``preserve_creation_lock`` is required for the post-wait check performed
-    while the caller holds that lock. Removing a held lock from the registry
-    would let another waiter create a replacement lock and enter concurrently.
+    Creation locks stay stable for the lifetime of the task key. Replacing one
+    during retirement would let a second creator enter while the first creator
+    still holds the original lock.
     """
     expected = _terminal_backend_fingerprint(resolved_config=config)
     stale_key = None
@@ -1979,9 +1995,6 @@ def _retire_stale_environment_for_config(
         except Exception:
             logger.debug("stale environment cleanup failed", exc_info=True)
     if stale_key is not None:
-        if not preserve_creation_lock:
-            with _creation_locks_lock:
-                _creation_locks.pop(stale_key, None)
         try:
             from tools.file_tools import clear_file_ops_cache
 
@@ -2429,7 +2442,6 @@ def ensure_task_env(task_id: Optional[str] = None):
             effective_task_id,
             task_id,
             config,
-            preserve_creation_lock=True,
         )
         existing = get_active_env(effective_task_id)
         if existing is not None:
@@ -3123,7 +3135,6 @@ def terminal_tool(
                     effective_task_id,
                     task_id,
                     config,
-                    preserve_creation_lock=True,
                 )
                 with _env_lock:
                     _existing_key = _environment_lookup_key(effective_task_id, task_id)
@@ -3697,6 +3708,12 @@ def terminal_tool(
                         "bounded_capture": True,
                     }
                     result = env.execute(command, **execute_kwargs)
+                except EnvironmentConnectionError as e:
+                    return _environment_connection_error_result(
+                        e,
+                        task_id,
+                        config=config,
+                    )
                 except Exception as e:
                     error_str = str(e).lower()
                     if "timeout" in error_str:

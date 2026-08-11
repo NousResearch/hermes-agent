@@ -247,6 +247,66 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
         self.assertEqual(result["status"], "degraded")
         self.assertIn("RPC poller", result["reason"])
 
+    def test_remote_rpc_connection_loss_aborts_blocked_script_promptly(self):
+        from tools import code_execution_tool, terminal_tool
+        from tools.environments.base import EnvironmentConnectionError
+
+        script_started = threading.Event()
+        release_script = threading.Event()
+        result_box = {}
+        worker = None
+
+        class DeadPollEnvironment:
+            def execute(self, command, **_kwargs):
+                if command.startswith("ls -1 "):
+                    if not script_started.wait(timeout=1):
+                        raise AssertionError("remote script did not start")
+                    raise EnvironmentConnectionError("RPC connection lost")
+                if "command -v python3" in command:
+                    return {"returncode": 0, "output": "OK\n"}
+                if "python3 script.py" in command:
+                    script_started.set()
+                    release_script.wait(timeout=5)
+                    return {"returncode": 0, "output": "late success\n"}
+                return {"returncode": 0, "output": ""}
+
+            def cleanup(self):
+                return None
+
+        env = DeadPollEnvironment()
+        config = {
+            "env_type": "ssh",
+            "cwd": "/home/user",
+            "timeout": 60,
+            "degraded_mode": "warn",
+        }
+
+        def run_remote():
+            result_box["result"] = json.loads(
+                _execute_remote("print('blocked')", "blocked-rpc-task", ["terminal"])
+            )
+
+        try:
+            with patch.object(
+                code_execution_tool,
+                "_get_or_create_env",
+                return_value=(env, "ssh"),
+            ), patch.object(terminal_tool, "_get_env_config", return_value=config):
+                worker = threading.Thread(target=run_remote)
+                worker.start()
+                worker.join(timeout=1.5)
+                self.assertFalse(
+                    worker.is_alive(),
+                    "execute_code waited for the remote client's full RPC timeout",
+                )
+        finally:
+            release_script.set()
+            if worker is not None:
+                worker.join(timeout=2)
+
+        self.assertEqual(result_box["result"]["status"], "degraded")
+        self.assertIn("RPC connection lost", result_box["result"]["reason"])
+
     def test_remote_execution_connection_failure_evicts_all_cached_state(self):
         from tools import file_tools, terminal_tool
         from tools.environments.base import EnvironmentConnectionError

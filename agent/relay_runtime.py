@@ -266,49 +266,34 @@ class _ProcessRelayPluginConfiguration:
                 return False
 
             try:
-                plugin_mod = getattr(relay, "plugin", None)
                 configured_inputs = _configured_plugin_inputs(relay)
                 if configured_inputs is None:
                     return False
                 plugin_config, dynamic_plugins = configured_inputs
                 if dynamic_plugins:
-                    initialize_dynamic = getattr(
-                        plugin_mod,
-                        "initialize_with_dynamic_plugins",
-                        None,
-                    )
-                    if callable(initialize_dynamic):
-                        try:
-                            activation = _resolve_plugin_awaitable(
-                                initialize_dynamic(plugin_config, dynamic_plugins)
+                    try:
+                        activation = _resolve_plugin_awaitable(
+                            relay.plugin.initialize_with_dynamic_plugins(
+                                plugin_config,
+                                dynamic_plugins,
                             )
-                            if activation is None:
-                                raise RuntimeError(
-                                    "NeMo Relay dynamic plugin initialization "
-                                    "returned no activation handle"
-                                )
-                            self._activation = activation
-                        except Exception as exc:
-                            raise RuntimeError(
-                                "Hermes Relay dynamic plugin activation failed"
-                            ) from exc
-                    else:
-                        raise RuntimeError(
-                            "Hermes Relay dynamic plugins require a binding that "
-                            "exposes plugin.initialize_with_dynamic_plugins"
                         )
+                        if activation is None:
+                            raise RuntimeError(
+                                "NeMo Relay dynamic plugin initialization "
+                                "returned no activation handle"
+                            )
+                        self._activation = activation
+                    except Exception as exc:
+                        raise RuntimeError(
+                            "Hermes Relay dynamic plugin activation failed"
+                        ) from exc
 
                 if self._activation is None:
-                    initialize = getattr(plugin_mod, "initialize", None)
-                    if not callable(initialize):
-                        raise RuntimeError(
-                            "installed NeMo Relay binding does not expose "
-                            "plugin.initialize"
-                        )
                     # Hermes only enters Relay's initialization path after an
                     # explicit opt-in. Relay currently owns any subsequent ambient
                     # layering; a future discovery=False API can make this exact.
-                    _resolve_plugin_awaitable(initialize(plugin_config))
+                    _resolve_plugin_awaitable(relay.plugin.initialize(plugin_config))
             except Exception as exc:
                 self._activation = None
                 logger.warning(
@@ -1923,18 +1908,9 @@ def _configured_plugin_inputs(
         plugins_section = config.get("plugins")
         dynamic_plugins: list[Any] = []
         if plugins_section:
-            plugin_mod = getattr(relay, "plugin", None)
-            load_dynamic_plugins = getattr(
-                plugin_mod,
-                "load_dynamic_plugin_activation_specs",
-                None,
+            dynamic_plugins = relay.plugin.load_dynamic_plugin_activation_specs(
+                config_path
             )
-            if not callable(load_dynamic_plugins):
-                raise RuntimeError(
-                    "installed NeMo Relay binding does not expose "
-                    "plugin.load_dynamic_plugin_activation_specs"
-                )
-            dynamic_plugins = load_dynamic_plugins(config_path)
         plugin_config = dict(config)
         plugin_config.pop("plugins", None)
         return plugin_config, dynamic_plugins
@@ -1948,27 +1924,13 @@ def _configured_plugin_inputs(
         return None
 
 def _flush_relay_subscribers(relay: Any) -> None:
-    """Flush Relay without blocking a 0.7 asyncio event-loop thread."""
-    subscribers = getattr(relay, "subscribers", None)
-    flush_async = getattr(subscribers, "flush_async", None)
-    if callable(flush_async):
-        _resolve_plugin_awaitable(flush_async())
-        return
-    flush = getattr(subscribers, "flush", None)
-    if callable(flush):
-        _resolve_plugin_awaitable(flush())
+    """Flush Relay without blocking an asyncio event-loop thread."""
+    _resolve_plugin_awaitable(relay.subscribers.flush_async())
 
 
 def _clear_relay_plugins(relay: Any) -> None:
-    """Clear Relay plugins through the newest available binding API."""
-    plugin_mod = getattr(relay, "plugin", None)
-    clear_async = getattr(plugin_mod, "clear_async", None)
-    if callable(clear_async):
-        _resolve_plugin_awaitable(clear_async())
-        return
-    clear = getattr(plugin_mod, "clear", None)
-    if callable(clear):
-        _resolve_plugin_awaitable(clear())
+    """Clear Relay plugins without blocking an asyncio event-loop thread."""
+    _resolve_plugin_awaitable(relay.plugin.clear_async())
 
 
 def _resolve_plugin_awaitable(value: Any) -> Any:

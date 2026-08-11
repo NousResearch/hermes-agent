@@ -31,13 +31,13 @@ class _FakeRelay:
             initialize=self._initialize_plugins,
             initialize_with_dynamic_plugins=self._initialize_dynamic_plugins,
             load_dynamic_plugin_activation_specs=self._load_dynamic_plugin_specs,
-            clear=self._clear_plugins,
+            clear_async=self._clear_plugins_async,
         )
         self.scope = SimpleNamespace(
             push=self._scope_push,
             pop=self._scope_pop,
         )
-        self.subscribers = SimpleNamespace(flush=self._flush)
+        self.subscribers = SimpleNamespace(flush_async=self._flush_async)
 
     def get_scope_stack(self) -> None:
         return None
@@ -71,8 +71,8 @@ class _FakeRelay:
         self.events.append(("plugin.load_dynamic_specs", str(config_path)))
         return self.dynamic_plugin_specs
 
-    def _clear_plugins(self) -> None:
-        self.events.append(("plugin.clear",))
+    async def _clear_plugins_async(self) -> None:
+        self.events.append(("plugin.clear_async",))
 
     def _scope_push(self, name: str, scope_type: Any, **kwargs: Any) -> Any:
         handle = ("scope", name, len(self.events))
@@ -82,32 +82,11 @@ class _FakeRelay:
     def _scope_pop(self, handle: Any, **kwargs: Any) -> None:
         self.events.append(("scope.pop", handle, kwargs))
 
-    def _flush(self) -> None:
-        self.events.append(("subscribers.flush",))
-
-
-class _AsyncCleanupRelay(_FakeRelay):
-    """Relay 0.7-shaped fake that rejects synchronous loop cleanup."""
-
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self.plugin.clear_async = self._clear_plugins_async
-        self.subscribers.flush_async = self._flush_async
-
-    def _clear_plugins(self) -> None:
-        raise AssertionError("synchronous plugin.clear must not be called")
-
-    def _flush(self) -> None:
-        raise AssertionError("synchronous subscribers.flush must not be called")
-
-    async def _clear_plugins_async(self) -> None:
-        self.events.append(("plugin.clear_async",))
-
     async def _flush_async(self) -> None:
         self.events.append(("subscribers.flush_async",))
 
 
-class _ConcurrentPublicationRelay(_AsyncCleanupRelay):
+class _ConcurrentPublicationRelay(_FakeRelay):
     def __init__(self) -> None:
         super().__init__()
         self.publication_finished = threading.Event()
@@ -145,7 +124,7 @@ def test_unset_config_disables_plugin_initialization(monkeypatch):
     finally:
         host.shutdown()
 
-    assert not any(event[0] == "subscribers.flush" for event in relay.events)
+    assert not any(event[0] == "subscribers.flush_async" for event in relay.events)
 
 
 def test_relay_initializes_explicit_plugins_before_first_session_scope(
@@ -192,20 +171,6 @@ def test_later_host_retries_after_initialization_failure(explicit_static_config)
     finally:
         failed_host.shutdown()
         recovered_host.shutdown()
-
-
-def test_missing_initialize_api_is_fail_open(explicit_static_config, caplog):
-    relay = _FakeRelay()
-    del relay.plugin.initialize
-
-    with caplog.at_level("WARNING"):
-        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
-
-    try:
-        assert not host.managed_execution_enabled()
-        assert "does not expose plugin.initialize" in caplog.text
-    finally:
-        host.shutdown()
 
 
 def test_missing_explicit_config_does_not_fall_back_to_discovery(
@@ -263,19 +228,19 @@ def test_two_profile_hosts_initialize_once_and_clear_after_final_shutdown(
     host_b.ensure_session({"session_id": "profile-b-session"})
 
     host_a.shutdown()
-    assert ("plugin.clear",) not in relay.events
+    assert ("plugin.clear_async",) not in relay.events
 
     host_b.shutdown()
     assert relay.events[-2:] == [
-        ("subscribers.flush",),
-        ("plugin.clear",),
+        ("subscribers.flush_async",),
+        ("plugin.clear_async",),
     ]
     assert relay.events.count(("plugin.initialize", {})) == 1
-    assert relay.events.count(("plugin.clear",)) == 1
+    assert relay.events.count(("plugin.clear_async",)) == 1
     pop_index = next(
         index for index, event in enumerate(relay.events) if event[0] == "scope.pop"
     )
-    assert pop_index < relay.events.index(("plugin.clear",))
+    assert pop_index < relay.events.index(("plugin.clear_async",))
 
 
 def test_plugin_initialization_inside_running_event_loop(explicit_static_config):
@@ -295,7 +260,7 @@ def test_plugin_initialization_inside_running_event_loop(explicit_static_config)
 def test_static_plugin_cleanup_uses_async_apis_inside_running_event_loop(
     explicit_static_config,
 ):
-    relay = _AsyncCleanupRelay()
+    relay = _FakeRelay()
 
     async def run_lifecycle() -> None:
         host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
@@ -389,10 +354,10 @@ manifest = "plugins/worker/relay-plugin.toml"
 
     host_b.shutdown()
     assert relay.events[-2:] == [
-        ("subscribers.flush",),
+        ("subscribers.flush_async",),
         ("plugin.activation.close",),
     ]
-    assert ("plugin.clear",) not in relay.events
+    assert ("plugin.clear_async",) not in relay.events
     assert relay.events.count(("plugin.activation.close",)) == 1
     pop_index = next(
         index for index, event in enumerate(relay.events) if event[0] == "scope.pop"
@@ -431,8 +396,8 @@ manifest = "relay-plugin.toml"
     finally:
         host.shutdown()
 
-    assert ("subscribers.flush",) not in relay.events
-    assert ("plugin.clear",) not in relay.events
+    assert ("subscribers.flush_async",) not in relay.events
+    assert ("plugin.clear_async",) not in relay.events
 
 
 def test_dynamic_activation_lifecycle_inside_running_event_loop(
@@ -448,7 +413,7 @@ manifest = "relay-plugin.toml"
         encoding="utf-8",
     )
     monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
-    relay = _AsyncCleanupRelay()
+    relay = _FakeRelay()
     relay.dynamic_plugin_specs = [{"plugin_id": "native.policy"}]
 
     async def run_lifecycle() -> None:
@@ -479,7 +444,7 @@ manifest = "relay-plugin.toml"
         encoding="utf-8",
     )
     monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
-    relay = _AsyncCleanupRelay()
+    relay = _FakeRelay()
     relay.dynamic_plugin_specs = [{"plugin_id": "worker.policy"}]
 
     async def run_lifecycle() -> None:
@@ -635,34 +600,6 @@ manifest = "relay-plugin.toml"
         # fake so this process-global fixture cannot leak into later tests.
         relay.activation_close_error = None
         relay_runtime._PLUGIN_CONFIGURATION.reset_for_tests()
-
-
-def test_missing_dynamic_initializer_disables_plugins(
-    tmp_path,
-    monkeypatch,
-    caplog,
-):
-    config = tmp_path / "plugins.toml"
-    config.write_text(
-        """
-[[plugins.dynamic]]
-manifest = "relay-plugin.toml"
-""".strip(),
-        encoding="utf-8",
-    )
-    monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
-    relay = _FakeRelay()
-    relay.dynamic_plugin_specs = [{"plugin_id": "native.policy"}]
-    del relay.plugin.initialize_with_dynamic_plugins
-
-    with caplog.at_level("WARNING"):
-        host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
-    try:
-        assert not host.managed_execution_enabled()
-        assert relay.events == [("plugin.load_dynamic_specs", str(config))]
-        assert "require a binding" in caplog.text
-    finally:
-        host.shutdown()
 
 
 def test_standard_dynamic_records_use_relay_toml_loader(

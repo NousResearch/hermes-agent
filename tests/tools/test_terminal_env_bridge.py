@@ -528,6 +528,7 @@ def test_execute_code_remote_creation_uses_full_container_policy(monkeypatch):
         "docker_extra_args": ["--cap-drop=ALL"],
         "docker_mount_cwd_to_workspace": True,
         "docker_persist_across_processes": False,
+        "docker_network": False,
     }
 
     class Environment:
@@ -545,6 +546,7 @@ def test_execute_code_remote_creation_uses_full_container_policy(monkeypatch):
         expected = terminal_tool._container_config_from_config(config)
         assert captured["container_config"] == expected
         assert captured["container_config"]["modal_mode"] == "managed"
+        assert captured["container_config"]["docker_network"] is False
     finally:
         with terminal_tool._env_lock:
             terminal_tool._active_environments.pop(task_id, None)

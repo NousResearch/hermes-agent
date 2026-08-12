@@ -164,18 +164,21 @@ class TestReapedEnvFallbackIsFillOnly:
     record.
     """
 
-    def _reap(self, monkeypatch, tmp_path, task_id, stale_cwd):
+    def _reap(self, monkeypatch, tmp_path, task_id, stale_cwd, *, owner=None):
         import tools.file_tools as ft
 
         class _StaleFileOps:
             cwd = stale_cwd
 
+        stale_file_ops = _StaleFileOps()
+        setattr(stale_file_ops, "_hermes_raw_task_id", owner or task_id)
+
         # Cached file_ops whose env was reaped: cache entry present,
         # _active_environments empty. The cache is keyed by the COLLAPSED
-        # container id ("default" for plain sessions) — that collapse is
-        # exactly why the snapshot can belong to another session.
+        # container id ("default" for plain sessions), while the wrapper keeps
+        # the raw session that created its cwd snapshot.
         container_id = tt._resolve_container_task_id(task_id)
-        monkeypatch.setattr(ft, "_file_ops_cache", {container_id: _StaleFileOps()})
+        monkeypatch.setattr(ft, "_file_ops_cache", {container_id: stale_file_ops})
         monkeypatch.setattr(tt, "_active_environments", {})
         monkeypatch.setattr(tt, "_last_activity", {})
         monkeypatch.setattr(
@@ -191,9 +194,19 @@ class TestReapedEnvFallbackIsFillOnly:
         assert tt.get_session_cwd("sess-a") == "/my/worktree"
 
     def test_absent_record_is_filled(self, tmp_path, monkeypatch):
-        """#26211 stays fixed: a recordless session still gets the rescue."""
+        """#26211 stays fixed: the wrapper owner still gets the rescue."""
         self._reap(monkeypatch, tmp_path, "sess-b", "/last/known/dir")
         assert tt.get_session_cwd("sess-b") == "/last/known/dir"
+
+    def test_other_owner_does_not_receive_stale_cwd(self, tmp_path, monkeypatch):
+        self._reap(
+            monkeypatch,
+            tmp_path,
+            "sess-b",
+            "/other/sessions/dir",
+            owner="sess-a",
+        )
+        assert tt.get_session_cwd("sess-b") is None
 
 
 class TestCommandCwdReadsTheRecord:

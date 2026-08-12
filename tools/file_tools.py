@@ -1442,10 +1442,14 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         )
         if matching_env is not None:
             return cached
-        # Environment was cleaned up or is stale. Preserve its old cwd only
-        # when the raw session has not already recorded its own cwd.
+        # Environment was cleaned up or is stale. Preserve its cwd only for
+        # the raw task that created this wrapper, and only when that session
+        # has not already recorded its own cwd. Collapsed shared keys such as
+        # ``default`` may be reused by another session whose cwd must not be
+        # overwritten by stale wrapper state.
+        cached_owner = vars(cached).get("_hermes_raw_task_id", task_id)
         old_cwd = getattr(cached, "cwd", None)
-        if old_cwd:
+        if old_cwd and cached_owner == raw_task_id:
             try:
                 from tools.terminal_tool import (
                     get_session_cwd,
@@ -1534,6 +1538,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         # a waiter can retire this environment for a new fingerprint and clear
         # the cache before this creator publishes its now-stale file wrapper.
         file_ops = ShellFileOperations(terminal_env)
+        setattr(file_ops, "_hermes_raw_task_id", raw_task_id)
         with _file_ops_lock:
             _file_ops_cache[task_id] = file_ops
     return file_ops

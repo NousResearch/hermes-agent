@@ -182,6 +182,13 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "xai-oauth": "xai",
     "xiaomi": "xiaomi",
     "nvidia": "nvidia",
+    # Meta Model API (Muse Spark family, api.meta.ai). models.dev keys these
+    # under the "meta" provider id; Hermes' provider is "meta-ai" (and the
+    # api.meta.ai host reverse-maps to "meta-ai"), so without both aliases the
+    # context/pricing lookup misses and muse-spark-* falls back to the generic
+    # 256K default instead of its true 1M window.
+    "meta-ai": "meta",
+    "meta": "meta",
     "groq": "groq",
     "mistral": "mistral",
     "togetherai": "togetherai",

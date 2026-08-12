@@ -59,3 +59,5 @@ def test_transport_failure_logs_exact_request_bytes_and_class_chain(caplog):
     assert "stream_opened=false" in message
     assert "exception_chain=APIConnectionError <- RemoteProtocolError" in message
     assert "payload" not in message
+    assert request_content.decode() not in message
+    assert "example.invalid" not in message

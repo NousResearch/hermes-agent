@@ -47,6 +47,40 @@ from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _kanban_worker_exit_code(result: Any, agent: Any) -> int:
+    """Persist classified provider failures and return the worker sentinel.
+
+    This is deliberately kept at the quiet worker boundary: a successful
+    fallback has no side effect, while terminal provider failures carry their
+    bounded cause to the dispatcher instead of being reduced to ``rc=1``.
+    """
+    if not isinstance(result, dict) or not result.get("failed"):
+        return 0
+    exit_code = 1
+    if not os.environ.get("HERMES_KANBAN_TASK"):
+        return exit_code
+    failure_reason = result.get("failure_reason")
+    if failure_reason not in ("rate_limit", "billing", "auth", "auth_permanent"):
+        return exit_code
+    try:
+        from hermes_cli import kanban_db as _kanban_db
+
+        _kanban_db.write_worker_provider_failure(
+            failure_reason=failure_reason,
+            error=result.get("error") or result.get("final_response") or "provider unavailable",
+            provider=getattr(agent, "provider", None),
+            model=getattr(agent, "model", None),
+        )
+        return {
+            "rate_limit": _kanban_db.KANBAN_RATE_LIMIT_EXIT_CODE,
+            "auth": _kanban_db.KANBAN_AUTH_EXIT_CODE,
+            "auth_permanent": _kanban_db.KANBAN_AUTH_EXIT_CODE,
+            "billing": _kanban_db.KANBAN_BILLING_EXIT_CODE,
+        }[failure_reason]
+    except Exception:
+        return exit_code
+
 # Suppress startup messages for clean CLI experience
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
@@ -18428,29 +18462,7 @@ def main(
                         # 5-hour quota window can't trip the circuit breaker and
                         # permanently block the card. Non-kanban runs keep the
                         # plain 0/1 contract automation wrappers expect.
-                        _exit_code = 0
-                        if isinstance(result, dict) and result.get("failed"):
-                            _exit_code = 1
-                            if os.environ.get("HERMES_KANBAN_TASK") and result.get(
-                                "failure_reason"
-                            ) in ("rate_limit", "billing", "auth", "auth_permanent"):
-                                try:
-                                    from hermes_cli import kanban_db as _kanban_db
-                                    _kanban_db.write_worker_provider_failure(
-                                        failure_reason=result["failure_reason"],
-                                        error=result.get("error") or result.get("final_response") or "provider unavailable",
-                                        provider=getattr(cli.agent, "provider", None),
-                                        model=getattr(cli.agent, "model", None),
-                                    )
-                                    _exit_code = {
-                                        "rate_limit": _kanban_db.KANBAN_RATE_LIMIT_EXIT_CODE,
-                                        "auth": _kanban_db.KANBAN_AUTH_EXIT_CODE,
-                                        "auth_permanent": _kanban_db.KANBAN_AUTH_EXIT_CODE,
-                                        "billing": _kanban_db.KANBAN_BILLING_EXIT_CODE,
-                                    }[result.get("failure_reason")]
-                                except Exception:
-                                    _exit_code = 1
-                        sys.exit(_exit_code)
+                        sys.exit(_kanban_worker_exit_code(result, cli.agent))
 
                 # Exit with error code if credentials or agent init fails
                 sys.exit(1)

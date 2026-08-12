@@ -398,6 +398,86 @@ def test_provider_boundary_payload_is_bounded_and_missing_is_safe(kanban_home, m
     assert _kb.read_worker_provider_failure("missing") == {}
 
 
+@pytest.mark.parametrize(
+    ("failure_reason", "exit_code", "exit_kind"),
+    [
+        ("auth_permanent", kb.KANBAN_AUTH_EXIT_CODE, "provider_auth"),
+        ("billing", kb.KANBAN_BILLING_EXIT_CODE, "provider_billing"),
+        ("rate_limit", kb.KANBAN_RATE_LIMIT_EXIT_CODE, "rate_limited"),
+    ],
+)
+def test_quiet_cli_provider_exit_reaches_dispatcher_with_classified_cause(
+    kanban_home, monkeypatch, failure_reason, exit_code, exit_kind
+):
+    """The quiet worker boundary must preserve the classifier result for reap."""
+    from types import SimpleNamespace
+
+    import cli as hermes_cli_module
+
+    log_dir = kanban_home / "kanban" / "logs"
+    monkeypatch.setenv("HERMES_KANBAN_LOG_DIR", str(log_dir))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_cli_boundary")
+    result = {
+        "failed": True,
+        "failure_reason": failure_reason,
+        "error": f"HTTP {401 if failure_reason.startswith('auth') else 402 if failure_reason == 'billing' else 429}: provider exhausted",
+    }
+
+    assert hermes_cli_module._kanban_worker_exit_code(
+        result, SimpleNamespace(provider="openai-codex", model="gpt-test")
+    ) == exit_code
+    payload = kb.read_worker_provider_failure("t_cli_boundary")
+    assert payload["failure_reason"] == failure_reason
+    assert payload["provider"] == "openai-codex"
+
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    with kb.connect() as conn:
+        host = kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="boundary", assignee="dev")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+        # Rewrite the sidecar for the actual task id used by reap.
+        kb.write_worker_provider_failure(
+            failure_reason=failure_reason,
+            error=result["error"],
+            provider="openai-codex",
+            model="gpt-test",
+        )
+        kb.claim_task(conn, tid, claimer=f"{host}:boundary")
+        pid = 71991
+        conn.execute("UPDATE tasks SET worker_pid=? WHERE id=?", (pid, tid))
+        conn.commit()
+        kb._record_worker_exit(pid, _exited_status(exit_code))
+
+        assert kb.detect_crashed_workers(conn) == []
+        task = kb.get_task(conn, tid)
+        if exit_kind == "rate_limited":
+            assert task.status == "ready"
+        else:
+            assert task.status == "blocked"
+            assert failure_reason.replace("_permanent", "") in (task.last_failure_error or "") or exit_kind in (task.last_failure_error or "")
+        assert not any(e.kind == "protocol_violation" for e in kb.list_events(conn, tid))
+
+
+def test_quiet_cli_provider_fallback_success_does_not_emit_failure_sidecar(
+    kanban_home, monkeypatch
+):
+    """A successful fallback remains a normal clean worker result."""
+    from types import SimpleNamespace
+
+    import cli as hermes_cli_module
+
+    log_dir = kanban_home / "kanban" / "logs"
+    monkeypatch.setenv("HERMES_KANBAN_LOG_DIR", str(log_dir))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fallback_success")
+    result = {"failed": False, "final_response": "fallback succeeded"}
+
+    assert hermes_cli_module._kanban_worker_exit_code(
+        result, SimpleNamespace(provider="openrouter", model="fallback-model")
+    ) == 0
+    assert kb.read_worker_provider_failure("t_fallback_success") == {}
+
+
 def test_provider_billing_exit_is_parked_without_respawn_loop(
     kanban_home, monkeypatch,
 ):

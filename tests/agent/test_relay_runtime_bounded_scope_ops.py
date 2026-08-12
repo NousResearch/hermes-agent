@@ -102,7 +102,34 @@ class _FakeRelay:
 
 def _make_runtime(fake_relay: _FakeRelay) -> RelayRuntime:
     """Build a RelayRuntime around the fake relay without native imports."""
-    return RelayRuntime(relay=fake_relay, profile_key="/tmp/test-profile")
+    runtime = RelayRuntime(relay=fake_relay, profile_key="/tmp/test-profile")
+    _LIVE_FAKES.append((runtime, fake_relay))
+    return runtime
+
+
+_LIVE_FAKES: list[tuple[RelayRuntime, _FakeRelay]] = []
+
+
+@pytest.fixture(autouse=True)
+def _release_wedges_after_test():
+    """Unwedge every fake and drain runtimes at teardown.
+
+    The wedge tests deliberately park shared-executor daemon workers on
+    Event.wait() forever.  Without this teardown those workers — and the
+    sessions still registered on each runtime's atexit shutdown hook —
+    outlive the test session, and the interpreter's exit path re-runs the
+    wedged pops (bounded, but 10s each): the CI per-file runner then hits
+    its 300s file timeout AFTER '6 passed' (2026-08-12 CI hang).  Setting
+    the events lets abandoned workers finish; shutdown() then drains fast
+    and unregisters the atexit hook.
+    """
+    yield
+    for runtime, fake in _LIVE_FAKES:
+        for wedge in (fake.scope._wedge, fake.subscribers._wedge):
+            if wedge is not None:
+                wedge.set()
+        runtime.shutdown()
+    _LIVE_FAKES.clear()
 
 
 def _run_with_join(fn, timeout: float = 5.0) -> tuple[bool, list[Any]]:

@@ -60,6 +60,40 @@ def _scope_op_executor():
     return _SCOPE_OP_EXECUTOR
 
 
+def _run_bounded_on_exit_thread(fn: Callable[[], Any], timeout: float) -> Any:
+    """Bounded fallback lane for interpreter shutdown.
+
+    When the shared executor refuses new futures (interpreter shutdown),
+    the operation still must not run unbounded on the calling thread: a
+    wedged native call would block process exit forever — the same defect
+    class this module exists to prevent, on the exit lane.  Run it on a
+    fresh daemon thread with a bounded join; on breach the daemon worker
+    is abandoned exactly like the executor lane abandons its worker.
+    """
+    result: list[Any] = []
+    error: list[BaseException] = []
+
+    def _target() -> None:
+        try:
+            result.append(fn())
+        except BaseException as exc:  # noqa: BLE001 - propagated below
+            error.append(exc)
+
+    worker = threading.Thread(
+        target=_target, daemon=True, name="relay-scope-op-exit"
+    )
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise TimeoutError(
+            f"Relay scope operation exceeded {timeout}s during interpreter "
+            "shutdown; abandoning the native call so process exit can proceed"
+        )
+    if error:
+        raise error[0]
+    return result[0] if result else None
+
+
 @dataclass
 class RelaySession:
     """One isolated Relay scope stack owned by a Hermes session."""
@@ -281,9 +315,13 @@ class RelayRuntime:
             future = _scope_op_executor().submit(context.run, invoke)
         except RuntimeError:
             # Interpreter shutdown: the executor refuses new futures, but
-            # the atexit close path must still flush cleanly.  No agent
-            # turn is waiting at shutdown, so the unbounded call is safe.
-            return context.run(invoke)
+            # the atexit close path must still flush cleanly.  Still
+            # bounded — a wedged native call must not block process exit
+            # (the CI runner hang, 2026-08-12: 6 tests passed in 4s, then
+            # the file-timeout SIGKILL'd a process stuck in this lane).
+            return _run_bounded_on_exit_thread(
+                lambda: context.run(invoke), timeout
+            )
         try:
             return future.result(timeout=timeout)
         except FuturesTimeoutError as exc:
@@ -411,8 +449,11 @@ class RelayRuntime:
                 ).result(timeout=_SCOPE_OP_TIMEOUT)
             except RuntimeError:
                 # Interpreter shutdown: executor refuses new futures; flush
-                # synchronously so the atexit close path still exports.
-                self.relay.subscribers.flush()
+                # on a bounded exit thread so a wedged pipeline cannot
+                # block process exit.
+                _run_bounded_on_exit_thread(
+                    self.relay.subscribers.flush, _SCOPE_OP_TIMEOUT
+                )
         except Exception as exc:
             failures.append(f"subscriber flush failed: {exc}")
         with self._sessions_lock:

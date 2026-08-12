@@ -421,7 +421,7 @@ function Write-Result([bool]$Ok, [int]$Code, [string]$Message, [bool]$ManualActi
             manual     = $ManualAction
             message    = $Message
             branch     = $Branch
-            finished_at = [int][double]::Parse((Get-Date -UFormat %s), [System.Globalization.CultureInfo]::InvariantCulture)
+            finished_at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         } | ConvertTo-Json -Compress
         [System.IO.File]::WriteAllText($ResultPath, $obj)
     } catch {}
@@ -611,7 +611,7 @@ try {
 
     # -- 0. Claim the update marker with OUR pid ---------------------------
     try {
-        $epoch = [int][double]::Parse((Get-Date -UFormat %s), [System.Globalization.CultureInfo]::InvariantCulture)
+        $epoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         # WriteAllText for byte-exact LF framing: Set-Content emits CRLF and
         # the marker contract (Rust/TS/Python readers) is "<pid>\n<ts>\n".
         [System.IO.File]::WriteAllText($MarkerPath, "$PID`n$epoch`n")

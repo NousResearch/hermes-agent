@@ -325,7 +325,10 @@ def write_worker_provider_failure(
             original = re.sub(
                 r"(?i)sk-[A-Za-z0-9_-]{8,}", "«redacted-secret»", original
             )
-            return redact_sensitive_text(original, force=True, file_read=True)[:limit]
+            # Provider failures are control-plane egress, not file content:
+            # retain the full mandatory redaction set, including ENV and JSON
+            # credential fields.
+            return redact_sensitive_text(original, force=True)[:limit]
         except Exception:
             return "«redacted-provider-failure»"
 

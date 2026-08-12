@@ -422,6 +422,35 @@ def test_provider_boundary_payload_force_redacts_credentials(kanban_home, monkey
     assert "auth" == payload["failure_reason"]
 
 
+def test_provider_boundary_redacts_config_and_json_secrets_from_every_field(
+    kanban_home, monkeypatch
+):
+    """Mandatory provider egress must not preserve config-shaped credentials."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_LOG_DIR", str(kanban_home / "kanban" / "logs"))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_structured_secret_boundary")
+    markers = {
+        "env": "env-secret-marker-7f2e",
+        "json": "json-secret-marker-91ac",
+    }
+    path = _kb.write_worker_provider_failure(
+        failure_reason=f'OPENAI_API_KEY={markers["env"]}',
+        error=f'{{"api_key":"{markers["json"]}"}}',
+        provider=f'provider OPENAI_API_KEY={markers["env"]}',
+        model=f'{{"token":"{markers["json"]}"}}',
+    )
+
+    assert path is not None
+    raw = Path(path).read_text(encoding="utf-8")
+    payload = _kb.read_worker_provider_failure("t_structured_secret_boundary")
+    durable = json.dumps(payload)
+    for marker in markers.values():
+        assert marker not in raw
+        assert marker not in durable
+    assert "OPENAI_API_KEY" in payload["failure_reason"]
+
+
 @pytest.mark.parametrize(
     ("failure_reason", "exit_code", "exit_kind"),
     [

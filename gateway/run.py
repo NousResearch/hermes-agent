@@ -7732,6 +7732,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pass
         return max_restarts, window_seconds, max_gap_seconds
 
+    def _scale_to_zero_active_messaging_platforms(self) -> list:
+        """ENABLED platforms that count for the relay-only arm gate (D1/F6).
+
+        Two filters, both load-bearing:
+        - enabled only: config.platforms is pre-seeded with disabled
+          placeholders for the full platform catalog (the F25 bug).
+        - MESSAGING only: non-messaging surfaces must not disarm scale-to-zero.
+          The api_server is a loopback listener force-enabled by the presence
+          of API_SERVER_KEY (which the Docker stage2 hook now generates for
+          every container, so hosted instances ALWAYS have it enabled) — it
+          holds no outbound socket and Chronos fires through it already reset
+          the idle clock. Counting it made messaging_is_relay_only_or_absent
+          False on every hosted instance, silently disarming the feature.
+          Mirrors the non-messaging exclusion set used for handoff eligibility
+          (see the `messaging_platforms` computation in _connect_platforms).
+        """
+        if not self.config:
+            return []
+        non_messaging = {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK}
+        try:
+            return [
+                p
+                for p, pc in self.config.platforms.items()
+                if getattr(pc, "enabled", False) and p not in non_messaging
+            ]
+        except Exception:  # noqa: BLE001
+            return []
+
     def _scale_to_zero_should_arm(self) -> bool:
         """Whether to start the idle watcher (D1/D11/§3.4(1))."""
         from gateway.relay import relay_wake_url
@@ -7741,23 +7769,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             should_arm,
         )
 
-        try:
-            # Only ENABLED platforms count. `config.platforms` is pre-seeded with a
-            # disabled placeholder PlatformConfig for every KNOWN platform (telegram,
-            # discord, slack, …), so `.keys()` is the full ~20-entry catalog regardless
-            # of what this instance actually runs. Passing the bare keys made
-            # `messaging_is_relay_only_or_absent` see those placeholders as live
-            # direct-socket platforms and return False, so scale-to-zero NEVER armed on
-            # a real relay-only instance. Mirror the connect loop, which already gates on
-            # `platform_config.enabled` (see the `if not platform_config.enabled: continue`
-            # in the adapter-connect loop) — arm off the same notion of "active platform."
-            platforms = (
-                [p for p, pc in self.config.platforms.items() if getattr(pc, "enabled", False)]
-                if self.config
-                else []
-            )
-        except Exception:  # noqa: BLE001
-            platforms = []
+        platforms = self._scale_to_zero_active_messaging_platforms()
         try:
             wake_url = relay_wake_url()
         except Exception:  # noqa: BLE001
@@ -7786,18 +7798,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             enabled = scale_to_zero_enabled()
             if not enabled:
                 return  # not opted in — normal, stay quiet
-            try:
-                active = (
-                    [
-                        getattr(p, "value", p)
-                        for p, pc in self.config.platforms.items()
-                        if getattr(pc, "enabled", False)
-                    ]
-                    if self.config
-                    else []
-                )
-            except Exception:  # noqa: BLE001
-                active = []
+            active = [
+                getattr(p, "value", p)
+                for p in self._scale_to_zero_active_messaging_platforms()
+            ]
             relay_only = messaging_is_relay_only_or_absent(active)
             try:
                 wake_url = relay_wake_url()

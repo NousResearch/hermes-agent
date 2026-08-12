@@ -111,3 +111,141 @@ def test_unknown_job_200_gone(monkeypatch):
         client.close()
 
 
+def test_valid_fire_forwards_to_gateway(monkeypatch):
+    """The dashboard is the public door only: a verified fire is FORWARDED to
+    the gateway api_server (which owns the live adapters — relay/E2EE
+    delivery), with the NAS bearer preserved, and the gateway's response is
+    passed through. The deprecated in-dashboard execution must NOT run."""
+    forwarded = []
+    executed = []
+
+    async def fake_forward(profile, job_id, authorization):
+        forwarded.append((profile, job_id, authorization))
+        return 202, {"status": "accepted", "job_id": job_id}
+
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+    monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda jid: "default")
+    monkeypatch.setattr(web_server, "_forward_cron_fire_to_gateway", fake_forward)
+    monkeypatch.setattr(web_server, "_fire_cron_job_for_profile",
+                        lambda p, j: executed.append((p, j)))
+
+    client, pa, ph = _client(auth_required=False)
+    try:
+        resp = client.post("/api/cron/fire",
+                           headers={"Authorization": "Bearer nas-jwt"},
+                           json={"job_id": "j1"})
+        assert resp.status_code == 202
+        assert resp.json().get("status") == "accepted"
+        assert forwarded == [("default", "j1", "Bearer nas-jwt")]
+        assert executed == []  # no local execution — gateway owns cron
+    finally:
+        _restore(pa, ph)
+        client.close()
+
+
+def test_gateway_unreachable_503_for_nas_retry(monkeypatch):
+    """Gateway down (scale-to-zero wake window / restart) -> 503 so NAS
+    retries per the Chronos contract. Deliberately NO local-execution
+    fallback — delivering from the dashboard process cannot serve
+    relay-fronted or E2EE targets."""
+    executed = []
+
+    async def fake_forward(profile, job_id, authorization):
+        return None  # unreachable
+
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+    monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda jid: "default")
+    monkeypatch.setattr(web_server, "_forward_cron_fire_to_gateway", fake_forward)
+    monkeypatch.setattr(web_server, "_fire_cron_job_for_profile",
+                        lambda p, j: executed.append((p, j)))
+
+    client, pa, ph = _client(auth_required=False)
+    try:
+        resp = client.post("/api/cron/fire",
+                           headers={"Authorization": "Bearer nas-jwt"},
+                           json={"job_id": "j2"})
+        assert resp.status_code == 503
+        assert executed == []
+    finally:
+        _restore(pa, ph)
+        client.close()
+
+
+def test_gateway_error_status_passes_through(monkeypatch):
+    """A non-2xx gateway response (e.g. its own 401 on a replayed JWT) passes
+    through unchanged — the dashboard adds no interpretation of its own."""
+
+    async def fake_forward(profile, job_id, authorization):
+        return 401, {"error": "invalid fire token"}
+
+    monkeypatch.setattr(
+        "plugins.cron_providers.chronos.verify.get_fire_verifier",
+        lambda: (lambda **kw: {"purpose": "cron_fire"}),
+    )
+    monkeypatch.setattr(web_server, "_find_cron_job_profile", lambda jid: "default")
+    monkeypatch.setattr(web_server, "_forward_cron_fire_to_gateway", fake_forward)
+
+    client, pa, ph = _client(auth_required=False)
+    try:
+        resp = client.post("/api/cron/fire",
+                           headers={"Authorization": "Bearer nas-jwt"},
+                           json={"job_id": "j3"})
+        assert resp.status_code == 401
+    finally:
+        _restore(pa, ph)
+        client.close()
+
+
+# ── _gateway_fire_endpoint URL resolution ────────────────────────────────
+
+
+def test_fire_endpoint_default_port(tmp_path, monkeypatch):
+    monkeypatch.delenv("API_SERVER_PORT", raising=False)
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    monkeypatch.setattr(web_server, "load_config", lambda: {})
+    url = web_server._gateway_fire_endpoint("default", tmp_path)
+    assert url == "http://127.0.0.1:8642/api/cron/fire"
+
+
+def test_fire_endpoint_config_yaml_port_wins(tmp_path, monkeypatch):
+    """The profile config.yaml port (read via the CANONICAL load_config, per
+    the config-read guard) wins over the process env API_SERVER_PORT."""
+    monkeypatch.setenv("API_SERVER_PORT", "9999")
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    monkeypatch.setattr(
+        web_server,
+        "load_config",
+        lambda: {"platforms": {"api_server": {"extra": {"port": 8700}}}},
+    )
+    url = web_server._gateway_fire_endpoint("default", tmp_path)
+    assert url == "http://127.0.0.1:8700/api/cron/fire"
+
+
+def test_fire_endpoint_profile_env_port(tmp_path, monkeypatch):
+    """A non-default profile reads API_SERVER_PORT from its own .env, not the
+    dashboard process env (per-profile-gateway topology)."""
+    monkeypatch.setenv("API_SERVER_PORT", "9999")  # dashboard process env
+    monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
+    monkeypatch.setattr(web_server, "load_config", lambda: {})
+    monkeypatch.setattr(web_server, "_cron_default_profile", lambda: "default")
+    (tmp_path / ".env").write_text("API_SERVER_PORT=8701\n", encoding="utf-8")
+    url = web_server._gateway_fire_endpoint("worker_alpha", tmp_path)
+    assert url == "http://127.0.0.1:8701/api/cron/fire"
+
+
+def test_fire_endpoint_multiplex_profile_prefix(tmp_path, monkeypatch):
+    """Multiplex mode: a non-default profile routes through the default
+    gateway's port with the /p/<profile>/ prefix mirror."""
+    monkeypatch.delenv("API_SERVER_PORT", raising=False)
+    monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "1")
+    monkeypatch.setattr(web_server, "load_config", lambda: {})
+    url = web_server._gateway_fire_endpoint("worker_alpha", tmp_path)
+    assert url == "http://127.0.0.1:8642/p/worker_alpha/api/cron/fire"
+
+

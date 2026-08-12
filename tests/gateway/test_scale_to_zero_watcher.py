@@ -249,6 +249,63 @@ async def test_self_suspend_noop_off_fly(monkeypatch):
     await r._scale_to_zero_self_suspend()
     assert called == []
 
+
+# ── non-messaging platforms must not disarm (the api_server-key regression) ──
+#
+# The Docker stage2 hook now generates API_SERVER_KEY for every container, and
+# key presence force-enables the api_server platform (gateway/config.py). The
+# arm gate counted every enabled platform, so `api_server` (a loopback
+# listener, not a messaging socket) made messaging_is_relay_only_or_absent
+# False on EVERY hosted instance — silently disarming scale-to-zero. The gate
+# must only count messaging platforms (excluding LOCAL/API_SERVER/WEBHOOK,
+# mirroring _connect_platforms' messaging_platforms exclusion set).
+
+
+def test_arm_true_with_api_server_enabled(monkeypatch):
+    from gateway.platforms.base import Platform
+
+    r = _arm_runner(
+        monkeypatch,
+        {
+            Platform.RELAY: True,
+            Platform.API_SERVER: True,
+            Platform.TELEGRAM: False,
+        },
+    )
+    assert r._scale_to_zero_should_arm() is True
+
+
+def test_arm_true_with_all_non_messaging_surfaces_enabled(monkeypatch):
+    from gateway.platforms.base import Platform
+
+    r = _arm_runner(
+        monkeypatch,
+        {
+            Platform.RELAY: True,
+            Platform.API_SERVER: True,
+            Platform.WEBHOOK: True,
+            Platform.LOCAL: True,
+        },
+    )
+    assert r._scale_to_zero_should_arm() is True
+
+
+def test_direct_platform_still_disarms_alongside_api_server(monkeypatch):
+    """The messaging-only filter must not over-broaden: a genuinely enabled
+    direct-socket platform still disarms even with api_server also enabled."""
+    from gateway.platforms.base import Platform
+
+    r = _arm_runner(
+        monkeypatch,
+        {
+            Platform.RELAY: True,
+            Platform.API_SERVER: True,
+            Platform.DISCORD: True,
+        },
+    )
+    assert r._scale_to_zero_should_arm() is False
+
+
 # ── supervised watchers must NOT count as live background work (staging bug) ──
 #
 # _spawn_supervised parks every permanent watcher task (session-expiry, kanban,

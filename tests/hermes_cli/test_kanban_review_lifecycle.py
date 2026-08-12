@@ -381,8 +381,10 @@ def test_external_webhook_review_routes_changes_to_dev_on_same_pr(board):
         assert task.metadata["original_implementer"] == "dev"
         assert task.metadata["canonical"] is True
         assert task.metadata["lane"] == "DEV"
+        assert task.metadata["capability"] == "implementation"
         assert task.metadata["coding_agent"] == "codex"
         assert task.metadata["existing_pr_remediation"] is True
+        assert task.metadata["no_replacement_pr"] is True
 
 
 

@@ -18433,12 +18433,15 @@ def main(
                             _exit_code = 1
                             if os.environ.get("HERMES_KANBAN_TASK") and result.get(
                                 "failure_reason"
-                            ) in ("rate_limit", "billing"):
+                            ) in ("rate_limit", "billing", "auth", "auth_permanent"):
                                 try:
-                                    from hermes_cli.kanban_db import (
-                                        KANBAN_RATE_LIMIT_EXIT_CODE as _RL_CODE,
-                                    )
-                                    _exit_code = _RL_CODE
+                                    from hermes_cli import kanban_db as _kanban_db
+                                    _exit_code = {
+                                        "rate_limit": _kanban_db.KANBAN_RATE_LIMIT_EXIT_CODE,
+                                        "auth": _kanban_db.KANBAN_AUTH_EXIT_CODE,
+                                        "auth_permanent": _kanban_db.KANBAN_AUTH_EXIT_CODE,
+                                        "billing": _kanban_db.KANBAN_BILLING_EXIT_CODE,
+                                    }[result.get("failure_reason")]
                                 except Exception:
                                     _exit_code = 1
                         sys.exit(_exit_code)

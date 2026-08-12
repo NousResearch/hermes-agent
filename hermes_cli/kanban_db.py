@@ -284,6 +284,11 @@ DEFAULT_CRASH_GRACE_SECONDS = 30
 # conventional "temporary failure, retry later" code, and well clear of the
 # 0/1/2 codes the worker uses for success / generic failure / usage error.
 KANBAN_RATE_LIMIT_EXIT_CODE = 75
+# Distinct worker-boundary sentinels for provider initialization failures.
+# These are intentionally separate from generic crashes so the dispatcher can
+# park provider health problems without calling them worker protocol failures.
+KANBAN_AUTH_EXIT_CODE = 76
+KANBAN_BILLING_EXIT_CODE = 77
 
 
 def _resolve_crash_grace_seconds() -> int:
@@ -5113,6 +5118,7 @@ def request_review_changes(
             (task_id,),
         ).fetchone()
         handoff = json.loads(event["payload"]) if event and event["payload"] else {}
+        submitted_metadata = handoff.get("metadata") if isinstance(handoff.get("metadata"), dict) else {}
         implementer = _canonical_assignee(handoff.get("original_assignee")) or ""
         if not implementer:
             # Webhook-created external PRs have no Hermes implementation
@@ -5133,7 +5139,14 @@ def request_review_changes(
             "lane": "DEV",
             "coding_agent": "codex",
             "existing_pr_remediation": True,
+            "no_replacement_pr": True,
+            "pr_url": submitted_metadata.get("pr_url") or handoff.get("pr_url") or review_metadata.get("pr_url"),
+            "repo": submitted_metadata.get("repo") or handoff.get("repo") or review_metadata.get("repo"),
+            "number": submitted_metadata.get("number") or handoff.get("number") or review_metadata.get("number"),
+            "head_sha": submitted_metadata.get("head_sha") or handoff.get("head_sha") or review_metadata.get("head_sha"),
         })
+        if review_metadata.get("coding_agent") not in {"codex", "cursor"}:
+            raise ValueError("changes-requested remediation requires supported coding agent codex or cursor")
         try:
             task_metadata = json.loads(row["metadata"]) if row["metadata"] else {}
         except (TypeError, json.JSONDecodeError):
@@ -5141,6 +5154,19 @@ def request_review_changes(
         if not isinstance(task_metadata, dict):
             task_metadata = {}
         task_metadata.update(review_metadata)
+        try:
+            from types import SimpleNamespace
+            from tools.coding_kanban_gate import task_capability_preflight
+            capability_reason = task_capability_preflight(SimpleNamespace(
+                assignee=implementer, status="ready", metadata=task_metadata,
+            ))
+        except Exception as exc:
+            capability_reason = f"capability preflight unavailable: {exc}"
+        if capability_reason:
+            _append_event(conn, task_id, "review_remediation_blocked", {
+                "reason": capability_reason, "metadata": task_metadata,
+            }, run_id=current_run_id)
+            return None
         cur = conn.execute(
             "UPDATE tasks SET status='ready', assignee=?, result=?, metadata=?, completed_at=NULL, "
             "consecutive_failures=0, last_failure_error=NULL, claim_lock=NULL, "
@@ -7782,6 +7808,8 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
       provider rate-limited / exhausted quota, NOT because the task failed.
       ``detect_crashed_workers`` releases the task back to ``ready`` without
       counting a failure, so a long quota window can't trip the breaker.
+    * ``"provider_auth"`` / ``"provider_billing"`` — terminal provider
+      failures reported by the worker boundary; these are not worker crashes.
     * ``"nonzero_exit"`` — ``WIFEXITED`` with non-zero status. Real error.
     * ``"signaled"`` — ``WIFSIGNALED`` (OOM killer, SIGKILL, etc). Real crash.
     * ``"unknown"`` — pid was not in the reap registry (either reaped by
@@ -7803,6 +7831,10 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
                 return ("clean_exit", 0)
             if code == KANBAN_RATE_LIMIT_EXIT_CODE:
                 return ("rate_limited", code)
+            if code == KANBAN_AUTH_EXIT_CODE:
+                return ("provider_auth", code)
+            if code == KANBAN_BILLING_EXIT_CODE:
+                return ("provider_billing", code)
             return ("nonzero_exit", code)
         if os.WIFSIGNALED(raw):
             return ("signaled", os.WTERMSIG(raw))
@@ -8468,6 +8500,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             pid = int(row["worker_pid"])
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
+            provider_unavailable_exit = False
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
                 # ``running`` in the DB — it exited without calling
@@ -8514,6 +8547,23 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     "pid": pid,
                     "claimer": row["claim_lock"],
                     "exit_code": code,
+                }
+            elif kind in {"provider_auth", "provider_billing"}:
+                protocol_violation = False
+                provider_unavailable_exit = True
+                category = "authentication" if kind == "provider_auth" else "billing/credits"
+                error_text = (
+                    f"provider {category} failure (worker exit {code}) — "
+                    "provider credentials or account health require operator remediation; "
+                    "task parked without retrying"
+                )
+                event_kind = "provider_unavailable"
+                event_payload = {
+                    "pid": pid,
+                    "claimer": row["claim_lock"],
+                    "exit_kind": kind,
+                    "exit_code": code,
+                    "provider_failure": category,
                 }
             else:
                 protocol_violation = False
@@ -8579,7 +8629,8 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                             "WHERE id = ?",
                             (error_text[:500], row["id"]),
                         )
-                    crashed.append(row["id"])
+                    if not provider_unavailable_exit:
+                        crashed.append(row["id"])
                     crash_details.append(
                         (row["id"], pid, row["claim_lock"],
                          protocol_violation, error_text)
@@ -8608,6 +8659,28 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             fp = _error_fingerprint(err_text)
             _fp_counts[fp] = _fp_counts.get(fp, 0) + 1
         for tid, pid, claimer, protocol_violation, error_text in crash_details:
+            if error_text.startswith("provider "):
+                provider_outcome = (
+                    "provider_authentication"
+                    if error_text.startswith("provider authentication")
+                    else "provider_billing"
+                )
+                with write_txn(conn):
+                    conn.execute(
+                        "UPDATE task_runs SET outcome=?, status=? "
+                        "WHERE id=(SELECT id FROM task_runs WHERE task_id=? "
+                        "ORDER BY id DESC LIMIT 1)",
+                        (provider_outcome, provider_outcome, tid),
+                    )
+                _record_task_failure(
+                    conn, tid, error=error_text,
+                    outcome=provider_outcome,
+                    failure_limit=1,
+                    release_claim=False,
+                    end_run=False,
+                    event_payload_extra={"pid": pid, "claimer": claimer},
+                )
+                continue
             if protocol_violation:
                 streak = _protocol_violation_streak(conn, tid)
                 trow = conn.execute(
@@ -8660,8 +8733,10 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             tripped = _record_task_failure(
                 conn, tid,
                 error=error_text,
-                outcome="crashed",
-                failure_limit=1 if is_systemic else None,
+                outcome=("provider_authentication" if error_text.startswith("provider authentication")
+                         else "provider_billing" if error_text.startswith("provider billing/credits")
+                         else "crashed"),
+                failure_limit=1 if is_systemic or error_text.startswith("provider ") else None,
                 release_claim=False,
                 end_run=False,
                 event_payload_extra={"pid": pid, "claimer": claimer},

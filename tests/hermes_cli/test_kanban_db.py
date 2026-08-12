@@ -318,6 +318,55 @@ def test_rate_limit_exit_requeues_without_counting_failure(
         assert "crashed" not in outcomes
 
 
+def test_provider_auth_exit_is_parked_without_protocol_violation(
+    kanban_home, monkeypatch,
+):
+    """Terminal provider auth failures are control-plane blockers, not worker crashes."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="auth", assignee="dev", metadata={"provider": "openai-codex"})
+        kb.claim_task(conn, tid, claimer=f"{host}:auth")
+        pid = 71001
+        conn.execute("UPDATE tasks SET worker_pid=? WHERE id=?", (pid, tid))
+        conn.commit()
+        _kb._record_worker_exit(pid, _exited_status(_kb.KANBAN_AUTH_EXIT_CODE))
+
+        assert kb.detect_crashed_workers(conn) == []
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert "authentication" in (task.last_failure_error or "").lower()
+        runs = conn.execute("SELECT outcome, metadata FROM task_runs WHERE task_id=?", (tid,)).fetchall()
+        assert runs[-1]["outcome"] == "provider_authentication"
+        assert "protocol_violation" not in (runs[-1]["metadata"] or "")
+
+
+def test_provider_billing_exit_is_parked_without_respawn_loop(
+    kanban_home, monkeypatch,
+):
+    """Permanent credit failures block once and are not repeatedly respawned."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="billing", assignee="dev", metadata={"provider": "openrouter"})
+        kb.claim_task(conn, tid, claimer=f"{host}:billing")
+        pid = 71002
+        conn.execute("UPDATE tasks SET worker_pid=? WHERE id=?", (pid, tid))
+        conn.commit()
+        _kb._record_worker_exit(pid, _exited_status(_kb.KANBAN_BILLING_EXIT_CODE))
+
+        assert kb.detect_crashed_workers(conn) == []
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert kb.check_respawn_guard(conn, tid) is not None
+        assert conn.execute("SELECT COUNT(*) FROM task_events WHERE task_id=? AND kind='protocol_violation'", (tid,)).fetchone()[0] == 0
+
+
 
 
 def test_respawn_guard_defers_rate_limited_within_cooldown(

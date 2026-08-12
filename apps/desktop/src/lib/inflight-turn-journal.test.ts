@@ -105,8 +105,16 @@ describe('persistInFlightTurnState', () => {
   })
 
   it('writes only the current session instead of reading and rewriting the aggregate journal', () => {
-    const getItem = vi.spyOn(Storage.prototype, 'getItem')
-    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+    const localStorage = window.localStorage
+    const storageConstructor = window.Storage
+
+    const spyTarget =
+      typeof storageConstructor === 'function' && localStorage instanceof storageConstructor
+        ? storageConstructor.prototype
+        : localStorage
+
+    const getItem = vi.spyOn(spyTarget, 'getItem')
+    const setItem = vi.spyOn(spyTarget, 'setItem')
 
     persistInFlightTurnState(journalState())
     vi.advanceTimersByTime(400)

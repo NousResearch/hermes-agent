@@ -730,20 +730,40 @@ def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
 
     Returns the mode string (e.g. ``"wal"``, ``"delete"``), or ``None``
     if the value cannot be determined (new DB, or PRAGMA read failed).
+
+    A PRAGMA read can fail transiently with ``disk i/o error`` on
+    virtualized block devices (XFS on cloud hosts).  Treating that as
+    "mode unknown" pushes callers onto their fail-closed unknown-mode
+    branch even though the on-disk mode is perfectly readable a few
+    milliseconds later.  Retry the read a few times before giving up:
+    transient EIO clears, deterministic unsupported-filesystem errors do
+    not.  ``None`` is still returned on final failure so the caller's
+    existing "unknown → refuse to downgrade" logic applies.
     """
-    try:
-        row = conn.execute("PRAGMA journal_mode").fetchone()
-    except sqlite3.OperationalError:
-        return None
-    if row is None:
-        return None
-    mode = row[0]
-    if isinstance(mode, bytes):  # defensive: sqlite3 occasionally returns bytes
+    last_exc: Optional[Exception] = None
+    for _ in range(4):
         try:
-            mode = mode.decode("ascii")
-        except UnicodeDecodeError:
+            row = conn.execute("PRAGMA journal_mode").fetchone()
+        except sqlite3.OperationalError as exc:
+            last_exc = exc
+            if "disk i/o error" not in str(exc).lower():
+                return None
+            time.sleep(0.05)
+            continue
+        if row is None:
             return None
-    return str(mode).strip().lower() if mode is not None else None
+        mode = row[0]
+        if isinstance(mode, bytes):  # defensive: sqlite3 occasionally returns bytes
+            try:
+                mode = mode.decode("ascii")
+            except UnicodeDecodeError:
+                return None
+        return str(mode).strip().lower() if mode is not None else None
+    if last_exc is not None:
+        logger.debug(
+            "_on_disk_journal_mode: retries exhausted on disk read (%s)", last_exc
+        )
+    return None
 
 
 def _apply_wal_size_limit(conn: sqlite3.Connection) -> None:
@@ -1409,6 +1429,21 @@ def is_malformed_db_error(exc: BaseException) -> bool:
     if not isinstance(exc, sqlite3.DatabaseError):
         return False
     return any(marker in str(exc).lower() for marker in _MALFORMED_SCHEMA_MARKERS)
+
+
+def _is_not_a_database_error(exc: BaseException) -> bool:
+    """True if *exc* is SQLite's 'file is not a database' error.
+
+    Raised when a connection's backing file is not a SQLite database — the
+    runtime connection-corruption class: a sibling process (forked curator
+    agent, external repair pass) replaced/truncated the file out from under
+    the live connection.  The file on disk may be perfectly healthy; the
+    CONNECTION is broken.  Distinct from the malformed-schema class: the fix
+    is a reconnect, not schema surgery.
+    """
+    if not isinstance(exc, sqlite3.DatabaseError):
+        return False
+    return "file is not a database" in str(exc).lower()
 
 
 # Markers that mean the host filesystem cannot accept another write. Kept as
@@ -2824,6 +2859,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # in place at most once per SessionDB instance so a genuinely
         # unrecoverable database can't put writers into a rebuild loop.
         self._fts_runtime_rebuild_attempted = False
+        # One-shot guard for the runtime connection-reopen recovery on the
+        # write path. A connection whose backing file was replaced/truncated
+        # by a sibling process surfaces as "file is not a database" on every
+        # write; we close and reopen the connection at most once per
+        # SessionDB instance so a genuinely unrecoverable database can't put
+        # writers into a reconnect loop.
+        self._notadb_reconnect_attempted = False
         # One-shot guard for the usermerge-floor config write on the
         # incremental FTS merge cadence (see _merge_fts_incrementally).
         self._fts_usermerge_floor_applied = False
@@ -3593,6 +3635,20 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             except sqlite3.DatabaseError as exc:
                 if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
                     continue
+                # Runtime connection-corruption self-heal: a connection whose
+                # backing file was replaced/truncated by a sibling process
+                # (e.g. a forked curator agent inheriting and closing the
+                # write fd, or an external repair pass) surfaces as "file is
+                # not a database" on EVERY subsequent write. Without a
+                # reconnect branch the gateway wedges permanently: every
+                # transcript/routing write raises, messages stay in memory,
+                # and swap grows without bound until the process is killed.
+                # Close the broken connection, reopen the DB file, and retry
+                # the write once.
+                if _is_not_a_database_error(exc):
+                    if not self._reconnect_after_notadb():
+                        raise
+                    continue
                 # Corrupt FTS shadow tables make every write raise the
                 # malformed/corrupt error class through the FTS sync triggers
                 # while the canonical messages table is intact. Recover here,
@@ -3641,6 +3697,64 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._WRITE_RETRY_MAX_S,
             )
         time.sleep(min(jitter, max(deadline - now, 0.001)))
+        return True
+
+    def _reconnect_after_notadb(self) -> bool:
+        """Close the corrupted write connection and reopen state.db.
+
+        Returns True when the connection was successfully replaced and the
+        failed write should be retried.  Mirrors the constructor's
+        ``_connect_and_init`` so WAL/schema reconciliation runs on the fresh
+        connection.  Never raises — logs and returns False on failure so the
+        original error propagates.
+
+        One-shot per instance: a genuinely unrecoverable database must not
+        put writers into a reconnect loop that pins CPU on every write.
+        """
+        if self._notadb_reconnect_attempted:
+            return False
+        self._notadb_reconnect_attempted = True
+        logger.warning(
+            "state.db connection reported 'file is not a database' — closing "
+            "and reopening the connection to self-heal (one-shot)."
+        )
+        try:
+            with self._lock:
+                if self._conn is not None:
+                    try:
+                        self._conn.close()
+                    except Exception:
+                        pass
+                    self._conn = None
+                new_conn = _connect_tracked_db(
+                    str(self.db_path),
+                    tracking_path=self.db_path,
+                    check_same_thread=False,
+                    timeout=1.0,
+                    isolation_level=None,
+                )
+                new_conn.row_factory = sqlite3.Row
+                # Publish BEFORE schema init: _init_schema/_reconcile_columns
+                # operate on self._conn, not on the local variable.
+                self._conn = new_conn
+                self._wal_active = (
+                    apply_wal_with_fallback(new_conn, db_label="state.db")
+                    == "wal"
+                )
+                apply_database_pragmas(new_conn, db_label="state.db")
+                new_conn.execute("PRAGMA foreign_keys=ON")
+                self._fts_cjk_loaded = load_fts5_cjk_extension(new_conn)
+                self._init_schema()
+        except Exception as exc:
+            logger.error(
+                "state.db reconnect after 'file is not a database' failed (%s); "
+                "the database may need the full offline repair path.",
+                exc,
+            )
+            return False
+        logger.warning(
+            "state.db connection reopened successfully; retrying the failed write."
+        )
         return True
 
     @staticmethod

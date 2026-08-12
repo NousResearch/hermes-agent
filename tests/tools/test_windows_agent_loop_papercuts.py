@@ -174,3 +174,57 @@ class TestSkillHashSymmetry:
             trust_level="community",
         )
         assert bundle_content_hash(posix) == bundle_content_hash(windows)
+
+
+class TestLineEndingPreservation:
+    """Pin LF preservation on Windows write/patch paths.
+
+    A live Windows session saw a repo-LF file (agent/prompt_builder.py)
+    come back full-CRLF after an edit, exploding the git diff to every
+    line (4699-line churn). The flip is not reproducible through the
+    current tool APIs — these tests pin the correct behavior so any
+    regression on the Windows write path (bash stdin streaming, temp-file
+    rename) is caught immediately rather than corrupting user repos.
+    """
+
+    def test_write_file_preserves_lf_on_overwrite(self, tmp_path):
+        from tools.file_tools import write_file_tool
+        import json
+
+        p = tmp_path / "mod.py"
+        p.write_bytes(b"a = 1\nb = 2\n")
+        res = json.loads(write_file_tool(path=str(p), content="a = 1\nb = 22\n"))
+        assert res.get("success", True)
+        assert b"\r\n" not in p.read_bytes()
+
+    def test_patch_preserves_lf_multiline(self, tmp_path):
+        from tools.file_tools import patch_tool
+        import json
+
+        p = tmp_path / "mod.py"
+        p.write_bytes(b"def f():\n    return 1\n\ndef g():\n    return 2\n")
+        res = json.loads(patch_tool(
+            mode="replace", path=str(p),
+            old_string="    return 1", new_string="    return 100",
+        ))
+        assert res.get("success")
+        data = p.read_bytes()
+        assert b"\r\n" not in data
+        assert b"return 100" in data
+
+    def test_patch_preserves_crlf_file(self, tmp_path):
+        from tools.file_tools import patch_tool
+        import json
+
+        p = tmp_path / "mod.py"
+        p.write_bytes(b"def f():\r\n    return 1\r\n")
+        res = json.loads(patch_tool(
+            mode="replace", path=str(p),
+            old_string="    return 1", new_string="    return 100",
+        ))
+        assert res.get("success")
+        data = p.read_bytes()
+        # CRLF file stays CRLF — no mixed endings after an LF-args patch.
+        assert b"\r\n" in data
+        assert b"return 100\r\n" in data
+        assert b"\n\n" not in data.replace(b"\r\n", b"")

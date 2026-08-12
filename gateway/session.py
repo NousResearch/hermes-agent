@@ -3068,13 +3068,18 @@ class SessionStore:
         self,
         session_key: str,
         reason: str = "restart_timeout",
+        *,
+        source: Optional[SessionSource] = None,
     ) -> bool:
         """Mark a session as resumable after a restart interruption.
 
         Unlike ``suspend_session()``, this preserves the existing
         ``session_id`` and the transcript.  The next call to
         ``get_or_create_session()`` for this key returns the same entry
-        so the user auto-resumes on the same conversation lane.
+        so the user auto-resumes on the same conversation lane.  When supplied,
+        ``source`` snapshots the active turn's exact delivery route so a shared
+        channel session resumes in its current thread rather than its older
+        session origin.
 
         Returns True if the session existed and was marked.
         """
@@ -3086,6 +3091,10 @@ class SessionStore:
                 # forced-wipe signal (from /stop or stuck-loop escalation).
                 if entry.suspended:
                     return False
+                if source is not None:
+                    entry.origin = replace(source)
+                    entry.platform = source.platform
+                    entry.chat_type = source.chat_type
                 entry.resume_pending = True
                 entry.resume_reason = reason
                 entry.last_resume_marked_at = _now()

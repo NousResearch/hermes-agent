@@ -5183,6 +5183,13 @@ class TurnRunner:
                 question=question,
                 choices=list(choices) if choices else None,
                 multi_select=bool(multi_select),
+                route_scope=_clarify_mod.build_route_scope(
+                    platform=ctx.source.platform,
+                    chat_id=ctx.source.chat_id,
+                    chat_type=ctx.source.chat_type,
+                    thread_id=ctx.source.thread_id,
+                    message_id=ctx.event_message_id,
+                ),
             )
 
             # Pause typing — like approval, we don't want a "thinking..."
@@ -9232,6 +9239,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 session_key, exc_info=True,
             )
 
+        # A pending Buzz channel clarify belongs to one thread. If this message
+        # belongs to a different route, do not redirect its text into the
+        # blocked run. Wake that run with an internal cancellation response and
+        # let the base adapter queue this event as a separate routed follow-up
+        # turn. Buzz DMs remain session-scoped and have no route filter.
+        try:
+            from tools import clarify_gateway as _clarify_mod
+
+            _clarify_route_scope = _clarify_mod.build_route_scope(
+                platform=event.source.platform,
+                chat_id=event.source.chat_id,
+                chat_type=event.source.chat_type,
+                thread_id=event.source.thread_id,
+                message_id=event.message_id,
+            )
+            if _clarify_mod.resolve_pending_outside_route(
+                session_key,
+                _clarify_route_scope,
+                "[The user continued in a different conversation route. "
+                "Do not treat that message as this clarification's answer. "
+                "End this turn without a substantive reply.]",
+            ):
+                logger.info(
+                    "Released pending clarify for cross-route Buzz follow-up: "
+                    "session=%s route=%s",
+                    session_key,
+                    _clarify_route_scope,
+                )
+                return False
+        except Exception:
+            logger.warning(
+                "Cross-route clarify release failed for session %s; "
+                "falling through to busy handling",
+                session_key,
+                exc_info=True,
+            )
+
         # Normal busy case (agent actively running a task)
         adapter = self._adapter_for_source(event.source)
         if not adapter:
@@ -13277,6 +13321,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     await self.async_session_store.mark_resume_pending(
                         _sk,
                         "restart_timeout" if self._restart_requested else "shutdown_timeout",
+                        source=self._get_cached_session_source(_sk),
                     )
                     _pre_drain_keys.append(_sk)
                 except Exception as _e:
@@ -13354,7 +13399,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     if _agent is _AGENT_PENDING_SENTINEL:
                         continue
                     try:
-                        await self.async_session_store.mark_resume_pending(_sk, _resume_reason)
+                        await self.async_session_store.mark_resume_pending(
+                            _sk,
+                            _resume_reason,
+                            source=self._get_cached_session_source(_sk),
+                        )
                     except Exception as _e:
                         logger.debug(
                             "mark_resume_pending failed for %s: %s",
@@ -15247,8 +15296,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _clarify_mod = None
         try:
             from tools import clarify_gateway as _clarify_mod
+            _clarify_route_scope = _clarify_mod.build_route_scope(
+                platform=source.platform,
+                chat_id=source.chat_id,
+                chat_type=source.chat_type,
+                thread_id=source.thread_id,
+                message_id=event.message_id,
+            )
             _pending_clarify = _clarify_mod.get_pending_for_session(
-                _quick_key, include_choice_prompts=True,
+                _quick_key,
+                include_choice_prompts=True,
+                route_scope=_clarify_route_scope,
             )
         except Exception:
             _pending_clarify = None
@@ -15269,7 +15327,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # with an empty response.
             if _raw_clarify_reply and not _raw_clarify_reply.startswith("/"):
                 _resolved = _clarify_mod.resolve_text_response_for_session(
-                    _quick_key, _raw_clarify_reply,
+                    _quick_key,
+                    _raw_clarify_reply,
+                    route_scope=_clarify_route_scope,
                 )
                 if _resolved:
                     logger.info(

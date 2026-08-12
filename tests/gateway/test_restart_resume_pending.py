@@ -222,6 +222,34 @@ class TestMarkResumePending:
         store.mark_resume_pending(entry.session_key, reason="shutdown_timeout")
         assert store._entries[entry.session_key].resume_reason == "shutdown_timeout"
 
+    def test_persists_latest_delivery_source_for_restart_resume(self, tmp_path):
+        """A shared channel session must resume in its active thread, not its stale origin."""
+        store = _make_store(tmp_path)
+        original = SessionSource(
+            platform=Platform("buzz"),
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="u1",
+        )
+        entry = store.get_or_create_session(original)
+        latest = SessionSource(
+            platform=Platform("buzz"),
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="u1",
+            thread_id="thread-root",
+            message_id="trigger-event",
+        )
+
+        assert store.mark_resume_pending(
+            entry.session_key,
+            source=latest,
+        ) is True
+
+        restored = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+        restored._ensure_loaded()
+        assert restored._entries[entry.session_key].origin == latest
+
 
 class TestClearResumePending:
 
@@ -552,6 +580,12 @@ async def test_drain_timeout_marks_resume_pending():
         session_key_one: running_agent,
         session_key_two: MagicMock(),
     }
+    live_sources = {
+        session_key_one: make_restart_source(chat_id="A", thread_id="thread-a"),
+        session_key_two: make_restart_source(chat_id="B", thread_id="thread-b"),
+    }
+    for session_key, source in live_sources.items():
+        runner._cache_session_source(session_key, source)
 
     # Plug a mock session_store that records marks.
     session_store = MagicMock()
@@ -569,6 +603,7 @@ async def test_drain_timeout_marks_resume_pending():
     assert marked == {session_key_one, session_key_two}
     for args in calls:
         assert args[0][1] == "shutdown_timeout"
+        assert args.kwargs["source"] == live_sources[args[0][0]]
 
 
 # ---------------------------------------------------------------------------

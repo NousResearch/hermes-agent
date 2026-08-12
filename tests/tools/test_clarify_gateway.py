@@ -72,6 +72,39 @@ class TestClarifyPrimitive:
         assert pending is not None
         assert pending.clarify_id == "id3b"
 
+    def test_untagged_buzz_dm_messages_share_session_scoped_clarify(self):
+        """Fresh Buzz DM events must not derive per-message clarify routes."""
+        from tools import clarify_gateway as cm
+
+        registration_scope = cm.build_route_scope(
+            platform="buzz",
+            chat_id="dm-chat",
+            chat_type="dm",
+            message_id="trigger-message",
+        )
+        answer_scope = cm.build_route_scope(
+            platform="buzz",
+            chat_id="dm-chat",
+            chat_type="dm",
+            message_id="answer-message",
+        )
+
+        assert registration_scope is None
+        assert answer_scope is None
+        entry = cm.register(
+            "dm-clarify",
+            "buzz-dm-session",
+            "What next?",
+            None,
+            route_scope=registration_scope,
+        )
+        assert cm.resolve_text_response_for_session(
+            "buzz-dm-session",
+            "Continue",
+            route_scope=answer_scope,
+        ) is True
+        assert entry.response == "Continue"
+
 
     def test_clear_session_cancels_pending_entries(self):
         """clear_session unblocks blocked threads with empty response."""

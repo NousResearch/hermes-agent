@@ -6045,10 +6045,18 @@ class BasePlatformAdapter(ABC):
             if not cmd:
                 try:
                     from tools import clarify_gateway as _clarify_mod
+                    _clarify_route_scope = _clarify_mod.build_route_scope(
+                        platform=event.source.platform,
+                        chat_id=event.source.chat_id,
+                        chat_type=event.source.chat_type,
+                        thread_id=event.source.thread_id,
+                        message_id=event.message_id,
+                    )
                     _has_text_clarify = (
                         _clarify_mod.get_pending_for_session(
                             session_key,
                             include_choice_prompts=True,
+                            route_scope=_clarify_route_scope,
                         ) is not None
                     )
                 except Exception:

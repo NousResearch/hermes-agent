@@ -280,6 +280,48 @@ def test_second_request_while_busy_is_rejected(mod):
     assert sw.entered[-1] == ("ram-kv", "req-b")
 
 
+def test_concurrent_enter_race_closes_with_one_holder(mod):
+    """Two threads racing enter_long_context must yield exactly one ok, one
+    ModeBusyError, and exactly one physical ram-kv switch.
+
+    Regression for the TOCTOU race: the single-holder slot is now reserved
+    under the lock before the physical switch, so a second concurrent request
+    sees the reservation and is rejected instead of double-switching (breaks
+    AC-3 per-request isolation + AC-2 restore correctness, mirroring
+    Turbohaul max_parallel_sidecars=1).
+    """
+    class SlowSwitcher(RecordingSwitcher):
+        def __call__(self, mode, request_id):
+            time.sleep(0.05)  # widen the switching seam so both threads race
+            super().__call__(mode, request_id)
+
+    sw = SlowSwitcher()
+    mgr = make_manager(mod, switcher=sw)
+    barrier = threading.Barrier(2)
+    results: dict[str, str] = {}
+
+    def _enter(rid: str) -> None:
+        barrier.wait()
+        try:
+            mgr.enter_long_context(rid)
+            results[rid] = "ok"
+        except mod.ModeBusyError:
+            results[rid] = "busy"
+        except Exception as exc:  # pragma: no cover - unexpected
+            results[rid] = f"err:{type(exc).__name__}"
+
+    t1 = threading.Thread(target=_enter, args=("race-a",))
+    t2 = threading.Thread(target=_enter, args=("race-b",))
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    assert sorted(results.values()) == ["busy", "ok"], results
+    assert len(mgr.active_requests()) == 1, mgr.active_requests()
+    assert len(sw.entered) == 1, sw.calls
+
+
 def test_normal_request_never_touches_mode_state(mod):
     sw = RecordingSwitcher()
     mgr = make_manager(mod, switcher=sw)

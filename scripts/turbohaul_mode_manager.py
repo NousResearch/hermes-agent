@@ -194,23 +194,31 @@ class TurbohaulModeManager:
                     f"{holders}; single-resident model semantics allow one "
                     f"long-context request at a time (request {request_id!r})"
                 )
+            # Reserve the single-holder slot UNDER the lock, BEFORE the
+            # physical switch. A concurrent request now observes the
+            # reservation and raises ModeBusyError instead of racing through
+            # the empty-check (TOCTOU fix; mirrors Turbohaul
+            # max_parallel_sidecars=1 single-resident semantics).
+            self._active[request_id] = MODE_RAM_KV
 
         # Physical switch outside the lock (it may block / call back).
         try:
             self._physical_switch(MODE_RAM_KV, request_id)
         except ModeSwitchError:
+            with self._lock:
+                self._active.pop(request_id, None)
             raise
         except Exception as exc:
             self._log_transition(
                 request_id, "switch-failed", level=logging.ERROR,
                 from_mode=MODE_GPU_KV, to_mode=MODE_RAM_KV, error=str(exc),
             )
+            with self._lock:
+                self._active.pop(request_id, None)
             raise ModeSwitchError(
                 f"failed to switch to RAM-KV for request {request_id!r}: {exc}"
             ) from exc
 
-        with self._lock:
-            self._active[request_id] = MODE_RAM_KV
         self._log_transition(
             request_id, "entered", from_mode=MODE_GPU_KV, to_mode=MODE_RAM_KV,
         )

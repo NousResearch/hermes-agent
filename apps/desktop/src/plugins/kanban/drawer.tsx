@@ -11,6 +11,10 @@ import {
   cn,
   Codicon,
   compactNumber,
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -39,6 +43,7 @@ import {
   fetchTask,
   logKey,
   patchTask,
+  previewAttachment,
   PROFILES_KEY,
   reassignTask,
   reclaimTask,
@@ -420,6 +425,17 @@ function AttachmentsSection({
 }) {
   const k = useKanban()
   const fileRef = useRef<HTMLInputElement>(null)
+  const [preview, setPreview] = useState<null | { dataUrl: string; filename: string }>(null)
+
+  const openAttachment = async (attachment: KanbanAttachment) => {
+    try {
+      const result = await previewAttachment(attachment.id)
+
+      setPreview({ dataUrl: result.data_url, filename: result.filename })
+    } catch (error) {
+      host.notifyError(error, k.attachmentPreviewUnavailable)
+    }
+  }
 
   return (
     <Section
@@ -457,13 +473,33 @@ function AttachmentsSection({
           {attachments.map(attachment => (
             <li className="flex items-center gap-1.5 text-[0.75rem] text-(--ui-text-tertiary)" key={attachment.id}>
               <Codicon name="file" size="0.75rem" />
-              {attachment.filename}
+              <button
+                className="min-w-0 truncate text-left underline-offset-2 hover:text-foreground hover:underline"
+                onClick={() => void openAttachment(attachment)}
+                type="button"
+              >
+                {attachment.filename}
+              </button>
             </li>
           ))}
         </ul>
       ) : (
         <p className="text-[0.75rem] text-(--ui-text-quaternary)">{k.noAttachments}</p>
       )}
+      <Dialog onOpenChange={open => !open && setPreview(null)} open={Boolean(preview)}>
+        <DialogContent bodyClassName="min-h-0" className="h-[min(82vh,56rem)] w-[min(92vw,76rem)] max-w-none">
+          <DialogHeader>
+            <DialogTitle>{preview?.filename ?? k.attachmentPreview}</DialogTitle>
+          </DialogHeader>
+          {preview?.dataUrl.startsWith('data:image/') ? (
+            <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto rounded-md bg-(--ui-surface-inset) p-3">
+              <img alt={preview.filename} className="max-h-full max-w-full object-contain" src={preview.dataUrl} />
+            </div>
+          ) : preview ? (
+            <iframe className="min-h-0 flex-1 rounded-md border border-border" src={preview.dataUrl} title={preview.filename} />
+          ) : null}
+        </DialogContent>
+      </Dialog>
     </Section>
   )
 }

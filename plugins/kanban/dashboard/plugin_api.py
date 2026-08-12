@@ -36,6 +36,7 @@ the port.
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import sqlite3
@@ -804,6 +805,35 @@ def download_attachment(attachment_id: int, board: Optional[str] = Query(None)):
             filename=att.filename,
             media_type=att.content_type or "application/octet-stream",
         )
+    finally:
+        conn.close()
+
+
+@router.get("/attachments/{attachment_id}/preview")
+def preview_attachment(attachment_id: int, board: Optional[str] = Query(None)):
+    """Return a bounded data URL for inline Desktop evidence preview."""
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        att = kanban_db.get_attachment(conn, attachment_id)
+        if att is None:
+            raise HTTPException(status_code=404, detail="attachment not found")
+        root = kanban_db.attachments_root(board=board).resolve()
+        try:
+            stored = Path(att.stored_path).resolve()
+            stored.relative_to(root)
+        except (ValueError, OSError):
+            raise HTTPException(status_code=404, detail="attachment file unavailable")
+        if not stored.is_file():
+            raise HTTPException(status_code=404, detail="attachment file missing on disk")
+        data = stored.read_bytes()
+        if len(data) > KANBAN_ATTACHMENT_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="attachment too large to preview")
+        content_type = att.content_type or "application/octet-stream"
+        return {
+            "filename": att.filename,
+            "data_url": f"data:{content_type};base64,{base64.b64encode(data).decode('ascii')}",
+        }
     finally:
         conn.close()
 

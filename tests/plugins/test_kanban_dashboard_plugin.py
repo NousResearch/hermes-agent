@@ -81,6 +81,28 @@ def test_board_empty(client):
     assert data["latest_event_id"] == 0
 
 
+def test_attachment_preview_streams_inline_without_exposing_storage_path(client):
+    create = client.post("/api/plugins/kanban/tasks", json={"title": "Review evidence"})
+    task_id = create.json()["task"]["id"]
+    upload = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/attachments",
+        files={"file": ("evidence.png", b"\x89PNG\r\n\x1a\n", "image/png")},
+    )
+    attachment_id = upload.json()["attachment"]["id"]
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{task_id}").json()
+    assert detail["attachments"][0]["content_type"] == "image/png"
+
+    preview = client.get(
+        f"/api/plugins/kanban/attachments/{attachment_id}/preview"
+    )
+    assert preview.status_code == 200
+    assert preview.json() == {
+        "data_url": "data:image/png;base64,iVBORw0KGgo=",
+        "filename": "evidence.png",
+    }
+
+
 # ---------------------------------------------------------------------------
 # POST /tasks then GET /board sees it
 # ---------------------------------------------------------------------------

@@ -124,6 +124,18 @@ emitted by each built-in hook site.
     child_status    – exit status string (e.g. "success", "error")
     tool_call_history – redacted tool name/input summary/byte counts/status list
     duration_ms     – wall-clock time of the child run in milliseconds
+
+``guardrail_block`` / ``guardrail_halt`` (emitted from
+``agent/tool_guardrails.py`` when the per-turn tool-call guardrail records
+a turn-stopping decision)::
+
+    tool_name       – the tool whose call was stopped
+    code            – decision code (e.g. "repeated_exact_failure_block",
+                      "idempotent_no_progress_block", "same_tool_failure_halt",
+                      "loop_web_search_cap", "loop_subagent_cap")
+    count           – streak/counter value behind the decision
+    action          – "block" | "halt"
+    message         – human-readable guidance text
 """
 
 from __future__ import annotations

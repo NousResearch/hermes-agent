@@ -4,17 +4,27 @@ The controller in this module is intentionally side-effect free: it tracks
 per-turn tool-call observations and returns decisions. Runtime code owns whether
 those decisions become warning guidance, synthetic tool results, or controlled
 turn halts.
+
+The single exception is observer notification: recording a turn-stopping
+decision (block or halt) emits the ``guardrail_block`` / ``guardrail_halt``
+lifecycle hook so external observers (shell hooks, outbound webhooks) can
+alert on guardrail activity without tailing logs. Emission is notify-only
+and failure-safe — hook results are ignored and a hook error can never
+break the agent loop.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from utils import safe_json_loads
 from agent.tool_result_classification import file_mutation_result_landed
+
+logger = logging.getLogger(__name__)
 
 
 IDEMPOTENT_TOOL_NAMES = frozenset(
@@ -270,6 +280,33 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
     return False, ""
 
 
+def _emit_guardrail_hook(decision: "ToolGuardrailDecision") -> None:
+    """Fire the ``guardrail_block`` / ``guardrail_halt`` lifecycle hook.
+
+    Notify-only and failure-safe, matching how other ``invoke_hook`` call
+    sites guard: the import is lazy (this module must stay importable
+    without ``hermes_cli``), emission is gated on ``has_hook`` so the common
+    no-hooks case costs one lookup, and any failure is logged and swallowed
+    — a hook can never break the agent loop.
+    """
+    event = "guardrail_halt" if decision.action == "halt" else "guardrail_block"
+    try:
+        from hermes_cli import lifecycle
+
+        if not lifecycle.has_hook(event):
+            return
+        lifecycle.invoke_hook(
+            event,
+            tool_name=decision.tool_name,
+            code=decision.code,
+            count=decision.count,
+            action=decision.action,
+            message=decision.message,
+        )
+    except Exception:
+        logger.debug("guardrail hook emission failed (%s)", event, exc_info=True)
+
+
 class ToolCallGuardrailController:
     """Per-turn controller for repeated failed/non-progressing tool calls."""
 
@@ -291,6 +328,12 @@ class ToolCallGuardrailController:
     @property
     def halt_decision(self) -> ToolGuardrailDecision | None:
         return self._halt_decision
+
+    def _record_stop(self, decision: ToolGuardrailDecision) -> ToolGuardrailDecision:
+        """Record a turn-stopping decision and notify hook observers."""
+        self._halt_decision = decision
+        _emit_guardrail_hook(decision)
+        return decision
 
     def before_call(self, tool_name: str, args: Mapping[str, Any] | None) -> ToolGuardrailDecision:
         signature = ToolCallSignature.from_call(tool_name, _coerce_args(args))
@@ -322,8 +365,7 @@ class ToolCallGuardrailController:
                 count=exact_count,
                 signature=signature,
             )
-            self._halt_decision = decision
-            return decision
+            return self._record_stop(decision)
 
         if self._is_idempotent(tool_name):
             record = self._no_progress.get(signature)
@@ -342,8 +384,7 @@ class ToolCallGuardrailController:
                         count=repeat_count,
                         signature=signature,
                     )
-                    self._halt_decision = decision
-                    return decision
+                    return self._record_stop(decision)
 
         return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
@@ -380,8 +421,7 @@ class ToolCallGuardrailController:
                     count=same_count,
                     signature=signature,
                 )
-                self._halt_decision = decision
-                return decision
+                return self._record_stop(decision)
 
             if self.config.warnings_enabled and exact_count >= self.config.exact_failure_warn_after:
                 return ToolGuardrailDecision(
@@ -475,8 +515,7 @@ class ToolCallGuardrailController:
                     count=self._turn_web_search_count,
                     signature=signature,
                 )
-                self._halt_decision = decision
-                return decision
+                return self._record_stop(decision)
             self._turn_web_search_count += 1
             return None
 
@@ -499,8 +538,7 @@ class ToolCallGuardrailController:
                     count=self._turn_subagent_count,
                     signature=signature,
                 )
-                self._halt_decision = decision
-                return decision
+                return self._record_stop(decision)
             self._turn_subagent_count += spawn_count
             return None
 

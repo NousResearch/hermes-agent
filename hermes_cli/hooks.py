@@ -231,6 +231,20 @@ _DEFAULT_PAYLOADS = {
         ],
         "duration_ms": 1234,
     },
+    "guardrail_block": {
+        "tool_name": "web_search",
+        "code": "idempotent_no_progress_block",
+        "count": 5,
+        "action": "block",
+        "message": "Blocked web_search: this read-only call returned the same result 5 times.",
+    },
+    "guardrail_halt": {
+        "tool_name": "terminal",
+        "code": "same_tool_failure_halt",
+        "count": 7,
+        "action": "halt",
+        "message": "Stopped terminal: it failed 7 times this turn.",
+    },
 }
 
 

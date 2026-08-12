@@ -1,19 +1,100 @@
 from hermes_cli import nous_auth_keepalive as keepalive
 from hermes_cli.auth import ACCESS_TOKEN_REFRESH_SKEW_SECONDS
 
-NOUS_ACCESS_TOKEN_TTL_SECONDS = 3600
+# Both lifetimes have been observed on real installs.
+OBSERVED_LIFETIMES_SECONDS = (3594, 899)
 
 
 def test_keepalive_interval_fits_inside_the_token_lifetime():
-    """The tick must land before the hour rolls over, or refresh stays reactive.
+    """The tick must land before the credential rolls over.
 
     A tick at or above TTL - skew can miss the refresh window entirely, which
     is what made every hour expire into a 401 plus a re-auth round trip.
     """
     assert (
         keepalive.NOUS_AUTH_KEEPALIVE_INTERVAL_SECONDS
-        < NOUS_ACCESS_TOKEN_TTL_SECONDS - ACCESS_TOKEN_REFRESH_SKEW_SECONDS
+        < min(OBSERVED_LIFETIMES_SECONDS) * 4 - ACCESS_TOKEN_REFRESH_SKEW_SECONDS
     )
+
+
+def test_refresh_always_fires_before_expiry_for_observed_lifetimes():
+    """Simulate the tick schedule and assert no credential expires unrefreshed.
+
+    This is the property that actually matters: for every lifetime, some tick
+    must decide to refresh while the credential is still valid. Ticking faster
+    alone does not guarantee it -- the refresh horizon has to cover the gap
+    between ticks too.
+    """
+    for lifetime in OBSERVED_LIFETIMES_SECONDS:
+        tick = keepalive._tick_seconds(
+            keepalive.NOUS_AUTH_KEEPALIVE_INTERVAL_SECONDS, lifetime
+        )
+        horizon = keepalive._refresh_horizon_seconds(
+            tick, keepalive.NOUS_INVOKE_JWT_MIN_TTL_SECONDS
+        )
+
+        # Walk the ticks and find the first one that refreshes.
+        refreshed_at = None
+        elapsed = 0
+        while elapsed <= lifetime:
+            if lifetime - elapsed <= horizon:
+                refreshed_at = elapsed
+                break
+            elapsed += tick
+
+        assert refreshed_at is not None, f"never refreshed for lifetime={lifetime}"
+        assert refreshed_at < lifetime, (
+            f"refresh at {refreshed_at}s came at/after expiry {lifetime}s "
+            f"(tick={tick}, horizon={horizon})"
+        )
+
+
+def test_tick_derives_from_observed_lifetime():
+    default = keepalive.NOUS_AUTH_KEEPALIVE_INTERVAL_SECONDS
+
+    # A short-lived credential pulls the tick down below the configured default.
+    assert keepalive._tick_seconds(default, 899) == 899 // 4
+
+    # A long-lived one is still capped by the configured interval.
+    assert keepalive._tick_seconds(default, 86400) == default
+
+    # A missing or nonsensical lifetime leaves the configured tick alone.
+    assert keepalive._tick_seconds(default, None) == default
+    assert keepalive._tick_seconds(default, 0) == default
+
+    # A pathological lifetime cannot spin the thread.
+    assert (
+        keepalive._tick_seconds(default, 4)
+        == keepalive.NOUS_AUTH_KEEPALIVE_MIN_INTERVAL_SECONDS
+    )
+
+
+def test_refresh_horizon_covers_the_gap_between_ticks():
+    # A credential that will not survive until the next tick refreshes now.
+    assert keepalive._refresh_horizon_seconds(900, 120) == 900 + (
+        ACCESS_TOKEN_REFRESH_SKEW_SECONDS
+    )
+    # The caller's floor still applies when ticks are very frequent.
+    assert keepalive._refresh_horizon_seconds(10, 5000) == 5000
+
+
+def test_observed_lifetime_takes_the_shorter_credential(monkeypatch):
+    monkeypatch.setattr(
+        keepalive,
+        "get_provider_auth_state",
+        lambda provider: {"expires_in": 3594, "agent_key_expires_in": 899},
+    )
+    assert keepalive._observed_lifetime_seconds() == 899
+
+    monkeypatch.setattr(keepalive, "get_provider_auth_state", lambda provider: {})
+    assert keepalive._observed_lifetime_seconds() is None
+
+    monkeypatch.setattr(
+        keepalive,
+        "get_provider_auth_state",
+        lambda provider: {"expires_in": "nonsense"},
+    )
+    assert keepalive._observed_lifetime_seconds() is None
 
 
 def test_interval_precedence_and_disable(monkeypatch):

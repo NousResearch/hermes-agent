@@ -122,8 +122,11 @@ jobs:
           load: true
           platforms: ${{ matrix.platform }}
           tags: ${{ env.IMAGE_NAME }}:test
+          # A release ref is a tag, not a branch; leave branch unknown for tag builds.
           build-args: |
             HERMES_GIT_SHA=${{ github.sha }}
+            BUILD_SOURCE_BRANCH=${{ github.ref_type == 'branch' && (github.head_ref || github.ref_name) || '' }}
+            BUILD_SOURCE_DIRTY=false
           cache-from: ${{ matrix.cache-from }}
           cache-to: ${{ (github.event_name != 'pull_request') && matrix.cache-to || '' }}
 
@@ -240,8 +243,11 @@ jobs:
           platforms: ${{ matrix.platform }}
           labels: |
             org.opencontainers.image.revision=${{ github.sha }}
+          # A release ref is a tag, not a branch; leave branch unknown for tag builds.
           build-args: |
             HERMES_GIT_SHA=${{ github.sha }}
+            BUILD_SOURCE_BRANCH=${{ github.ref_type == 'branch' && (github.head_ref || github.ref_name) || '' }}
+            BUILD_SOURCE_DIRTY=false
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           cache-from: ${{ matrix.cache-from }}
           cache-to: ${{ matrix.cache-to }}

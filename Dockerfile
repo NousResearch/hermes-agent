@@ -274,6 +274,12 @@ RUN uv sync --frozen --no-install-project --extra all --extra messaging --extra 
 # ---------- Frontend build (cached independently from Python source) ----------
 # Copy only the frontend source trees first so that Python-only changes don't
 # invalidate the (relatively slow) web + ui-tui build layer.
+# The Docker context intentionally excludes .git. CI supplies these build args
+# so Vite can still stamp the published bundle with exact source provenance;
+# local builds that omit them remain explicitly unknown rather than guessed.
+ARG HERMES_GIT_SHA=
+ARG BUILD_SOURCE_BRANCH=
+ARG BUILD_SOURCE_DIRTY=
 COPY web/ web/
 COPY ui-tui/ ui-tui/
 COPY apps/shared/ apps/shared/
@@ -338,7 +344,6 @@ RUN mkdir -p /opt/hermes/bin && \
 # to live-git lookup.  CI
 # (.github/workflows/docker.yml) passes ${{ github.sha }} so
 # every published image has it.
-ARG HERMES_GIT_SHA=
 RUN set -eu; \
     if [ -n "${HERMES_GIT_SHA}" ]; then \
         printf '%s\n' "${HERMES_GIT_SHA}" > /opt/hermes/.hermes_build_sha; \

@@ -34,6 +34,7 @@ gateway:
         group_allow_from: []       # group ids when group_policy=allowlist
         split_length: 100          # long replies split at this many chars
         text_image_threshold: 150  # longer replies render as a text image
+        image_max_size: 2048       # downscale inbound images (0 = keep as-is)
 ```
 
 ### Connection modes
@@ -74,10 +75,15 @@ Set `text_image_threshold: 0` to disable the image path.
 - **Markdown is stripped** before delivery — QQ does not render it, so `**bold**`, headings, lists, and tables are converted to readable plain text (headings → `【…】`, lists → `•`, tables → spaced cells, fenced code blocks → bordered boxes). This runs before splitting and text-image rendering, so images are clean too.
 - **Inbound voice messages are transcribed**: the adapter downloads the clip and converts it with `ffmpeg` to 16 kHz mono WAV, then hands it to Hermes' STT pipeline (local whisper / Groq / OpenAI — same as other platforms). Requires `ffmpeg` on the Hermes host; without it, voice clips degrade to a `[语音]` marker.
 
+## Images
+
+- Inbound images are downloaded to a temp directory and exposed to the vision tool via `media_urls`; undownloadable images degrade to a `[图片]` placeholder.
+- Images larger than `image_max_size` (default **2048** px on the long edge) are downscaled with Pillow before the LLM sees them — high-resolution QQ photos otherwise make vision calls slow or time out. RGBA stays PNG, everything else becomes JPEG (q85); animated GIFs collapse to their first frame. Set `image_max_size: 0` to keep originals untouched.
+
 ## Notes
 
 - Outbound messages use the OneBot segment-array format (not CQ-code strings) — required for NapCat's message handling.
 - Replies are sent as plain text without quoting the triggering message.
-- Inbound images are downloaded to a temp directory and exposed to the vision tool via `media_urls`; undownloadable images degrade to a `[图片]` placeholder.
 - QQ faces map to common emoji; unknown faces collapse to `[表情]`.
+- In **private chats** the bot shows QQ's native "typing…" bubble while the agent generates (via NapCat's `set_input_status` extension). Group chats have no typing indicator on QQ.
 - Long replies may take a few seconds to render — the gateway shows a typing indicator where supported.

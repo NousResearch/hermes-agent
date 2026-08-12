@@ -3373,15 +3373,7 @@ async function applyUpdatesPosixHandoff(opts: any) {
     // best effort
   }
 
-  const args = [
-    ...handoff.args,
-    '--install-root',
-    updateRoot,
-    '--branch',
-    branch,
-    '--desktop-pid',
-    String(process.pid)
-  ]
+  const args = [...handoff.args, '--install-root', updateRoot, '--branch', branch, '--desktop-pid', String(process.pid)]
 
   // Relaunch target: the running .app bundle on mac (script swaps the
   // rebuilt bundle over it), the running binary elsewhere. The script's gate
@@ -3427,9 +3419,7 @@ async function applyUpdatesPosixHandoff(opts: any) {
     writeUpdateMarker(HERMES_HOME, child.pid)
   }
 
-  rememberLog(
-    `[updates] launched posix hand-off: ${handoff.scriptPath} (branch ${branch}); quitting to hand off`
-  )
+  rememberLog(`[updates] launched posix hand-off: ${handoff.scriptPath} (branch ${branch}); quitting to hand off`)
   emitUpdateProgress({
     stage: 'restart',
     message:
@@ -3444,7 +3434,6 @@ async function applyUpdatesPosixHandoff(opts: any) {
 
   return { ok: true, handedOff: true, updater: handoff.scriptPath }
 }
-
 
 function readJson(filePath) {
   try {

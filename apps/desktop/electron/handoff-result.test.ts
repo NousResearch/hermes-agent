@@ -86,7 +86,11 @@ test('manual flag survives the round trip and defaults false', () => {
   assert.equal(result.manual, true)
 
   write(home, { ok: true, exit_code: 0, message: 'done', branch: 'main', finished_at: Math.floor(Date.now() / 1000) })
-  assert.equal(readAndConsumeHandoffResult(home)?.manual, false, 'older writers without the field parse as manual:false')
+  assert.equal(
+    readAndConsumeHandoffResult(home)?.manual,
+    false,
+    'older writers without the field parse as manual:false'
+  )
 })
 
 test('an old manual result survives the freshness window but an old ordinary one does not', () => {

@@ -342,23 +342,45 @@ def _should_skip_backup_file(abs_path: Path, rel_path: Path, out_path: Path) -> 
 def _safe_copy_db(src: Path, dst: Path) -> bool:
     """Copy a SQLite database safely using the backup() API.
 
-    Handles WAL mode — produces a consistent snapshot even while
-    the DB is being written to. Fail closed if a consistent snapshot cannot
-    be created: copying only the live main file can omit committed WAL data.
+    Handles WAL mode and produces a consistent snapshot while the source is
+    being written. Fail closed if SQLite cannot produce that snapshot: a raw
+    main-file copy can omit committed WAL frames and must never be presented
+    as a valid backup.
+
+    The snapshot is written to a temp file in the destination directory,
+    validated with ``PRAGMA quick_check``, fsynced, and only then moved over
+    ``dst`` atomically. A failure therefore never truncates or deletes a
+    previous good backup at ``dst`` (the old implementation wrote into
+    ``dst`` directly and unlinked it on failure), and a crash mid-copy can
+    never leave a half-written file that looks like a backup. Every failure
+    path — including an unwritable destination directory — returns ``False``
+    so callers can treat it as a per-file error instead of aborting the whole
+    backup run.
     """
-    conn = None
-    backup_conn = None
+    conn = backup_conn = None
+    temp_path = None
     try:
+        fd, temp_name = tempfile.mkstemp(
+            prefix=f".{dst.name}.", suffix=".tmp", dir=dst.parent
+        )
+        os.close(fd)
+        temp_path = Path(temp_name)
         conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
-        backup_conn = sqlite3.connect(str(dst))
+        backup_conn = sqlite3.connect(str(temp_path))
         conn.backup(backup_conn)
+        row = backup_conn.execute("PRAGMA quick_check").fetchone()
+        if not row or row[0] != "ok":
+            raise sqlite3.DatabaseError(f"backup quick_check returned {row!r}")
+        backup_conn.close()
+        backup_conn = None
+        conn.close()
+        conn = None
+        with temp_path.open("rb") as handle:
+            os.fsync(handle.fileno())
+        os.replace(temp_path, dst)
         return True
     except Exception as exc:
         logger.warning("SQLite safe copy failed for %s: %s", src, exc)
-        try:
-            dst.unlink(missing_ok=True)
-        except OSError:
-            pass
         return False
     finally:
         for connection in (backup_conn, conn):
@@ -367,7 +389,11 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
                     connection.close()
                 except Exception:
                     pass
-
+        if temp_path is not None:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 def is_zeroed_sqlite_file(
     path: Path, *, probe_bytes: int = 100, force: bool = False

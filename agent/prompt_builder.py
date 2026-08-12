@@ -1104,6 +1104,26 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
 _BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
 
 
+def _windows_marketing_version() -> str:
+    """Return the marketing Windows version ("10", "11", ...) for the prompt.
+
+    ``platform.release()`` reports the kernel version, which is ``10`` for
+    BOTH Windows 10 and Windows 11 — the prompt then claims "Windows (10)"
+    on Windows 11 hosts and misleads the model about the OS (#51755).
+    Windows 11 is distinguished by build number: >= 22000 is 11.
+    Falls back to ``platform.release()`` on any lookup failure.
+    """
+    try:
+        build = sys.getwindowsversion().build  # type: ignore[attr-defined]
+        if build >= 22000:
+            return "11"
+        return "10"
+    except Exception:
+        import platform
+
+        return platform.release()
+
+
 _WINDOWS_BASH_SHELL_HINT = (
     "Shell: on this Windows host your `terminal` tool runs commands through "
     "bash (git-bash / MSYS), NOT PowerShell or cmd.exe. Use POSIX shell "
@@ -1284,7 +1304,7 @@ def build_environment_hints() -> str:
         if is_wsl():
             host_lines.append("Host: WSL (Windows Subsystem for Linux)")
         elif sys.platform == "win32":
-            host_lines.append(f"Host: Windows ({platform.release()})")
+            host_lines.append(f"Host: Windows ({_windows_marketing_version()})")
         elif sys.platform == "darwin":
             mac_ver = platform.mac_ver()[0]
             host_lines.append(f"Host: macOS ({mac_ver or platform.release()})")

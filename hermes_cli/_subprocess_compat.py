@@ -37,6 +37,7 @@ from typing import Mapping, Sequence
 __all__ = [
     "IS_WINDOWS",
     "resolve_node_command",
+    "split_command_line",
     "suppress_platform_ver_console",
     "windows_detach_flags",
     "windows_detach_flags_without_breakaway",
@@ -48,6 +49,39 @@ __all__ = [
 
 
 IS_WINDOWS = sys.platform == "win32"
+
+
+def split_command_line(line: str) -> list[str]:
+    """Split a user-supplied command line into tokens, Windows-safely.
+
+    ``shlex.split(line)`` (posix=True) treats every backslash as an escape
+    character, so Windows paths are silently mangled: ``C:\\Users\\me\\out.txt``
+    becomes ``C:Usersmeout.txt`` — no error, just a wrong path that then
+    "succeeds" against a mangled relative filename (#83934) or makes a valid
+    hook script report "not executable" (#78293).
+
+    On Windows this uses ``posix=False``, which preserves backslashes while
+    still honoring double-quoted tokens ("path with spaces"). The trade-off
+    is that posix=False keeps surrounding quotes on quoted tokens, so we
+    strip one layer of matching double quotes per token — that matches how
+    Windows command lines are conventionally parsed. On POSIX the behavior
+    is exactly ``shlex.split``.
+
+    Raises ValueError for unbalanced quotes, same as ``shlex.split``.
+    """
+    if not IS_WINDOWS:
+        import shlex
+
+        return shlex.split(line)
+    import shlex
+
+    tokens = shlex.split(line, posix=False)
+    out: list[str] = []
+    for tok in tokens:
+        if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in ("'", '"'):
+            tok = tok[1:-1]
+        out.append(tok)
+    return out
 
 
 # -----------------------------------------------------------------------------

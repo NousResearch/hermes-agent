@@ -1781,7 +1781,14 @@ class SlashCommandCompleter(Completer):
                     raw = proc.stdout.strip().split("\n")
                     # Store relative paths
                     for p in raw[:5000]:
-                        rel = os.path.relpath(p, cwd) if os.path.isabs(p) else p
+                        try:
+                            rel = os.path.relpath(p, cwd) if os.path.isabs(p) else p
+                        except ValueError:
+                            # Windows: relpath raises for paths on a different
+                            # mount than cwd — device paths (\\.\nul, \\.\con)
+                            # or another drive letter. One bad entry must not
+                            # crash the @ autocomplete event loop (#42016).
+                            continue
                         files.append(rel)
                     break
             except (subprocess.TimeoutExpired, OSError):

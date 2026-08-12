@@ -511,7 +511,10 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         "error": None,
     }
     try:
-        argv = shlex.split(os.path.expanduser(spec.command))
+        # Windows-safe: plain shlex.split eats backslashes in paths (#78293).
+        from hermes_cli._subprocess_compat import split_command_line
+
+        argv = split_command_line(os.path.expanduser(spec.command))
     except ValueError as exc:
         result["error"] = f"command {spec.command!r} cannot be parsed: {exc}"
         return result
@@ -950,7 +953,9 @@ def _command_script_path(command: str) -> str:
     common bare-path form.
     """
     try:
-        parts = shlex.split(command)
+        from hermes_cli._subprocess_compat import split_command_line
+
+        parts = split_command_line(command)
     except ValueError:
         return command
     if not parts:
@@ -1037,7 +1042,9 @@ def script_is_executable(command: str) -> bool:
     if not os.path.isfile(expanded):
         return False
     try:
-        argv = shlex.split(command)
+        from hermes_cli._subprocess_compat import split_command_line
+
+        argv = split_command_line(command)
     except ValueError:
         return False
     is_bare_invocation = bool(argv) and argv[0] == path

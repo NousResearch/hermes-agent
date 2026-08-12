@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -240,6 +241,33 @@ def test_tui_shell_exec_rpc_hides_console_window(monkeypatch):
 
 
 
+def test_cli_quick_command_exec_hides_console_window(monkeypatch):
+    import cli as cli_mod
+
+    captured = []
+
+    def fake_popen(cmd, **kwargs):
+        captured.append((cmd, kwargs))
+        return SimpleNamespace(
+            stdout=io.BytesIO(b"qc ok\n"),
+            stderr=io.BytesIO(),
+            wait=lambda timeout=None: 0,
+        )
+
+    _patch_hide_flags(monkeypatch)
+    monkeypatch.setattr(cli_mod.sys, "platform", "win32")
+    monkeypatch.setattr(cli_mod.subprocess, "Popen", fake_popen)
+
+    inst = object.__new__(cli_mod.HermesCLI)
+    inst.config = {"quick_commands": {"qtest": {"type": "exec", "command": "echo cli-qc-56747"}}}
+    inst._pending_resume_sessions = None
+    inst._console_print = lambda *a, **k: None
+
+    assert inst.process_command("/qtest") is True
+
+    spawns = _spawns(captured, "cli-qc-56747")
+    assert len(spawns) == 1, captured
+    assert spawns[0][1]["creationflags"] == _CREATE_NO_WINDOW
 
 
 

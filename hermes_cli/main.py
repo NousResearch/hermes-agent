@@ -4878,6 +4878,13 @@ def cmd_kanban(args):
     return kanban_command(args)
 
 
+def cmd_feature(args):
+    """Feature pipeline management."""
+    from hermes_cli.feature import cmd_feature as _cmd_feature
+
+    return _cmd_feature(args)
+
+
 def cmd_project(args):
     """Manage projects (named, multi-folder workspaces)."""
     from hermes_cli.projects_cmd import projects_command
@@ -11693,6 +11700,14 @@ def main():
 
     kanban_parser = _build_kanban_parser(subparsers)
     kanban_parser.set_defaults(func=cmd_kanban)
+
+    # =========================================================================
+    # feature command — feature pipeline management
+    # =========================================================================
+    from hermes_cli.feature import build_parser as _build_feature_parser
+
+    feature_parser = _build_feature_parser(subparsers)
+    feature_parser.set_defaults(func=cmd_feature)
 
     # =========================================================================
     # project command — named, multi-folder workspaces

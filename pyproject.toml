@@ -132,6 +132,10 @@ dependencies = [
   # install rather than gating it behind an extra + a mid-session lazy install
   # (which deadlocked the CLI under prompt_toolkit — see #40490).
   "Pillow==12.3.0",
+  # Glyph-coverage lookup (cmap) for the OneBot platform's text-image
+  # rendering — lets the adapter pick per-character fallback fonts so CJK,
+  # symbols, and rare glyphs never render as tofu boxes.
+  "fonttools>=4.0",
   # Windows log rotation. Stdlib ``RotatingFileHandler.doRollover()`` uses
   # ``os.rename()`` which fails with ``PermissionError [WinError 32]`` on
   # Windows whenever any other process holds an append-mode handle on

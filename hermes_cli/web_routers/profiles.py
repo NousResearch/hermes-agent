@@ -913,15 +913,23 @@ async def get_active_profile_endpoint():
     the running dashboard/gateway is scoped to (derived from HERMES_HOME).
     """
     from hermes_cli import profiles as profiles_mod
-    try:
-        active = profiles_mod.get_active_profile() or "default"
-    except Exception:
-        active = "default"
-    try:
-        current = profiles_mod.get_active_profile_name() or "default"
-    except Exception:
-        current = "default"
-    return {"active": active, "current": current}
+
+    def _run():
+        # Both reads touch the filesystem: get_active_profile() reads the
+        # active_profile state file and get_active_profile_name() resolves
+        # HERMES_HOME against the profiles root. Batched into one hop so the
+        # sidebar's polling costs a single executor round-trip, not two.
+        try:
+            active = profiles_mod.get_active_profile() or "default"
+        except Exception:
+            active = "default"
+        try:
+            current = profiles_mod.get_active_profile_name() or "default"
+        except Exception:
+            current = "default"
+        return {"active": active, "current": current}
+
+    return await asyncio.get_running_loop().run_in_executor(None, _run)
 
 
 @router.post("/api/profiles/active")
@@ -932,8 +940,14 @@ async def set_active_profile_endpoint(body: ProfileActiveUpdate):
     it changes which profile subsequent CLI commands and gateways use.
     """
     from hermes_cli import profiles as profiles_mod
+
+    def _run():
+        return profiles_mod.set_active_profile(body.name)
+
     try:
-        profiles_mod.set_active_profile(body.name)
+        # set_active_profile() stats the target profile, creates the state
+        # directory and writes active_profile through a temp file + replace.
+        await asyncio.get_running_loop().run_in_executor(None, _run)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
@@ -1006,8 +1020,16 @@ async def open_profile_terminal_endpoint(name: str):
 @router.patch("/api/profiles/{name}")
 async def rename_profile_endpoint(name: str, body: ProfileRename):
     from hermes_cli import profiles as profiles_mod
+
+    def _run():
+        return profiles_mod.rename_profile(name, body.new_name)
+
     try:
-        path = profiles_mod.rename_profile(name, body.new_name)
+        # rename_profile() stops a running gateway through the same 10-second
+        # _stop_gateway_process() poll that delete does, then renames the
+        # profile directory, rewrites the Honcho host blocks and regenerates
+        # the wrapper script.
+        path = await asyncio.get_running_loop().run_in_executor(None, _run)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except (ValueError, FileExistsError) as e:

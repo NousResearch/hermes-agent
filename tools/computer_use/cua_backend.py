@@ -1502,7 +1502,13 @@ class _CuaDriverSession:
 
     def _restart_session_locked(self) -> None:
         """Recreate the MCP session after the daemon/stdin transport was closed.
-        Caller must hold self._lock (the reconnect-once retry path holds it)."""
+        Caller must hold self._lock (the reconnect-once retry path holds it).
+
+        When the cua-driver daemon terminates a stale session (e.g. Mac screen
+        lock / sleep), the old session ID is no longer recognised. We must mint
+        a brand-new UUID and re-register via start_session — reusing the old ID
+        silently fails because the daemon drops unknown sessions.
+        """
         if self._started:
             try:
                 self._stop_lifecycle_locked()
@@ -1512,8 +1518,18 @@ class _CuaDriverSession:
         # Clear stale capability state; the next start populates from scratch.
         self._capabilities = {}
         self._capability_version = ""
+        # CRITICAL: always generate a NEW session ID on reconnect.
+        # The old ID is dead (daemon closed it) — reusing it means every
+        # tool call silently hits an unknown session.
+        self._session_id = f"hermes-{uuid.uuid4().hex[:12]}"
+        logger.info("cua-driver reconnecting with new session: %s", self._session_id)
         self._start_lifecycle_locked()
         self._started = True
+        # Re-register the new session with cua-driver.
+        try:
+            self._session.call_tool("start_session", {"session": self._session_id})
+        except Exception as e:
+            logger.warning("cua-driver start_session after reconnect failed (continuing anonymous): %s", e)
 
     def _call_tool_via_cli(self, name: str, args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
         """Fallback transport: invoke ``cua-driver call <tool> <json>`` as a

@@ -23,6 +23,9 @@
 import { useStore } from '@nanostores/react'
 import { type ReactNode, useEffect } from 'react'
 
+import { WorkspaceWallpaperBackdrop, WorkspaceWallpaperScope } from '@/components/Backdrop'
+import { $wallpaperActive } from '@/store/wallpaper'
+
 import { useLayoutEditHotkey } from '../../edit-mode'
 import { publishWorkspaceGeometry } from '../../geometry'
 import { $layoutTree, trackActiveTreeGroup } from '../store'
@@ -37,6 +40,7 @@ import { TreeNode } from './tree-node'
 
 export function LayoutTreeRoot({ children, titlebar = false }: { children?: ReactNode; titlebar?: boolean }) {
   const tree = useStore($layoutTree)
+  const wallpaperActive = useStore($wallpaperActive)
 
   useLayoutEditHotkey(true)
   useTabKeyHints()
@@ -48,14 +52,19 @@ export function LayoutTreeRoot({ children, titlebar = false }: { children?: Reac
   useEffect(publishWorkspaceGeometry, [])
 
   return (
-    <div className="relative flex min-h-0 min-w-0 flex-1">
-      {/* THE SEAM INVARIANT: boundaries are drawn by the tree (one sash
+    <WorkspaceWallpaperScope>
+      <div
+        className="relative isolate flex min-h-0 min-w-0 flex-1"
+        data-workspace-wallpaper-active={wallpaperActive || undefined}
+      >
+        <WorkspaceWallpaperBackdrop />
+        {/* THE SEAM INVARIANT: boundaries are drawn by the tree (one sash
           hairline per seam) — content mounted in a zone must not paint its
           own edge chrome. App components (asides, the shadcn sidebar) carry
           edge borders + inset highlights for the OLD shell's geometry; this
           neutralizes all of them at the zone boundary, for every current and
           future pane, instead of per-pane class surgery. */}
-      <style>{`
+        <style>{`
         [data-tree-group] :is(aside, [data-slot=sidebar]) {
           border-left-width: 0;
           border-right-width: 0;
@@ -92,5 +101,6 @@ export function LayoutTreeRoot({ children, titlebar = false }: { children?: Reac
         </>
       )}
     </div>
+    </WorkspaceWallpaperScope>
   )
 }

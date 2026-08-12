@@ -31,6 +31,7 @@ import {
 import nodePty from 'node-pty'
 
 import { classifyActiveRuntime } from './active-runtime-state'
+import { formatDesktopLogLine } from './desktop-log-line'
 import { stopBackendChild as stopBackendChildImpl, stopBackendTreesForUpdate } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
 import { createBackendConnectionState } from './backend-connection-state'
@@ -1347,7 +1348,10 @@ function rememberLog(chunk) {
     return
   }
 
-  const lines = text.split(/\r?\n/).map(line => `[hermes] ${line}`)
+  // One timestamp per chunk: lines arriving in the same event happened
+  // at the same moment.  ISO-8601 UTC, matching agent.log/gateway.log.
+  const stamp = new Date().toISOString()
+  const lines = text.split(/\r?\n/).map(line => formatDesktopLogLine(line, stamp))
   hermesLog.push(...lines)
 
   if (hermesLog.length > 300) {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -396,6 +397,29 @@ def test_provider_boundary_payload_is_bounded_and_missing_is_safe(kanban_home, m
     payload = _kb.read_worker_provider_failure("t_boundary")
     assert len(payload["error"]) == 500
     assert _kb.read_worker_provider_failure("missing") == {}
+
+
+def test_provider_boundary_payload_force_redacts_credentials(kanban_home, monkeypatch):
+    """Provider sidecars never persist credential material, even when logging redaction is off."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_LOG_DIR", str(kanban_home / "kanban" / "logs"))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_secret_boundary")
+    token = "sk-proj-THISMUSTNOTPERSIST"
+    path = _kb.write_worker_provider_failure(
+        failure_reason="auth",
+        error=f"HTTP 401 Authorization: Bearer {token}",
+        provider=f"openai {token}",
+        model=f"model-{token}",
+    )
+
+    assert path is not None
+    raw = path and Path(path).read_text(encoding="utf-8")
+    assert token not in raw
+    payload = _kb.read_worker_provider_failure("t_secret_boundary")
+    assert token not in json.dumps(payload)
+    assert "401" in payload["error"]
+    assert "auth" == payload["failure_reason"]
 
 
 @pytest.mark.parametrize(

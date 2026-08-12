@@ -91,6 +91,7 @@ from typing import Any, Iterable, Mapping, Optional
 
 from hermes_cli.sqlite_util import add_column_if_missing as _add_column_if_missing
 from toolsets import get_toolset_names
+from agent.redact import redact_sensitive_text
 
 _log = logging.getLogger(__name__)
 
@@ -312,11 +313,27 @@ def write_worker_provider_failure(
     if not root:
         return None
     path = Path(root) / f"{task_id}.provider.json"
+    # This is a durable control-plane boundary.  It must redact regardless of
+    # the user's normal logging preference, and before truncation so a secret
+    # cannot be preserved by a shortened prefix/suffix.
+    def _safe(value: object, limit: int) -> str:
+        try:
+            original = str(value)
+            # Force-redaction's prefix matcher intentionally requires a token
+            # boundary; provider/model labels can embed a key after a hyphen.
+            # Catch that durable-boundary case before the general redactor.
+            original = re.sub(
+                r"(?i)sk-[A-Za-z0-9_-]{8,}", "«redacted-secret»", original
+            )
+            return redact_sensitive_text(original, force=True, file_read=True)[:limit]
+        except Exception:
+            return "«redacted-provider-failure»"
+
     payload = {
-        "failure_reason": str(failure_reason)[:64],
-        "error": str(error)[:500],
-        "provider": str(provider or "configured provider")[:100],
-        "model": str(model or "")[:200],
+        "failure_reason": _safe(failure_reason, 64),
+        "error": _safe(error, 500),
+        "provider": _safe(provider or "configured provider", 100),
+        "model": _safe(model or "", 200),
     }
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

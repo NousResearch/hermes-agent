@@ -50,7 +50,11 @@ export function modelOptionsQueryKey(profile: null | string | undefined, session
   return ['model-options', profileKey, sessionId || 'global'] as const
 }
 
-export function requestModelOptions({
+function hasSelectableModels(options: ModelOptionsResponse | null | undefined): boolean {
+  return options?.providers?.some(provider => (provider.models?.length ?? 0) > 0) ?? false
+}
+
+export async function requestModelOptions({
   explicitOnly = true,
   gateway,
   refresh = false,
@@ -71,7 +75,31 @@ export function requestModelOptions({
       params.explicit_only = true
     }
 
-    return gateway.request<ModelOptionsResponse>('model.options', params)
+    const gatewayOptions = await gateway.request<ModelOptionsResponse>('model.options', params)
+
+    if (hasSelectableModels(gatewayOptions)) {
+      return gatewayOptions
+    }
+
+    // A connected Desktop gateway can occasionally return only the current
+    // provider/model (or an empty provider list) while its authenticated REST
+    // catalog is already populated. Recover through the same profile-scoped
+    // endpoint Settings uses, but keep the live session selection authoritative.
+    try {
+      const restOptions = await getGlobalModelOptions({ explicitOnly, ...(refresh ? { refresh: true } : {}) })
+
+      if (hasSelectableModels(restOptions)) {
+        return {
+          ...restOptions,
+          ...(gatewayOptions?.provider ? { provider: gatewayOptions.provider } : {}),
+          ...(gatewayOptions?.model ? { model: gatewayOptions.model } : {})
+        }
+      }
+    } catch {
+      // Preserve the gateway result when the recovery path is unavailable.
+    }
+
+    return gatewayOptions
   }
 
   return getGlobalModelOptions({ explicitOnly, ...(refresh ? { refresh: true } : {}) })

@@ -16,7 +16,11 @@ describe('requestModelOptions', () => {
   })
 
   it('uses the connected gateway even before a session exists', async () => {
-    const gatewayPayload = { model: 'BeastMode', provider: 'moa', providers: [] }
+    const gatewayPayload = {
+      model: 'BeastMode',
+      provider: 'moa',
+      providers: [{ models: ['BeastMode'], name: 'Mixture of Agents', slug: 'moa' }]
+    }
 
     const gateway = {
       request: vi.fn(() => Promise.resolve(gatewayPayload))
@@ -26,6 +30,40 @@ describe('requestModelOptions', () => {
 
     expect(gateway.request).toHaveBeenCalledWith('model.options', { explicit_only: true })
     expect(getGlobalModelOptions).not.toHaveBeenCalled()
+  })
+
+  it('recovers an empty gateway catalog through profile-scoped REST without replacing the session selection', async () => {
+    const gatewayPayload = { model: 'hermes-local', provider: 'hermes-local' }
+
+    const restPayload = {
+      model: 'profile-default',
+      provider: 'openai-codex',
+      providers: [{ models: ['hermes-local'], name: 'Hermes Local vLLM', slug: 'hermes-local' }]
+    }
+
+    const gateway = {
+      request: vi.fn(() => Promise.resolve(gatewayPayload))
+    }
+
+    vi.mocked(getGlobalModelOptions).mockResolvedValueOnce(restPayload)
+
+    await expect(requestModelOptions({ gateway: gateway as never, sessionId: 'session-1' })).resolves.toEqual({
+      ...restPayload,
+      model: 'hermes-local',
+      provider: 'hermes-local'
+    })
+
+    expect(getGlobalModelOptions).toHaveBeenCalledWith({ explicitOnly: true })
+  })
+
+  it('keeps the gateway result when both catalog paths have no selectable models', async () => {
+    const gatewayPayload = { model: 'hermes-local', provider: 'hermes-local', providers: [] }
+
+    const gateway = {
+      request: vi.fn(() => Promise.resolve(gatewayPayload))
+    }
+
+    await expect(requestModelOptions({ gateway: gateway as never })).resolves.toBe(gatewayPayload)
   })
 
   it('passes the active session id and refresh flag through the gateway', async () => {
@@ -40,6 +78,7 @@ describe('requestModelOptions', () => {
       refresh: true,
       session_id: 'session-1'
     })
+    expect(getGlobalModelOptions).toHaveBeenCalledWith({ explicitOnly: true, refresh: true })
   })
 
   it('falls back to REST when no gateway is connected', async () => {

@@ -45,7 +45,18 @@ export function useModelControls({ queryClient, requestGateway }: ModelControlsO
       includeGlobal: boolean,
       profile = $activeGatewayProfile.get()
     ) => {
-      const patch = (prev: ModelOptionsResponse | undefined) => ({ ...(prev ?? {}), provider, model })
+      const patch = (prev: ModelOptionsResponse | undefined) => {
+        // Selection state can update before the catalog query has resolved.
+        // Keep that optimistic cache structurally complete; the composer
+        // interprets a response without `providers` as an empty catalog.
+        const providers = prev?.providers?.length
+          ? prev.providers
+          : provider && model
+            ? [{ models: [model], name: provider, slug: provider }]
+            : []
+
+        return { ...prev, provider, model, providers }
+      }
 
       queryClient.setQueryData<ModelOptionsResponse>(modelOptionsQueryKey(profile, sessionId), patch)
 

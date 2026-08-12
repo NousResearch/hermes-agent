@@ -54,6 +54,7 @@ def _make_dummy_env(**kwargs):
         run_as_host_user=kwargs.get("run_as_host_user", False),
         extra_args=kwargs.get("extra_args", []),
         persist_across_processes=kwargs.get("persist_across_processes", True),
+        shared_container_key=kwargs.get("shared_container_key", ""),
         shm_size=kwargs.get("shm_size", docker_env._DEFAULT_SHM_SIZE),
     )
 
@@ -713,6 +714,27 @@ def test_labels_attribute_populated_after_init(monkeypatch):
         "hermes-profile": "default",
         "hermes-egress": "off",
     }
+
+
+def test_shared_container_key_replaces_profile_identity(monkeypatch):
+    """Trusted profiles using the same explicit key share the reuse label."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "research")
+    _mock_subprocess_run(monkeypatch)
+
+    env = _make_dummy_env(task_id="abc", shared_container_key="team/workspace")
+
+    assert env._labels["hermes-profile"] == "team_workspace"
+
+
+def test_empty_shared_container_key_preserves_profile_isolation(monkeypatch):
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(docker_env, "_get_active_profile_name", lambda: "research")
+    _mock_subprocess_run(monkeypatch)
+
+    env = _make_dummy_env(task_id="abc", shared_container_key="")
+
+    assert env._labels["hermes-profile"] == "research"
 
 
 # ── Cross-process container reuse (issue #20561) ──────────────────

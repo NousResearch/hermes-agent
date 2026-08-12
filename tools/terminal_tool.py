@@ -1203,13 +1203,11 @@ def _maybe_reap_docker_orphans(container_config: Dict[str, Any]) -> None:
     max_age = lifetime * 2
 
     try:
-        from tools.environments.docker import (
-            reap_orphan_containers, _get_active_profile_name,
-        )
+        from tools.environments.docker import reap_orphan_containers, _container_identity
     except ImportError:
         return
     try:
-        profile = _get_active_profile_name()
+        profile = _container_identity(container_config.get("docker_shared_container_key", ""))
         removed = reap_orphan_containers(
             max_age_seconds=max_age, profile_filter=profile,
         )
@@ -1864,6 +1862,9 @@ def _get_env_config() -> Dict[str, Any]:
         "docker_persist_across_processes": os.getenv(
             "TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES", "true"
         ).lower() in {"true", "1", "yes"},
+        "docker_shared_container_key": os.getenv(
+            "TERMINAL_DOCKER_SHARED_CONTAINER_KEY", ""
+        ).strip(),
         # Startup orphan reaper for hermes-tagged containers left behind by
         # crashed / SIGKILL'd previous processes that bypassed atexit.
         # Conservative: only sweeps Exited containers older than 2× the
@@ -1921,6 +1922,7 @@ def _container_config_from_config(config: Dict[str, Any]) -> dict:
         "docker_shm_size": config.get("docker_shm_size", "1g"),
         "docker_network": config.get("docker_network", True),
         "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+        "docker_shared_container_key": config.get("docker_shared_container_key", ""),
         "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
     }
 
@@ -1996,6 +1998,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
                 False if session_scoped
                 else cc.get("docker_persist_across_processes", True)
             ),
+            shared_container_key=cc.get("docker_shared_container_key", ""),
             shm_size=cc.get("docker_shm_size", "1g"),
         )
         # Marker read by is_persistent_env(): a session-scoped container

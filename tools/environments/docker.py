@@ -153,6 +153,15 @@ def _get_active_profile_name() -> str:
         return "default"
 
 
+def _container_identity(shared_key: str = "") -> str:
+    """Return the profile label used for reuse and orphan reaping.
+
+    Profiles remain isolated by default. An explicit shared key lets trusted
+    profiles that intentionally share a workspace use one Docker identity.
+    """
+    return _sanitize_label_value(shared_key or _get_active_profile_name())
+
+
 def reap_orphan_containers(
     *,
     max_age_seconds: int = 600,
@@ -895,6 +904,7 @@ class DockerEnvironment(BaseEnvironment):
         extra_args: list = None,
         persist_across_processes: bool = True,
         shm_size: str = _DEFAULT_SHM_SIZE,
+        shared_container_key: str = "",
     ):
         if cwd == "~":
             cwd = "/root"
@@ -1376,9 +1386,9 @@ class DockerEnvironment(BaseEnvironment):
         #   * future cross-process reuse (`hermes-task-id`, `hermes-profile`)
         #   * operators running `docker ps --filter label=hermes-agent=1`
         # Values are limited to the safe character set defined by
-        # _sanitize_label_value(); the active Hermes profile is captured at
+        # _sanitize_label_value(); the configured reuse identity is captured at
         # container-start time and never changes for the container's lifetime.
-        profile_name = _sanitize_label_value(_get_active_profile_name())
+        profile_name = _container_identity(shared_container_key)
         task_label = _sanitize_label_value(task_id)
         label_args = [
             "--label", "hermes-agent=1",

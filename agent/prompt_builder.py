@@ -1389,6 +1389,7 @@ def _probe_remote_backend(env_type: str) -> str | None:
                 "docker_extra_args": config.get("docker_extra_args", []),
                 "docker_shm_size": config.get("docker_shm_size", "1g"),
                 "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+                "docker_shared_container_key": config.get("docker_shared_container_key", ""),
                 "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
             }
 

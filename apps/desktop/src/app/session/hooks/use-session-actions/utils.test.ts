@@ -117,6 +117,16 @@ describe('applyRuntimeInfo credential warnings', () => {
 })
 
 describe('resume turn-state reconciliation', () => {
+  beforeEach(() => {
+    setCurrentCwd('/main-repo')
+    setCurrentBranch('main')
+  })
+
+  afterEach(() => {
+    setCurrentCwd('')
+    setCurrentBranch('')
+  })
+
   it('rejects a stale active response after the same generation settles', () => {
     const initial = createClientSessionState()
 

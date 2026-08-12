@@ -561,12 +561,15 @@ def test_restart_restores_launch_and_activated_profile_once(tmp_path, monkeypatc
 
     def persist(home, delegation_id, session_key):
         monkeypatch.setenv("HERMES_HOME", str(home))
+        # Fresh timestamps: restore_undelivered_completions terminally drops
+        # replays older than its staleness cap, which epoch-0 fixtures trip.
+        now = time.time()
         record = {
             "delegation_id": delegation_id,
             "session_key": session_key,
             "origin_ui_session_id": "sid",
             "parent_session_id": None,
-            "dispatched_at": 1.0,
+            "dispatched_at": now - 60.0,
         }
         ad._persist_dispatch(record)
         event = {
@@ -575,7 +578,7 @@ def test_restart_restores_launch_and_activated_profile_once(tmp_path, monkeypatc
             "session_key": session_key,
             "origin_ui_session_id": "sid",
             "status": "completed",
-            "completed_at": 2.0,
+            "completed_at": now - 30.0,
             "summary": f"result for {session_key}",
         }
         ad._persist_completion(

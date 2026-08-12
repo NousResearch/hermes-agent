@@ -1452,6 +1452,34 @@ def _db_for_profile(profile: str | None = None):
         return None, False
 
 
+def _transfer_db_to_agent(agent, db) -> bool:
+    """Hand a DEDICATED profile handle to *agent*, which closes it on teardown.
+
+    The build sites open a per-profile ``state.db`` handle, pass it to
+    ``_make_agent``, and own it until the built agent is the one that will be
+    torn down. This marks that transfer: from here ``AIAgent.close()`` (reached
+    via :func:`_teardown_session`) releases the handle, so the caller must stop
+    closing it.
+
+    Returns True only when the transfer actually happened. It is refused when
+    *agent* is not holding *this* handle — the build failed before
+    ``_make_agent``, or the agent was given a different db — because a False
+    return is what tells the caller the handle is still its own to close.
+    Never called for the shared launch handle: that one is opened by
+    ``_get_db()``, outlives every agent, and stays at ``_owns_session_db``
+    False.
+    """
+    if agent is None or db is None:
+        return False
+    try:
+        if getattr(agent, "_session_db", None) is not db:
+            return False
+        agent._owns_session_db = True
+        return True
+    except Exception:
+        return False
+
+
 @contextlib.contextmanager
 def _profile_db(params: dict | None = None):
     """Yield the SessionDB for ``params['profile']`` (app-global remote mode).
@@ -2294,6 +2322,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
         notify_registered = False
         home_token = None
         secret_token = None
+        session_db = None
+        owns_db = False
         profile_home = current.get("profile_home")
         try:
             history_ready = current.get("resume_history_ready")
@@ -2321,7 +2351,12 @@ def _start_agent_build(sid: str, session: dict) -> None:
                 try:
                     from hermes_state import SessionDB
 
+                    # DEDICATED handle — ours until _transfer_db_to_agent hands
+                    # it to the built agent in the finally below. Every path
+                    # that leaves this build without that transfer (the except
+                    # below, and a session reaped mid-build) must close it.
                     session_db = SessionDB(db_path=Path(profile_home) / "state.db")
+                    owns_db = True
                 except Exception:
                     session_db = None
 
@@ -2465,6 +2500,18 @@ def _start_agent_build(sid: str, session: dict) -> None:
                     unregister_gateway_notify(key)
                 except Exception:
                     pass
+            # Dedicated profile handle: hand it to the agent that will actually
+            # be torn down, or close it here when no such agent exists. Both
+            # non-transfer cases are real: the except above (build raised, so
+            # nothing holds the handle) and `replaced` (the session was reaped
+            # mid-build, so this agent is discarded and _teardown_session will
+            # never reach it). Transferring to a discarded agent would leak the
+            # handle exactly as before.
+            if owns_db and session_db is not None:
+                built = None if replaced else current.get("agent")
+                if not _transfer_db_to_agent(built, session_db):
+                    with contextlib.suppress(Exception):
+                        session_db.close()
             ready.set()
 
     build_thread = threading.Thread(target=_build, daemon=True)
@@ -2571,6 +2618,23 @@ def _terminal_task_cwd(session: dict | None) -> str:
     resolution path is taken even when the dashboard entrypoint did not call
     ``apply_terminal_config_to_env`` on its own ``os.environ``.
     """
+    return _terminal_task_cwd_with_source(session)[0]
+
+
+def _terminal_task_cwd_with_source(session: dict | None) -> tuple[str, str]:
+    """Like :func:`_terminal_task_cwd` but also names the value's ORIGIN.
+
+    Returns ``(cwd, source)`` where source is:
+
+    * ``"session"`` — the workspace the user attached to THIS session
+      (``explicit_cwd``), or this session's own tracked directory.
+    * ``"process"`` — the process-global ``TERMINAL_CWD`` env var / config
+      ``terminal.cwd`` fallback.  On a shared-container backend this is the
+      normal seed; under per-session docker isolation it is a launch
+      artifact from a PREVIOUS session (the workspace picker persists it
+      process-wide) and must never become a fresh session's bind mount —
+      terminal_tool refuses ``cwd_source: "process"`` as a mount source.
+    """
     backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
     if not backend or backend == "local":
         # Fall back to config when TERMINAL_ENV is unset (dashboard/TUI process
@@ -2585,6 +2649,11 @@ def _terminal_task_cwd(session: dict | None) -> str:
             pass
 
     if backend and backend != "local":
+        # A workspace the user explicitly attached to THIS session wins over
+        # the process-global env var — the env var is whatever the LAST
+        # session's picker wrote, not this session's choice.
+        if session and session.get("explicit_cwd") and session.get("cwd"):
+            return str(session["cwd"]), "session"
         raw = os.environ.get("TERMINAL_CWD", "").strip()
         if not raw:
             try:
@@ -2594,9 +2663,13 @@ def _terminal_task_cwd(session: dict | None) -> str:
             except Exception:
                 raw = ""
         if raw and raw not in {".", "auto", "cwd"}:
-            return raw
+            return raw, "process"
+        if backend == "ssh":
+            return "~", "process"
 
-    return _session_cwd(session)
+    if session and session.get("cwd"):
+        return str(session["cwd"]), "session"
+    return _completion_cwd(), "process"
 
 
 # Git working-tree probing (run git, resolve roots, fold worktrees) lives in a
@@ -2679,6 +2752,27 @@ def _heal_dead_cwd(cwd: str) -> str:
 def _is_local_terminal_backend() -> bool:
     backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
     return not backend or backend == "local"
+
+
+def _effective_terminal_backend() -> str:
+    """Active terminal backend name (``local``, ``docker``, ``ssh``, ...).
+
+    ``TERMINAL_ENV`` is authoritative when set (launchers bridge
+    ``terminal.backend`` into env at startup). Desktop/TUI in-process gateways
+    skip that bridge, so fall back to the ``terminal.backend`` config key —
+    the same rule ``_terminal_task_cwd`` uses.
+    """
+    backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
+    if not backend or backend == "local":
+        try:
+            terminal_cfg = _load_cfg().get("terminal", {})
+            if isinstance(terminal_cfg, dict):
+                cfg_backend = str(terminal_cfg.get("backend") or "").strip().lower()
+                if cfg_backend and cfg_backend != "local":
+                    backend = cfg_backend
+        except Exception:
+            pass
+    return backend or "local"
 
 
 def _display_session_cwd(session: dict | None) -> str:
@@ -2812,8 +2906,9 @@ def _register_session_cwd(session: dict | None) -> None:
     try:
         from tools.terminal_tool import register_task_env_overrides
 
+        cwd, cwd_source = _terminal_task_cwd_with_source(session)
         register_task_env_overrides(
-            session["session_key"], {"cwd": _terminal_task_cwd(session)}
+            session["session_key"], {"cwd": cwd, "cwd_source": cwd_source}
         )
     except Exception:
         pass
@@ -3289,10 +3384,18 @@ def _apply_managed(cfg: dict) -> dict:
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_mtime, _cfg_path
 
-    from hermes_cli.config import atomic_config_write
+    from utils import atomic_roundtrip_yaml_save
 
     path = _hermes_home / "config.yaml"
-    atomic_config_write(path, cfg)
+    # Comment-, ordering-, and Unicode-preserving full-state write.
+    # Replaces the previous `yaml.safe_dump(cfg, f)` (and later
+    # `atomic_config_write`, which is not comment-preserving) which clobbered
+    # the user's hand-written config every time we touched a single setting
+    # (top-level keys reordered alphabetically, comments dropped, kaomoji
+    # mangled to \\uXXXX escapes). Fails closed on an unreadable existing
+    # config.yaml the same way atomic_config_write does (see
+    # atomic_roundtrip_yaml_save's require_readable_config_before_write call).
+    atomic_roundtrip_yaml_save(path, cfg)
     with _cfg_lock:
         _cfg_cache = copy.deepcopy(cfg)
         _cfg_path = path
@@ -5518,16 +5621,19 @@ def _probe_config_health(cfg: dict) -> str:
     agent_cfg = cfg.get("agent")
     if isinstance(display_cfg, dict):
         personality = str(display_cfg.get("personality", "") or "").strip().lower()
-        if (
-            personality
-            and personality not in {"default", "none", "neutral"}
-            and isinstance(agent_cfg, dict)
-            and agent_cfg.get("personalities") is None
-        ):
-            warnings.append(
-                "`display.personality` is set but `agent.personalities` is empty/null; "
-                "personality overlay will be skipped."
-            )
+        if personality and personality not in {"default", "none", "neutral"}:
+            try:
+                from hermes_cli.personality import available_personalities
+
+                if personality not in available_personalities(cfg):
+                    warnings.append(
+                        f"`display.personality: {personality}` does not match any "
+                        "built-in or `agent.personalities` entry; personality "
+                        "overlay will be skipped."
+                    )
+            except Exception:
+                pass
+    _ = agent_cfg  # retained for shape parity; built-ins exist without config
     return " ".join(warnings).strip()
 
 
@@ -5673,6 +5779,7 @@ def _session_info(
         "cwd": cwd,
         "branch": _git_branch_for_cwd(cwd),
         "project": _project_info_for_cwd(cwd),
+        "terminal_backend": _effective_terminal_backend(),
         "personality": str(personality or ""),
         "running": bool(turn_state["running"]),
         "turn_started_at": turn_started_at,
@@ -5928,11 +6035,18 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
     if _tool_progress_enabled(sid) or _tool_lifecycle_required_for_ui(name):
-        payload = {
+        payload: dict[str, object] = {
             "tool_id": tool_call_id,
             "name": name,
             "context": _tool_ctx(name, args),
         }
+        # The desktop renders the expanded tool row (the `$` transcript) from
+        # the args of the part, and `context` is an 80-char display preview.
+        # tool.complete already ships full args to every client. When
+        # tool.start ships them too, the expanded row is complete while the
+        # tool runs, at the cost of one duplicate transient payload per call.
+        if args:
+            payload["args"] = args
         if _session_verbose(sid):
             args_text = _tool_args_text(args)
             if args_text:
@@ -6442,60 +6556,51 @@ def _wire_callbacks(sid: str):
 
 
 def _render_personality_prompt(value) -> str:
-    if isinstance(value, dict):
-        parts = [value.get("system_prompt", "")]
-        if value.get("tone"):
-            parts.append(f'Tone: {value["tone"]}')
-        if value.get("style"):
-            parts.append(f'Style: {value["style"]}')
-        return "\n".join(p for p in parts if p)
-    return str(value)
+    """Delegates to hermes_cli.personality (single owner of rendering)."""
+    from hermes_cli.personality import render_personality_prompt
+
+    return render_personality_prompt(value)
 
 
 def _available_personalities(cfg: dict | None = None) -> dict:
-    try:
-        from cli import load_cli_config
+    """Built-ins + user overrides, via hermes_cli.personality (single owner)."""
+    from hermes_cli.personality import available_personalities
 
-        return (load_cli_config().get("agent") or {}).get("personalities", {}) or {}
-    except Exception:
-        try:
-            from hermes_cli.config import load_config as _load_full_cfg
-
-            return (_load_full_cfg().get("agent") or {}).get("personalities", {}) or {}
-        except Exception:
-            cfg = cfg or _load_cfg()
-            return (cfg.get("agent") or {}).get("personalities", {}) or {}
+    if cfg is None:
+        cfg = _load_cfg()
+    return available_personalities(cfg)
 
 
 def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str]:
-    raw = str(value or "").strip()
-    name = raw.lower()
-    if not name or name in {"none", "default", "neutral"}:
-        return "", ""
+    """Resolve a requested personality against _available_personalities.
 
+    Same contract as hermes_cli.personality.resolve_personality — (name,
+    prompt) or ValueError — but resolves through the module-level
+    _available_personalities so tests (and future gateway-side overrides)
+    keep a single patch point.
+    """
+    from hermes_cli.personality import normalize_personality_name
+
+    name = normalize_personality_name(value)
+    if not name:
+        return "", ""
     personalities = _available_personalities(cfg)
     if name not in personalities:
-        names = sorted(personalities)
-        available = ", ".join(f"`{n}`" for n in names)
-        base = f"Unknown personality: `{raw}`."
-        if available:
-            base += f"\n\nAvailable: `none`, {available}"
-        else:
-            base += "\n\nNo personalities configured."
-        raise ValueError(base)
-
+        names = ", ".join(f"`{n}`" for n in sorted(personalities))
+        raise ValueError(
+            f"Unknown personality: `{str(value).strip()}`.\n\nAvailable: `none`, {names}"
+        )
     return name, _render_personality_prompt(personalities[name])
 
 
 def _prompt_text(value) -> str:
-    """Normalize config prompt values from YAML before handing them to AIAgent."""
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value.strip()
-    if isinstance(value, list):
-        return "\n".join(str(item).strip() for item in value if str(item).strip())
-    return str(value).strip()
+    """Normalize config prompt values from YAML before handing them to AIAgent.
+
+    Delegates to hermes_cli.personality (single owner).
+    """
+    from hermes_cli.personality import prompt_text
+
+    return prompt_text(value)
 
 
 def _apply_personality_to_session(
@@ -6995,8 +7100,9 @@ def _make_agent(
         pass
 
     cfg = _load_cfg()
-    agent_cfg = cfg.get("agent") or {}
-    system_prompt = _prompt_text(agent_cfg.get("system_prompt", ""))
+    from hermes_cli.config import resolve_ephemeral_system_prompt_from_config
+
+    system_prompt = resolve_ephemeral_system_prompt_from_config(cfg)
     startup_skills = _parse_tui_skills_env()
     if startup_skills:
         from agent.skill_commands import build_preloaded_skills_prompt
@@ -7638,9 +7744,15 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             tc_info = tool_call_args.get(tc_id) if tc_id else None
             name = (tc_info[0] if tc_info else None) or m.get("tool_name") or "tool"
             args = (tc_info[1] if tc_info else None) or {}
-            messages.append(
-                {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
-            )
+            tool_msg = {"role": "tool", "name": name, "context": _tool_ctx(name, args)}
+            # This is the display projection, so keep it faithful. `context`
+            # is an 80-char preview for collapsed row titles. A renderer that
+            # shows the full call (the expanded `$` transcript in the desktop)
+            # rebuilds it from args. When only the preview shipped, that
+            # truncation was permanent.
+            if args:
+                tool_msg["args"] = args
+            messages.append(tool_msg)
             continue
         # An assistant turn may carry only reasoning/thinking content with no
         # visible text (extended-thinking turns, thinking-only recovery
@@ -8438,6 +8550,22 @@ def _emit_terminal_turn_error(sid: str, session: dict, error: Any) -> None:
     _emit("message.complete", sid, payload)
 
 
+def _restore_agent_history_after_turn_error(session: dict, agent) -> bool:
+    """Keep a failed turn's working transcript in the gateway session.
+
+    ``AIAgent`` persists its working messages independently of the gateway's
+    history snapshot. If the turn raises after that persistence, the next
+    prompt must see the working transcript instead of the pre-turn snapshot.
+    """
+    agent_messages = getattr(agent, "_session_messages", None)
+    if not isinstance(agent_messages, list):
+        return False
+    with session["history_lock"]:
+        session["history"] = list(agent_messages)
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+    return True
+
+
 def _queued_prompt_snapshot(session: dict) -> dict | None:
     """Return the accepted next-turn prompt without its transport handle.
 
@@ -8739,6 +8867,9 @@ def _fallback_session_info(
     agent = session.get("agent")
     if agent is not None:
         info = _session_info(agent)
+        # Public turn state rides on top of any _session_info shape — tests
+        # monkeypatch _session_info with bare lambdas, so stamp here rather
+        # than threading kwargs through the call.
         info.update(
             {
                 "running": bool(turn_state["running"]),
@@ -8748,9 +8879,17 @@ def _fallback_session_info(
             }
         )
         return info
-    cwd = _default_session_cwd()
+    # The SESSION's own workspace, not the gateway's launch directory. Reporting
+    # `_default_session_cwd()` here told a lazily-resumed session's client that
+    # its workspace was wherever the gateway process happened to start, so the
+    # desktop Files pane painted the wrong project even after the renderer
+    # rebound correctly (#71254). `branch` is always emitted ("" outside a git
+    # repo) so a client can clear a stale label instead of retaining it — the
+    # same contract `_lazy_session_info` above already follows.
+    cwd = _session_cwd(session)
     return {
         "cwd": cwd,
+        "branch": _git_branch_for_cwd(cwd),
         "project": _project_info_for_cwd(cwd),
         "lazy": True,
         "model": _resolve_model(),
@@ -10237,6 +10376,9 @@ def _notification_poller_loop(
             _emitted.add(dedup_key)
         if outcome == "busy":
             process_registry.completion_queue.put(event)
+            # Requeueing makes the queue non-empty again, so without breaking
+            # here the drain spins on the same busy-owned event forever.
+            break
 
     for event in deferred:
         process_registry.completion_queue.put(event)
@@ -10365,6 +10507,128 @@ def _start_notification_poller(sid: str, session: dict) -> threading.Event:
     _notification_pollers.append((stop, t))
     t.start()
     return stop
+
+
+def _hud_surface_note(session: dict) -> str:
+    """The HUD-mode note for this turn, or "" when it was not typed there."""
+    if session.get("client_surface") != "hud":
+        return ""
+    from agent.prompt_builder import hud_surface_note
+
+    return hud_surface_note(getattr(session.get("agent"), "valid_tool_names", None))
+
+
+def _prepend_note(run_message: Any, note: str) -> Any:
+    """Prefix a per-turn note onto the MODEL INPUT, leaving the prompt alone.
+
+    Everything the model needs to know about the turn but the user did not
+    type — an interrupted reply, reactions, the surface they typed into —
+    arrives this way. persist_user_message keeps the clean prompt, so no
+    scaffolding reaches the transcript, and annotating the NEW turn never
+    rewrites an already-sent message, so the cached prefix survives.
+    """
+    if not note:
+        return run_message
+    if isinstance(run_message, str):
+        return f"{note}\n\n{run_message}"
+    if isinstance(run_message, list):
+        return [{"type": "text", "text": note}, *run_message]
+    return run_message
+
+
+_GOAL_COMPRESSION_RECOVERY_ATTEMPTS = "_goal_compression_recovery_attempts"
+_GOAL_COMPRESSION_RECOVERY_LIMIT = 1
+
+
+def _is_successful_goal_turn(result: Any, status: str, raw: Any) -> bool:
+    """Return whether a turn produced a real response the goal judge can use."""
+    return bool(
+        status == "complete"
+        and isinstance(raw, str)
+        and raw.strip()
+        and not (isinstance(result, dict) and result.get("failed"))
+        and not (isinstance(result, dict) and result.get("completed") is False)
+    )
+
+
+def _plan_goal_compression_recovery(
+    session: dict,
+    result: Any,
+    *,
+    status: str,
+    raw: Any,
+) -> tuple[str | None, str | None]:
+    """Plan a bounded active-goal retry after compression exhaustion.
+
+    Compression exhaustion is a failed turn, so it must not be sent to the
+    goal judge or consume the goal's turn budget.  One fresh continuation turn
+    is allowed.  If that turn also exhausts compression, pause the goal rather
+    than spinning until an arbitrary user message happens to wake it up.
+
+    Returns ``(continuation_prompt, status_notice)``.  Sessions without an
+    active goal retain the existing error-only behavior.
+    """
+    compression_exhausted = bool(
+        isinstance(result, dict) and result.get("compression_exhausted")
+    )
+    if not compression_exhausted:
+        if _is_successful_goal_turn(result, status, raw):
+            session.pop(_GOAL_COMPRESSION_RECOVERY_ATTEMPTS, None)
+        return None, None
+
+    from hermes_cli.goals import GoalManager
+
+    sid_key = str(session.get("session_key") or "")
+    if not sid_key:
+        return None, None
+
+    try:
+        goals_cfg = _load_cfg().get("goals") or {}
+        goal_max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+    except Exception:
+        goal_max_turns = 20
+
+    goal_mgr = GoalManager(
+        session_id=sid_key,
+        default_max_turns=goal_max_turns,
+    )
+    if not goal_mgr.is_active():
+        session.pop(_GOAL_COMPRESSION_RECOVERY_ATTEMPTS, None)
+        return None, None
+
+    goal_created_at = float(getattr(goal_mgr.state, "created_at", 0.0) or 0.0)
+    recovery_state = session.get(_GOAL_COMPRESSION_RECOVERY_ATTEMPTS)
+    attempts = 0
+    if (
+        isinstance(recovery_state, dict)
+        and recovery_state.get("goal_created_at") == goal_created_at
+        and recovery_state.get("goal") == getattr(goal_mgr.state, "goal", "")
+    ):
+        try:
+            attempts = int(recovery_state.get("attempts", 0) or 0)
+        except (TypeError, ValueError):
+            attempts = 0
+
+    continuation_prompt = goal_mgr.next_continuation_prompt()
+    if attempts < _GOAL_COMPRESSION_RECOVERY_LIMIT and continuation_prompt:
+        session[_GOAL_COMPRESSION_RECOVERY_ATTEMPTS] = {
+            "goal_created_at": goal_created_at,
+            "goal": getattr(goal_mgr.state, "goal", ""),
+            "attempts": attempts + 1,
+        }
+        return (
+            continuation_prompt,
+            "Context compression was exhausted. Retrying the active goal once.",
+        )
+
+    goal_mgr.pause(reason="context compression exhausted twice consecutively")
+    # A later explicit /goal resume gets a fresh bounded recovery cycle.
+    session.pop(_GOAL_COMPRESSION_RECOVERY_ATTEMPTS, None)
+    return (
+        None,
+        "Goal paused after context compression was exhausted twice. "
+        "Run /compress, then /goal resume to continue.",
+    )
 
 
 def _set_turn_origin_locked(session: dict, origin: TurnOrigin) -> int:
@@ -11079,7 +11343,6 @@ def _start_usage_ticker(
     thread.start()
     return stop, thread
 
-
 def _run_prompt_submit(
     rid,
     sid: str,
@@ -11399,21 +11662,14 @@ def _run_prompt_submit(
             from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE, take_speech_interrupted
 
             if take_speech_interrupted():
-                if isinstance(run_message, str):
-                    run_message = f"{SPEECH_INTERRUPTED_NOTE}\n\n{run_message}"
-                elif isinstance(run_message, list):
-                    run_message = [{"type": "text", "text": SPEECH_INTERRUPTED_NOTE}, *run_message]
+                run_message = _prepend_note(run_message, SPEECH_INTERRUPTED_NOTE)
 
-            # Reactions the user added since the last turn ride the MODEL INPUT
-            # only (same enrichment channel as the speech-interrupted note);
-            # persist_user_message below stays the clean prompt, so no
-            # scaffolding reaches the transcript. Cache-safe: annotating the
-            # NEW turn never rewrites an already-sent message.
-            if reaction_notes := _pending_reaction_notes(session):
-                if isinstance(run_message, str):
-                    run_message = f"{reaction_notes}\n\n{run_message}"
-                elif isinstance(run_message, list):
-                    run_message = [{"type": "text", "text": reaction_notes}, *run_message]
+            # Reactions the user added since the last turn.
+            run_message = _prepend_note(run_message, _pending_reaction_notes(session))
+
+            # Which window the message was typed into. HUD mode is per-turn
+            # state, so it cannot live in the (byte-stable) system prompt.
+            run_message = _prepend_note(run_message, _hud_surface_note(session))
 
             def _stream(delta):
                 with session["history_lock"]:
@@ -11469,6 +11725,14 @@ def _run_prompt_submit(
             if display_kind and "persist_user_display_kind" in _run_params:
                 run_kwargs["persist_user_display_kind"] = display_kind
                 run_kwargs["persist_user_display_metadata"] = display_metadata
+            # Auto-titling now fires inside the turn prologue (shared by every
+            # surface). Hand the agent this session's live-rename hook so the
+            # sidebar repaints the moment a title lands, rather than waiting
+            # for the next list refresh.
+            _title_key = session.get("session_key") or sid
+            agent._on_session_title = lambda t, _src, _k=_title_key: _emit(
+                "session.title", sid, {"session_id": _k, "title": t}
+            )
             if claimed_notification_ids and "deferred_notification_ids" in _run_params:
                 run_kwargs["deferred_notification_ids"] = sorted(
                     claimed_notification_ids
@@ -11881,55 +12145,6 @@ def _run_prompt_submit(
                     # Transient DB failure — keep pending_title for retry.
                     pass
 
-            if (
-                status == "complete"
-                and isinstance(raw, str)
-                and raw.strip()
-                and isinstance(text, str)
-                and text.strip()
-            ):
-                try:
-                    from agent.title_generator import maybe_auto_title
-
-                    _title_key = session.get("session_key") or sid
-                    # Snapshot the runtime identity; the validator lets the
-                    # background titler skip its LLM call if the session's
-                    # model changed before it fires (#19027).
-                    _title_model = getattr(agent, "model", None)
-                    _title_provider = getattr(agent, "provider", None)
-                    maybe_auto_title(
-                        _get_db(),
-                        _title_key,
-                        persist_user_message
-                        if persist_user_message is not None
-                        else text,
-                        raw,
-                        session.get("history", []),
-                        # Keep auxiliary auto-detection aligned with the active
-                        # Desktop/Webapp session. Without this, providers that
-                        # rely on runtime auth (for example OpenAI Codex OAuth)
-                        # are skipped and the new session remains untitled.
-                        main_runtime={
-                            "model": getattr(agent, "model", None),
-                            "provider": getattr(agent, "provider", None),
-                            "base_url": getattr(agent, "base_url", None),
-                            "api_key": getattr(agent, "api_key", None),
-                            "api_mode": getattr(agent, "api_mode", None),
-                        },
-                        runtime_validator=lambda: (
-                            getattr(agent, "model", None) == _title_model
-                            and getattr(agent, "provider", None) == _title_provider
-                        ),
-                        # Push the generated title live so the sidebar renames
-                        # without waiting for the next list refresh (the titler
-                        # runs async, after this turn's refresh already fired).
-                        title_callback=lambda t, _k=_title_key: _emit(
-                            "session.title", sid, {"session_id": _k, "title": t}
-                        ),
-                    )
-                except Exception:
-                    pass
-
             # Voice TTS fallback: when the streaming pipeline couldn't start
             # (no provider / missing deps probed at turn start), speak the
             # final text whole (cli.py:_voice_speak_response parity). The
@@ -11969,6 +12184,12 @@ def _run_prompt_submit(
             print(
                 f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True
             )
+            # The agent persists its working transcript on normal finalization,
+            # but an exception in that finalizer can otherwise leave the
+            # gateway's separate in-memory history at the turn-start snapshot.
+            # Keep the partial turn available to the next prompt; the durable
+            # inflight record still carries the recoverable error state.
+            _restore_agent_history_after_turn_error(session, agent)
             try:
                 # Close the turn with the same terminal error frame shape as
                 # the returned-error path (uniform client handling), retaining
@@ -12293,7 +12514,19 @@ def _attachment_ref_path(session: dict, target: Path) -> str:
 
 
 def _desktop_attachment_dir(session: dict) -> Path:
-    root = Path(_session_cwd(session)).resolve() / ".hermes" / "desktop-attachments"
+    """Resolve the file-attachment staging dir against the session's effective home.
+
+    Anchored on the session profile's ``attachments/`` dir (same rule as
+    ``_session_images_dir``): ``file.attach`` runs BEFORE ``prompt.submit``
+    installs the session's profile HERMES_HOME override, while the docker/ssh
+    sandbox mounts are resolved against the *session profile's* home at run
+    time — so the staged file must land where the bind mount points, or the
+    container can never see it (#76577). ``attachments/`` is registered in
+    ``tools.credential_files._CACHE_DIRS`` and auto-mounted into containers.
+    """
+    profile_home = session.get("profile_home")
+    base = Path(profile_home) if profile_home else _hermes_home
+    root = base / "attachments"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -12373,10 +12606,11 @@ def _stage_session_file_attachment(
       1. The path resolves to a file already INSIDE the session workspace — use
          it as-is (no copy, ``uploaded=False``).
       2. The path resolves to a gateway-visible file OUTSIDE the workspace — copy
-         it into ``.hermes/desktop-attachments/`` so the ``@file:`` ref resolves.
+         it into the session home's ``attachments/`` dir (bind-mounted into
+         container backends) so the ``@file:`` ref resolves inside the sandbox.
       3. The path doesn't exist on the gateway (the common remote case: it's a
          path on the CLIENT's disk) — decode the uploaded ``data_url`` bytes and
-         write them into ``.hermes/desktop-attachments/``.
+         write them into the session home's ``attachments/`` dir.
 
     Returns ``(stored_path, uploaded)``.
     """
@@ -13107,8 +13341,12 @@ def _(rid, params: dict) -> dict:
             elif key == "personality":
                 sid_key = params.get("session_id", "")
                 pname, new_prompt = _validate_personality(str(value or ""), cfg)
-                _write_config_key("display.personality", pname)
-                _write_config_key("agent.system_prompt", new_prompt)
+                # Personality text is an in-session overlay. Persistence goes
+                # through hermes_cli.personality (single owner) and never
+                # touches the user-owned global system prompt.
+                from hermes_cli.personality import persist_personality
+
+                persist_personality(pname)
                 nv = str(value or "none")
                 history_reset, info = _apply_personality_to_session(
                     sid_key, session, new_prompt, pname
@@ -13293,20 +13531,41 @@ def _(rid, params, pdb, conn) -> dict:
     return _ok(rid, {"project": proj.to_dict() if proj else None, "cwd": cwd, "branch": _git_branch_for_cwd(cwd)})
 
 
+def _non_workspace_dirs() -> set[str]:
+    """Directories that are never a workspace, whichever tier proposes them.
+
+    The filesystem root, the user's home, and the directory homes live in —
+    ``/home`` on Linux, ``/Users`` on macOS, ``C:\\Users`` on Windows. Both
+    POSIX spellings are excluded on every host because both are reachable as a
+    cwd anywhere: macOS ships an empty ``/home`` autofs stub, and a container or
+    remote shell hands back Linux paths. Promoting one of these mints a
+    catch-all project that swallows unplaced sessions, and ``/home`` in
+    particular renders as a second row reading "home" next to the Home bucket.
+    """
+    home = os.path.realpath(os.path.expanduser("~"))
+    candidates = (os.sep, home, os.path.dirname(home), "/home", "/Users")
+
+    return {os.path.normcase(os.path.realpath(path)) for path in candidates if path}
+
+
 def _is_repo_junk(root: str) -> bool:
-    """A git root we never auto-surface as a project: the bare home dir or
-    anything under HERMES_HOME (~/.hermes by default) — config/sessions/skills,
-    not a workspace. User-created projects pointing there are still honored."""
+    """A git root we never auto-surface as a project: a non-workspace dir (see
+    :func:`_non_workspace_dirs`) or anything under HERMES_HOME (~/.hermes by
+    default) — config/sessions/skills, not a workspace. User-created projects
+    pointing there are still honored."""
     if not root:
         return True
 
     from hermes_constants import get_hermes_home
 
     real = os.path.realpath(root)
-    home = os.path.realpath(os.path.expanduser("~"))
     hermes_home = os.path.realpath(str(get_hermes_home()))
 
-    return real == home or real == hermes_home or real.startswith(hermes_home + os.sep)
+    return (
+        os.path.normcase(real) in _non_workspace_dirs()
+        or real == hermes_home
+        or real.startswith(hermes_home + os.sep)
+    )
 
 
 def _is_session_cwd_junk(cwd: str) -> bool:
@@ -13314,8 +13573,9 @@ def _is_session_cwd_junk(cwd: str) -> bool:
 
     Unlike discovered git roots, an explicitly selected descendant of
     HERMES_HOME may be an intentional prose/data workspace. The pre-Projects
-    desktop surfaced every such cwd, so exclude only the two broad defaults
-    that would create catch-all projects.
+    desktop surfaced every such cwd, so exclude only the broad defaults that
+    would create catch-all projects: HERMES_HOME itself and the dirs in
+    :func:`_non_workspace_dirs`.
     """
     if not cwd:
         return True
@@ -13323,9 +13583,8 @@ def _is_session_cwd_junk(cwd: str) -> bool:
     from hermes_constants import get_hermes_home
 
     real = os.path.normcase(os.path.realpath(cwd))
-    home = os.path.normcase(os.path.realpath(os.path.expanduser("~")))
     hermes_home = os.path.normcase(os.path.realpath(str(get_hermes_home())))
-    return real == home or real == hermes_home
+    return real in _non_workspace_dirs() or real == hermes_home
 
 
 def _repo_discovery_policy(raw: dict | None = None) -> dict:
@@ -13622,6 +13881,10 @@ def _project_tree_inputs(
         include_children=False,
         exclude_sources=_PROJECT_TREE_EXCLUDED_SOURCES,
         include_archived=False,
+        # `_project_tree_row` keeps ~18 fields and drops the rest, so selecting
+        # the system-prompt blob only to discard it costs tens of MB of B-tree
+        # reads per build on a long-lived database.
+        compact_rows=True,
     )
     sessions = [_project_tree_row(r) for r in rows]
     # Parallel-warm the git cache so build_tree's resolver reads it instead of
@@ -13687,6 +13950,13 @@ def _build_project_tree(
     _DIR_EXISTS_CACHE.clear()
     sessions, projects, discovered, active_id = _project_tree_inputs(
         db, session_limit, include_discovered=include_discovered
+    )
+    # build_tree resolves every declared project folder and every discovered
+    # repo root too, and those paths are not session cwds — without this they
+    # are the one part of the build still probing git one directory at a time.
+    git_probe.warm_roots(
+        [str(f.get("path") or "") for p in projects for f in (p.get("folders") or [])]
+        + [str(r.get("root") or "") for r in discovered]
     )
     tree = project_tree.build_tree(
         projects,
@@ -13883,6 +14153,7 @@ def _rank_slash_completions(
     origin_of,
     *,
     browsing: bool,
+    score_of=None,
 ) -> list[dict]:
     """Rank and bound slash completions the way the menu should read.
 
@@ -13891,6 +14162,12 @@ def _rank_slash_completions(
     block is reordered, most-used first and A-Z within a tie, so the handful
     of skills someone invokes daily lead the ones that shipped with Hermes
     and were never opened.
+
+    ``score_of`` (optional) is the fuzzy-match scorer from
+    :func:`tui_gateway.slash_fuzzy.fuzzy_rank_slash_items` — when a typed
+    query produced scores, they lead the skill sort so a name match beats a
+    description match before usage breaks ties. Commands arrive already
+    score-sorted and keep their order either way.
 
     The limit is spent PER KIND rather than on one flat truncation. A flat
     cut is positional, not editorial: the completer emits every registry
@@ -13918,7 +14195,12 @@ def _rank_slash_completions(
             if origin_of(name_of(item)) != "bundled" or usage(name_of(item)) > 0
         ]
 
-    skills.sort(key=lambda item: (-usage(name_of(item)), name_of(item)))
+    if score_of is not None:
+        skills.sort(
+            key=lambda item: (score_of(item), -usage(name_of(item)), name_of(item))
+        )
+    else:
+        skills.sort(key=lambda item: (-usage(name_of(item)), name_of(item)))
 
     return commands[:_SLASH_COMPLETION_LIMIT] + skills[:_SLASH_COMPLETION_LIMIT]
 
@@ -14588,6 +14870,12 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             broadcast_session_info()
         elif name == "personality" and arg and agent:
             pname, new_prompt = _validate_personality(arg, _load_cfg())
+            # Persist through the single owner so this surface can never
+            # drift from the others (the old TUI slash path applied the
+            # overlay in-session but skipped persistence entirely).
+            from hermes_cli.personality import persist_personality
+
+            persist_personality(pname)
             _apply_personality_to_session(sid, session, new_prompt, pname)
         elif name == "prompt" and agent:
             cfg = _load_cfg()

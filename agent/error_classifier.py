@@ -388,6 +388,15 @@ _INVALID_MESSAGE_BODY_PATTERNS = [
     "text content blocks must be non-empty",
     "content field is required",
     "messages: at least one message is required",
+    # Qwen / vLLM chat templates raise this when the request has no surviving
+    # non-empty user turn (oversized session truncation, compression that
+    # dropped the only user message, or a resumed lineage that opens with
+    # assistant/tool). Deterministic — compression cannot invent a user
+    # query the template already rejected. Fail fast as format_error so we
+    # do not thrash the compression loop or mis-route into llama.cpp
+    # grammar recovery when local engines wrap the raise_exception as
+    # applyPromptTemplate / "Unable to generate parser for this template".
+    "no user query found",
 ]
 
 # Request-validation patterns — the request is malformed and will fail
@@ -804,16 +813,26 @@ def classify_api_error(
     # recognizable phrases; on match we strip ``pattern``/``format`` from
     # ``self.tools`` in the retry loop and retry once. Cloud providers are
     # unaffected — they accept these keywords and we never hit this branch.
+    #
+    # Exclude Qwen/vLLM template raise_exception("No user query found…")
+    # wrapped by some local engines as applyPromptTemplate / "Unable to
+    # generate parser for this template". That is a poisoned transcript
+    # shape (handled via _INVALID_MESSAGE_BODY_PATTERNS → format_error),
+    # not a tool-schema grammar rejection — matching it here strips
+    # pattern/format keywords and retries uselessly while the real fix
+    # is /new (or a successful compression that preserves a user turn).
+    _llama_cpp_grammar_hit = (
+        "error parsing grammar" in error_msg
+        or "json-schema-to-grammar" in error_msg
+        or (
+            "unable to generate parser" in error_msg
+            and "template" in error_msg
+        )
+    )
     if (
         status_code == 400
-        and (
-            "error parsing grammar" in error_msg
-            or "json-schema-to-grammar" in error_msg
-            or (
-                "unable to generate parser" in error_msg
-                and "template" in error_msg
-            )
-        )
+        and _llama_cpp_grammar_hit
+        and "no user query found" not in error_msg
     ):
         return _result(
             FailoverReason.llama_cpp_grammar_pattern,

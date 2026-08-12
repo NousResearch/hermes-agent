@@ -35,7 +35,9 @@ describe("createPtyCompositionForwarder", () => {
 
     forwarder.onCompositionEnd("ä");
     forwarder.noteTerminalData("x");
-    vi.runAllTimers();
+    vi.advanceTimersByTime(15);
+    expect(send).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
 
     expect(send).toHaveBeenCalledExactlyOnceWith("ä");
   });

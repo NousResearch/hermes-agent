@@ -7606,7 +7606,16 @@ def _get_cached_client(
                 # This concurrently built loser was never exposed to a caller,
                 # so it is safe to close immediately.
                 _close_cached_client(built_client)
-    return client, model or default_model
+    # Apply the SAME slash-compat guard the cache-hit paths above use. Without
+    # this the cold path (cache miss) returns the caller's raw ``model`` while
+    # a warm path returns ``_compat_model(...)`` for the identical arguments —
+    # so the FIRST auxiliary call with a namespaced id like
+    # ``anthropic/claude-haiku-4-5`` sends it un-stripped to a provider that
+    # does not accept vendor-prefixed ids (404 "model not found"), and every
+    # later call silently succeeds. ``_compat_model`` still honors caller-wins
+    # for clients that DO accept slash ids (OpenRouter, or a default that is
+    # itself namespaced), so legitimate aggregator slugs are untouched.
+    return client, _compat_model(client, model, default_model)
 
 
 # Aliases that target direct REST APIs not modeled as first-class providers

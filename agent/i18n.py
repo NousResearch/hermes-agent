@@ -120,6 +120,7 @@ GATEWAY_MESSAGE_CATEGORIES: dict[str, str] = {
     "gateway.kanban_crashed": "info",
     "gateway.kanban_gave_up": "info",
     "gateway.kanban_timed_out": "info",
+    "gateway.kanban_review_requested": "info",
     "gateway.compression_aux_unavailable": "info",
     "gateway.compression_no_provider": "info",
     "gateway.compress_aux_model_failed": "info",

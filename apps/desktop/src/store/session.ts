@@ -9,6 +9,8 @@ import { persistBoolean, persistString, storedBoolean, storedString } from '@/li
 import { syncCronModelImpactConnection } from '@/store/cron-model-impact-scope'
 import type { SessionInfo, UsageStats } from '@/types/hermes'
 
+import { clearUnreadOnOpen } from './session-unread-remote'
+
 type Updater<T> = T | ((current: T) => T)
 export type ComposerModelSource = '' | 'default' | 'manual'
 
@@ -682,7 +684,9 @@ export const setActiveSessionStoredIdRotation = (next: Updater<ActiveSessionStor
 // in session-unread.ts, which persists explicit finish markers + per-session
 // "seen message_count" watermarks and rebuilds this atom from them on every
 // list refresh — so the green dot survives an app restart, and a session that
-// finished while the app was CLOSED still comes up unread. Written by
+// finished while the app was CLOSED still comes up unread. The explicit
+// Mark-as-unread toggle rides the BACKEND watermark instead
+// (SessionDB.set_session_read, session-unread-remote.ts). Written by
 // session-states.ts (live busy→idle edge), cleared here on session open.
 export const $unreadFinishedSessionIds = atom<string[]>([])
 
@@ -709,6 +713,11 @@ export const setSelectedStoredSessionId = (next: Updater<string | null>) => {
 
   if (id) {
     markSessionRead(id)
+  }
+
+  // ...and the persisted watermark flag, when the row carried one.
+  if (id) {
+    void clearUnreadOnOpen(id)
   }
 }
 

@@ -4697,3 +4697,65 @@ class TestDashboardComponentHealth:
         assert self.ws.DASHBOARD_HEALTH.selftest_status == "failing"
         assert self.ws.DASHBOARD_HEALTH.selftest_http_status == 500
         assert self.ws.DASHBOARD_HEALTH.snapshot()["status"] == "degraded"
+
+
+class TestSessionPatchUnread:
+    """PATCH /api/sessions/{id} with {"unread": bool} marks the session
+    read/unread, and GET /api/sessions surfaces the derived flag."""
+
+    @pytest.fixture(autouse=True)
+    def _setup_test_client(self, monkeypatch, _isolate_hermes_home):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+
+        import hermes_state
+        from hermes_constants import get_hermes_home
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        monkeypatch.setattr(
+            hermes_state, "DEFAULT_DB_PATH", get_hermes_home() / "state.db"
+        )
+
+        self.client = TestClient(app)
+        self.auth_client = TestClient(app)
+        self.auth_client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            db.create_session(session_id="s1", source="cli")
+            db.append_message(session_id="s1", role="user", content="hi")
+            db.set_session_read("s1")  # start read, like a conversation you opened
+        finally:
+            db.close()
+
+    def test_patch_unread_true_marks_row_unread(self):
+        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": True})
+        assert resp.status_code == 200
+        assert resp.json()["unread"] is True
+
+        rows = self.auth_client.get("/api/sessions?limit=100").json()["sessions"]
+        assert next(s for s in rows if s["id"] == "s1")["unread"] is True
+
+    def test_patch_unread_false_marks_row_read(self):
+        self.auth_client.patch("/api/sessions/s1", json={"unread": True})
+        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": False})
+        assert resp.status_code == 200
+        assert resp.json()["unread"] is False
+
+        rows = self.auth_client.get("/api/sessions?limit=100").json()["sessions"]
+        assert next(s for s in rows if s["id"] == "s1")["unread"] is False
+
+    def test_patch_unread_alone_is_accepted(self):
+        # The route's "Nothing to update" guard must not reject a bare unread.
+        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": True})
+        assert resp.status_code == 200
+
+    def test_patch_unread_rejects_non_bool(self):
+        # NB: pydantic v2 coerces "yes"/"no"/"1"/"0"/"on"/"off" to bool, so use
+        # a string outside the accepted set to prove validation rejects it.
+        resp = self.auth_client.patch("/api/sessions/s1", json={"unread": "maybe"})
+        assert resp.status_code == 422  # pydantic validation

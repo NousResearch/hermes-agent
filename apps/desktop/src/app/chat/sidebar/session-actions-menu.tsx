@@ -105,8 +105,12 @@ interface SessionActions {
   sessionId: string
   title: string
   pinned?: boolean
+  /** Backend-derived read state — drives the Mark as unread/read label. */
+  unread?: boolean
   profile?: string
   onPin?: () => void
+  /** Toggle the persisted read-state watermark for this row. */
+  onToggleUnread?: () => void
   onBranch?: () => void
   onArchive?: () => void
   onDelete?: () => void
@@ -187,8 +191,10 @@ function useSessionActions({
   sessionId,
   title,
   pinned = false,
+  unread = false,
   profile,
   onPin,
+  onToggleUnread,
   onBranch,
   onArchive,
   onDelete,
@@ -303,21 +309,32 @@ function useSessionActions({
         onPin?.()
       }
     }),
-    // Only meaningful for a row still carrying the finished-unread dot; once
-    // read (or never unread) the item vanishes.
-    ...(isUnread
-      ? [
-          spec({
-            disabled: !sessionId,
-            icon: 'check-all',
-            label: r.markRead,
-            onSelect: () => {
-              triggerHaptic('selection')
-              markSessionRead(sessionId)
-            }
-          })
-        ]
-      : [])
+    // One read-state item, driven by BOTH unread sources: the transient
+    // finished-unread dot (isUnread) and the backend watermark (unread).
+    // "Mark as read" clears whichever is lit; "Mark as unread" arms the
+    // persisted watermark so the dot survives restarts.
+    spec({
+      disabled: !sessionId || (!onToggleUnread && !isUnread),
+      // Closed envelope = unread, open envelope = read (codicon has mail and
+      // mail-read, but no mail-unread glyph — verified against the font css).
+      icon: unread || isUnread ? 'mail-read' : 'mail',
+      label: unread || isUnread ? r.markRead : r.markUnread,
+      onSelect: () => {
+        triggerHaptic('selection')
+
+        if (unread || isUnread) {
+          // Clear the transient family dot immediately…
+          markSessionRead(sessionId)
+
+          // …and retire the persisted watermark when the row carries one.
+          if (unread) {
+            onToggleUnread?.()
+          }
+        } else {
+          onToggleUnread?.()
+        }
+      }
+    })
   ]
 
   // WORK — derive/extract from the session.

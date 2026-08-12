@@ -1799,6 +1799,9 @@ export const ja = defineLocale({
     row: {
       pin: 'ピン留め',
       unpin: 'ピン留めを解除',
+      markUnread: '未読にする',
+      markRead: '既読にする',
+      unreadFailed: '未読状態を更新できませんでした',
       copyId: 'ID をコピー',
       export: 'エクスポート',
       branchFrom: '分岐',

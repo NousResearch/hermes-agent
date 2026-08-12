@@ -2029,6 +2029,9 @@ export const en: Translations = {
     row: {
       pin: 'Pin',
       unpin: 'Unpin',
+      markUnread: 'Mark as unread',
+      markRead: 'Mark as read',
+      unreadFailed: 'Could not update unread state',
       copyId: 'Copy ID',
       export: 'Export',
       branchFrom: 'Branch',

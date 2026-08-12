@@ -1741,6 +1741,9 @@ export const zhHant = defineLocale({
     row: {
       pin: '釘選',
       unpin: '取消釘選',
+      markUnread: '標記為未讀',
+      markRead: '標記為已讀',
+      unreadFailed: '無法更新未讀狀態',
       copyId: '複製 ID',
       export: '匯出',
       branchFrom: '分支',

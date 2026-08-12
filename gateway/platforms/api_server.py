@@ -3534,16 +3534,19 @@ class APIServerAdapter(BasePlatformAdapter):
         # sidebar owns (the "keep" flag exempts a chat from the auto-archive
         # sweep). Rejecting them here was silently 400ing every pin the desktop
         # made, so pins only ever lived in that one app's localStorage.
-        allowed = {"title", "end_reason", "pinned", "archived", "hidden"}
+        # `unread` is the read-state watermark toggle (same desktop owner).
+        allowed = {"title", "end_reason", "pinned", "archived", "hidden", "unread"}
         unknown = sorted(set(body) - allowed)
         if unknown:
             return web.json_response(_openai_error(f"Unsupported session fields: {', '.join(unknown)}", code="unsupported_session_field"), status=400)
 
-        for flag in ("pinned", "archived", "hidden"):
+        for flag in ("pinned", "archived", "hidden", "unread"):
             if flag in body and not isinstance(body[flag], bool):
                 return web.json_response(_openai_error(f"'{flag}' must be a boolean", code="invalid_session_field"), status=400)
 
         db = await self._ensure_session_db_async()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
         if "title" in body:
             try:
                 await asyncio.to_thread(db.set_session_title, session_id, "" if body["title"] is None else str(body["title"]))
@@ -3555,6 +3558,8 @@ class APIServerAdapter(BasePlatformAdapter):
             await asyncio.to_thread(db.set_session_archived, session_id, body["archived"])
         if "hidden" in body:
             await asyncio.to_thread(db.set_session_hidden, session_id, body["hidden"])
+        if "unread" in body:
+            await asyncio.to_thread(db.set_session_read, session_id, read=not body["unread"])
         if body.get("end_reason"):
             await asyncio.to_thread(db.end_session, session_id, str(body["end_reason"]))
         session = await asyncio.to_thread(db.get_session, session_id) or session

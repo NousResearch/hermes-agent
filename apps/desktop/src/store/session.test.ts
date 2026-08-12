@@ -4,6 +4,17 @@ import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type { SessionInfo } from '@/types/hermes'
 
+const setUnreadRemote = vi.fn<(id: string, unread: boolean, profile?: null | string) => Promise<{ ok: boolean }>>(() =>
+  Promise.resolve({ ok: true })
+)
+
+vi.mock('@/hermes', () => ({
+  // Opening a session now PATCHes its persisted unread flag (clearUnreadOnOpen
+  // -> markSessionUnread); keep the REST mutation minimal for the suite.
+  setApiRequestProfile: () => {},
+  setSessionUnreadRemote: (id: string, unread: boolean, profile?: null | string) => setUnreadRemote(id, unread, profile)
+}))
+
 import {
   $activeSessionId,
   $connection,
@@ -551,12 +562,15 @@ describe('unread finished sessions', () => {
     clearAllSessionStates()
     $unreadFinishedSessionIds.set([])
     $selectedStoredSessionId.set(null)
+    $sessions.set([])
+    setUnreadRemote.mockClear()
   })
 
   afterEach(() => {
     clearAllSessionStates()
     $unreadFinishedSessionIds.set([])
     $selectedStoredSessionId.set(null)
+    $sessions.set([])
   })
 
   it('marks a session unread when its turn finishes in the background', () => {
@@ -692,6 +706,27 @@ describe('unread finished sessions', () => {
     expect($unreadFinishedSessionIds.get()).toEqual([])
 
     vi.useRealTimers()
+  })
+
+  it('clears a persisted unread row when the session is opened', async () => {
+    $sessions.set([session({ id: 's1', unread: true })])
+
+    setSelectedStoredSessionId('s1')
+
+    // The optimistic flip is synchronous; the PATCH is fire-and-forget.
+    expect($sessions.get().find(s => s.id === 's1')?.unread).toBe(false)
+
+    await Promise.resolve()
+    expect(setUnreadRemote).toHaveBeenCalledWith('s1', false, undefined)
+  })
+
+  it('does not PATCH a read row when it is opened', async () => {
+    $sessions.set([session({ id: 's1', unread: false })])
+
+    setSelectedStoredSessionId('s1')
+
+    await Promise.resolve()
+    expect(setUnreadRemote).not.toHaveBeenCalled()
   })
 })
 

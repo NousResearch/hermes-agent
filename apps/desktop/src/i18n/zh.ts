@@ -2215,6 +2215,9 @@ export const zh: Translations = {
     row: {
       pin: '置顶',
       unpin: '取消置顶',
+      markUnread: '标记为未读',
+      markRead: '标记为已读',
+      unreadFailed: '无法更新未读状态',
       copyId: '复制 ID',
       export: '导出',
       branchFrom: '分支',

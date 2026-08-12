@@ -502,6 +502,11 @@ export interface SessionInfo {
    *  elsewhere. Undefined against a backend predating the flag; treat that as
    *  "no opinion" and leave the local pin set alone. */
   pinned?: boolean
+  /** Derived read state (backend watermark: `last_read_at` vs `last_active`,
+   *  see `SessionDB.session_unread`). True when the conversation was
+   *  explicitly marked unread or a response arrived after it was last read.
+   *  Undefined against a backend predating the flag; treat as read. */
+  unread?: boolean
   preview: null | string
   source: null | string
   started_at: number

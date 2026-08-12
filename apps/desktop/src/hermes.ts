@@ -658,6 +658,19 @@ export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: st
   })
 }
 
+// Mirror a sidebar unread toggle to the backend read-state watermark
+// (sessions.last_read_at via SessionDB.set_session_read). Same profile
+// routing as the other session mutations: a remote session's row lives only
+// on its remote host, so the owning profile must travel with the request.
+export function setSessionUnreadRemote(id: string, unread: boolean, profile?: string | null): Promise<{ ok: boolean }> {
+  return window.hermesDesktop.api<{ ok: boolean }>({
+    ...(profile ? { profile } : {}),
+    path: `/api/sessions/${encodeURIComponent(id)}`,
+    method: 'PATCH',
+    body: { unread }
+  })
+}
+
 export function searchSessions(query: string): Promise<SessionSearchResponse> {
   return window.hermesDesktop.api<SessionSearchResponse>({
     path: `/api/sessions/search?q=${encodeURIComponent(query)}`

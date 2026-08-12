@@ -1645,6 +1645,9 @@ export const ar = defineLocale({
     row: {
       pin: 'تثبيت',
       unpin: 'إلغاء التثبيت',
+      markUnread: 'وضع علامة كغير مقروء',
+      markRead: 'وضع علامة كمقروء',
+      unreadFailed: 'تعذر تحديث حالة القراءة',
       copyId: 'نسخ المعرف',
       export: 'تصدير',
       branchFrom: 'فرع',

@@ -5118,7 +5118,11 @@ def request_review_changes(
             (task_id,),
         ).fetchone()
         handoff = json.loads(event["payload"]) if event and event["payload"] else {}
-        submitted_metadata = handoff.get("metadata") if isinstance(handoff.get("metadata"), dict) else {}
+        submitted_metadata = (
+            dict(handoff["metadata"])
+            if isinstance(handoff.get("metadata"), dict)
+            else {}
+        )
         implementer = _canonical_assignee(handoff.get("original_assignee")) or ""
         if not implementer:
             # Webhook-created external PRs have no Hermes implementation
@@ -5128,6 +5132,23 @@ def request_review_changes(
             if not implementer:
                 return None
         review_metadata = dict(metadata or {})
+        try:
+            task_metadata = json.loads(row["metadata"]) if row["metadata"] else {}
+        except (TypeError, json.JSONDecodeError):
+            task_metadata = {}
+        if not isinstance(task_metadata, dict):
+            task_metadata = {}
+        # Preserve the immutable PR identity from the native submission and
+        # any branch/worktree identity already attached to the card.  External
+        # webhook cards have no implementer, so this is also the point where we
+        # synthesize the complete DEV remediation contract.
+        source_metadata = {**task_metadata, **submitted_metadata}
+        configured_agent = (
+            review_metadata.get("coding_agent")
+            or submitted_metadata.get("coding_agent")
+            or task_metadata.get("coding_agent")
+            or "codex"
+        )
         review_metadata.update({
             "approved": False,
             "reviewer": row["assignee"],
@@ -5137,35 +5158,49 @@ def request_review_changes(
             "changes_requested": True,
             "canonical": True,
             "lane": "DEV",
-            "coding_agent": "codex",
+            "capability": "implementation",
+            "coding_agent": configured_agent,
+            EXISTING_PR_REMEDIATION_METADATA_KEY: True,
+            # Retain the legacy descriptive key for consumers that display it,
+            # while the canonical gate uses remediate_existing_pr.
             "existing_pr_remediation": True,
             "no_replacement_pr": True,
-            "pr_url": submitted_metadata.get("pr_url") or handoff.get("pr_url") or review_metadata.get("pr_url"),
-            "repo": submitted_metadata.get("repo") or handoff.get("repo") or review_metadata.get("repo"),
-            "number": submitted_metadata.get("number") or handoff.get("number") or review_metadata.get("number"),
-            "head_sha": submitted_metadata.get("head_sha") or handoff.get("head_sha") or review_metadata.get("head_sha"),
+            "pr_url": source_metadata.get("pr_url") or handoff.get("pr_url") or review_metadata.get("pr_url"),
+            "repo": source_metadata.get("repo") or handoff.get("repo") or review_metadata.get("repo"),
+            "number": source_metadata.get("number") or handoff.get("number") or review_metadata.get("number"),
+            "head_sha": source_metadata.get("head_sha") or handoff.get("head_sha") or review_metadata.get("head_sha"),
         })
-        if review_metadata.get("coding_agent") not in {"codex", "cursor"}:
-            raise ValueError("changes-requested remediation requires supported coding agent codex or cursor")
-        try:
-            task_metadata = json.loads(row["metadata"]) if row["metadata"] else {}
-        except (TypeError, json.JSONDecodeError):
-            task_metadata = {}
-        if not isinstance(task_metadata, dict):
-            task_metadata = {}
+        if source_metadata.get("branch_name"):
+            review_metadata["branch_name"] = source_metadata["branch_name"]
         task_metadata.update(review_metadata)
-        try:
-            from types import SimpleNamespace
-            from tools.coding_kanban_gate import task_capability_preflight
-            capability_reason = task_capability_preflight(SimpleNamespace(
-                assignee=implementer, status="ready", metadata=task_metadata,
-            ))
-        except Exception as exc:
-            capability_reason = f"capability preflight unavailable: {exc}"
+        if review_metadata.get("coding_agent") not in {"codex", "cursor"}:
+            capability_reason = (
+                "changes-requested remediation requires supported coding agent "
+                f"codex or cursor; got {review_metadata.get('coding_agent')!r}"
+            )
+        else:
+            try:
+                from types import SimpleNamespace
+                from tools.coding_kanban_gate import task_capability_preflight
+                capability_reason = task_capability_preflight(SimpleNamespace(
+                    assignee=implementer, status="ready", metadata=task_metadata,
+                ))
+            except Exception as exc:
+                capability_reason = f"capability preflight unavailable: {exc}"
         if capability_reason:
+            conn.execute(
+                "UPDATE tasks SET status='blocked', assignee=?, result=?, metadata=?, "
+                "completed_at=NULL, claim_lock=NULL, claim_expires=NULL, worker_pid=NULL "
+                "WHERE id=? AND status='running' AND current_run_id IS NOT NULL",
+                (implementer, capability_reason, json.dumps(task_metadata, ensure_ascii=False), task_id),
+            )
+            blocked_run_id = _end_run(
+                conn, task_id, outcome="capability_blocked", status="blocked",
+                summary=capability_reason, metadata={**review_metadata, "block_reason": capability_reason},
+            )
             _append_event(conn, task_id, "review_remediation_blocked", {
                 "reason": capability_reason, "metadata": task_metadata,
-            }, run_id=current_run_id)
+            }, run_id=blocked_run_id or current_run_id)
             return None
         cur = conn.execute(
             "UPDATE tasks SET status='ready', assignee=?, result=?, metadata=?, completed_at=NULL, "
@@ -8552,10 +8587,22 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 protocol_violation = False
                 provider_unavailable_exit = True
                 category = "authentication" if kind == "provider_auth" else "billing/credits"
+                try:
+                    task_metadata = json.loads(
+                        conn.execute(
+                            "SELECT metadata FROM tasks WHERE id=?", (row["id"],)
+                        ).fetchone()["metadata"] or "{}"
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    task_metadata = {}
+                if not isinstance(task_metadata, dict):
+                    task_metadata = {}
+                provider = str(task_metadata.get("provider") or "configured provider").strip()
+                profile = str(row["claim_lock"] or "worker").split(":", 1)[-1]
                 error_text = (
-                    f"provider {category} failure (worker exit {code}) — "
-                    "provider credentials or account health require operator remediation; "
-                    "task parked without retrying"
+                    f"provider {category} failure for profile {profile} ({provider}) "
+                    f"(worker exit {code}) — refresh credentials or restore provider "
+                    "account credits; task parked without retrying"
                 )
                 event_kind = "provider_unavailable"
                 event_payload = {

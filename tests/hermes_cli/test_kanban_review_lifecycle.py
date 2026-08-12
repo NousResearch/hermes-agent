@@ -387,6 +387,45 @@ def test_external_webhook_review_routes_changes_to_dev_on_same_pr(board):
         assert task.metadata["no_replacement_pr"] is True
 
 
+def test_external_webhook_review_rejects_unsupported_remediation_agent_atomically(board):
+    with board as conn:
+        task_id = kb.ingest_pull_request(
+            conn, repository="acme/repo", number=78, head_sha="f" * 40,
+            title="External PR", reviewer="reviewer",
+        )
+        review = kb.claim_review_task(conn, task_id, claimer="worker:reviewer")
+        assert review is not None
+        assert kb.request_review_changes(
+            conn, task_id, summary="unsupported agent", metadata={"coding_agent": "direct"},
+            expected_run_id=review.current_run_id,
+        ) is None
+        task = kb.get_task(conn, task_id)
+        assert task.status == "blocked"
+        assert task.assignee == "dev"
+        assert "supported coding agent" in task.result
+        run = kb.latest_run(conn, task_id)
+        assert run.outcome == "capability_blocked"
+        assert run.status == "blocked"
+
+
+def test_external_webhook_review_remediation_is_spawnable_on_same_head(board):
+    with board as conn:
+        task_id = kb.ingest_pull_request(
+            conn, repository="acme/repo", number=79, head_sha="1" * 40,
+            title="External PR", reviewer="reviewer",
+        )
+        review = kb.claim_review_task(conn, task_id, claimer="worker:reviewer")
+        assert review is not None
+        assert kb.request_review_changes(
+            conn, task_id, summary="spawn existing PR remediation",
+            expected_run_id=review.current_run_id,
+        ) == task_id
+        task = kb.get_task(conn, task_id)
+        assert task.status == "ready"
+        assert kb.check_respawn_guard(conn, task_id) is None
+        assert kb.dispatch_once(conn, dry_run=True).spawned == [(task_id, "dev", "")]
+
+
 
 def test_webhook_replay_preserves_native_review_claim(board):
     with board as conn:

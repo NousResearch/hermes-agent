@@ -56,6 +56,35 @@ describe('requestModelOptions', () => {
     expect(getGlobalModelOptions).toHaveBeenCalledWith({ explicitOnly: true })
   })
 
+  it('recovers through profile-scoped REST when the gateway catalog request fails', async () => {
+    const restPayload = {
+      model: 'hermes-local',
+      provider: 'hermes-local',
+      providers: [{ models: ['hermes-local'], name: 'Hermes Local vLLM', slug: 'hermes-local' }]
+    }
+
+    const gateway = {
+      request: vi.fn(() => Promise.reject(new Error('gateway request unavailable')))
+    }
+
+    vi.mocked(getGlobalModelOptions).mockResolvedValueOnce(restPayload)
+
+    await expect(requestModelOptions({ gateway: gateway as never, sessionId: 'session-1' })).resolves.toEqual(restPayload)
+    expect(getGlobalModelOptions).toHaveBeenCalledWith({ explicitOnly: true })
+  })
+
+  it('preserves the gateway error when its REST recovery path also fails', async () => {
+    const gatewayError = new Error('gateway request unavailable')
+
+    const gateway = {
+      request: vi.fn(() => Promise.reject(gatewayError))
+    }
+
+    vi.mocked(getGlobalModelOptions).mockRejectedValueOnce(new Error('REST request unavailable'))
+
+    await expect(requestModelOptions({ gateway: gateway as never })).rejects.toBe(gatewayError)
+  })
+
   it('keeps the gateway result when both catalog paths have no selectable models', async () => {
     const gatewayPayload = { model: 'hermes-local', provider: 'hermes-local', providers: [] }
 

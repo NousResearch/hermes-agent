@@ -75,9 +75,16 @@ export async function requestModelOptions({
       params.explicit_only = true
     }
 
-    const gatewayOptions = await gateway.request<ModelOptionsResponse>('model.options', params)
+    let gatewayError: unknown
+    let gatewayOptions: ModelOptionsResponse | undefined
 
-    if (hasSelectableModels(gatewayOptions)) {
+    try {
+      gatewayOptions = await gateway.request<ModelOptionsResponse>('model.options', params)
+    } catch (error) {
+      gatewayError = error
+    }
+
+    if (gatewayOptions && hasSelectableModels(gatewayOptions)) {
       return gatewayOptions
     }
 
@@ -96,10 +103,15 @@ export async function requestModelOptions({
         }
       }
     } catch {
-      // Preserve the gateway result when the recovery path is unavailable.
+      // Preserve the gateway result (or its original error) when the recovery
+      // path is unavailable.
     }
 
-    return gatewayOptions
+    if (gatewayOptions) {
+      return gatewayOptions
+    }
+
+    throw gatewayError
   }
 
   return getGlobalModelOptions({ explicitOnly, ...(refresh ? { refresh: true } : {}) })

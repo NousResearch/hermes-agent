@@ -2,8 +2,9 @@
 
 > Copy everything below the line into a FRESH chat with an independent
 > auditor/reviewer agent. Self-contained: no prior context needed.
-> Producing baseline: code final `4e2278b7ca` (KenseiAgent worktree) and
-> `9a1870b` (Dashboard worktree). Branch tips add docs only — see HEAD note.
+> Producing baseline: code final `c4e07dd3bf` (KenseiAgent worktree, after
+> round-1 review corrections) and `9a1870b` (Dashboard worktree). Branch
+> tips add docs only — see HEAD note.
 
 ---
 
@@ -21,9 +22,10 @@ Worktree 1 — KenseiAgent core (CLI, TUI, Desktop, Python control_room):
 
 - Repo: /home/kensei/worktrees/kenseiagent-control-room-20260812
 - Branch: feat/control-room-v1-20260812
-- HEAD: ANY descendant of `4e2278b7ca` whose diff `4e2278b7ca..HEAD`
+- HEAD: ANY descendant of `c4e07dd3bf` whose diff `c4e07dd3bf..HEAD`
   touches ONLY docs/ — if HEAD touches code, that is a finding
-- Code final: `4e2278b7ca`
+- Code final: `c4e07dd3bf` (includes round-1 corrections: CR-401 rename
+  completed in all 5 locales, handoff/evidence-table fixes)
 - Code baseline: `66f18cc24517fdcc52bd0e0f6ffd5cc2f556522c`
   (diff baseline..HEAD must be limited to control_room/, hermes_cli/,
   cli.py, tui_gateway/, ui-tui/, apps/desktop/, tests/, scripts/,
@@ -34,8 +36,8 @@ Worktree 1 — KenseiAgent core (CLI, TUI, Desktop, Python control_room):
 cd /home/kensei/worktrees/kenseiagent-control-room-20260812
 git branch --show-current              # expect: feat/control-room-v1-20260812
 git rev-parse HEAD
-git merge-base --is-ancestor 4e2278b7ca HEAD && echo "code-final ancestry OK"
-git diff --name-only 4e2278b7ca..HEAD | cat   # expect: docs/control-room-release-decision.md only
+git merge-base --is-ancestor c4e07dd3bf HEAD && echo "code-final ancestry OK"
+git diff --name-only c4e07dd3bf..HEAD | cat   # expect: docs/ only
 git diff --check 66f18cc245..HEAD      # expect: exit 0 (no whitespace errors)
 git status --short                     # expect: clean EXCEPT ?? pnpm-lock.yaml (see NOTE-A)
 ```
@@ -62,6 +64,19 @@ pending Sahil's sign-off; the authored tests run from the pnpm workspace
 install regardless. Its absence is NOT a defect.
 
 If ANY state check fails, stop and report — do not continue.
+
+## What was corrected (round-1 findings, commit c4e07dd3bf)
+
+1. CR-401 rename was English-only — completed in ar/ja/zh/zh-hant
+   (labels + nav.controlRoom keys); control-room.test.ts now asserts the
+   rename label in EVERY locale, so an en-only rename fails CI.
+2. Handoff claim-A parenthetical double-counted (99 vs actual 94) — fixed.
+3. Release-decision section 3 evidence table was stale (517/1547-12/3)
+   vs live (522/1559-0/8/4669-15 + CR-603 PASS) — refreshed.
+4. speech-text citation corrected to 51c68d4ab1.
+
+All other round-1 findings were VERIFIED (state clean, scope clean,
+no raw SQL, no dead controls, typed-unavailable everywhere claimed).
 
 ## Claims to verify
 

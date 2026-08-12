@@ -43,6 +43,7 @@ import pytest
 
 @pytest.mark.parametrize("model,expected", [
     # NVIDIA Nemotron reasoning family (longest keys first).
+    ("nvidia/nemotron-3.5-lightning-30b-a3b", 300.0),
     ("nvidia/nemotron-3-ultra-550b-a55b", 600.0),
     ("nvidia/nemotron-3-super-120b-a12b", 600.0),
     ("nvidia/nemotron-3-nano-30b-a3b", 300.0),
@@ -202,7 +203,3 @@ def test_stream_stale_timeout_floor_for_nemotron_3_ultra():
         est_tokens=10_000,
     )
     assert timeout == 600.0
-
-
-
-

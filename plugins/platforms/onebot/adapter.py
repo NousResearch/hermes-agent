@@ -420,6 +420,10 @@ class OneBotAdapter(BasePlatformAdapter):
             )
         except (TypeError, ValueError):
             self._text_image_threshold = DEFAULT_TEXT_IMAGE_THRESHOLD
+        try:
+            self._image_max_size = int(extra.get("image_max_size", 1536))
+        except (TypeError, ValueError):
+            self._image_max_size = 1536
         self._require_mention = bool(extra.get("require_mention", True))
         self._dm_policy = str(extra.get("dm_policy", "open")).strip().lower()
         self._group_policy = str(extra.get("group_policy", "open")).strip().lower()
@@ -780,7 +784,45 @@ class OneBotAdapter(BasePlatformAdapter):
         tmp.mkdir(exist_ok=True)
         path = tmp / f"img_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}{ext}"
         path.write_bytes(data)
-        return str(path)
+        # Shrink oversized images BEFORE the LLM sees them — high-res QQ
+        # photos make vision calls slow or time out entirely.
+        shrunk = await asyncio.to_thread(self._shrink_image, path)
+        return shrunk or str(path)
+
+    def _shrink_image(self, path: Path) -> Optional[str]:
+        """Downscale an image to ≤ `image_max_size` px on its long edge.
+
+        Returns the new path when the image was resized, None when it was
+        already small enough (or processing failed — the caller keeps the
+        original). Animated GIFs collapse to their first frame, which is
+        fine for vision analysis.
+        """
+        max_size = self._image_max_size
+        if max_size <= 0:
+            return None
+        try:
+            from PIL import Image
+
+            img = Image.open(path)
+            img.load()
+        except Exception as e:
+            logger.debug("[onebot] image open failed, keeping original: %s", e)
+            return None
+        try:
+            if max(img.size) <= max_size:
+                return None
+            img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+            out = path.with_suffix(".png" if img.mode == "RGBA" else ".jpg")
+            if img.mode == "RGBA":
+                img.save(out, format="PNG", optimize=True)
+            else:
+                if img.mode not in ("RGB", "L"):
+                    img = img.convert("RGB")
+                img.save(out, format="JPEG", quality=85)
+            return str(out)
+        except Exception as e:
+            logger.debug("[onebot] image shrink failed, keeping original: %s", e)
+            return None
 
     async def _download_audio(self, url: str) -> Optional[str]:
         """Download a voice clip and convert it to 16 kHz mono WAV.

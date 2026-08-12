@@ -149,6 +149,38 @@ def test_cq_parse_record_no_url_falls_back() -> None:
     assert media_types == []
 
 
+def test_shrink_image_downscales_large_image(tmp_path) -> None:
+    from PIL import Image
+
+    adapter = _make_adapter(image_max_size=1536)
+    big = tmp_path / "big.jpg"
+    Image.new("RGB", (3000, 2000), "white").save(big)
+    out = adapter._shrink_image(big)
+    assert out is not None
+    with Image.open(out) as img:
+        assert max(img.size) <= 1536
+    # Aspect ratio preserved.
+    assert img.size == (1536, 1024)
+
+
+def test_shrink_image_skips_small_image(tmp_path) -> None:
+    from PIL import Image
+
+    adapter = _make_adapter(image_max_size=1536)
+    small = tmp_path / "small.png"
+    Image.new("RGB", (800, 600), "white").save(small)
+    assert adapter._shrink_image(small) is None
+
+
+def test_shrink_image_disabled_with_zero(tmp_path) -> None:
+    from PIL import Image
+
+    adapter = _make_adapter(image_max_size=0)
+    big = tmp_path / "big.png"
+    Image.new("RGB", (3000, 2000), "white").save(big)
+    assert adapter._shrink_image(big) is None
+
+
 def test_is_mentioned() -> None:
     adapter = _make_adapter()
     adapter._self_id = "2512172957"

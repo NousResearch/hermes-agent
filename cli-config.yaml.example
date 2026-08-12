@@ -1766,3 +1766,25 @@ updates:
 #     command: "cat /run/user/1000/hermes-secrets.env"
 #     helper_timeout_seconds: 3
 #     override_existing: false             # .env/shell win by default
+
+# =============================================================================
+# Cost / pricing
+# =============================================================================
+# How a turn's cost is estimated for models that are NOT in the curated
+# official-docs pricing snapshot baked into agent/usage_pricing.py. The
+# snapshot always takes precedence — it encodes deliberate corrections a live
+# catalog can't know (e.g. a model's standing LIST price rather than a
+# temporary launch-intro rate). `external_source` only picks the dynamic
+# catalog consulted when the snapshot has no entry, so a model released since
+# the snapshot was last hand-edited records real cost instead of "n/a":
+#
+#   models_dev  (default) — the git-backed models.dev registry, which already
+#                           supplies context windows and capabilities here and
+#                           publishes per-million cost including cache tiers.
+#   openrouter            — the OpenRouter models API.
+#
+# Whichever source is not selected is used automatically as the fallback when
+# the primary catalog is missing a model id.
+#
+# pricing:
+#   external_source: models_dev

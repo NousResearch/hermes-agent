@@ -487,6 +487,34 @@ def fetch_models_dev(
         return _models_dev_cache
 
 
+def cached_models_dev() -> Dict[str, Any]:
+    """Return the models.dev registry WITHOUT ever touching the network.
+
+    Cache-only twin of :func:`fetch_models_dev`: fresh in-memory cache, else
+    the on-disk cache (at any age), else an empty dict. Used by pure
+    predicates that must not block — see
+    ``usage_pricing.has_known_pricing``.
+
+    An empty result means "not known from cache", not "not priced".
+    """
+    global _models_dev_cache, _models_dev_cache_time
+
+    if _models_dev_cache and (time.time() - _models_dev_cache_time) < _MODELS_DEV_CACHE_TTL:
+        return _models_dev_cache
+
+    disk_data = _load_disk_cache()
+    if disk_data:
+        _models_dev_cache = disk_data
+        disk_age = _disk_cache_age_seconds()
+        if disk_age is not None:
+            _models_dev_cache_time = time.time() - disk_age
+        else:
+            _models_dev_cache_time = time.time() - _MODELS_DEV_CACHE_TTL
+        return disk_data
+
+    return _models_dev_cache or {}
+
+
 def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
     """Look up context_length for a provider+model combo in models.dev.
 
@@ -562,6 +590,79 @@ def _extract_context(entry: Dict[str, Any]) -> Optional[int]:
     return None
 
 
+def _extract_cost(entry: Dict[str, Any]) -> Optional[Dict[str, float]]:
+    """Extract the per-million-token USD cost block from a models.dev entry.
+
+    models.dev publishes cost already in per-million-token USD (unlike the
+    OpenRouter models API, which is per-token), shaped as::
+
+        {"input": 5, "output": 25, "cache_read": 0.5, "cache_write": 6.25}
+
+    Only the flat base-tier rates are read. Entries may also carry a ``tiers``
+    / ``context_over_200k`` block for long-context surcharges; those are
+    deliberately ignored so this returns the same flat shape the curated
+    snapshot uses.
+
+    Returns a dict holding only the keys actually present, or None when the
+    entry publishes neither an input nor an output rate (unpriced model).
+    """
+    if not isinstance(entry, dict):
+        return None
+    cost = entry.get("cost")
+    if not isinstance(cost, dict):
+        return None
+
+    def _num(key: str) -> Optional[float]:
+        value = cost.get(key)
+        # bool is an int subclass — reject it explicitly.
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)) and value >= 0:
+            return float(value)
+        return None
+
+    input_cost = _num("input")
+    output_cost = _num("output")
+    if input_cost is None and output_cost is None:
+        return None
+
+    result: Dict[str, float] = {}
+    if input_cost is not None:
+        result["input"] = input_cost
+    if output_cost is not None:
+        result["output"] = output_cost
+    cache_read = _num("cache_read")
+    if cache_read is not None:
+        result["cache_read"] = cache_read
+    cache_write = _num("cache_write")
+    if cache_write is not None:
+        result["cache_write"] = cache_write
+    return result
+
+
+def lookup_models_dev_pricing(
+    provider: str, model: str, *, cache_only: bool = False
+) -> Optional[Dict[str, float]]:
+    """Look up per-million USD pricing for a provider+model in models.dev.
+
+    Cost-dimension twin of :func:`lookup_models_dev_context`. Resolution is
+    provider-scoped on purpose: a provider absent from
+    ``PROVIDER_TO_MODELS_DEV`` (``custom``, ``local``, ``unknown``) yields
+    None rather than falling back to a cross-provider id scan, so a
+    self-hosted model that happens to share an id with a hosted one is never
+    billed at the hosted vendor's rate.
+
+    With ``cache_only=True`` the registry is never fetched over the network.
+    """
+    models = _get_provider_models(provider, cache_only=cache_only)
+    if models is None:
+        return None
+    entry = _find_model_entry(models, model)
+    if entry is None:
+        return None
+    return _extract_cost(entry)
+
+
 # ---------------------------------------------------------------------------
 # Model capability metadata
 # ---------------------------------------------------------------------------
@@ -579,16 +680,18 @@ class ModelCapabilities:
     model_family: str = ""
 
 
-def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
+def _get_provider_models(provider: str, *, cache_only: bool = False) -> Optional[Dict[str, Any]]:
     """Resolve a Hermes provider ID to its models dict from models.dev.
 
     Returns the models dict or None if the provider is unknown or has no data.
+    With ``cache_only=True`` the registry is read from cache only, never the
+    network (for pure predicates on display paths).
     """
     mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
     if not mdev_provider_id:
         return None
 
-    data = fetch_models_dev()
+    data = cached_models_dev() if cache_only else fetch_models_dev()
     provider_data = data.get(mdev_provider_id)
     if not isinstance(provider_data, dict):
         return None

@@ -1204,6 +1204,39 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
         return {}
 
 
+def cached_model_metadata() -> Dict[str, Dict[str, Any]]:
+    """Return OpenRouter model metadata WITHOUT ever touching the network.
+
+    Same cache hierarchy as :func:`fetch_model_metadata` minus the network
+    stage: fresh in-memory cache, else the on-disk cache (at any age), else an
+    empty dict. Callers that are pure predicates — notably
+    ``usage_pricing.has_known_pricing``, which runs inside display loops — use
+    this so rendering a session list can never block on an HTTP round trip.
+
+    An empty result means "not known from cache", not "not priced"; callers
+    must treat it as unknown rather than as an authoritative absence.
+    """
+    global _model_metadata_cache, _model_metadata_cache_time
+
+    if _model_metadata_cache and (time.time() - _model_metadata_cache_time) < _MODEL_CACHE_TTL:
+        return _model_metadata_cache
+
+    disk_cache = _load_model_metadata_disk_cache()
+    if disk_cache:
+        # Populate the in-memory cache but anchor its timestamp to the disk
+        # file's real age, so this never masquerades as a fresh fetch and the
+        # next non-cache-only caller still refreshes on schedule.
+        _model_metadata_cache = disk_cache
+        disk_age = _model_metadata_disk_cache_age_seconds()
+        if disk_age is not None:
+            _model_metadata_cache_time = time.time() - disk_age
+        else:
+            _model_metadata_cache_time = time.time() - _MODEL_CACHE_TTL
+        return disk_cache
+
+    return {}
+
+
 def fetch_endpoint_model_metadata(
     base_url: str,
     api_key: str = "",

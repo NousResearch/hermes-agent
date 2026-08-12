@@ -403,7 +403,26 @@ def _sanitize_oauth_text(text: str) -> str:
     return text
 
 
-def _prepend_oauth_system_context(messages, preamble: str) -> None:
+def _extract_cache_ttl(system) -> str:
+    """Return the cache TTL carried by the system block(s) being relocated.
+
+    The OAuth path discards ``system[]`` and moves its text onto the first user
+    message. The displaced block may carry a ``cache_control`` marker whose TTL
+    was chosen by the user's ``cache_ttl`` config (``5m`` or ``1h``); the
+    relocated preamble must inherit it, or a 1h-configured user is silently
+    downgraded to 5m caching. Defaults to ``5m`` when no marker is present.
+    """
+    if isinstance(system, list):
+        for b in system:
+            if not isinstance(b, dict):
+                continue
+            marker = b.get("cache_control")
+            if isinstance(marker, dict) and marker.get("ttl"):
+                return marker["ttl"]
+    return "5m"
+
+
+def _prepend_oauth_system_context(messages, preamble: str, ttl: str = "5m") -> None:
     """Prepend ``preamble`` as a cache-marked leading block of the first user message.
 
     Used on the OAuth path to relocate the real system prompt out of ``system[]``
@@ -411,11 +430,13 @@ def _prepend_oauth_system_context(messages, preamble: str) -> None:
     and into the conversation, mirroring how Claude Code keeps only its identity
     line in ``system[]``.
 
-    The relocated block carries a 5m ``cache_control`` marker (built via
+    The relocated block carries a ``cache_control`` marker (built via
     ``prompt_caching._build_marker``) so the heavy prompt prefix is still cached
     across turns — the first user message is a stable prefix within a
     conversation, so the cache breakpoint simply moves from the system slot to
-    the first-user-message slot without breaking caching.
+    the first-user-message slot without breaking caching. ``ttl`` is inherited
+    from the displaced system block (see ``_extract_cache_ttl``) so a user
+    configured for 1-hour caching is not silently downgraded to 5m.
 
     Note on the 4-breakpoint cap: the upstream ``apply_anthropic_cache_control``
     pass places a marker on the (heavy) system block + the last 3 messages. When
@@ -434,7 +455,7 @@ def _prepend_oauth_system_context(messages, preamble: str) -> None:
     block = {
         "type": "text",
         "text": preamble,
-        "cache_control": _build_marker("5m"),
+        "cache_control": _build_marker(ttl),
     }
     for msg in messages:
         if msg.get("role") != "user":
@@ -2845,7 +2866,11 @@ def build_anthropic_kwargs(
     if is_oauth:
         # 1. Collect + sanitize existing system text in one pass (string or
         #    content blocks). Sanitizing inline avoids a second list rebuild.
+        #    Capture the displaced block's cache TTL BEFORE system[] is
+        #    replaced, so the relocated preamble inherits the user's configured
+        #    cache_ttl instead of silently downgrading 1h users to 5m.
         extra_system_parts: List[str] = []
+        relocated_cache_ttl = _extract_cache_ttl(system)
         if isinstance(system, list):
             for b in system:
                 if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
@@ -2864,7 +2889,9 @@ def build_anthropic_kwargs(
                 + "\n\n".join(extra_system_parts).strip()
                 + f"\n</{_OAUTH_SYSTEM_CONTEXT_TAG}>"
             )
-            _prepend_oauth_system_context(anthropic_messages, preamble)
+            _prepend_oauth_system_context(
+                anthropic_messages, preamble, relocated_cache_ttl
+            )
 
         # 4. Normalize tool names so NOTHING goes on the OAuth wire with a
         #    single-underscore ``mcp_`` prefix.  Anthropic's subscription/OAuth

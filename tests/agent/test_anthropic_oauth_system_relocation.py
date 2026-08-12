@@ -180,3 +180,57 @@ class TestOAuthCacheBreakpointCap:
         assert isinstance(blocks, list)
         assert "cache_control" in blocks[0]
         assert blocks[0]["text"].startswith("<system_context>")
+
+    def test_oauth_relocation_preserves_1h_cache_ttl(self):
+        """A user configured for 1h caching must not be silently downgraded to 5m.
+
+        The relocation discards the system block that carried the ``ttl: 1h``
+        marker; the preamble that replaces it has to inherit that TTL, or OAuth
+        users on ``cache_ttl: "1h"`` quietly lose 55 minutes of cache lifetime
+        (and pay to re-write the prefix) with no error anywhere.
+        """
+        from agent.prompt_caching import apply_anthropic_cache_control
+
+        msgs = [
+            {"role": "system", "content": "You are Hermes Agent by Nous Research. " * 80},
+            {"role": "user", "content": "first question"},
+            {"role": "assistant", "content": "first answer"},
+            {"role": "user", "content": "second question"},
+            {"role": "assistant", "content": "second answer"},
+            {"role": "user", "content": "third question"},
+        ]
+        # Production order, but with the 1h TTL the user configured.
+        cached = apply_anthropic_cache_control(msgs, cache_ttl="1h", native_anthropic=False)
+        kw = build_anthropic_kwargs(
+            model="claude-opus-4-8",
+            messages=cached,
+            tools=None,
+            max_tokens=8,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+        first_user = next(m for m in kw["messages"] if m["role"] == "user")
+        preamble = first_user["content"][0]
+        assert preamble["text"].startswith("<system_context>")
+        assert preamble["cache_control"] == {"type": "ephemeral", "ttl": "1h"}, (
+            "relocated preamble must inherit the configured 1h TTL, not hardcode 5m"
+        )
+        # The cap still holds at the 1h TTL.
+        total = _count_cache_markers(kw.get("system")) + _count_cache_markers(kw.get("messages"))
+        assert total <= 4, f"OAuth wire exceeded Anthropic's 4-breakpoint cap: {total}"
+
+    def test_oauth_relocation_defaults_to_5m_without_marker(self):
+        """No cache marker on the displaced system block → plain 5m ephemeral."""
+        kw = build_anthropic_kwargs(
+            model="claude-opus-4-8",
+            messages=[
+                {"role": "system", "content": "You are Hermes Agent. " * 20},
+                {"role": "user", "content": "hi"},
+            ],
+            tools=None,
+            max_tokens=8,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+        first_user = next(m for m in kw["messages"] if m["role"] == "user")
+        assert first_user["content"][0]["cache_control"] == {"type": "ephemeral"}

@@ -102,8 +102,13 @@ def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_e
         agent._execute_tool_calls_sequential(msg, messages, "task-1")
 
     mock_hfc.assert_called_once()
-    assert len(starts) == 1
-    assert any(event[0][0] == "tool.completed" for event in progress)
+    assert starts == [(("c-soft", "web_search", args), {})]
+    started_event = next(event for event in progress if event[0][0] == "tool.started")
+    completed_event = next(
+        event for event in progress if event[0][0] == "tool.completed"
+    )
+    assert started_event[1]["tool_call_id"] == "c-soft"
+    assert completed_event[1]["tool_call_id"] == "c-soft"
     assert len(messages) == 1
     assert messages[0]["role"] == "tool"
     assert messages[0]["tool_call_id"] == "c-soft"
@@ -215,9 +220,17 @@ def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_
     assert starts == [("c-allow", "web_search", allowed_args)]
     started_events = [event for event in progress_events if event[0] == "tool.started"]
     completed_events = [event for event in progress_events if event[0] == "tool.completed"]
-    assert started_events == [("tool.started", "web_search", allowed_args, {})]
+    assert started_events == [
+        (
+            "tool.started",
+            "web_search",
+            allowed_args,
+            {"tool_call_id": "c-allow"},
+        )
+    ]
     assert len(completed_events) == 1
     assert completed_events[0][1] == "web_search"
+    assert completed_events[0][3]["tool_call_id"] == "c-allow"
 
 
 def test_relay_rewrite_precedes_sequential_policy_approval_checkpoint_and_dispatch():

@@ -3879,7 +3879,6 @@ class TurnRunner:
                         mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
             except Exception as _hint_err:
                 logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
-            return
 
         # "_thinking" is assistant scratch text between tool calls.  It
         # is never ordinary tool progress: only relay it when the platform
@@ -3900,10 +3899,6 @@ class TurnRunner:
         if not ctx.tool_progress_enabled:
             return
 
-        # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)
-        if event_type not in {"tool.started",}:
-            return
-
         # Never render a progress bubble for the clarify tool.  The
         # adapter's send_clarify IS the user-facing rendering (interactive
         # buttons or the numbered-text fallback), so a progress bubble is
@@ -3914,6 +3909,73 @@ class TurnRunner:
         # rendered prompt (#52374).
         if tool_name == "clarify":
             return
+
+        if event_type == "tool.completed" and tool_name:
+            def _collapse(text):
+                return " ".join(str(text).split())
+
+            is_error = kwargs.get("is_error", False)
+            duration = kwargs.get("duration")
+            result = kwargs.get("result")
+            tool_call_id = str(kwargs.get("tool_call_id") or "")
+
+            status = "✗" if is_error else "✓"
+            try:
+                duration_suffix = f" {float(duration):.1f}s" if duration else ""
+            except (TypeError, ValueError):
+                duration_suffix = ""
+            completion_suffix = f" {status}{duration_suffix}"
+
+            result_snippet = ""
+            if result and not is_error:
+                try:
+                    data = json.loads(result) if isinstance(result, str) else result
+                    if isinstance(data, dict) and data.get("output"):
+                        output = _collapse(data["output"])
+                        result_snippet = (
+                            f": {output[:50]}"
+                            if len(output) <= 50
+                            else f": {output[:47]}..."
+                        )
+                except (ValueError, TypeError):
+                    if isinstance(result, str):
+                        first = _collapse(result)
+                        if len(first) <= 60:
+                            result_snippet = f": {first}"
+
+            ctx.progress_queue.put(
+                (
+                    "__completed__",
+                    tool_call_id,
+                    tool_name,
+                    completion_suffix + result_snippet,
+                )
+            )
+            return
+
+        # Only act on tool.started events (ignore reasoning.available, etc.)
+        if event_type != "tool.started":
+            return
+
+        tool_call_id = str(kwargs.get("tool_call_id") or "")
+
+        def _queue_started(message: str, *, deduplicate: bool = False) -> None:
+            if tool_call_id:
+                # Distinct active calls need distinct lines so completion can
+                # update by call ID even when name and preview are identical.
+                ctx.last_progress_msg[0] = None
+                ctx.repeat_count[0] = 0
+                ctx.progress_queue.put(("__started__", tool_call_id, message))
+                return
+            if deduplicate and message == ctx.last_progress_msg[0]:
+                ctx.repeat_count[0] += 1
+                ctx.progress_queue.put(
+                    ("__dedup__", message, ctx.repeat_count[0])
+                )
+                return
+            ctx.last_progress_msg[0] = message
+            ctx.repeat_count[0] = 0
+            ctx.progress_queue.put(message)
 
         # Suppress tool-progress bubbles once the user has sent `stop`.
         # When the LLM response carries N parallel tool calls, the agent
@@ -3933,6 +3995,11 @@ class TurnRunner:
 
         # "new" mode: only report when tool changes
         if ctx.progress_mode == "new" and tool_name == ctx.last_tool[0]:
+            if tool_call_id:
+                # Keep the call identity in the queue so its eventual
+                # completion stays suppressed too. Otherwise a hidden repeated
+                # start would leak back as a standalone completion line.
+                ctx.progress_queue.put(("__suppressed__", tool_call_id))
             return
         ctx.last_tool[0] = tool_name
 
@@ -3991,7 +4058,7 @@ class TurnRunner:
         if ctx.progress_mode == "verbose":
             if _code_block_full is not None:
                 ctx.last_was_terminal_block[0] = True
-                ctx.progress_queue.put(_code_block_full)
+                _queue_started(_code_block_full)
                 return
             ctx.last_was_terminal_block[0] = False
             if args:
@@ -4008,7 +4075,7 @@ class TurnRunner:
                 msg = f"{emoji} {tool_name}: \"{preview}\""
             else:
                 msg = f"{emoji} {tool_name}..."
-            ctx.progress_queue.put(msg)
+            _queue_started(msg)
             return
 
         # "all" / "new" modes: short preview, respects tool_preview_length
@@ -4057,21 +4124,12 @@ class TurnRunner:
             msg = f"{emoji} {tool_name}..."
             ctx.last_was_terminal_block[0] = False
 
-        # Dedup: collapse consecutive identical progress messages.
-        # Common with execute_code where models iterate with the same
-        # code (same boilerplate imports → identical previews).
-        if msg == ctx.last_progress_msg[0]:
-            ctx.repeat_count[0] += 1
-            # Update the last line in progress_lines with a counter
-            # via a special "dedup" queue message.
-            ctx.progress_queue.put(("__dedup__", msg, ctx.repeat_count[0]))
-            return
-        ctx.last_progress_msg[0] = msg
-        ctx.repeat_count[0] = 0
+        # Legacy/custom callback events without a call ID retain the existing
+        # consecutive-line dedup behavior. Executor events carry IDs and stay
+        # separate so same-name calls can complete independently.
+        _queue_started(msg, deduplicate=True)
 
-        ctx.progress_queue.put(msg)
-
-    async def send_progress_messages(self):
+    async def send_progress_messages(self, *, drain_only: bool = False):
         ctx = self._ctx
         if not ctx.progress_queue:
             return
@@ -4096,8 +4154,14 @@ class TurnRunner:
             return
 
         progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
+        progress_line_by_call_id: dict[str, int] = {}
         progress_msg_id = None   # ID of the current progress message to edit
-        can_edit = ctx.progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
+        separate_grouping = ctx.progress_grouping == "separate"
+        can_edit = not separate_grouping  # "separate" = one message per tool (pre-v0.9 behavior)
+        separate_line_by_call_id: dict[str, str] = {}
+        separate_message_by_call_id: dict[str, str] = {}
+        suppressed_call_ids: set[str] = set()
+        separate_last_message_id = None
         _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
         _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
@@ -4159,6 +4223,37 @@ class TurnRunner:
         def _progress_text(lines: list) -> str:
             return "\n".join(str(line) for line in lines)
 
+        def _append_started(call_id: str, line: str) -> str:
+            progress_lines.append(line)
+            if call_id:
+                progress_line_by_call_id[call_id] = len(progress_lines) - 1
+            return line
+
+        def _apply_completed(
+            call_id: str, completed_tool: str, completion_suffix: str
+        ) -> str | None:
+            if call_id in suppressed_call_ids:
+                suppressed_call_ids.discard(call_id)
+                return None
+            line_index = progress_line_by_call_id.pop(call_id, None)
+            if line_index is not None and line_index < len(progress_lines):
+                progress_lines[line_index] = (
+                    f"{progress_lines[line_index]}{completion_suffix}"
+                )
+                return progress_lines[line_index]
+
+            # The start may have been suppressed by "new" mode or rolled into
+            # an older full bubble. Append a standalone completion rather than
+            # risk updating a different same-name call.
+            from agent.display import get_tool_emoji
+
+            line = (
+                f"{get_tool_emoji(completed_tool, default='⚙️')} "
+                f"{completed_tool}{completion_suffix}"
+            )
+            progress_lines.append(line)
+            return line
+
         def _split_progress_groups(lines: list) -> list[list]:
             """Partition progress lines into platform-sized editable bubbles."""
             groups: list[list] = []
@@ -4191,6 +4286,77 @@ class TurnRunner:
             )
             _track_progress_result(result)
             return result
+
+        async def _deliver_separate_raw(raw) -> None:
+            """Deliver one progress event per bubble, editing completion in place."""
+            nonlocal separate_last_message_id
+
+            if isinstance(raw, tuple) and len(raw) == 2 and raw[0] == "__suppressed__":
+                suppressed_call_ids.add(raw[1])
+                return
+
+            if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__started__":
+                _, call_id, started_line = raw
+                line = str(started_line)
+                result = await _send_progress_text(line)
+                if result.success and result.message_id:
+                    separate_last_message_id = str(result.message_id)
+                    if call_id:
+                        separate_line_by_call_id[call_id] = line
+                        separate_message_by_call_id[call_id] = str(result.message_id)
+                return
+
+            if isinstance(raw, tuple) and len(raw) == 4 and raw[0] == "__completed__":
+                _, call_id, completed_tool, completion_suffix = raw
+                if call_id in suppressed_call_ids:
+                    suppressed_call_ids.discard(call_id)
+                    return
+                started_line = separate_line_by_call_id.pop(call_id, None)
+                if started_line is None:
+                    from agent.display import get_tool_emoji
+
+                    completed_line = (
+                        f"{get_tool_emoji(completed_tool, default='⚙️')} "
+                        f"{completed_tool}{completion_suffix}"
+                    )
+                else:
+                    completed_line = f"{started_line}{completion_suffix}"
+
+                message_id = separate_message_by_call_id.pop(call_id, None)
+                if message_id:
+                    result = await _edit_progress_message(message_id, completed_line)
+                    if result.success:
+                        return
+                result = await _send_progress_text(completed_line)
+                if result.success and result.message_id:
+                    separate_last_message_id = str(result.message_id)
+                return
+
+            if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
+                _, base_msg, count = raw
+                line = f"{base_msg} (×{count + 1})"
+                if separate_last_message_id:
+                    result = await _edit_progress_message(
+                        separate_last_message_id, line
+                    )
+                    if result.success:
+                        return
+                result = await _send_progress_text(line)
+                if result.success and result.message_id:
+                    separate_last_message_id = str(result.message_id)
+                return
+
+            if isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
+                ctx.last_progress_msg[0] = None
+                ctx.repeat_count[0] = 0
+                separate_line_by_call_id.clear()
+                separate_message_by_call_id.clear()
+                separate_last_message_id = None
+                return
+
+            result = await _send_progress_text(str(raw))
+            if result.success and result.message_id:
+                separate_last_message_id = str(result.message_id)
 
         async def _roll_progress_overflow_if_needed() -> bool:
             """Start fresh editable progress bubbles before a bubble exceeds limit.
@@ -4233,8 +4399,119 @@ class TurnRunner:
             # The newest continuation is now the only mutable bubble.  Keep
             # just its lines so subsequent edits update it instead of
             # replaying the full historical transcript into new messages.
+            retained_start = len(progress_lines) - len(groups[-1])
+            for call_id, line_index in list(progress_line_by_call_id.items()):
+                if line_index < retained_start:
+                    progress_line_by_call_id.pop(call_id, None)
+                else:
+                    progress_line_by_call_id[call_id] = (
+                        line_index - retained_start
+                    )
             progress_lines = groups[-1]
             return True
+
+        async def _drain_and_flush() -> None:
+            """Drain queued lifecycle events without throttle delays, then flush."""
+            nonlocal progress_msg_id, progress_lines
+            if separate_grouping:
+                while not ctx.progress_queue.empty():
+                    try:
+                        await _deliver_separate_raw(ctx.progress_queue.get_nowait())
+                    except Exception:
+                        break
+                return
+
+            while not ctx.progress_queue.empty():
+                try:
+                    raw = ctx.progress_queue.get_nowait()
+                    if (
+                        isinstance(raw, tuple)
+                        and len(raw) == 2
+                        and raw[0] == "__suppressed__"
+                    ):
+                        suppressed_call_ids.add(raw[1])
+                    elif (
+                        isinstance(raw, tuple)
+                        and len(raw) == 3
+                        and raw[0] == "__dedup__"
+                    ):
+                        _, base_msg, count = raw
+                        if progress_lines:
+                            progress_lines[-1] = f"{base_msg} (×{count + 1})"
+                            await _roll_progress_overflow_if_needed()
+                    elif (
+                        isinstance(raw, tuple)
+                        and len(raw) == 3
+                        and raw[0] == "__started__"
+                    ):
+                        _, call_id, started_line = raw
+                        _append_started(call_id, started_line)
+                        await _roll_progress_overflow_if_needed()
+                    elif (
+                        isinstance(raw, tuple)
+                        and len(raw) == 4
+                        and raw[0] == "__completed__"
+                    ):
+                        _, call_id, completed_tool, completion_suffix = raw
+                        completed_line = _apply_completed(
+                            call_id, completed_tool, completion_suffix
+                        )
+                        if completed_line is not None:
+                            await _roll_progress_overflow_if_needed()
+                    elif (
+                        isinstance(raw, tuple)
+                        and len(raw) >= 1
+                        and raw[0] == "__reset__"
+                    ):
+                        await _roll_progress_overflow_if_needed()
+                        if can_edit and progress_lines:
+                            pending_text = _progress_text(progress_lines)
+                            try:
+                                if progress_msg_id:
+                                    await _edit_progress_message(
+                                        progress_msg_id, pending_text
+                                    )
+                                else:
+                                    await _send_progress_text(pending_text)
+                            except Exception:
+                                pass
+                        progress_msg_id = None
+                        progress_lines = []
+                        progress_line_by_call_id.clear()
+                        ctx.last_progress_msg[0] = None
+                        ctx.repeat_count[0] = 0
+                    else:
+                        progress_lines.append(str(raw))
+                        await _roll_progress_overflow_if_needed()
+                except Exception:
+                    break
+
+            # Fast tools can finish before the normal sender performs its first
+            # send. In that case flush the completed buffer as a new message.
+            if can_edit and progress_lines:
+                await _roll_progress_overflow_if_needed()
+                full_text = _progress_text(progress_lines)
+                try:
+                    if progress_msg_id:
+                        await _edit_progress_message(progress_msg_id, full_text)
+                    else:
+                        await _send_progress_text(full_text)
+                except Exception:
+                    pass
+
+        if drain_only:
+            agent = ctx.agent_holder[0] if ctx.agent_holder else None
+            if not ctx._run_still_current() or (
+                agent is not None and getattr(agent, "is_interrupted", False)
+            ):
+                while not ctx.progress_queue.empty():
+                    try:
+                        ctx.progress_queue.get_nowait()
+                    except Exception:
+                        break
+                return
+            await _drain_and_flush()
+            return
 
         while True:
             try:
@@ -4264,12 +4541,37 @@ class TurnRunner:
                 except Exception:
                     pass
 
+                if separate_grouping:
+                    await _deliver_separate_raw(raw)
+                    await asyncio.sleep(0.3)
+                    if ctx._run_still_current():
+                        _send_typing = getattr(adapter, "send_typing", None)
+                        if callable(_send_typing):
+                            await cast(Callable[..., Awaitable[Any]], _send_typing)(
+                                ctx.source.chat_id,
+                                metadata=ctx._progress_metadata,
+                            )
+                    continue
+
                 # Handle dedup messages: update last line with repeat counter
+                if isinstance(raw, tuple) and len(raw) == 2 and raw[0] == "__suppressed__":
+                    suppressed_call_ids.add(raw[1])
+                    continue
                 if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                     _, base_msg, count = raw
                     if progress_lines:
                         progress_lines[-1] = f"{base_msg} (×{count + 1})"
                     msg = progress_lines[-1] if progress_lines else base_msg
+                elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__started__":
+                    _, call_id, started_line = raw
+                    msg = _append_started(call_id, started_line)
+                elif isinstance(raw, tuple) and len(raw) == 4 and raw[0] == "__completed__":
+                    _, call_id, completed_tool, completion_suffix = raw
+                    msg = _apply_completed(
+                        call_id, completed_tool, completion_suffix
+                    )
+                    if msg is None:
+                        continue
                 elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
                     # Content bubble just landed on the platform — close off
                     # the current tool-progress bubble so the next tool
@@ -4281,11 +4583,12 @@ class TurnRunner:
                     # linearization regression after PR #7885.)
                     progress_msg_id = None
                     progress_lines = []
+                    progress_line_by_call_id.clear()
                     ctx.last_progress_msg[0] = None
                     ctx.repeat_count[0] = 0
                     continue
                 else:
-                    msg = raw
+                    msg = str(raw)
                     progress_lines.append(msg)
 
                 if await _roll_progress_overflow_if_needed():
@@ -4383,44 +4686,7 @@ class TurnRunner:
             except queue.Empty:
                 await asyncio.sleep(0.3)
             except asyncio.CancelledError:
-                # Drain remaining queued messages
-                while not ctx.progress_queue.empty():
-                    try:
-                        raw = ctx.progress_queue.get_nowait()
-                        if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
-                            _, base_msg, count = raw
-                            if progress_lines:
-                                progress_lines[-1] = f"{base_msg} (×{count + 1})"
-                                await _roll_progress_overflow_if_needed()
-                        elif isinstance(raw, tuple) and len(raw) >= 1 and raw[0] == "__reset__":
-                            # Content-bubble marker during drain: close off
-                            # the current progress bubble and start a fresh
-                            # one for any tool lines that arrived after.
-                            await _roll_progress_overflow_if_needed()
-                            if can_edit and progress_lines and progress_msg_id:
-                                _pending_text = _progress_text(progress_lines)
-                                try:
-                                    await _edit_progress_message(progress_msg_id, _pending_text)
-                                except Exception:
-                                    pass
-                            progress_msg_id = None
-                            progress_lines = []
-                            ctx.last_progress_msg[0] = None
-                            ctx.repeat_count[0] = 0
-                        else:
-                            progress_lines.append(raw)
-                            await _roll_progress_overflow_if_needed()
-                    except Exception:
-                        break
-                # Final edit with all remaining tools (only if editing works)
-                if can_edit and progress_lines and progress_msg_id:
-                    await _roll_progress_overflow_if_needed()
-                if can_edit and progress_lines and progress_msg_id:
-                    full_text = _progress_text(progress_lines)
-                    try:
-                        await _edit_progress_message(progress_msg_id, full_text)
-                    except Exception:
-                        pass
+                await _drain_and_flush()
                 return
             except Exception as e:
                 logger.error("Progress message error: %s", e)
@@ -26926,6 +27192,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Stop progress sender, interrupt monitor, and notification task
             if progress_task:
                 progress_task.cancel()
+                try:
+                    await progress_task
+                except asyncio.CancelledError:
+                    pass
+                progress_task = None
+                # Cancelling a Task before its coroutine ever starts does not
+                # enter the sender's CancelledError handler. Drain with a fresh
+                # sender state so ultra-fast tool lifecycles are still shown.
+                if turn_ctx.progress_queue and not turn_ctx.progress_queue.empty():
+                    await send_progress_messages(drain_only=True)
             if log_task:
                 log_task.cancel()
             interrupt_monitor.cancel()

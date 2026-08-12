@@ -2,10 +2,14 @@
 
 import asyncio
 import importlib
+import json
+import re
 import sys
+import threading
 import time
 import types
 from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -19,8 +23,10 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
     def __init__(self, platform=Platform.TELEGRAM):
         super().__init__(PlatformConfig(enabled=True, token="***"), platform)
         self.sent = []
+        self.sent_message_ids = []
         self.edits = []
         self.typing = []
+        self._next_id = 0
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         return True
@@ -28,7 +34,12 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         return None
 
+    def _mint_id(self):
+        self._next_id += 1
+        return f"progress-{self._next_id}"
+
     async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        message_id = self._mint_id()
         self.sent.append(
             {
                 "chat_id": chat_id,
@@ -37,7 +48,8 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
                 "metadata": metadata,
             }
         )
-        return SendResult(success=True, message_id="progress-1")
+        self.sent_message_ids.append(message_id)
+        return SendResult(success=True, message_id=message_id)
 
     async def edit_message(self, chat_id, message_id, content) -> SendResult:
         self.edits.append(
@@ -97,7 +109,6 @@ class SmallLimitProgressAdapter(ProgressCaptureAdapter):
 
     def __init__(self, platform=Platform.TELEGRAM):
         super().__init__(platform=platform)
-        self._next_id = 0
         self.oversized_edits = []
         self.oversized_sends = []
 
@@ -106,6 +117,7 @@ class SmallLimitProgressAdapter(ProgressCaptureAdapter):
         return f"progress-{self._next_id}"
 
     async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        message_id = self._mint_id()
         if len(content) > self.MAX_MESSAGE_LENGTH:
             self.oversized_sends.append(content)
         self.sent.append(
@@ -116,7 +128,8 @@ class SmallLimitProgressAdapter(ProgressCaptureAdapter):
                 "metadata": metadata,
             }
         )
-        return SendResult(success=True, message_id=self._mint_id())
+        self.sent_message_ids.append(message_id)
+        return SendResult(success=True, message_id=message_id)
 
     async def edit_message(self, chat_id, message_id, content) -> SendResult:
         if len(content) > self.MAX_MESSAGE_LENGTH:
@@ -399,6 +412,203 @@ def _make_runner(adapter):
         stt_enabled=False,
     )
     return runner
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("progress_grouping", ["accumulate", "separate"])
+@pytest.mark.parametrize("progress_mode", ["all", "new"])
+async def test_concurrent_same_name_completions_keep_call_id_outputs(
+    monkeypatch, tmp_path, progress_grouping, progress_mode
+):
+    """Real executor events must update the matching same-name progress line."""
+    import run_agent as real_run_agent
+    import yaml
+
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", progress_mode)
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump(
+            {
+                "display": {
+                    "friendly_tool_labels": False,
+                    "tool_progress": progress_mode,
+                    "tool_progress_grouping": progress_grouping,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tool_calls = [
+        SimpleNamespace(
+            id="call-alpha",
+            type="function",
+            function=SimpleNamespace(
+                name="web_search", arguments=json.dumps({"query": "alpha"})
+            ),
+        ),
+        SimpleNamespace(
+            id="call-beta",
+            type="function",
+            function=SimpleNamespace(
+                name="web_search", arguments=json.dumps({"query": "beta"})
+            ),
+        ),
+        SimpleNamespace(
+            id="call-gamma",
+            type="function",
+            function=SimpleNamespace(
+                name="web_search", arguments=json.dumps({"query": "gamma"})
+            ),
+        ),
+    ]
+
+    def _response(content, finish_reason, calls=None):
+        message = SimpleNamespace(content=content, tool_calls=calls)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message, finish_reason=finish_reason)],
+            model="test/model",
+            usage=None,
+        )
+
+    class ConcurrentExecutorAgent(real_run_agent.AIAgent):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.client = MagicMock()
+            self.client.chat.completions.create.side_effect = [
+                _response("", "tool_calls", tool_calls),
+                _response("done", "stop"),
+            ]
+
+    tool_defs = [
+        {
+            "type": "function",
+            "function": {
+                "name": "web_search",
+                "description": "Search",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    monkeypatch.setattr(
+        real_run_agent, "get_tool_definitions", lambda *args, **kwargs: tool_defs
+    )
+    monkeypatch.setattr(
+        real_run_agent, "check_toolset_requirements", lambda *args, **kwargs: {}
+    )
+    monkeypatch.setattr(real_run_agent, "OpenAI", MagicMock)
+    monkeypatch.setattr(real_run_agent, "AIAgent", ConcurrentExecutorAgent)
+
+    concurrent_gate = threading.Barrier(3)
+    worker_threads = set()
+
+    def _tool_result(_name, args, _task_id, **_kwargs):
+        worker_threads.add(threading.get_ident())
+        concurrent_gate.wait(timeout=3)
+        if args["query"] == "gamma":
+            return "Error executing web_search: gamma failed"
+        return json.dumps({"output": f"{args['query'].upper()}_RESULT"})
+
+    monkeypatch.setattr(real_run_agent, "handle_function_call", _tool_result)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "api_key": "test-key-1234567890",
+            "base_url": "https://example.test/v1",
+            "provider": "custom",
+            "api_mode": "chat_completions",
+            "model": "test/model",
+        },
+    )
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+    result = await runner._run_agent(
+        message="search twice",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-completed",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    assert len(worker_threads) == 3
+    assert adapter.sent
+
+    all_progress = "\n".join(
+        call["content"] for call in adapter.sent + adapter.edits
+    )
+    if progress_mode == "new":
+        expected = (
+            ("alpha", "ALPHA_RESULT", "✓"),
+            ("beta", "BETA_RESULT", "✓"),
+            ("gamma", None, "✗"),
+        )
+        visible = [entry for entry in expected if entry[0] in all_progress]
+        assert len(visible) == 1
+        visible_query, visible_output, visible_status = visible[0]
+        assert visible_status in all_progress
+        if visible_output is not None:
+            assert visible_output in all_progress
+        for query, output, _status in expected:
+            if query == visible_query:
+                continue
+            assert query not in all_progress
+            if output is not None:
+                assert output not in all_progress
+        if progress_grouping == "separate":
+            assert len(adapter.sent) == 1
+            assert len(adapter.edits) == 1
+        return
+
+    if progress_grouping == "separate":
+        assert len(adapter.sent) == 3
+        assert len(adapter.edits) == 3
+        progress_lines = [edit["content"] for edit in adapter.edits]
+    else:
+        final_progress = (
+            adapter.edits[-1]["content"]
+            if adapter.edits
+            else adapter.sent[-1]["content"]
+        )
+        progress_lines = final_progress.splitlines()
+    alpha_line = next(line for line in progress_lines if "alpha" in line.lower())
+    beta_line = next(line for line in progress_lines if "beta" in line.lower())
+    gamma_line = next(line for line in progress_lines if "gamma" in line.lower())
+    assert "✓" in alpha_line and "ALPHA_RESULT" in alpha_line
+    assert "✓" in beta_line and "BETA_RESULT" in beta_line
+    assert re.search(r"✓ \d+\.\d+s: ALPHA_RESULT", alpha_line)
+    assert re.search(r"✓ \d+\.\d+s: BETA_RESULT", beta_line)
+    assert re.search(r"✗ \d+\.\d+s", gamma_line)
+
+    if progress_grouping == "separate":
+        for query, output in (
+            ("alpha", "ALPHA_RESULT"),
+            ("beta", "BETA_RESULT"),
+            ("gamma", None),
+        ):
+            sent_index = next(
+                i for i, call in enumerate(adapter.sent)
+                if query in call["content"]
+            )
+            message_id = adapter.sent_message_ids[sent_index]
+            completed = next(
+                call for call in adapter.edits
+                if call["message_id"] == message_id
+            )
+            assert query in completed["content"]
+            if output is not None:
+                assert output in completed["content"]
 
 
 @pytest.mark.asyncio
@@ -912,6 +1122,95 @@ class VerboseAgent:
         }
 
 
+class ReorderedCompletionAgent:
+    """Emit same-name completions in reverse order to prove ID correlation."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        cb = self.tool_progress_callback
+        assert cb is not None
+        cb(
+            "tool.started",
+            "web_search",
+            "alpha",
+            {"query": "alpha"},
+            tool_call_id="call-alpha",
+        )
+        cb(
+            "tool.started",
+            "web_search",
+            "beta",
+            {"query": "beta"},
+            tool_call_id="call-beta",
+        )
+        cb(
+            "tool.completed",
+            "web_search",
+            None,
+            None,
+            duration=0.2,
+            result=json.dumps({"output": "BETA_RESULT"}),
+            tool_call_id="call-beta",
+        )
+        cb(
+            "tool.completed",
+            "web_search",
+            None,
+            None,
+            duration=0.4,
+            result=json.dumps({"output": "ALPHA_RESULT"}),
+            tool_call_id="call-alpha",
+        )
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class ResetBetweenLifecycleEventsAgent:
+    """Put an assistant bubble between a tool's start and completion."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        assert self.tool_progress_callback is not None
+        assert self.interim_assistant_callback is not None
+        self.tool_progress_callback(
+            "tool.started",
+            "web_search",
+            "alpha",
+            {"query": "alpha"},
+            tool_call_id="call-alpha",
+        )
+        time.sleep(0.35)
+        self.interim_assistant_callback(
+            "commentary between lifecycle events", already_streamed=False
+        )
+        time.sleep(0.35)
+        self.tool_progress_callback(
+            "tool.completed",
+            "web_search",
+            None,
+            None,
+            duration=0.7,
+            result=json.dumps({"output": "ALPHA_RESULT"}),
+            tool_call_id="call-alpha",
+        )
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 async def _run_with_agent(
     monkeypatch,
     tmp_path,
@@ -972,6 +1271,102 @@ async def _run_with_agent(
         session_key=session_key,
     )
     return adapter, result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("progress_grouping", ["accumulate", "separate"])
+async def test_reversed_same_name_completions_update_their_call_ids(
+    monkeypatch, tmp_path, progress_grouping
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ReorderedCompletionAgent,
+        session_id=f"sess-reversed-completions-{progress_grouping}",
+        config_data={
+            "display": {
+                "friendly_tool_labels": False,
+                "tool_progress": "all",
+                "tool_progress_grouping": progress_grouping,
+                "interim_assistant_messages": False,
+            }
+        },
+    )
+
+    assert result["final_response"] == "done"
+    if progress_grouping == "accumulate":
+        final_progress = (
+            adapter.edits[-1]["content"]
+            if adapter.edits
+            else adapter.sent[-1]["content"]
+        )
+        alpha_line = next(
+            line for line in final_progress.splitlines() if "alpha" in line
+        )
+        beta_line = next(
+            line for line in final_progress.splitlines() if "beta" in line
+        )
+        assert "0.4s" in alpha_line and "ALPHA_RESULT" in alpha_line
+        assert "0.2s" in beta_line and "BETA_RESULT" in beta_line
+        return
+
+    assert len(adapter.sent) == 2
+    assert len(adapter.edits) == 2
+    for query, duration, output in (
+        ("alpha", "0.4s", "ALPHA_RESULT"),
+        ("beta", "0.2s", "BETA_RESULT"),
+    ):
+        sent_index = next(
+            i for i, call in enumerate(adapter.sent)
+            if query in call["content"]
+        )
+        message_id = adapter.sent_message_ids[sent_index]
+        completed = next(
+            call for call in adapter.edits
+            if call["message_id"] == message_id
+        )
+        assert query in completed["content"]
+        assert duration in completed["content"]
+        assert output in completed["content"]
+
+
+@pytest.mark.asyncio
+async def test_separate_progress_reset_does_not_edit_above_new_content(
+    monkeypatch, tmp_path
+):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        ResetBetweenLifecycleEventsAgent,
+        session_id="sess-separate-reset-completion",
+        config_data={
+            "display": {
+                "friendly_tool_labels": False,
+                "tool_progress": "all",
+                "tool_progress_grouping": "separate",
+                "interim_assistant_messages": True,
+            }
+        },
+    )
+
+    assert result["final_response"] == "done"
+    start_index = next(
+        i for i, call in enumerate(adapter.sent)
+        if 'web_search: "alpha"' in call["content"]
+    )
+    commentary_index = next(
+        i for i, call in enumerate(adapter.sent)
+        if call["content"] == "commentary between lifecycle events"
+    )
+    completion_index = next(
+        i for i, call in enumerate(adapter.sent)
+        if "web_search ✓ 0.7s: ALPHA_RESULT" in call["content"]
+    )
+    assert start_index < commentary_index < completion_index
+    assert not any(
+        call["message_id"] == adapter.sent_message_ids[start_index]
+        for call in adapter.edits
+    )
 
 
 @pytest.mark.asyncio

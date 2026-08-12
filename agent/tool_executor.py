@@ -713,7 +713,11 @@ def _begin_tool_execution(
             )
             preview = _build_tool_preview(function_name, display_args)
             agent.tool_progress_callback(
-                "tool.started", function_name, preview, display_args
+                "tool.started",
+                function_name,
+                preview,
+                display_args,
+                tool_call_id=tool_call_id,
             )
         except Exception as callback_error:
             logging.debug("Tool progress callback error: %s", callback_error)
@@ -1517,6 +1521,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     "tool.completed", progress_function_name, None, None,
                     duration=tool_duration, is_error=is_error,
                     result=display_function_result,
+                    tool_call_id=tc.id,
                 )
             except Exception as cb_err:
                 logging.debug("Tool progress callback error: %s", cb_err)
@@ -2281,6 +2286,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     "tool.completed", function_name, None, None,
                     duration=tool_duration, is_error=_is_error_result,
                     result=display_function_result,
+                    tool_call_id=tool_call.id,
                 )
             except Exception as cb_err:
                 logging.debug("Tool progress callback error: %s", cb_err)

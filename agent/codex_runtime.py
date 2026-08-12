@@ -496,10 +496,10 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
 
     Translation map:
       * ``item/started`` for tool-shaped items → ``tool_progress_callback(
-        "tool.started", name, preview, args)``
+        "tool.started", name, preview, args, tool_call_id=...)``
       * ``item/completed`` for tool-shaped items → ``tool_progress_callback(
         "tool.completed", name, None, None, duration=..., is_error=...,
-        result=...)``
+        result=..., tool_call_id=...)``
       * ``item/agentMessage/delta`` → ``_fire_stream_delta(text)`` so chat
         adapters can render the assistant's reply as it streams.
       * ``item/reasoning/delta`` → ``_fire_reasoning_delta(text)``
@@ -543,12 +543,19 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         item_id = item.get("id") or ""
         name = _codex_item_to_tool_name(item)
         args = _codex_item_to_args(item)
+        tool_call_id = _stable_call_id(item, name)
         if item_id:
             started[item_id] = (name, args, time.monotonic())
         cb = getattr(agent, "tool_progress_callback", None)
         if cb is not None:
             try:
-                cb("tool.started", name, _codex_item_to_preview(item), args)
+                cb(
+                    "tool.started",
+                    name,
+                    _codex_item_to_preview(item),
+                    args,
+                    tool_call_id=tool_call_id,
+                )
             except Exception:
                 logger.debug(
                     "tool_progress_callback raised on tool.started for %s",
@@ -561,7 +568,7 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         start_cb = getattr(agent, "tool_start_callback", None)
         if start_cb is not None:
             try:
-                start_cb(_stable_call_id(item, name), name, args)
+                start_cb(tool_call_id, name, args)
             except Exception:
                 logger.debug(
                     "tool_start_callback raised for %s", name, exc_info=True,
@@ -570,6 +577,7 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
     def _fire_tool_completed(item: dict) -> None:
         item_id = item.get("id") or ""
         name = _codex_item_to_tool_name(item)
+        tool_call_id = _stable_call_id(item, name)
         prior = started.pop(item_id, None)
         # Prefer codex's own durationMs when present so the bubble shows
         # exact tool wall-time; fall back to our started timestamp; fall
@@ -585,8 +593,16 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         cb = getattr(agent, "tool_progress_callback", None)
         if cb is not None:
             try:
-                cb("tool.completed", name, None, None,
-                   duration=duration, is_error=is_error, result=result)
+                cb(
+                    "tool.completed",
+                    name,
+                    None,
+                    None,
+                    duration=duration,
+                    is_error=is_error,
+                    result=result,
+                    tool_call_id=tool_call_id,
+                )
             except Exception:
                 logger.debug(
                     "tool_progress_callback raised on tool.completed for %s",
@@ -596,7 +612,7 @@ def make_codex_app_server_event_bridge(agent) -> Callable[[dict], None]:
         if complete_cb is not None:
             args = prior[1] if prior is not None else _codex_item_to_args(item)
             try:
-                complete_cb(_stable_call_id(item, name), name, args, result)
+                complete_cb(tool_call_id, name, args, result)
             except Exception:
                 logger.debug(
                     "tool_complete_callback raised for %s", name, exc_info=True,

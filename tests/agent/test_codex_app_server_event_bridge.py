@@ -193,6 +193,7 @@ class TestToolProgressDispatch:
         assert call.args[1] == "exec_command"
         assert "ls /tmp" in call.args[2]  # preview
         assert call.args[3] == {"command": "ls /tmp", "cwd": "/tmp"}
+        assert call.kwargs["tool_call_id"]
 
     def test_command_completed_fires_tool_completed_with_result(self):
         agent = _make_stub_agent()
@@ -220,6 +221,8 @@ class TestToolProgressDispatch:
         assert completed.kwargs["duration"] == pytest.approx(0.042)
         assert completed.kwargs["is_error"] is False
         assert completed.kwargs["result"] == "hi\n"
+        started = agent.tool_progress_callback.call_args_list[0]
+        assert completed.kwargs["tool_call_id"] == started.kwargs["tool_call_id"]
 
 
 
@@ -245,6 +248,7 @@ class TestToolProgressDispatch:
         assert calls[0].args[1] == "web_search"
         assert calls[0].args[2] == "hermes agent docs"
         assert calls[0].args[3] == {"query": "hermes agent docs"}
+        assert calls[1].kwargs["tool_call_id"] == calls[0].kwargs["tool_call_id"]
 
 
 

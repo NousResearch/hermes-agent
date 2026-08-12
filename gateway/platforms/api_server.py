@@ -27,10 +27,11 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-# _resolve_request_profile result for a /p/<profile>/ prefix this gateway does not serve (-> 404);
-# distinct from None (no prefix / multiplexing off -> default profile).
+# Sentinel returned by _resolve_request_profile when a /p/<profile>/ prefix or
+# X-Hermes-Profile header names a profile this gateway does not serve (→ 404).
+# Distinct from None (no selector / multiplexing off → default profile).
 _PROFILE_REJECTED = object()
-
+_PROFILE_CONFLICT = object()
 
 def _prefix_names_served_profile(profile: str) -> bool:
     """True when a /p/<profile>/ prefix names the profile this gateway serves. Fail closed: a
@@ -41,8 +42,8 @@ def _prefix_names_served_profile(profile: str) -> bool:
     except Exception:
         return False
 
-
-# Per-request /p/<profile>/ selection: set by the profile-prefix middleware, read by handlers.
+# Profile selected by the URL prefix or X-Hermes-Profile request header. Set by
+# the profile middleware before authentication; read by handlers / _run_agent.
 _api_request_profile: ContextVar[Optional[str]] = ContextVar(
     "api_server_request_profile", default=None)
 _api_request_browser_control_principal: ContextVar[str] = ContextVar(
@@ -1427,10 +1428,28 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     # -- Multi-profile multiplexing (/p/<profile>/...) --------------------------------
 
     def _resolve_request_profile(self, request: "web.Request"):
-        """Resolve + validate the /p/<profile>/ prefix: ``None`` (no prefix, or multiplexing
-        off and the prefix names this gateway's own profile), the served profile name, or
-        ``_PROFILE_REJECTED`` (-> 404). Fail closed: a foreign prefix must never be ignored."""
-        profile = (request.match_info.get("profile") or "").strip()
+        """Resolve + validate the request's profile selector.
+
+        The established ``/p/<profile>/`` prefix and ``X-Hermes-Profile``
+        header are equivalent. The header lets API clients select a profile
+        without rewriting every endpoint path. Selection happens in middleware
+        before authentication, SessionDB access, config loading, or agent
+        creation, so the selected profile's own key and runtime scope remain
+        authoritative.
+
+        Returns:
+          - ``None`` when no selector is present, or multiplexing is off.
+          - the profile name (str) when present, multiplexing is on, and the
+            profile is one this gateway serves.
+          - ``_PROFILE_REJECTED`` when the selector is unknown/unconfigured,
+            or names a profile this single-profile gateway does not serve.
+          - ``_PROFILE_CONFLICT`` when prefix and header disagree.
+        """
+        path_profile = (request.match_info.get("profile") or "").strip()
+        header_profile = (request.headers.get("X-Hermes-Profile") or "").strip()
+        if path_profile and header_profile and path_profile != header_profile:
+            return _PROFILE_CONFLICT
+        profile = path_profile or header_profile
         if not profile:
             return None
         cfg = getattr(self.gateway_runner, "config", None)
@@ -1467,11 +1486,19 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         return _profile_runtime_scope(get_profile_dir(profile))
 
     def _make_profile_prefix_middleware(self):
-        """Reject unknown /p/<profile>/ prefixes and scope the request home."""
+        """Resolve the request profile and scope auth/config/session access."""
 
         @web.middleware
         async def profile_prefix_middleware(request: "web.Request", handler):
             profile = self._resolve_request_profile(request)
+            if profile is _PROFILE_CONFLICT:
+                return web.json_response(
+                    _openai_error(
+                        "X-Hermes-Profile conflicts with the URL profile prefix",
+                        code="profile_selector_conflict",
+                    ),
+                    status=400,
+                )
             if profile is _PROFILE_REJECTED:
                 return web.json_response({"error": "Unknown or unconfigured profile"}, status=404)
             token = _api_request_profile.set(profile)
@@ -2246,6 +2273,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 "responses_api": True, "responses_streaming": True, "run_submission": True,
                 "runs_idempotency": _api_runs._idempotency_capabilities(self, store_type=RunIdempotencyStore),
                 **_STATIC_FEATURE_FLAGS,
+                "profile_header": "X-Hermes-Profile",
                 "cors": bool(self._cors_origins),
                 # Always advertised for feature-detection; enabled follows config.
                 "browser_extension_control": {

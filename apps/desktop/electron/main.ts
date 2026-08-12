@@ -1820,11 +1820,17 @@ async function waitForUpdateToFinish() {
       // machines with no shim browser and no notifier this dialog is the
       // FIRST time the message is visible — it must not be a log line.
       rememberLog(`[updates] detached update finished with manual action (branch ${result.branch}): ${result.message}`)
-      dialog.showMessageBox({
+      await dialog.showMessageBox({
         type: 'warning',
         title: 'Hermes update',
         message: 'The update finished, but needs one more step',
         detail: result.message
+      }).catch((err: unknown) => {
+        rememberLog(`[updates] could not show manual-action dialog: ${err}`)
+        // macOS rejects showMessageBox when another modal is already presented.
+        // showErrorBox is synchronous and always renders — use it as a fallback
+        // so the required-action message is never silently dropped.
+        dialog.showErrorBox('Hermes update', result.message)
       })
     } else if (result && result.ok) {
       rememberLog(`[updates] detached update finished OK (branch ${result.branch})`)

@@ -1188,6 +1188,24 @@ class TestUpdateModeAppendCapability:
         item = kw["items"][0]
         assert item["update_mode"] == "append"
 
+    def test_legacy_feature_payload_without_storage_flag_preserves_append(
+        self, provider, monkeypatch
+    ):
+        """Pre-policy feature payloads omitted store_document_text entirely."""
+        self._clear_capability_cache()
+        monkeypatch.setattr(
+            "plugins.memory.hindsight._fetch_hindsight_api_capabilities",
+            lambda *a, **kw: (
+                "0.5.6",
+                {"observations": True, "bank_config_api": True},
+            ),
+        )
+
+        assert provider._resolve_retain_target(provider._document_id) == (
+            "test-session",
+            "append",
+        )
+
     def test_text_disabled_bank_uses_cumulative_non_append_retains(
         self, provider, monkeypatch
     ):

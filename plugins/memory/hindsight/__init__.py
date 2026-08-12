@@ -328,10 +328,11 @@ def _check_api_supports_update_mode_append(api_url: str,
         supported = effective_store_document_text is True
     elif supported and features is not None:
         # Before per-bank overrides, the server feature was the effective
-        # policy. Missing feature blocks are legacy payloads and historically
-        # imply source-text storage is enabled (vectorize-io/hindsight#2511).
+        # policy. A missing key is a legacy payload and historically implies
+        # source-text storage is enabled; only an explicit false disables
+        # append (vectorize-io/hindsight#2511).
         effective_store_document_text = features.get("store_document_text")
-        supported = effective_store_document_text is True
+        supported = effective_store_document_text is not False
     with _append_capability_lock:
         # Re-check after acquiring the lock in case a concurrent probe filled it.
         cached = _append_capability_cache.get(cache_key)

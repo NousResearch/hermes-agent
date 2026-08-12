@@ -207,7 +207,7 @@ voice = [
 # first /wake; mirrored in tools/lazy_deps.py.
 wake = [
   "openwakeword==0.6.0",
-  "onnxruntime==1.27.0",
+  "onnxruntime==1.20.1",  # macOS 13 x86_64 无 1.27.0 wheel（需 macOS 14+），本地适配
   "sherpa-onnx==1.13.4",
   "sentencepiece==0.2.2",
   "pvporcupine==4.0.3",

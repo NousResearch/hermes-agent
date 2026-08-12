@@ -167,7 +167,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     ),
     "wake.openwakeword": (
         "openwakeword==0.6.0",
-        "onnxruntime==1.27.0",
+        "onnxruntime==1.20.1",  # macOS 13 x86_64 无 1.27.0 wheel（需 macOS 14+），本地适配
         "sounddevice==0.5.5",
         "numpy==2.4.3",
     ),

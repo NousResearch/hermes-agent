@@ -253,15 +253,39 @@ describe('installFindShortcut', () => {
     uninstall()
   })
 
-  test('sends hermes:open-find-bar on Cmd+F (macOS primary accelerator)', () => {
+  // macOS branch: inject `isMac: () => true` so we exercise the REAL
+  // `meta` (Cmd) path — previously untested, because `process.platform` is
+  // baked at import time and the old "Cmd+F" case actually sent Ctrl.
+  test('sends hermes:open-find-bar on Cmd+F (meta) on macOS and prevents default', () => {
     const wc = makeFakeWebContents()
     const win = makeFakeWindow(wc)
-    const uninstall = installFindShortcut(win)
+    const uninstall = installFindShortcut(win, () => true)
 
-    // On macOS, Cmd is `meta`. We can't flip IS_MAC at runtime in the
-    // module under test, but the helper also accepts literal Ctrl on macOS
-    // so a non-macOS layout still works — verify the macOS-equivalent
-    // chord via Ctrl here (the macOS-specific Cmd path is a thin alias).
+    // Cmd+F on macOS: meta held, no control/alt/shift.
+    wc.emit('before-input-event', {}, {
+      key: 'f',
+      control: false,
+      meta: true,
+      alt: false,
+      shift: false,
+    })
+
+    assert.deepEqual(wc.calls.send, [
+      { channel: 'hermes:open-find-bar', payload: undefined }
+    ])
+
+    uninstall()
+  })
+
+  // The design intentionally accepts literal Ctrl on macOS too (dual-channel)
+  // so a non-macOS layout still works. Pin that behavior so the width of the
+  // chord doesn't silently drift.
+  test('accepts literal Ctrl+F on macOS (dual-channel with Cmd)', () => {
+    const wc = makeFakeWebContents()
+    const win = makeFakeWindow(wc)
+    const uninstall = installFindShortcut(win, () => true)
+
+    // Ctrl+F with no meta on macOS still opens the FindBar.
     wc.emit('before-input-event', {}, {
       key: 'F',
       control: true,
@@ -270,8 +294,30 @@ describe('installFindShortcut', () => {
       shift: false,
     })
 
-    assert.equal(wc.calls.send.length, 1)
-    assert.equal(wc.calls.send[0].channel, 'hermes:open-find-bar')
+    assert.deepEqual(wc.calls.send, [
+      { channel: 'hermes:open-find-bar', payload: undefined }
+    ])
+
+    uninstall()
+  })
+
+  // Cross-check: a bare Ctrl+F WITHOUT meta must NOT open on Linux/Windows,
+  // where only `control` counts (the macOS `meta || control` widening must not
+  // leak across the platform boundary).
+  test('does NOT fire for Ctrl+F with meta only on Linux/Windows', () => {
+    const wc = makeFakeWebContents()
+    const win = makeFakeWindow(wc)
+    const uninstall = installFindShortcut(win, () => false)
+
+    wc.emit('before-input-event', {}, {
+      key: 'f',
+      control: false,
+      meta: true,
+      alt: false,
+      shift: false,
+    })
+
+    assert.equal(wc.calls.send.length, 0, 'meta (Cmd) is not a valid chord on non-macOS')
 
     uninstall()
   })

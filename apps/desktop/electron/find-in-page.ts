@@ -135,11 +135,14 @@ export function installFoundInPageForwarder(webContents: Electron.WebContents | 
  * `webContents.findInPage`). This helper just guarantees that a Ctrl/Cmd+F
  * press reaches that pipeline.
  *
+ * `isMac` is injectable so the macOS-modifier branch can be exercised by
+ * unit tests without rebooting the process under a different platform.
+ *
  * Returns an uninstall fn that detaches the listener.
  */
-const IS_MAC = process.platform === 'darwin'
+const IS_MAC = () => process.platform === 'darwin'
 
-export function installFindShortcut(window: Electron.BrowserWindow): () => void {
+export function installFindShortcut(window: Electron.BrowserWindow, isMac: () => boolean = IS_MAC): () => void {
   const { webContents } = window
   if (!webContents || webContents.isDestroyed()) {
     return () => {}
@@ -155,7 +158,7 @@ export function installFindShortcut(window: Electron.BrowserWindow): () => void 
     // is on a non-macOS layout. On Pop!_OS / GNOME the GTK compositor owns
     // Ctrl+F before the renderer's keydown fires — this main-process handler
     // runs strictly before that (#81727).
-    const hasMod = IS_MAC ? input.meta || input.control : input.control
+    const hasMod = isMac() ? input.meta || input.control : input.control
     const isFindChord =
       key === 'f' &&
       hasMod &&

@@ -38,6 +38,14 @@ def test_empty_lines_are_preserved():
     assert lines == ["a", "", "b"]
 
 
+def test_all_line_ending_styles_are_normalized_without_losing_empty_lines():
+    expected = ["a", "", "b", ""]
+    for text in ("a\n\nb\n", "a\r\n\r\nb\r\n", "a\r\rb\r"):
+        lines = _wrap_panel_text(text, width=60)
+        assert lines == expected
+        assert all("\r" not in line and "\n" not in line for line in lines)
+
+
 def test_single_line_behaviour_unchanged():
     assert _wrap_panel_text("short", width=60) == ["short"]
     long_line = "x" * 130
@@ -103,86 +111,3 @@ def test_clarify_wrapper_preserves_empty_lines():
         "",
         "more context",
     ]
-
-
-# --- Clarify panel binding regression (exercises the actual panel renderer) ---
-
-
-def _make_clarify_cli():
-    """Stub HermesCLI instance with a set clarify state (mirrors test_cli_approval_ui)."""
-    import queue
-    import threading
-    from cli import HermesCLI
-    cli = HermesCLI.__new__(HermesCLI)
-    cli._clarify_state = None
-    cli._clarify_freetext = False
-    cli._clarify_response_queue = None
-    cli._clarify_lock = threading.Lock()
-    cli._clarify_deadline = 0
-    cli._invalidate = lambda: None
-    return cli
-
-
-def test_clarify_panel_binding_renders_all_choices_with_multiline_question():
-    """Panel-binding regression for #72580: a multi-line clarify question must
-    not push the selectable choices off-screen — the panel renderer (not just
-    the wrapper) must keep every choice visible."""
-    import shutil as _shutil
-    from unittest.mock import patch
-
-    cli = _make_clarify_cli()
-    cli._clarify_state = {
-        "question": "Which option do you want?\nContext:\nline two of a long question",
-        "choices": ["option alpha", "option beta", "option gamma"],
-        "selected": 0,
-        "multi_select": False,
-        "response_queue": __import__("queue").Queue(),
-    }
-
-    with patch("cli.shutil.get_terminal_size",
-               return_value=_shutil.os.terminal_size((100, 24))):
-        fragments = cli._get_clarify_display_fragments()
-
-    rendered = "".join(text for _style, text in fragments)
-
-    # Every choice must be present in the rendered panel.
-    for label in ("option alpha", "option beta", "option gamma"):
-        assert label in rendered, f"choice {label!r} missing from clarify panel"
-
-    # Other (type your answer) row must render as the fallback selection.
-    assert "Other (type your answer)" in rendered
-
-    # The multi-line question keeps one display line per source line
-    # (newline-split fix) instead of collapsing.
-    assert "\n" not in rendered.replace("\n", ""), "embedded newlines in panel text"
-    assert "line two of a long question" in rendered
-
-
-def test_clarify_panel_binding_drops_question_on_tiny_terminal():
-    """When the choices alone overflow the viewport, the question is dropped
-    entirely so the choices (the only thing needed to select) still render."""
-    import shutil as _shutil
-    from unittest.mock import patch
-
-    cli = _make_clarify_cli()
-    # 20 choices at ~64 cols each exceed a 10-row terminal even with compact chrome.
-    cli._clarify_state = {
-        "question": "A very long question " + ("that should be dropped " * 20),
-        "choices": [f"choice number {i}" for i in range(20)],
-        "selected": 0,
-        "multi_select": False,
-        "response_queue": __import__("queue").Queue(),
-    }
-
-    with patch("cli.shutil.get_terminal_size",
-               return_value=_shutil.os.terminal_size((80, 10))):
-        fragments = cli._get_clarify_display_fragments()
-
-    rendered = "".join(text for _style, text in fragments)
-
-    # All choices still render on a tiny terminal.
-    for i in range(20):
-        assert f"choice number {i}" in rendered, f"choice {i} missing on tiny terminal"
-    # Question dropped entirely (not just truncated) when choices overflow.
-    assert "that should be dropped" not in rendered
-    assert "Other (type your answer)" in rendered

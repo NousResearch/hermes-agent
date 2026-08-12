@@ -582,8 +582,15 @@ def test_real_terminal_provider_initialization_never_dispatches_tools(kanban_hom
     agent = _provider_boundary_agent(_provider_error(401, "OAuth token expired"))
     tool_calls = []
     agent.tools = [{"type": "function", "function": {"name": "dangerous_tool"}}]
-    agent._handle_function_call = lambda *args, **kwargs: tool_calls.append(args)
+    # Tool dispatch is performed by the production AIAgent execution seam,
+    # not by an instance ``_handle_function_call`` attribute.  Instrument the
+    # seam that run_conversation actually invokes so this assertion cannot be
+    # vacuous if dispatch is refactored.
+    def record_tool_execution(*args, **kwargs):
+        tool_calls.append((args, kwargs))
+
     with (
+        patch.object(agent, "_execute_tool_calls", side_effect=record_tool_execution),
         patch.object(agent, "_persist_session"),
         patch.object(agent, "_save_trajectory"),
         patch.object(agent, "_cleanup_task_resources"),
@@ -597,6 +604,7 @@ def test_real_failed_primary_successful_fallback_is_clean(kanban_home):
     """A fallback response must not emit a provider sidecar or sentinel."""
     from types import SimpleNamespace
     from unittest.mock import patch
+    import cli as hermes_cli_module
 
     agent = _provider_boundary_agent(_provider_error(401, "OAuth token expired"), fallback=True)
     success = SimpleNamespace(
@@ -604,16 +612,35 @@ def test_real_failed_primary_successful_fallback_is_clean(kanban_home):
         usage=None,
         model="fallback-model",
     )
-    agent.client.chat.completions.create.side_effect = [_provider_error(401, "OAuth token expired"), success]
-    with (
-        patch.object(agent, "_try_activate_fallback", return_value=True),
-        patch.object(agent, "_persist_session"),
-        patch.object(agent, "_save_trajectory"),
-        patch.object(agent, "_cleanup_task_resources"),
-    ):
-        result = agent.run_conversation("perform the operational task")
-    assert result.get("failed") is not True
-    assert result["final_response"] == "fallback ok"
+    task_id = "t-real-fallback-success"
+    log_dir = kanban_home / "kanban" / "logs"
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setenv("HERMES_KANBAN_LOG_DIR", str(log_dir))
+    client = agent.client
+    client.chat.completions.create.side_effect = [_provider_error(401, "OAuth token expired")]
+
+    def activate_fallback(*, reason=None):
+        """Model the real activation side effect without network/auth I/O."""
+        setattr(agent, "provider", "fallback")
+        setattr(agent, "model", "fallback-model")
+        client.chat.completions.create.side_effect = [success]
+        return True
+
+    try:
+        with (
+            patch.object(agent, "_try_activate_fallback", side_effect=activate_fallback),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("perform the operational task")
+        assert result.get("failed") is not True
+        assert result["final_response"] == "fallback ok"
+        assert hermes_cli_module._kanban_worker_exit_code(result, agent) == 0
+        assert kb.read_worker_provider_failure(task_id) == {}
+    finally:
+        monkeypatch.undo()
 
 
 def test_provider_billing_exit_is_parked_without_respawn_loop(

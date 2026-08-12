@@ -2268,6 +2268,7 @@ describe('usePromptActions submit / queue drain semantics', () => {
       'prompt.submit',
       {
         message_id: 'queued-1700000000000-source',
+        queued: true,
         session_id: RUNTIME_SESSION_ID,
         submitted_at: 1_700_000_000,
         text: 'queued message'
@@ -2523,12 +2524,14 @@ describe('useComposerQueue source-session retention', () => {
     expect(promptCalls).toEqual([
       {
         message_id: entry.id,
+        queued: true,
         session_id: 'rt-a-stale',
         submitted_at: entry.queuedAt / 1000,
         text: entry.text
       },
       {
         message_id: entry.id,
+        queued: true,
         session_id: 'rt-a-recovered',
         submitted_at: entry.queuedAt / 1000,
         text: entry.text

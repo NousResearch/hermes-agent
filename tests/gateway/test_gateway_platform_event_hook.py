@@ -447,9 +447,16 @@ class TestProfileScopedPlatformEventHandler:
         adapter = _adapter()
         adapter.gateway_runner = runner  # type: ignore[assignment]
 
-        source = adapter._source_from_reaction_for_auth(
-            _auth_reaction_update(user_id=777)
-        )
+        # Main now rejects routes to unserved profiles (_profile_name_for_source
+        # checks _multiplex_profile_homes); declare "work" as served so the
+        # route stamps rather than fail-closing to profile=None.
+        with patch(
+            "gateway.run._multiplex_profile_homes",
+            return_value=[("work", Path("/profiles/work"))],
+        ):
+            source = adapter._source_from_reaction_for_auth(
+                _auth_reaction_update(user_id=777)
+            )
 
         assert source.profile == "work"
         assert getattr(source, "_transport_adapter_ref")() is adapter

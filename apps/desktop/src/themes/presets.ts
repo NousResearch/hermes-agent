@@ -276,13 +276,75 @@ export const slateTheme: DesktopTheme = {
   }
 }
 
+/** Warm monochrome with a single molten-orange accent. Matches the CLI designless skin. */
+export const designlessTheme: DesktopTheme = {
+  name: 'designless',
+  label: 'Designless',
+  description: 'Warm monochrome — molten orange focus (designless.cloud)',
+  // Light variant (canonical designless-light).
+  colors: {
+    background: '#FFFFFF',
+    foreground: '#111111',
+    card: '#F7F4F0',
+    cardForeground: '#111111',
+    muted: '#E8E4DF',
+    mutedForeground: '#6B6560',
+    popover: '#FCFAF8',
+    popoverForeground: '#111111',
+    primary: '#FF4719',
+    primaryForeground: '#FFFFFF',
+    secondary: '#E8E4DF',
+    secondaryForeground: '#3A3530',
+    accent: '#F4F0EB',
+    accentForeground: '#111111',
+    border: '#DDD7D1',
+    input: '#DDD7D1',
+    ring: '#FF4719',
+    midground: '#FF4719',
+    destructive: '#C0000A',
+    destructiveForeground: '#FFFFFF',
+    sidebarBackground: '#F7F4F0',
+    sidebarBorder: '#DDD7D1',
+    userBubble: '#E8E4DF',
+    userBubbleBorder: '#C9C1B9'
+  },
+  // Dark variant (canonical designless-dark).
+  darkColors: {
+    background: '#090807',
+    foreground: '#E5DDD0',
+    card: '#0F0D0B',
+    cardForeground: '#E5DDD0',
+    muted: '#1D1A17',
+    mutedForeground: '#8A8176',
+    popover: '#171411',
+    popoverForeground: '#E5DDD0',
+    primary: '#FF4719',
+    primaryForeground: '#FFFFFF',
+    secondary: '#1D1A17',
+    secondaryForeground: '#C8BEAF',
+    accent: '#1D1A17',
+    accentForeground: '#E5DDD0',
+    border: '#3D3530',
+    input: '#3D3530',
+    ring: '#FF4719',
+    midground: '#FF4719',
+    destructive: '#FF6B5B',
+    destructiveForeground: '#090807',
+    sidebarBackground: '#0F0D0B',
+    sidebarBorder: '#1D1A17',
+    userBubble: '#1D1A17',
+    userBubbleBorder: '#3D3530'
+  }
+}
+
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
   nous: nousTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,
   cyberpunk: cyberpunkTheme,
-  slate: slateTheme
+  slate: slateTheme,
+  designless: designlessTheme
 }
 
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)

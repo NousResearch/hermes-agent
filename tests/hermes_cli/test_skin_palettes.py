@@ -15,7 +15,10 @@ from hermes_cli.skin_engine import _BUILTIN_SKINS
 
 # Union of the color keys consumed by the TUI (fromSkin) and the classic CLI
 # (banner.py / display.py / prompt_toolkit overrides). completion_menu_meta_*
-# intentionally excluded: they default to the base menu keys.
+# intentionally excluded: they default to the base menu keys. `background` is
+# excluded from REQUIRED_KEYS too: the classic CLI never paints a canvas (the
+# terminal owns it) and existing skins omit it — it is consumed by the TUI and
+# the desktop GUI's skin→theme converter, and audited only when present.
 REQUIRED_KEYS = frozenset(
     {
         "banner_border",
@@ -187,19 +190,27 @@ def test_base_palette_contrast_and_polarity(skin, palette, is_light):
 
     _check_fills(palette, is_light, FILLS, problems)
     _check_chip(palette, problems)
+    _check_background(palette, is_light, problems)
 
     assert not problems, f"{skin}.colors:\n  " + "\n  ".join(problems)
 
 
 @pytest.mark.parametrize(("skin", "block", "palette", "is_light"), OVERLAYS, ids=OVERLAY_IDS)
 def test_overlay_keys_and_fill_polarity(skin, block, palette, is_light):
-    unknown = palette.keys() - REQUIRED_KEYS
+    # Overlays may also carry keys that are GUI/TUI-only (never rendered by
+    # the classic CLI): the app surface and the completion meta column.
+    unknown = palette.keys() - REQUIRED_KEYS - {
+        "background",
+        "completion_menu_meta_bg",
+        "completion_menu_meta_current_bg",
+    }
     assert not unknown, f"{skin}.{block} has unknown keys: {sorted(unknown)}"
 
     problems = []
     _check_fills(palette, is_light, [k for k in FILLS if k in palette], problems)
     if "completion_menu_current_bg" in palette and "completion_menu_bg" in palette:
         _check_chip(palette, problems)
+    _check_background(palette, is_light, problems)
 
     assert not problems, f"{skin}.{block}:\n  " + "\n  ".join(problems)
 
@@ -211,6 +222,18 @@ def _check_fills(palette, is_light, keys, problems):
             problems.append(f"{key}={palette[key]} is a dark fill (lum {lum:.2f}) in a light palette")
         if not is_light and lum > 0.35:
             problems.append(f"{key}={palette[key]} is a light fill (lum {lum:.2f}) in a dark palette")
+
+
+def _check_background(palette, is_light, problems):
+    # `background` is optional; when a skin declares one it must match the
+    # palette's polarity (the GUI paints it as the app surface).
+    if "background" not in palette:
+        return
+    lum = luminance(palette["background"])
+    if is_light and lum < 0.4:
+        problems.append(f"background={palette['background']} is dark (lum {lum:.2f}) in a light palette")
+    if not is_light and lum > 0.35:
+        problems.append(f"background={palette['background']} is light (lum {lum:.2f}) in a dark palette")
 
 
 def _check_chip(palette, problems):

@@ -35,7 +35,11 @@ from tests.hermes_cli.test_session_recovery import (
 )
 
 
-HAVE_SQLITE3_CLI = shutil.which("sqlite3") is not None
+from hermes_cli.session_lost_and_found import find_sqlite3_cli
+
+# .recover needs a sqlite3 shell built with sqlite_dbpage — PATH presence
+# alone is not enough (Ubuntu CI ships a build without it).
+HAVE_SQLITE3_CLI = find_sqlite3_cli() is not None
 
 
 # ── physical corruption helpers ─────────────────────────────────────────────

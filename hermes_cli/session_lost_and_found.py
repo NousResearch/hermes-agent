@@ -27,6 +27,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any, Optional
 
@@ -55,13 +56,15 @@ _EPOCH_LOW = 1_000_000_000.0   # 2001
 _EPOCH_HIGH = 4_000_000_000.0  # 2096
 
 SQLITE3_CLI_GUIDANCE = (
-    "A last-resort page-level salvage is available when the `sqlite3` "
-    "command-line shell is installed: its `.recover` command can rebuild "
-    "rows into lost_and_found tables even when the table schemas are "
+    "A last-resort page-level salvage is available when a `.recover`-capable "
+    "`sqlite3` command-line shell is installed: its `.recover` command can "
+    "rebuild rows into lost_and_found tables even when the table schemas are "
     "unreadable (this is a CLI-only feature, not part of Python's sqlite3 "
-    "module). Install the sqlite3 CLI (e.g. `apt install sqlite3` or "
-    "`brew install sqlite`) so it is on PATH, then re-run with "
-    "--allow-partial."
+    "module, and some distro builds lack it — the shell must include the "
+    "sqlite_dbpage extension, as the official builds from sqlite.org do). "
+    "Install such a sqlite3 CLI (e.g. `brew install sqlite` or the "
+    "precompiled sqlite-tools from sqlite.org) so it is on PATH, then re-run "
+    "with --allow-partial."
 )
 
 
@@ -70,9 +73,46 @@ class LostAndFoundError(RuntimeError):
 
 
 def find_sqlite3_cli() -> Optional[str]:
-    """Return the sqlite3 CLI path, or None when page-level salvage is out."""
+    """Return a ``.recover``-capable sqlite3 CLI path, or None.
 
-    return shutil.which("sqlite3")
+    PATH presence is not enough: distro builds (e.g. Ubuntu's) can ship a
+    sqlite3 shell compiled without the ``sqlite_dbpage`` virtual table that
+    ``.recover`` requires — those fail every recovery with
+    ``no such table: sqlite_dbpage``. Probe capability on a scratch DB once
+    instead of discovering it mid-recovery.
+    """
+
+    binary = shutil.which("sqlite3")
+    if binary is None:
+        return None
+    return binary if _cli_supports_recover(binary) else None
+
+
+def _cli_supports_recover(binary: str) -> bool:
+    """True when ``binary`` can run ``.recover`` (has sqlite_dbpage)."""
+
+    scratch_dir = tempfile.mkdtemp(prefix="hermes-recover-probe-")
+    scratch = Path(scratch_dir) / "probe.db"
+    try:
+        conn = sqlite3.connect(str(scratch))
+        try:
+            conn.execute("CREATE TABLE t (x)")
+            conn.execute("INSERT INTO t VALUES (1)")
+            conn.commit()
+        finally:
+            conn.close()
+        probe = subprocess.run(
+            [binary, "-readonly", str(scratch), ".recover"],
+            capture_output=True,
+            timeout=30,
+        )
+        if probe.returncode != 0:
+            return False
+        return b"sqlite_dbpage" not in probe.stderr
+    except (OSError, subprocess.SubprocessError, sqlite3.Error):
+        return False
+    finally:
+        shutil.rmtree(scratch_dir, ignore_errors=True)
 
 
 def run_cli_lost_and_found_recover(

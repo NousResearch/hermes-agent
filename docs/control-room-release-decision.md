@@ -2,9 +2,15 @@
 
 Date: 2026-08-12
 Author: KENSEI (self-review against actual test output)
-Status: **READY FOR SAHIL'S DECISION** — not activated until sign-off
+Status: **DECIDED — OPTION B (HOLD)** — not activated until the two env-gated gaps are closed. Sahil selected B on 2026-08-12.
 
 ---
+
+## 0. Decision record
+
+- **2026-08-12** — Sahil selected **Option B: HOLD**. No merge to canonical, no
+  activation, until CR-603 live peer E2E AND desktop vitest both pass.
+- Worktree branches remain intact for resumption; canonicals untouched.
 
 ## 1. What shipped
 
@@ -70,23 +76,23 @@ APIs; zero raw SQL in `control_room/`; confirmation contract is enforced in
 the router (not the UI); cross-profile guard; stale-revision re-fetch;
 duplicate-submit guard. See `docs/control-room-security-review.md`.
 
-## 6. Activation decision — CHOOSE
+## 6. Activation decision — DECIDED
 
-- **A. ACTIVATE v1 now** — merge worktree branches into canonicals (or
-  cherry-pick), accept the two env-gated gaps as known debt, schedule CR-603
-  live E2E + desktop vitest repair as follow-up tasks.
-- **B. HOLD until CR-603 + desktop vitest pass** — ship later, zero known
-  gaps, requires a maintenance window with live gateways and a full
-  workspace install.
-- **C. PARTIAL** — activate CLI + TUI + Dashboard now (all suites green),
-  hold Desktop until its vitest env is repaired.
+- **B. HOLD (SELECTED 2026-08-12)** — no merge, no activation, until:
+  1. CR-603 live two-session peer E2E passes, and
+  2. Desktop vitest suite passes after a working workspace install.
+  Worktrees stay as-is for resumption; canonicals remain untouched.
 
-## 7. Follow-up tasks if A or C
+## 7. Follow-up tasks to close the HOLD (required before activation)
 
-1. Live two-session peer E2E (CR-603) — needs 2 running gateways.
-2. Repair desktop workspace install (pnpm install in monorepo) then run the
-   authored desktop tests.
-3. Wire BFF gateway RPC client → real approvals/peer capabilities.
+1. **CR-603 live peer E2E** — two real Hermes gateways + editable Peer plugin:
+   message receipt, inbox action, request lifecycle visible through Control
+   Room. Needs a maintenance window with live gateways.
+2. **Desktop workspace install repair** — pnpm (or npm with fixed resolution)
+   install in the KenseiAgent monorepo so the authored desktop vitest suite
+   actually runs; then execute and green it.
+3. **Post-activation hardening** — wire BFF gateway RPC client → real
+   approvals/peer capabilities (currently typed unavailable by design).
 4. Update the operator guide if any activation-step differences emerge.
 
 ---

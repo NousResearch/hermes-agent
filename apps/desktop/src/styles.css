@@ -562,18 +562,20 @@
      Set on <html> by store/translucency.ts; macOS chat windows only. Every
      chat window already carries an NSVisualEffectView (`vibrancy: 'sidebar'`
      in electron/main.ts) that WindowServer composites BELOW the web contents;
-     the page normally buries it under fully opaque surfaces. Glass thins
-     exactly the two field surfaces — the chat surface and the sidebar — to
+     the page normally buries it under fully opaque surfaces.
+
+     ONE PAINTER: <body> paints the glass tint exactly once, at
      `--translucency-glass-keep` (set inline from the intensity slider, floor
-     30%) so the material shows through as a matte desktop blur, while cards,
-     popovers, the composer and every raised control keep their opaque fills
-     and text keeps full contrast. Unlike Clear, nothing on the page fades.
-     Surfaces that MASK in-page content are deliberately not thinned: the
-     editor surface backs the diff gutter's sticky line-number mask and the
-     active pane tab, and the find bar reads --ui-surface-background —
-     in-page transparency there reads as text bleeding through text, not as
-     glass. The two thinned surfaces already cover the window, so the pane
-     container behind them never shows.
+     30%), and the field tokens (chat / sidebar / editor surface) go fully
+     transparent. The field surfaces NEST — body > pane container > chat
+     section > transcript wrapper all wear these tokens — so thinning the
+     tokens themselves stacks the tint once per layer and a session pane ends
+     up near-opaque (~0.93 at 60%) while the landing page, with fewer layers,
+     reads far clearer. With a single painter the field alpha is the same
+     number on every route. Raised content (cards, popovers, bubbles, the
+     composer) keeps its own opaque fills over full-contrast text; regions
+     still read distinct through their borders and the material itself.
+     Unlike Clear, nothing on the page fades.
 
      The boot script in index.html pins an opaque inline background on <html>
      before first paint; it has to go transparent here or it sits behind the
@@ -583,17 +585,69 @@
      which does not composite page alpha. */
   :root[data-hermes-glass] {
     background-color: transparent !important;
+    --ui-chat-surface-background: transparent;
+    --ui-sidebar-surface-background: transparent;
+    --ui-editor-surface-background: transparent;
+    --ui-terminal-surface-background: var(--ui-bg-chrome);
+  }
+
+  :root[data-hermes-glass] body {
+    background: color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent);
+  }
+
+  /* Surfaces that MASK sibling content must stay filled under glass — a
+     see-through mask reads as text bleeding through text, not as glass. The
+     diff panel's sticky line-number gutter wears the editor surface
+     (components/chat/diff-lines.tsx), and a dragged sidebar row wears the
+     sidebar surface precisely so the rows it passes over don't show through
+     (see the comment in sidebar/session-row.tsx). Both get an opaque fill
+     back. */
+  :root[data-hermes-glass] [data-slot='file-diff-panel'] {
+    --ui-editor-surface-background: var(--ui-bg-chrome);
+  }
+
+  :root[data-hermes-glass] .cursor-grabbing {
+    --ui-sidebar-surface-background: var(--ui-bg-sidebar);
+  }
+
+  /* The inline user-message edit box wears the chat surface as a raised box
+     fill; give it the opaque chrome the token resolves to outside glass. */
+  :root[data-hermes-glass] .composer-human-message-container {
+    --ui-chat-surface-background: var(--ui-bg-chrome);
+  }
+
+  /* Overlay cards (settings, agents, cron, command center — everything on
+     OverlayView) sit ABOVE the field, so they run counter to it: near-opaque
+     over a glass field, never thinner than the field itself (max() covers
+     low slider values where the field keeps more than 94%). The card wears
+     the chat token and its internal nav asides wear the sidebar token, so
+     both come back as almost-solid fills and the two-tone layout survives. */
+  :root[data-hermes-glass] [data-glass-raised] {
     --ui-chat-surface-background: color-mix(
       in srgb,
-      var(--ui-bg-chrome) var(--translucency-glass-keep, 100%),
+      var(--ui-bg-chrome) max(94%, var(--translucency-glass-keep, 100%)),
       transparent
     );
     --ui-sidebar-surface-background: color-mix(
       in srgb,
-      var(--ui-bg-sidebar) var(--translucency-glass-keep, 100%),
+      var(--ui-bg-sidebar) max(94%, var(--translucency-glass-keep, 100%)),
       transparent
     );
-    --ui-terminal-surface-background: var(--ui-bg-chrome);
+    --ui-editor-surface-background: var(--ui-bg-chrome);
+  }
+
+  /* Clear mode (native window opacity) fades EVERYTHING in the window
+     uniformly, so when an overlay opens over a session two layers of text
+     fade by the same amount and fight through the overlay's light default
+     scrim (bg-black/22 + 2px blur). While clear is active, the scrim works
+     for a living: darken it and widen the blur so the covered transcript
+     drops away and the overlay's own text is the only line of type in front
+     of the desktop. Set on <html> by store/translucency.ts whenever
+     mode='clear' and intensity > 0; !important because the utility classes
+     live in a later cascade layer. */
+  :root[data-hermes-clear] [data-overlay-surface] {
+    background-color: rgb(0 0 0 / 0.55) !important;
+    backdrop-filter: blur(0.5rem) !important;
   }
 
   * {

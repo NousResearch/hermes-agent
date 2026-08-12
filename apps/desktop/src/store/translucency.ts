@@ -86,6 +86,11 @@ const applyGlassSurfaces = (intensity: number, mode: TranslucencyMode): void => 
 
   const root = document.documentElement
   const on = mode === 'glass' && intensity > 0 && GLASS_SUPPORTED && isChatWindow()
+  // Clear mode fades the whole window uniformly, so overlay text and the
+  // covered transcript blend; styles.css strengthens the overlay scrim while
+  // this attribute is present. Native opacity applies in every window kind,
+  // so no chat-window gate.
+  const clearOn = mode === 'clear' && intensity > 0
 
   if (on) {
     root.setAttribute('data-hermes-glass', '')
@@ -93,6 +98,12 @@ const applyGlassSurfaces = (intensity: number, mode: TranslucencyMode): void => 
   } else {
     root.removeAttribute('data-hermes-glass')
     root.style.removeProperty('--translucency-glass-keep')
+  }
+
+  if (clearOn) {
+    root.setAttribute('data-hermes-clear', '')
+  } else {
+    root.removeAttribute('data-hermes-clear')
   }
 }
 

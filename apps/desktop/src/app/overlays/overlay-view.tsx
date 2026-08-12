@@ -98,6 +98,10 @@ export function OverlayView({
           'relative flex h-full min-h-0 flex-col overflow-hidden rounded-xl border border-(--ui-stroke-secondary) bg-(--ui-chat-surface-background) shadow-md',
           rootClassName
         )}
+        // Marks the card as a RAISED surface for window glass: while the field
+        // behind it thins to show the desktop, this card stays near-opaque
+        // (see the [data-glass-raised] rules in styles.css). Inert otherwise.
+        data-glass-raised=""
       >
         <div className="pointer-events-none absolute inset-x-0 top-0 z-10 h-[calc(var(--titlebar-height)+0.1875rem)] [-webkit-app-region:drag]">
           {headerContent && (

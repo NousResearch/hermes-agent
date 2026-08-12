@@ -3737,6 +3737,41 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
 _BARE_BILLING_PROVIDERS = {"auto", "openrouter", "custom"}
 
 
+def _stored_provider_is_routable(provider: str, model: str = "") -> bool:
+    """Return whether a persisted provider identity is still configured.
+
+    Session rows outlive provider configuration. A removed custom provider must
+    not be handed back to ``_make_agent`` during Desktop resume, otherwise the
+    resume fails before the session-scoped model picker can switch it away.
+    This is deliberately a config/registry check only — it must not probe the
+    provider or require a usable credential.
+    """
+    candidate = str(provider or "").strip()
+    normalized = candidate.lower()
+    if not candidate or normalized in _BARE_BILLING_PROVIDERS:
+        return False
+
+    try:
+        from hermes_cli.runtime_provider import has_named_custom_provider
+
+        if has_named_custom_provider(candidate):
+            return True
+    except Exception:
+        logger.debug("named custom provider check failed", exc_info=True)
+
+    try:
+        from hermes_cli.auth import resolve_provider
+
+        resolved = str(resolve_provider(candidate) or "").strip().lower()
+    except Exception:
+        return False
+
+    # ``resolve_provider`` can map local aliases (ollama/vllm/...) to the
+    # generic custom runtime. Those remain valid when their session stored an
+    # endpoint; bare ``custom`` was excluded above because it has no identity.
+    return bool(resolved) and (resolved != "custom" or bool(model))
+
+
 def _stored_session_runtime_overrides(row: dict | None) -> dict:
     """Return runtime fields persisted with a stored session.
 
@@ -3804,6 +3839,16 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
                 "custom provider identity recovery failed", exc_info=True
             )
         provider = healed or ("" if not base_url else provider)
+
+    if provider and not _stored_provider_is_routable(provider, model):
+        # Keep the model in the restored session so Desktop can show the
+        # transcript and let the user choose a replacement. Do not retain the
+        # deleted provider's endpoint metadata: _make_agent applies these
+        # fields after resolving the replacement runtime and would otherwise
+        # continue routing the session to the removed endpoint.
+        provider = ""
+        base_url = ""
+        api_mode = ""
 
     if model:
         # Use the same dict-shaped override that live /model switches use so a

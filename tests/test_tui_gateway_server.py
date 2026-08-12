@@ -3106,7 +3106,7 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
     assert "launch_update" not in captured
 
 
-def test_stored_session_runtime_overrides_skips_bare_billing_provider():
+def test_stored_session_runtime_overrides_skips_bare_billing_provider(monkeypatch):
     """A bare billing bucket ("custom"/"auto"/"openrouter") must not be restored as the
     provider identity on resume. A custom endpoint that never used `/model` persists only
     `billing_provider="custom"`; restoring that broke `session.resume` with "No LLM provider
@@ -3127,12 +3127,56 @@ def test_stored_session_runtime_overrides_skips_bare_billing_provider():
     assert ov["provider_override"] == "anthropic"
     assert ov["model_override"]["provider"] == "anthropic"
 
-    # An explicit routable provider in model_config wins over the bare billing bucket.
+    # This fixture represents a provider that is still configured; the deleted-
+    # provider regression is covered by the dedicated test above.
+    monkeypatch.setattr(
+        server,
+        "_stored_provider_is_routable",
+        lambda provider, model="": provider == "custom:myendpoint" or provider == "anthropic",
+    )
     ov = server._stored_session_runtime_overrides(
         {"model": "m", "billing_provider": "custom", "model_config": {"provider": "custom:myendpoint"}}
     )
     assert ov["provider_override"] == "custom:myendpoint"
     assert ov["model_override"]["provider"] == "custom:myendpoint"
+
+
+def test_stored_session_runtime_overrides_drops_deleted_provider_runtime(monkeypatch):
+    """A removed provider must not strand a stored transcript on resume.
+
+    Keep the model and session-local knobs so the Desktop can paint the session,
+    but discard the unroutable provider endpoint. The existing session-scoped
+    model picker can then switch the restored shell to a configured provider.
+    """
+    monkeypatch.setattr(
+        server,
+        "_stored_provider_is_routable",
+        lambda provider, model="": provider != "a6api",
+    )
+
+    overrides = server._stored_session_runtime_overrides(
+        {
+            "model": "gpt-5.6-sol",
+            "billing_provider": "a6api",
+            "model_config": {
+                "provider": "a6api",
+                "base_url": "https://deleted.example/v1",
+                "api_mode": "chat_completions",
+                "reasoning_config": {"enabled": True, "effort": "high"},
+                "service_tier": "priority",
+            },
+        }
+    )
+
+    assert "provider_override" not in overrides
+    assert overrides["model_override"] == {
+        "model": "gpt-5.6-sol",
+        "provider": None,
+        "base_url": None,
+        "api_mode": None,
+    }
+    assert overrides["reasoning_config_override"] == {"enabled": True, "effort": "high"}
+    assert overrides["service_tier_override"] == "priority"
 
 
 def test_stored_session_runtime_overrides_restores_explicit_normal_tier():

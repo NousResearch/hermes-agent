@@ -483,6 +483,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
         ...(message.interim ? { interim: true } : {}),
         ...timelineMeta,
         ...(message.completedAt !== undefined ? { timelineCompletedAt: message.completedAt } : {}),
+        ...(message.durationS !== undefined ? { durationS: message.durationS } : {}),
         ...reactionMeta
       }
     }

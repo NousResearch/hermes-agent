@@ -149,7 +149,10 @@ const COMPARED_FIELDS = [
   'interim',
   'reactions',
   'timestamp',
-  'completedAt'
+  'completedAt',
+  // Turn wall-clock duration — stamps the visible "⏱ 38s" badge, so a change
+  // must re-render (set once at completion; stable afterwards).
+  'durationS'
 ] as const
 
 const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'rowId'] as const

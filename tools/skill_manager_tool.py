@@ -1737,8 +1737,8 @@ SKILL_MANAGE_SCHEMA = {
             "new_string": {
                 "type": "string",
                 "description": (
-                    "Replacement text (required for 'patch'). Can be empty string "
-                    "to delete the matched text."
+                    "Replacement text (required for 'patch'); must differ from "
+                    "old_string. Can be empty string to delete the matched text."
                 )
             },
             "replace_all": {

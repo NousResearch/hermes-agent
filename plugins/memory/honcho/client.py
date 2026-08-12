@@ -18,6 +18,7 @@ import os
 import logging
 import hashlib
 import ipaddress
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -1109,6 +1110,27 @@ def _config_yaml_timeout() -> float | None:
         return None
 
 
+def resolve_effective_base_url(config: HonchoClientConfig) -> str | None:
+    """Resolve and normalize the base URL used to build the Honcho client."""
+    resolved_base_url = _sanitize_url(config.base_url)
+    if not resolved_base_url:
+        try:
+            from hermes_cli.config import load_config
+
+            honcho_cfg = load_config().get("honcho", {})
+            if isinstance(honcho_cfg, dict):
+                resolved_base_url = _sanitize_url(
+                    honcho_cfg.get("base_url", "").strip() or None
+                )
+        except Exception:
+            logger.warning("Failed to resolve Honcho base URL from config", exc_info=True)
+            resolved_base_url = None
+
+    if not resolved_base_url:
+        return None
+    return re.sub(r"/v\d+/*$", "", resolved_base_url).rstrip("/")
+
+
 def _honcho_json_timeout() -> float | None:
     """Read timeout/requestTimeout from honcho.json (host block wins), memoized on mtime."""
     try:
@@ -1277,23 +1299,21 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         # Allow config.yaml honcho.base_url to override the SDK's environment
         # mapping, enabling remote self-hosted Honcho deployments without
         # requiring the server to live on localhost.
-        resolved_base_url = config.base_url
+        resolved_base_url = resolve_effective_base_url(config)
         resolved_timeout = config.timeout
-        if not resolved_base_url or resolved_timeout is None:
+        if resolved_timeout is None:
             try:
                 from hermes_cli.config import load_config
-                hermes_cfg = load_config()
-                honcho_cfg = hermes_cfg.get("honcho", {})
+
+                honcho_cfg = load_config().get("honcho", {})
                 if isinstance(honcho_cfg, dict):
-                    if not resolved_base_url:
-                        resolved_base_url = _sanitize_url(honcho_cfg.get("base_url", "").strip() or None)
-                    if resolved_timeout is None:
-                        resolved_timeout = _resolve_optional_float(
-                            honcho_cfg.get("timeout"),
-                            honcho_cfg.get("request_timeout"),
-                        )
+                    resolved_timeout = _resolve_optional_float(
+                        honcho_cfg.get("timeout"),
+                        honcho_cfg.get("request_timeout"),
+                    )
             except Exception:
-                pass
+                logger.warning("Failed to resolve Honcho timeout from config", exc_info=True)
+                resolved_timeout = None
 
         # Fall back to the default so an unconfigured install cannot hang
         # indefinitely on a stalled Honcho request.
@@ -1331,18 +1351,6 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
             effective_api_key = config.api_key if _explicit_key else "local"
         else:
             effective_api_key = config.api_key
-
-        # The Honcho SDK's route builders (e.g. routes.workspaces()) already
-        # include the version prefix (e.g. "/v3/workspaces").  When a user-supplied
-        # base_url already ends in a version segment (e.g.
-        # "http://localhost:38000/v3", "https://honcho.my.ts.net/v3"), concatenating
-        # the two produces "/v3/v3/workspaces" → 404 on every call.  This is a pure
-        # routing concern independent of host, so strip a trailing version segment
-        # from ANY base_url — loopback, LAN, custom domain, or cloud alike.  The
-        # SDK then appends its own versioned paths correctly.
-        if resolved_base_url:
-            import re as _re
-            resolved_base_url = _re.sub(r"/v\d+/*$", "", resolved_base_url).rstrip("/")
 
         kwargs: dict = {
             "workspace_id": config.workspace_id,

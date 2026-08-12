@@ -187,6 +187,47 @@ def test_write_stdin_uses_bytes_for_posix_pty(registry):
     assert written == [b"hello\n"]
 
 
+@pytest.mark.windows_only
+def test_submit_stdin_uses_crlf_for_windows_pty(registry):
+    """Enter on a Windows PTY is a carriage return, not a bare LF.
+
+    ConPTY cooked input only ends a line on ``\\r``; a bare ``\\n`` through
+    pywinpty is never delivered to a blocking line read (Python readline,
+    Go bufio.Scanner — the exact hang seen live with ``gh auth login``'s
+    "Press Enter to open the browser" prompt). submit_stdin must append
+    ``\\r\\n`` for Windows PTY sessions.
+    """
+    written = []
+
+    class _FakePty:
+        def write(self, value):
+            written.append(value)
+
+    session = _make_session(sid="pty-win-submit")
+    session._pty = _FakePty()
+    registry._running[session.id] = session
+
+    result = registry.submit_stdin(session.id, "Y")
+
+    assert result["status"] == "ok"
+    assert written == ["Y\r\n"]
+
+
+@pytest.mark.windows_only
+def test_submit_stdin_keeps_lf_for_windows_pipe(registry):
+    """Non-PTY (Popen pipe) sessions keep the plain LF on Windows."""
+    session = _make_session(sid="pipe-win-submit")
+    fake_stdin = MagicMock()
+    session.process = MagicMock()
+    session.process.stdin = fake_stdin
+    registry._running[session.id] = session
+
+    result = registry.submit_stdin(session.id, "Y")
+
+    assert result["status"] == "ok"
+    fake_stdin.write.assert_called_once_with("Y\n")
+
+
 # =========================================================================
 # Get / Poll
 # =========================================================================

@@ -1111,7 +1111,13 @@ _WINDOWS_BASH_SHELL_HINT = (
     "calls. MSYS-style paths like `/c/Users/<user>/...` work alongside "
     "native `C:\\Users\\<user>\\...` paths. PowerShell builtins "
     "(`Get-ChildItem`, `$env:FOO`, `Select-String`) will NOT work — use their "
-    "POSIX equivalents (`ls`, `$FOO`, `grep`)."
+    "POSIX equivalents (`ls`, `$FOO`, `grep`). When answering prompts in a "
+    "pty background process, use process(submit) — never process(write) "
+    "with a bare trailing newline: Enter on a Windows PTY is a carriage "
+    "return, and a lone `\\n` is not delivered as a line terminator, so the "
+    "child's prompt silently never returns. When a CLI offers a "
+    "non-interactive path (flags, `--with-token`, config files, an OAuth "
+    "device flow polled with curl), prefer it over driving prompts."
 )
 
 

@@ -2169,8 +2169,26 @@ class ProcessRegistry:
             return {"status": "error", "error": str(e)}
 
     def submit_stdin(self, session_id: str, data: str = "") -> dict:
-        """Send data + newline to a running process's stdin (like pressing Enter)."""
-        return self.write_stdin(session_id, data + "\n")
+        """Send data + newline to a running process's stdin (like pressing Enter).
+
+        On a Windows PTY session the Enter key is a carriage return: ConPTY
+        cooked input treats ``\\r`` as end-of-line, and a bare ``\\n`` written
+        through pywinpty is NOT delivered as a line terminator — the child's
+        blocking line read (Python ``readline()``, Go ``bufio.Scanner`` as in
+        ``gh auth login``'s "Press Enter to open the browser" prompt) simply
+        never returns and the process hangs while looking healthy. Verified
+        empirically via pywinpty 2.0.15: ``\\n`` -> no line, ``\\r`` /
+        ``\\r\\n`` -> line delivered. Use ``\\r\\n`` so the child sees both the
+        Enter keypress and a conventional newline; POSIX PTYs and Popen pipes
+        keep the plain ``\\n``.
+        """
+        session = self.get(session_id)
+        is_windows_pty = bool(
+            _IS_WINDOWS and session is not None
+            and getattr(session, "_pty", None)
+        )
+        line_ending = "\r\n" if is_windows_pty else "\n"
+        return self.write_stdin(session_id, data + line_ending)
 
     def request_close_terminal(self, session_id: str) -> dict:
         """Ask the desktop GUI to close the read-only terminal tab mirroring this

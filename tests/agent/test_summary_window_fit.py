@@ -112,10 +112,16 @@ class TestFeasibilityStashesWindowInsteadOfLoweringThreshold:
 
 class TestGenerateSummaryWindowFit:
     def test_prompt_trimmed_to_fit_small_window(self):
+        """The per-call fit is the backstop below fold granularity: a window
+        the fold planner cannot split further (here: forced single-chunk, as
+        for one giant turn group) must still be trimmed to the aux window."""
         c = _compressor()
         c.summary_model = "small-model"
         c.summary_model_context_length = 70_000
         turns = _cjk_turns()
+        # Oversized CJK content normally folds into chunks; pin the
+        # single-call path so the trim backstop itself is under test.
+        c._in_summary_fold = True
 
         with patch(
             "agent.context_compressor.call_llm",

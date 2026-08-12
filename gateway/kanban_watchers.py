@@ -25,6 +25,19 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
+def _resolve_shared_injection_embedding() -> Any:
+    """Resolve the shared-memory writer's embedding without changing spaces.
+
+    The event-driven lead writer shares a vector projection with the nightly
+    injector.  It must delegate selection to Severian's one resolver so a
+    ``qwen`` cutover remains Qwen rather than silently becoming hash.
+    Imported lazily because Severian is an optional integration.
+    """
+    from severian.infrastructure.embedding_resolver import embedding_from_env
+
+    return embedding_from_env()
+
+
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -869,12 +882,6 @@ class GatewayKanbanWatchersMixin:
                                     inject_on_task_completion,
                                 )
                                 from severian.composition import build_bundle as _si_bundle
-                                from severian.infrastructure.granite_embedding import (
-                                    GraniteR2Embedding as _si_granite,
-                                )
-                                from severian.infrastructure.vector import (
-                                    HashEmbedding as _si_hash,
-                                )
 
                                 import os as _os
                                 from pathlib import Path as _Path
@@ -889,13 +896,7 @@ class GatewayKanbanWatchersMixin:
                                     "SEVERIAN_STORAGE", ""
                                 ).strip()
                                 if _store and _team_key:
-                                    _embedding = (
-                                        _si_granite()
-                                        if _os.environ.get(
-                                            "SEVERIAN_EMBEDDING", ""
-                                        ).strip().lower() == "granite"
-                                        else _si_hash()
-                                    )
+                                    _embedding = _resolve_shared_injection_embedding()
                                     _bundle = _si_bundle(
                                         backend="sqlite",
                                         database=_Path(_store) / "severian.db",

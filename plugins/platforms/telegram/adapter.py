@@ -307,6 +307,7 @@ from plugins.platforms.telegram.telegram_network import (
 )
 from utils import atomic_replace, env_float, env_int
 
+
 _TELEGRAM_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
 _TELEGRAM_IMAGE_MIME_TO_EXT = {
     "image/png": ".png",
@@ -640,6 +641,19 @@ class TelegramAdapter(BasePlatformAdapter):
     - Forum topics (thread_id support)
     - Media messages
     """
+
+    @staticmethod
+    def _rich_message_filter():
+        """Build the filter lazily to preserve PTB-stub test imports."""
+        base_filter = getattr(filters, "MessageFilter", None)
+        if base_filter is None:
+            raise RuntimeError("python-telegram-bot MessageFilter is unavailable")
+
+        class _RichMessageFilter(base_filter):
+            def filter(self, message: Any) -> bool:
+                return TelegramAdapter._is_rich_message_update(message)
+
+        return _RichMessageFilter()
 
     # Telegram message limits
     MAX_MESSAGE_LENGTH = 4096
@@ -3897,6 +3911,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._handle_text_message
             ))
             self._app.add_handler(TelegramMessageHandler(
+                self._rich_message_filter(),
+                self._handle_rich_message,
+            ))
+            self._app.add_handler(TelegramMessageHandler(
                 filters.COMMAND,
                 self._handle_command
             ))
@@ -4027,6 +4045,10 @@ class TelegramAdapter(BasePlatformAdapter):
                         self._app.add_handler(TelegramMessageHandler(
                             filters.TEXT & ~filters.COMMAND,
                             self._handle_text_message
+                        ))
+                        self._app.add_handler(TelegramMessageHandler(
+                            self._rich_message_filter(),
+                            self._handle_rich_message,
                         ))
                         self._app.add_handler(TelegramMessageHandler(
                             filters.COMMAND,
@@ -8936,6 +8958,44 @@ class TelegramAdapter(BasePlatformAdapter):
         event = self._apply_telegram_group_observe_attribution(event)
         self._enqueue_text_event(event)
 
+    async def _handle_rich_message(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Normalize a top-level Bot API rich message into ordinary text ingress."""
+        msg = self._effective_update_message(update)
+        if not msg:
+            return
+        payload = self._inbound_rich_message_payload(msg)
+        getter = getattr(payload, "get", None)
+        text = self._flatten_rich_blocks(getter("blocks") if callable(getter) else None).strip()
+        if not text:
+            return
+        if not self._is_user_authorized_from_message(msg):
+            return
+        if not self._should_process_message(msg):
+            return
+        await self._ensure_forum_commands(msg)
+        event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
+        event.text = self._clean_bot_trigger_text(text)
+        await self._cache_replied_media(msg, event)
+        event = self._apply_telegram_group_observe_attribution(event)
+        self._enqueue_text_event(event)
+
+    @classmethod
+    def _inbound_rich_message_payload(cls, message: Any) -> Any:
+        rich_message = getattr(message, "rich_message", None)
+        if rich_message is not None:
+            return rich_message
+        api_kwargs = getattr(message, "api_kwargs", None)
+        getter = getattr(api_kwargs, "get", None)
+        return getter("rich_message") if callable(getter) else None
+
+    @classmethod
+    def _is_rich_message_update(cls, message: Any) -> bool:
+        payload = cls._inbound_rich_message_payload(message)
+        getter = getattr(payload, "get", None)
+        return bool(callable(getter) and getter("blocks") is not None)
+
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
         msg = self._effective_update_message(update)
@@ -9192,7 +9252,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 _observe_type = self._media_message_type(_m)
                 _event = self._build_message_event(_m, _observe_type, update_id=update.update_id)
                 if _m.caption:
-                    _event.text = self._clean_bot_trigger_text(_m.caption)
+                    _event.text = self._clean_bot_trigger_text(
+                        self._expand_link_entities(_m)
+                    )
                 await self._cache_observed_media(_m, _event)
                 self._observe_unmentioned_group_message(
                     _m, _event.message_type, update_id=update.update_id, event=_event
@@ -9207,7 +9269,7 @@ class TelegramAdapter(BasePlatformAdapter):
         
         # Add caption as text
         if msg.caption:
-            event.text = self._clean_bot_trigger_text(msg.caption)
+            event.text = self._clean_bot_trigger_text(self._expand_link_entities(msg))
         
         # Handle stickers: describe via vision tool with caching
         if msg.sticker:
@@ -9689,13 +9751,21 @@ class TelegramAdapter(BasePlatformAdapter):
             return ""
         if isinstance(value, str):
             return value
-        if isinstance(value, list):
+        if isinstance(value, (list, tuple)):
             return "".join(cls._flatten_rich_inline_text(item) for item in value)
-        if isinstance(value, dict):
-            text = value.get("text")
+        getter = getattr(value, "get", None)
+        if callable(getter):
+            text = getter("text")
             if text is not None:
-                return cls._flatten_rich_inline_text(text)
-            children = value.get("children")
+                rendered = cls._flatten_rich_inline_text(text)
+                node_type = str(getter("type") or "").lower()
+                url = getter("url") or getter("href")
+                if url and node_type in {
+                    "url", "text_url", "anchor_link", "reference_link", "link"
+                }:
+                    return f"{rendered} ({url})" if rendered else str(url)
+                return rendered
+            children = getter("children") or getter("parts")
             if children is not None:
                 return cls._flatten_rich_inline_text(children)
         return ""
@@ -9703,36 +9773,45 @@ class TelegramAdapter(BasePlatformAdapter):
     @classmethod
     def _flatten_rich_blocks(cls, blocks: Any) -> str:
         """Best-effort plaintext flattener for Bot API rich-message blocks."""
-        if not isinstance(blocks, list):
+        if not isinstance(blocks, (list, tuple)):
             return ""
 
         lines: List[str] = []
         for block in blocks:
-            if not isinstance(block, dict):
+            getter = getattr(block, "get", None)
+            if not callable(getter):
                 continue
 
-            block_type = block.get("type")
-            if block_type == "list":
-                for item in block.get("items", []):
-                    if not isinstance(item, dict):
+            if getter("type") == "list":
+                for item in getter("items") or []:
+                    item_getter = getattr(item, "get", None)
+                    if not callable(item_getter):
                         continue
-                    item_text = cls._flatten_rich_blocks(item.get("blocks"))
+                    item_text = cls._flatten_rich_blocks(item_getter("blocks"))
+                    if not item_text:
+                        item_text = cls._flatten_rich_inline_text(item_getter("text"))
                     if not item_text:
                         continue
-                    label = item.get("label")
                     item_lines = item_text.splitlines()
-                    if not item_lines:
-                        continue
-                    first_line = item_lines[0]
-                    if label:
-                        first_line = f"{label} {first_line}".strip()
-                    lines.append(first_line)
+                    label = item_getter("label")
+                    lines.append(f"{label} {item_lines[0]}".strip() if label else item_lines[0])
                     lines.extend(item_lines[1:])
                 continue
 
-            text = cls._flatten_rich_inline_text(block.get("text"))
+            text = cls._flatten_rich_inline_text(getter("text"))
             if text:
                 lines.extend(text.splitlines())
+            title = cls._flatten_rich_inline_text(getter("title"))
+            if title:
+                lines.extend(title.splitlines())
+            nested = getter("blocks") or getter("children")
+            nested_text = (
+                cls._flatten_rich_blocks(nested)
+                if isinstance(nested, (list, tuple))
+                else cls._flatten_rich_inline_text(nested)
+            )
+            if nested_text:
+                lines.extend(nested_text.splitlines())
 
         return "\n".join(line.rstrip() for line in lines if line)
 
@@ -9740,11 +9819,7 @@ class TelegramAdapter(BasePlatformAdapter):
     def _extract_rich_reply_text(cls, reply_to_message: Any) -> Optional[str]:
         """Return plaintext echoed by Telegram's rich_message reply payload."""
         try:
-            api_kwargs = getattr(reply_to_message, "api_kwargs", None)
-            getter = getattr(api_kwargs, "get", None)
-            if not callable(getter):
-                return None
-            rich_message = getter("rich_message")
+            rich_message = cls._inbound_rich_message_payload(reply_to_message)
             rich_getter = getattr(rich_message, "get", None)
             if not callable(rich_getter):
                 return None
@@ -9752,6 +9827,60 @@ class TelegramAdapter(BasePlatformAdapter):
             return text or None
         except Exception:
             return None
+
+    def _expand_link_entities(self, message: Message) -> str:
+        """Inline Telegram ``text_link`` URLs into visible message text.
+
+        Telegram stores hidden-link offsets as UTF-16 code units, while Python
+        indexes Unicode code points.  Convert the boundaries before inserting
+        the URL so anchors after emoji and other non-BMP characters stay valid.
+        """
+        text = getattr(message, "text", None)
+        if text:
+            entities = getattr(message, "entities", None) or []
+        else:
+            text = getattr(message, "caption", None) or ""
+            entities = getattr(message, "caption_entities", None) or []
+        if not text or not entities:
+            return text
+
+        def utf16_index(offset: int) -> Optional[int]:
+            units = 0
+            for index, char in enumerate(text):
+                if units == offset:
+                    return index
+                units += 2 if ord(char) > 0xFFFF else 1
+                if units > offset:
+                    return None
+            return len(text) if units == offset else None
+
+        utf16_length = sum(2 if ord(char) > 0xFFFF else 1 for char in text)
+        links: List[Tuple[int, int, str]] = []
+        for entity in entities:
+            entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
+            raw_url = getattr(entity, "url", None)
+            url = raw_url.strip() if isinstance(raw_url, str) else ""
+            if entity_type != "text_link" or not url:
+                continue
+            try:
+                offset = int(getattr(entity, "offset", -1))
+                length = int(getattr(entity, "length", 0))
+            except (TypeError, ValueError):
+                continue
+            if offset < 0 or length <= 0 or offset + length > utf16_length:
+                continue
+            start, end = utf16_index(offset), utf16_index(offset + length)
+            if start is None or end is None or end <= start:
+                continue
+            links.append((start, end, url))
+
+        expanded = text
+        for _start, end, url in sorted(links, reverse=True):
+            inline = f" ({url})"
+            if expanded[end:].startswith(inline):
+                continue
+            expanded = f"{expanded[:end]}{inline}{expanded[end:]}"
+        return expanded
 
     def _build_message_event(
         self,
@@ -9879,11 +10008,9 @@ class TelegramAdapter(BasePlatformAdapter):
             if quote_text:
                 reply_to_text = quote_text
             else:
-                reply_to_text = (
-                    message.reply_to_message.text
-                    or message.reply_to_message.caption
-                    or None
-                )
+                reply_message = message.reply_to_message
+                if reply_message.text or reply_message.caption:
+                    reply_to_text = self._expand_link_entities(reply_message)
                 if not reply_to_text:
                     # Prefer Telegram's native rich-message echo when present;
                     # keep the local send-time index only as a fallback for
@@ -9908,7 +10035,7 @@ class TelegramAdapter(BasePlatformAdapter):
         )
 
         return MessageEvent(
-            text=message.text or "",
+            text=self._expand_link_entities(message),
             message_type=msg_type,
             source=source,
             raw_message=message,
@@ -9916,10 +10043,47 @@ class TelegramAdapter(BasePlatformAdapter):
             platform_update_id=update_id,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            forward_origin=self._extract_forward_origin(message),
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
             timestamp=message.date,
         )
+
+    @staticmethod
+    def _telegram_forward_origin_type(origin: Any) -> str:
+        origin_type = getattr(origin, "type", None)
+        return str(getattr(origin_type, "name", origin_type) or "unknown").lower()
+
+    @staticmethod
+    def _telegram_forward_origin_date(origin: Any) -> Optional[str]:
+        date = getattr(origin, "date", None)
+        if date is None:
+            return None
+        return date.isoformat() if hasattr(date, "isoformat") else str(date)
+
+    def _extract_forward_origin(self, message: Message) -> Optional[Dict[str, str]]:
+        """Normalize Telegram forwarded-message metadata for agent context."""
+        origin = getattr(message, "forward_origin", None)
+        if origin is None or not isinstance(getattr(origin, "type", None), str):
+            return None
+        result: Dict[str, str] = {"type": self._telegram_forward_origin_type(origin)}
+        date = self._telegram_forward_origin_date(origin)
+        if date:
+            result["date"] = date
+        sender_user = getattr(origin, "sender_user", None)
+        if sender_user is not None:
+            name = getattr(sender_user, "full_name", None) or getattr(sender_user, "username", None)
+            if name:
+                result["sender_name"] = str(name)
+        hidden_name = getattr(origin, "sender_user_name", None)
+        if hidden_name:
+            result["sender_name"] = str(hidden_name)
+        chat = getattr(origin, "chat", None)
+        if chat is not None:
+            name = getattr(chat, "title", None) or getattr(chat, "username", None)
+            if name:
+                result["chat_name"] = str(name)
+        return result
 
     # ── Message reactions (processing lifecycle) ──────────────────────────
 

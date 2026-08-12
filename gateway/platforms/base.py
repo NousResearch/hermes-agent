@@ -2338,6 +2338,9 @@ class MessageEvent:
     reply_to_author_name: Optional[str] = None
     reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
 
+    # Normalized source metadata for forwarded platform messages.
+    forward_origin: Optional[Dict[str, str]] = None
+
     # Structured interactive-prompt reply (relay Phase 3). Present when this
     # event is the user answering a native interactive prompt rendered by the
     # relay connector (Discord component / Telegram inline keyboard / Slack
@@ -5952,10 +5955,14 @@ class BasePlatformAdapter(ABC):
         if needs_topic_recovery:
             await asyncio.to_thread(self._apply_topic_recovery, event)
 
+        profile = event.source.profile or getattr(self, "_gateway_profile_name", None)
+        if profile and not event.source.profile:
+            event.source.profile = profile
         session_key = build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=profile,
         )
 
         # On-entry self-heal: if the adapter still has an _active_sessions

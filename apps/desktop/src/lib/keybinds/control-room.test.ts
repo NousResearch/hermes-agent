@@ -43,16 +43,22 @@ describe('Control Room i18n copy (CR-401)', () => {
   })
 
   it('adds the home section key to every shipped locale', async () => {
-    const locales = ['ar', 'en', 'ja', 'zh', 'zh-hant']
-    for (const name of locales) {
-      const mod = (await import(`@/i18n/${name}`)) as Record<string, unknown>
-      const messages = mod[name] as {
+    const locales: Array<[string, string]> = [
+      ['ar', 'ar'],
+      ['en', 'en'],
+      ['ja', 'ja'],
+      ['zh', 'zh'],
+      ['zh-hant', 'zhHant'],
+    ]
+    for (const [file, exportName] of locales) {
+      const mod = (await import(`@/i18n/${file}`)) as Record<string, unknown>
+      const messages = mod[exportName] as {
         commandCenter: { sections: Record<string, string>; sectionDescriptions: Record<string, string> }
       }
       const sections = messages.commandCenter.sections
       const descriptions = messages.commandCenter.sectionDescriptions
-      expect(sections.home, `${name}: sections.home`).toBeTruthy()
-      expect(descriptions.home, `${name}: sectionDescriptions.home`).toBeTruthy()
+      expect(sections.home, `${file}: sections.home`).toBeTruthy()
+      expect(descriptions.home, `${file}: sectionDescriptions.home`).toBeTruthy()
     }
   })
 })

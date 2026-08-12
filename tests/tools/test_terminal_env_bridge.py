@@ -8,7 +8,7 @@ config.yaml.
 
 import os
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier, Lock, Thread
+from threading import Barrier, Event, Lock, Thread
 
 import pytest
 
@@ -39,6 +39,8 @@ def _reset_bridge_state(monkeypatch):
         terminal_tool._task_environment_keys.clear()
     with terminal_tool._creation_locks_lock:
         terminal_tool._creation_locks.clear()
+        terminal_tool._creation_lock_users.clear()
+        terminal_tool._creation_lock_retired.clear()
 
 
 def _write_config(text: str) -> None:
@@ -411,6 +413,155 @@ def test_stale_retirement_keeps_the_stable_creation_lock():
             terminal_tool._environment_metadata.pop(task_id, None)
         with terminal_tool._creation_locks_lock:
             terminal_tool._creation_locks.pop(task_id, None)
+
+
+def test_stale_cleanup_blocks_replacement_creation(monkeypatch):
+    import tools.code_execution_tool as code_execution_tool
+
+    task_id = "stale-cleanup-race"
+    cleanup_started = Event()
+    release_cleanup = Event()
+    creation_started = Event()
+    config_a = {"env_type": "local", "cwd": "/a", "timeout": 30}
+    config_b = {"env_type": "local", "cwd": "/b", "timeout": 30}
+    created = []
+    results = []
+
+    class OldEnvironment:
+        def cleanup(self):
+            cleanup_started.set()
+            release_cleanup.wait(timeout=2)
+
+    class NewEnvironment:
+        pass
+
+    def create_environment(**_kwargs):
+        creation_started.set()
+        env = NewEnvironment()
+        created.append(env)
+        return env
+
+    terminal_tool._register_active_environment(
+        task_id, OldEnvironment(), config_a, task_id,
+    )
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: config_b)
+    monkeypatch.setattr(terminal_tool, "_create_environment", create_environment)
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+
+    def get_environment():
+        results.append(code_execution_tool._get_or_create_env(task_id)[0])
+
+    first = Thread(target=get_environment)
+    second = Thread(target=get_environment)
+    try:
+        first.start()
+        assert cleanup_started.wait(timeout=1)
+        second.start()
+        assert not creation_started.wait(timeout=0.2)
+        release_cleanup.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+        assert not first.is_alive()
+        assert not second.is_alive()
+        assert len(created) == 1
+        assert results == [created[0], created[0]]
+    finally:
+        release_cleanup.set()
+        first.join(timeout=2)
+        second.join(timeout=2)
+        with terminal_tool._env_lock:
+            terminal_tool._active_environments.pop(task_id, None)
+            terminal_tool._last_activity.pop(task_id, None)
+            terminal_tool._forget_environment_key(task_id)
+        with terminal_tool._creation_locks_lock:
+            terminal_tool._creation_locks.pop(task_id, None)
+
+
+def test_degraded_eviction_keeps_a_held_creation_lock():
+    task_id = "held-eviction-lock"
+    lock = Lock()
+    lock.acquire()
+    eviction_done = Event()
+    with terminal_tool._creation_locks_lock:
+        terminal_tool._creation_locks[task_id] = lock
+    worker = Thread(
+        target=lambda: (
+            terminal_tool._evict_environment_for_task(task_id),
+            eviction_done.set(),
+        )
+    )
+    try:
+        worker.start()
+        assert not eviction_done.wait(timeout=0.2)
+        with terminal_tool._creation_locks_lock:
+            assert terminal_tool._creation_locks.get(task_id) is lock
+        lock.release()
+        worker.join(timeout=2)
+        assert eviction_done.is_set()
+        with terminal_tool._creation_locks_lock:
+            assert task_id not in terminal_tool._creation_locks
+    finally:
+        if lock.locked():
+            lock.release()
+        worker.join(timeout=2)
+        with terminal_tool._creation_locks_lock:
+            terminal_tool._creation_locks.pop(task_id, None)
+
+
+def test_execute_code_remote_creation_uses_full_container_policy(monkeypatch):
+    import tools.code_execution_tool as code_execution_tool
+
+    task_id = "managed-modal-policy"
+    captured = {}
+    config = {
+        "env_type": "modal",
+        "modal_image": "python:3.11",
+        "modal_mode": "managed",
+        "cwd": "/workspace",
+        "timeout": 30,
+        "container_cpu": 2,
+        "container_memory": 4096,
+        "container_disk": 8192,
+        "container_persistent": True,
+        "docker_forward_env": ["HTTP_PROXY"],
+        "docker_env": {"MODE": "test"},
+        "docker_extra_args": ["--cap-drop=ALL"],
+        "docker_mount_cwd_to_workspace": True,
+        "docker_persist_across_processes": False,
+    }
+
+    class Environment:
+        pass
+
+    def create_environment(**kwargs):
+        captured.update(kwargs)
+        return Environment()
+
+    monkeypatch.setattr(terminal_tool, "_get_env_config", lambda: config)
+    monkeypatch.setattr(terminal_tool, "_create_environment", create_environment)
+    monkeypatch.setattr(terminal_tool, "_start_cleanup_thread", lambda: None)
+    try:
+        code_execution_tool._get_or_create_env(task_id)
+        expected = terminal_tool._container_config_from_config(config)
+        assert captured["container_config"] == expected
+        assert captured["container_config"]["modal_mode"] == "managed"
+    finally:
+        with terminal_tool._env_lock:
+            terminal_tool._active_environments.pop(task_id, None)
+            terminal_tool._last_activity.pop(task_id, None)
+            terminal_tool._forget_environment_key(task_id)
+        with terminal_tool._creation_locks_lock:
+            terminal_tool._creation_locks.pop(task_id, None)
+
+
+def test_cleanup_vm_clears_canonical_task_overrides():
+    task_id = "cleanup-leak"
+    terminal_tool.register_task_env_overrides(
+        task_id,
+        {"env_type": "docker", "docker_image": "private/image"},
+    )
+    terminal_tool.cleanup_vm(task_id)
+    assert terminal_tool.resolve_task_overrides(task_id) == {}
 
 
 def test_cleanup_vm_resolves_the_active_profile_namespace(tmp_path, monkeypatch):

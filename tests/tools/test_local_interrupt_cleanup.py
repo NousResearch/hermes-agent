@@ -200,3 +200,30 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
             env.cleanup()
         except Exception:
             pass
+
+
+def test_execute_cancel_event_kills_running_process():
+    env = LocalEnvironment(cwd="/tmp")
+    cancel_event = threading.Event()
+    result_holder = {}
+
+    def worker():
+        result_holder["result"] = env.execute(
+            "sleep 30",
+            timeout=60,
+            cancel_event=cancel_event,
+        )
+
+    thread = threading.Thread(target=worker)
+    try:
+        thread.start()
+        time.sleep(0.1)
+        cancel_event.set()
+        thread.join(timeout=5)
+        assert not thread.is_alive()
+        assert result_holder["result"]["returncode"] == 130
+        assert "Command cancelled" in result_holder["result"]["output"]
+    finally:
+        cancel_event.set()
+        thread.join(timeout=5)
+        env.cleanup()

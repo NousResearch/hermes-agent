@@ -34,6 +34,7 @@ Usage:
 """
 
 import copy
+from contextlib import ExitStack, contextmanager
 import hashlib
 import importlib.util
 import json
@@ -49,7 +50,7 @@ import atexit
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, Iterable, List
 
 from utils import env_var_enabled
 
@@ -1097,6 +1098,8 @@ _task_environment_keys: Dict[tuple[str, str], set[str]] = {}
 _env_lock = threading.Lock()
 _creation_locks: Dict[str, threading.Lock] = {}  # Per-task locks for sandbox creation
 _creation_locks_lock = threading.Lock()  # Protects _creation_locks dict itself
+_creation_lock_users: Dict[str, int] = {}
+_creation_lock_retired: set[str] = set()
 _cleanup_thread = None
 _cleanup_running = False
 
@@ -1970,9 +1973,8 @@ def _retire_stale_environment_for_config(
 ) -> None:
     """Retire an environment whose stored backend fingerprint is stale.
 
-    Creation locks stay stable for the lifetime of the task key. Replacing one
-    during retirement would let a second creator enter while the first creator
-    still holds the original lock.
+    The caller must hold the stable creation lock for ``effective_task_id`` so
+    backend cleanup cannot race replacement creation or file-wrapper publish.
     """
     expected = _terminal_backend_fingerprint(resolved_config=config)
     stale_key = None
@@ -2024,6 +2026,71 @@ def _environment_lookup_key(
     ):
         return raw_task_id
     return None
+
+
+def _matching_environment_for_config(
+    effective_task_id: str,
+    raw_task_id: Optional[str],
+    config: Dict[str, Any],
+) -> tuple[Optional[str], Any]:
+    """Return a cached environment only when its backend identity is current."""
+    expected = _terminal_backend_fingerprint(resolved_config=config)
+    with _env_lock:
+        key = _environment_lookup_key(effective_task_id, raw_task_id)
+        if key is None:
+            return None, None
+        metadata = _environment_metadata.get(key)
+        if metadata is not None and metadata.get("fingerprint") != expected:
+            return None, None
+        env = _active_environments.get(key)
+        if env is None:
+            return None, None
+        _last_activity[key] = time.time()
+        return key, env
+
+
+@contextmanager
+def _task_creation_lock(task_key: str):
+    """Hold a stable per-task creation lock with waiter accounting."""
+    with _creation_locks_lock:
+        lock = _creation_locks.setdefault(task_key, threading.Lock())
+        _creation_lock_users[task_key] = _creation_lock_users.get(task_key, 0) + 1
+    try:
+        with lock:
+            yield
+    finally:
+        with _creation_locks_lock:
+            users = _creation_lock_users.get(task_key, 1) - 1
+            if users > 0:
+                _creation_lock_users[task_key] = users
+            else:
+                _creation_lock_users.pop(task_key, None)
+                if task_key in _creation_lock_retired:
+                    if _creation_locks.get(task_key) is lock:
+                        _creation_locks.pop(task_key, None)
+                    _creation_lock_retired.discard(task_key)
+
+
+def _retire_creation_lock(task_key: str) -> None:
+    """Remove an unused creation lock without splitting holders or waiters."""
+    with _creation_locks_lock:
+        lock = _creation_locks.get(task_key)
+        if lock is None:
+            return
+        if _creation_lock_users.get(task_key, 0) or lock.locked():
+            _creation_lock_retired.add(task_key)
+            return
+        _creation_locks.pop(task_key, None)
+        _creation_lock_retired.discard(task_key)
+
+
+@contextmanager
+def _task_creation_locks(task_keys: Iterable[str]):
+    """Hold several task locks in stable order for multi-namespace teardown."""
+    with ExitStack() as stack:
+        for task_key in sorted(set(task_keys)):
+            stack.enter_context(_task_creation_lock(task_key))
+        yield
 
 
 def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
@@ -2288,13 +2355,11 @@ def _cleanup_inactive_envs(lifetime_seconds: Optional[int] = None):
     except ImportError:
         pass
 
-    # Phase 1: collect stale entries and remove them from tracking dicts while
-    # holding the lock.  Do NOT call env.cleanup() inside the lock -- Modal and
-    # Docker teardown can block for 10-15s, which would stall every concurrent
-    # terminal/file tool call waiting on _env_lock.
-    envs_to_stop = []  # list of (task_id, env) pairs
-
+    # Collect candidates under the registry lock, then serialize each removal
+    # and backend cleanup with creators for the same task key. This avoids
+    # destroying a replacement that attached to the same persistent backend.
     with _env_lock:
+        stale_task_ids = []
         for task_id, last_time in list(_last_activity.items()):
             metadata = _environment_metadata.get(task_id, {})
             task_lifetime = metadata.get(
@@ -2302,44 +2367,49 @@ def _cleanup_inactive_envs(lifetime_seconds: Optional[int] = None):
                 lifetime_seconds if lifetime_seconds is not None else 300,
             )
             if current_time - last_time > task_lifetime:
+                stale_task_ids.append(task_id)
+
+    for task_id in stale_task_ids:
+        with _task_creation_lock(task_id):
+            with _env_lock:
+                last_time = _last_activity.get(task_id)
+                metadata = _environment_metadata.get(task_id, {})
+                task_lifetime = metadata.get(
+                    "lifetime_seconds",
+                    lifetime_seconds if lifetime_seconds is not None else 300,
+                )
+                if last_time is None or current_time - last_time <= task_lifetime:
+                    continue
                 env = _active_environments.pop(task_id, None)
                 _last_activity.pop(task_id, None)
                 _forget_environment_key(task_id)
-                if env is not None:
-                    envs_to_stop.append((task_id, env))
+            if env is None:
+                continue
 
-        # Also purge per-task creation locks for cleaned-up tasks
-        with _creation_locks_lock:
-            for task_id, _ in envs_to_stop:
-                _creation_locks.pop(task_id, None)
+            try:
+                from tools.file_tools import clear_file_ops_cache
+                clear_file_ops_cache(task_id)
+            except ImportError:
+                pass
 
-    # Phase 2: stop the actual sandboxes OUTSIDE the lock so other tool calls
-    # are not blocked while Modal/Docker sandboxes shut down.
-    for task_id, env in envs_to_stop:
-        # Invalidate stale file_ops cache entry (Bug fix: prevents
-        # ShellFileOperations from referencing a dead sandbox)
-        try:
-            from tools.file_tools import clear_file_ops_cache
-            clear_file_ops_cache(task_id)
-        except ImportError:
-            pass
+            try:
+                if hasattr(env, 'cleanup'):
+                    env.cleanup()
+                elif hasattr(env, 'stop'):
+                    env.stop()
+                elif hasattr(env, 'terminate'):
+                    env.terminate()
 
-        try:
-            if hasattr(env, 'cleanup'):
-                env.cleanup()
-            elif hasattr(env, 'stop'):
-                env.stop()
-            elif hasattr(env, 'terminate'):
-                env.terminate()
+                logger.info("Cleaned up inactive environment for task: %s", task_id)
 
-            logger.info("Cleaned up inactive environment for task: %s", task_id)
-
-        except Exception as e:
-            error_str = str(e)
-            if "404" in error_str or "not found" in error_str.lower():
-                logger.info("Environment for task %s already cleaned up", task_id)
-            else:
-                logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+            except Exception as e:
+                error_str = str(e)
+                if "404" in error_str or "not found" in error_str.lower():
+                    logger.info("Environment for task %s already cleaned up", task_id)
+                else:
+                    logger.warning("Error cleaning up environment for task %s: %s", task_id, e)
+            finally:
+                _retire_creation_lock(task_id)
 
 
 def _cleanup_thread_worker():
@@ -2407,15 +2477,12 @@ def ensure_task_env(task_id: Optional[str] = None):
         return None
 
     effective_task_id = _resolve_container_task_id(task_id)
-    _retire_stale_environment_for_config(
-        effective_task_id, task_id, config,
-    )
 
     # Fast path: already active — mirror terminal_tool and refresh activity.
-    existing = get_active_env(effective_task_id)
+    _, existing = _matching_environment_for_config(
+        effective_task_id, task_id, config,
+    )
     if existing is not None:
-        with _env_lock:
-            _last_activity[effective_task_id] = time.time()
         return existing
 
     overrides = resolve_task_overrides(task_id)
@@ -2434,16 +2501,15 @@ def ensure_task_env(task_id: Optional[str] = None):
 
     # Per-task creation lock so a concurrent terminal_tool call and this helper
     # don't each spawn a sandbox for the same task.
-    with _creation_locks_lock:
-        task_lock = _creation_locks.setdefault(effective_task_id, threading.Lock())
-
-    with task_lock:
+    with _task_creation_lock(effective_task_id):
         _retire_stale_environment_for_config(
             effective_task_id,
             task_id,
             config,
         )
-        existing = get_active_env(effective_task_id)
+        _, existing = _matching_environment_for_config(
+            effective_task_id, task_id, config,
+        )
         if existing is not None:
             return existing
         try:
@@ -2581,53 +2647,55 @@ def cleanup_vm(
             env_key = _environment_lookup_key(resolved_task_id, task_id)
             keys.add(env_key if env_key is not None else resolved_task_id)
 
-    envs = []
-    with _env_lock:
-        for cache_key in keys:
-            env = _active_environments.pop(cache_key, None)
-            _last_activity.pop(cache_key, None)
-            _forget_environment_key(cache_key)
-            if env is not None:
-                envs.append((cache_key, env))
-
-    # Clean up per-task creation lock
-    with _creation_locks_lock:
-        for cache_key in keys:
-            _creation_locks.pop(cache_key, None)
-
-    # Invalidate stale file_ops cache entry
-    try:
-        from tools.file_tools import clear_file_ops_cache
-        for cache_key in keys:
-            clear_file_ops_cache(cache_key)
-    except ImportError:
-        pass
-
-    if not envs:
-        return
-
-    for cache_key, env in envs:
+    with _task_creation_locks(keys):
         try:
-            if hasattr(env, 'cleanup'):
-                import inspect
-                sig = inspect.signature(env.cleanup)
-                if "force_remove" in sig.parameters:
-                    env.cleanup(force_remove=force_remove)
-                else:
-                    env.cleanup()
-            elif hasattr(env, 'stop'):
-                env.stop()
-            elif hasattr(env, 'terminate'):
-                env.terminate()
+            for cache_key in keys:
+                with _env_lock:
+                    env = _active_environments.pop(cache_key, None)
+                    _last_activity.pop(cache_key, None)
+                    _forget_environment_key(cache_key)
 
-            logger.info("Manually cleaned up environment for task: %s", cache_key)
+                try:
+                    from tools.file_tools import clear_file_ops_cache
+                    clear_file_ops_cache(cache_key)
+                except ImportError:
+                    pass
 
-        except Exception as e:
-            error_str = str(e)
-            if "404" in error_str or "not found" in error_str.lower():
-                logger.info("Environment for task %s already cleaned up", cache_key)
-            else:
-                logger.warning("Error cleaning up environment for task %s: %s", cache_key, e)
+                if env is not None:
+                    try:
+                        if hasattr(env, 'cleanup'):
+                            import inspect
+                            sig = inspect.signature(env.cleanup)
+                            if "force_remove" in sig.parameters:
+                                env.cleanup(force_remove=force_remove)
+                            else:
+                                env.cleanup()
+                        elif hasattr(env, 'stop'):
+                            env.stop()
+                        elif hasattr(env, 'terminate'):
+                            env.terminate()
+
+                        logger.info(
+                            "Manually cleaned up environment for task: %s",
+                            cache_key,
+                        )
+
+                    except Exception as e:
+                        error_str = str(e)
+                        if "404" in error_str or "not found" in error_str.lower():
+                            logger.info(
+                                "Environment for task %s already cleaned up",
+                                cache_key,
+                            )
+                        else:
+                            logger.warning(
+                                "Error cleaning up environment for task %s: %s",
+                                cache_key,
+                                e,
+                            )
+                _retire_creation_lock(cache_key)
+        finally:
+            clear_task_env_overrides(task_id)
 
 
 def _atexit_cleanup():
@@ -3041,9 +3109,6 @@ def terminal_tool(
         # every delegate_task child share one container; only task_ids with
         # a registered env override (RL benchmarks) get isolated sandboxes.
         effective_task_id = _resolve_container_task_id(task_id)
-        _retire_stale_environment_for_config(
-            effective_task_id, task_id, config,
-        )
 
         # Check per-task overrides (set by environments like TerminalBench2Env)
         # before falling back to global env var config. ``resolve_task_overrides``
@@ -3107,29 +3172,14 @@ def terminal_tool(
         # Use a per-task creation lock so concurrent tool calls for the same
         # task_id wait for the first one to finish creating the sandbox,
         # instead of each creating their own (wasting Modal resources).
-        env: Any = None
-        with _env_lock:
-            # Prefer the collapsed container id, but fall back to an env cached
-            # under the raw task_id. Per-session surfaces (ACP/gateway/dashboard)
-            # with a CWD-only override collapse to "default" for container
-            # sharing, yet an env may already be cached under the originating
-            # task_id; honor it instead of spawning a duplicate.
-            _existing_key = _environment_lookup_key(effective_task_id, task_id)
-            if _existing_key is not None:
-                _last_activity[_existing_key] = time.time()
-                env = _active_environments[_existing_key]
-                needs_creation = False
-            else:
-                needs_creation = True
+        _existing_key, env = _matching_environment_for_config(
+            effective_task_id, task_id, config,
+        )
+        needs_creation = env is None
 
         if needs_creation:
             # Per-task lock: only one thread creates the sandbox, others wait
-            with _creation_locks_lock:
-                if effective_task_id not in _creation_locks:
-                    _creation_locks[effective_task_id] = threading.Lock()
-                task_lock = _creation_locks[effective_task_id]
-
-            with task_lock:
+            with _task_creation_lock(effective_task_id):
                 # Double-check after acquiring the per-task lock
                 _retire_stale_environment_for_config(
                     effective_task_id,
@@ -4002,7 +4052,6 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
     keys = {_resolve_container_task_id(task_id)}
     if task_id:
         keys.add(task_id)
-    evicted = []
     with _env_lock:
         keys.update(
             _task_environment_keys.get(
@@ -4010,28 +4059,28 @@ def _evict_environment_for_task(task_id: Optional[str]) -> None:
                 set(),
             )
         )
+
+    with _task_creation_locks(keys):
         for key in keys:
-            env = _active_environments.pop(key, None)
-            _last_activity.pop(key, None)
-            _forget_environment_key(key)
+            with _env_lock:
+                env = _active_environments.pop(key, None)
+                _last_activity.pop(key, None)
+                _forget_environment_key(key)
             if env is not None:
-                evicted.append(env)
-    for env in evicted:
-        try:
-            env.cleanup()
-        except Exception:
-            logger.debug("cleanup of degraded environment failed", exc_info=True)
+                try:
+                    env.cleanup()
+                except Exception:
+                    logger.debug(
+                        "cleanup of degraded environment failed",
+                        exc_info=True,
+                    )
 
-    with _creation_locks_lock:
-        for key in keys:
-            _creation_locks.pop(key, None)
-    try:
-        from tools.file_tools import clear_file_ops_cache
-
-        for key in keys:
-            clear_file_ops_cache(key)
-    except ImportError:
-        pass
+            try:
+                from tools.file_tools import clear_file_ops_cache
+                clear_file_ops_cache(key)
+            except ImportError:
+                pass
+            _retire_creation_lock(key)
 
 
 def _environment_connection_error_result(

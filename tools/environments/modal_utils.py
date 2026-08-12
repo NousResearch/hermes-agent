@@ -14,6 +14,7 @@ trust-boundary decisions in their own modules.
 from __future__ import annotations
 
 import shlex
+import threading
 import time
 import uuid
 from abc import abstractmethod
@@ -81,6 +82,7 @@ class BaseModalExecutionEnvironment(BaseEnvironment):
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
         bounded_capture: bool = False,
+        cancel_event: threading.Event | None = None,
     ) -> dict:
         # Managed/remote modal transports execute commands via explicit transport
         # and do not rely on shell background rewriters. Keep parameter for
@@ -123,6 +125,12 @@ class BaseModalExecutionEnvironment(BaseEnvironment):
         }
 
         while True:
+            if cancel_event is not None and cancel_event.is_set():
+                try:
+                    self._cancel_modal_exec(start.handle)
+                except Exception:
+                    pass
+                return self._result("[Command cancelled]", 130)
             if is_interrupted():
                 try:
                     self._cancel_modal_exec(start.handle)

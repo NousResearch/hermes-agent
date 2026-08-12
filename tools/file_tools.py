@@ -1418,62 +1418,49 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
     from tools.terminal_tool import (
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
-        _creation_locks,
-        _creation_locks_lock,
+        _container_config_from_config,
+        _matching_environment_for_config,
         _resolve_container_task_id,
         _register_active_environment,
         _retire_stale_environment_for_config,
+        _ssh_config_from_config,
+        _task_creation_lock,
     )
     import time
 
     raw_task_id = task_id or "default"
     task_id = _resolve_container_task_id(raw_task_id)
     config = _get_env_config()
-    _retire_stale_environment_for_config(task_id, raw_task_id, config)
 
     # Fast path: check cache -- but also verify the underlying environment
     # is still alive (it may have been killed by the cleanup thread).
     with _file_ops_lock:
         cached = _file_ops_cache.get(task_id)
     if cached is not None:
-        with _env_lock:
-            if task_id in _active_environments:
-                _last_activity[task_id] = time.time()
-                return cached
-            else:
-                # Environment was cleaned up -- preserve the old cwd in the
-                # session record before invalidating the stale cache entry
-                # (fixes #26211: silent file-creation failures in long-running
-                # conversations). Usually a no-op: every completed command
-                # already recorded its cwd.
-                #
-                # Fill-only: ``cached.cwd`` is a snapshot of the SHARED env's
-                # cwd at cache-build time, so it is not attributable to this
-                # session (same class as the interrupted-command bug, #85658).
-                # Rescue a session that has no record, but never overwrite a
-                # record the session wrote for itself.
-                old_cwd = getattr(cached, "cwd", None)
-                if old_cwd:
-                    try:
-                        from tools.terminal_tool import (
-                            get_session_cwd,
-                            record_session_cwd,
-                        )
-                        if get_session_cwd(raw_task_id) is None:
-                            record_session_cwd(raw_task_id, old_cwd)
-                    except Exception:
-                        pass
-                with _file_ops_lock:
-                    _file_ops_cache.pop(task_id, None)
+        _, matching_env = _matching_environment_for_config(
+            task_id, raw_task_id, config,
+        )
+        if matching_env is not None:
+            return cached
+        # Environment was cleaned up or is stale. Preserve its old cwd only
+        # when the raw session has not already recorded its own cwd.
+        old_cwd = getattr(cached, "cwd", None)
+        if old_cwd:
+            try:
+                from tools.terminal_tool import (
+                    get_session_cwd,
+                    record_session_cwd,
+                )
+                if get_session_cwd(raw_task_id) is None:
+                    record_session_cwd(raw_task_id, old_cwd)
+            except Exception:
+                pass
+        with _file_ops_lock:
+            _file_ops_cache.pop(task_id, None)
 
     # Need to ensure the environment exists before building file_ops.
     # Acquire per-task lock so only one thread creates the sandbox.
-    with _creation_locks_lock:
-        if task_id not in _creation_locks:
-            _creation_locks[task_id] = threading.Lock()
-        task_lock = _creation_locks[task_id]
-
-    with task_lock:
+    with _task_creation_lock(task_id):
         # Double-check: another thread may have created it while we waited
         _retire_stale_environment_for_config(
             task_id,
@@ -1510,30 +1497,13 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             cwd, host_cwd = _resolve_environment_cwd(config, raw_task_id)
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
-            container_config = None
-            if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
-                container_config = {
-                    "container_cpu": config.get("container_cpu", 1),
-                    "container_memory": config.get("container_memory", 5120),
-                    "container_disk": config.get("container_disk", 51200),
-                    "container_persistent": config.get("container_persistent", True),
-                    "vercel_runtime": config.get("vercel_runtime", ""),
-                    "docker_volumes": config.get("docker_volumes", []),
-                    "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                    "docker_forward_env": config.get("docker_forward_env", []),
-                    "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                    "docker_network": config.get("docker_network", True),
-                }
+            container_config = (
+                _container_config_from_config(config)
+                if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
+                else None
+            )
 
-            ssh_config = None
-            if env_type == "ssh":
-                ssh_config = {
-                    "host": config.get("ssh_host", ""),
-                    "user": config.get("ssh_user", ""),
-                    "port": config.get("ssh_port", 22),
-                    "key": config.get("ssh_key", ""),
-                    "persistent": config.get("ssh_persistent", False),
-                }
+            ssh_config = _ssh_config_from_config(config) if env_type == "ssh" else None
 
             local_config = None
             if env_type == "local":

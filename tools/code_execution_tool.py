@@ -888,28 +888,25 @@ def _get_or_create_env(task_id: str):
     from tools.terminal_tool import (
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
-        _creation_locks, _creation_locks_lock, resolve_task_overrides,
+        resolve_task_overrides,
         _resolve_container_task_id, _resolve_environment_cwd,
+        _container_config_from_config, _matching_environment_for_config,
         _register_active_environment, _retire_stale_environment_for_config,
+        _ssh_config_from_config, _task_creation_lock,
     )
 
     effective_task_id = _resolve_container_task_id(task_id)
     config = _get_env_config()
-    _retire_stale_environment_for_config(effective_task_id, task_id, config)
 
     # Fast path: environment already exists
-    with _env_lock:
-        if effective_task_id in _active_environments:
-            _last_activity[effective_task_id] = time.time()
-            return _active_environments[effective_task_id], config["env_type"]
+    _, existing = _matching_environment_for_config(
+        effective_task_id, task_id, config,
+    )
+    if existing is not None:
+        return existing, config["env_type"]
 
     # Slow path: create environment (same pattern as file_tools._get_file_ops)
-    with _creation_locks_lock:
-        if effective_task_id not in _creation_locks:
-            _creation_locks[effective_task_id] = threading.Lock()
-        task_lock = _creation_locks[effective_task_id]
-
-    with task_lock:
+    with _task_creation_lock(effective_task_id):
         _retire_stale_environment_for_config(
             effective_task_id,
             task_id,
@@ -936,28 +933,13 @@ def _get_or_create_env(task_id: str):
 
         cwd, host_cwd = _resolve_environment_cwd(config, task_id)
 
-        container_config = None
-        if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}:
-            container_config = {
-                "container_cpu": config.get("container_cpu", 1),
-                "container_memory": config.get("container_memory", 5120),
-                "container_disk": config.get("container_disk", 51200),
-                "container_persistent": config.get("container_persistent", True),
-                "vercel_runtime": config.get("vercel_runtime", ""),
-                "docker_volumes": config.get("docker_volumes", []),
-                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                "docker_network": config.get("docker_network", True),
-            }
+        container_config = (
+            _container_config_from_config(config)
+            if env_type in {"docker", "singularity", "modal", "daytona", "vercel_sandbox"}
+            else None
+        )
 
-        ssh_config = None
-        if env_type == "ssh":
-            ssh_config = {
-                "host": config.get("ssh_host", ""),
-                "user": config.get("ssh_user", ""),
-                "port": config.get("ssh_port", 22),
-                "key": config.get("ssh_key", ""),
-                "persistent": config.get("ssh_persistent", False),
-            }
+        ssh_config = _ssh_config_from_config(config) if env_type == "ssh" else None
 
         local_config = None
         if env_type == "local":
@@ -1232,6 +1214,7 @@ def _execute_remote(
     exec_start = time.monotonic()
     stop_event = threading.Event()
     rpc_thread = None
+    script_thread = None
     rpc_connection_errors: List[Exception] = []
     script_done = threading.Event()
     script_results: List[Dict[str, Any]] = []
@@ -1318,7 +1301,11 @@ def _execute_remote(
         def _run_remote_script() -> None:
             try:
                 script_results.append(
-                    env.execute(script_command, timeout=timeout)
+                    env.execute(
+                        script_command,
+                        timeout=timeout,
+                        cancel_event=stop_event,
+                    )
                 )
             except Exception as exc:
                 script_errors.append(exc)
@@ -1387,6 +1374,17 @@ def _execute_remote(
                     EnvironmentConnectionError(
                         "RPC poller did not stop after the remote script finished"
                     )
+                )
+
+        if script_thread is not None and rpc_connection_errors:
+            # The generated client may be waiting for an RPC response that can
+            # no longer arrive. BaseEnvironment observes ``stop_event`` and
+            # kills its process handle; do not return or retire the environment
+            # until that worker has stopped.
+            script_thread.join(timeout=5)
+            if script_thread.is_alive():
+                logger.error(
+                    "Remote execute_code script did not stop after RPC cancellation"
                 )
 
         # Clean up remote sandbox dir

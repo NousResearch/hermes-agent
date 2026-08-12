@@ -293,6 +293,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
 
         script_started = threading.Event()
         release_script = threading.Event()
+        script_finished = threading.Event()
         result_box = {}
         worker = None
 
@@ -306,7 +307,13 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
                     return {"returncode": 0, "output": "OK\n"}
                 if "python3 script.py" in command:
                     script_started.set()
-                    release_script.wait(timeout=5)
+                    cancel_event = _kwargs.get("cancel_event")
+                    if cancel_event is None:
+                        release_script.wait(timeout=5)
+                    else:
+                        cancel_event.wait(timeout=5)
+                    time.sleep(0.2)
+                    script_finished.set()
                     return {"returncode": 0, "output": "late success\n"}
                 return {"returncode": 0, "output": ""}
 
@@ -338,6 +345,10 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
                 self.assertFalse(
                     worker.is_alive(),
                     "execute_code waited for the remote client's full RPC timeout",
+                )
+                self.assertTrue(
+                    script_finished.is_set(),
+                    "execute_code returned before the cancelled remote script worker stopped",
                 )
         finally:
             release_script.set()
@@ -551,7 +562,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
             def __init__(self):
                 self.response_command = ""
 
-            def execute(self, command, cwd=None, timeout=None):
+            def execute(self, command, cwd=None, timeout=None, **_kwargs):
                 if command.startswith("ls -1"):
                     return {"output": request_path}
                 if command == f"cat {request_path}":
@@ -608,7 +619,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
             def get_temp_dir(self):
                 return "/tmp"
 
-            def execute(self, command, cwd=None, timeout=None):
+            def execute(self, command, cwd=None, timeout=None, **_kwargs):
                 if "command -v python3" in command:
                     return {"output": "OK\n"}
                 if "python3 script.py" in command:
@@ -647,7 +658,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
             def get_temp_dir(self):
                 return "/data/data/com.termux/files/usr/tmp"
 
-            def execute(self, command, cwd=None, timeout=None):
+            def execute(self, command, cwd=None, timeout=None, **_kwargs):
                 self.commands.append((command, cwd, timeout))
                 if "command -v python3" in command:
                     return {"output": "OK\n"}
@@ -690,7 +701,7 @@ class TestExecuteCodeRemoteTempDir(unittest.TestCase):
             def get_temp_dir(self):
                 return "/tmp"
 
-            def execute(self, command, cwd=None, timeout=None):
+            def execute(self, command, cwd=None, timeout=None, **_kwargs):
                 self.commands.append((command, cwd, timeout))
                 if "command -v python3" in command:
                     return {"output": "OK\n"}
@@ -1621,7 +1632,7 @@ class TestHeadTailTruncation(unittest.TestCase):
             def get_temp_dir(self):
                 return "/tmp"
 
-            def execute(self, command, cwd=None, timeout=None):
+            def execute(self, command, cwd=None, timeout=None, **_kwargs):
                 self.commands.append((command, cwd, timeout))
                 if "command -v python3" in command:
                     return {"output": "OK\n"}

@@ -7652,8 +7652,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         counted by _running_agent_count(), but suspending mid-flight loses them.
         Checks the runner's own tracked tasks + the process registry's running
         processes + any pending process-completion watchers.
+
+        PERMANENT supervised watchers (tagged _hermes_supervised_watcher by
+        _spawn_supervised) are excluded: they live for the whole process —
+        including the scale-to-zero watcher itself — so counting them would
+        make this predicate True forever and the gateway could never go
+        dormant. Verified live on staging (2026-08-12): an armed, fully idle
+        instance never logged "going dormant" because ~9 supervised watchers
+        sat in _background_tasks. Fly's coarse autostop used to mask this;
+        with the gateway owning the suspend it became load-bearing.
         """
-        if any(not t.done() for t in self._background_tasks):
+        if any(
+            not t.done() and not getattr(t, "_hermes_supervised_watcher", False)
+            for t in self._background_tasks
+        ):
             return True
         try:
             from tools.async_delegation import active_count
@@ -12021,6 +12033,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Deliberately do NOT pass name= to create_task — some test doubles mock
         # create_task with a signature that rejects the name kwarg.
         task = asyncio.create_task(coro_factory())
+        # Mark this as a PERMANENT supervised watcher, not transient background
+        # WORK. The scale-to-zero idle check must ignore these: supervised
+        # watchers (session-expiry, kanban, reconnect, the scale-to-zero watcher
+        # itself, ...) live for the whole process, so counting them as "live
+        # background work" would make the gateway consider itself busy forever
+        # and never go dormant/suspend. Transient tasks added to
+        # _background_tasks elsewhere (startup-resume events etc.) stay counted.
+        task._hermes_supervised_watcher = True  # type: ignore[attr-defined]
         self._background_tasks.add(task)
         if on_spawn is not None:
             # Record the live handle NOW so an external tracker (e.g.

@@ -247,6 +247,35 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     ),
 }
 
+# Auto-extend HERMES_OVERLAYS with any ACP subprocess provider (auth_type
+# "external_process", base_url "acp://<agent>") registered in providers/ —
+# e.g. a claude-acp or codex-acp plugin from
+# https://github.com/mvdbastos/hermes-acp-agents. These aren't in models.dev,
+# so without an overlay entry get_provider() returns None for them, the same
+# failure mode the "vertex" comment above describes. copilot-acp is the one
+# ACP provider declared explicitly above (its own base_url env var predates
+# this mechanism); plugins only need to add a ProviderProfile, not edit this
+# file.
+try:
+    from providers import list_providers as _list_providers_for_overlays
+
+    for _pp in _list_providers_for_overlays():
+        if _pp.name in HERMES_OVERLAYS:
+            continue
+        if _pp.auth_type != "external_process" or not str(_pp.base_url or "").startswith("acp://"):
+            continue
+        _base_url_var = next(
+            (v for v in _pp.env_vars if v.endswith("_BASE_URL") or v.endswith("_URL")), ""
+        )
+        HERMES_OVERLAYS[_pp.name] = HermesOverlay(
+            transport="codex_responses",
+            auth_type="external_process",
+            base_url_override=_pp.base_url,
+            base_url_env_var=_base_url_var,
+        )
+except Exception:
+    pass
+
 
 # -- Resolved provider -------------------------------------------------------
 # The merged result of models.dev + overlay + user config.
@@ -428,6 +457,19 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "ollama-cloud": "Ollama Cloud",
     "xai-oauth": "xAI Grok OAuth (SuperGrok / Premium+)",
 }
+
+# Auto-extend _LABEL_OVERRIDES for the ACP subprocess providers auto-added to
+# HERMES_OVERLAYS above, using each profile's display_name.
+try:
+    from providers import list_providers as _list_providers_for_labels
+
+    for _pp in _list_providers_for_labels():
+        if _pp.name in _LABEL_OVERRIDES:
+            continue
+        if _pp.auth_type == "external_process" and str(_pp.base_url or "").startswith("acp://") and _pp.display_name:
+            _LABEL_OVERRIDES[_pp.name] = _pp.display_name
+except Exception:
+    pass
 
 
 # -- Transport → API mode mapping ---------------------------------------------

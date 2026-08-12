@@ -11921,6 +11921,13 @@ def _session_latest_descendant(session_id: str, db):
             except Exception:
                 return None
 
+    def is_delegate_model_config(model_config):
+        try:
+            parsed = json.loads(model_config or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return False
+        return isinstance(parsed, dict) and parsed.get("_delegate_from") is not None
+
     sid = db.resolve_session_id(session_id)
     if not sid or not db.get_session(sid):
         return None, []
@@ -11942,19 +11949,17 @@ def _session_latest_descendant(session_id: str, db):
                 SELECT s.id, s.parent_session_id, s.started_at, s.model_config
                 FROM sessions s
                 JOIN descendants d ON s.parent_session_id = d.id
+                WHERE CASE
+                    WHEN json_valid(s.model_config)
+                    THEN json_extract(s.model_config, '$._delegate_from') IS NULL
+                    ELSE 1
+                END
             )
             SELECT id, parent_session_id, started_at, model_config FROM descendants
             """,
             (sid,),
         ).fetchall()
         for row in raw_rows:
-            # Skip delegate subagent sessions: they are not continuation
-            # targets (see docstring). The tag lives in model_config as
-            # "_delegate_from": "<parent session id>", written by
-            # delegate_tool when spawning the child.
-            model_config = row_get(row, "model_config", 3) or ""
-            if "_delegate_from" in model_config:
-                continue
             rows.append({
                 "id": row_get(row, "id", 0),
                 "parent_session_id": row_get(row, "parent_session_id", 1),
@@ -11964,7 +11969,7 @@ def _session_latest_descendant(session_id: str, db):
         rows = db.list_sessions_rich(limit=10000, offset=0, compact_rows=True)
         rows = [
             r for r in rows
-            if "_delegate_from" not in (r.get("model_config") or "")
+            if not is_delegate_model_config(r.get("model_config"))
         ]
 
     children = {}

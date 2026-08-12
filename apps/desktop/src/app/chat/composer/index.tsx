@@ -340,6 +340,7 @@ export function ChatBar({
     queuedPrompts,
     sessionId,
     setComposerText,
+    slashAttachmentsUnsupported: t.desktop.slashAttachmentsUnsupported,
     stashAt
   })
 

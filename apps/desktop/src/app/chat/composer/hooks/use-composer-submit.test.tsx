@@ -59,6 +59,7 @@ function renderSubmitHook({
       queuedPrompts: [],
       sessionId: 'runtime-session',
       setComposerText: vi.fn(),
+      slashAttachmentsUnsupported: 'Remove attachments before running a slash command.',
       stashAt: vi.fn()
     })
   )
@@ -138,6 +139,27 @@ describe('useComposerSubmit busy-turn routing', () => {
     })
 
     expect(queueCurrentDraft).toHaveBeenCalledTimes(1)
+    expect(onSteer).not.toHaveBeenCalled()
+    expect(onSubmit).not.toHaveBeenCalled()
+    expect(onCancel).not.toHaveBeenCalled()
+  })
+
+  it('keeps an attachment-bearing slash command in the composer and warns (#81798)', () => {
+    const attachment: ComposerAttachment = { id: 'image', kind: 'image', label: 'diagram.png' }
+
+    const { clearDraft, hook, onCancel, onSteer, onSubmit, queueCurrentDraft } = renderSubmitHook({
+      attachments: [attachment],
+      busy: true,
+      text: '/moa explain this'
+    })
+
+    act(() => {
+      hook.result.current.submitDraft()
+    })
+
+    expect(clearDraft).not.toHaveBeenCalled()
+    expect(queueCurrentDraft).not.toHaveBeenCalled()
+
     expect(onSteer).not.toHaveBeenCalled()
     expect(onSubmit).not.toHaveBeenCalled()
     expect(onCancel).not.toHaveBeenCalled()

@@ -21,7 +21,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
 import { $connection, $sessions, sessionMatchesStoredId } from '@/store/session'
@@ -238,6 +238,12 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
       const visibleText = rawText.trim()
       const attachments = options?.attachments ?? scope.attachments.$attachments.get()
 
+      if (attachments.length > 0 && SLASH_COMMAND_RE.test(visibleText)) {
+        notify({ kind: 'warning', message: copy.slashAttachmentsUnsupported })
+
+        return false
+      }
+
       listTileSession(visibleText)
 
       if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
@@ -249,7 +255,7 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
 
       return await submitPromptText(rawText, options)
     },
-    [listTileSession, scope.attachments.$attachments, submitPromptText]
+    [copy.slashAttachmentsUnsupported, listTileSession, scope.attachments.$attachments, submitPromptText]
   )
 
   const cancelRun = useCallback(async () => {

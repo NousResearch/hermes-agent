@@ -219,7 +219,32 @@ describe('usePromptActions /title', () => {
 
   afterEach(() => {
     cleanup()
+    clearNotifications()
     vi.restoreAllMocks()
+  })
+
+  it('rejects attachment-bearing slash commands instead of submitting them as prose (#81798)', async () => {
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const attachment: ComposerAttachment = { id: 'image', kind: 'image', label: 'diagram.png' }
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        refreshSessions={vi.fn(async () => undefined)}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const accepted = await handle!.submitText('/moa explain this', { attachments: [attachment] })
+
+    expect(accepted).toBe(false)
+    expect(requestGateway).not.toHaveBeenCalled()
+    expect($notifications.get()).toEqual([
+      expect.objectContaining({
+        kind: 'warning',
+        message: 'Remove attachments before running a slash command.'
+      })
+    ])
   })
 
   it('renames via the session.title RPC (with the runtime id), updates the sidebar store, and refreshes', async () => {

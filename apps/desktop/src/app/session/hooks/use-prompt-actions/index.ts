@@ -589,6 +589,12 @@ export function usePromptActions({
       const visibleText = sanitizeComposerInput(rawText).trim()
       const attachments = options?.attachments ?? $composerAttachments.get()
 
+      if (attachments.length > 0 && SLASH_COMMAND_RE.test(visibleText)) {
+        notify({ kind: 'warning', message: copy.slashAttachmentsUnsupported })
+
+        return false
+      }
+
       if (!attachments.length && SLASH_COMMAND_RE.test(visibleText)) {
         triggerHaptic('selection')
         // Forward the explicit target (background queue drain, tile) — dropping
@@ -600,7 +606,7 @@ export function usePromptActions({
 
       return await submitPromptText(rawText, options)
     },
-    [executeSlashCommand, submitPromptText]
+    [copy.slashAttachmentsUnsupported, executeSlashCommand, submitPromptText]
   )
 
   const transcribeVoiceAudio = useCallback(

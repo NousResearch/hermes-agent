@@ -2522,6 +2522,7 @@ export const ar = defineLocale({
     sessionUnavailable: 'الجلسة غير متاحة',
     createSessionFailed: 'فشل إنشاء الجلسة',
     promptFailed: 'فشل إرسال الرسالة',
+    slashAttachmentsUnsupported: 'أزل المرفقات قبل تشغيل أمر بشرطة مائلة.',
     providerCredentialRequired: 'مطلوب اعتماد المزود',
     emptySlashCommand: 'أمر slash فارغ',
     desktopCommands: 'أوامر سطح المكتب',

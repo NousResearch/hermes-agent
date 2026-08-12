@@ -267,9 +267,11 @@ def _detect_escape_drift(content: str, matches: List[Tuple[int, int]],
     Returns an error string if drift is detected, None otherwise.
     """
     # Cheap pre-check: bail out unless new_string actually contains a
-    # suspect escape sequence. This keeps the guard free for all the
-    # common, correct cases.
-    if "\\'" not in new_string and '\\"' not in new_string:
+    # suspect escape sequence or any backslash at all (the doubling guard
+    # below only matters when backslashes are present). This keeps the
+    # guard free for all the common, correct cases.
+    has_quote_suspects = "\\'" in new_string or '\\"' in new_string
+    if not has_quote_suspects and "\\" not in old_string:
         return None
 
     # Aggregate matched regions of the file — that's what new_string will
@@ -278,19 +280,89 @@ def _detect_escape_drift(content: str, matches: List[Tuple[int, int]],
     # escaped strings); accept the patch.
     matched_regions = "".join(content[start:end] for start, end in matches)
 
-    for suspect in ("\\'", '\\"'):
-        if suspect in new_string and suspect in old_string and suspect not in matched_regions:
-            plain = suspect[1]  # "'" or '"'
-            return (
-                f"Escape-drift detected: old_string and new_string contain "
-                f"the literal sequence {suspect!r} but the matched region of "
-                f"the file does not. This is almost always a tool-call "
-                f"serialization artifact where an apostrophe or quote got "
-                f"prefixed with a spurious backslash. Re-read the file with "
-                f"read_file and pass old_string/new_string without "
-                f"backslash-escaping {plain!r} characters."
-            )
+    if has_quote_suspects:
+        for suspect in ("\\'", '\\"'):
+            if suspect in new_string and suspect in old_string and suspect not in matched_regions:
+                plain = suspect[1]  # "'" or '"'
+                return (
+                    f"Escape-drift detected: old_string and new_string contain "
+                    f"the literal sequence {suspect!r} but the matched region of "
+                    f"the file does not. This is almost always a tool-call "
+                    f"serialization artifact where an apostrophe or quote got "
+                    f"prefixed with a spurious backslash. Re-read the file with "
+                    f"read_file and pass old_string/new_string without "
+                    f"backslash-escaping {plain!r} characters."
+                )
+
+    # Backslash-run doubling: the model sent old_string with 2x the
+    # backslashes the file actually has (JSON string double-escaping —
+    # source text `\\` arrives as `\\\\`). A similarity strategy can match
+    # the region anyway, and writing new_string verbatim then doubles every
+    # backslash run in the file (`C:\\Users` becomes `C:\\\\Users`).
+    # Detect the halving relationship between the shared (unchanged) text
+    # of old_string and the matched region and block with guidance rather
+    # than silently corrupting escape sequences.
+    drift = _detect_backslash_doubling(matched_regions, old_string, new_string)
+    if drift:
+        return drift
     return None
+
+
+def _backslash_runs(s: str) -> List[int]:
+    """Return the lengths of maximal backslash runs in ``s``, in order."""
+    runs: List[int] = []
+    n = 0
+    for ch in s:
+        if ch == "\\":
+            n += 1
+        elif n:
+            runs.append(n)
+            n = 0
+    if n:
+        runs.append(n)
+    return runs
+
+
+def _detect_backslash_doubling(matched_regions: str, old_string: str,
+                               new_string: str) -> Optional[str]:
+    """Detect JSON double-escaped backslashes in old_string/new_string.
+
+    Fires when every backslash run in old_string is exactly twice the
+    length of the corresponding run in the matched file region (with the
+    same number of runs, and at least one run of length >= 2 so a single
+    doubled backslash in prose can't trigger it). That pattern means the
+    tool-call arguments went through an extra JSON-escaping pass; writing
+    new_string verbatim would double every backslash in the file.
+    """
+    old_runs = _backslash_runs(old_string)
+    file_runs = _backslash_runs(matched_regions)
+    if not old_runs or not file_runs or len(old_runs) != len(file_runs):
+        return None
+    if old_runs == file_runs:
+        return None
+    # Every old run must be exactly double its file counterpart, and the
+    # doubling must be non-trivial (>= 2 backslashes in the file) for at
+    # least one run — a lone `\` vs `\\` is too weak a signal on its own
+    # unless it is consistent across 2+ runs.
+    if any(o != f * 2 for o, f in zip(old_runs, file_runs)):
+        return None
+    if not (any(f >= 2 for f in file_runs) or len(file_runs) >= 2):
+        return None
+    # new_string must exhibit the same doubling (the model copy-pasted the
+    # doubled form); if it already matches the file's counts, writing it is
+    # harmless and we let the edit through.
+    new_runs = _backslash_runs(new_string)
+    if new_runs == file_runs:
+        return None
+    return (
+        "Escape-drift detected: every backslash run in old_string is exactly "
+        "twice as long as in the matched region of the file (e.g. the file "
+        "has `\\\\` where old_string has `\\\\\\\\`). The tool-call arguments "
+        "were JSON-escaped one extra time; applying new_string verbatim would "
+        "double every backslash in the file. Re-read the file with read_file "
+        "and resend old_string/new_string with the backslash counts exactly "
+        "as they appear in the file."
+    )
 
 
 def _leading_whitespace(line: str) -> str:

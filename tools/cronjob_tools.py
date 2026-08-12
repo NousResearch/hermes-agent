@@ -804,6 +804,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     ]
     if external_refs:
         result["context_from"] = external_refs
+    if isinstance(job.get("attach_to_session"), bool):
+        result["attach_to_session"] = job["attach_to_session"]
     return result
 
 
@@ -1970,6 +1972,7 @@ def _cronjob_handler(args, **kw):
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        attach_to_session=args.get("attach_to_session"),
         monitor_script=_mon_script,
         monitor_url=_mon_url,
         task_id=kw.get("task_id"),

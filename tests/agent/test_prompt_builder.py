@@ -990,3 +990,59 @@ class TestParallelToolCallGuidance:
 # =========================================================================
 
 
+# ---------------------------------------------------------------------------
+# build_skills_system_prompt — explicit platform parameter (#50521)
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSkillsSystemPromptPlatform:
+    """build_skills_system_prompt must accept an explicit ``platform``
+    parameter so callers (system_prompt.py) can pass ``agent.platform``
+    instead of relying on a process-global ``HERMES_PLATFORM`` env var
+    that leaks ``"cli"`` into gateway turns."""
+
+    def test_explicit_platform_passed_to_disabled_lookup(self, tmp_path, monkeypatch):
+        """Explicit platform= should be forwarded to get_disabled_skill_names."""
+        from agent.prompt_builder import build_skills_system_prompt, _SKILLS_PROMPT_CACHE
+        import agent.prompt_builder as _pb
+        import agent.skill_utils as _su
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        monkeypatch.setattr(_su, "get_skills_dir", lambda: skills_dir)
+        monkeypatch.setattr(_su, "get_all_skills_dirs", lambda: [skills_dir])
+
+        platforms_seen = []
+        def tracking_disabled(platform=None):
+            platforms_seen.append(platform)
+            return set()
+        # Patch the imported reference in prompt_builder, not skill_utils
+        monkeypatch.setattr(_pb, "get_disabled_skill_names", tracking_disabled)
+
+        _SKILLS_PROMPT_CACHE.clear()
+        build_skills_system_prompt(platform="cli")
+        assert platforms_seen == ["cli"], f"Expected ['cli'], got {platforms_seen}"
+
+    def test_none_platform_falls_back_to_env(self, tmp_path, monkeypatch):
+        """When platform=None, env var fallback should still work."""
+        from agent.prompt_builder import build_skills_system_prompt, _SKILLS_PROMPT_CACHE
+        import agent.prompt_builder as _pb
+        import agent.skill_utils as _su
+
+        skills_dir = tmp_path / "skills"
+        skills_dir.mkdir()
+        monkeypatch.setattr(_su, "get_skills_dir", lambda: skills_dir)
+        monkeypatch.setattr(_su, "get_all_skills_dirs", lambda: [skills_dir])
+
+        monkeypatch.setenv("HERMES_PLATFORM", "telegram")
+        platforms_seen = []
+        def tracking_disabled(platform=None):
+            platforms_seen.append(platform)
+            return set()
+        monkeypatch.setattr(_pb, "get_disabled_skill_names", tracking_disabled)
+
+        _SKILLS_PROMPT_CACHE.clear()
+        build_skills_system_prompt()
+        assert platforms_seen == ["telegram"], f"Expected ['telegram'], got {platforms_seen}"
+
+

@@ -104,3 +104,52 @@ def test_sequential_tool_timeout_emits_result_and_continues(tmp_path, monkeypatc
     assert len(timeout_events) == 1
     assert timeout_events[0]["status"] == "timeout"
     agent._flush_messages_to_session_db.assert_called()
+
+
+def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkeypatch):
+    import hermes_cli.lifecycle as lifecycle
+    import model_tools
+
+    agent = _make_agent(tmp_path)
+    release_first = threading.Event()
+    first_returned = threading.Event()
+    dispatch_count = 0
+    terminal_events: list[dict] = []
+
+    def _dispatch(_name, _args, **_kwargs):
+        nonlocal dispatch_count
+        dispatch_count += 1
+        if dispatch_count == 1:
+            release_first.wait()
+            first_returned.set()
+            return "late result"
+        return "second result"
+
+    calls = [_tool_call("hung"), _tool_call("next")]
+    messages: list[dict] = []
+    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.05")
+
+    try:
+        with (
+            patch.object(model_tools.registry, "dispatch", side_effect=_dispatch),
+            patch.object(lifecycle, "has_hook", return_value=True),
+            patch.object(
+                lifecycle,
+                "invoke_hook",
+                side_effect=lambda hook, **kwargs: (
+                    terminal_events.append(kwargs) if hook == "post_tool_call" else []
+                ),
+            ),
+        ):
+            execute_tool_calls_sequential(
+                agent, SimpleNamespace(tool_calls=calls), messages, "task"
+            )
+            release_first.set()
+            assert first_returned.wait(timeout=1)
+    finally:
+        release_first.set()
+
+    assert [(event["tool_call_id"], event.get("error_type")) for event in terminal_events] == [
+        ("hung", "tool_timeout"),
+        ("next", None),
+    ]

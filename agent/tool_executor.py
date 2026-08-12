@@ -2167,27 +2167,30 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             _spinner_result = None
             try:
                 def _execute(next_args: dict) -> Any:
-                    return _ra().handle_function_call(
-                        function_name,
-                        next_args,
-                        effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=agent.session_id or "",
-                        turn_id=getattr(agent, "_current_turn_id", "") or "",
-                        api_request_id=getattr(agent, "_current_api_request_id", "")
-                        or "",
-                        enabled_tools=(
-                            list(agent.valid_tool_names)
-                            if agent.valid_tool_names
-                            else None
-                        ),
-                        skip_pre_tool_call_hook=True,
-                        skip_tool_request_middleware=True,
-                        skip_tool_execution_middleware=True,
-                        tool_request_middleware_trace=list(middleware_trace),
-                        enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                        disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-                    )
+                    from model_tools import suppress_post_tool_call_hook
+
+                    with suppress_post_tool_call_hook():
+                        return _ra().handle_function_call(
+                            function_name,
+                            next_args,
+                            effective_task_id,
+                            tool_call_id=tool_call.id,
+                            session_id=agent.session_id or "",
+                            turn_id=getattr(agent, "_current_turn_id", "") or "",
+                            api_request_id=getattr(agent, "_current_api_request_id", "")
+                            or "",
+                            enabled_tools=(
+                                list(agent.valid_tool_names)
+                                if agent.valid_tool_names
+                                else None
+                            ),
+                            skip_pre_tool_call_hook=True,
+                            skip_tool_request_middleware=True,
+                            skip_tool_execution_middleware=True,
+                            tool_request_middleware_trace=list(middleware_trace),
+                            enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                            disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                        )
 
                 (
                     function_result,
@@ -2246,27 +2249,30 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         else:
             try:
                 def _execute(next_args: dict) -> Any:
-                    return _ra().handle_function_call(
-                        function_name,
-                        next_args,
-                        effective_task_id,
-                        tool_call_id=tool_call.id,
-                        session_id=agent.session_id or "",
-                        turn_id=getattr(agent, "_current_turn_id", "") or "",
-                        api_request_id=getattr(agent, "_current_api_request_id", "")
-                        or "",
-                        enabled_tools=(
-                            list(agent.valid_tool_names)
-                            if agent.valid_tool_names
-                            else None
-                        ),
-                        skip_pre_tool_call_hook=True,
-                        skip_tool_request_middleware=True,
-                        skip_tool_execution_middleware=True,
-                        tool_request_middleware_trace=list(middleware_trace),
-                        enabled_toolsets=getattr(agent, "enabled_toolsets", None),
-                        disabled_toolsets=getattr(agent, "disabled_toolsets", None),
-                    )
+                    from model_tools import suppress_post_tool_call_hook
+
+                    with suppress_post_tool_call_hook():
+                        return _ra().handle_function_call(
+                            function_name,
+                            next_args,
+                            effective_task_id,
+                            tool_call_id=tool_call.id,
+                            session_id=agent.session_id or "",
+                            turn_id=getattr(agent, "_current_turn_id", "") or "",
+                            api_request_id=getattr(agent, "_current_api_request_id", "")
+                            or "",
+                            enabled_tools=(
+                                list(agent.valid_tool_names)
+                                if agent.valid_tool_names
+                                else None
+                            ),
+                            skip_pre_tool_call_hook=True,
+                            skip_tool_request_middleware=True,
+                            skip_tool_execution_middleware=True,
+                            tool_request_middleware_trace=list(middleware_trace),
+                            enabled_toolsets=getattr(agent, "enabled_toolsets", None),
+                            disabled_toolsets=getattr(agent, "disabled_toolsets", None),
+                        )
 
                 (
                     function_result,
@@ -2332,16 +2338,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # context-engine, memory-manager, clarify, delegate_task) are
         # dispatched inline — they never reach handle_function_call, so the
         # executor is the one that has to fire post_tool_call. For
-        # registry-dispatched tools the else-branch above invoked
-        # handle_function_call, which already fires the hook.
-        from agent.agent_runtime_helpers import agent_runtime_owns_post_tool_hook
+        # Every dispatch suppresses the inner handle_function_call observer so
+        # the executor owns one terminal event for this tool_call_id. This also
+        # prevents an abandoned timeout worker from reporting late success.
         _executor_must_emit_post_hook = (
             not _execution_blocked
             and not _execution_timed_out
-            and (
-                not _execution_dispatched
-                or agent_runtime_owns_post_tool_hook(agent, function_name)
-            )
         )
         if _executor_must_emit_post_hook:
             _emit_terminal_post_tool_call(

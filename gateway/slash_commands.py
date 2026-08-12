@@ -2734,32 +2734,35 @@ class GatewaySlashCommandsMixin:
             gate_arg = args[len("gate"):].strip()
             gate_lower = gate_arg.lower()
             if not gate_arg or gate_lower == "list":
-                return mgr.render_gates()
+                return mgr.render_gates(translate=t)
             if gate_lower.startswith("add "):
                 command = gate_arg[len("add"):].strip()
                 try:
                     gate = mgr.add_gate(command)
                 except (RuntimeError, ValueError) as exc:
-                    return f"/goal gate add: {exc}"
-                return (
-                    f"⚿ Gate added: $ {gate.command} "
-                    f"({gate.max_retries} retries, {gate.timeout_seconds}s timeout). "
-                    f"It must pass before the goal can complete."
+                    return t("gateway.goal_gate_add_failed", error=exc)
+                return t(
+                    "gateway.goal_gate_added",
+                    command=gate.command,
+                    max_retries=gate.max_retries,
+                    timeout_seconds=gate.timeout_seconds,
                 )
             if gate_lower.startswith("remove ") or gate_lower.startswith("rm "):
                 idx_text = gate_arg.split(None, 1)[1].strip()
                 try:
                     removed = mgr.remove_gate(int(idx_text))
                 except (RuntimeError, ValueError, IndexError) as exc:
-                    return f"/goal gate remove: {exc}"
-                return f"✓ Gate removed: $ {removed}"
+                    return t("gateway.goal_gate_remove_failed", error=exc)
+                return t("gateway.goal_gate_removed", command=removed)
             if gate_lower == "clear":
                 try:
                     prev = mgr.clear_gates()
                 except RuntimeError as exc:
-                    return f"/goal gate clear: {exc}"
-                return f"✓ Cleared {prev} gate{'s' if prev != 1 else ''}."
-            return "Usage: /goal gate [list | add <command> | remove <N> | clear]"
+                    return t("gateway.goal_gate_clear_failed", error=exc)
+                if prev == 1:
+                    return t("gateway.goal_gate_cleared_one")
+                return t("gateway.goal_gate_cleared_many", count=prev)
+            return t("gateway.goal_gate_usage")
 
         # /goal draft <objective> → draft a structured completion contract,
         # then set it. The aux LLM call is sync; run it off the event loop.
@@ -2835,30 +2838,38 @@ class GatewaySlashCommandsMixin:
 
         mgr, session_entry = await self._get_heartbeat_manager_for_event(event)
         if mgr is None:
-            return "Heartbeats unavailable (no session)."
+            return t("gateway.heartbeat_unavailable")
 
         quick_key = self._session_key_for_source(event.source) if event.source else None
 
         if not args or lower == "status":
-            return mgr.status_line()
+            return mgr.status_line(translate=t)
 
         if lower == "pause":
             state = mgr.pause()
-            return f"⏸ Heartbeat paused: {state.prompt}" if state else "No heartbeat set."
+            return (
+                t("gateway.heartbeat_paused", prompt=state.prompt)
+                if state
+                else t("gateway.heartbeat_not_set")
+            )
 
         if lower == "resume":
             state = mgr.resume()
             if state is None:
-                return "No heartbeat to resume."
+                return t("gateway.heartbeat_no_resume")
             if quick_key and event.source is not None:
                 self._register_heartbeat_watch(quick_key, event.source, mgr.session_id)
-            return f"▶ Heartbeat resumed (every {format_interval(state.interval_seconds)}): {state.prompt}"
+            return t(
+                "gateway.heartbeat_resumed",
+                interval=format_interval(state.interval_seconds),
+                prompt=state.prompt,
+            )
 
         if lower in {"clear", "stop", "off"}:
             had = mgr.clear()
             if quick_key:
                 self._unregister_heartbeat_watch(quick_key)
-            return "✓ Heartbeat cleared." if had else "No heartbeat set."
+            return t("gateway.heartbeat_cleared") if had else t("gateway.heartbeat_not_set")
 
         # Set: `/heartbeat every 10m <prompt>` (also accepts `10m <prompt>`).
         tokens = args.split(None, 2)
@@ -2872,25 +2883,22 @@ class GatewaySlashCommandsMixin:
             prompt = args[len(tokens[0]):].strip() if interval and interval > 0 else ""
 
         if interval is None:
-            return (
-                "Usage: /heartbeat every <interval> <prompt>  (e.g. /heartbeat every 10m Check CI)\n"
-                "Also: /heartbeat status | pause | resume | clear"
-            )
+            return t("gateway.heartbeat_usage")
         if interval < 0:
-            return f"Interval too small — minimum is {MIN_INTERVAL_SECONDS}s."
+            return t("gateway.heartbeat_interval_too_small", minimum=MIN_INTERVAL_SECONDS)
         if not prompt.strip():
-            return "Usage: /heartbeat every <interval> <prompt> — the prompt is required."
+            return t("gateway.heartbeat_prompt_required")
 
         try:
             state = mgr.set(prompt, interval)
         except ValueError as exc:
-            return f"Invalid heartbeat: {exc}"
+            return t("gateway.heartbeat_invalid", error=exc)
         if quick_key and event.source is not None:
             self._register_heartbeat_watch(quick_key, event.source, mgr.session_id)
-        return (
-            f"♥ Heartbeat set (every {format_interval(state.interval_seconds)}): {state.prompt}\n"
-            "Fires as a normal turn whenever this session is idle and the interval has "
-            "elapsed. Lives while the gateway runs — use `hermes cron` for durable schedules."
+        return t(
+            "gateway.heartbeat_set",
+            interval=format_interval(state.interval_seconds),
+            prompt=state.prompt,
         )
 
     async def _handle_refine_command(self, event: "MessageEvent") -> str:
@@ -2904,9 +2912,9 @@ class GatewaySlashCommandsMixin:
         args = (event.get_command_args() or "").strip()
         quick_key = self._session_key_for_source(event.source) if event.source else None
         if not quick_key:
-            return "Refine unavailable (no session)."
+            return t("gateway.refine_unavailable")
         if quick_key in self._running_agents:
-            return "Agent is running — wait for the turn to finish, then /refine."
+            return t("gateway.refine_agent_running")
 
         agent = None
         cache_lock = getattr(self, "_agent_cache_lock", None)
@@ -2915,11 +2923,11 @@ class GatewaySlashCommandsMixin:
                 cached = self._agent_cache.get(quick_key)
                 agent = cached[0] if isinstance(cached, tuple) else cached if cached else None
         if agent is None:
-            return "Nothing to refine yet — send a message first."
+            return t("gateway.refine_no_agent")
 
         snapshot = list(getattr(agent, "_session_messages", None) or [])
         if not snapshot:
-            return "Nothing to refine yet — the conversation is empty."
+            return t("gateway.refine_empty_conversation")
 
         review_skills = "skill_manage" in getattr(agent, "valid_tool_names", set())
         try:
@@ -2930,12 +2938,9 @@ class GatewaySlashCommandsMixin:
                 focus=args or None,
             )
         except Exception as exc:
-            return f"/refine failed to start: {exc}"
+            return t("gateway.refine_start_failed", error=exc)
         tail = f" (focus: {args})" if args else ""
-        return (
-            f"⚗ Reviewing this conversation in the background{tail} — "
-            f"any memory/skill updates will be reported when done."
-        )
+        return t("gateway.refine_started", tail=tail)
 
     async def _handle_subgoal_command(self, event: "MessageEvent") -> str:
         """Handle /subgoal for gateway platforms (mirror of CLI handler).

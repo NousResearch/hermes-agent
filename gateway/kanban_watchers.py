@@ -610,9 +610,13 @@ class GatewayKanbanWatchersMixin:
                             handoff = ""
                             if ev.payload and ev.payload.get("summary"):
                                 handoff = f"\n{str(ev.payload['summary'])[:200]}"
-                            msg = (
-                                f"👀 {board_tag}{tag}Kanban {sub['task_id']} ready for review"
-                                f" — {title}{handoff}"
+                            msg = t(
+                                "gateway.kanban_review_requested",
+                                board_tag=board_tag,
+                                tag=tag,
+                                task_id=sub["task_id"],
+                                title=title,
+                                handoff=handoff,
                             )
                         elif kind == "block_loop_detected":
                             # A task re-blocked for the same cause past the

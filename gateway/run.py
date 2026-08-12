@@ -3783,18 +3783,8 @@ def _normalize_empty_agent_response(
             "session storage" in error_str
         ):
             if failure_reason.endswith(":disk") or "disk" in error_str:
-                return (
-                    "⚠️ Session storage was temporarily unavailable, so this "
-                    "turn was stopped to protect your conversation history. "
-                    "Please check available disk space, then send your "
-                    "message again."
-                )
-            return (
-                "⚠️ Session storage was temporarily unavailable, so this "
-                "turn was stopped to protect your conversation history. "
-                "Your message should already be saved — please send it "
-                "again in a moment."
-            )
+                return t("gateway.session_storage_unavailable_disk")
+            return t("gateway.session_storage_unavailable_retry")
         is_context_failure = any(
             p in error_str
             for p in ("context", "token", "too large", "too long", "exceed", "payload")
@@ -15769,22 +15759,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         args = (event.get_command_args() or "").strip()
         if args.lower() in {"off", "resume", "stop", "disengage"}:
             if estop.disengage():
-                return "▶️ Resumed — new work is accepted again."
-            return "Hermes wasn't paused."
+                return t("gateway.pause_resumed")
+            return t("gateway.pause_not_paused")
         state = estop.get_state()
         if state is not None and not args:
             reason = state.get("reason")
             suffix = f" (reason: {reason})" if reason else ""
-            return (
-                f"⏸️ Hermes is already paused{suffix}. "
-                "Use `/pause off` to resume."
-            )
+            return t("gateway.pause_already", suffix=suffix)
         estop.engage(reason=args or None)
         suffix = f" (reason: {args})" if args else ""
-        return (
-            f"⏸️ Paused{suffix}. New cron/kanban/gateway work is on hold; "
-            "in-flight work finishes normally. Use `/pause off` to resume."
-        )
+        return t("gateway.pause_engaged", suffix=suffix)
 
     async def _busy_start_command(self, event: MessageEvent, quick_key: str, source):
         # Telegram sends /start for bot launches/deep-links. Treat it as a
@@ -17498,11 +17482,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _quick_key,
                     exc.session_id,
                 )
-                return (
-                    "⏳ Another turn is still running on this session. To "
-                    "protect the transcript, this message was not processed. "
-                    "Wait for the active turn to finish, then resend it."
-                )
+                return t("gateway.turn_lease_timeout")
             try:
                 await self._run_post_turn_hooks(
                     agent_result=_agent_result,

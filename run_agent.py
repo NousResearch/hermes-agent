@@ -2643,10 +2643,7 @@ class AIAgent:
                 marker in str(current).lower()
                 for marker in network_resolution_markers
             ):
-                return (
-                    "Hermes can't reach the model provider. You may be offline. "
-                    "Check your internet connection and try again."
-                )
+                return t("gateway.provider_unreachable_offline")
             current = current.__cause__ or current.__context__
 
         if (

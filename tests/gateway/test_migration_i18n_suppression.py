@@ -7,6 +7,7 @@ passing). Category suppression is a separate feature (see its own test module).
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -67,6 +68,105 @@ def test_gateway_system_messages_is_registered_in_default_config():
     from hermes_cli.config import DEFAULT_CONFIG
 
     assert DEFAULT_CONFIG["gateway"]["system_messages"] == {}
+
+
+# ---- current-main semantic integration ------------------------------------
+
+def test_current_main_persistence_recovery_routes_through_i18n():
+    from gateway.run import _normalize_empty_agent_response
+
+    result = {
+        "failed": True,
+        "failure_reason": "session_persistence_failed:disk",
+        "error": "disk full",
+    }
+    with patch("gateway.run.t", return_value="LOCALIZED-PERSISTENCE") as translate:
+        assert _normalize_empty_agent_response(result, "") == "LOCALIZED-PERSISTENCE"
+    translate.assert_called_once_with("gateway.session_storage_unavailable_disk")
+
+
+@pytest.mark.asyncio
+async def test_current_main_pause_reply_routes_through_i18n():
+    from gateway.run import GatewayRunner
+
+    event = SimpleNamespace(get_command_args=lambda: "off")
+    with (
+        patch("agent.estop.disengage", return_value=True),
+        patch("gateway.run.t", return_value="LOCALIZED-RESUME") as translate,
+    ):
+        result = await GatewayRunner._handle_pause_command(object.__new__(GatewayRunner), event)
+    assert result == "LOCALIZED-RESUME"
+    translate.assert_called_once_with("gateway.pause_resumed")
+
+
+@pytest.mark.asyncio
+async def test_current_main_heartbeat_unavailable_routes_through_i18n():
+    from gateway.slash_commands import GatewaySlashCommandsMixin
+
+    runner = SimpleNamespace()
+
+    async def _get_manager(_event):
+        return None, None
+
+    runner._get_heartbeat_manager_for_event = _get_manager
+    event = SimpleNamespace(get_command_args=lambda: "", source=None)
+    with patch("gateway.slash_commands.t", return_value="LOCALIZED-HEARTBEAT") as translate:
+        result = await GatewaySlashCommandsMixin._handle_heartbeat_command(runner, event)
+    assert result == "LOCALIZED-HEARTBEAT"
+    translate.assert_called_once_with("gateway.heartbeat_unavailable")
+
+
+@pytest.mark.asyncio
+async def test_current_main_goal_gate_reply_routes_through_i18n():
+    from gateway.slash_commands import GatewaySlashCommandsMixin
+
+    gate = SimpleNamespace(command="pytest -q", max_retries=3, timeout_seconds=60)
+    manager = SimpleNamespace(add_gate=lambda _command: gate)
+    runner = SimpleNamespace()
+
+    async def _get_manager(_event):
+        return manager, None
+
+    runner._get_goal_manager_for_event = _get_manager
+    event = SimpleNamespace(get_command_args=lambda: "gate add pytest -q")
+    with patch("gateway.slash_commands.t", return_value="LOCALIZED-GATE") as translate:
+        result = await GatewaySlashCommandsMixin._handle_goal_command(runner, event)
+    assert result == "LOCALIZED-GATE"
+    translate.assert_called_once_with(
+        "gateway.goal_gate_added",
+        command="pytest -q",
+        max_retries=3,
+        timeout_seconds=60,
+    )
+
+
+@pytest.mark.asyncio
+async def test_current_main_refine_reply_routes_through_i18n():
+    from gateway.slash_commands import GatewaySlashCommandsMixin
+
+    runner = SimpleNamespace(_session_key_for_source=lambda _source: None)
+    event = SimpleNamespace(get_command_args=lambda: "", source=None)
+    with patch("gateway.slash_commands.t", return_value="LOCALIZED-REFINE") as translate:
+        result = await GatewaySlashCommandsMixin._handle_refine_command(runner, event)
+    assert result == "LOCALIZED-REFINE"
+    translate.assert_called_once_with("gateway.refine_unavailable")
+
+
+def test_current_main_dns_hint_routes_through_i18n():
+    from run_agent import AIAgent
+
+    error = OSError(-3, "Temporary failure in name resolution")
+    with patch("run_agent.t", return_value="LOCALIZED-OFFLINE") as translate:
+        assert AIAgent._summarize_api_error(error) == "LOCALIZED-OFFLINE"
+    translate.assert_called_once_with("gateway.provider_unreachable_offline")
+
+
+def test_current_main_compaction_handoff_final_routes_through_i18n():
+    import agent.conversation_loop as loop
+
+    with patch.object(loop, "t", return_value="LOCALIZED-HANDOFF") as translate:
+        assert loop._handoff_skip_final_response() == "LOCALIZED-HANDOFF"
+    translate.assert_called_once_with("gateway.compaction_handoff_waiting")
 
 
 # ---- marker-coupling preserved ---------------------------------------------

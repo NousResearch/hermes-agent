@@ -198,6 +198,8 @@ async def test_full_dispatch_rejects_lease_timeout_without_running_goal_hook(
     runner._clear_session_env = MagicMock()
     runner._run_agent = pytest.fail
     runner._post_turn_goal_continuation = AsyncMock()
+    translated = "LOCALIZED-TURN-LEASE-REJECTION"
+    monkeypatch.setattr("gateway.run.t", lambda key, **_kwargs: translated if key == "gateway.turn_lease_timeout" else key)
 
     try:
         response = await asyncio.wait_for(runner._handle_message(_event()), timeout=1)
@@ -205,8 +207,7 @@ async def test_full_dispatch_rejects_lease_timeout_without_running_goal_hook(
         assert runner._turn_leases.release(holder) is True
 
     assert isinstance(response, str)
-    assert "not processed" in response.lower()
-    assert "resend" in response.lower()
+    assert response == translated
     runner.session_store.load_transcript.assert_not_called()
     runner._clear_session_env.assert_called_once_with(session_env_tokens)
     runner._post_turn_goal_continuation.assert_not_awaited()

@@ -19,7 +19,6 @@ class CapturingThread:
     targets = []
 
     def __init__(self, *, target, daemon=None, name=None):
-        self._target = target
         self.targets.append(target)
 
     def start(self):

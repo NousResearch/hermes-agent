@@ -42,28 +42,22 @@ class _BackgroundReviewRun:
         self.request_done = threading.Event()
         self._lock = threading.Lock()
         self._review_agent = None
-        self._request_started = False
         self._request_finished = False
         self._cancel_dispatched = False
 
     def begin_request(self, review_agent: Any) -> bool:
         """Atomically admit the first provider-capable review phase."""
         with self._lock:
-            self._review_agent = review_agent
             if self.cancel_requested.is_set() or self._request_finished:
                 return False
-            self._request_started = True
+            self._review_agent = review_agent
             return True
 
     def cancel(self) -> Any:
         """Fence startup and return the running fork, if one was admitted."""
         with self._lock:
             self.cancel_requested.set()
-            if (
-                self._request_started
-                and not self._request_finished
-                and not self._cancel_dispatched
-            ):
+            if self._review_agent is not None and not self._cancel_dispatched:
                 self._cancel_dispatched = True
                 return self._review_agent
             return None
@@ -74,7 +68,6 @@ class _BackgroundReviewRun:
             if self._request_finished:
                 return False
             self._request_finished = True
-            self._request_started = False
             self._review_agent = None
             return True
 

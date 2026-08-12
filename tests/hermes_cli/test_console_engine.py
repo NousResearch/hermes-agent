@@ -504,3 +504,28 @@ def test_execute_handler_string_exit_returns_error_not_crash(_isolate_hermes_hom
 
     assert result.status == "error"
     assert result.output
+
+
+def test_split_line_preserves_windows_paths():
+    """#83934: on Windows, shlex must not swallow backslashes.
+
+    With posix=True (the old behaviour) every backslash in a Windows path is
+    treated as an escape and stripped, so `sessions export C:\\Users\\me\\out`
+    silently wrote to a mangled relative filename. With posix=False the path
+    survives intact, and quotes left on quoted tokens are stripped."""
+    from hermes_cli import console_engine as ce
+
+    tokens = ce._split_line(r"sessions export C:\Users\me\Desktop\out.jsonl", posix=False)
+    assert tokens == ["sessions", "export", r"C:\Users\me\Desktop\out.jsonl"]
+
+    # quoted token still loses its surrounding quotes
+    quoted = ce._split_line(r'sessions export "C:\my path\out.jsonl"', posix=False)
+    assert quoted == ["sessions", "export", r"C:\my path\out.jsonl"]
+
+
+def test_split_line_preserves_posix_behaviour():
+    """POSIX splitting is unchanged: backslash stays an escape char."""
+    from hermes_cli import console_engine as ce
+
+    tokens = ce._split_line("sessions export /tmp/out.jsonl", posix=True)
+    assert tokens == ["sessions", "export", "/tmp/out.jsonl"]

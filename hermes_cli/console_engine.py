@@ -14,6 +14,7 @@ import functools
 import importlib
 import io
 import json
+import os
 import shlex
 import sys
 from dataclasses import dataclass
@@ -116,11 +117,20 @@ def _table_summary(summary: str, *, limit: int = 76) -> str:
     return f"{summary[: limit - 3].rstrip()}..."
 
 
-def _split_line(line: str) -> list[str]:
+def _split_line(line: str, *, posix: bool | None = None) -> list[str]:
+    # On POSIX shlex treats backslash as an escape character, so a Windows
+    # path like C:\Users\me\out.jsonl silently loses its backslashes. Use
+    # posix=False on Windows so backslashes survive, then strip the quotes
+    # that posix=False leaves around quoted tokens.
+    if posix is None:
+        posix = os.name != "nt"
     try:
-        return shlex.split(line, comments=False, posix=True)
+        parts = shlex.split(line, comments=False, posix=posix)
     except ValueError as exc:
         raise ConsoleCommandError(f"Could not parse command: {exc}") from exc
+    if not posix:
+        parts = [p[1:-1] if len(p) > 1 and p[0] == p[-1] and p[0] in "\"'" else p for p in parts]
+    return parts
 
 
 def _contains_shell_syntax(line: str, tokens: Sequence[str]) -> bool:

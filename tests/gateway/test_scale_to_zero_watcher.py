@@ -162,3 +162,89 @@ def test_no_arm_when_a_direct_platform_is_actually_enabled(monkeypatch):
     assert r._scale_to_zero_should_arm() is False
 
 
+
+# ── the self-suspend step: fires only after a clean quiesce, in order ─────────
+#
+# The gateway owns the suspend (Fly Proxy autostop is inbound-only/job-blind and
+# no longer held open by outbound sockets), so the watcher must (a) suspend only
+# AFTER go_dormant succeeded — the relay flip precedes the freeze, closing the
+# buffered-event black hole — and (b) never suspend when the quiesce failed or
+# inbound landed mid-quiesce.
+
+
+@pytest.mark.asyncio
+async def test_watcher_self_suspends_after_dormant(monkeypatch):
+    r, adapter = _runner_with(monkeypatch, idle=True)
+    calls = []
+
+    async def fake_suspend():
+        calls.append(("suspend", adapter.go_dormant_calls))
+        r._running = False  # stop the loop after the first full sequence
+
+    monkeypatch.setattr(r, "_scale_to_zero_self_suspend", fake_suspend, raising=False)
+    task = asyncio.create_task(r._scale_to_zero_watcher(interval=0.01))
+    await asyncio.wait_for(task, timeout=2)
+    # Suspend fired exactly once, and only AFTER go_dormant ran (flip-before-freeze).
+    assert calls == [("suspend", 1)]
+
+
+@pytest.mark.asyncio
+async def test_watcher_skips_suspend_when_dormant_fails(monkeypatch):
+    r, adapter = _runner_with(monkeypatch, idle=True)
+
+    async def broken_dormant():
+        raise RuntimeError("quiesce failed")
+
+    adapter.go_dormant = broken_dormant
+    suspend_calls = []
+
+    async def fake_suspend():
+        suspend_calls.append(1)
+
+    monkeypatch.setattr(r, "_scale_to_zero_self_suspend", fake_suspend, raising=False)
+    task = asyncio.create_task(r._scale_to_zero_watcher(interval=0.01))
+    await asyncio.sleep(0.1)
+    r._running = False
+    await asyncio.wait_for(task, timeout=2)
+    # A failed quiesce means an UNFLIPPED relay — suspending would black-hole
+    # inbound events. Must stay awake.
+    assert suspend_calls == []
+
+
+@pytest.mark.asyncio
+async def test_watcher_skips_suspend_when_inbound_lands_mid_quiesce(monkeypatch):
+    r, adapter = _runner_with(monkeypatch, idle=True)
+    # First idle check (loop gate) True, second (post-quiesce re-check) False.
+    reads = iter([True, False, False, False, False, False])
+    monkeypatch.setattr(
+        r, "_scale_to_zero_is_idle", lambda: next(reads, False), raising=False
+    )
+    suspend_calls = []
+
+    async def fake_suspend():
+        suspend_calls.append(1)
+
+    monkeypatch.setattr(r, "_scale_to_zero_self_suspend", fake_suspend, raising=False)
+    task = asyncio.create_task(r._scale_to_zero_watcher(interval=0.01))
+    await asyncio.sleep(0.15)
+    r._running = False
+    await asyncio.wait_for(task, timeout=2)
+    assert adapter.go_dormant_calls == 1
+    assert suspend_calls == []
+
+
+@pytest.mark.asyncio
+async def test_self_suspend_noop_off_fly(monkeypatch):
+    """Off-Fly (no flaps socket/identity) the helper is a silent no-op —
+    dormancy without platform suspend, never an error."""
+    r = GatewayRunner.__new__(GatewayRunner)
+    monkeypatch.setattr(
+        "gateway.scale_to_zero.self_suspend_available", lambda *a, **k: False
+    )
+    called = []
+    monkeypatch.setattr(
+        "gateway.scale_to_zero.suspend_self",
+        lambda *a, **k: called.append(1) or True,
+    )
+    await r._scale_to_zero_self_suspend()
+    assert called == []

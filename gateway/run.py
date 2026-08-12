@@ -7838,7 +7838,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return self.adapters.get(Platform.RELAY)
 
     async def _scale_to_zero_watcher(self, interval: float = 30.0) -> None:
-        """Watch for idle and drive the relay dormant so the platform can suspend.
+        """Watch for idle, drive the relay dormant, then self-suspend the machine.
 
         Started ONLY when _scale_to_zero_should_arm() (opted in via the Labs
         HERMES_SCALE_TO_ZERO stamp + relay-only/absent messaging + a wakeUrl).
@@ -7847,12 +7847,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             machine, §3.4(6); does NOT set _running=False),
           - relay adapter.go_dormant() — going_idle->ack + supervisor-preserving
             socket close (NOT disconnect(), NOT the run.py stop path),
-          - deliberately NO mark_resume_pending (D13 — suspend preserves RAM).
-        The process stays alive; the platform (Fly autostop:"suspend") suspends
-        the now-traffic-idle machine and autostart wakes it on the wakeUrl poke,
-        at which point the preserved reconnect supervisor re-dials and the
+          - deliberately NO mark_resume_pending (D13 — suspend preserves RAM),
+          - THEN suspend this machine through the local flaps socket
+            (gateway.scale_to_zero.suspend_self). The gateway owns the suspend
+            because Fly Proxy autostop judges idle on INBOUND connections only:
+            it cannot see an in-flight agent turn (outbound-only LLM traffic)
+            and, since the mid-2026 proxy change, an open outbound relay socket
+            no longer holds the machine awake — autostop:"suspend" would freeze
+            the machine mid-job or before the relay flip (the buffered-event
+            black hole). NAS therefore provisions scale-to-zero machines with
+            autostop:"off"; the suspend only ever happens HERE, strictly after
+            the idle predicate held and the dormant quiesce completed.
+        Autostart stays platform-side: the connector's wakeUrl poke (Fly-proxied)
+        wakes the machine, the preserved reconnect supervisor re-dials, and the
         connector drains the buffered backlog. After driving dormant we set a
         re-arm cooldown so a wake's drained backlog isn't immediately re-quiesced.
+        Off-Fly (no flaps socket / machine identity) the suspend step is skipped:
+        dormancy still happens, the process just stays running — fail-awake.
         """
         await asyncio.sleep(min(interval, 30.0))  # let startup settle
         while self._running:
@@ -7872,27 +7883,67 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     continue
                 logger.info(
                     "scale-to-zero: gateway idle for >= %.0fs — going dormant "
-                    "(relay buffered, socket closed, awaiting platform suspend)",
+                    "(relay buffered, socket closed) then self-suspending",
                     self._scale_to_zero_idle_timeout_seconds(),
                 )
                 try:
                     self._update_runtime_status("draining")
                 except Exception:  # noqa: BLE001 - status is best-effort
                     logger.debug("scale-to-zero: status mark failed", exc_info=True)
+                dormant_ok = True
                 try:
                     result = go_dormant()
                     if asyncio.iscoroutine(result):
                         await result
                 except Exception:  # noqa: BLE001 - dormancy is best-effort
+                    dormant_ok = False
                     logger.debug("scale-to-zero: go_dormant failed", exc_info=True)
                 # 0.F: after a wake the drained inbound updates _last_inbound_at,
                 # but give it a window so we don't immediately re-go-dormant on the
                 # same idle reading before traffic lands.
                 self._scale_to_zero_cooldown_until = time.time() + max(interval, 60.0)
+                # Self-suspend ONLY after a clean quiesce: the relay flip must be
+                # set (buffered delivery + wake poke armed) before the freeze, or
+                # inbound events black-hole while we sleep. Re-check idle one last
+                # time — inbound may have landed during the quiesce await.
+                if not dormant_ok:
+                    continue
+                if not self._scale_to_zero_is_idle():
+                    logger.info(
+                        "scale-to-zero: inbound arrived during quiesce — skipping suspend"
+                    )
+                    continue
+                await self._scale_to_zero_self_suspend()
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - the watcher must never crash the gateway
                 logger.debug("scale-to-zero watcher iteration error", exc_info=True)
+
+    async def _scale_to_zero_self_suspend(self) -> None:
+        """Suspend this Fly machine via the local flaps socket (fail-awake).
+
+        Runs the blocking unix-socket call in a worker thread so the event loop
+        stays live right up to the kernel freeze. On success the process is
+        frozen shortly after — nothing meaningful runs until the wake resume.
+        Off-Fly (self_suspend_available() False) this is a silent no-op.
+        """
+        from gateway.scale_to_zero import self_suspend_available, suspend_self
+
+        try:
+            if not self_suspend_available():
+                logger.debug(
+                    "scale-to-zero: flaps socket / machine identity absent — "
+                    "dormant without platform suspend"
+                )
+                return
+            accepted = await asyncio.to_thread(suspend_self)
+            if not accepted:
+                logger.warning(
+                    "scale-to-zero: self-suspend not accepted — machine stays "
+                    "awake (fail-awake); will retry on the next idle window"
+                )
+        except Exception:  # noqa: BLE001 - suspend is best-effort, never crash
+            logger.debug("scale-to-zero: self-suspend failed", exc_info=True)
 
     def _status_action_label(self) -> str:
         return "restart" if self._restart_requested else "shutdown"
@@ -11895,7 +11946,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # relay-only/absent, and a wakeUrl is registered (decisions.md D1/D11/
         # §3.4(1)). A non-opted instance never starts it, so behaviour is exactly
         # as today. When armed, the watcher drives the relay dormant on sustained
-        # idle so the platform (Fly autostop:"suspend") can suspend the machine.
+        # idle and then suspends the machine itself via the local flaps socket
+        # (Fly Proxy autostop is inbound-only and job-blind, so the gateway owns
+        # the suspend decision; NAS provisions these machines autostop:"off").
         try:
             if self._scale_to_zero_should_arm():
                 logger.info(

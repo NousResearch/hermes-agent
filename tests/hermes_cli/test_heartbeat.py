@@ -125,6 +125,19 @@ def test_manager_rejects_bad_input():
         mgr.set("ok", 5)
 
 
+def test_status_line_accepts_gateway_translator():
+    mgr = HeartbeatManager(session_id="hb-translated-status-sid")
+    mgr.clear()
+    calls = []
+
+    def translate(key, **kwargs):
+        calls.append((key, kwargs))
+        return f"translated:{key}"
+
+    assert mgr.status_line(translate=translate) == "translated:gateway.heartbeat_none"
+    assert calls == [("gateway.heartbeat_none", {})]
+
+
 def test_manager_persists_across_instances():
     mgr = HeartbeatManager(session_id="hb-persist-sid")
     mgr.set("persisted prompt", 600)

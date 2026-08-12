@@ -1903,6 +1903,16 @@ _PROVIDER_ROUTING_FIELDS = {
 }
 
 
+#: Canonical built-in provider ids that are deliberately NOT keys of
+#: ``auth.PROVIDER_REGISTRY``. ``auth.py`` keeps ``openrouter`` out on purpose
+#: ("adding them here breaks runtime_provider resolution that relies on
+#: ``openrouter not in PROVIDER_REGISTRY``"), so registry membership alone
+#: would stop flagging a ``providers.openrouter`` entry that the runtime
+#: still ignores. ``custom`` is excluded by the caller instead — it is the
+#: explicit user-supplied escape hatch, not something that can be shadowed.
+_BUILTIN_PROVIDERS_OUTSIDE_REGISTRY = frozenset({"openrouter"})
+
+
 def find_shadowed_builtin_provider_entries(
     config: Optional[Dict[str, Any]] = None,
 ) -> List[str]:
@@ -1921,10 +1931,11 @@ def find_shadowed_builtin_provider_entries(
     honors those as custom-provider names. Only a raw name that is itself the
     canonical id counts.
 
-    Cost note: this scans every providers./custom_providers entry and calls
-    ``resolve_provider`` per candidate name, which is fine for the validation
-    / doctor path it serves; the runtime hot path only consults it through
-    the once-per-provider memoized warning in ``runtime_provider``.
+    The built-in check is a static lookup against ``auth.PROVIDER_REGISTRY``
+    and must stay that way: ``resolve_provider()`` calls
+    ``validate_config_structure()`` back to build its unknown-provider hint,
+    so asking it here closes an unbounded mutual recursion (see
+    ``TestShadowCheckDoesNotReenterProviderResolution``).
     """
     if config is None:
         try:
@@ -1932,7 +1943,7 @@ def find_shadowed_builtin_provider_entries(
         except Exception:
             return []
     try:
-        from hermes_cli.auth import AuthError, resolve_provider
+        from hermes_cli.auth import PROVIDER_REGISTRY
     except Exception:
         return []
 
@@ -1940,14 +1951,16 @@ def find_shadowed_builtin_provider_entries(
         norm = (name or "").strip().lower().replace(" ", "-")
         if not norm or norm in {"custom", "auto"}:
             return None
-        try:
-            canonical = resolve_provider(norm)
-        except AuthError:
+        if norm in _BUILTIN_PROVIDERS_OUTSIDE_REGISTRY:
+            return norm
+        entry = PROVIDER_REGISTRY.get(norm)
+        if entry is None:
             return None
-        except Exception:
-            logger.debug("shadow check: resolve_provider(%r) failed", norm, exc_info=True)
-            return None
-        return norm if (canonical or "").strip().lower() == norm else None
+        # Aliases are registered as extra keys pointing at the canonical
+        # entry (auth.py: "Also register aliases so resolve_provider()
+        # resolves them"), so compare against the entry's own id: only a name
+        # that IS the canonical id counts as shadowing.
+        return norm if (getattr(entry, "id", "") or "").strip().lower() == norm else None
 
     shadowed: List[str] = []
     providers = config.get("providers")

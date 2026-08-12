@@ -200,3 +200,82 @@ class TestShadowedBuiltinProviderEntries:
             "model": {"provider": "kimi", "default": "test"},
         })
         assert not [i for i in issues if "shadows" in i.message]
+
+
+class TestShadowCheckDoesNotReenterProviderResolution:
+    """The shadow check must decide "is this a built-in id?" statically.
+
+    ``auth.resolve_provider()`` already calls back into
+    ``validate_config_structure()`` to build its unknown-provider hint
+    (``_get_config_hint_for_unknown_provider``, upstream since dce5f51c7c,
+    2026-04-05). So a shadow check that asks ``resolve_provider`` closes an
+    unbounded mutual recursion:
+
+        resolve_provider -> _get_config_hint_for_unknown_provider
+          -> validate_config_structure -> find_shadowed_builtin_provider_entries
+            -> resolve_provider -> ...
+
+    Each lap re-reads and deep-copies the config, so it does not fail fast —
+    it burns CPU until the CI per-file timeout SIGKILLs the process
+    (tests/hermes_cli/test_aux_picker_inventory.py, 300s exceeded). These
+    tests pin the seam rather than the symptom: they fail immediately instead
+    of hanging the suite.
+    """
+
+    def test_shadow_scan_never_calls_resolve_provider(self, monkeypatch):
+        """The edge that closes the cycle must not exist."""
+        import hermes_cli.auth as auth
+        from hermes_cli.config import find_shadowed_builtin_provider_entries
+
+        class _Tripwire(BaseException):
+            """Not an ``Exception`` on purpose.
+
+            ``_canonical_shadow`` wraps its provider lookup in a broad
+            ``except Exception``, which would swallow a plain assertion and
+            make this test pass against the very code it is meant to catch.
+            """
+
+        def _boom(*args, **kwargs):
+            raise _Tripwire
+
+        monkeypatch.setattr(auth, "resolve_provider", _boom)
+
+        try:
+            find_shadowed_builtin_provider_entries({
+                "providers": {
+                    "gemini": {"base_url": "https://example.com/v1", "api_key": "k"},
+                    "my-llm": {"base_url": "https://myllm.example.com/v1"},
+                },
+                "custom_providers": [{"name": "Legacy Box", "base_url": "https://x/v1"}],
+                "model": {"provider": "gemini", "default": "m"},
+            })
+        except _Tripwire:
+            raise AssertionError(
+                "find_shadowed_builtin_provider_entries() called "
+                "auth.resolve_provider(); resolve_provider() calls "
+                "validate_config_structure() back, so this edge closes an "
+                "unbounded recursion"
+            )
+
+    def test_static_scan_keeps_the_original_verdicts(self):
+        """Same answers as the resolve_provider-based scan it replaces."""
+        from hermes_cli.config import find_shadowed_builtin_provider_entries
+
+        found = find_shadowed_builtin_provider_entries({
+            "providers": {
+                "gemini": {"base_url": "https://example.com/v1"},
+                "openrouter": {"base_url": "https://example.com/v1"},
+                "my-llm": {"base_url": "https://myllm.example.com/v1"},
+                "kimi": {"base_url": "https://my-kimi.example.com/v1"},
+            },
+            "model": {"provider": "gemini", "default": "m"},
+        })
+
+        assert "gemini" in found, "canonical built-in id is shadowing"
+        assert "openrouter" in found, (
+            "openrouter is a real built-in that is deliberately kept OUT of "
+            "PROVIDER_REGISTRY (auth.py: 'openrouter not in PROVIDER_REGISTRY'), "
+            "so a registry-membership test alone would silently stop flagging it"
+        )
+        assert "my-llm" not in found, "a user's own provider id is not shadowing"
+        assert "kimi" not in found, "an alias (kimi -> kimi-coding) is not shadowing"

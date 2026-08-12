@@ -261,6 +261,51 @@ def _order_flush_files(paths) -> list[tuple[Path, Optional[Dict[str, Any]]]]:
     return [(path, payload) for _key, path, payload in entries]
 
 
+def _transcript_append_kwargs(
+    session_id: str,
+    message: Dict[str, Any],
+    payload: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build ``SessionDB.append_message`` kwargs for a spooled transcript row.
+
+    Mirrors ``SessionTranscriptMixin._append_transcript_message`` in
+    ``gateway/session_transcript.py`` field for field, so a message replayed after a
+    restart lands as the same row the live drain would have written.  The
+    fields are listed explicitly rather than splatted from *message*: the
+    spool payload is arbitrary JSON from disk and an unexpected key would
+    raise ``TypeError`` and abort the recovery pass.
+
+    ``timestamp`` keeps the payload-level ``ts`` fallback, which is the only
+    clock available when the message itself was spooled without one.
+    """
+    from agent.turn_context import extract_api_content_sidecar
+    from gateway.session_transcript import _ASSISTANT_ONLY_KEYS
+
+    # Reasoning columns are assistant-only in the live writer; copying them
+    # onto another role would fabricate rows the gateway never produces.
+    is_assistant = message.get("role") == "assistant"
+    return {
+        "session_id": session_id,
+        "role": message.get("role", "unknown"),
+        "content": message.get("content"),
+        "tool_name": message.get("tool_name"),
+        "tool_calls": message.get("tool_calls"),
+        "tool_call_id": message.get("tool_call_id"),
+        **{k: message.get(k) if is_assistant else None for k in _ASSISTANT_ONLY_KEYS},
+        "platform_message_id": (
+            message.get("platform_message_id") or message.get("message_id")
+        ),
+        "observed": bool(message.get("observed")),
+        "timestamp": message.get("timestamp") or payload.get("ts"),
+        # The api_content sidecar is the exact bytes sent to the API for this
+        # row; the live writer requires it to survive every persistence path
+        # or the next replay diverges at this row.
+        "api_content": extract_api_content_sidecar(message),
+        "display_kind": message.get("display_kind"),
+        "display_metadata": message.get("display_metadata"),
+    }
+
+
 def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
     """Replay flush-dir ``*.json`` files via ``SessionDB.append_message``, deleting each on success.
 
@@ -323,9 +368,7 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
             logger.warning("Cannot recover structurally invalid transcript spool "
                            "file %s; preserved for manual inspection", path)
             return False
-        session_db.append_message(session_id=spooled_sid, role=message.get("role", "unknown"),
-                                  content=message.get("content") or "",
-                                  timestamp=message.get("timestamp") or payload.get("ts"))
+        session_db.append_message(**_transcript_append_kwargs(spooled_sid, message, payload))
         return True
     session_key, data = payload.get("session_key", ""), payload.get("data", {})
     text = data.get("text", "")

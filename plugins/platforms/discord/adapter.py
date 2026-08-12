@@ -414,7 +414,7 @@ class _DiscordNonConversationalMessageTracker:
         except Exception:
             logger.debug("[%s] Failed to save non-conversational Discord IDs", "Discord", exc_info=True)
 
-    def mark_many(self, message_ids: List[str]) -> None:
+    async def mark_many(self, message_ids: List[str]) -> None:
         changed = False
         for message_id in message_ids:
             key = str(message_id or "").strip()
@@ -422,7 +422,11 @@ class _DiscordNonConversationalMessageTracker:
                 self._ids[key] = None
                 changed = True
         if changed:
-            self._save()
+            # atomic_json_write() calls os.fsync(), which blocks until the
+            # write reaches stable storage. Both callers of mark_many() run
+            # on the event loop, so offload the flush the same way #83906
+            # did for the other gateway persist paths.
+            await asyncio.to_thread(self._save)
 
     def __contains__(self, message_id: str) -> bool:
         return str(message_id or "") in self._ids
@@ -3611,7 +3615,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if message_ids:
                 _target_id = thread_id or chat_id
                 if nonconversational:
-                    self._nonconversational_messages.mark_many(message_ids)
+                    await self._nonconversational_messages.mark_many(message_ids)
                 elif not _looks_like_nonconversational_history_message(content):
                     self._last_self_message_id[_target_id] = message_ids[-1]
 
@@ -7872,7 +7876,7 @@ class DiscordAdapter(BasePlatformAdapter):
             msg = await channel.send(content=content, embed=embed, view=view)
             view._message = msg  # store for on_timeout expiration editing
             if _metadata_marks_nonconversational(metadata):
-                self._nonconversational_messages.mark_many([str(msg.id)])
+                await self._nonconversational_messages.mark_many([str(msg.id)])
             return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:
             return SendResult(success=False, error=str(e))

@@ -2740,7 +2740,7 @@ class FeishuAdapter(BasePlatformAdapter):
             return
 
         message_id = getattr(message, "message_id", None)
-        if not message_id or self._is_duplicate(message_id):
+        if not message_id or await self._is_duplicate(message_id):
             logger.debug("[Feishu] Dropping duplicate/missing message_id: %s", message_id)
             return
 
@@ -4738,14 +4738,15 @@ class FeishuAdapter(BasePlatformAdapter):
     def _persist_seen_message_ids(self) -> None:
         try:
             self._dedup_state_path.parent.mkdir(parents=True, exist_ok=True)
-            recent = self._seen_message_order[-self._dedup_cache_size:]
-            # Save as {msg_id: timestamp} so TTL filtering works across restarts.
-            payload = {"message_ids": {k: self._seen_message_ids[k] for k in recent if k in self._seen_message_ids}}
+            with self._dedup_lock:
+                recent = self._seen_message_order[-self._dedup_cache_size:]
+                # Save as {msg_id: timestamp} so TTL filtering works across restarts.
+                payload = {"message_ids": {k: self._seen_message_ids[k] for k in recent if k in self._seen_message_ids}}
             atomic_json_write(self._dedup_state_path, payload, indent=None)
         except OSError:
             logger.warning("[Feishu] Failed to persist dedup state to %s", self._dedup_state_path, exc_info=True)
 
-    def _is_duplicate(self, message_id: str) -> bool:
+    async def _is_duplicate(self, message_id: str) -> bool:
         now = time.time()
         ttl = _FEISHU_DEDUP_TTL_SECONDS
         with self._dedup_lock:
@@ -4758,8 +4759,12 @@ class FeishuAdapter(BasePlatformAdapter):
             while len(self._seen_message_order) > self._dedup_cache_size:
                 stale = self._seen_message_order.pop(0)
                 self._seen_message_ids.pop(stale, None)
-            self._persist_seen_message_ids()
-            return False
+        # atomic_json_write() calls os.fsync(), which blocks until the write
+        # reaches stable storage. _handle_message_event_data runs on the
+        # event loop for every inbound message, so offload the flush the
+        # same way #83906 did for the other gateway persist paths.
+        await asyncio.to_thread(self._persist_seen_message_ids)
+        return False
 
     # =========================================================================
     # Outbound payload construction and send pipeline

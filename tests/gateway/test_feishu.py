@@ -1186,9 +1186,9 @@ class TestAdapterBehavior(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_home:
             with patch.dict(os.environ, {"HERMES_HOME": temp_home}, clear=False):
                 first = FeishuAdapter(PlatformConfig())
-                self.assertFalse(first._is_duplicate("om_same"))
+                self.assertFalse(asyncio.run(first._is_duplicate("om_same")))
                 second = FeishuAdapter(PlatformConfig())
-                self.assertTrue(second._is_duplicate("om_same"))
+                self.assertTrue(asyncio.run(second._is_duplicate("om_same")))
 
 
     @patch.dict(os.environ, {}, clear=True)
@@ -1622,7 +1622,7 @@ class TestDedupTTL(unittest.TestCase):
         with patch.object(adapter, "_persist_seen_message_ids"):
             adapter._seen_message_ids = {"om_dup": time.time()}
             adapter._seen_message_order = ["om_dup"]
-            self.assertTrue(adapter._is_duplicate("om_dup"))
+            self.assertTrue(asyncio.run(adapter._is_duplicate("om_dup")))
 
 
     @patch.dict(os.environ, {}, clear=True)
@@ -1655,6 +1655,32 @@ class TestDedupTTL(unittest.TestCase):
                 assert "om_good" in adapter._seen_message_ids
                 assert "om_bad_str" not in adapter._seen_message_ids
                 assert "om_bad_null" not in adapter._seen_message_ids
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_persist_on_new_message_runs_off_event_loop_thread(self):
+        """atomic_json_write() calls os.fsync(), which blocks until the write
+        reaches stable storage. _is_duplicate() runs on the event loop for
+        every inbound message (_handle_message_event_data), so the persist
+        step must be offloaded to a thread — mirrors
+        test_directory_write_runs_off_event_loop_thread in
+        test_channel_directory.py for the same #83906 bug class."""
+        import threading
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        loop_thread = threading.get_ident()
+        write_threads = []
+
+        def fake_write(path, data, *args, **kwargs):
+            write_threads.append(threading.get_ident())
+
+        with patch("plugins.platforms.feishu.adapter.atomic_json_write", side_effect=fake_write):
+            is_dup = asyncio.run(adapter._is_duplicate("om_new"))
+
+        self.assertFalse(is_dup)
+        self.assertTrue(write_threads)
+        self.assertTrue(all(tid != loop_thread for tid in write_threads))
 
 
 class TestGroupMentionAtAll(unittest.TestCase):

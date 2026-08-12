@@ -329,9 +329,13 @@ class ContextTokenStore:
     def get(self, account_id: str, user_id: str) -> Optional[str]:
         return self._cache.get(self._key(account_id, user_id))
 
-    def set(self, account_id: str, user_id: str, token: str) -> None:
+    async def set(self, account_id: str, user_id: str, token: str) -> None:
         self._cache[self._key(account_id, user_id)] = token
-        self._persist(account_id)
+        # atomic_json_write() calls os.fsync(), which blocks until the write
+        # reaches stable storage. _process_message runs on the event loop for
+        # every inbound message, so offload the flush the same way #83906 did
+        # for the other gateway persist paths.
+        await asyncio.to_thread(self._persist, account_id)
 
     def _persist(self, account_id: str) -> None:
         prefix = f"{account_id}:"
@@ -1501,7 +1505,7 @@ class WeixinAdapter(BasePlatformAdapter):
 
         context_token = str(message.get("context_token") or "").strip()
         if context_token:
-            self._token_store.set(self._account_id, sender_id, context_token)
+            await self._token_store.set(self._account_id, sender_id, context_token)
         asyncio.create_task(self._maybe_fetch_typing_ticket(sender_id, context_token or None))
 
         media_paths: List[str] = []

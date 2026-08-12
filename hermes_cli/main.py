@@ -9905,6 +9905,7 @@ def cmd_update(args):
         detect_install_method,
         format_docker_update_message,
         is_managed,
+        is_nix_install_method,
         managed_error,
         recommended_update_command_for_method,
     )
@@ -9924,7 +9925,7 @@ def cmd_update(args):
         print(format_docker_update_message())
         sys.exit(1)
 
-    if install_method in {"nix", "nixos", "apt"}:
+    if is_nix_install_method(install_method) or install_method == "apt":
         print(recommended_update_command_for_method(install_method))
         sys.exit(1)
 

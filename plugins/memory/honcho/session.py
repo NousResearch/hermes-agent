@@ -553,6 +553,19 @@ class HonchoSessionManager:
             return f"{sanitized_peer_id}-{digest}"
         return sanitized_peer_id
 
+    def _declared_owner_peer_id(self) -> str | None:
+        """Peer ID of the install owner, or None when no owner is declared.
+
+        The owner is the identity setup writes as ``peerName``. A runtime
+        gateway identity is the owner only when an alias maps it onto that
+        peer — which _resolve_user_peer_id already does, so callers can
+        compare a session's resolved user peer against this value.
+        """
+        peer_name = getattr(self._config, "peer_name", None) if self._config else None
+        if peer_name and str(peer_name).strip():
+            return self._sanitize_id(str(peer_name).strip())
+        return None
+
     def _resolve_user_peer_id(self, key: str) -> str:
         """Resolve the Honcho user peer ID for this manager/session."""
         pin_peer_name = (
@@ -1138,20 +1151,34 @@ class HonchoSessionManager:
             return False
 
         # Only migrate the owner-describing memory files (MEMORY.md / USER.md)
-        # when the session's user peer IS the owner peer. Otherwise a
+        # when the session's user peer IS the install owner. Otherwise a
         # non-owner triggering a new session (e.g. any other human in a shared
         # Slack/Discord channel) gets the owner's full profile files uploaded
         # under the NON-OWNER's peer, and Honcho's deriver attributes the
         # owner's facts to that person. SOUL.md describes the agent, not a
         # human, but skipping it here too keeps the migration owner-scoped.
-        # The owner is resolved through _resolve_user_peer_id (pin/runtime/
-        # alias aware) — config.peer_name alone is optional and None for
-        # most single-user setups.
-        owner_peer_id = self._resolve_user_peer_id(session_key)
-        if session.user_peer_id != owner_peer_id:
+        #
+        # The owner is a CONFIG fact — the declared peerName — never a
+        # re-resolution of the session's own peer: _resolve_user_peer_id
+        # answers "who is this session's user", so comparing its output to
+        # session.user_peer_id compares the triggering user to themselves
+        # and passes for the non-owner too.
+        owner_peer_id = self._declared_owner_peer_id()
+        if owner_peer_id is not None:
+            session_is_owner = session.user_peer_id == owner_peer_id
+        else:
+            # No declared owner. Without a runtime identity this is the
+            # single-operator path (peer id from config defaults or the
+            # session key) and the files describe that operator. With a
+            # runtime identity the session belongs to whoever messaged
+            # through the gateway — nobody can be proven to be the owner.
+            session_is_owner = not self._runtime_user_ids()
+        if not session_is_owner:
             logger.info(
-                "Skipping memory-file migration for non-owner session (user=%s)",
+                "Skipping memory-file migration: session user peer '%s' is not the "
+                "declared owner (peerName=%s)",
                 session.user_peer_id,
+                owner_peer_id or "unset",
             )
             return False
 

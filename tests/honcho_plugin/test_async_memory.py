@@ -54,13 +54,23 @@ def make_manager(monkeypatch):
     monkeypatch.setattr(session_module, "get_honcho_client", lambda *a, **k: client)
     created = []
 
-    def _make(write_frequency="turn") -> HonchoSessionManager:
+    def _make(
+        write_frequency="turn",
+        *,
+        runtime_user_peer_name=None,
+        **cfg_kwargs,
+    ) -> HonchoSessionManager:
         cfg = HonchoClientConfig(
             write_frequency=write_frequency,
             api_key="test-key",
             enabled=True,
+            **cfg_kwargs,
         )
-        mgr = HonchoSessionManager(honcho=client, config=cfg)
+        mgr = HonchoSessionManager(
+            honcho=client,
+            config=cfg,
+            runtime_user_peer_name=runtime_user_peer_name,
+        )
         created.append(mgr)
         return mgr
 
@@ -420,28 +430,34 @@ class TestAsyncWriterRetry:
         assert call_count[0] == 2
 
 
+def _prime_migration_session(mgr, key, honcho_session_id, ai_peer_id="custom-ai"):
+    """Cache a session whose user peer is what the REAL resolver returns for
+    this manager — exactly what get_or_create stores — so the owner gate is
+    tested against reachable states, not hand-picked peer ids."""
+    session = _make_session(
+        key=key,
+        user_peer_id=mgr._resolve_user_peer_id(key),
+        assistant_peer_id=ai_peer_id,
+        honcho_session_id=honcho_session_id,
+    )
+    mgr._cache[session.key] = session
+    honcho_session = MagicMock()
+    mgr._sessions_cache[session.honcho_session_id] = honcho_session
+    return session, honcho_session
+
+
 class TestMemoryFileMigrationTargets:
     def test_soul_upload_targets_ai_peer(self, tmp_path, make_manager):
-        mgr = make_manager(write_frequency="turn")
-        # Migration is owner-gated: the session's user peer must match what
-        # _resolve_user_peer_id returns. Make the runtime identity match the
-        # crafted session so this reads as the owner's own session.
-        mgr._runtime_user_peer_name = "custom-user"
-        session = _make_session(
-            key="cli:test",
-            user_peer_id="custom-user",
-            assistant_peer_id="custom-ai",
-            honcho_session_id="cli-test",
-        )
-        mgr._cache[session.key] = session
+        # peerName declares the owner; no runtime identity, so the session
+        # resolves to the owner peer and migration proceeds.
+        mgr = make_manager(write_frequency="turn", peer_name="custom-user")
+        session, honcho_session = _prime_migration_session(mgr, "cli:test", "cli-test")
+        assert session.user_peer_id == "custom-user"
 
         user_peer = MagicMock(name="user-peer")
         ai_peer = MagicMock(name="ai-peer")
         mgr._peers_cache[session.user_peer_id] = user_peer
         mgr._peers_cache[session.assistant_peer_id] = ai_peer
-
-        honcho_session = MagicMock()
-        mgr._sessions_cache[session.honcho_session_id] = honcho_session
 
         (tmp_path / "MEMORY.md").write_text("memory facts", encoding="utf-8")
         (tmp_path / "USER.md").write_text("user profile", encoding="utf-8")
@@ -461,26 +477,108 @@ class TestMemoryFileMigrationTargets:
         assert peer_by_upload_name["user_profile.md"] is user_peer
         assert peer_by_upload_name["agent_soul.md"] is ai_peer
 
-    def test_migration_skipped_for_non_owner_session(self, tmp_path, make_manager):
-        """A non-owner user peer in the session must not receive the owner's
-        memory files — see #43752-adjacent shared-channel misattribution."""
-        mgr = make_manager(write_frequency="turn")
-        mgr._runtime_user_peer_name = "owner-user"
-        session = _make_session(
-            key="discord:shared",
-            user_peer_id="some-other-human",
-            assistant_peer_id="custom-ai",
-            honcho_session_id="shared-chan",
+
+class TestMemoryFileMigrationOwnerGate:
+    def test_non_owner_gateway_user_is_skipped(self, tmp_path, make_manager):
+        """The shared-channel scenario: a declared owner exists, but the
+        session was triggered by someone else's platform identity. The old
+        gate (re-resolving the session's own peer) passed here."""
+        mgr = make_manager(
+            write_frequency="turn",
+            peer_name="owner-user",
+            runtime_user_peer_name="some-other-human",
         )
-        mgr._cache[session.key] = session
-        mgr._sessions_cache[session.honcho_session_id] = MagicMock()
+        session, honcho_session = _prime_migration_session(
+            mgr, "discord:shared", "shared-chan"
+        )
+        assert session.user_peer_id == "some-other-human"
 
         (tmp_path / "MEMORY.md").write_text("owner facts", encoding="utf-8")
 
         uploaded = mgr.migrate_memory_files(session.key, str(tmp_path))
 
         assert uploaded is False
-        assert mgr._sessions_cache[session.honcho_session_id].upload_file.call_count == 0
+        assert honcho_session.upload_file.call_count == 0
+
+    def test_no_declared_owner_with_gateway_identity_is_skipped(
+            self, tmp_path, make_manager):
+        """Without peerName nobody messaging through a gateway can be proven
+        to be the owner — migration must not run."""
+        mgr = make_manager(
+            write_frequency="turn",
+            runtime_user_peer_name="discord-123",
+        )
+        session, honcho_session = _prime_migration_session(
+            mgr, "discord:shared", "shared-chan"
+        )
+
+        (tmp_path / "MEMORY.md").write_text("owner facts", encoding="utf-8")
+
+        uploaded = mgr.migrate_memory_files(session.key, str(tmp_path))
+
+        assert uploaded is False
+        assert honcho_session.upload_file.call_count == 0
+
+    def test_no_declared_owner_single_operator_migrates(self, tmp_path, make_manager):
+        """No peerName and no runtime identity is the plain CLI install —
+        the only person who exists is the operator the files describe."""
+        mgr = make_manager(write_frequency="turn")
+        session, honcho_session = _prime_migration_session(mgr, "cli:test", "cli-test")
+        mgr._peers_cache[session.user_peer_id] = MagicMock()
+        mgr._peers_cache[session.assistant_peer_id] = MagicMock()
+
+        (tmp_path / "MEMORY.md").write_text("memory facts", encoding="utf-8")
+
+        uploaded = mgr.migrate_memory_files(session.key, str(tmp_path))
+
+        assert uploaded is True
+        assert honcho_session.upload_file.call_count == 1
+
+    def test_aliased_owner_identity_migrates(self, tmp_path, make_manager):
+        """An alias mapping the owner's platform ID onto peerName makes that
+        gateway identity the owner."""
+        mgr = make_manager(
+            write_frequency="turn",
+            peer_name="owner-user",
+            user_peer_aliases={"discord-999": "owner-user"},
+            runtime_user_peer_name="discord-999",
+        )
+        session, honcho_session = _prime_migration_session(
+            mgr, "discord:dm", "discord-dm"
+        )
+        assert session.user_peer_id == "owner-user"
+        mgr._peers_cache[session.user_peer_id] = MagicMock()
+        mgr._peers_cache[session.assistant_peer_id] = MagicMock()
+
+        (tmp_path / "USER.md").write_text("user profile", encoding="utf-8")
+
+        uploaded = mgr.migrate_memory_files(session.key, str(tmp_path))
+
+        assert uploaded is True
+        assert honcho_session.upload_file.call_count == 1
+
+    def test_pinned_peer_name_migrates(self, tmp_path, make_manager):
+        """pinPeerName collapses every identity onto the owner peer by
+        explicit config, so the files land on the peer they describe."""
+        mgr = make_manager(
+            write_frequency="turn",
+            peer_name="owner-user",
+            pin_peer_name=True,
+            runtime_user_peer_name="anyone-at-all",
+        )
+        session, honcho_session = _prime_migration_session(
+            mgr, "discord:shared", "shared-chan"
+        )
+        assert session.user_peer_id == "owner-user"
+        mgr._peers_cache[session.user_peer_id] = MagicMock()
+        mgr._peers_cache[session.assistant_peer_id] = MagicMock()
+
+        (tmp_path / "MEMORY.md").write_text("memory facts", encoding="utf-8")
+
+        uploaded = mgr.migrate_memory_files(session.key, str(tmp_path))
+
+        assert uploaded is True
+        assert honcho_session.upload_file.call_count == 1
 
 
 # ---------------------------------------------------------------------------

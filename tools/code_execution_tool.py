@@ -29,7 +29,6 @@ Remote execution additionally requires Python 3 in the terminal backend.
 """
 
 import base64
-import functools
 import json
 import logging
 import os
@@ -1489,9 +1488,11 @@ def execute_code(
         _pp_parts = [tmpdir]
         if _uses_hermes_python_environment(_child_python):
             _pp_parts.append(_hermes_root)
-        else:
-            # Import behavior changes silently otherwise — surface it so
-            # "import hermes_constants suddenly fails" reports are diagnosable.
+        elif _child_python not in _external_env_logged:
+            # Import behavior changes silently otherwise — surface it (once
+            # per interpreter path) so "import hermes_constants suddenly
+            # fails" reports are diagnosable without log spam.
+            _external_env_logged.add(_child_python)
             logger.info(
                 "execute_code: child interpreter %s is outside the Hermes "
                 "environment; hermes root omitted from PYTHONPATH",
@@ -1840,18 +1841,45 @@ def _get_execution_mode() -> str:
     return DEFAULT_EXECUTION_MODE
 
 
-@functools.lru_cache(maxsize=32)
+# Shared budget for the two interpreter-probe caches below. Success-only
+# dict caches (FIFO-evicted at the cap) rather than lru_cache: a transient
+# probe failure (fork pressure, 5s timeout on a loaded host) must not stick
+# for the process lifetime.
+_PROBE_CACHE_MAX = 32
+_usable_python_cache: dict = {}
+_python_prefix_cache: dict = {}
+
+# Interpreter paths already reported as outside the Hermes environment —
+# dedupes the exclusion log to once per path per process.
+_external_env_logged: set = set()
+
+
+def _cache_probe_result(cache: dict, key: str, value):
+    """Insert into a bounded probe cache, FIFO-evicting at the cap."""
+    if len(cache) >= _PROBE_CACHE_MAX:
+        cache.pop(next(iter(cache)))
+    cache[key] = value
+
+
 def _is_usable_python(python_path: str) -> bool:
     """Check whether a candidate Python interpreter is usable for execute_code.
 
     Requires Python 3.8+ (f-strings and stdlib modules the RPC stubs need).
-    Cached so we don't fork a subprocess on every execute_code call.
+    Successful probes are cached per interpreter path; failures are retried
+    (a sticky False would silently pin project mode to sys.executable).
     """
+    cached = _usable_python_cache.get(python_path)
+    if cached is not None:
+        return cached
     result = _probe_python(
         python_path,
         "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)",
     )
-    return result is not None and result.returncode == 0
+    if result is None:
+        return False
+    usable = result.returncode == 0
+    _cache_probe_result(_usable_python_cache, python_path, usable)
+    return usable
 
 
 def _probe_python(python_path: str, code: str, *, text: bool = False):
@@ -1876,17 +1904,14 @@ def _probe_python(python_path: str, code: str, *, text: bool = False):
         return None
 
 
-_python_prefix_cache: dict = {}
-
-
 def _python_environment_prefix(python_path: str) -> str:
     """Return the resolved ``sys.prefix`` reported by *python_path*, if any.
 
-    Successful probes are cached per interpreter path.  Failures are NOT
-    cached: a transient probe failure (fork pressure, 5s timeout on a loaded
-    host) must not stick for the process lifetime — a sticky empty result
-    would silently drop the hermes root from every subsequent execute_code
-    call's PYTHONPATH.
+    Successful probes are cached per interpreter path (bounded, FIFO-evicted).
+    Failures are NOT cached: a transient probe failure (fork pressure, 5s
+    timeout on a loaded host) must not stick for the process lifetime — a
+    sticky empty result would silently drop the hermes root from every
+    subsequent execute_code call's PYTHONPATH.
     """
     cached = _python_prefix_cache.get(python_path)
     if cached is not None:
@@ -1894,8 +1919,7 @@ def _python_environment_prefix(python_path: str) -> str:
     result = _probe_python(python_path, "import sys; print(sys.prefix)", text=True)
     if result is not None and result.returncode == 0 and result.stdout.strip():
         prefix = os.path.realpath(result.stdout.strip())
-        if len(_python_prefix_cache) < 32:
-            _python_prefix_cache[python_path] = prefix
+        _cache_probe_result(_python_prefix_cache, python_path, prefix)
         return prefix
     return ""
 

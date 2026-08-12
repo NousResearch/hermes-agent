@@ -40,6 +40,7 @@ from tools.code_execution_tool import (
     _is_usable_python,
     _python_environment_prefix,
     _python_prefix_cache,
+    _usable_python_cache,
     _resolve_child_cwd,
     _resolve_child_python,
     _uses_hermes_python_environment,
@@ -107,8 +108,28 @@ class TestResolveChildPython(unittest.TestCase):
 
 
     def test_is_usable_python_accepts_real_python(self):
-        _is_usable_python.cache_clear()
+        _usable_python_cache.clear()
         self.assertTrue(_is_usable_python(sys.executable))
+
+    def test_is_usable_python_failure_is_not_cached(self):
+        """A transient probe failure must not stick — the next call retries.
+
+        A sticky cached False would silently pin project mode to
+        sys.executable for the process lifetime.
+        """
+        _usable_python_cache.clear()
+        try:
+            with patch("subprocess.run",
+                       side_effect=subprocess.TimeoutExpired(cmd=[], timeout=5)) as mock_run:
+                self.assertFalse(_is_usable_python("/flaky/python"))
+            self.assertEqual(mock_run.call_count, 1)
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = unittest.mock.MagicMock(returncode=0)
+                self.assertTrue(_is_usable_python("/flaky/python"))
+            self.assertEqual(mock_run.call_count, 1,
+                             "probe must be retried after a failure")
+        finally:
+            _usable_python_cache.clear()
 
 
 # ---------------------------------------------------------------------------

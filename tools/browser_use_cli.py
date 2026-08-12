@@ -11,7 +11,8 @@ import re
 import shutil
 import subprocess
 import time
-from typing import Any, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from utils import is_truthy_value
 
@@ -134,19 +135,159 @@ def is_browser_use_cli_mode() -> bool:
     return _find_cli() is not None
 
 
+_NOTICE_STAMP_NAME = ".browser_use_default_notice"
+_NOTICE_INTERVAL_S = 24 * 3600
+
+
+def default_downgrade_notice() -> Optional[str]:
+    """One-line notice when the default Browser Use backend silently downgraded.
+
+    Returns the notice string when ``browser.backend`` is unset (Browser Use
+    would be the default) but the CLI is not runnable, so the session fell
+    back to the built-in browser tools. Rate-limited to once per 24h via a
+    stamp file so it nudges without nagging. Returns ``None`` otherwise.
+    """
+    try:
+        if get_browser_backend():
+            return None  # explicit choice — nothing downgraded
+        try:
+            from tools.browser_camofox import is_camofox_mode
+
+            if is_camofox_mode():
+                return None
+        except Exception:
+            pass
+        if _find_cli() is not None:
+            return None
+
+        from hermes_constants import get_hermes_home
+
+        stamp = Path(get_hermes_home()) / "cache" / _NOTICE_STAMP_NAME
+        try:
+            if 0 <= time.time() - stamp.stat().st_mtime < _NOTICE_INTERVAL_S:
+                return None
+        except OSError:
+            pass
+        try:
+            stamp.parent.mkdir(parents=True, exist_ok=True)
+            stamp.touch()
+        except OSError:
+            pass
+        return (
+            "Browser Use CLI not found — using the built-in browser tools. "
+            "Run `hermes tools` (Browser Automation → Browser Use) to install it, "
+            "or `browser.backend: off` in config.yaml to silence this."
+        )
+    except Exception as e:  # pragma: no cover — a notice must never break startup
+        logger.debug("browser-use downgrade notice failed: %s", e)
+        return None
+
+
+def _managed_bin_dir() -> Optional[str]:
+    """Hermes' own bin dir ($HERMES_HOME/bin) — where install.sh puts uv/uvx
+    and where install_cli() links the browser-use binary."""
+    try:
+        from hermes_constants import get_hermes_home
+
+        return str(Path(get_hermes_home()) / "bin")
+    except Exception as e:  # pragma: no cover — defensive
+        logger.debug("Could not resolve managed bin dir: %s", e)
+        return None
+
+
 def _find_cli() -> Optional[List[str]]:
     """Locate the browser-use CLI, or None when it can't be run.
 
-    Prefers an installed browser-use binary; falls back to running it
-    through uvx
+    Prefers an installed browser-use binary (PATH, then Hermes' managed
+    $HERMES_HOME/bin); falls back to running it through uvx (PATH, then
+    managed). The managed probes matter because Hermes bootstraps its own
+    uv into $HERMES_HOME/bin, which is not on the user's PATH.
+    """
+    bin_dir = _managed_bin_dir()
+    for probe_path in (None, bin_dir):
+        if probe_path is None or probe_path:
+            direct = shutil.which("browser-use", path=probe_path)
+            if direct:
+                return [direct]
+    for probe_path in (None, bin_dir):
+        if probe_path is None or probe_path:
+            uvx = shutil.which("uvx", path=probe_path)
+            if uvx:
+                return [uvx, "browser-use"]
+    return None
+
+
+def install_cli(timeout_s: int = 600) -> Tuple[bool, str]:
+    """Install the browser-use CLI persistently via ``uv tool install``.
+
+    Resolution order for uv: Hermes' managed uv (bootstrapped on demand via
+    ``hermes_cli.managed_uv.ensure_uv``) → uv on PATH. The binary is linked
+    into ``$HERMES_HOME/bin`` (``UV_TOOL_BIN_DIR``) so ``_find_cli()``
+    resolves it for every profile without touching the user's PATH.
+
+    Returns ``(ok, message)`` — never raises.
     """
     direct = shutil.which("browser-use")
     if direct:
-        return [direct]
-    uvx = shutil.which("uvx")
-    if uvx:
-        return [uvx, "browser-use"]
-    return None
+        return True, f"browser-use CLI already installed ({direct})"
+    bin_dir = _managed_bin_dir()
+    if bin_dir:
+        managed = shutil.which("browser-use", path=bin_dir)
+        if managed:
+            return True, f"browser-use CLI already installed ({managed})"
+
+    uv_bin: Optional[str] = None
+    try:
+        from hermes_cli.managed_uv import ensure_uv
+
+        uv_bin = str(ensure_uv() or "") or None
+    except Exception as e:
+        logger.debug("Managed uv bootstrap unavailable: %s", e)
+    if not uv_bin:
+        uv_bin = shutil.which("uv")
+    if not uv_bin:
+        return False, (
+            "uv is not available and could not be bootstrapped. Install uv "
+            "(https://docs.astral.sh/uv/) and run `uv tool install browser-use`."
+        )
+
+    env = dict(os.environ)
+    env["UV_NO_CONFIG"] = "1"
+    if bin_dir:
+        try:
+            Path(bin_dir).mkdir(parents=True, exist_ok=True)
+            env["UV_TOOL_BIN_DIR"] = bin_dir
+        except OSError as e:
+            logger.debug("Could not prepare %s: %s", bin_dir, e)
+
+    try:
+        result = subprocess.run(
+            [uv_bin, "tool", "install", "browser-use"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            timeout=timeout_s,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"`uv tool install browser-use` timed out after {timeout_s}s"
+    except Exception as e:
+        return False, f"Failed to run `uv tool install browser-use`: {e}"
+
+    if result.returncode != 0:
+        tail = "\n".join(
+            (result.stderr or result.stdout or "").strip().splitlines()[-3:]
+        )
+        return False, f"`uv tool install browser-use` failed:\n{tail}"
+
+    found = _find_cli()
+    if not found or len(found) != 1:
+        return False, (
+            "install reported success but the browser-use binary is still "
+            "not resolvable — run `uv tool install browser-use` manually"
+        )
+    return True, f"browser-use CLI installed ({found[0]})"
 
 
 def _workspace_dir(task_id: Optional[str]) -> Optional[str]:

@@ -61,9 +61,13 @@ What it does:
 
 1. Resolves a fresh Nous Portal access token from your existing login
    (`~/.hermes/auth.json`) — this proves which Nous org (tenant) you own. If
-   `gateway.idp.token_url` is configured, a generic OAuth2 client-credentials
-   token from your own IdP is used instead (the air-gapped / self-hosted-IdP
-   path, no Nous Portal involved).
+   `gateway.idp.token_url` is configured, your own IdP is used instead (the
+   air-gapped / self-hosted-IdP path, no Nous Portal involved): with
+   `client_id`/`client_secret` configured it performs a generic OAuth2
+   client-credentials grant; with neither configured the URL is treated as an
+   ambient token endpoint (plain GET whose response body is the token — the
+   metadata-server pattern, e.g. Domino's `$DOMINO_API_PROXY/access-token`).
+   Configuring only one of the two credentials is an error.
 2. POSTs the enrollment token and a gateway id to the connector's
    `/relay/enroll` endpoint over TLS.
 3. The connector verifies the token (signature, single-use, tenant match),
@@ -105,7 +109,7 @@ separate feature flag. Deployments that don't set it are unaffected.
 | `GATEWAY_RELAY_WAKE_URL` / `gateway.relay_wake_url` | env / `config.yaml` | Optional wake-poke target for idle/suspended gateways. |
 | `GATEWAY_RELAY_PLATFORMS` | env | Comma-separated list of platforms this gateway fronts over one connection (e.g. `discord,telegram`). Usually stamped by the deployment/orchestrator. |
 | `GATEWAY_RELAY_BOT_IDS` | env | JSON map of per-platform bot identities, e.g. `{"discord": {"botId": "…"}}`. Paired with `GATEWAY_RELAY_PLATFORMS`. |
-| `gateway.idp.token_url` | `config.yaml` | When set, enrollment/provisioning authenticates via generic OAuth2 client-credentials against your own IdP instead of Nous Portal. |
+| `gateway.idp.token_url` | `config.yaml` | When set, enrollment/provisioning authenticates against your own IdP instead of Nous Portal: OAuth2 client-credentials when `gateway.idp.client_id`/`client_secret` are also set; otherwise an ambient token endpoint (plain GET returning the token, raw or `{"access_token": …}`). |
 
 ## Supported capabilities
 

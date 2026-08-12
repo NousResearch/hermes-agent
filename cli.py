@@ -7358,6 +7358,25 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # logged at DEBUG by the advisory module.
             pass
 
+    def _show_browser_backend_notice(self):
+        """One-time hint when the default Browser Use backend isn't runnable.
+
+        Browser Use mode is the default browser backend, but it silently
+        falls back to the built-in browser tools when neither the
+        browser-use CLI nor uvx can be found. Surface that downgrade once
+        per 24h so users know why browsing behaves differently and how to
+        fix it (rate limiting lives in default_downgrade_notice()).
+        """
+        try:
+            from tools.browser_use_cli import default_downgrade_notice
+
+            notice = default_downgrade_notice()
+            if notice:
+                self._console_print(f"[yellow]⚠ {notice}[/yellow]")
+        except Exception:
+            # Never let a hint block startup.
+            logger.debug("browser backend notice failed", exc_info=True)
+
     def finalize_preloaded_skills(self) -> None:
         """Join the background --skills preload and fold it into the prompt.
 
@@ -15295,6 +15314,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Surface any active supply-chain security advisories right after the
         # welcome banner. Quiet/single-query paths call this themselves.
         self._show_security_advisories()
+        # Surface a silent browser-backend downgrade (default Browser Use
+        # mode with no runnable CLI) — one line, rate-limited to 24h.
+        self._show_browser_backend_notice()
 
         # First-run: a completely unconfigured install must route into
         # provider onboarding, not a chat that cannot work. Previously a

@@ -1772,12 +1772,23 @@ def _run_post_setup(post_setup_key: str):
     elif post_setup_key == "browser_use_cli":
         if shutil.which("browser-use"):
             _print_success("    browser-use CLI found on PATH")
-        elif shutil.which("uvx"):
-            _print_info("    browser-use CLI not installed — it will run via `uvx browser-use`")
-            _print_info("    For a persistent install: uv tool install browser-use")
         else:
-            _print_warning("    browser-use CLI not found and uvx is unavailable")
-            _print_info("    Install with: uv tool install browser-use  (https://docs.astral.sh/uv/)")
+            _print_info("    Installing browser-use CLI (uv tool install browser-use)...")
+            try:
+                from tools.browser_use_cli import install_cli
+
+                ok, message = install_cli()
+            except Exception as exc:  # pragma: no cover — defensive
+                ok, message = False, f"install failed: {exc}"
+            if ok:
+                _print_success(f"    {message}")
+            else:
+                for line in str(message).splitlines():
+                    _print_warning(f"    {line[:200]}")
+                if shutil.which("uvx"):
+                    _print_info("    Falling back to zero-install runs via `uvx browser-use`")
+                else:
+                    _print_info("    Install manually: uv tool install browser-use  (https://docs.astral.sh/uv/)")
         _print_info("    Local Chrome needs remote debugging: chrome://inspect/#remote-debugging")
         _print_info("    Cloud browsers: browser-use auth login  (or set BROWSER_USE_API_KEY)")
 

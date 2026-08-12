@@ -10082,10 +10082,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         return suspended
 
-    def _clear_restart_failure_count(self, session_key: str) -> None:
+    async def _clear_restart_failure_count(self, session_key: str) -> None:
         """Clear the restart-failure counter for a session that completed OK.
 
         Called after a successful agent turn to signal the loop is broken.
+        Offloaded to a thread because the caller (_handle_message_with_agent)
+        runs on the event loop and atomic_json_write calls os.fsync.
         """
         import json
 
@@ -10097,7 +10099,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if session_key in counts:
                 del counts[session_key]
                 if counts:
-                    atomic_json_write(path, counts, indent=None)
+                    await asyncio.to_thread(atomic_json_write, path, counts, indent=None)
                 else:
                     path.unlink(missing_ok=True)
         except Exception:
@@ -18339,7 +18341,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # succeeded and subsequent messages should no longer receive
             # the restart-interruption system note.
             if session_key and _should_clear_resume_pending_after_turn(agent_result):
-                self._clear_restart_failure_count(session_key)
+                await self._clear_restart_failure_count(session_key)
                 try:
                     await self.async_session_store.clear_resume_pending(session_key)
                 except Exception as _e:

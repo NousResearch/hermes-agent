@@ -2795,6 +2795,67 @@ def _event_media_is_stt_input(event, index: int) -> bool:
     )
 
 
+def _event_contains_sensitive_voice_data(event) -> bool:
+    """Return True when an event carries voice text or STT-bound audio."""
+    if getattr(event, "message_type", None) == MessageType.VOICE:
+        return True
+    media_urls = getattr(event, "media_urls", None) or []
+    return any(_event_media_is_stt_input(event, index) for index in range(len(media_urls)))
+
+
+def _message_type_name(event) -> str:
+    message_type = getattr(event, "message_type", None)
+    return getattr(message_type, "value", None) or str(message_type or "unknown")
+
+
+def _log_pending_message_preview(stage: str, text: str, event=None) -> None:
+    """Log queued text previews, replacing voice content with bounded metadata."""
+    if event is not None and _event_contains_sensitive_voice_data(event):
+        logger.debug(
+            "Processing voice follow-up: stage=%s message_type=%s "
+            "text_chars=%d text_bytes=%d",
+            stage,
+            _message_type_name(event),
+            len(text),
+            len(text.encode("utf-8")),
+        )
+    elif stage == "queued":
+        logger.debug("Processing queued message after agent completion: '%s...'", text[:40])
+    else:
+        logger.debug("Processing pending message: '%s...'", text[:40])
+
+
+def _bounded_stt_metadata(value: Any, default: str) -> str:
+    """Normalize one STT metadata field without forwarding free-form text."""
+    if not isinstance(value, str):
+        return default
+    normalized = value.strip().lower()
+    if not normalized or len(normalized) > 64:
+        return default
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", normalized):
+        return default
+    return normalized
+
+
+def _stt_failure_metadata(result: Any) -> tuple[str, str]:
+    """Extract bounded provider/code fields from structured or legacy envelopes."""
+    if not isinstance(result, dict):
+        return "unknown", "provider_failure"
+    provider = _bounded_stt_metadata(result.get("provider"), "unknown")
+    error_code = result.get("error_code") or result.get("error_type")
+    error = result.get("error")
+    if not error_code and isinstance(error, dict):
+        error_code = error.get("code") or error.get("type")
+    return provider, _bounded_stt_metadata(error_code, "provider_failure")
+
+
+def _voice_stt_failure_marker(error_code: str) -> str:
+    return (
+        "[voice message could not be transcribed automatically; "
+        f"error_code={_bounded_stt_metadata(error_code, 'provider_failure')}]"
+    )
+
+
 def _event_media_is_video(event, index: int) -> bool:
     """True if the attachment at *index* is video (per-attachment MIME first)."""
     mtype = _event_media_type_at(event, index)
@@ -16628,7 +16689,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 )
                             except Exception as _echo_exc:
                                 logger.debug(
-                                    "Transcript echo failed (non-fatal): %s", _echo_exc,
+                                    "STT failure provider=unknown stage=echo "
+                                    "error_code=delivery_exception exception_type=%s",
+                                    type(_echo_exc).__name__,
                                 )
                 # NOTE: Previously, when transcription failed (e.g. no STT
                 # provider configured), the gateway also emitted a hardcoded
@@ -17026,14 +17089,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Inner handler that runs under the _running_agents sentinel guard."""
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
-        _msg_preview = (event.text or "")[:80].replace("\n", " ")
-        _reply_id = getattr(event, "reply_to_message_id", None)
-        _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
-        logger.info(
-            "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
-            _platform_name, source.user_name or source.user_id or "unknown",
-            source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
-        )
+        if _event_contains_sensitive_voice_data(event):
+            _voice_text = event.text or ""
+            _voice_reply_text = getattr(event, "reply_to_text", None) or ""
+            logger.info(
+                "inbound voice message: stage=handler message_type=%s "
+                "text_chars=%d text_bytes=%d reply_text_chars=%d",
+                _message_type_name(event),
+                len(_voice_text),
+                len(_voice_text.encode("utf-8")),
+                len(_voice_reply_text),
+            )
+        else:
+            _msg_preview = (event.text or "")[:80].replace("\n", " ")
+            _reply_id = getattr(event, "reply_to_message_id", None)
+            _reply_txt = (getattr(event, "reply_to_text", None) or "")[:80].replace("\n", " ")
+            logger.info(
+                "inbound message: platform=%s user=%s chat=%s msg=%r reply_to_id=%s reply_to_text=%r",
+                _platform_name, source.user_name or source.user_id or "unknown",
+                source.chat_id or "unknown", _msg_preview, _reply_id, _reply_txt,
+            )
 
         # Get or create session
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's
@@ -19926,10 +20001,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         if self._is_duplicate_voice_transcript(guild_id, user_id, transcript):
             logger.info(
-                "Suppressing duplicate voice transcript for guild=%s user=%s: %s",
+                "Suppressing duplicate voice transcript guild=%s user=%s "
+                "transcript_chars=%d",
                 guild_id,
                 user_id,
-                transcript[:100],
+                len(transcript),
             )
             return
 
@@ -20089,11 +20165,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             adapter = self._adapter_for_source(event.source)
 
-            # If connected to a voice channel, play there instead of sending a file
+            # If connected to a voice channel, play there instead of sending a file.
+            # Some synthetic events (for example, an async-completion turn that
+            # recursively drains an interrupting voice follow-up) retain the outer
+            # event and therefore have no raw guild metadata. In that case, defer
+            # to the current adapter's play_tts contract: Discord can resolve its
+            # live text-channel-to-voice-channel binding from chat_id.
             guild_id = self._get_guild_id(event)
+            # Some synthetic events (for example, an async-completion turn
+            # that recursively drains an interrupting voice follow-up)
+            # retain the outer event and therefore have no raw guild
+            # metadata. Resolve voice-channel routing defensively via
+            # getattr/callable rather than assuming the adapter shape.
             play_in_voice_channel = getattr(adapter, "play_in_voice_channel", None)
             is_in_voice_channel = getattr(adapter, "is_in_voice_channel", None)
-            send_voice = getattr(adapter, "send_voice", None)
             in_voice_channel = bool(
                 guild_id
                 and callable(play_in_voice_channel)
@@ -20102,7 +20187,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             reply_anchor = self._reply_anchor_for_event(event)
             thread_meta = self._thread_metadata_for_source(event.source, reply_anchor)
-            if not in_voice_channel and callable(send_voice):
+            # BasePlatformAdapter subclasses route through play_tts (which
+            # falls back to send_voice on its own), so probe that contract
+            # first; only fall back to a raw send_voice attribute for
+            # adapters that predate/bypass the base class.
+            use_play_tts = isinstance(adapter, BasePlatformAdapter)
+            send_voice = None if use_play_tts else getattr(adapter, "send_voice", None)
+            if not in_voice_channel and (use_play_tts or callable(send_voice)):
                 # Mark the auto voice reply as notify-worthy.  Mirrors the
                 # final-text path in gateway/platforms/base.py which sets
                 # ``notify=True`` so platform adapters that gate push
@@ -20119,15 +20210,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if in_voice_channel:
                     play_voice = cast(Callable[..., Awaitable[Any]], play_in_voice_channel)
                     await play_voice(guild_id, actual_path)
-                elif callable(send_voice):
-                    send_voice_call = cast(Callable[..., Awaitable[Any]], send_voice)
+                elif use_play_tts or callable(send_voice):
                     send_kwargs: Dict[str, Any] = {
                         "chat_id": event.source.chat_id,
                         "audio_path": actual_path,
                         "reply_to": reply_anchor,
                         "metadata": thread_meta,
                     }
-                    await send_voice_call(**send_kwargs)
+                    if use_play_tts:
+                        await adapter.play_tts(**send_kwargs)
+                    else:
+                        send_voice_call = cast(Callable[..., Awaitable[Any]], send_voice)
+                        await send_voice_call(**send_kwargs)
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
         finally:
@@ -22483,8 +22577,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 transcribe_audio_local_fallback,
             )
         except ModuleNotFoundError as e:
-            logger.error("Transcription module unavailable: %s", e)
-            unavailable_note = "[voice message could not be transcribed]"
+            logger.error(
+                "STT failure provider=unknown stage=import "
+                "error_code=module_unavailable exception_type=%s",
+                type(e).__name__,
+            )
+            unavailable_note = _voice_stt_failure_marker("module_unavailable")
             _placeholder = "(The user sent a message with no text content)"
             if user_text and user_text.strip() == _placeholder:
                 return unavailable_note, []
@@ -22496,7 +22594,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         successful_transcripts: List[str] = []
         for path in audio_paths:
             try:
-                logger.debug("Transcribing user voice: %s", path)
+                logger.debug("STT transcription started: stage=transcribe")
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if not result.get("success"):
                     fallback = await asyncio.to_thread(
@@ -22504,9 +22602,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         path,
                     )
                     if fallback.get("success"):
+                        fallback_provider = _bounded_stt_metadata(
+                            fallback.get("provider"), "local"
+                        )
                         logger.info(
-                            "Configured STT failed for %s; recovered with local STT",
-                            path,
+                            "STT fallback recovered: provider=%s stage=fallback",
+                            fallback_provider,
                         )
                         result = fallback
                 if result["success"]:
@@ -22532,7 +22633,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # reply to the content.
                     enriched_parts.append(f'"{transcript}"')
                 else:
-                    error = result.get("error", "unknown error")
+                    provider, error_code = _stt_failure_metadata(result)
                     # All failure branches: a single, minimal, neutral marker.
                     # Do NOT mention "no STT provider configured", "setup
                     # instructions", or the "hermes-agent-setup" skill, and do
@@ -22540,25 +22641,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # persisted in conversation history and poison every later
                     # turn, so the model keeps volunteering STT-setup advice
                     # even after transcription starts working. The cause is
-                    # logged for operator diagnosis but kept out of the
+                    # represented only by bounded metadata and kept out of the
                     # LLM-visible prompt.
-                    logger.info("Voice transcription failed for %s: %s", path, error)
-                    from tools.credential_files import to_agent_visible_cache_path
-
-                    agent_path = to_agent_visible_cache_path(os.path.abspath(path))
-                    enriched_parts.append(
-                        "[voice message could not be transcribed automatically; "
-                        f"the audio is available at: {agent_path}]"
+                    logger.info(
+                        "STT failure provider=%s stage=transcribe error_code=%s",
+                        provider,
+                        error_code,
                     )
+                    enriched_parts.append(_voice_stt_failure_marker(error_code))
             except Exception as e:
-                logger.error("Transcription error: %s", e)
-                from tools.credential_files import to_agent_visible_cache_path
-
-                agent_path = to_agent_visible_cache_path(os.path.abspath(path))
-                enriched_parts.append(
-                    "[voice message could not be transcribed automatically; "
-                    f"the audio is available at: {agent_path}]"
+                logger.error(
+                    "STT failure provider=unknown stage=transcribe "
+                    "error_code=stt_exception exception_type=%s",
+                    type(e).__name__,
                 )
+                enriched_parts.append(_voice_stt_failure_marker("stt_exception"))
 
         if enriched_parts:
             prefix = "\n\n".join(enriched_parts)
@@ -22650,7 +22747,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     metadata=metadata,
                 )
             except Exception as echo_exc:
-                logger.debug("%s echo failed (non-fatal): %s", log_context, echo_exc)
+                logger.debug(
+                    "STT failure provider=unknown stage=echo "
+                    "error_code=delivery_exception exception_type=%s",
+                    type(echo_exc).__name__,
+                )
 
     async def _transcribe_and_echo_pending_voice(
         self,
@@ -22694,7 +22795,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return enriched_text or text, transcripts
         except Exception as trans_exc:
-            logger.warning("%s transcription failed: %s", log_context, trans_exc)
+            logger.warning(
+                "STT failure provider=unknown stage=pending "
+                "error_code=stt_exception exception_type=%s",
+                type(trans_exc).__name__,
+            )
             return text, []
 
     def _build_process_event_source(self, evt: dict):
@@ -26659,7 +26764,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     else:
                         pending = _pending_text or _build_media_placeholder(pending_event)
                     if pending:
-                        logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
+                        _log_pending_message_preview("queued", pending, pending_event)
 
             # Leftover /steer: if a steer arrived after the last tool batch
             # (e.g. during the final API call), the agent couldn't inject it
@@ -26703,7 +26808,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 pending = None
 
             if pending_event or pending:
-                logger.debug("Processing pending message: '%s...'", pending[:40])
+                _log_pending_message_preview("pending", pending or "", pending_event)
 
                 # Clear the adapter's interrupt event so the next _run_agent call
                 # doesn't immediately re-trigger the interrupt before the new agent

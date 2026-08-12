@@ -1399,6 +1399,39 @@ def voice_stop_hint() -> str:
 # ============================================================================
 # STT dispatch
 # ============================================================================
+def _bounded_stt_metadata(value: Any, default: str) -> str:
+    """Normalize STT metadata without forwarding free-form provider output."""
+    if not isinstance(value, str):
+        return default
+    normalized = value.strip().lower()
+    if not normalized or len(normalized) > 64:
+        return default
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]*", normalized):
+        return default
+    return normalized
+
+
+def _stt_failure_metadata(result: Any) -> tuple[str, str]:
+    if not isinstance(result, dict):
+        return "unknown", "provider_failure"
+    provider = _bounded_stt_metadata(result.get("provider"), "unknown")
+    error_code = result.get("error_code") or result.get("error_type")
+    error = result.get("error")
+    if not error_code and isinstance(error, dict):
+        error_code = error.get("code") or error.get("type")
+    return provider, _bounded_stt_metadata(error_code, "provider_failure")
+
+
+def _safe_stt_failure_result(provider: str, error_code: str) -> Dict[str, Any]:
+    return {
+        "success": False,
+        "transcript": "",
+        "provider": _bounded_stt_metadata(provider, "unknown"),
+        "error_code": _bounded_stt_metadata(error_code, "provider_failure"),
+        "error": "Transcription failed",
+    }
+
+
 def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str, Any]:
     """Transcribe a WAV recording using the existing Whisper pipeline.
 
@@ -1414,12 +1447,24 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
     """
     from tools.transcription_tools import MAX_FILE_SIZE, transcribe_audio
 
-    result = transcribe_audio(wav_path, model=model)
+    try:
+        result = transcribe_audio(wav_path, model=model)
+    except Exception as exc:
+        logger.error(
+            "Voice STT failure provider=unknown stage=transcribe "
+            "error_code=stt_exception exception_type=%s",
+            type(exc).__name__,
+        )
+        return _safe_stt_failure_result("unknown", "stt_exception")
 
     # Only chunk when the provider itself reports "File too large" —
     # local providers (faster-whisper, whisper.cpp, etc.) have no upload
     # cap so ``transcribe_audio`` will never return this error for them.
-    if not result.get("success") and "File too large" in result.get("error", ""):
+    raw_error = result.get("error", "")
+    is_file_too_large = (
+        isinstance(raw_error, str) and "File too large" in raw_error
+    ) or result.get("error_code") == "file_too_large"
+    if not result.get("success") and is_file_too_large:
         result = _transcribe_wav_in_chunks(wav_path, model=model, max_file_size=MAX_FILE_SIZE)
 
     # Filter out Whisper hallucinations (common on silent/near-silent audio).
@@ -1432,7 +1477,12 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
         if is_whisper_hallucination(raw_transcript) and not is_voice_stop_phrase(
             raw_transcript
         ):
-            logger.info("Filtered Whisper hallucination: %r", result["transcript"])
+            logger.info(
+                "Filtered Whisper hallucination: stage=hallucination_filter "
+                "transcript_chars=%d transcript_bytes=%d",
+                len(raw_transcript),
+                len(raw_transcript.encode("utf-8")),
+            )
             return {"success": True, "transcript": "", "filtered": True}
 
     # Providers that flag no_speech (empty transcript) failed to hear words,
@@ -1440,6 +1490,15 @@ def transcribe_recording(wav_path: str, model: Optional[str] = None) -> Dict[str
     # quietly instead of surfacing "Transcription failed".
     if result.get("no_speech"):
         return {"success": True, "transcript": "", "no_speech": True}
+
+    if not result.get("success"):
+        provider, error_code = _stt_failure_metadata(result)
+        logger.info(
+            "Voice STT failure provider=%s stage=transcribe error_code=%s",
+            provider,
+            error_code,
+        )
+        return _safe_stt_failure_result(provider, error_code)
 
     return result
 
@@ -1469,18 +1528,22 @@ def _transcribe_wav_in_chunks(
     try:
         chunk_paths = _split_wav_for_transcription(wav_path, max_file_size=max_file_size)
         if not chunk_paths:
-            return {"success": False, "transcript": "", "error": "No audio chunks were created"}
+            logger.info(
+                "Voice STT failure provider=unknown stage=chunk error_code=no_chunks"
+            )
+            return _safe_stt_failure_result("unknown", "no_chunks")
 
-        logger.info("Transcribing oversized WAV in %d chunks: %s", len(chunk_paths), wav_path)
-        for index, chunk_path in enumerate(chunk_paths, start=1):
+        logger.info("Transcribing oversized WAV: stage=chunk chunks=%d", len(chunk_paths))
+        for chunk_path in chunk_paths:
             result = transcribe_audio(chunk_path, model=model)
             if not result.get("success"):
-                error = result.get("error", "Unknown transcription error")
-                return {
-                    "success": False,
-                    "transcript": "",
-                    "error": f"Chunk {index}/{len(chunk_paths)} failed: {error}",
-                }
+                provider, error_code = _stt_failure_metadata(result)
+                logger.info(
+                    "Voice STT failure provider=%s stage=chunk error_code=%s",
+                    provider,
+                    error_code,
+                )
+                return _safe_stt_failure_result(provider, error_code)
 
             transcript = result.get("transcript", "").strip()
             if transcript and not is_whisper_hallucination(transcript):
@@ -1492,9 +1555,13 @@ def _transcribe_wav_in_chunks(
             "provider": result.get("provider"),
             "chunks": len(chunk_paths),
         }
-    except Exception as e:
-        logger.error("Chunked transcription failed for %s: %s", wav_path, e, exc_info=True)
-        return {"success": False, "transcript": "", "error": f"Chunked transcription failed: {e}"}
+    except Exception as exc:
+        logger.error(
+            "Voice STT failure provider=unknown stage=chunk "
+            "error_code=stt_exception exception_type=%s",
+            type(exc).__name__,
+        )
+        return _safe_stt_failure_result("unknown", "stt_exception")
     finally:
         for chunk_path in chunk_paths:
             try:

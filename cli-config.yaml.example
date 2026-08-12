@@ -1072,6 +1072,37 @@ platform_toolsets:
 #   reactions: true                  # Show processing reactions (default: true)
 #   history_backfill: true           # Recover missed channel messages on mention (default: true)
 #   history_backfill_limit: 50       # Max messages to scan backwards (default: 50)
+#   voice_barge_in:                   # Strict VC interruption while bot TTS plays (default: off)
+#     enabled: false                  # Opt in; otherwise inbound capture pauses during bot speech
+#     monitor_only: false             # Fail-closed; when true it overrides enabled and never interrupts, ACKs, or routes input
+#     phrases:                        # Configure only this deployment's own wake name
+#       - "하나야"                    # e.g. 하나야/유나야/미나야/라나야/세나야; choose one
+#     streaming_kws:                 # Optional local low-latency Korean detector
+#       enabled: false               # Off by default; local model downloads once on first use
+#       shadow_only: true            # Log detections without interrupting until canary acceptance
+#       provider: faster_whisper       # Local rolling ASR; no API key
+#       model: base                    # Hugging Face model name or local model_dir
+#       model_dir: ""                  # Optional pre-downloaded faster-whisper model path
+#       compute_type: int8
+#       window_ms: 1600                # Maximum in-memory rolling window
+#       stride_ms: 320                 # Evaluate after this much new audio
+#       min_audio_ms: 640              # Ignore shorter fragments
+#       hotword_bias: false            # Keep names discriminative; exact phrases are matched after ASR
+#       contrast_wake_names: []        # If bias is enabled, add confusable names with equal weight
+#       num_threads: 4
+#       queue_frames: 256              # Bounded in-memory PCM queue; no audio is persisted
+#     min_trailing_characters: 2      # Applies only when a command is spoken in the same utterance
+#     ack_enabled: false              # Independently opt in to spoken barge-in acknowledgements
+#     stop_ack_phrases:               # Short round-robin ACK after own-name-only match; no model event
+#       - "네."
+#       - "말씀하세요."
+#     follow_up_ack_phrases:          # Independent round-robin before a clean tail is routed once
+#       - "네, 말씀하세요."
+#       - "좋아요, 이어서 들을게요."
+#   # Recommended two-step flow: say only "하나야" to stop TTS and hear a short
+#   # stop ACK, then speak a fresh command after the ACK. The fresh utterance
+#   # follows the normal voice-input path. Overlap audio without the configured
+#   # deployment name is discarded while TTS is playing.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)

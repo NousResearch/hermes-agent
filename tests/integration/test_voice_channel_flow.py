@@ -430,6 +430,19 @@ class TestFullVoiceFlow:
         assert 100 in receiver._buffers
         assert len(receiver._buffers[100]) > 0
 
+    def test_playback_capture_overrides_pause_and_tags_real_rtp(self):
+        """Barge-in capture reopens a paused receiver before real RTP arrives."""
+        key = _make_secret_key()
+        receiver = _make_voice_receiver(key)
+        receiver.pause()
+
+        receiver.begin_playback_capture(7)
+        packet = _build_encrypted_rtp_packet(key, b'\xf8\xff\xfe', ssrc=100)
+        receiver._on_packet(packet)
+
+        assert len(receiver._buffers[100]) > 0
+        assert receiver._buffer_playback_tokens[100] == 7
+
     def test_corrupted_packet_ignored(self):
         """Corrupted/truncated packet → silently ignored."""
         key = _make_secret_key()

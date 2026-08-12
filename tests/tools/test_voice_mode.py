@@ -512,9 +512,189 @@ class TestTranscribeRecording:
         assert result["transcript"] == ""
         assert result["filtered"] is True
 
+    def test_filtered_hallucination_log_contains_only_metadata(self, caplog):
+        transcript_canary = "FILTERED_TRANSCRIPT_CANARY_5f2a"
+        mock_transcribe = MagicMock(
+            return_value={"success": True, "transcript": transcript_canary}
+        )
+        caplog.set_level("INFO", logger="tools.voice_mode")
 
-    def test_other_error_does_not_trigger_chunk(self, tmp_path, monkeypatch):
-        """Non-size errors from transcribe_audio are returned as-is."""
+        with (
+            patch("tools.transcription_tools.transcribe_audio", mock_transcribe),
+            patch("tools.voice_mode.is_whisper_hallucination", return_value=True),
+        ):
+            from tools.voice_mode import transcribe_recording
+
+            result = transcribe_recording("/tmp/synthetic.wav")
+
+        assert result == {"success": True, "transcript": "", "filtered": True}
+        assert transcript_canary not in caplog.text
+        assert "stage=hallucination_filter" in caplog.text
+        assert f"transcript_chars={len(transcript_canary)}" in caplog.text
+
+    @pytest.mark.parametrize(
+        ("failure", "expected_provider", "expected_error_code", "expected_metadata"),
+        [
+            (
+                {
+                    "success": False,
+                    "transcript": "",
+                    "provider": "synthetic-provider",
+                    "error_code": "quota_exceeded",
+                    "error": {
+                        "message": "VOICE_MODE_ERROR_CANARY_STRUCTURED_37ce",
+                        "body": "VOICE_MODE_ERROR_CANARY_STRUCTURED_37ce",
+                    },
+                },
+                "synthetic-provider",
+                "quota_exceeded",
+                "provider=synthetic-provider stage=transcribe error_code=quota_exceeded",
+            ),
+            (
+                {
+                    "success": False,
+                    "transcript": "",
+                    "provider": "legacy-provider",
+                    "error": "VOICE_MODE_ERROR_CANARY_LEGACY_8d4f",
+                },
+                "legacy-provider",
+                "provider_failure",
+                "provider=legacy-provider stage=transcribe error_code=provider_failure",
+            ),
+            (
+                RuntimeError("VOICE_MODE_ERROR_CANARY_EXCEPTION_e9a1"),
+                "unknown",
+                "stt_exception",
+                (
+                    "provider=unknown stage=transcribe error_code=stt_exception "
+                    "exception_type=RuntimeError"
+                ),
+            ),
+        ],
+    )
+    def test_failure_consumption_exposes_only_bounded_metadata(
+        self,
+        failure,
+        expected_provider,
+        expected_error_code,
+        expected_metadata,
+        caplog,
+    ):
+        if isinstance(failure, Exception):
+            mock_transcribe = MagicMock(side_effect=failure)
+            canary = str(failure)
+        else:
+            mock_transcribe = MagicMock(return_value=failure)
+            raw_error = failure["error"]
+            canary = raw_error["message"] if isinstance(raw_error, dict) else raw_error
+        caplog.set_level("INFO", logger="tools.voice_mode")
+
+        with patch("tools.transcription_tools.transcribe_audio", mock_transcribe):
+            from tools.voice_mode import transcribe_recording
+
+            result = transcribe_recording("/tmp/synthetic.wav")
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "provider": expected_provider,
+            "error_code": expected_error_code,
+            "error": "Transcription failed",
+        }
+        assert canary not in caplog.text
+        assert canary not in repr(result)
+        assert "Traceback" not in caplog.text
+        assert expected_metadata in caplog.text
+
+    @pytest.mark.parametrize(
+        ("failure", "expected_provider", "expected_error_code", "expected_metadata"),
+        [
+            (
+                {
+                    "success": False,
+                    "transcript": "",
+                    "provider": "chunk-provider",
+                    "error_code": "remote_rejected",
+                    "error": {
+                        "message": "CHUNK_ERROR_CANARY_STRUCTURED_5aa2",
+                        "body": "CHUNK_ERROR_CANARY_STRUCTURED_5aa2",
+                    },
+                },
+                "chunk-provider",
+                "remote_rejected",
+                "provider=chunk-provider stage=chunk error_code=remote_rejected",
+            ),
+            (
+                {
+                    "success": False,
+                    "transcript": "",
+                    "provider": "legacy-chunk",
+                    "error": "CHUNK_ERROR_CANARY_LEGACY_0a4c",
+                },
+                "legacy-chunk",
+                "provider_failure",
+                "provider=legacy-chunk stage=chunk error_code=provider_failure",
+            ),
+            (
+                RuntimeError("CHUNK_ERROR_CANARY_EXCEPTION_9f13"),
+                "unknown",
+                "stt_exception",
+                (
+                    "provider=unknown stage=chunk error_code=stt_exception "
+                    "exception_type=RuntimeError"
+                ),
+            ),
+        ],
+    )
+    def test_chunk_failure_exposes_only_bounded_metadata(
+        self,
+        failure,
+        expected_provider,
+        expected_error_code,
+        expected_metadata,
+        monkeypatch,
+        caplog,
+    ):
+        from tools.voice_mode import _transcribe_wav_in_chunks
+
+        wav_path = "/synthetic/CHUNK_PATH_CANARY_d56e.wav"
+        monkeypatch.setattr(
+            "tools.voice_mode._split_wav_for_transcription",
+            lambda *_args, **_kwargs: ["/synthetic/chunk-1.wav"],
+        )
+        if isinstance(failure, Exception):
+            mock_transcribe = MagicMock(side_effect=failure)
+            canary = str(failure)
+        else:
+            mock_transcribe = MagicMock(return_value=failure)
+            raw_error = failure["error"]
+            canary = raw_error["message"] if isinstance(raw_error, dict) else raw_error
+        caplog.set_level("INFO", logger="tools.voice_mode")
+
+        with patch("tools.transcription_tools.transcribe_audio", mock_transcribe):
+            result = _transcribe_wav_in_chunks(
+                wav_path,
+                model="synthetic-model",
+                max_file_size=1024,
+            )
+
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "provider": expected_provider,
+            "error_code": expected_error_code,
+            "error": "Transcription failed",
+        }
+        assert canary not in caplog.text
+        assert canary not in repr(result)
+        assert wav_path not in caplog.text
+        assert wav_path not in repr(result)
+        assert "Traceback" not in caplog.text
+        assert expected_metadata in caplog.text
+
+
+    def test_other_error_does_not_trigger_chunk(self, tmp_path):
+        """Non-size failures are sanitized without entering the chunk path."""
         wav_path = tmp_path / "record.wav"
         n_frames = 50000
         audio = struct.pack(f"<{n_frames}h", *([1000] * n_frames))
@@ -534,8 +714,14 @@ class TestTranscribeRecording:
             from tools.voice_mode import transcribe_recording
             result = transcribe_recording(str(wav_path), model="base")
 
-        assert result["success"] is False
-        assert "STT is disabled" in result["error"]
+        assert result == {
+            "success": False,
+            "transcript": "",
+            "provider": "unknown",
+            "error_code": "provider_failure",
+            "error": "Transcription failed",
+        }
+        assert "STT is disabled" not in repr(result)
         mock_transcribe.assert_called_once()
 
 

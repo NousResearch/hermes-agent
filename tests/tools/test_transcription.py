@@ -64,7 +64,8 @@ class TestValidateAudioFile:
         from tools.transcription_tools import _validate_audio_file
         result = _validate_audio_file(str(tmp_path / "nope.ogg"))
         assert result is not None
-        assert "not found" in result["error"]
+        assert result["error_code"] == "file_not_found"
+        assert result["error_type"] == "FileNotFoundError"
 
 
     def test_too_large(self, tmp_path):
@@ -80,7 +81,8 @@ class TestValidateAudioFile:
         ))):
             result = _validate_audio_file(str(f))
         assert result is not None
-        assert "too large" in result["error"]
+        assert result["error_code"] == "file_too_large"
+        assert result["error_type"] == "FileTooLargeError"
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +142,8 @@ class TestTranscribeLocal:
             from tools.transcription_tools import _transcribe_local
             result = _transcribe_local("/tmp/test.ogg", "base")
         assert result["success"] is False
-        assert "not installed" in result["error"]
+        assert result["error_code"] == "local_dependency_unavailable"
+        assert result["error_type"] == "DependencyUnavailableError"
 
 
 # ---------------------------------------------------------------------------
@@ -155,7 +158,8 @@ class TestTranscribeOpenAI:
         from tools.transcription_tools import _transcribe_openai
         result = _transcribe_openai("/tmp/test.ogg", "whisper-1")
         assert result["success"] is False
-        assert "VOICE_TOOLS_OPENAI_KEY" in result["error"]
+        assert result["error_code"] == "credentials_unavailable"
+        assert result["error_type"] == "ValueError"
 
 
     def test_unset_language_omits_argument(self, monkeypatch, tmp_path):
@@ -203,7 +207,8 @@ class TestTranscribeAudio:
         from tools.transcription_tools import transcribe_audio
         result = transcribe_audio("/nonexistent/file.ogg")
         assert result["success"] is False
-        assert "not found" in result["error"]
+        assert result["error_code"] == "file_not_found"
+        assert result["error_type"] == "FileNotFoundError"
 
 
 class TestLocalFallback:
@@ -241,7 +246,8 @@ class TestLocalFallback:
             result = transcribe_audio_local_fallback(str(audio_file))
 
         assert result["success"] is False
-        assert "installed local STT" in result["error"]
+        assert result["error_code"] == "local_backend_unavailable"
+        assert result["error_type"] == "BackendUnavailableError"
 
 
 # ---------------------------------------------------------------------------

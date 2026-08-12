@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from gateway.config import Platform
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
@@ -92,6 +92,62 @@ class TestAutoVoiceReplyFormat:
 
         voice_event = _make_event(Platform.TELEGRAM, chat_id="123", message_type=MessageType.VOICE)
         assert runner._should_send_voice_reply(voice_event, "hello", [], already_sent=True) is True
+
+    @pytest.mark.asyncio
+    async def test_discord_synthetic_auto_voice_reply_uses_live_text_channel_binding(self):
+        """A synthetic outer event must not turn live VC TTS into an attachment.
+
+        An internal completion can be interrupted by a Discord voice turn. The
+        runner drains that pending voice turn recursively, then routes its reply
+        through the original internal event, which has no raw guild metadata.
+        The current Discord adapter still owns the text-channel-to-VC binding.
+        """
+        from plugins.platforms.discord.adapter import DiscordAdapter
+
+        runner = _make_runner()
+        adapter = DiscordAdapter(
+            PlatformConfig(enabled=True, token="fake-token")
+        )
+        runner.adapters[Platform.DISCORD] = adapter
+
+        guild_id = 111
+        chat_id = "222"
+        voice_client = MagicMock()
+        voice_client.is_connected.return_value = True
+        adapter._voice_clients[guild_id] = voice_client
+        adapter._voice_text_channels[guild_id] = int(chat_id)
+        adapter.play_in_voice_channel = AsyncMock(return_value=True)
+        adapter.send_voice = AsyncMock()
+
+        # Models the original internal completion event retained by the outer
+        # delivery frame after the pending voice turn is recursively drained.
+        event = _make_event(
+            Platform.DISCORD,
+            chat_id=chat_id,
+            message_type=MessageType.TEXT,
+        )
+        event.internal = True
+        event.raw_message = None
+
+        def fake_tts(*, text, output_path):
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(output_path).write_bytes(b"fake mp3")
+            return json.dumps({
+                "success": True,
+                "file_path": output_path,
+                "provider": "test",
+            })
+
+        with patch("tools.tts_tool.text_to_speech_tool", side_effect=fake_tts):
+            await runner._send_voice_reply(event, "voice follow-up response")
+
+        adapter.send_voice.assert_not_awaited()
+        adapter.play_in_voice_channel.assert_awaited_once()
+        playback_call = adapter.play_in_voice_channel.await_args
+        assert playback_call is not None
+        assert playback_call.args[0] == guild_id
+        assert Path(playback_call.args[1]).suffix == ".mp3"
+
 
 def _make_runner() -> GatewayRunner:
     with patch("gateway.run.GatewayRunner._load_voice_modes", return_value={}):

@@ -749,6 +749,61 @@ For the full setup and operational guide, see:
 - [Voice Mode](/user-guide/features/voice-mode)
 - [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes)
 
+### Voice channel interruption with an agent-specific wake name
+
+Discord voice barge-in is an explicit opt-in. By default, Hermes pauses broad inbound capture while its own TTS is playing. Enabling `discord.voice_barge_in` keeps capture active during that playback and accepts only a configured phrase at the start of the transcript.
+
+For an agent-generic deployment, configure **only that agent's own Korean call name**. For example, separate agents can use `하나야`, `유나야`, `미나야`, `라나야`, or `세나야`; do not copy all five names into one agent's `phrases` list.
+
+```yaml
+discord:
+  voice_barge_in:
+    enabled: true
+    monitor_only: false
+    phrases:
+      - "하나야"       # replace with this deployment's own name
+    ack_enabled: true
+    stop_ack_phrases:
+      - "네."
+      - "말씀하세요."
+    min_trailing_characters: 2
+
+    streaming_kws:
+      enabled: false   # opt in separately after measuring shadow results
+      shadow_only: true
+      provider: faster_whisper
+      model: base
+      window_ms: 1600
+      stride_ms: 320
+      min_audio_ms: 640
+      hotword_bias: false
+      contrast_wake_names: []
+      num_threads: 4
+      queue_frames: 256
+```
+
+The recommended interaction is deliberately two-step:
+
+1. While the agent is speaking, say only its configured name, for example **“하나야.”**
+2. Hermes interrupts that playback and plays one short stop acknowledgement, for example **“네.”** The wake name itself does not create a model turn.
+3. After the acknowledgement finishes, speak a **new, separate utterance**, for example **“내일 날씨 알려줘.”** That untagged utterance enters the normal voice-input path.
+
+Each captured buffer is tied to the exact playback epoch that produced it. Replacing or removing that playback state ends the epoch; a delayed tagged buffer cannot interrupt, acknowledge, or route after that boundary.
+
+#### Privacy and monitor-only canarying
+
+- `enabled`, `monitor_only`, acknowledgements, and streaming KWS are all disabled by default. With neither live nor monitor capture enabled, inbound capture remains paused during bot speech.
+- `monitor_only: true` overrides contradictory live/ACK settings. It may capture playback-overlap audio and run the configured batch STT provider, but it never interrupts, acknowledges, claims a command, or routes a model turn.
+- Monitor logs contain bounded transport/STT metadata such as packet counts, byte counts, timing, lengths, match booleans, and exception types. They do **not** log transcripts or audio content. Temporary batch-STT WAV files are deleted after processing; remember that a non-local STT provider still receives the audio according to that provider's privacy policy.
+- Streaming KWS uses a bounded in-memory PCM queue and local rolling ASR. It does not persist its rolling audio. Start with `shadow_only: true`: detections are logged but do not interrupt. Set it to `false` only after shadow measurements show acceptable misses and false positives; live mode can interrupt before the normal silence endpoint and batch STT complete.
+
+#### Latency, false positives, and echo limits
+
+- Smaller `stride_ms` and `min_audio_ms` can reduce interruption latency, but increase CPU work and the chance of partial-word false positives. Larger values are slower but more conservative. `window_ms` must remain long enough to contain the full configured name.
+- Keep `hotword_bias: false` first. Bias can improve recall but can also turn similar names into false positives. If you enable it, list confusable names in `contrast_wake_names` so they receive equal bias, then re-run shadow canarying.
+- A short own-name trigger is faster than a multi-word stop phrase but usually less discriminative. Use exactly one distinctive deployment name and review shadow logs before enabling live interruption.
+- Hermes does not currently perform acoustic echo cancellation (AEC) on the inbound Discord stream. Speaker-to-microphone leakage can therefore resemble user speech. Prefer headphones or echo-suppressed hardware, keep ACKs short and free of the wake name, and avoid enabling live mode until shadow results are stable.
+
 ### Voice Channel Audio Effects (ambient + verbal acks)
 
 When the bot is in a voice channel, you can give it a more conversational feel: a short verbal acknowledgement ("let me look into that") before it starts working, and a subtle ambient "thinking" bed that plays underneath while tools run — the speech ducks the ambient down and swells it back when finished, similar to Grok voice mode.

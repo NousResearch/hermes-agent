@@ -1548,6 +1548,19 @@ def _build_child_agent(
                 child_toolsets.append("kanban")
             if effective_role == "orchestrator" and "delegation" not in child_toolsets:
                 child_toolsets.append("delegation")
+            # Fully-neutralised detection: a toolset name that survives the
+            # intersection but is also present in child_disabled_toolsets has
+            # its schemas subtracted downstream (e.g. 'kanban' is always in
+            # the child's disabled list). A child whose ENTIRE resolved set is
+            # neutralised would be left with only ambient tools
+            # (rescuer_fetch) — the Octacon inline-delegation incident. Treat
+            # that as starvation so the backstop below rescues the child to
+            # the parent's bounded set. Orchestrators are exempt when they
+            # retain 'delegation' (a real, non-neutralised capability).
+            if child_toolsets and all(
+                t in child_disabled_toolsets for t in child_toolsets
+            ):
+                child_toolsets = []
 
         # Always_skills stored for later injection into child context
         _p_skills_block = _pcfg.get("skills", {}) or {}

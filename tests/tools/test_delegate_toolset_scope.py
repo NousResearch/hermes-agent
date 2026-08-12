@@ -167,6 +167,38 @@ class TestToolsetStarvationBackstop:
             )
         assert self._enabled(MockAgent) == ["audit"]
 
+    def test_kanban_parent_profile_kanban_only_falls_back(self, caplog):
+        """Real Kensei parent shape: the parent HAS 'kanban' enabled (it is
+        listed in platform_toolsets.cli) and the profile requests
+        ['hermes-cli', 'kanban']. The intersection keeps 'kanban' (the parent
+        exposes it), _strip_blocked_tools removes it, and the observability
+        re-add puts it back — leaving child_toolsets non-empty while its
+        tools are subtracted via disabled_toolsets. The backstop must treat
+        a fully-neutralised set as starvation and fall back to the parent's
+        bounded set, or the child is left with only ambient tools
+        (rescuer_fetch) — the Octacon inline-delegation incident."""
+        import logging
+
+        parent = _mock_parent(
+            ["terminal", "file", "web", "skills", "session_search", "kanban"]
+        )
+        with caplog.at_level(logging.WARNING):
+            with patch("run_agent.AIAgent") as MockAgent:
+                MockAgent.return_value = MagicMock()
+                _build_child_agent(
+                    task_index=0, goal="g", context=None, toolsets=None,
+                    model=None, max_iterations=10, task_count=1,
+                    parent_agent=parent, profile="octacon",
+                    profile_content=_profile_cfg(["hermes-cli", "kanban"]),
+                )
+        enabled = self._enabled(MockAgent)
+        # Not empty — the backstop rescued it.
+        assert enabled
+        # Equals the parent's bounded set (blocked tools stripped, kanban
+        # stripped because its schemas are subtracted via disabled_toolsets).
+        assert set(enabled) == set(_strip_blocked_tools(parent.enabled_toolsets))
+        assert any("falling back" in r.message for r in caplog.records)
+
     def test_unresolvable_explicit_toolsets_fall_back_not_empty(self):
         """Explicit (test-only) toolsets that don't resolve to anything must
         fall back to the parent's bounded set, never []."""

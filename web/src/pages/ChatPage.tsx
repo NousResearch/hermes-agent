@@ -108,6 +108,58 @@ function ptyAttachToken(rotate = false): string {
   return t;
 }
 
+interface PtyReplayControl {
+  type: "pty.replay";
+  epoch: string;
+  start_offset: number;
+  replay_end_offset: number;
+  reset: boolean;
+  reason: string;
+}
+
+interface PtyReplayCursor {
+  identity: string;
+  epoch: string;
+  offset: number;
+  decoder: TextDecoder;
+}
+
+/** Parse server control frames without mistaking ordinary text output for one. */
+function parsePtyReplayControl(data: string): PtyReplayControl | null {
+  let value: unknown;
+  try {
+    value = JSON.parse(data);
+  } catch {
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+  const frame = value as Record<string, unknown>;
+  if (frame.type !== "pty.replay") return null;
+  if (
+    typeof frame.epoch !== "string" ||
+    !/^[0-9a-f]{32}$/.test(frame.epoch) ||
+    typeof frame.start_offset !== "number" ||
+    !Number.isSafeInteger(frame.start_offset) ||
+    typeof frame.replay_end_offset !== "number" ||
+    !Number.isSafeInteger(frame.replay_end_offset) ||
+    frame.start_offset < 0 ||
+    frame.replay_end_offset < frame.start_offset ||
+    typeof frame.reset !== "boolean" ||
+    typeof frame.reason !== "string"
+  ) {
+    return null;
+  }
+  return frame as unknown as PtyReplayControl;
+}
+
+function ptyCursorIdentity(
+  attachToken: string,
+  resume: string | null,
+  profile: string,
+): string {
+  return `${attachToken}\0${profile}\0${resume ?? ""}`;
+}
+
 // Channel id ties this chat tab's PTY child (publisher) to its sidebar
 // (subscriber).  Generated once per mount so a tab refresh starts a fresh
 // channel — the previous PTY child terminates with the old WS, and its
@@ -223,10 +275,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const forceFreshPtyRef = useRef(false);
   const blockedInputNoticeRef = useRef(false);
   const lastResumeReconnectAtRef = useRef(0);
-  // True when WE closed the socket as a lifecycle suspend (tab hidden).
-  // onclose must not treat that as a session end — the PTY is still alive
-  // on the server and we reconnect on visible.
-  const suspendedByUsRef = useRef(false);
+  const suspendedSocketRef = useRef<WebSocket | null>(null);
+  const reconnectSocketRef = useRef<((forceFresh?: boolean) => void) | null>(
+    null,
+  );
+  const ptyReplayCursorRef = useRef<PtyReplayCursor | null>(null);
   // True from the moment the connect effect begins until the socket resolves
   // (open or close). Guards the page-resume reconnect against firing during
   // the async ticket/URL await gap where wsRef.current is not yet assigned.
@@ -269,7 +322,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     setBanner(null);
     setLastCloseCode(null);
     setPtyState("connecting");
-    setReconnectNonce((n) => n + 1);
+    const reconnectSocket = reconnectSocketRef.current;
+    if (reconnectSocket) {
+      reconnectSocket(false);
+    } else {
+      setReconnectNonce((n) => n + 1);
+    }
   }, [clearReconnectTimer]);
   const startFreshPty = useCallback(() => {
     forceFreshPtyRef.current = true;
@@ -1079,9 +1137,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // WebSocket. In gated mode (``window.__HERMES_AUTH_REQUIRED__``) this
     // awaits a single-use ticket via /api/auth/ws-ticket before opening;
     // in loopback mode it resolves synchronously against the injected
-    // session token. The IIFE keeps the outer effect synchronous so its
-    // ``return cleanup`` stays at the top level; handlers + disposables
-    // are hoisted to ``let`` bindings the cleanup closes over.
+    // session token. Socket reconnects stay inside this terminal-lifecycle
+    // effect so xterm keeps its painted history while the byte cursor resumes.
     let unmounting = false;
     let onDataDisposable: { dispose(): void } | null = null;
     let onResizeDisposable: { dispose(): void } | null = null;
@@ -1123,12 +1180,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     } else {
       setResumeHydrating(false);
     }
-    const forceFresh = forceFreshPtyRef.current;
+    const initialForceFresh = forceFreshPtyRef.current;
     forceFreshPtyRef.current = false;
-    // A connect attempt is now in flight — set synchronously (before the async
-    // socket-open IIFE below awaits its ticket URL) so a page-resume event in
-    // that gap doesn't fire a redundant reconnect (wsRef isn't assigned yet).
-    connectInFlightRef.current = true;
     const clearConnectingTimer = () => {
       if (connectingTimerRef.current) {
         clearTimeout(connectingTimerRef.current);
@@ -1138,9 +1191,9 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // The pre-socket half of the connect. A ticket request that rejects or
     // never settles leaves no socket behind, so neither `onclose` nor the
     // NS-591 CONNECTING timer (armed after `new WebSocket` below) can recover
-    // it. `ticketSuperseded` invalidates a late ticket result so a timed-out
+    // it. The generation invalidates a late ticket result so a timed-out
     // attempt cannot open a socket behind the replacement this schedules.
-    let ticketSuperseded = false;
+    let ticketGeneration = 0;
     let ticketTimer: ReturnType<typeof setTimeout> | null = null;
     const clearTicketTimer = () => {
       if (ticketTimer) {
@@ -1162,50 +1215,75 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       setPtyState("reconnecting");
       reconnectTimerRef.current = setTimeout(() => {
         reconnectTimerRef.current = null;
-        setReconnectNonce((n) => n + 1);
+        void openPtySocket(false);
       }, delayMs);
     };
-    // Give up on the ticket phase and hand off to the ordinary backoff.
-    const failTicketAttempt = () => {
-      ticketSuperseded = true;
+    // Give up on the active ticket phase and hand off to ordinary backoff.
+    const failTicketAttempt = (generation: number) => {
+      if (generation !== ticketGeneration) {
+        return;
+      }
+      ticketGeneration += 1;
       clearTicketTimer();
       connectInFlightRef.current = false;
       scheduleReconnect(null);
     };
-    void (async () => {
+    async function openPtySocket(forceFresh: boolean) {
       if (unmounting) return;
+      const activeSocket = wsRef.current;
+      if (
+        !forceFresh &&
+        (connectInFlightRef.current ||
+          activeSocket?.readyState === WebSocket.CONNECTING ||
+          activeSocket?.readyState === WebSocket.OPEN)
+      ) {
+        return;
+      }
+      // Set before awaiting a gated-mode ticket so resume/focus bursts cannot
+      // open a second socket in the async URL-build gap.
+      connectInFlightRef.current = true;
+      const generation = ++ticketGeneration;
       const params: Record<string, string> = { channel };
       if (resumeParam) params.resume = resumeParam;
       if (forceFresh) params.fresh = "1";
       // Keep-alive identity: reattach to this tab's living PTY across
       // refresh/transient drops. A forced-fresh start rotates the token so
       // the previous keep-alive PTY is not reattached (registry reaps it).
-      params.attach = ptyAttachToken(forceFresh);
+      const attachToken = ptyAttachToken(forceFresh);
+      params.attach = attachToken;
+      const cursorIdentity = ptyCursorIdentity(
+        attachToken,
+        resumeParam,
+        scopedProfile,
+      );
+      const cursor = ptyReplayCursorRef.current;
+      if (cursor?.identity === cursorIdentity) {
+        params.epoch = cursor.epoch;
+        params.offset = String(cursor.offset);
+      }
       // Profile-scoped chat: the PTY child gets HERMES_HOME pointed at the
       // selected profile, so the conversation runs with that profile's model,
       // skills, memory, and sessions (see web_server._resolve_chat_argv).
       if (scopedProfile) params.profile = scopedProfile;
-
       ticketTimer = setTimeout(() => {
         ticketTimer = null;
-        if (unmounting || ticketSuperseded) {
+        if (unmounting || generation !== ticketGeneration) {
           return;
         }
-        failTicketAttempt();
+        failTicketAttempt(generation);
       }, PTY_TICKET_TIMEOUT_MS);
 
       let url: string;
       try {
         url = await api.buildWsUrl("/api/pty", params);
       } catch (err) {
-        if (unmounting || ticketSuperseded) return;
+        if (unmounting || generation !== ticketGeneration) return;
         console.warn(`[chat] PTY ticket request failed: ${err}`);
-        failTicketAttempt();
+        failTicketAttempt(generation);
         return;
       }
-      if (unmounting || ticketSuperseded) return;
+      if (unmounting || generation !== ticketGeneration) return;
       clearTicketTimer();
-
       const ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
@@ -1226,6 +1304,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }, PTY_CONNECTING_TIMEOUT_MS);
 
     ws.onopen = () => {
+      if (wsRef.current !== ws) {
+        ws.close(4409, "superseded client connection");
+        return;
+      }
       clearReconnectTimer();
       clearConnectingTimer();
       connectInFlightRef.current = false;
@@ -1273,8 +1355,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     // erase codes and blank-line bursts while replaying a long session.
     // Suppress them for a bounded window after connect, then let ordinary
     // in-place redraws through untouched. See pty-resume-sanitizer.ts.
-    const decoder = new TextDecoder();
-    const sanitizer = new PtyResumeSanitizer();
+    const fallbackDecoder = new TextDecoder();
+    let sanitizer = new PtyResumeSanitizer();
+    let replayControlSeen = false;
+    let retryWithoutCursor = false;
     if (resumeParam) {
       eraseSuppressionTimer = setTimeout(() => {
         eraseSuppressionTimer = null;
@@ -1283,12 +1367,69 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     }
 
     ws.onmessage = (ev) => {
-      const text =
-        typeof ev.data === "string"
-          ? ev.data
-          : decoder.decode(new Uint8Array(ev.data as ArrayBuffer), {
-              stream: true,
-            });
+      // Browser queues message tasks independently of close tasks. Ignore a
+      // late frame from a socket that has already been replaced so it cannot
+      // repaint duplicate output or advance the replacement socket's cursor.
+      if (wsRef.current !== ws) {
+        return;
+      }
+      if (typeof ev.data === "string") {
+        const control = parsePtyReplayControl(ev.data);
+        if (control) {
+          const current = ptyReplayCursorRef.current;
+          if (
+            !control.reset &&
+            (current?.identity !== cursorIdentity ||
+              current.epoch !== control.epoch ||
+              current.offset !== control.start_offset)
+          ) {
+            // A delta without the exact local base would create an invisible
+            // gap. Drop the cursor and force a full retained replay instead.
+            ptyReplayCursorRef.current = null;
+            retryWithoutCursor = true;
+            ws.close(4400, "PTY replay cursor mismatch");
+            return;
+          }
+
+          const decoder =
+            !control.reset && current
+              ? current.decoder
+              : new TextDecoder();
+          if (control.reset) {
+            sanitizer = new PtyResumeSanitizer();
+            term.reset();
+          }
+          ptyReplayCursorRef.current = {
+            identity: cursorIdentity,
+            epoch: control.epoch,
+            offset: control.start_offset,
+            decoder,
+          };
+          replayControlSeen = true;
+          if (control.replay_end_offset === control.start_offset) {
+            finishResumeHydration();
+          }
+          return;
+        }
+
+        term.write(ev.data);
+        noteResumePtyChunk(ev.data);
+        return;
+      }
+
+      const bytes = new Uint8Array(ev.data as ArrayBuffer);
+      const activeCursor = ptyReplayCursorRef.current;
+      const decoder =
+        replayControlSeen && activeCursor?.identity === cursorIdentity
+          ? activeCursor.decoder
+          : fallbackDecoder;
+      const text = decoder.decode(bytes, { stream: true });
+      if (replayControlSeen && activeCursor?.identity === cursorIdentity) {
+        // Count transport bytes, not decoded JS characters. A multi-byte UTF-8
+        // code point and arbitrary non-text bytes each advance by their raw
+        // frame length, matching RingBuffer.total_appended on the server.
+        activeCursor.offset += bytes.byteLength;
+      }
       // Gate hydration on the payload actually written to xterm. The
       // sanitizer can turn a nonempty erase-only / all-newline / partial-CSI
       // resume frame into "" (pty-resume-sanitizer.ts); keying off raw `text`
@@ -1309,10 +1450,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     };
 
     ws.onclose = (ev) => {
+      const isCurrentSocket = wsRef.current === ws;
+      const suspendedByUs = suspendedSocketRef.current === ws;
+      if (suspendedByUs) {
+        suspendedSocketRef.current = null;
+      }
       // Drain buffered sanitizer state. A buffered partial escape is dropped
       // (writing an unterminated CSI would wedge xterm's parser); a buffered
       // newline run is emitted collapsed.
-      if (resumeParam) {
+      if (resumeParam && isCurrentSocket) {
         clearEraseSuppressionTimer();
         try {
           term.write(sanitizer.flush());
@@ -1320,10 +1466,24 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           /* ignore */
         }
       }
-      wsRef.current = null;
-      connectInFlightRef.current = false;
-      clearConnectingTimer();
+      if (isCurrentSocket) {
+        wsRef.current = null;
+        connectInFlightRef.current = false;
+        clearConnectingTimer();
+      }
       if (unmounting) {
+        return;
+      }
+      // A socket we closed for a hidden tab owns its suspend marker. If a
+      // replacement socket has already connected, this stale close must not
+      // clear or consume any state belonging to that newer socket.
+      if (suspendedByUs) {
+        if (isCurrentSocket) {
+          setPtyState("closed");
+        }
+        return;
+      }
+      if (!isCurrentSocket) {
         return;
       }
       // Surface the real cause to the browser console on every close so a
@@ -1333,6 +1493,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       const why = ev.reason ? ` reason=${ev.reason}` : "";
       console.warn(`[chat] PTY WebSocket closed code=${ev.code}${why}`);
       setLastCloseCode(ev.code);
+      if (retryWithoutCursor) {
+        setPtyState("reconnecting");
+        void openPtySocket(false);
+        return;
+      }
       if (ev.code === 4401) {
         if (maybeReloadForLoopbackWsAuthFailure(ev.code)) {
           return;
@@ -1390,14 +1555,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         setPtyState("closed");
         return;
       }
-      // Lifecycle suspend: WE closed the socket on tab-hidden. The PTY is
-      // still alive on the server; do NOT show "session ended" — just mark
-      // closed and let the visible→resume path reconnect with the offset.
-      if (suspendedByUsRef.current) {
-        suspendedByUsRef.current = false;
-        setPtyState("closed");
-        return;
-      }
       if (!ev.wasClean || ev.code === 1001 || ev.code === 1006) {
         // Transient transport drop (refresh, sleep/wake, signal loss).
         // Reconnect with backoff; the same ?attach= token reattaches to
@@ -1432,6 +1589,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // eslint-disable-next-line no-control-regex -- intentional ESC byte in xterm SGR mouse report parser
       const SGR_MOUSE_RE = /^\x1b\[<(\d+);(\d+);(\d+)([Mm])$/;
       const forwardPtyData = (data: string, useMobileReplacement = true) => {
+
         // Mouse reports (scroll wheel etc.) are not typed input — swallow
         // them before the blocked-input check so scrolling a disconnected
         // terminal doesn't trip the "reconnecting" notice.
@@ -1439,8 +1597,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           return;
         }
 
+        const activeWs = wsRef.current;
         if (
-          ws.readyState !== WebSocket.OPEN ||
+          !activeWs ||
+          activeWs.readyState !== WebSocket.OPEN ||
           shouldBlockPtyInput(ptyStateRef.current)
         ) {
           if (!blockedInputNoticeRef.current) {
@@ -1461,12 +1621,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         if (normalized.normalized) {
           mobileReplacementInputUntilRef.current = 0;
         }
-        ws.send(normalized.data);
+        activeWs.send(normalized.data);
       };
       // The deferred composition fallback is already committed text, so it
       // must not consume the mobile replacement window intended for xterm's
       // normal onData path.
       sendComposedText = (data) => forwardPtyData(data, false);
+      onDataDisposable?.dispose();
       onDataDisposable = term.onData((data) => {
         if (!SGR_MOUSE_RE.test(data)) {
           compositionForwarder.noteTerminalData(data);
@@ -1474,19 +1635,27 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         forwardPtyData(data);
       });
 
+      onResizeDisposable?.dispose();
       onResizeDisposable = term.onResize(({ cols, rows }) => {
-        if (ws.readyState === WebSocket.OPEN) {
-          ws.send(`\x1b[RESIZE:${cols};${rows}]`);
+        const activeWs = wsRef.current;
+        if (activeWs?.readyState === WebSocket.OPEN) {
+          activeWs.send(`\x1b[RESIZE:${cols};${rows}]`);
         }
       });
+    }
 
-      // Release the stick-to-bottom pin the moment the user scrolls up, so
-      // we only auto-follow during the resume replay — not their manual
-      // review of the backlog (#59591).
-      onScrollDisposable = term.onScroll(() => {
-        stickToBottomRef.current = isViewportPinnedToBottom(term.buffer.active);
-      });
-    })();
+    // Release the stick-to-bottom pin the moment the user scrolls up, so
+    // we only auto-follow during the resume replay - not their manual
+    // review of the backlog (#59591).
+    onScrollDisposable = term.onScroll(() => {
+      stickToBottomRef.current = isViewportPinnedToBottom(term.buffer.active);
+    });
+
+    const reconnectThisEffect = (forceFresh = false) => {
+      void openPtySocket(forceFresh);
+    };
+    reconnectSocketRef.current = reconnectThisEffect;
+    reconnectThisEffect(initialForceFresh);
 
     term.focus();
 
@@ -1518,13 +1687,15 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       clearReconnectTimer();
       clearConnectingTimer();
       clearTicketTimer();
-      ticketSuperseded = true;
+      ticketGeneration += 1;
       connectInFlightRef.current = false;
-      // Phase 5.3: ``ws`` is local to the IIFE that opens it (the gated-mode
-      // ticket fetch makes the open async). The cleanup runs at the outer
-      // effect's top level so it can't reach into that scope — close via
-      // the ref instead. ``?.`` covers the race where unmount fires before
-      // the ticket fetch resolves and ``wsRef.current`` was never assigned.
+      if (reconnectSocketRef.current === reconnectThisEffect) {
+        reconnectSocketRef.current = null;
+      }
+      suspendedSocketRef.current = null;
+      // The socket is local to openPtySocket (the gated-mode ticket fetch makes
+      // opening async), so effect cleanup closes the active instance via its
+      // ref. ``?.`` covers unmount before ticket resolution.
       wsRef.current?.close();
       wsRef.current = null;
       host.removeEventListener("keydown", _imeCompositionGuard, true);
@@ -1679,7 +1850,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         // the server and we reconnect on visible with the byte offset.
         const ws = wsRef.current;
         if (ws && ws.readyState === WebSocket.OPEN) {
-          suspendedByUsRef.current = true;
+          suspendedSocketRef.current = ws;
           ws.close(1000, "tab hidden");
         }
         return;

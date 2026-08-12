@@ -284,6 +284,11 @@ def _transcript_append_kwargs(
     # Reasoning columns are assistant-only in the live writer; copying them
     # onto another role would fabricate rows the gateway never produces.
     is_assistant = message.get("role") == "assistant"
+    # Only a *missing* timestamp falls back to the payload clock.  A truthiness
+    # test would rewrite epoch 0, which is a valid timestamp.
+    timestamp = message.get("timestamp")
+    if timestamp is None:
+        timestamp = payload.get("ts")
     return {
         "session_id": session_id,
         "role": message.get("role", "unknown"),
@@ -296,7 +301,7 @@ def _transcript_append_kwargs(
             message.get("platform_message_id") or message.get("message_id")
         ),
         "observed": bool(message.get("observed")),
-        "timestamp": message.get("timestamp") or payload.get("ts"),
+        "timestamp": timestamp,
         # The api_content sidecar is the exact bytes sent to the API for this
         # row; the live writer requires it to survive every persistence path
         # or the next replay diverges at this row.

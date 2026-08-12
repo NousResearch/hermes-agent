@@ -149,6 +149,37 @@ class TestWslCwdTranslation:
         assert updated is not None
         assert updated.cwd == "/mnt/c/Users/foo/project"
 
+    def test_update_cwd_replaces_attached_docker_workspace_root(
+        self, manager, monkeypatch, tmp_path
+    ):
+        from tools import terminal_tool
+
+        first = tmp_path / "first-project"
+        second = tmp_path / "second-project"
+        first.mkdir()
+        second.mkdir()
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        monkeypatch.setenv("TERMINAL_CONTAINER_PERSISTENT", "false")
+        monkeypatch.setattr(terminal_tool, "_terminal_config_bridge_attempted", True)
+        monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+        monkeypatch.setattr(terminal_tool, "_session_cwd", {})
+
+        state = manager.create_session(cwd=str(first))
+        updated = manager.update_cwd(state.session_id, cwd=str(second))
+        resolved = terminal_tool._resolve_task_workspace(
+            {
+                "env_type": "docker",
+                "docker_mount_cwd_to_workspace": True,
+                "cwd": "/root",
+                "host_cwd": None,
+            },
+            state.session_id,
+        )
+
+        assert updated is not None
+        assert resolved.host_cwd == str(second)
+        assert resolved.container_cwd == "/workspace"
+
 # ---------------------------------------------------------------------------
 # fork
 # ---------------------------------------------------------------------------

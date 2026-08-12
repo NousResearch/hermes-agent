@@ -120,7 +120,12 @@ def _acp_stderr_print(*args, **kwargs) -> None:
     print(*args, **kwargs)
 
 
-def _register_task_cwd(task_id: str, cwd: str) -> None:
+def _register_task_cwd(
+    task_id: str,
+    cwd: str,
+    *,
+    workspace_reset: bool = False,
+) -> None:
     """Bind a task/session id to the editor's working directory for tools.
 
     Zed can launch Hermes from a Windows workspace while the ACP process runs
@@ -132,10 +137,13 @@ def _register_task_cwd(task_id: str, cwd: str) -> None:
         return
     try:
         from tools.terminal_tool import register_task_env_overrides
-        register_task_env_overrides(
-            task_id,
-            {"cwd": _translate_acp_cwd(cwd), "cwd_source": "session"},
-        )
+        overrides: Dict[str, Any] = {
+            "cwd": _translate_acp_cwd(cwd),
+            "cwd_source": "session",
+        }
+        if workspace_reset:
+            overrides["workspace_reset"] = True
+        register_task_env_overrides(task_id, overrides)
     except Exception:
         logger.debug("Failed to register ACP task cwd override", exc_info=True)
 
@@ -364,7 +372,9 @@ class SessionManager:
         if state is None:
             return None
         state.cwd = cwd
-        _register_task_cwd(session_id, cwd)
+        # ACP load/resume cwd is the newly attached editor workspace root, not
+        # a live ``cd`` below the previously attached root.
+        _register_task_cwd(session_id, cwd, workspace_reset=True)
         self._persist(state)
         return state
 

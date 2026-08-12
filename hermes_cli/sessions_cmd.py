@@ -208,7 +208,15 @@ def cmd_sessions(args, sessions_parser=None):
             return 0
         if allow_partial and report.get("verified"):
             counts = report.get("verification", {}).get("table_counts", {})
-            print(f"✓ Partial recovery output verified at: {output}")
+            if report.get("best_effort"):
+                print(f"✓ BEST-EFFORT page-level salvage verified at: {output}")
+                print(
+                    "  The source table schemas were unreadable; rows were "
+                    "rebuilt from raw pages via sqlite3 .recover and mapped "
+                    "heuristically."
+                )
+            else:
+                print(f"✓ Partial recovery output verified at: {output}")
             print(
                 "  Recovered "
                 f"{int(counts.get('sessions') or 0):,} sessions and "

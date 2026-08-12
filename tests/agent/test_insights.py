@@ -543,7 +543,23 @@ class TestTerminalFormatting:
         assert "Notable Sessions" in text
 
 
+    def test_terminal_processed_tokens_explain_cache_accounting(self, db):
+        db.create_session(session_id="s1", source="cli", model="gpt-4o")
+        db.update_token_counts(
+            "s1",
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=200,
+            cache_write_tokens=25,
+        )
+        db._conn.commit()
 
+        report = InsightsEngine(db).generate(days=30)
+        text = InsightsEngine(db).format_terminal(report)
+
+        assert report["overview"]["total_tokens"] == 375
+        assert "Processed tokens:  375 (includes cache reads/writes)" in text
+        assert "Total tokens" not in text
 
     def test_terminal_format_hides_cost_for_custom_models(self, db):
         """Cost display is hidden entirely — custom models no longer show 'N/A' either."""
@@ -571,13 +587,33 @@ class TestGatewayFormatting:
 
 
     def test_gateway_format_hides_cost(self, populated_db):
-        """Gateway format omits dollar figures and internal cache details."""
+        """Gateway format omits dollar figures and exact cache breakdowns."""
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
         text = engine.format_gateway(report)
 
         assert "$" not in text
-        assert "cache" not in text.lower()
+        assert "cache read:" not in text.lower()
+        assert "cache write:" not in text.lower()
+
+    def test_gateway_processed_tokens_explain_cache_accounting(self, db):
+        db.create_session(session_id="s1", source="cli", model="gpt-4o")
+        db.update_token_counts(
+            "s1",
+            input_tokens=100,
+            output_tokens=50,
+            cache_read_tokens=200,
+            cache_write_tokens=25,
+        )
+        db._conn.commit()
+
+        report = InsightsEngine(db).generate(days=30)
+        text = InsightsEngine(db).format_gateway(report)
+
+        assert (
+            "**Processed tokens:** 375 "
+            "(includes cache reads/writes; in: 100 / out: 50)"
+        ) in text
 
 
 

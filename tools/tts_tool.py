@@ -58,6 +58,9 @@ from typing import Callable, Dict, Any, Iterator, List, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
 from hermes_cli._subprocess_compat import windows_hide_flags
+from hermes_cli.audio_key_guard import (
+    resolve_provider_key as _guard_provider_key,
+)
 from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
@@ -717,6 +720,9 @@ def _resolve_minimax_tts_runtime(
         )
 
     endpoint = str(mm_config.get("base_url") or endpoints[region]).strip()
+    # Never send the real MiniMax cloud key to a config-overridden private/LAN
+    # base_url; a config ``tts.minimax.api_key`` wins for self-hosted-with-auth.
+    api_key = _guard_provider_key(mm_config.get("api_key"), api_key, endpoint)
     endpoint_host = (urlparse(endpoint).hostname or "").lower()
     official_region_hosts = {
         "global": frozenset({"api.minimax.io", "api.minimax.chat"}),
@@ -2155,6 +2161,9 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
             or get_env_value("XAI_BASE_URL")
             or DEFAULT_XAI_BASE_URL
         ).strip().rstrip("/")
+    # Never send the real xAI cloud key to a config-overridden private/LAN
+    # base_url; a config ``tts.xai.api_key`` wins for self-hosted-with-auth.
+    api_key = _guard_provider_key(xai_config.get("api_key"), api_key, base_url)
 
     # Match the documented minimal POST /v1/tts shape by default. Only send
     # output_format when Hermes actually needs a non-default format/override.
@@ -2630,6 +2639,9 @@ def _generate_gemini_tts(text: str, output_path: str, tts_config: Dict[str, Any]
         or get_env_value("GEMINI_BASE_URL")
         or DEFAULT_GEMINI_TTS_BASE_URL
     ).strip().rstrip("/")
+    # Never send the real Gemini cloud key to a config-overridden private/LAN
+    # base_url; a config ``tts.gemini.api_key`` wins for self-hosted-with-auth.
+    api_key = _guard_provider_key(gemini_config.get("api_key"), api_key, base_url)
     persona_prompt = _read_gemini_persona_prompt(gemini_config)
     tts_script = text
     if _gemini_audio_tags_enabled(gemini_config, model):

@@ -313,7 +313,7 @@ When using the Z.AI / GLM provider, Hermes automatically probes multiple endpoin
 Hermes keeps the canonical `deepseek` provider and selects the wire protocol by model:
 
 - `deepseek-v4-flash` uses DeepSeek's Responses API at `https://api.deepseek.com/responses`.
-- `deepseek-v4-pro`, dated variants, and unknown models remain on Chat Completions under `https://api.deepseek.com/v1`.
+- `deepseek-v4-pro`, dated variants, and other capability-disabled first-party IDs remain on Chat Completions under `https://api.deepseek.com/v1`.
 - Custom `DEEPSEEK_BASE_URL` proxies are not rewritten; only the official DeepSeek endpoint is normalized.
 
 Set `DEEPSEEK_API_KEY` in `~/.hermes/.env`, then select Flash normally:

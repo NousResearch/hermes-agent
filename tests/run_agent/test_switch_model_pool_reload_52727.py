@@ -255,3 +255,20 @@ def test_direct_runtime_switch_normalizes_deepseek_wire_and_official_root(
 
     assert agent.api_mode == expected_mode
     assert agent.base_url == expected_url
+
+
+def test_direct_runtime_switch_normalizes_deepseek_alias_before_wire_selection():
+    agent = _make_agent("deepseek", "deepseek-v4-pro", _make_pool("deepseek"))
+
+    switch_model(
+        agent,
+        new_model="deepseek-chat",
+        new_provider="deepseek",
+        api_key="deepseek-key",
+        base_url="https://api.deepseek.com/v1",
+        api_mode="chat_completions",
+    )
+
+    assert agent.model == "deepseek-v4-flash"
+    assert agent.api_mode == "codex_responses"
+    assert agent.base_url == "https://api.deepseek.com"

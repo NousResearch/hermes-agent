@@ -1064,25 +1064,72 @@ class TestDeepSeekNativeWebSearch:
             is_deepseek_responses=True,
             reasoning_config={"effort": "high"},
             request_overrides={
+                "background": True,
+                "context_management": [{"type": "compaction"}],
+                "conversation": "conv_123",
                 "include": ["reasoning.encrypted_content"],
+                "metadata": {"key": "value"},
+                "previous_response_id": "resp_123",
+                "prompt": {"id": "pmpt_123"},
                 "prompt_cache_key": "override",
                 "prompt_cache_retention": "24h",
+                "safety_identifier": "user-123",
                 "service_tier": "priority",
+                "stream_options": {"include_obfuscation": True},
+                "truncation": "auto",
                 "reasoning": {"effort": "high", "summary": "auto"},
                 "extra_body": {
+                    "background": True,
+                    "context_management": [{"type": "compaction"}],
                     "prompt_cache_key": "nested",
                     "service_tier": "priority",
                     "kept": "yes",
                 },
             },
         )
-        for key in ("include", "prompt_cache_key", "prompt_cache_retention", "service_tier"):
+        for key in (
+            "background",
+            "context_management",
+            "conversation",
+            "include",
+            "metadata",
+            "previous_response_id",
+            "prompt",
+            "prompt_cache_key",
+            "prompt_cache_retention",
+            "safety_identifier",
+            "service_tier",
+            "stream_options",
+            "truncation",
+        ):
             assert key not in kw
         assert kw["reasoning"] == {"effort": "high"}
         assert kw["extra_body"] == {"kept": "yes"}
 
 
 class TestDeepSeekWebSearchReplay:
+    def test_preflight_preserves_search_call_as_is(self, transport):
+        replay_item = {
+            "id": "ws_123",
+            "type": "web_search_call",
+            "status": "completed",
+            "action": {
+                "type": "search",
+                "query": "current release",
+                "sources": [{"type": "url", "url": "https://example.test"}],
+            },
+        }
+        kwargs = transport.preflight_kwargs(
+            {
+                "model": "deepseek-v4-flash",
+                "instructions": "Be helpful.",
+                "input": [replay_item, {"role": "user", "content": "Source?"}],
+                "store": False,
+            }
+        )
+
+        assert kwargs["input"][0] == replay_item
+
     def test_streamed_search_call_normalizes_and_replays_in_order(self, transport):
         from agent.codex_runtime import _consume_codex_event_stream
 

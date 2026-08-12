@@ -2490,7 +2490,12 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         api_mode = determine_api_mode(new_provider, base_url, model=new_model)
     if str(new_provider or "").strip().lower() == "deepseek":
         # DeepSeek is dual-wire by model. Do not trust a stale mode supplied by
-        # a direct caller when switching Flash <-> Pro.
+        # a direct caller when switching Flash <-> Pro. Direct callers may
+        # also bypass the CLI's model normalizer, so canonicalize retired
+        # aliases before both capability lookup and assignment.
+        from hermes_cli.model_normalize import normalize_model_for_provider
+
+        new_model = normalize_model_for_provider(new_model, "deepseek")
         api_mode = deepseek_api_mode(new_model)
 
     # Defense-in-depth: ensure OpenCode base_url doesn't carry a trailing

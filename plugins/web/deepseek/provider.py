@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from agent.web_search_provider import WebSearchProvider, get_provider_env
+from agent.web_search_provider import WebSearchProvider
 
 
 class DeepSeekWebSearchProvider(WebSearchProvider):
@@ -34,18 +34,28 @@ class DeepSeekWebSearchProvider(WebSearchProvider):
         return "DeepSeek Native Web Search"
 
     def is_available(self) -> bool:
-        return bool(get_provider_env("DEEPSEEK_API_KEY"))
+        # This is a selection marker for the active DeepSeek inference route,
+        # not an independently dispatched search client. It is available only
+        # after explicit user opt-in; this keeps it out of registry fallback
+        # while allowing the legacy web dispatcher to honor the more specific
+        # ``web.search_backend`` key instead of silently choosing another
+        # installed backend.
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            config = load_config_readonly()
+            web = config.get("web") if isinstance(config, dict) else None
+            if not isinstance(web, dict):
+                return False
+            configured = web.get("search_backend") or web.get("backend") or ""
+            return str(configured).strip().lower() == self.name
+        except Exception:
+            return False
 
     def supports_search(self) -> bool:
         return True
 
     def supports_extract(self) -> bool:
-        return False
-
-    def supports_auto_detection(self) -> bool:
-        # This provider is a selection marker for an in-turn server-side tool,
-        # not a local search implementation. A DEEPSEEK_API_KEY alone must not
-        # replace the user's normal client-side web backend.
         return False
 
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
@@ -65,12 +75,15 @@ class DeepSeekWebSearchProvider(WebSearchProvider):
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {
-            "env_vars": [
-                {
-                    "name": "DEEPSEEK_API_KEY",
-                    "prompt": "DeepSeek API key",
-                    "secret": True,
-                    "required": True,
-                }
-            ]
+            "name": self.display_name,
+            "badge": "native · search only",
+            "tag": (
+                "Uses the active capability-enabled DeepSeek inference route; "
+                "configure DeepSeek under Models first."
+            ),
+            # Inference credentials are owned by the model-provider setup and
+            # may come from its credential pool rather than a singleton env
+            # key. Selecting native search must not prompt for or duplicate
+            # that credential in the web-provider flow.
+            "env_vars": [],
         }

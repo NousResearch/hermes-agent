@@ -78,7 +78,7 @@ def _xai_prefers_native_web_search() -> bool:
         return True
 
 
-def _deepseek_prefers_native_web_search() -> bool:
+def _deepseek_native_web_search_enabled() -> bool:
     """True only when the user explicitly selected DeepSeek web search.
 
     Unlike xAI's collision workaround, DeepSeek native search is opt-in because
@@ -100,6 +100,9 @@ def _deepseek_prefers_native_web_search() -> bool:
             return False
 
         # Require the marker plugin to be enabled and registered as well.
+        # Explicit registry resolution intentionally returns registered
+        # providers even when their local ``is_available`` probe is false;
+        # this marker never executes a local request.
         provider = get_active_search_provider()
         return getattr(provider, "name", None) == "deepseek"
     except Exception:
@@ -107,12 +110,21 @@ def _deepseek_prefers_native_web_search() -> bool:
 
 
 def _sanitize_deepseek_responses_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any]:
-    """Remove OpenAI-only Responses fields rejected by DeepSeek."""
+    """Remove unsupported DeepSeek Responses fields after user overrides."""
     for key in (
+        "background",
+        "context_management",
+        "conversation",
         "include",
+        "metadata",
+        "previous_response_id",
+        "prompt",
         "prompt_cache_key",
         "prompt_cache_retention",
+        "safety_identifier",
         "service_tier",
+        "stream_options",
+        "truncation",
     ):
         kwargs.pop(key, None)
 
@@ -128,10 +140,19 @@ def _sanitize_deepseek_responses_kwargs(kwargs: Dict[str, Any]) -> Dict[str, Any
     if isinstance(extra_body, dict):
         cleaned = dict(extra_body)
         for key in (
+            "background",
+            "context_management",
+            "conversation",
             "include",
+            "metadata",
+            "previous_response_id",
+            "prompt",
             "prompt_cache_key",
             "prompt_cache_retention",
+            "safety_identifier",
             "service_tier",
+            "stream_options",
+            "truncation",
         ):
             cleaned.pop(key, None)
         if cleaned:
@@ -433,7 +454,7 @@ class ResponsesApiTransport(ProviderTransport):
             is_deepseek_responses
             and deepseek_native_web_search
             and response_tools
-            and _deepseek_prefers_native_web_search()
+            and _deepseek_native_web_search_enabled()
         ):
             has_client_web_search = any(
                 isinstance(t, dict)

@@ -139,16 +139,6 @@ class WebSearchProvider(abc.ABC):
         """
         return False
 
-    def supports_auto_detection(self) -> bool:
-        """Return whether registry fallback may select this provider.
-
-        Most client-side backends preserve the historic behavior of becoming
-        active when their credentials are the only available option. Marker
-        providers for server-side model capabilities can override this to
-        require an explicit ``web.*_backend`` selection instead.
-        """
-        return True
-
     def search(self, query: str, limit: int = 5) -> Dict[str, Any]:
         """Execute a web search.
 

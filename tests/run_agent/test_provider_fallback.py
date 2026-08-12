@@ -259,6 +259,7 @@ class TestFallbackChainAdvancement:
         assert agent.api_mode == "codex_responses"
         assert agent.base_url == "https://api.deepseek.com"
         assert agent._client_kwargs["base_url"] == "https://api.deepseek.com"
+        assert str(agent.client.base_url).rstrip("/") == "https://api.deepseek.com"
 
     def test_deepseek_pro_fallback_uses_chat_v1(self):
         fbs = [{"provider": "deepseek", "model": "deepseek-v4-pro"}]
@@ -288,6 +289,7 @@ class TestFallbackChainAdvancement:
         assert agent.api_mode == "chat_completions"
         assert agent.base_url == "https://api.deepseek.com/v1"
         assert agent._client_kwargs["base_url"] == "https://api.deepseek.com/v1"
+        assert str(agent.client.base_url).rstrip("/") == "https://api.deepseek.com/v1"
 
 
 # ── Pool-rotation vs fallback gating (#11314) ────────────────────────────

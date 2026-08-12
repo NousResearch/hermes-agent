@@ -731,25 +731,30 @@ def normalize_deepseek_base_url(provider: str, api_mode: str, base_url: str) -> 
     """Normalize only DeepSeek's official endpoint for the selected wire.
 
     The official Responses endpoint lives at ``/responses`` while the OpenAI
-    compatible Chat Completions endpoint is rooted under ``/v1``. Custom
-    proxies are left byte-for-byte unchanged apart from a trailing slash.
+    compatible Chat Completions endpoint is rooted under ``/v1``. Other
+    providers, custom proxies, and non-canonical official URLs are returned
+    unchanged.
     """
-    value = str(base_url or "").strip().rstrip("/")
+    value = str(base_url or "").strip()
     if str(provider or "").strip().lower() != "deepseek":
         return value
     if base_url_hostname(value) != "api.deepseek.com":
         return value
 
-    # Only rewrite the two documented official roots. Preserve any explicit
-    # non-standard path on the official host rather than guessing.
-    lower = value.lower()
-    if lower.endswith("/v1"):
-        root = value[:-3].rstrip("/")
-    else:
-        root = value
-    parsed = urlparse(root)
-    if parsed.path not in {"", "/"}:
+    # Only rewrite the two documented official roots. Preserve query strings,
+    # fragments, userinfo, and any non-standard path rather than silently
+    # changing the route's meaning.
+    parsed = urlparse(value)
+    if (
+        parsed.username is not None
+        or parsed.password is not None
+        or parsed.query
+        or parsed.fragment
+        or parsed.path not in {"", "/", "/v1", "/v1/"}
+    ):
         return value
+    canonical = value.rstrip("/")
+    root = canonical[:-3].rstrip("/") if parsed.path in {"/v1", "/v1/"} else canonical
     if api_mode == "codex_responses":
         return root.rstrip("/")
     return root.rstrip("/") + "/v1"

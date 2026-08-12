@@ -208,7 +208,9 @@ def test_real_sdk_streams_and_replays_deepseek_web_search_call(
 
     tools = [_web_search_tool()]
     first_messages = [{"role": "user", "content": "What is new?"}]
-    first_kwargs = agent._build_api_kwargs(first_messages, tools_for_api=tools)
+    first_kwargs = agent._get_transport().preflight_kwargs(
+        agent._build_api_kwargs(first_messages, tools_for_api=tools)
+    )
     first_response = agent._run_codex_stream(first_kwargs)
     normalized = agent._get_transport().normalize_response(first_response)
 
@@ -227,7 +229,9 @@ def test_real_sdk_streams_and_replays_deepseek_web_search_call(
         },
         {"role": "user", "content": "Which source?"},
     ]
-    second_kwargs = agent._build_api_kwargs(history, tools_for_api=tools)
+    second_kwargs = agent._get_transport().preflight_kwargs(
+        agent._build_api_kwargs(history, tools_for_api=tools)
+    )
     second_response = agent._run_codex_stream(second_kwargs)
     second_normalized = agent._get_transport().normalize_response(second_response)
     assert second_normalized.content == "The source is example.test."
@@ -240,6 +244,7 @@ def test_real_sdk_streams_and_replays_deepseek_web_search_call(
     assert first_body["tools"] == [{"type": "web_search"}]
     assert "prompt_cache_key" not in first_body
     assert "include" not in first_body
+    assert "context_management" not in first_body
 
     replay_input = handler.captured_requests[1]["body"]["input"]
     replayed_search = next(

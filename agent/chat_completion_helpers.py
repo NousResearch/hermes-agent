@@ -1457,6 +1457,8 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
             is_deepseek_responses=is_deepseek_responses,
             github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
             replay_encrypted_reasoning=(
+                # DeepSeek supports plain reasoning input but not OpenAI's
+                # encrypted_content continuation envelope.
                 not is_deepseek_responses
                 and bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
             ),

@@ -56,7 +56,9 @@ def test_v4_pro_has_explicit_disabled_capability_reservation():
         responses_api=False,
         native_web_search=False,
     )
-    assert deepseek_native_web_search_models() == ("deepseek-v4-flash",)
+    enabled = deepseek_native_web_search_models()
+    assert "deepseek-v4-flash" in enabled
+    assert "deepseek-v4-pro" not in enabled
 
 
 def test_v4_pro_future_enablement_is_localized_to_capability_entry(monkeypatch):
@@ -78,10 +80,10 @@ def test_v4_pro_future_enablement_is_localized_to_capability_entry(monkeypatch):
         "https://api.deepseek.com/v1",
         "deepseek-v4-pro",
     ) == "codex_responses"
-    assert deepseek_native_web_search_models() == (
+    assert {
         "deepseek-v4-flash",
         "deepseek-v4-pro",
-    )
+    }.issubset(deepseek_native_web_search_models())
 
 
 def test_native_search_capability_fails_closed_without_responses(monkeypatch):
@@ -112,12 +114,32 @@ def test_official_base_url_is_normalized_by_wire(mode, value, expected):
 
 
 def test_custom_deepseek_proxy_is_not_rewritten():
-    value = "https://deepseek-proxy.example/v1"
+    value = "https://deepseek-proxy.example/v1/"
     assert normalize_deepseek_base_url("deepseek", "codex_responses", value) == value
+
+
+def test_non_deepseek_url_is_not_changed():
+    value = "https://another-provider.example/v1/"
+    assert normalize_deepseek_base_url("custom", "codex_responses", value) == value
 
 
 def test_lookalike_official_host_is_not_rewritten():
     value = "https://api.deepseek.com.attacker.test/v1"
+    assert normalize_deepseek_base_url("deepseek", "codex_responses", value) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://api.deepseek.com/v1?tenant=one",
+        "https://api.deepseek.com/v1#fragment",
+        "https://api.deepseek.com/v1?redirect=https://example.test/",
+        "https://api.deepseek.com/v1#section/",
+        "https://user@api.deepseek.com/v1",
+        "https://api.deepseek.com/custom/v1",
+    ],
+)
+def test_noncanonical_official_urls_are_not_rewritten(value):
     assert normalize_deepseek_base_url("deepseek", "codex_responses", value) == value
 
 
@@ -146,6 +168,14 @@ def deepseek_runtime(monkeypatch):
 def test_runtime_target_flash_overrides_stale_persisted_chat_mode(deepseek_runtime):
     resolved = rp.resolve_runtime_provider(
         requested="deepseek", target_model="deepseek-v4-flash"
+    )
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://api.deepseek.com"
+
+
+def test_runtime_normalizes_retired_alias_before_wire_selection(deepseek_runtime):
+    resolved = rp.resolve_runtime_provider(
+        requested="deepseek", target_model="deepseek-chat"
     )
     assert resolved["api_mode"] == "codex_responses"
     assert resolved["base_url"] == "https://api.deepseek.com"
@@ -242,6 +272,32 @@ def test_direct_agent_init_routes_flash_to_responses(monkeypatch, tmp_path):
         skip_context_files=True,
         skip_memory=True,
     )
+    assert agent.api_mode == "codex_responses"
+    assert agent.base_url == "https://api.deepseek.com"
+
+
+def test_direct_agent_init_normalizes_alias_before_wire_selection(monkeypatch, tmp_path):
+    from unittest.mock import MagicMock
+
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setattr("run_agent.OpenAI", MagicMock(return_value=MagicMock()))
+    monkeypatch.setattr("run_agent.get_tool_definitions", lambda **_kw: [])
+    monkeypatch.setattr("run_agent.check_toolset_requirements", lambda: {})
+    agent = AIAgent(
+        api_key="sk-test",
+        base_url="https://api.deepseek.com/v1",
+        provider="deepseek",
+        api_mode="chat_completions",
+        model="deepseek-chat",
+        max_iterations=1,
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+
+    assert agent.model == "deepseek-v4-flash"
     assert agent.api_mode == "codex_responses"
     assert agent.base_url == "https://api.deepseek.com"
 

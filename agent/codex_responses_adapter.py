@@ -413,9 +413,16 @@ def _json_safe_responses_item(value: Any) -> Any:
     model_dump = getattr(value, "model_dump", None)
     if callable(model_dump):
         try:
-            return _json_safe_responses_item(model_dump(exclude_none=True))
+            return _json_safe_responses_item(
+                model_dump(mode="json", exclude_none=True, warnings=False)
+            )
         except TypeError:
-            return _json_safe_responses_item(model_dump())
+            try:
+                return _json_safe_responses_item(
+                    model_dump(mode="json", exclude_none=True)
+                )
+            except TypeError:
+                return _json_safe_responses_item(model_dump())
     raw = getattr(value, "__dict__", None)
     if isinstance(raw, dict):
         return _json_safe_responses_item(raw)
@@ -845,6 +852,17 @@ def _preflight_codex_input_items(
                     "output": sanitize_text(output),
                 }
             )
+            continue
+
+        if item_type == "web_search_call":
+            # DeepSeek's Responses API is stateless and requires each search
+            # call output item to be passed back as-is so it can restore the
+            # server-held search result.  Preserve provider-added action
+            # fields (queries/sources/open-page metadata) while stripping only
+            # private/non-JSON Python state in the shared normalizer.
+            replay_item = _normalize_server_tool_replay_item(item)
+            if replay_item is not None:
+                normalized.append(replay_item)
             continue
 
         if item_type == "reasoning":

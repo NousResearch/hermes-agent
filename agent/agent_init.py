@@ -673,6 +673,15 @@ def init_agent(
         # DeepSeek routing is model-capability-dependent. Do not let a stale
         # persisted/explicit mode route a model to an unsupported endpoint when
         # AIAgent is constructed outside the runtime resolver.
+        # Normalize retired aliases before looking up capabilities; the general
+        # normalization pass below otherwise runs too late and could leave a
+        # normalized V4 Flash model on Chat Completions for its first turn.
+        try:
+            from hermes_cli.model_normalize import normalize_model_for_provider
+
+            agent.model = normalize_model_for_provider(agent.model, agent.provider)
+        except Exception:
+            pass
         from hermes_cli.providers import deepseek_api_mode
 
         agent.api_mode = deepseek_api_mode(agent.model)

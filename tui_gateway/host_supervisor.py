@@ -19,6 +19,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from gateway.status import _pid_exists
 from hermes_constants import get_hermes_home
 from tools.environments.local import hermes_subprocess_env
 
@@ -106,10 +107,12 @@ def _pid_alive(pid: int) -> bool:
     if pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
+        return bool(_pid_exists(pid))
+    except Exception:
+        # Unknown liveness is not proof of death. The identity check still
+        # gates orphan termination, and the termination wait stays bounded.
+        logger.debug("failed to check liveness for pid=%s; assuming alive", pid, exc_info=True)
         return True
-    except Exception as exc:
-        return isinstance(exc, PermissionError)
 
 
 def _signal_pid(pid: int, sig: int, label: str) -> bool:
@@ -502,7 +505,7 @@ class HostSupervisor:
         deadline = time.monotonic() + timeout
         while _pid_alive(pid):
             if time.monotonic() >= deadline:
-                _signal_pid(pid, signal.SIGKILL, "SIGKILL")
+                _signal_pid(pid, getattr(signal, "SIGKILL", signal.SIGTERM), "force-terminate")
                 return
             time.sleep(0.05)
 

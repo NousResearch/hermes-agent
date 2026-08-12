@@ -66,9 +66,11 @@ With `require_mention: true` (default), the bot only responds in groups when it 
 
 - **≤ `split_length`** (default 100) characters: sent as a single text message.
 - **`split_length` – `text_image_threshold`** (default 150): split into multiple messages, breaking at sentence boundaries (`。！？!?；;\n`) so sentences are never cut in half.
-- **> `text_image_threshold`**: rendered as a black-on-white text image (720 px wide, CJK-aware font fallback chain) and sent as a single image message. Falls back to text chunks if rendering fails.
+- **> `text_image_threshold`**: rendered as a black-on-white text image (800 px wide, CJK-aware font fallback chain) and sent as a single image message. Falls back to text chunks if rendering fails.
 
 Set `text_image_threshold: 0` to disable the image path.
+
+The text-image renderer is an AstrBot-style **element-based Markdown renderer**: bold / italic / strikethrough / inline code / code blocks / headers / quotes / lists and **tables** (AstrBot itself has no table element) are all drawn natively. Chinese typography rules are honored — punctuation never starts a line (行首禁则), inline styles wrap as a whole line, literal `\n` in plain text becomes a real line break (inside inline code it becomes a space; `\\n` is kept), and inline code uses a light-blue pill with a monospace font for Latin/digits and glyph-level fallback for CJK. When the reply target's nickname is known, the card gets an AstrBot-style blue top bar (`To <nickname>`, #002FA7).
 
 ## Markdown & voice
 
@@ -77,13 +79,43 @@ Set `text_image_threshold: 0` to disable the image path.
 
 ## Images
 
-- Inbound images are downloaded to a temp directory and exposed to the vision tool via `media_urls`; undownloadable images degrade to a `[图片]` placeholder.
+- Inbound messages are parsed as the **OneBot segment array** (`message` field) when available — image/voice/at/face/video/file segments are handled structurally; text-format clients fall back to CQ-code string parsing. CQ entity escaping (`&amp;` → `&`, `&#91;` → `[`, …) is reversed before any URL is used, so CDN links with `&` parameters download correctly.
+- Images are downloaded to a temp directory and exposed to the vision tool via `media_urls`; undownloadable images degrade to a `[图片]` placeholder. If the image segment only carries a `file` hash (no URL), the adapter calls the OneBot `get_image` action to resolve the real URL; `base64://` and `file://` forms are handled directly.
 - Images larger than `image_max_size` (default **2048** px on the long edge) are downscaled with Pillow before the LLM sees them — high-resolution QQ photos otherwise make vision calls slow or time out. RGBA stays PNG, everything else becomes JPEG (q85); animated GIFs collapse to their first frame. Set `image_max_size: 0` to keep originals untouched.
+
+## Outbound media
+
+The adapter implements the gateway's native media senders as OneBot segments, so the agent can deliver rich media through the standard `MEDIA:` / markdown-image mechanism:
+
+| Capability | OneBot segment | Notes |
+|---|---|---|
+| Image URL (direct) | `image` with `url` | Markdown image URLs from the agent are sent as-is; the bridge downloads them (no local file needed). |
+| Local image | `image` with `base64://` | Up to 8 MB. |
+| Batch images | multiple `image` segments | One message, max 9 images per message; URL + local mixed. |
+| Voice | `record` with `base64://` | Up to 20 MB; the bridge transcodes to silk. |
+| Video | `video` with `base64://` | Up to 20 MB. |
+| File | `file` with `base64://` + `name` | Up to 20 MB. |
+| Forwarded messages | `send_forward_msg` with `node`s | Group chats only. |
+
+**Merged forwarding** is triggered by an agent-side block:
+
+```
+[[qq_forward]]
+<display name>
+<message text>
+---
+<display name>
+<message text>
+[[/qq_forward]]
+```
+
+Each `---`-separated block becomes one forwarded node (name + text, 500-char cap per node). In private chats the marker is ignored and the block degrades to plain text.
 
 ## Notes
 
 - Outbound messages use the OneBot segment-array format (not CQ-code strings) — required for NapCat's message handling.
 - Replies are sent as plain text without quoting the triggering message.
-- QQ faces map to common emoji; unknown faces collapse to `[表情]`.
+- QQ faces map to common emoji; unknown faces collapse to `[表情]`. Voice without a downloadable link degrades to `[语音]`; inbound video/file segments degrade to `[视频]` / `[文件:name]` placeholders.
 - In **private chats** the bot shows QQ's native "typing…" bubble while the agent generates (via NapCat's `set_input_status` extension). Group chats have no typing indicator on QQ.
 - Long replies may take a few seconds to render — the gateway shows a typing indicator where supported.
+- Cron / scheduled deliveries cannot attach media to OneBot yet (the core `send_message_tool` media whitelist covers telegram, discord, matrix, weixin, signal, yuanbao, feishu, whatsapp and slack only) — interactive replies are unaffected.

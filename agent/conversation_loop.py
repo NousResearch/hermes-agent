@@ -526,6 +526,7 @@ def _billing_or_entitlement_message(
     provider: str,
     base_url: str,
     model: str,
+    unverified: bool = False,
 ) -> str:
     if _is_nous_inference_route(provider, base_url):
         return _nous_entitlement_message(capability)
@@ -540,30 +541,45 @@ def _billing_or_entitlement_message(
     # apply to a subscription — the user waits for the reset or switches to an
     # API key.
     if (provider or "").strip().lower() == "anthropic":
-        lines = [
-            (
-                f"{provider_label} reported that your Claude subscription usage may be "
-                f"exhausted for {model_label} (included quota + extra-usage credits)."
-            ),
-            "Options: wait for the billing cycle to reset, or add extra usage at "
-            "https://claude.ai/settings/usage",
-            "You can also switch to an Anthropic API key or another provider with "
-            "/model <model> --provider <provider>.",
-            # This 400 is not proof of a billing problem. Anthropic returns the
-            # same "out of extra usage" body when its server-side content filter
-            # rejects part of the request on a subscription OAuth token, so the
-            # message reliably misdirects diagnosis toward buying quota (#82154).
-            # Say so here rather than asserting exhaustion the caller can't check.
-            "If https://claude.ai/settings/usage still shows quota remaining, this is "
-            "probably NOT a billing problem: on a Claude subscription (OAuth) token "
-            "Anthropic returns this same message when its content filter rejects part "
-            "of the request — typically a phrase in the system prompt.",
-            # The exhaustion latch replays the stored error for ~60 min without
-            # issuing a request, so a real fix looks like it didn't work.
-            "Retry with a fresh credential state: `hermes auth reset anthropic`. Until "
-            "that cooldown clears, this error can be replayed from cache without "
-            "contacting the API.",
-        ]
+        # ``unverified`` (ClassifiedError.billing_unverified, #82154): the
+        # "out of extra usage" 400 is ambiguous — Anthropic returns the same
+        # body when its server-side content filter rejects part of the request
+        # on a subscription OAuth token, so the message reliably misdirects
+        # diagnosis toward buying quota. Hedge the claim and name the other
+        # cause. A confirmed verdict (e.g. a real 402 or an API-key credit
+        # depletion) keeps the assertive wording.
+        if unverified:
+            lines = [
+                (
+                    f"{provider_label} reported that your Claude subscription usage may be "
+                    f"exhausted for {model_label} (included quota + extra-usage credits) — "
+                    "but this specific error is not proof of a billing problem."
+                ),
+                "If https://claude.ai/settings/usage still shows quota remaining, this is "
+                "probably NOT a billing problem: on a Claude subscription (OAuth) token "
+                "Anthropic returns this same message when its content filter rejects part "
+                "of the request — typically a phrase in the system prompt.",
+                "If usage really is exhausted: wait for the billing cycle to reset, or add "
+                "extra usage at https://claude.ai/settings/usage",
+                "You can also switch to an Anthropic API key or another provider with "
+                "/model <model> --provider <provider>.",
+                # The exhaustion latch replays the stored error without issuing
+                # a request, so a real fix looks like it didn't work.
+                "Retry with a fresh credential state: `hermes auth reset anthropic`. Until "
+                "that cooldown clears, this error can be replayed from cache without "
+                "contacting the API.",
+            ]
+        else:
+            lines = [
+                (
+                    f"{provider_label} reported that your Claude subscription usage is "
+                    f"exhausted for {model_label} (included quota + extra-usage credits)."
+                ),
+                "Options: wait for the billing cycle to reset, or add extra usage at "
+                "https://claude.ai/settings/usage",
+                "You can also switch to an Anthropic API key or another provider with "
+                "/model <model> --provider <provider>.",
+            ]
         return "\n".join(lines)
 
     # Provider-agnostic billing URL derivation (OpenAI, DeepSeek, xAI, Groq,
@@ -592,16 +608,84 @@ def _billing_or_entitlement_message(
     return "\n".join(lines)
 
 
-def _billing_block_dict(provider, base_url, model, message="") -> Optional[dict]:
+def _billing_block_dict(
+    provider, base_url, model, message="", *, unverified: bool = False
+) -> Optional[dict]:
     """Best-effort structured billing descriptor (None if billing_links is unavailable)."""
     try:
         from agent.billing_links import build_billing_block
 
-        return build_billing_block(
+        block = build_billing_block(
             provider=provider, base_url=str(base_url), model=model, message=message
         ).to_dict()
     except Exception:
         return None
+    if block is not None and unverified:
+        # Carry the classifier's ambiguity into the structured descriptor so
+        # every surface rendering the block can hedge too (#82154).
+        block["unverified"] = True
+    return block
+
+
+def _billing_terminal_label(summary: str, unverified: bool) -> str:
+    """Terminal-failure prefix for a billing-classified error.
+
+    ``unverified`` (#82154): the Anthropic "out of extra usage" 400 can be a
+    content-filter rejection, so the terminal line must not assert billing
+    exhaustion as fact.
+    """
+    if unverified:
+        return (
+            "Provider reported usage/credit exhaustion (unverified — the same "
+            f"error can be a content-filter rejection, not billing): {summary}"
+        )
+    return f"Billing or credits exhausted: {summary}"
+
+
+def _billing_failure_result(
+    *,
+    classified,
+    summary: str,
+    messages,
+    api_call_count: int,
+    provider: str,
+    base_url,
+    model: str,
+    guidance: Optional[str] = None,
+) -> dict:
+    """Structured terminal result for a billing-classified failure.
+
+    Single construction point for the returned terminal response so the
+    label, guidance, structured block, and ambiguity flag stay consistent
+    across the non-retryable abort and max-retries paths (#82154).
+    """
+    unverified = bool(getattr(classified, "billing_unverified", False))
+    if guidance is None:
+        guidance = _billing_or_entitlement_message(
+            capability="model access",
+            provider=provider,
+            base_url=str(base_url),
+            model=model,
+            unverified=unverified,
+        )
+    final = _billing_terminal_label(summary, unverified)
+    if guidance:
+        final += f"\n\n{guidance}"
+    return {
+        "final_response": final,
+        "messages": messages,
+        "api_calls": api_call_count,
+        "completed": False,
+        "failed": True,
+        "error": summary,
+        "failure_reason": classified.reason.value,
+        # The billing verdict may rest on an ambiguous body (#82154) — carry
+        # that through the structured result, not just the prose.
+        "billing_unverified": unverified,
+        "billing_block": _billing_block_dict(
+            provider, base_url, model, guidance, unverified=unverified
+        ),
+    }
 
 
 def _print_billing_or_entitlement_guidance(
@@ -611,12 +695,14 @@ def _print_billing_or_entitlement_guidance(
     provider: str,
     base_url: str,
     model: str,
+    unverified: bool = False,
 ) -> bool:
     message = _billing_or_entitlement_message(
         capability=capability,
         provider=provider,
         base_url=base_url,
         model=model,
+        unverified=unverified,
     )
     if not message:
         return False
@@ -4382,6 +4468,7 @@ def run_conversation(
                     has_retried_429=_retry.has_retried_429,
                     classified_reason=classified.reason,
                     error_context=error_context,
+                    billing_unverified=classified.billing_unverified,
                 )
                 if recovered_with_pool:
                     continue
@@ -5026,9 +5113,17 @@ def run_conversation(
                                 "switching to fallback model..."
                             )
                         elif classified.reason == FailoverReason.billing:
-                            agent._buffer_status(
-                                "⚠️ Billing or credits exhausted — switching to fallback provider..."
-                            )
+                            if classified.billing_unverified:
+                                # Ambiguous body (#82154) — don't assert billing.
+                                agent._buffer_status(
+                                    "⚠️ Provider reported usage/credit exhaustion "
+                                    "(unverified — may be a content-filter rejection) "
+                                    "— switching to fallback provider..."
+                                )
+                            else:
+                                agent._buffer_status(
+                                    "⚠️ Billing or credits exhausted — switching to fallback provider..."
+                                )
                         elif _is_transport_failure:
                             agent._buffer_status(
                                 "⚠️ Provider unreachable — switching to fallback provider..."
@@ -5725,6 +5820,7 @@ def run_conversation(
                             provider=_provider,
                             base_url=str(_base),
                             model=_model,
+                            unverified=classified.billing_unverified,
                         ):
                             pass
                         elif _provider == "nous" and _print_nous_entitlement_guidance(
@@ -5851,26 +5947,15 @@ def run_conversation(
                     # the max-retries path so every surface (CLI, TUI, desktop)
                     # renders one consistent billing signal.
                     if classified.reason == FailoverReason.billing:
-                        _ce_guidance = _billing_or_entitlement_message(
-                            capability="model access",
+                        return _billing_failure_result(
+                            classified=classified,
+                            summary=_nonretryable_summary,
+                            messages=messages,
+                            api_call_count=api_call_count,
                             provider=_provider,
-                            base_url=str(_base),
+                            base_url=_base,
                             model=_model,
                         )
-                        _ce_final = f"Billing or credits exhausted: {_nonretryable_summary}"
-                        if _ce_guidance:
-                            _ce_final += f"\n\n{_ce_guidance}"
-                        _ce_block = _billing_block_dict(_provider, _base, _model, _ce_guidance)
-                        return {
-                            "final_response": _ce_final,
-                            "messages": messages,
-                            "api_calls": api_call_count,
-                            "completed": False,
-                            "failed": True,
-                            "error": _nonretryable_summary,
-                            "failure_reason": classified.reason.value,
-                            "billing_block": _ce_block,
-                        }
                     return {
                         "final_response": _nonretryable_summary,
                         "messages": messages,
@@ -5914,12 +5999,20 @@ def run_conversation(
                     _final_summary = agent._summarize_api_error(api_error)
                     _billing_guidance = ""
                     if classified.reason == FailoverReason.billing:
-                        agent._emit_status(f"❌ Billing or credits exhausted — {_final_summary}")
+                        if classified.billing_unverified:
+                            # Ambiguous body (#82154) — hedge the terminal line.
+                            agent._emit_status(
+                                "❌ Provider reported usage/credit exhaustion "
+                                f"(unverified — may be a content-filter rejection) — {_final_summary}"
+                            )
+                        else:
+                            agent._emit_status(f"❌ Billing or credits exhausted — {_final_summary}")
                         _billing_guidance = _billing_or_entitlement_message(
                             capability="model access",
                             provider=_provider,
                             base_url=str(_base),
                             model=_model,
+                            unverified=classified.billing_unverified,
                         )
                         _print_billing_or_entitlement_guidance(
                             agent,
@@ -5927,6 +6020,7 @@ def run_conversation(
                             provider=_provider,
                             base_url=str(_base),
                             model=_model,
+                            unverified=classified.billing_unverified,
                         )
                     elif is_rate_limited:
                         agent._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
@@ -6033,13 +6127,20 @@ def run_conversation(
                         )
                     agent._persist_session(messages, conversation_history)
                     _billing_block = None
+                    _billing_unverified = False
                     if classified.reason == FailoverReason.billing:
-                        _final_response = f"Billing or credits exhausted: {_final_summary}"
+                        _billing_unverified = classified.billing_unverified
+                        _final_response = _billing_terminal_label(
+                            _final_summary, _billing_unverified
+                        )
                         if _billing_guidance:
                             _final_response += f"\n\n{_billing_guidance}"
                         # Structured recovery descriptor so every surface renders
                         # the same link + label from one signal (see helper).
-                        _billing_block = _billing_block_dict(_provider, _base, _model, _billing_guidance)
+                        _billing_block = _billing_block_dict(
+                            _provider, _base, _model, _billing_guidance,
+                            unverified=_billing_unverified,
+                        )
                     else:
                         _final_response = f"API call failed after {max_retries} retries: {_final_summary}"
                     if _is_thinking_timeout:
@@ -6079,6 +6180,9 @@ def run_conversation(
                         # different exit code. ``rate_limit`` / ``billing`` here
                         # mean "quota wall, not a task error".
                         "failure_reason": classified.reason.value,
+                        # True when the billing verdict rests on an ambiguous
+                        # body (#82154) — may be a content-filter rejection.
+                        "billing_unverified": _billing_unverified,
                         # Present only for billing walls: structured recovery
                         # descriptor (provider, billing_url, is_nous, message).
                         "billing_block": _billing_block,

@@ -946,6 +946,7 @@ def recover_with_credential_pool(
     has_retried_429: bool,
     classified_reason: Optional[FailoverReason] = None,
     error_context: Optional[Dict[str, Any]] = None,
+    billing_unverified: bool = False,
 ) -> tuple[bool, bool]:
     """Attempt credential recovery via pool rotation.
 
@@ -960,6 +961,12 @@ def recover_with_credential_pool(
     providers that surface billing/rate-limit/auth conditions under a
     different status code, such as Anthropic returning HTTP 400 for
     "out of extra usage".
+
+    `billing_unverified` marks a billing verdict that rests on an ambiguous
+    body (``ClassifiedError.billing_unverified``, #82154): the pool persists
+    it as ``billing_unverified`` so the exhausted entry gets a short cooldown
+    instead of the one-hour billing bench — the same 400 can be a
+    content-filter rejection that leaves the credential healthy.
     """
     pool = agent._credential_pool
     if pool is None:
@@ -1052,7 +1059,13 @@ def recover_with_credential_pool(
         # cooldowns — the pool can only tell them apart if we say which.
         # ``effective_reason`` is resolved below; this closure runs after.
         if effective_reason is not None:
-            kwargs["failure_reason"] = effective_reason.value
+            _failure_reason = effective_reason.value
+            if effective_reason == FailoverReason.billing and billing_unverified:
+                # Ambiguous billing body (#82154): persist the ambiguity so
+                # the cooldown is sized as transient, not a 1-hour bench.
+                from agent.credential_pool import FAILURE_REASON_BILLING_UNVERIFIED
+                _failure_reason = FAILURE_REASON_BILLING_UNVERIFIED
+            kwargs["failure_reason"] = _failure_reason
         return pool.mark_exhausted_and_rotate(**kwargs)
 
     effective_reason = classified_reason

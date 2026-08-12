@@ -130,6 +130,26 @@ whatsapp:
 - `unauthorized_dm_behavior: pair` is the global default. Unknown DM senders get a pairing code.
 - `whatsapp.unauthorized_dm_behavior: ignore` makes WhatsApp stay silent for unauthorized DMs, which is usually the better choice for a private number.
 
+### Observe group context without replying
+
+For an allowlisted group, Hermes can retain authorized participants' messages while invoking the agent only for a trusted native WhatsApp mention of the bot:
+
+```yaml
+gateway:
+  platforms:
+    whatsapp:
+      extra:
+        group_policy: allowlist
+        group_allow_from:
+          - "120363001234567890@g.us"
+        observe_unmentioned_group_messages: true
+        observe_group_allow_from:
+          - "*"
+        group_sessions_per_user: false
+```
+
+When enabled, plain-text `@name` strings, wake-word regexes, slash commands, quoted replies, and free-response chat exemptions do not invoke the agent. Only WhatsApp's native mention metadata does. Authorization and group allowlists are checked before a message is retained; normal gateway authorization still controls who may invoke the agent.
+
 Then start the gateway:
 
 ```bash

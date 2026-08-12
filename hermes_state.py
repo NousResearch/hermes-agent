@@ -54,6 +54,7 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _FTS_TRIGGERS,
     _LISTABLE_CHILD_SQL,
     _PREVIEW_RAW_SELECT,
+    _RESET_END_REASONS,
     _ephemeral_child_sql,
     _shape_preview,
     _sql_session_last_active,
@@ -5155,8 +5156,28 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self._execute_write(_do)
 
     def reopen_session(self, session_id: str) -> None:
-        """Clear ended_at/end_reason so a session can be resumed."""
+        """Clear ended_at/end_reason so a session can be resumed.
+
+        Before clearing a reset boundary, stabilize markerless legacy reset
+        children that still depend on the parent's mutable end_reason.
+        """
         def _do(conn):
+            placeholders = ",".join("?" for _ in _RESET_END_REASONS)
+            conn.execute(
+                "UPDATE sessions AS child SET model_config = json_set("
+                "COALESCE(child.model_config, '{}'), '$._reset_from', "
+                "child.parent_session_id) "
+                "WHERE child.parent_session_id = ? "
+                "AND json_extract(COALESCE(child.model_config, '{}'), "
+                "                 '$._reset_from') IS NULL "
+                "AND child.session_key IS NOT NULL "
+                "AND child.session_key != '' "
+                "AND EXISTS (SELECT 1 FROM sessions parent "
+                "            WHERE parent.id = child.parent_session_id "
+                f"            AND parent.end_reason IN ({placeholders}) "
+                "            AND parent.session_key = child.session_key)",
+                (session_id, *_RESET_END_REASONS),
+            )
             conn.execute(
                 "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
                 (session_id,),

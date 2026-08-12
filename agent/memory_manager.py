@@ -1050,7 +1050,15 @@ class MemoryManager:
     # tool can also return non-mutating shapes (errors, staged-for-approval
     # records); those are filtered out by ``notify_memory_tool_write`` before
     # we ever reach a provider.
-    _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "remove"}
+    _MIRRORED_MEMORY_ACTIONS = {"add", "replace", "remove", "patch"}
+
+    # ``patch`` rewrites a span inside an existing entry, so to a provider it
+    # is an update — the same shape as ``replace``. Providers filter on the
+    # documented action names (``on_memory_write`` in agent/memory_provider.py),
+    # so mirroring the literal "patch" would be silently dropped by every one
+    # of them. We mirror it as "replace" and keep the original action + regex
+    # in metadata for providers that want to tell the two apart.
+    _MIRRORED_ACTION_ALIASES = {"patch": "replace"}
 
     @staticmethod
     def _memory_tool_result_succeeded(result: Any) -> bool:
@@ -1086,8 +1094,11 @@ class MemoryManager:
 
         * gate on a committed (non-staged, successful) write,
         * expand the single-op and batched (``operations``) shapes,
-        * keep only mutating actions (add/replace/remove),
-        * build per-op provenance metadata and forward ``old_text``.
+        * keep only mutating actions (add/replace/remove/patch),
+        * build per-op provenance metadata and forward ``old_text``,
+        * mirror ``patch`` as a ``replace`` carrying the full rewritten entry
+          (``patched_entry`` from the tool result) rather than the bare
+          replacement span, with ``source_action``/``pattern`` in metadata.
 
         ``build_metadata`` is an optional agent-side callable (the loop knows
         session/task/tool-call provenance the manager does not) invoked once per
@@ -1105,7 +1116,10 @@ class MemoryManager:
                 "action": tool_args.get("action"),
                 "content": tool_args.get("content"),
                 "old_text": tool_args.get("old_text"),
+                "pattern": tool_args.get("pattern"),
             }]
+
+        patched_entry = self._patched_entry(tool_result)
 
         for op in raw_operations:
             if not isinstance(op, dict):
@@ -1118,14 +1132,35 @@ class MemoryManager:
                 old_text = op.get("old_text")
                 if old_text:
                     metadata["old_text"] = str(old_text)
+                content = str(op.get("content") or "")
+                if action == "patch":
+                    metadata["source_action"] = "patch"
+                    pattern = op.get("pattern")
+                    if pattern:
+                        metadata["pattern"] = str(pattern)
+                    # Prefer the entry as it now reads on disk; fall back to the
+                    # replacement span when the tool result didn't carry it.
+                    content = patched_entry or content
                 self.on_memory_write(
-                    action,
+                    self._MIRRORED_ACTION_ALIASES.get(action, action),
                     target,
-                    str(op.get("content") or ""),
+                    content,
                     metadata=metadata,
                 )
             except Exception as e:
                 logger.debug("notify_memory_tool_write failed for op %s: %s", action, e)
+
+    @staticmethod
+    def _patched_entry(result: Any) -> str:
+        """Pull ``patched_entry`` out of a built-in memory tool result, if present."""
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except Exception:
+                return ""
+        if not isinstance(result, dict):
+            return ""
+        return str(result.get("patched_entry") or "")
 
     def on_delegation(self, task: str, result: str, *,
                       child_session_id: str = "", **kwargs) -> None:

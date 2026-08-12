@@ -1546,6 +1546,34 @@ class TestExecuteToolCalls:
         assert metadata["tool_call_id"] == "mem-1"
         assert messages[-1]["tool_call_id"] == "mem-1"
 
+    def test_sequential_memory_patch_forwards_pattern(self, agent):
+        """The sequential path must pass ``pattern`` through to memory_tool().
+
+        Regression: the branch built the call from action/content/old_text only,
+        so every agent-issued ``patch`` failed the tool's required-field check
+        even though the registry handler forwarded the argument correctly.
+        """
+        tc = _mock_tool_call(
+            name="memory",
+            arguments=json.dumps({
+                "action": "patch",
+                "target": "memory",
+                "pattern": r"Python 3\.11",
+                "content": "Python 3.12",
+            }),
+            call_id="mem-patch-1",
+        )
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        agent._memory_manager = None
+        agent._memory_store = object()
+
+        with patch("tools.memory_tool.memory_tool", return_value=json.dumps({"success": True})) as mock_mem:
+            agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
+
+        assert mock_mem.call_args.kwargs["pattern"] == r"Python 3\.11"
+        assert mock_mem.call_args.kwargs["action"] == "patch"
+
     def test_keyboard_interrupt_emits_cancelled_post_tool_hook(self, agent, monkeypatch):
         tc = _mock_tool_call(name="web_search", arguments='{"q":"test"}', call_id="c1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
@@ -2156,6 +2184,26 @@ class TestConcurrentToolExecution:
 
         assert json.loads(result) == {"error": "Blocked"}
         assert agent._turns_since_memory == 5
+
+    def test_invoke_tool_memory_patch_forwards_pattern(self, agent):
+        """The concurrent path must pass ``pattern`` through to memory_tool()."""
+        agent._memory_manager = None
+        agent._memory_store = object()
+
+        with patch("tools.memory_tool.memory_tool", return_value=json.dumps({"success": True})) as mock_mem:
+            agent._invoke_tool(
+                "memory",
+                {
+                    "action": "patch",
+                    "target": "memory",
+                    "pattern": r"staging\.example\.com",
+                    "content": "prod.example.com",
+                },
+                "task-1",
+            )
+
+        assert mock_mem.call_args.kwargs["pattern"] == r"staging\.example\.com"
+        assert mock_mem.call_args.kwargs["action"] == "patch"
 
 
 

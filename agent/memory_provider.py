@@ -328,9 +328,14 @@ class MemoryProvider(ABC):
     ) -> None:
         """Called when the built-in memory tool writes an entry.
 
-        action: 'add', 'replace', or 'remove'
+        action: 'add', 'replace', or 'remove'. The tool's ``patch`` action
+          (regex rewrite of a span inside an entry) arrives as 'replace' with
+          ``metadata['source_action'] == 'patch'`` and the regex in
+          ``metadata['pattern']``, so providers that only key on the three
+          documented actions still see the update.
         target: 'memory' or 'user'
-        content: the entry content
+        content: the entry content — for a mirrored ``patch`` this is the full
+          rewritten entry, not just the replaced span.
         metadata: structured provenance for the write, when available. Common
           keys include ``write_origin``, ``execution_context``, ``session_id``,
           ``parent_session_id``, ``platform``, and ``tool_name``.

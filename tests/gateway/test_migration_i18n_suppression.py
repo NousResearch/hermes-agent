@@ -114,6 +114,40 @@ def test_invalid_category_ignored_not_crashing():
     i18n.reset_language_cache()
 
 
+def test_current_main_kanban_review_notification_is_suppressible():
+    kwargs = {
+        "board_tag": "",
+        "tag": "",
+        "task_id": "task-1",
+        "title": "Review me",
+        "handoff": "",
+    }
+    with patch.object(i18n, "_load_config_dict", return_value=_cfg(suppress="all")):
+        i18n.reset_language_cache()
+        assert i18n.t("gateway.kanban_review_requested", **kwargs) == ""
+    i18n.reset_language_cache()
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        "gateway.session_storage_unavailable_disk",
+        "gateway.pause_resumed",
+        "gateway.turn_lease_timeout",
+        "gateway.goal_gate_added",
+        "gateway.heartbeat_unavailable",
+        "gateway.refine_unavailable",
+        "gateway.provider_unreachable_offline",
+        "gateway.compaction_handoff_waiting",
+    ],
+)
+def test_current_main_command_error_and_final_replies_are_not_suppressible(key):
+    with patch.object(i18n, "_load_config_dict", return_value=_cfg(suppress="all")):
+        i18n.reset_language_cache()
+        assert i18n.t(key), f"{key} is a required reply, not an ambient notice"
+    i18n.reset_language_cache()
+
+
 def test_gateway_system_message_suppression_is_registered_in_default_config():
     from hermes_cli.config import DEFAULT_CONFIG
 

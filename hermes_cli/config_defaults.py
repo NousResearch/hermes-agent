@@ -495,6 +495,9 @@ DEFAULT_CONFIG = {
         # When on, SETUID/SETGID caps are omitted from the container since
         # no privilege drop is needed.
         "docker_run_as_host_user": False,
+        # Explicit opt-in for trusted profiles to reuse the same Docker
+        # container identity. Empty preserves the active-profile boundary.
+        "docker_shared_container_key": "",
         # Persistent shell — keep a long-lived bash shell across execute() calls
         # so cwd/env vars/shell variables survive between commands.
         # Enabled by default for non-local backends (SSH); local is always opt-in

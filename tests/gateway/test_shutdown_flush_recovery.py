@@ -230,6 +230,19 @@ class TestSpoolReplayFidelity:
             == "tg-7"
         )
 
+    def test_epoch_zero_timestamp_is_not_replaced_by_the_fallback(
+        self, flush_dir
+    ):
+        """0 is a valid timestamp; only a missing one may fall back."""
+        _write_spool(
+            flush_dir, "pending-aaa.json", "sess-1",
+            {"role": "user", "content": "hi", "timestamp": 0}, ts=999, seq=0,
+        )
+
+        mock_db = MagicMock()
+        assert recover_pending_to_db(mock_db) == 1
+        assert mock_db.append_message.call_args.kwargs["timestamp"] == 0
+
     def test_payload_ts_is_the_timestamp_fallback(self, flush_dir):
         _write_spool(
             flush_dir, "pending-aaa.json", "sess-1",

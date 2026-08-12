@@ -71,7 +71,10 @@ from agent.context_engine import (
     automatic_compaction_status_message,
     sanitize_memory_context,
 )
-from agent.model_metadata import estimate_request_tokens_rough
+from agent.model_metadata import (
+    estimate_messages_tokens_rough,
+    estimate_request_tokens_rough,
+)
 from agent.session_activity import ActivityProvenance, normalize_activity_provenance
 
 logger = logging.getLogger(__name__)
@@ -3279,6 +3282,51 @@ def compress_context(
                 # conversation's pre-compaction turns are about to be summarized
                 # away regardless of whether the id rotates).
                 agent.commit_memory_session(messages)
+
+                # Anti-growth guard at the COMMIT SITE: never persist a
+                # compression that makes the transcript larger (observed:
+                # 379K -> 687K when the generated summary plus retained
+                # reasoning exceeded what it replaced). Compare like-for-like
+                # (both rough estimates of the same message shape) so an
+                # "actual vs estimate" measurement mismatch cannot produce a
+                # false verdict. The gateway has a rotation-path-only guard
+                # (#83339), but in-place compaction commits inside this method
+                # via archive_and_compact — before the gateway can inspect the
+                # result — so the guard must live here to protect both paths.
+                # On growth, treat the attempt as a no-op: the original
+                # transcript stays untouched and durable.
+                _rough_in = estimate_messages_tokens_rough(messages)
+                _rough_out = estimate_messages_tokens_rough(compressed)
+                if _rough_out > _rough_in:
+                    logger.warning(
+                        "Compression refused: compressed transcript would be "
+                        "larger than the original (session=%s, ~%s -> ~%s "
+                        "tokens); keeping the original transcript unchanged",
+                        agent.session_id or "none",
+                        f"{_rough_in:,}",
+                        f"{_rough_out:,}",
+                    )
+                    try:
+                        agent._emit_warning(
+                            "⚠️ Compression refused: the generated summary "
+                            "would have GROWN the conversation instead of "
+                            "shrinking it. No messages were dropped — "
+                            "conversation continues unchanged."
+                        )
+                    except Exception:
+                        pass
+                    _existing_sp = getattr(agent, "_cached_system_prompt", None)
+                    if not _existing_sp:
+                        _existing_sp = agent._build_system_prompt(system_message)
+                    _emit_compression_attempt_telemetry(
+                        agent,
+                        started_at=_attempt_started_at,
+                        commit_status="aborted",
+                        split_status="aborted",
+                        failure_class="would_grow",
+                    )
+                    _release_lock()
+                    return messages, _existing_sp
 
                 if in_place:
                     # ── In-place compaction: keep the same session_id ──────────

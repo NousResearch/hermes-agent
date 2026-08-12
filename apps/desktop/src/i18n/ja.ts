@@ -1188,8 +1188,9 @@ export const ja = defineLocale({
     settingsFields: '設定フィールド',
     mcpServers: 'MCP サーバー',
     archivedChats: 'アーカイブ済みチャット',
-    sections: { sessions: 'セッション', system: 'システム', usage: '使用状況' },
+    sections: { home: 'コントロールルーム', sessions: 'セッション', system: 'システム', usage: '使用状況' },
     sectionDescriptions: {
+      home: '注意優先の制御画面 — あなたを必要とする項目、エージェント、タスク、メッセージ、システム',
       sessions: 'セッションの検索と管理',
       system: 'ステータス、ログ、システムアクション',
       usage: 'トークン、コスト、スキルの活動履歴'

@@ -1024,11 +1024,13 @@ export const ar = defineLocale({
     archivedChats: 'المحادثات المؤرشفة',
     commands: 'الأوامر',
     sections: {
+      home: 'غرفة التحكم',
       sessions: 'الجلسات',
       system: 'النظام',
       usage: 'الاستخدام'
     },
     sectionDescriptions: {
+      home: 'سطح التحكم بالانتباه أولاً — ما يحتاجك، الوكلاء، المهام، الرسائل، النظام',
       sessions: 'البحث في الجلسات وإدارتها',
       system: 'الحالة والسجلات وإجراءات النظام',
       usage: 'نشاط الرموز والتكلفة والمهارات عبر الزمن'

@@ -1153,8 +1153,9 @@ export const zhHant = defineLocale({
     settingsFields: '設定欄位',
     mcpServers: 'MCP 伺服器',
     archivedChats: '已封存聊天',
-    sections: { sessions: '工作階段', system: '系統', usage: '使用量' },
+    sections: { home: '控制室', sessions: '工作階段', system: '系統', usage: '使用量' },
     sectionDescriptions: {
+      home: '注意力優先的控制介面 — 需要你、代理、任務、訊息、系統',
       sessions: '搜尋和管理工作階段',
       system: '狀態、記錄和系統動作',
       usage: '一段時間內的詞元、費用和技能活動'

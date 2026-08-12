@@ -19,6 +19,7 @@ import {
   Bookmark,
   BookmarkFilled,
   Download,
+  LayoutDashboard,
   MessageCircle,
   Trash2,
   Wrench
@@ -37,10 +38,11 @@ import { OverlayMain, OverlayNav, OverlaySplitLayout } from '../overlays/overlay
 import { OverlayView } from '../overlays/overlay-view'
 
 import { MaintenancePanel } from './maintenance'
+import { ControlRoomHome } from './control-room-home'
 
-export type CommandCenterSection = 'maintenance' | 'sessions' | 'system' | 'usage'
+export type CommandCenterSection = 'home' | 'maintenance' | 'sessions' | 'system' | 'usage'
 
-const SECTIONS = ['sessions', 'system', 'usage', 'maintenance'] as const satisfies readonly CommandCenterSection[]
+export const SECTIONS = ['home', 'sessions', 'system', 'usage', 'maintenance'] as const satisfies readonly CommandCenterSection[]
 
 const LOG_FILES = ['agent', 'errors', 'gateway', 'desktop'] as const
 const LOG_LEVELS = ['ALL', 'INFO', 'WARNING', 'ERROR'] as const
@@ -138,7 +140,7 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
   // $sessions ticks on every streaming token (title updates, new sessions),
   // but we only need the data on the Sessions tab. Subscribe conditionally so
   // the System/Usage/Maintenance tabs don't re-render on every stream delta.
-  const [section, setSection] = useRouteEnumParam('section', SECTIONS, initialSection ?? 'sessions')
+  const [section, setSection] = useRouteEnumParam('section', SECTIONS, initialSection ?? 'home')
   const sessions = useStoreSelector($sessions, s => (section === 'sessions' ? s : EMPTY_SESSIONS))
   const pinnedSessionIds = useStoreSelector($pinnedSessionIds, s => (section === 'sessions' ? s : EMPTY_PINNED))
 
@@ -307,13 +309,15 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
       SECTIONS.map(value => ({
         active: section === value,
         icon:
-          value === 'sessions'
-            ? MessageCircle
-            : value === 'system'
-              ? Activity
-              : value === 'maintenance'
-                ? Wrench
-                : BarChart3,
+          value === 'home'
+            ? LayoutDashboard
+            : value === 'sessions'
+              ? MessageCircle
+              : value === 'system'
+                ? Activity
+                : value === 'maintenance'
+                  ? Wrench
+                  : BarChart3,
         id: value,
         label: cc.sections[value],
         onSelect: () => setSection(value)
@@ -356,7 +360,11 @@ export function CommandCenterView({ initialSection, onClose, onDeleteSession, on
             </div>
           </header>
 
-          {section === 'sessions' ? (
+          {section === 'home' ? (
+            <div className="min-h-0 flex-1">
+              <ControlRoomHome />
+            </div>
+          ) : section === 'sessions' ? (
             <div className="min-h-0 flex-1 overflow-y-auto">
               {!sessionListHasResults ? (
                 <EmptyPanel description={debouncedQuery ? cc.noResults : cc.noSessions} />

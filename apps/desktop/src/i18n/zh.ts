@@ -1437,8 +1437,9 @@ export const zh: Translations = {
     settingsFields: '设置字段',
     mcpServers: 'MCP 服务器',
     archivedChats: '已归档对话',
-    sections: { maintenance: '维护', sessions: '会话', system: '系统', usage: '用量' },
+    sections: { home: '控制室', maintenance: '维护', sessions: '会话', system: '系统', usage: '用量' },
     sectionDescriptions: {
+      home: '注意力优先的控制界面 — 需要你、代理、任务、消息、系统',
       maintenance: '诊断、备份、维护器与记忆数据',
       sessions: '搜索与管理会话',
       system: '状态、日志与系统操作',

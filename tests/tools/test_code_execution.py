@@ -590,6 +590,19 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
                 self.assertIn("Python source", result["error"])
                 self.assertIn("terminal(command=...)", result["error"])
 
+    def test_non_string_code_redirects_instead_of_attributeerror(self):
+        for code in (123, {"code": "print(1)"}, ["print(1)"]):
+            with self.subTest(code=code):
+                result = json.loads(registry.dispatch(
+                    "execute_code",
+                    {"code": code},
+                    task_id="test",
+                ))
+                self.assertIn("error", result)
+                self.assertIn(type(code).__name__, result["error"])
+                self.assertIn("Python source as a string", result["error"])
+                self.assertNotIn("AttributeError", result["error"])
+
     def test_windows_returns_error(self):
         """When SANDBOX_AVAILABLE is False (e.g. when the backend deems
         the sandbox unusable for this environment), execute_code returns

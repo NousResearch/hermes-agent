@@ -2069,7 +2069,12 @@ from tools.registry import registry, tool_error
 
 
 def _execute_code_handler(args: dict, **kwargs) -> str:
-    """Validate raw tool arguments before dispatching to ``execute_code``."""
+    """Recover misdirected calls before dispatching to ``execute_code``.
+
+    Models sometimes reuse terminal's ``command`` argument or send a
+    non-string ``code`` payload; both get an actionable redirect instead
+    of a generic failure.
+    """
     # Help models recover when they reuse terminal's ``command`` argument.
     if "code" not in args and "command" in args:
         logger.warning(
@@ -2081,8 +2086,18 @@ def _execute_code_handler(args: dict, **kwargs) -> str:
             "commands; for Python, retry as execute_code(code=...)."
         )
 
+    code = args.get("code", "")
+    if code is not None and not isinstance(code, str):
+        # A non-string payload (int, dict, list) would otherwise surface as
+        # a generic AttributeError from code.strip() — redirect instead.
+        return tool_error(
+            f"execute_code received a {type(code).__name__} in 'code', but it "
+            "requires Python source as a string. Retry as "
+            "execute_code(code=\"...\")."
+        )
+
     return execute_code(
-        code=args.get("code", ""),
+        code=code or "",
         task_id=kwargs.get("task_id"),
         enabled_tools=kwargs.get("enabled_tools"),
     )

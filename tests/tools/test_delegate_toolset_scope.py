@@ -199,6 +199,61 @@ class TestToolsetStarvationBackstop:
         assert set(enabled) == set(_strip_blocked_tools(parent.enabled_toolsets))
         assert any("falling back" in r.message for r in caplog.records)
 
+    def test_browser_masked_partial_collapse_falls_back(self, caplog):
+        """quan/remii shape: profile ['hermes-cli', 'kanban', 'browser'] with
+        a parent exposing 'browser'. The composite fails to expand but the
+        extra 'browser' toolset survives the intersection, masking the
+        starvation — the child would resolve to browser-only (no file, no
+        terminal). It must fall back to the parent's bounded set so the core
+        inspection trio (read_file + search_files + terminal) is preserved."""
+        import logging
+
+        parent = _mock_parent(
+            ["terminal", "file", "web", "skills", "session_search", "kanban", "browser"]
+        )
+        with caplog.at_level(logging.WARNING):
+            with patch("run_agent.AIAgent") as MockAgent:
+                MockAgent.return_value = MagicMock()
+                _build_child_agent(
+                    task_index=0, goal="g", context=None, toolsets=None,
+                    model=None, max_iterations=10, task_count=1,
+                    parent_agent=parent, profile="quan",
+                    profile_content=_profile_cfg(["hermes-cli", "kanban", "browser"]),
+                )
+        enabled = self._enabled(MockAgent)
+        # Not empty — the backstop rescued it.
+        assert enabled
+        # Equals the parent's bounded set (blocked tools stripped) — includes
+        # browser, but crucially also file + terminal + web + skills.
+        assert set(enabled) == set(_strip_blocked_tools(parent.enabled_toolsets))
+        assert {"file", "terminal"} <= set(enabled)
+        assert any("falling back" in r.message for r in caplog.records)
+
+    def test_flat_model_config_does_not_crash(self):
+        """Legacy flat config convention (33 sub-profiles): top-level
+        `model: deepseek-v4-flash` as a string instead of the nested
+        `model: {default: ...}` dict. Both delegation paths (delegate_task
+        pre-resolve and _build_child_agent) must not AttributeError on
+        str.get() — the child must still be built with the flat model as
+        its effective model."""
+        parent = _mock_parent(
+            ["terminal", "file", "web", "skills", "session_search", "kanban", "browser"]
+        )
+        flat_cfg = _profile_cfg(["hermes-cli", "kanban", "file", "terminal"])
+        flat_cfg["config"]["model"] = "deepseek-v4-flash"  # flat string form
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0, goal="g", context=None, toolsets=None,
+                model=None, max_iterations=10, task_count=1,
+                parent_agent=parent, profile="ceecee-brand",
+                profile_content=flat_cfg,
+            )
+        enabled = self._enabled(MockAgent)
+        # No crash, and the child still resolves a real toolset.
+        assert enabled
+        assert {"file", "terminal"} <= set(enabled)
+
     def test_unresolvable_explicit_toolsets_fall_back_not_empty(self):
         """Explicit (test-only) toolsets that don't resolve to anything must
         fall back to the parent's bounded set, never []."""

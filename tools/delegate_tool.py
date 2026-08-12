@@ -791,6 +791,29 @@ def _is_mcp_toolset_name(name: str) -> bool:
     return bool(target and str(target).startswith("mcp-"))
 
 
+def _profile_model_cfg(profile_cfg: dict) -> dict:
+    """Normalise a profile's ``model`` config block to dict form.
+
+    Two conventions exist in the fleet: the canonical nested dict
+    (``model: {default: ..., provider: ...}``) and a legacy flat string
+    (``model: deepseek-v4-flash`` with top-level ``provider`` /
+    ``base_url``). Both delegation paths must tolerate the flat form —
+    ``str.get()`` would AttributeError and abort profile delegation
+    outright for the 33 sub-profiles that still use it.
+    """
+    raw = (profile_cfg or {}).get("model") or {}
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        flat = {"default": raw.strip()}
+        for key in ("provider", "base_url", "api_key"):
+            val = (profile_cfg or {}).get(key)
+            if isinstance(val, str) and val.strip():
+                flat[key] = val
+        return flat
+    return {}
+
+
 def _expand_parent_toolsets(parent_toolsets: set) -> set:
     """Expand composite toolsets so individual toolset names are recognized.
 
@@ -1520,8 +1543,8 @@ def _build_child_agent(
     # Apply profile settings to effective child config.
     # Explicit override_* params (from delegation config or per-task) always win.
     if loaded_profile_cfg:
-        _pcfg = loaded_profile_cfg.get("config", {})
-        _pmodel = _pcfg.get("model", {}) or {}
+        _pcfg = loaded_profile_cfg.get("config", {}) or {}
+        _pmodel = _profile_model_cfg(_pcfg)
 
         # Model/provider/base_url — only apply as defaults (explicit wins)
         if not model and _pmodel.get("default"):
@@ -1561,6 +1584,28 @@ def _build_child_agent(
                 t in child_disabled_toolsets for t in child_toolsets
             ):
                 child_toolsets = []
+            # Partial-collapse detection: when the profile intended the full
+            # core surface (requested 'hermes-cli') but the composite failed
+            # to expand against the parent, a surviving extra toolset (e.g.
+            # 'browser' on the quan/remii profiles) can mask the starvation
+            # — the child would resolve to browser-only with no file or
+            # terminal tools. Fall back unless the resolved set still covers
+            # the core inspection trio (read_file + search_files + terminal),
+            # which is also exactly what the deliberate least-privilege
+            # 'audit' toolset provides (so that case stays intact).
+            if (
+                child_toolsets
+                and "hermes-cli" in _p_toolsets
+                and "hermes-cli" not in _expanded
+            ):
+                from toolsets import TOOLSETS as _TS
+                _resolved_names = {
+                    name
+                    for ts in child_toolsets
+                    for name in _TS.get(ts, {}).get("tools", [])
+                }
+                if not {"read_file", "search_files", "terminal"} <= _resolved_names:
+                    child_toolsets = []
 
         # Always_skills stored for later injection into child context
         _p_skills_block = _pcfg.get("skills", {}) or {}
@@ -1621,7 +1666,10 @@ def _build_child_agent(
 
     # Resolve the child's effective model early so it can ride on every event.
     # Priority: explicit model > profile config model > parent agent model
-    _profile_model_cb = loaded_profile_cfg["config"].get("model", {}).get("default") if loaded_profile_cfg else None
+    _profile_model_cb = (
+        _profile_model_cfg(loaded_profile_cfg.get("config", {}) or {}).get("default")
+        if loaded_profile_cfg else None
+    )
     effective_model_for_cb = model or _profile_model_cb or getattr(parent_agent, "model", None)
 
     # Build progress callback to relay tool calls to parent display.
@@ -1660,9 +1708,13 @@ def _build_child_agent(
         child_thinking_cb = _child_thinking
 
     # Resolve effective credentials: explicit override > profile config > parent inherit
-    _profile_model = loaded_profile_cfg["config"].get("model", {}).get("default") if loaded_profile_cfg else None
-    _profile_provider = loaded_profile_cfg["config"].get("model", {}).get("provider") if loaded_profile_cfg else None
-    _profile_base_url = loaded_profile_cfg["config"].get("model", {}).get("base_url") if loaded_profile_cfg else None
+    _profile_model_cfg_block = (
+        _profile_model_cfg(loaded_profile_cfg.get("config", {}) or {})
+        if loaded_profile_cfg else {}
+    )
+    _profile_model = _profile_model_cfg_block.get("default")
+    _profile_provider = _profile_model_cfg_block.get("provider")
+    _profile_base_url = _profile_model_cfg_block.get("base_url")
     effective_model = model or _profile_model or parent_agent.model
     effective_provider = override_provider or _profile_provider or getattr(parent_agent, "provider", None)
     effective_base_url = override_base_url or _profile_base_url or parent_agent.base_url
@@ -3448,7 +3500,7 @@ def delegate_task(
         # Profile config values are PRIMARY when profile is set explicitly.
         # Delegation config (from parent) fills gaps only — the whole point
         # of profile= is to make the subagent run AS that profile.
-        _pm = _cfg.get("model", {}) or {}
+        _pm = _profile_model_cfg(_cfg)
         if _pm.get("default"):
             creds["model"] = _pm["default"]
         if _pm.get("provider"):

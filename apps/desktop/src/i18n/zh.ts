@@ -223,7 +223,8 @@ export const zh: Translations = {
     actions: {
       'keybinds.openPanel': '打开键盘快捷键',
       'nav.commandPalette': '打开命令面板',
-      'nav.commandCenter': '打开命令中心',
+      'nav.commandCenter': '打开控制室',
+      'nav.controlRoom': '打开控制室',
       'nav.settings': '打开设置',
       'nav.profiles': '打开配置',
       'nav.skills': '打开技能',
@@ -1373,7 +1374,7 @@ export const zh: Translations = {
     newSessionInProject: project => `在 ${project} 中新建会话`,
     commands: '命令',
     startInBranch: branch => `在 ${branch} 中开始新对话`,
-    commandCenter: '命令中心',
+    commandCenter: '控制室',
     appearance: '外观',
     settings: '设置',
     changeTheme: '更改主题',

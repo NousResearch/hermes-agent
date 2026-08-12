@@ -1089,7 +1089,7 @@ export const zhHant = defineLocale({
     goToSession: '前往工作階段',
     branches: '分支',
     startInBranch: branch => `在 ${branch} 中開始新對話`,
-    commandCenter: '命令中心',
+    commandCenter: '控制室',
     appearance: '外觀',
     settings: '設定',
     changeTheme: '變更主題',
@@ -1822,6 +1822,7 @@ export const zhHant = defineLocale({
       'composer.sendNewline': '傳送 · Shift+Enter 換行',
       'composer.sendQueued': '傳送下一個排隊的回合',
       'keybinds.openPanel': '所有鍵盤快捷鍵',
+      'nav.controlRoom': '開啟控制室',
       'composer.cancel': '關閉彈出視窗 · 取消執行',
       'composer.history': '循環彈出視窗 / 歷史記錄'
     },

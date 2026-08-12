@@ -33,37 +33,48 @@ KenseiAgent worktree `feat/control-room-v1-20260812` (base 66f18cc245):
 - `70bd4f40aa` Phase 3 CLI — status segment, Ctrl+P
 - `e5c2264b92` Phase 3 TUI — Ink overlay, badge, gateway RPCs
 - `05dc4c16b6` Phase 4 Desktop — rename, Ctrl+P, home, status badge
+- `9a1870b` (via Phase 5 dashboard worktree) — BFF contract, Ctrl+P view
 - `cee98adc9e` Phase 6 docs — matrix, security, perf, a11y, guide, demo
+- `04c62f307e` + `fff1ce55fd` release decision packet + HOLD record
+- `35473a0afb` fix — peer provider parses real JSON inbox shape (CR-603 catch)
+- `13554e31e8` test — CR-603 live peer lifecycle E2E
+- `4e2278b7ca` fix(env) — pnpm workspace install; desktop/TUI tests runnable
+- `4301c6bff9` docs — HOLD closers CLOSED, packet back to READY
+- `84d2b50054` docs — objective review handoff prompt
+- (next) fix — CR-401 rename completed in all 5 locales; handoff + evidence table corrected
 
-Dashboard worktree (base e1de73a):
+Dashboard worktree `feat/control-room-v1-20260812` (base e1de73a):
 - `9a1870b` Phase 5 — BFF contract, Ctrl+P view, HealthStrip badge, tests
 
-## 3. Test evidence (actual output, not claims)
+## 3. Test evidence (actual output, not claims — refreshed 12/08/26 after HOLD closers)
 
 | Suite | Result |
 |-------|--------|
-| control_room + tui_gateway Python | **517 passed, 1 skipped** |
+| control_room + tui_gateway Python | **522 passed, 1 skipped** |
 | CLI status bar | **20 passed** |
-| TUI vitest | **1547 passed, 12 failed** — 12 are pre-existing baseline (scrollBox/virtualHistory/MoA), identical on canonical |
+| TUI vitest | **1559 passed, 1 skipped, 0 failed** (fully green — the prior 12 baseline env failures are fixed by the pnpm workspace install, commit 4e2278b7ca) |
 | Dashboard BFF pytest | **7 passed** |
 | Dashboard web vitest | **4 passed** |
-| Desktop keybind tests | **3 passed** (via minimal config; full desktop vitest env-blocked) |
+| Desktop control-room tests | **8 passed** (control-room.test.ts, now asserts the CR-401 rename in ALL 5 locales) |
+| Desktop full vitest | **4669 passed, 15 failed, 2 skipped** — the 15 failures are pre-existing upstream baseline in files untouched by this branch (speech-text.test.ts 13, searchable-select.test.tsx 2) |
+| CR-603 live peer E2E | **PASS** (tests/control_room/e2e_live_peer_cr603.py — real two-manager sockets; cross-process via plugin E2E-910) |
 
 TS mirror gate: `python -m control_room.export_ts_schema --check` — pass.
 
 ## 4. Honest gaps (NOT hidden)
 
-1. **CR-603 live peer lifecycle E2E — deferred (env-gated).** Needs two real
-   Hermes gateways + editable Peer plugin; no live sessions existed during the
-   integration window. Unit coverage exists for message creation and inbox
-   actions. This is the one open QA item.
-2. **Desktop full vitest — env-blocked.** The hoisted node_modules lacks
-   `@vitejs/plugin-react` / `@tailwindcss/vite` / `@tabler/icons-react` /
-   `@tanstack/react-query`; canonical is identical; npm install fails on
-   phantom version resolution. Keybind contract verified 3/3; remaining
-   desktop tests are authored source, not executed. Requires a working
-   workspace install (pnpm resolved fine for the dashboard — a similar scoped
-   install should work for the monorepo).
+1. **CR-603 live peer lifecycle E2E — CLOSED (12/08/26).** Live two-manager
+   E2E over real AF_UNIX sockets proves receipt → inbox → lifecycle visible
+   through Control Room (commit 13554e31e8); peer provider JSON-parse fix
+   (35473a0afb); cross-process transport via plugin E2E-910. Not run: a
+   two-FULL-Hermes-gateway session (manager-instance level + plugin
+   real-binary disposable-home E2E used instead — documented in section 7).
+2. **Desktop full vitest — CLOSED (12/08/26).** pnpm workspace install in
+   the monorepo (commit 4e2278b7ca) unblocked the suite: 4669 passed; the
+   15 remaining failures are upstream baseline in speech-text/searchable-
+   select, untouched by this branch. pnpm-lock.yaml intentionally untracked
+   (package-manager standard switch is a governance decision pending
+   Sahil's sign-off).
 3. **Dashboard BFF capabilities** `approvals`, `peer_messages`,
    `delegation_control` are hardcoded unavailable in v1 — correct per contract
    (no live path), but they become real only when the BFF gains a gateway RPC

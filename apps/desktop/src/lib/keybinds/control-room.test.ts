@@ -53,12 +53,22 @@ describe('Control Room i18n copy (CR-401)', () => {
     for (const [file, exportName] of locales) {
       const mod = (await import(`@/i18n/${file}`)) as Record<string, unknown>
       const messages = mod[exportName] as {
-        commandCenter: { sections: Record<string, string>; sectionDescriptions: Record<string, string> }
+        keybinds: { actions: Record<string, string> }
+        commandCenter: { sections: Record<string, string>; sectionDescriptions: Record<string, string>; commandCenter: string }
       }
       const sections = messages.commandCenter.sections
       const descriptions = messages.commandCenter.sectionDescriptions
       expect(sections.home, `${file}: sections.home`).toBeTruthy()
       expect(descriptions.home, `${file}: sectionDescriptions.home`).toBeTruthy()
+      // CR-401 regression: the rename must land in EVERY locale, not just
+      // English. Assert the nav action label exists and the section label is
+      // not the old "Command Center" default.
+      expect(messages.keybinds.actions['nav.controlRoom'], `${file}: nav.controlRoom label`).toBeTruthy()
+      expect(messages.commandCenter.commandCenter, `${file}: section label`).toBeTruthy()
+      expect(
+        messages.commandCenter.commandCenter,
+        `${file}: section label must not be the old Command Center default`
+      ).not.toBe('Command Center')
     }
   })
 })

@@ -1124,7 +1124,7 @@ export const ja = defineLocale({
     goToSession: 'セッションへ移動',
     branches: 'ブランチ',
     startInBranch: branch => `${branch} で新しい会話`,
-    commandCenter: 'コマンドセンター',
+    commandCenter: 'コントロールルーム',
     appearance: '外観',
     settings: '設定',
     changeTheme: 'テーマを変更',
@@ -1880,6 +1880,7 @@ export const ja = defineLocale({
       'composer.sendNewline': '送信 · 改行は Shift+Enter',
       'composer.sendQueued': '次のキュー済みターンを送信',
       'keybinds.openPanel': 'すべてのキーボードショートカット',
+      'nav.controlRoom': 'コントロールルームを開く',
       'composer.cancel': 'ポップオーバーを閉じる · 実行をキャンセル',
       'composer.history': 'ポップオーバー / 履歴を切り替え'
     },

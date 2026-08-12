@@ -197,7 +197,8 @@ export const ar = defineLocale({
     actions: {
       'keybinds.openPanel': 'فتح اختصارات لوحة المفاتيح',
       'nav.commandPalette': 'فتح لوحة الأوامر',
-      'nav.commandCenter': 'فتح مركز الأوامر',
+      'nav.commandCenter': 'فتح غرفة التحكم',
+      'nav.controlRoom': 'فتح غرفة التحكم',
       'nav.settings': 'فتح الإعدادات',
       'nav.profiles': 'فتح الملفات الشخصية',
       'nav.skills': 'فتح المهارات',
@@ -959,7 +960,7 @@ export const ar = defineLocale({
     goToSession: 'الانتقال إلى الجلسة',
     branches: 'الفروع',
     startInBranch: branch => `محادثة جديدة في ${branch}`,
-    commandCenter: 'مركز الأوامر',
+    commandCenter: 'غرفة التحكم',
     appearance: 'المظهر',
     settings: 'الإعدادات',
     changeTheme: 'تغيير الثيم',

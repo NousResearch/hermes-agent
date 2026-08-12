@@ -74,7 +74,8 @@ cd /home/kensei/worktrees/kenseiagent-control-room-20260812
 ```
 
 - EXPECTED: 522 passed, 1 skipped (run the FULL two dirs; the
-  control_room count alone is 99 — 94 + 5 live-shape tests)
+  control_room count alone is 94 — that includes the 5 live-shape
+  tests in test_peer_live_shape.py)
 - Evidence: control_room/contract.py, service.py, actions.py,
   executors.py, flows.py; tests/control_room/test_peer_live_shape.py
 
@@ -132,16 +133,19 @@ npx vitest run src/lib/keybinds/control-room.test.ts
 
 - EXPECTED: 1 file passed, 8 tests passed. Covers CR-403 keybind
   defaults (mod+p = nav.controlRoom, palette = mod+k only), CR-401
-  i18n rename across all 5 locales (ar/en/ja/zh/zh-hant incl. the
-  zh-hant->zhHant export-name mapping), CR-402 home section.
+  i18n rename across all 5 locales (ar/en/ja/zh/zh-hant — each locale
+  asserts a translated nav.controlRoom label AND a section label that
+  is not the old "Command Center" default; the zh-hant->zhHant
+  export-name mapping is handled), CR-402 home section.
 - The full desktop suite runs 4669 passed / 15 failed. The 15 failures
   are PRE-EXISTING UPSTREAM BASELINE in files untouched by this branch:
   `src/lib/speech-text.test.ts` (13, sanitizeTextForSpeech regex drift
-  from upstream merge 1586b6d0b1) and
+  from upstream) and
   `src/app/settings/searchable-select.test.tsx` (2). Verify by
   `git log --oneline -1 -- apps/desktop/src/lib/speech-text.ts` — the
-  last change is the upstream merge, not this branch. If you find any
-  failure in a control-room-touched file, that IS a finding.
+  last change is 51c68d4ab1 (upstream "Add Hermes desktop app"), not
+  this branch. If you find any failure in a control-room-touched file,
+  that IS a finding.
 
 ### F. Dashboard BFF + SPA (reproduce ~1 min)
 

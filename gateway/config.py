@@ -1551,7 +1551,7 @@ def load_gateway_config() -> GatewayConfig:
                 if not isinstance(_api_extra, dict):
                     _api_extra = {}
                     _api_plat["extra"] = _api_extra
-                for _bridge_key in ("port", "key", "host", "cors_origins", "model_name"):
+                for _bridge_key in ("port", "key", "host", "cors_origins", "model_name", "admin_config_rw"):
                     if _bridge_key in _api_plat and _bridge_key not in _api_extra:
                         _api_extra[_bridge_key] = _api_plat.pop(_bridge_key)
 

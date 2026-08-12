@@ -209,11 +209,13 @@ and it does not do pricing or capability enrichment.
 Hermes-aware clients can request the same curated provider/model inventory used
 by the dashboard and TUI. This route uses the API server's normal bearer
 authentication and returns provider rows, model capability hints, and pricing
-metadata that do not belong in the OpenAI-compatible `/v1/models` response:
+metadata that do not belong in the OpenAI-compatible `/v1/models` response.
+Set `HERMES_AUTH_VALUE` to the complete authorization value (`Bearer` followed
+by your API token) before running these examples:
 
 ```bash
 curl \
-  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -H "Authorization: ${HERMES_AUTH_VALUE}" \
   "http://127.0.0.1:8642/api/model/options"
 ```
 
@@ -228,7 +230,7 @@ and busts the provider model cache:
 
 ```bash
 curl \
-  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -H "Authorization: ${HERMES_AUTH_VALUE}" \
   "http://127.0.0.1:8642/api/model/options?refresh=1"
 ```
 
@@ -462,13 +464,155 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 ```bash
 # fork a session and run one turn
 curl -X POST http://localhost:8642/api/sessions/$ID/fork \
-  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -H "Authorization: Bearer ***
   -d '{"title": "explore alt path"}'
 
 # stream a turn over SSE
 curl -N -X POST http://localhost:8642/api/sessions/$ID/chat/stream \
-  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -H "Authorization: Bearer ***
   -d '{"input": "what files changed in the last hour?"}'
+```
+
+## Administrative Control-Plane API
+
+:::warning Opt-in Surface & Security Warning
+The Administrative Control-Plane API allows external UIs and business control planes to reconcile runtime profiles, profile-scoped skills, and managed context/identity files over HTTP. **This surface is disabled by default** and must be explicitly enabled via `gateway.api_server.admin_config_rw: true` in `config.yaml`. Standard bearer authentication (`API_SERVER_KEY`) is strictly required for every request.
+
+Note: Standard Bearer authentication (`API_SERVER_KEY`) is the security trust boundary. Ownership tuples (`managed_by`, `tenant_id`, `resource_id`) prevent accidental reconciliation collision across multiple control plane services using the same gateway, but do not protect against malicious callers holding a valid Bearer token.
+:::
+
+### Opt-in Configuration
+
+Enable administrative read-write operations in `~/.hermes/config.yaml`:
+
+```yaml
+gateway:
+  api_server:
+    enabled: true
+    key: your-secret-key
+    admin_config_rw: true   # Default false. Opt-in requirement for /v1/admin/*
+```
+
+When `admin_config_rw` is false (default), `/v1/capabilities` advertises `"admin_config_rw": false` and all `/v1/admin/*` endpoints fail closed with **HTTP 403** without leaking profile or filesystem existence.
+
+### Ownership Model
+
+Managed profiles are tagged with a generic control-plane ownership manifest stored in `.control_plane_manifest.json` inside each profile directory:
+
+```json
+{
+  "managed_by": "control_plane",
+  "tenant_id": "tenant-123",
+  "resource_id": "profile-res-456",
+  "revision": 1,
+  "spec_digest": "sha256:...",
+  "created_at": "2026-08-10T19:30:00Z",
+  "updated_at": "2026-08-10T19:30:00Z"
+}
+```
+
+The caller identifies ownership via headers (`X-Hermes-Owner-Managed-By`, `X-Hermes-Owner-Tenant-Id`, `X-Hermes-Owner-Resource-Id`) or request JSON (`managed_by`, `tenant_id`, `resource_id`). Individual profile and child-resource operations require all three fields. Collection `GET /v1/admin/profiles` requires `managed_by` and `tenant_id`; `resource_id` is an optional exact filter so a control plane can enumerate a tenant's profiles for orphan detection.
+
+**Ownership Safety Rules:**
+- **Default Profile Protection**: The default profile (`~/.hermes`) cannot be created, updated, or deleted via the Admin API.
+- **Atomic Ownership Assignment**: Creating a new named profile establishes ownership atomically.
+- **Strict Isolation**: Upsert or delete operations on existing profiles or child skills/files require a matching ownership tuple. Missing ownership tuple returns **HTTP 400 Bad Request**. Attempts to mutate an unowned profile return **HTTP 409 Conflict**.
+- **Idempotency**: Profile deletion returns success for an already-absent profile when a complete ownership tuple is supplied. Child deletion returns **HTTP 404** when already absent. Existing unowned resources are never deleted.
+
+### File & Skill Restrictions
+
+- **Skills**: Always profile-scoped (`skills/{skill_slug}/SKILL.md`). Slugs must match `^[a-zA-Z0-9_-]+$`.
+- **Files**: Writes are restricted to an explicit allowlist of identity and context files: `SOUL.md`, `memories/USER.md`, `memories/MEMORY.md`, and dedicated subtrees under `context/` or `memories/`.
+- **Forbidden Files**: `.env`, `config.yaml`, state DBs (`state.db*`), credentials (`auth.json`), and process PIDs are rejected with **HTTP 403**. Invalid absolute/traversal paths are rejected with **HTTP 400**; symlink escapes are rejected without following the link.
+- **Atomic Operations**: File and manifest writes use atomic temporary files with owner-only permissions (`0600`).
+
+### Endpoint Summary
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/v1/admin/profiles` | List profiles matching `managed_by + tenant_id`; optionally filter by `resource_id` |
+| `PUT` | `/v1/admin/profiles/{profile}` | Create or update a named managed profile |
+| `GET` | `/v1/admin/profiles/{profile}` | Read managed profile metadata and ownership |
+| `DELETE` | `/v1/admin/profiles/{profile}` | Delete a named managed profile |
+| `GET` | `/v1/admin/profiles/{profile}/skills` | List profile-scoped skills |
+| `PUT` | `/v1/admin/profiles/{profile}/skills/{skill_slug}` | Create or update a skill (`SKILL.md`) |
+| `GET` | `/v1/admin/profiles/{profile}/skills/{skill_slug}` | Read a profile-scoped skill |
+| `DELETE` | `/v1/admin/profiles/{profile}/skills/{skill_slug}` | Delete a skill |
+| `GET` | `/v1/admin/profiles/{profile}/files` | List managed context/identity files |
+| `PUT` | `/v1/admin/profiles/{profile}/files/{path}` | Create or update a managed file |
+| `GET` | `/v1/admin/profiles/{profile}/files/{path}` | Read a managed context file |
+| `DELETE` | `/v1/admin/profiles/{profile}/files/{path}` | Delete a managed context file |
+
+### Request / Response Examples
+
+#### Create/Update Profile
+
+```bash
+curl -X PUT http://localhost:8642/v1/admin/profiles/coder \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "managed_by": "control_plane",
+    "tenant_id": "tenant-a",
+    "resource_id": "res-coder-1",
+    "display_name": "Coder Agent",
+    "description": "Code review agent",
+    "soul": "You are a meticulous software reviewer.",
+    "user_context": "User prefers type hints."
+  }'
+```
+
+**Response (201 Created / 200 OK):**
+
+```json
+{
+  "object": "hermes.admin.profile",
+  "name": "coder",
+  "display_name": "Coder Agent",
+  "is_default": false,
+  "ownership": {
+    "managed_by": "control_plane",
+    "tenant_id": "tenant-a",
+    "resource_id": "res-coder-1"
+  },
+  "revision": 1,
+  "digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "applied_digest": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "drifted": false,
+  "description": "Code review agent",
+  "soul": "You are a meticulous software reviewer.",
+  "user_context": "User prefers type hints.",
+  "created_at": "2026-08-10T19:30:00Z",
+  "updated_at": "2026-08-10T19:30:00Z"
+}
+```
+
+#### Create/Update Profile-Scoped Skill
+
+```bash
+curl -X PUT http://localhost:8642/v1/admin/profiles/coder/skills/github-pr \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "X-Hermes-Owner-Managed-By: control_plane" \
+  -H "X-Hermes-Owner-Tenant-Id: tenant-a" \
+  -H "X-Hermes-Owner-Resource-Id: res-coder-1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "---\nname: github-pr\ndescription: GitHub PR automation\n---\n# GitHub PR Helper\n"
+  }'
+```
+
+#### Create/Update Managed Context File
+
+```bash
+curl -X PUT http://localhost:8642/v1/admin/profiles/coder/files/SOUL.md \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "X-Hermes-Owner-Managed-By: control_plane" \
+  -H "X-Hermes-Owner-Tenant-Id: tenant-a" \
+  -H "X-Hermes-Owner-Resource-Id: res-coder-1" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "content": "You are a meticulous software reviewer."
+  }'
 ```
 
 ## Skills and toolsets discovery
@@ -477,11 +621,11 @@ curl -N -X POST http://localhost:8642/api/sessions/$ID/chat/stream \
 
 ```bash
 curl http://localhost:8642/v1/skills \
-  -H "Authorization: Bearer $API_SERVER_KEY"
+  -H "Authorization: Bearer ***
 # → [{"name": "github-pr-workflow", "description": "...", "category": "..."}, ...]
 
 curl http://localhost:8642/v1/toolsets \
-  -H "Authorization: Bearer $API_SERVER_KEY"
+  -H "Authorization: Bearer ***
 # → [{"name": "core", "label": "...", "description": "...", "enabled": true,
 #     "configured": true, "tools": ["read_file", "write_file", ...]}, ...]
 ```

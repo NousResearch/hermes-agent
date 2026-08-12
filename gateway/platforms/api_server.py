@@ -19,6 +19,9 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
 - POST /v1/runs/{run_id}/approval — resolve a pending run approval
 - POST /v1/runs/{run_id}/stop       — interrupt a running agent
+- GET/PUT/DELETE /v1/admin/profiles[/...] — opt-in control-plane administration of managed profiles
+- GET/PUT/DELETE /v1/admin/profiles/{profile}/skills[/...] — profile-scoped skill CRUD
+- GET/PUT/DELETE /v1/admin/profiles/{profile}/files[/...] — managed context/identity file CRUD
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
 
@@ -64,11 +67,6 @@ from typing import Any, Dict, List, Optional
 # (no prefix / multiplexing off → handle as the default profile).
 _PROFILE_REJECTED = object()
 
-# Profile selected by the /p/<profile>/ URL prefix for the current request.
-# Set by the profile-prefix middleware; read by handlers / _run_agent.
-_api_request_profile: ContextVar[Optional[str]] = ContextVar(
-    "api_server_request_profile", default=None
-)
 
 def _approval_event_choices(*, smart_denied: bool, allow_permanent: bool) -> list[str]:
     if smart_denied:
@@ -84,6 +82,7 @@ except ImportError:
     web = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
+from gateway.request_profile import api_request_profile as _api_request_profile
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE,
     BasePlatformAdapter,
@@ -97,6 +96,20 @@ from gateway.readiness import collect_runtime_readiness
 
 from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
 from agent.secret_scope import get_secret as _scoped_get_secret
+from gateway.admin import (
+    handle_create_update_file,
+    handle_create_update_profile,
+    handle_create_update_skill,
+    handle_delete_file,
+    handle_delete_profile,
+    handle_delete_skill,
+    handle_get_file,
+    handle_get_profile,
+    handle_get_skill,
+    handle_list_files,
+    handle_list_profiles,
+    handle_list_skills,
+)
 
 
 def _get_scoped_secret(name, default=None):
@@ -986,8 +999,8 @@ class ResponseStore:
 # ---------------------------------------------------------------------------
 
 _CORS_HEADERS = {
-    "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, If-Match, X-Hermes-Owner-Managed-By, X-Hermes-Owner-Tenant-Id, X-Hermes-Owner-Resource-Id, X-Control-Plane-Managed-By, X-Control-Plane-Tenant-Id, X-Control-Plane-Resource-Id",
 }
 
 
@@ -1413,6 +1426,9 @@ class APIServerAdapter(BasePlatformAdapter):
         # (Idea credit: PR #22825 by @mssteuer.)
         self._direct_model_requests: bool = _coerce_request_bool(
             extra.get("direct_model_requests"), default=False
+        )
+        self._admin_config_rw: bool = _coerce_request_bool(
+            extra.get("admin_config_rw"), default=False
         )
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
@@ -2092,6 +2108,21 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/runs/{run_id}/events", self._handle_run_events),
             ("POST", "/v1/runs/{run_id}/approval", self._handle_run_approval),
             ("POST", "/v1/runs/{run_id}/stop", self._handle_stop_run),
+            # Control Plane Admin API
+            ("GET", "/v1/admin/profiles", self._handle_admin_list_profiles),
+            ("POST", "/v1/admin/profiles", self._handle_admin_create_update_profile),
+            ("PUT", "/v1/admin/profiles/{target_profile}", self._handle_admin_create_update_profile),
+            ("GET", "/v1/admin/profiles/{target_profile}", self._handle_admin_get_profile),
+            ("DELETE", "/v1/admin/profiles/{target_profile}", self._handle_admin_delete_profile),
+            ("GET", "/v1/admin/profiles/{target_profile}/skills", self._handle_admin_list_skills),
+            ("POST", "/v1/admin/profiles/{target_profile}/skills", self._handle_admin_create_update_skill),
+            ("PUT", "/v1/admin/profiles/{target_profile}/skills/{skill_slug}", self._handle_admin_create_update_skill),
+            ("GET", "/v1/admin/profiles/{target_profile}/skills/{skill_slug}", self._handle_admin_get_skill),
+            ("DELETE", "/v1/admin/profiles/{target_profile}/skills/{skill_slug}", self._handle_admin_delete_skill),
+            ("GET", "/v1/admin/profiles/{target_profile}/files", self._handle_admin_list_files),
+            ("PUT", "/v1/admin/profiles/{target_profile}/files/{path:.*}", self._handle_admin_create_update_file),
+            ("GET", "/v1/admin/profiles/{target_profile}/files/{path:.*}", self._handle_admin_get_file),
+            ("DELETE", "/v1/admin/profiles/{target_profile}/files/{path:.*}", self._handle_admin_delete_file),
         ]
         if _CRON_AVAILABLE:
             # Chronos managed-cron fire webhook (NAS → agent). Authenticated
@@ -3100,6 +3131,48 @@ class APIServerAdapter(BasePlatformAdapter):
         if auth_err:
             return auth_err
 
+        endpoints = {
+            "health": {"method": "GET", "path": "/health"},
+            "health_detailed": {"method": "GET", "path": "/health/detailed"},
+            "models": {"method": "GET", "path": "/v1/models"},
+            "model_options": {"method": "GET", "path": "/api/model/options"},
+            "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
+            "responses": {"method": "POST", "path": "/v1/responses"},
+            "runs": {"method": "POST", "path": "/v1/runs"},
+            "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
+            "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
+            "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
+            "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
+            "skills": {"method": "GET", "path": "/v1/skills"},
+            "toolsets": {"method": "GET", "path": "/v1/toolsets"},
+            "sessions": {"method": "GET", "path": "/api/sessions"},
+            "session_create": {"method": "POST", "path": "/api/sessions"},
+            "session": {"method": "GET", "path": "/api/sessions/{session_id}"},
+            "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
+            "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
+            "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
+            "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
+            "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
+            "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
+            "session_model_lock": {"method": "POST", "path": "/api/sessions/{session_id}/model"},
+        }
+
+        if self._admin_config_rw:
+            endpoints.update({
+                "admin_profiles": {"method": "GET", "path": "/v1/admin/profiles"},
+                "admin_profile_create_update": {"method": "PUT", "path": "/v1/admin/profiles/{profile}"},
+                "admin_profile_get": {"method": "GET", "path": "/v1/admin/profiles/{profile}"},
+                "admin_profile_delete": {"method": "DELETE", "path": "/v1/admin/profiles/{profile}"},
+                "admin_skills": {"method": "GET", "path": "/v1/admin/profiles/{profile}/skills"},
+                "admin_skill_create_update": {"method": "PUT", "path": "/v1/admin/profiles/{profile}/skills/{skill_slug}"},
+                "admin_skill_get": {"method": "GET", "path": "/v1/admin/profiles/{profile}/skills/{skill_slug}"},
+                "admin_skill_delete": {"method": "DELETE", "path": "/v1/admin/profiles/{profile}/skills/{skill_slug}"},
+                "admin_files": {"method": "GET", "path": "/v1/admin/profiles/{profile}/files"},
+                "admin_file_create_update": {"method": "PUT", "path": "/v1/admin/profiles/{profile}/files/{path:.*}"},
+                "admin_file_get": {"method": "GET", "path": "/v1/admin/profiles/{profile}/files/{path:.*}"},
+                "admin_file_delete": {"method": "DELETE", "path": "/v1/admin/profiles/{profile}/files/{path:.*}"},
+            })
+
         return web.json_response({
             "object": "hermes.api_server.capabilities",
             "platform": "hermes-agent",
@@ -3136,7 +3209,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat_streaming": True,
                 "session_fork": True,
                 "session_model_lock": True,
-                "admin_config_rw": False,
+                "admin_config_rw": self._admin_config_rw,
                 "jobs_admin": False,
                 "memory_write_api": False,
                 "skills_api": True,
@@ -3146,32 +3219,48 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_key_header": "X-Hermes-Session-Key",
                 "cors": bool(self._cors_origins),
             },
-            "endpoints": {
-                "health": {"method": "GET", "path": "/health"},
-                "health_detailed": {"method": "GET", "path": "/health/detailed"},
-                "models": {"method": "GET", "path": "/v1/models"},
-                "model_options": {"method": "GET", "path": "/api/model/options"},
-                "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
-                "responses": {"method": "POST", "path": "/v1/responses"},
-                "runs": {"method": "POST", "path": "/v1/runs"},
-                "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
-                "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
-                "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
-                "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
-                "skills": {"method": "GET", "path": "/v1/skills"},
-                "toolsets": {"method": "GET", "path": "/v1/toolsets"},
-                "sessions": {"method": "GET", "path": "/api/sessions"},
-                "session_create": {"method": "POST", "path": "/api/sessions"},
-                "session": {"method": "GET", "path": "/api/sessions/{session_id}"},
-                "session_update": {"method": "PATCH", "path": "/api/sessions/{session_id}"},
-                "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
-                "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
-                "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
-                "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
-                "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
-                "session_model_lock": {"method": "POST", "path": "/api/sessions/{session_id}/model"},
-            },
+            "endpoints": endpoints,
         })
+
+    # ------------------------------------------------------------------
+    # Control Plane Admin API Handlers
+    # ------------------------------------------------------------------
+
+    async def _handle_admin_list_profiles(self, request: "web.Request") -> "web.Response":
+        return await handle_list_profiles(self, request)
+
+    async def _handle_admin_create_update_profile(self, request: "web.Request") -> "web.Response":
+        return await handle_create_update_profile(self, request)
+
+    async def _handle_admin_get_profile(self, request: "web.Request") -> "web.Response":
+        return await handle_get_profile(self, request)
+
+    async def _handle_admin_delete_profile(self, request: "web.Request") -> "web.Response":
+        return await handle_delete_profile(self, request)
+
+    async def _handle_admin_list_skills(self, request: "web.Request") -> "web.Response":
+        return await handle_list_skills(self, request)
+
+    async def _handle_admin_create_update_skill(self, request: "web.Request") -> "web.Response":
+        return await handle_create_update_skill(self, request)
+
+    async def _handle_admin_get_skill(self, request: "web.Request") -> "web.Response":
+        return await handle_get_skill(self, request)
+
+    async def _handle_admin_delete_skill(self, request: "web.Request") -> "web.Response":
+        return await handle_delete_skill(self, request)
+
+    async def _handle_admin_list_files(self, request: "web.Request") -> "web.Response":
+        return await handle_list_files(self, request)
+
+    async def _handle_admin_create_update_file(self, request: "web.Request") -> "web.Response":
+        return await handle_create_update_file(self, request)
+
+    async def _handle_admin_get_file(self, request: "web.Request") -> "web.Response":
+        return await handle_get_file(self, request)
+
+    async def _handle_admin_delete_file(self, request: "web.Request") -> "web.Response":
+        return await handle_delete_file(self, request)
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
         """GET /v1/skills — list installed skills visible to the API-server agent.
@@ -6609,6 +6698,7 @@ class APIServerAdapter(BasePlatformAdapter):
             created_at=created_at,
             session_id=session_id,
             model=body.get("model", self._model_name),
+            profile=_api_request_profile.get(),
         )
 
         # Background task outlives the HTTP response (and thus the middleware

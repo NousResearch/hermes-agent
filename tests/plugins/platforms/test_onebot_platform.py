@@ -118,24 +118,35 @@ def test_adapter_has_max_message_length() -> None:
 def test_cq_parse_at_and_face() -> None:
     adapter = _make_adapter()
     raw = "[CQ:at,qq=12345] 你好 [CQ:face,id=0]"
-    text, media = asyncio.run(adapter._parse_content(raw))
+    text, media, media_types = asyncio.run(adapter._parse_content(raw))
     assert text == "@12345 你好 😊"
     assert media == []
+    assert media_types == []
 
 
 def test_cq_parse_at_all_and_reply() -> None:
     adapter = _make_adapter()
     raw = "[CQ:reply,id=99][CQ:at,qq=all] 注意"
-    text, _ = asyncio.run(adapter._parse_content(raw))
+    text, _, _ = asyncio.run(adapter._parse_content(raw))
     assert text == "@全体成员 注意"
 
 
 def test_cq_parse_image_no_url_falls_back() -> None:
     adapter = _make_adapter()
     raw = "看图 [CQ:image,file=abc.jpg]"
-    text, media = asyncio.run(adapter._parse_content(raw))
+    text, media, media_types = asyncio.run(adapter._parse_content(raw))
     assert text == "看图 [图片]"
     assert media == []
+    assert media_types == []
+
+
+def test_cq_parse_record_no_url_falls_back() -> None:
+    adapter = _make_adapter()
+    raw = "听这个 [CQ:record,file=abc.silk]"
+    text, media, media_types = asyncio.run(adapter._parse_content(raw))
+    assert text == "听这个 [语音]"
+    assert media == []
+    assert media_types == []
 
 
 def test_is_mentioned() -> None:
@@ -167,6 +178,50 @@ def test_group_policy_allowlist() -> None:
     adapter = _make_adapter(group_policy="allowlist", group_allow_from=["888888"])
     assert adapter._group_allowed("888888")
     assert not adapter._group_allowed("777777")
+
+
+# ---------------------------------------------------------------------------
+# Markdown stripping
+# ---------------------------------------------------------------------------
+
+
+def test_strip_markdown_inline() -> None:
+    from plugins.platforms.onebot.adapter import strip_markdown
+
+    assert strip_markdown("**加粗** 和 *斜体* 和 `代码`") == "加粗 和 斜体 和 代码"
+    assert strip_markdown("[链接](https://example.com)") == "链接（https://example.com）"
+    assert strip_markdown("~~删除线~~") == "删除线"
+
+
+def test_strip_markdown_blocks() -> None:
+    from plugins.platforms.onebot.adapter import strip_markdown
+
+    text = "## 标题\n\n- 项目一\n- 项目二\n\n1. 第一\n2. 第二\n\n> 引用"
+    out = strip_markdown(text)
+    assert "【标题】" in out
+    assert "• 项目一" in out
+    assert "1. 第一" in out
+    assert "「引用」" in out
+
+
+def test_strip_markdown_code_block() -> None:
+    from plugins.platforms.onebot.adapter import strip_markdown
+
+    text = "```python\nprint('hi')\n```\n结尾"
+    out = strip_markdown(text)
+    assert "┌─[python]─" in out
+    assert "│ print('hi')" in out
+    assert "结尾" in out
+
+
+def test_send_strips_markdown_before_delivery() -> None:
+    adapter = _make_adapter(text_image_threshold=0)
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    result = asyncio.run(adapter.send("private:1", "**你好** `世界`"))
+    assert result.success
+    text = ws.sent[0]["params"]["message"][0]["data"]["text"]
+    assert text == "你好 世界"
 
 
 # ---------------------------------------------------------------------------

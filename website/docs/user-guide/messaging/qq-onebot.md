@@ -69,6 +69,11 @@ With `require_mention: true` (default), the bot only responds in groups when it 
 
 Set `text_image_threshold: 0` to disable the image path.
 
+## Markdown & voice
+
+- **Markdown is stripped** before delivery — QQ does not render it, so `**bold**`, headings, lists, and tables are converted to readable plain text (headings → `【…】`, lists → `•`, tables → spaced cells, fenced code blocks → bordered boxes). This runs before splitting and text-image rendering, so images are clean too.
+- **Inbound voice messages are transcribed**: the adapter downloads the clip and converts it with `ffmpeg` to 16 kHz mono WAV, then hands it to Hermes' STT pipeline (local whisper / Groq / OpenAI — same as other platforms). Requires `ffmpeg` on the Hermes host; without it, voice clips degrade to a `[语音]` marker.
+
 ## Notes
 
 - Outbound messages use the OneBot segment-array format (not CQ-code strings) — required for NapCat's message handling.

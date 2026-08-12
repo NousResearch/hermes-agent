@@ -80,9 +80,14 @@ MAX_MESSAGE_LENGTH = 4000  # QQ per-message cap (UTF-16-ish, keep safe)
 _CQ_AT_RE = re.compile(r"\[CQ:at,qq=(\d+|all)\]")
 _CQ_IMAGE_RE = re.compile(r"\[CQ:image,[^\]]*?url=([^,\]]+)\]")
 _CQ_IMAGE_NOURL_RE = re.compile(r"\[CQ:image(?:,[^\]]*)?\]")
+_CQ_RECORD_RE = re.compile(r"\[CQ:record,[^\]]*?url=([^,\]]+)\]")
+_CQ_RECORD_NOURL_RE = re.compile(r"\[CQ:record(?:,[^\]]*)?\]")
 _CQ_REPLY_RE = re.compile(r"\[CQ:reply,id=(\d+)\]")
 _CQ_FACE_RE = re.compile(r"\[CQ:face,id=(\d+)\]")
 _CQ_ANY_RE = re.compile(r"\[CQ:[^\]]*\]")
+
+# Max bytes for a downloaded voice clip (silk/amr from QQ).
+AUDIO_MAX_BYTES = 15 * 1024 * 1024
 
 # Reply splitting: messages longer than this are sent as multiple messages,
 # breaking at sentence boundaries (。！？!?；;\n) instead of mid-sentence.
@@ -272,6 +277,101 @@ _FACE_EMOJI = {
     "14": "😏", "21": "😳", "74": "😪", "107": "🐶", "108": "🐱",
     "110": "👍", "111": "👎", "116": "🎉", "171": "🍺", "173": "👌",
 }
+
+
+def _inline_markdown(text: str) -> str:
+    """Strip inline Markdown from a single line (QQ shows raw syntax)."""
+    text = re.sub(r"`([^`\n]+)`", r"\1", text)
+    text = re.sub(r"\*{3}(.+?)\*{3}", r"\1", text)
+    text = re.sub(r"_{3}(.+?)_{3}", r"\1", text)
+    text = re.sub(r"\*{2}(.+?)\*{2}", r"\1", text)
+    text = re.sub(r"_{2}(.+?)_{2}", r"\1", text)
+    text = re.sub(r"\*(.+?)\*", r"\1", text)
+    text = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", text)
+    text = re.sub(r"~~(.+?)~~", r"\1", text)
+    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1（\2）", text)
+    text = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"[\1]", text)
+    text = re.sub(r"\[([^\]]+)\]\[[^\]]*\]", r"\1", text)
+    return text
+
+
+def strip_markdown(text: str) -> str:
+    """Convert Markdown to clean QQ-friendly plain text.
+
+    QQ does not render Markdown — raw ``**bold**`` / ``## heading`` would
+    appear as literal characters. Common constructs are converted to
+    readable Unicode equivalents; fenced code blocks keep their contents.
+    """
+    lines = text.splitlines()
+    out: List[str] = []
+    in_code = False
+    code_lang = ""
+    code_lines: List[str] = []
+
+    for line in lines:
+        fence = re.match(r"^(`{3,}|~{3,})(.*)", line.strip())
+        if fence:
+            if not in_code:
+                in_code = True
+                code_lang = fence.group(2).strip()
+                code_lines = []
+            else:
+                in_code = False
+                label = f"[{code_lang}]" if code_lang else "[代码]"
+                out.append(f"┌─{label}─")
+                out.extend("│ " + cl for cl in code_lines)
+                out.append("└──────")
+                code_lines = []
+            continue
+        if in_code:
+            code_lines.append(line)
+            continue
+
+        h = re.match(r"^(#{1,6})\s+(.*)", line)
+        if h:
+            level, title = len(h.group(1)), h.group(2).strip()
+            title = _inline_markdown(title)
+            out.append(f"【{title}】" if level <= 2 else f"▌ {title}")
+            continue
+
+        if re.match(r"^\s*[-*_]{3,}\s*$", line):
+            out.append("────────────────")
+            continue
+
+        bq = re.match(r"^>\s?(.*)", line)
+        if bq:
+            out.append("「" + _inline_markdown(bq.group(1)) + "」")
+            continue
+
+        ul = re.match(r"^(\s*)[-*+]\s+(.*)", line)
+        if ul:
+            indent = len(ul.group(1)) // 2
+            out.append("  " * indent + "• " + _inline_markdown(ul.group(2)))
+            continue
+
+        ol = re.match(r"^(\s*)(\d+)[.)]\s+(.*)", line)
+        if ol:
+            indent = len(ol.group(1)) // 2
+            out.append("  " * indent + ol.group(2) + ". " + _inline_markdown(ol.group(3)))
+            continue
+
+        if re.match(r"^\s*\|", line):
+            if re.match(r"^\s*\|[\s\-:|]+\|\s*$", line):
+                continue
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            out.append("  ".join(_inline_markdown(c) for c in cells if c))
+            continue
+
+        out.append(_inline_markdown(line))
+
+    # Flush an unclosed fenced code block (LLM output truncated mid-block).
+    if in_code:
+        label = f"[{code_lang}]" if code_lang else "[代码]"
+        out.append(f"┌─{label}─")
+        out.extend("│ " + cl for cl in code_lines)
+        out.append("└──────")
+
+    return "\n".join(out).strip()
 
 
 def _build_chat_id(message_type: str, id_: Any) -> str:
@@ -556,11 +656,20 @@ class OneBotAdapter(BasePlatformAdapter):
             else:
                 return
 
-            text, media_urls = await self._parse_content(raw)
+            text, media_urls, media_types = await self._parse_content(raw)
 
+            has_voice = any(t.startswith("audio/") for t in media_types)
+            if not text and not media_urls:
+                return
             event = MessageEvent(
                 text=text,
-                message_type=MessageType.TEXT if not media_urls else MessageType.PHOTO,
+                message_type=(
+                    MessageType.VOICE
+                    if has_voice and not text
+                    else MessageType.PHOTO
+                    if media_urls
+                    else MessageType.TEXT
+                ),
                 user_id=user_id,
                 user_name=nickname or user_id,
                 source=SessionSource(
@@ -573,7 +682,7 @@ class OneBotAdapter(BasePlatformAdapter):
                 raw_message=data,
                 message_id=str(data.get("message_id") or ""),
                 media_urls=media_urls,
-                media_types=["image"] * len(media_urls),
+                media_types=media_types,
             )
             await self.handle_message(event)
         except Exception as e:
@@ -609,24 +718,39 @@ class OneBotAdapter(BasePlatformAdapter):
             return True
         return False
 
-    async def _parse_content(self, raw: str) -> Tuple[str, List[str]]:
-        """Convert a raw CQ-encoded message to (text, downloaded image paths).
+    async def _parse_content(self, raw: str) -> Tuple[str, List[str], List[str]]:
+        """Convert a raw CQ-encoded message to (text, media_paths, media_types).
 
         Images with a downloadable url are fetched into a temp dir so the
-        vision tool can read them. Replies/at are normalized to plain text.
+        vision tool can read them; voice clips are downloaded and converted
+        to 16 kHz mono WAV so the gateway's STT pipeline can transcribe
+        them. Replies/at are normalized to plain text.
         """
         image_urls = _CQ_IMAGE_RE.findall(raw)
+        record_urls = _CQ_RECORD_RE.findall(raw)
         media_urls: List[str] = []
+        media_types: List[str] = []
         for url in image_urls:
             try:
                 path = await self._download_image(url)
                 if path:
                     media_urls.append(path)
+                    media_types.append("image")
             except Exception as e:
                 logger.debug("[onebot] image download failed: %s", e)
+        for url in record_urls:
+            try:
+                path = await self._download_audio(url)
+                if path:
+                    media_urls.append(path)
+                    media_types.append("audio/wav")
+            except Exception as e:
+                logger.debug("[onebot] voice download failed: %s", e)
 
         text = _CQ_IMAGE_RE.sub(lambda m: "[图片]", raw)
         text = _CQ_IMAGE_NOURL_RE.sub("[图片]", text)
+        text = _CQ_RECORD_RE.sub(lambda m: "[语音]", text)
+        text = _CQ_RECORD_NOURL_RE.sub("[语音]", text)
         text = _CQ_AT_RE.sub(
             lambda m: "@" + ("全体成员" if m.group(1) == "all" else m.group(1)), text
         )
@@ -634,7 +758,7 @@ class OneBotAdapter(BasePlatformAdapter):
         text = _CQ_FACE_RE.sub(lambda m: _FACE_EMOJI.get(m.group(1), "[表情]"), text)
         text = _CQ_ANY_RE.sub("", text)
         text = re.sub(r"[ \t]+", " ", text).strip()
-        return text, media_urls
+        return text, media_urls, media_types
 
     async def _download_image(self, url: str) -> Optional[str]:
         if not url or url.lower().startswith("base64://"):
@@ -657,6 +781,64 @@ class OneBotAdapter(BasePlatformAdapter):
         path = tmp / f"img_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}{ext}"
         path.write_bytes(data)
         return str(path)
+
+    async def _download_audio(self, url: str) -> Optional[str]:
+        """Download a voice clip and convert it to 16 kHz mono WAV.
+
+        QQ voice messages are silk/amr — the gateway STT pipeline expects
+        a standard audio file, so ffmpeg converts it (best effort; returns
+        None on any failure and the caller degrades to a [语音] marker).
+        """
+        if not url or url.lower().startswith("base64://"):
+            return None
+        headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
+        timeout = aiohttp.ClientTimeout(total=25.0)
+        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return None
+                data = await resp.read()
+        if len(data) > AUDIO_MAX_BYTES:
+            logger.debug("[onebot] voice too large, skipping (%d bytes)", len(data))
+            return None
+
+        tmp = Path(tempfile.gettempdir()) / "hermes_onebot"
+        tmp.mkdir(exist_ok=True)
+        stem = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+        in_path = tmp / f"voice_{stem}.bin"
+        out_path = tmp / f"voice_{stem}.wav"
+        in_path.write_bytes(data)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg",
+                "-y",
+                "-i",
+                str(in_path),
+                "-ar",
+                "16000",
+                "-ac",
+                "1",
+                "-f",
+                "wav",
+                str(out_path),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                rc = await asyncio.wait_for(proc.wait(), timeout=20.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                return None
+            if rc != 0 or not out_path.exists():
+                logger.debug("[onebot] ffmpeg voice conversion failed (rc=%s)", rc)
+                return None
+            return str(out_path)
+        except (OSError, FileNotFoundError) as e:
+            logger.debug("[onebot] ffmpeg unavailable: %s", e)
+            return None
+        finally:
+            in_path.unlink(missing_ok=True)
 
     # ------------------------------------------------------------------
     # Outbound
@@ -694,6 +876,11 @@ class OneBotAdapter(BasePlatformAdapter):
                         media_segments.append(
                             {"type": "image", "data": {"file": f"base64://{b64}"}}
                         )
+
+            # QQ doesn't render Markdown — convert common syntax to readable
+            # plain text BEFORE splitting/rendering so chunks and text images
+            # are both clean.
+            content = strip_markdown(content or "")
 
             parts = _split_reply(content or "", self._split_length)
 

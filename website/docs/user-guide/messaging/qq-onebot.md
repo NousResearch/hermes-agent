@@ -70,7 +70,7 @@ With `require_mention: true` (default), the bot only responds in groups when it 
 
 Set `text_image_threshold: 0` to disable the image path.
 
-The text-image renderer is an AstrBot-style **element-based Markdown renderer**: bold / italic / strikethrough / inline code / code blocks / headers / quotes / lists and **tables** (AstrBot itself has no table element) are all drawn natively. Chinese typography rules are honored — punctuation never starts a line (行首禁则), inline styles wrap as a whole line, literal `\n` in plain text becomes a real line break (inside inline code it becomes a space; `\\n` is kept), and inline code uses a light-blue pill with a monospace font for Latin/digits and glyph-level fallback for CJK. When the reply target's nickname is known, the card gets an AstrBot-style blue top bar (`To <nickname>`, #002FA7).
+The text-image renderer is an AstrBot-style **element-based Markdown renderer**: bold / italic / strikethrough / inline code / code blocks / headers / quotes / lists and **tables** (AstrBot itself has no table element) are all drawn natively. Chinese typography rules are honored — punctuation never starts a line (行首禁则), inline styles wrap as a whole line, literal `\n` in plain text becomes a real line break (inside inline code it becomes a space; `\\n` is kept), and inline code uses a light-blue pill with a monospace font for Latin/digits and glyph-level fallback for CJK. When the reply target's nickname is known, the card gets an AstrBot-style blue top bar (`To <nickname>`, Klein blue #002FA7, white text at **twice the body font size**, ~68 px tall), matching AstrBot's card header proportions.
 
 ## Markdown & voice
 

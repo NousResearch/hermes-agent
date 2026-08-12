@@ -780,9 +780,31 @@ class RelayAdapter(BasePlatformAdapter):
         channel_id = str(payload.get("channel_id") or "")
         guild_id = payload.get("guild_id")  # real Discord interaction wire field
         source = SessionSource(
-            platform=Platform.RELAY,
+            # The LOGICAL platform, not Platform.RELAY. This lane parses a
+            # Discord interaction wire payload, so the underlying platform is
+            # known statically — and it must be stamped for three consumers:
+            #   1. Session keys: the connector binds the interaction's
+            #      follow-up capability under buildSessionKey with
+            #      platform="discord" (interactionSessionSource); the relay
+            #      TEXT lane (ws_transport._event_from_wire) also maps to the
+            #      logical platform. RELAY here forked interaction sessions
+            #      away from both.
+            #   2. /sethome: with platform=RELAY the handler filed the home
+            #      channel under platforms.relay.home_channel (invisible to
+            #      cron delivery, which looks up the logical platform) and
+            #      mirrored it into the dead RELAY_HOME_CHANNEL env var.
+            #   3. Egress: _capture_scope records _platform_by_chat from this
+            #      value and deliberately skips the generic "relay".
+            platform=Platform.DISCORD,
             chat_id=channel_id,
-            chat_type="channel" if guild_id else "dm",
+            # "group", not "channel": the session key embeds chat_type, and
+            # BOTH the connector's capability binding (interactionSessionSource
+            # → buildSessionKey, chat_type "group") and the native Discord
+            # adapter's channel events key guild channels as "group". A
+            # "channel" slot here forked the interaction session from the
+            # chat's message session AND from the vault key the connector
+            # bound the follow-up capability under.
+            chat_type="group" if guild_id else "dm",
             user_id=str(user.get("id"))
             if isinstance(user, dict) and user.get("id")
             else None,
@@ -793,6 +815,15 @@ class RelayAdapter(BasePlatformAdapter):
             if guild_id
             else None,  # Discord guild → generic scope slot
             message_id=str(payload.get("id")) if payload.get("id") else None,
+            # Same upstream-trust marker the relay text lane stamps
+            # (ws_transport._event_from_wire): this interaction arrived over
+            # the per-instance-authenticated relay WS after the connector
+            # verified Discord's edge signature and resolved the tenant.
+            # Without it, authz treated the event as unauthenticated relay
+            # traffic — and /sethome's via_relay guard never engaged, which is
+            # how platform=RELAY home channels slipped through in the first
+            # place. Set locally, never read off the wire.
+            delivered_via_upstream_relay=True,
         )
         event = MessageEvent(text=text, message_type=message_type, source=source)
         if itype == 3:

@@ -429,6 +429,7 @@ def test_tool_executor_uses_canonical_responses_pairing_id():
     ) == "call_ABC"
 
 
+
 # ── repair_message_sequence_with_cursor (#44837) ───────────────────────────
 
 from agent.agent_runtime_helpers import repair_message_sequence_with_cursor
@@ -475,7 +476,6 @@ def test_cursor_rewinds_when_compaction_happens_before_cursor():
 
 
 
-
 def test_flush_guard_clamps_overshooting_cursor():
     """_flush_messages_to_session_db safety net: an overshooting cursor must
     not produce a negative-start slice that skips everything (#44837)."""
@@ -510,15 +510,6 @@ def test_flush_guard_clamps_overshooting_cursor():
 
 
 # ── Pass 0: merge consecutive assistant messages (issue #29148, #49147) ─────
-
-
-
-
-
-
-
-
-
 
 
 
@@ -827,8 +818,6 @@ def test_repair_keeps_tool_result_when_tool_calls_are_sdk_objects():
     assert "tool" in roles, "legitimate tool result was dropped as a false orphan"
     tool_msg = next(m for m in messages if m.get("role") == "tool")
     assert tool_msg["content"] == "file contents"
-
-
 
 
 
@@ -1145,3 +1134,171 @@ def test_classify_orphans_mixed():
     assert rs == {"call_A", "call_C"}
     assert [m["tool_call_id"] for m in orphaned] == ["call_C"]
     assert [tc["id"] for tc in missing] == ["call_B"]
+
+
+# ── Positional tool_call <-> tool_result pairing ───────────────────────────
+# Production incident (session 4d8727cbcf04): context compression displaced
+# a tool result ~110 messages past its declaring assistant turn (across a
+# user turn). repair_message_sequence Pass 1 dropped the displaced result as
+# stray but left the declaring assistant carrying an UNANSWERED tool_call
+# with empty content; sanitize_api_messages' global-set stub pass saw the
+# displaced result still present, considered the call answered, and injected
+# no stub — DeepSeek v4 then 400'd the payload: "An assistant message with
+# 'tool_calls' must be followed by tool messages responding to each
+# 'tool_call_id' (insufficient tool messages following tool_calls message)".
+
+
+def _assistant_with_call(call_id, content=""):
+    return {
+        "role": "assistant",
+        "content": content,
+        "tool_calls": [{
+            "id": call_id, "type": "function",
+            "function": {"name": "f", "arguments": "{}"},
+        }],
+    }
+
+
+def _tool_result(call_id, content="out"):
+    return {"role": "tool", "tool_call_id": call_id, "content": content}
+
+
+def test_repair_prunes_tool_call_whose_result_was_displaced():
+    """Pass 2: a tool_call with no result in the immediately-following run is
+    pruned, even when its result exists far later (post-compression shape).
+    The assistant turn keeps its plain content once the calls are pruned.
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "do it"},
+        _assistant_with_call("call_A", content=""),          # declares A, never answered here
+        _assistant_with_call("call_B", content="second"),    # merged into the above (Pass 0)
+        _tool_result("call_B"),
+        {"role": "user", "content": "meanwhile"},            # user redirect
+        _tool_result("call_A", content="late result"),       # displaced: dropped by Pass 1
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 1
+    assistants = [m for m in messages if m.get("role") == "assistant"]
+    assert len(assistants) == 1
+    ids = [tc["id"] for tc in assistants[0]["tool_calls"]]
+    assert ids == ["call_B"]          # unanswered call_A pruned
+    assert assistants[0]["content"] == "second"
+    # The legitimate call_B result survives; only the displaced late
+    # call_A result was dropped.
+    tools = [m for m in messages if m.get("role") == "tool"]
+    assert len(tools) == 1
+    assert tools[0]["tool_call_id"] == "call_B"
+
+
+def test_repair_drops_turn_when_pruned_calls_were_only_payload():
+    """Pass 2: when pruning empties the merged assistant turn (no content,
+    no reasoning), the whole turn is dropped instead of sending an empty
+    non-final assistant message (itself a 400 on most providers).
+    """
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "do it"},
+        _assistant_with_call("call_A"),                    # empty content
+        {"role": "assistant", "content": ""},              # merged in (Pass 0)
+        {"role": "user", "content": "redirected"},
+        _tool_result("call_A", content="late"),            # displaced: dropped
+    ]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs >= 2
+    assert all(m.get("role") != "assistant" for m in messages)
+    # The two user turns merge (Pass 3); nothing was lost.
+    users = [m for m in messages if m.get("role") == "user"]
+    assert len(users) == 1
+    assert "do it" in users[0]["content"] and "redirected" in users[0]["content"]
+
+
+def test_repair_keeps_calls_answered_within_following_run():
+    """Negative control: a legitimate assistant(tool_calls)+tool run must
+    survive Pass 2 untouched (the ongoing dialog pattern)."""
+    agent = _bare_agent()
+    messages = [
+        {"role": "user", "content": "Q1"},
+        _assistant_with_call("t1", content=""),
+        _tool_result("t1"),
+        {"role": "user", "content": "Q2"},
+    ]
+    original = [dict(m) for m in messages]
+
+    repairs = AIAgent._repair_message_sequence(agent, messages)
+
+    assert repairs == 0
+    assert messages == original
+
+
+def test_sanitize_stubs_call_unanswered_positionally_even_if_result_exists_elsewhere():
+    """sanitize_api_messages must inject a stub right after the declaring
+    assistant message when no result follows it, EVEN IF a (displaced)
+    result exists later in the transcript — the global-set check missed
+    this exact shape (production 400, session 4d8727cbcf04)."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "do it"},
+        _assistant_with_call("call_A", content=""),
+        {"role": "user", "content": "meanwhile"},
+        _tool_result("call_A", content="late result"),
+    ]
+
+    out = sanitize_api_messages(list(messages))
+
+    roles = [m["role"] for m in out]
+    assert roles == ["user", "assistant", "tool", "user"]
+    stub = out[2]
+    assert stub["tool_call_id"] == "call_A"
+    assert "Result unavailable" in stub["content"]
+    # The displaced late result is dropped (positional orphan).
+    assert "late result" not in [m.get("content", "") for m in out]
+
+
+def test_sanitize_drops_result_appearing_before_its_call():
+    """A tool result that precedes its declaring assistant message is a
+    positional orphan — strict providers reject 'role=tool' messages that
+    don't follow a tool_calls message."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "do it"},
+        _tool_result("call_A"),                    # before its call
+        _assistant_with_call("call_A", content=""),
+        _tool_result("call_A"),
+    ]
+
+    out = sanitize_api_messages(list(messages))
+
+    tools = [m for m in out if m.get("role") == "tool"]
+    assert len(tools) == 1                          # only the valid one survives
+    assert tools[0]["tool_call_id"] == "call_A"
+
+
+def test_sanitize_positional_pairing_untouched_valid_transcript():
+    """Negative control: a fully paired transcript (each tool-calling
+    assistant immediately followed by its results) gets no stubs and loses
+    no results."""
+    from agent.agent_runtime_helpers import sanitize_api_messages
+
+    messages = [
+        {"role": "user", "content": "do it"},
+        _assistant_with_call("call_A", content=""),
+        _tool_result("call_A"),
+        _assistant_with_call("call_B", content=""),
+        _tool_result("call_B"),
+        {"role": "assistant", "content": "done"},
+    ]
+
+    out = sanitize_api_messages(list(messages))
+
+    assert [m["role"] for m in out] == [
+        "user", "assistant", "tool", "assistant", "tool", "assistant",
+    ]
+    assert all("Result unavailable" not in str(m.get("content", "")) for m in out)
+

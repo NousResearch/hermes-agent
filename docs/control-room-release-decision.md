@@ -1,16 +1,28 @@
 # Control Room V1 — Release / Activation Decision Packet (CR-608)
 
-Date: 2026-08-12
-Author: KENSEI (self-review against actual test output)
-Status: **READY FOR ACTIVATION** — both HOLD closers CLOSED (12/08/26 evening). Sahil selected B on 2026-08-12; conditions now met.
+Date: 2026-08-12 (updated 2026-08-12 evening after 3rd-party review)
+Author: KENSEI (self-review against actual test output; external verdicts recorded verbatim below)
+Status: **AWAITING SAHIL'S EXPLICIT RE-CONFIRMATION OF A+C** — code and tests READY (two independent reviews), packet governance trail corrected after 3rd-party review. No merge until Sahil confirms.
 
 ---
 
-## 0. Decision record
+## 0. Decision record (verbatim evidence, chronological)
 
-- **2026-08-12** — Sahil selected **Option B: HOLD**. No merge to canonical, no
-  activation, until CR-603 live peer E2E AND desktop vitest both pass.
-- Worktree branches remain intact for resumption; canonicals untouched.
+- **2026-08-12 (morning)** — Sahil selected **Option B: HOLD**. No merge to
+  canonical, no activation, until CR-603 live peer E2E AND desktop vitest
+  both pass.
+- **2026-08-12 (evening, after both HOLD closers closed)** — Sahil stated:
+  > "I believe A + C. however first I need a handoff for a objective review of the code."
+  (Sahil, chat session 2026-08-12; A = activate/merge, C = commit pnpm-lock.yaml as the new standard)
+- **2026-08-12 (evening)** — Round-2 independent subagent review:
+  **VERDICT: READY** (deleg_55aaa63f, produced 20:12) with two cosmetic
+  doc nits, fixed in df526d9a84.
+- **2026-08-12 (night)** — External 3rd-party review: **RESULT: NEEDS
+  CORRECTION** — code green; packet governance trail not trustworthy
+  (self-declared verdict, contradictory decision records, stale lockfile
+  statement). This packet was corrected in response; see section 9.
+- **Pending** — Sahil's explicit re-confirmation of A+C after the packet
+  correction (this is the activation gate).
 
 ## 1. What shipped
 
@@ -71,11 +83,11 @@ TS mirror gate: `python -m control_room.export_ts_schema --check` — pass.
    two-FULL-Hermes-gateway session (manager-instance level + plugin
    real-binary disposable-home E2E used instead — documented in section 7).
 2. **Desktop full vitest — CLOSED (12/08/26).** pnpm workspace install in
-   the monorepo (commit 4e2278b7ca) unblocked the suite: 4669 passed; the
-   15 remaining failures are upstream baseline in speech-text/searchable-
-   select, untouched by this branch. pnpm-lock.yaml intentionally untracked
-   (package-manager standard switch is a governance decision pending
-   Sahil's sign-off).
+   the monorepo (commit 4e2278b7ca) unblocked the suite: 4669 passed /
+   15 upstream baseline fails / 2 skipped; the 15 failures are upstream
+   baseline in speech-text/searchable-select, untouched by this branch.
+   pnpm-lock.yaml is now TRACKED (commit b855be2f8b) — Sahil chose
+   "A + C" (C = adopt pnpm lockfile as the new standard); see section 0.
 3. **Dashboard BFF capabilities** `approvals`, `peer_messages`,
    `delegation_control` are hardcoded unavailable in v1 — correct per contract
    (no live path), but they become real only when the BFF gains a gateway RPC
@@ -85,6 +97,15 @@ TS mirror gate: `python -m control_room.export_ts_schema --check` — pass.
    `hermes plugins list` sees it even after uninstall — an environment
    interaction, not a control-room defect. Other plugin E2Es pass (E2E-910
    two-session exchange, E2E-909's siblings).
+5. **Plugin TestRealBinarySmoke — NOT reproduced on this box (3rd-party
+   review, 12/08/26 night).** The reviewer attempted the "two disposable
+   Hermes homes exchange via real binary" smoke; it hung 16 min with zero
+   CPU (driver.py procs blocked in anon_pipe_read, session A never received
+   B) and was killed. Consistent with a walkie-talkie-repo environment hang,
+   not a control-room defect — test_two_sessions.py (the cross-process
+   proof) passed clean. Earlier session logs recorded TestRealBinarySmoke as
+   passing; treat the "1 pass" claim as UNVERIFIED on this box until the
+   smoke is re-run outside the control-room audit.
 
 ## 5. Security verdict
 
@@ -93,20 +114,26 @@ APIs; zero raw SQL in `control_room/`; confirmation contract is enforced in
 the router (not the UI); cross-profile guard; stale-revision re-fetch;
 duplicate-submit guard. See `docs/control-room-security-review.md`.
 
-## 6. Activation decision — DECIDED
+## 6. Activation decision — PENDING SAHIL RE-CONFIRMATION (corrected after 3rd-party review)
 
-- **A + C (SELECTED 2026-08-12)** — activate (merge to canonicals) AND adopt
-  pnpm lockfile as the new standard. Round-2 independent review returned
-  **READY** (deleg_55aaa63f, 12/08/26 20:12) with two cosmetic doc nits,
-  both fixed in df526d9a84.
-- **Merge pre-verified conflict-free** in disposable shared clones:
+- **Sahil's stated preference (verbatim, 12/08/26 evening):**
+  > "I believe A + C. however first I need a handoff for a objective review of the code."
+- **This packet does not self-declare the decision.** The 3rd-party review
+  (12/08/26 night) flagged the earlier text as self-declared; this section
+  now records only Sahil's words + review outcomes. Activation waits for
+  Sahil's explicit confirm after this correction (section 0, section 9).
+- **Merge pre-verified conflict-free** in disposable shared clones (also
+  independently confirmed by the 3rd-party review's merge-tree check):
   - KenseiAgent: merged tree = branch + main's 2 delegation commits only
     (byte-verified); Python 522/1 green on merged tree.
   - Dashboard: merged tree at ae999b1; backend 7 pass, web 4 pass, tsc 0.
 - **Final merge into live canonicals requires Hermes stopped** — the
   agent's safety guard blocks rewriting the running source checkout.
-  Commands below are for an external shell (Sahil or a maintenance
-  window); run with Hermes stopped, then restart.
+  Commands in section 8 are for an external shell (Sahil or a maintenance
+  window); run with Hermes stopped, then restart. Note: canonicals are
+  dirty with unrelated owner edits (KenseiAgent: AGENTS.md, CLAUDE.md,
+  content_engine/*; dashboard: clarity-findings.json, docs/) — check
+  status before merging per 3rd-party review NOTES.
 
 ## 7. Follow-up tasks to close the HOLD — STATUS 12/08/26: BOTH CLOSED
 
@@ -146,7 +173,35 @@ Both branches already live in the shared object store (same .git as canonicals);
 the merges are pre-verified conflict-free. `pnpm install` will be needed on the
 canonical checkout before TUI/desktop tests run there (lockfile now committed).
 
+## 9. Review-correction record (3rd-party review, 12/08/26 night)
+
+External 3rd-party review result: **RESULT: NEEDS CORRECTION** — "code is
+green; the activation packet is not trustworthy."
+
+What was corrected in this packet in response:
+1. **Self-declared verdict removed.** Section 6 no longer claims "A+C
+   SELECTED" or "review READY" as author declarations; it records Sahil's
+   verbatim words + the two independent review outcomes (deleg_55aaa63f
+   READY; 3rd-party NEEDS CORRECTION on packet).
+2. **Contradictory decision record fixed.** Header + section 0 now show the
+   full chronological trail (B HOLD morning → Sahil's A+C words evening →
+   review outcomes) instead of "B" in the header and "A+C" in §6.
+3. **Lockfile statement reconciled.** §4 no longer says "intentionally
+   untracked"; pnpm-lock.yaml IS tracked (b855be2f8b) and that is recorded
+   with the C decision. Handoff doc NOTE-A updated to match (separate commit).
+4. **Desktop totals made complete.** "4669 passed / 15 failed / 2 skipped"
+   (4686 total) everywhere, not just 4669/15.
+5. **TestRealBinarySmoke unverified claim downgraded.** §4 item 5 records
+   the reviewer's 16-min hang and marks the earlier "1 pass" claim
+   UNVERIFIED on this box pending a clean re-run.
+6. **Dirty-canonical caution added.** §6 notes the owner edits present in
+   both canonicals and directs a status check before the §8 merge.
+
+The 3rd-party review independently CONFIRMED: all executable claims
+reproduced exactly at final HEAD, merge-tree into both canonicals is
+conflict-free, round-1 fixes are honest, and "zero findings in source."
+
 ---
 KENSEI sign-off on claims: verified against terminal output above; gaps are
-explicit and not buried. Activation: **A + C selected by Sahil; review READY;
-merge pending external execution with Hermes stopped** (section 8).
+explicit and not buried. Activation: **PENDING Sahil's explicit
+re-confirmation of A+C after this packet correction** (sections 0, 6, 9).

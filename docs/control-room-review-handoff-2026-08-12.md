@@ -37,9 +37,9 @@ cd /home/kensei/worktrees/kenseiagent-control-room-20260812
 git branch --show-current              # expect: feat/control-room-v1-20260812
 git rev-parse HEAD
 git merge-base --is-ancestor c4e07dd3bf HEAD && echo "code-final ancestry OK"
-git diff --name-only c4e07dd3bf..HEAD | cat   # expect: docs/ only
+git diff --name-only c4e07dd3bf..HEAD | cat   # expect: docs/ + pnpm-lock.yaml (see NOTE-A)
 git diff --check 66f18cc245..HEAD      # expect: exit 0 (no whitespace errors)
-git status --short                     # expect: clean EXCEPT ?? pnpm-lock.yaml (see NOTE-A)
+git status --short                     # expect: clean (pnpm-lock.yaml TRACKED; see NOTE-A)
 ```
 
 Worktree 2 — Kensei Dashboard (BFF + React SPA):
@@ -58,10 +58,11 @@ git diff --check e1de73a..HEAD         # expect: exit 0
 git status --short                     # expect: clean
 ```
 
-NOTE-A: pnpm-lock.yaml is intentionally untracked in worktree 1. The
-package-manager standard switch (npm -> pnpm) is a governance decision
-pending Sahil's sign-off; the authored tests run from the pnpm workspace
-install regardless. Its absence is NOT a defect.
+NOTE-A: pnpm-lock.yaml is TRACKED in worktree 1 (commit b855be2f8b) —
+Sahil chose "A + C" (C = adopt the pnpm lockfile as the new
+package-manager standard) on 12/08/26 evening; the 3rd-party review
+flagged the earlier "untracked" statement as stale. Its presence is
+expected and NOT a defect.
 
 If ANY state check fails, stop and report — do not continue.
 
@@ -219,7 +220,7 @@ section 7 (follow-up tasks))
    env, so `hermes plugins list` sees it even after uninstall. This is
    an environment interaction, not a control-room defect. Verify the
    other plugin E2Es pass (see C).
-3. pnpm-lock.yaml intentionally untracked (see NOTE-A).
+3. pnpm-lock.yaml tracked as the new standard (b855be2f8b) — see NOTE-A.
 4. Live two-FULL-Hermes-gateway E2E (as opposed to two manager
    instances) was not run; CR-603 is proven at the manager-instance
    level plus the plugin's own real-binary disposable-home E2E.

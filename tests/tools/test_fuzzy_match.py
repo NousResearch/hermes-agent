@@ -1,6 +1,6 @@
 """Tests for the fuzzy matching module."""
 
-from tools.fuzzy_match import fuzzy_find_and_replace
+from tools.fuzzy_match import IDENTICAL_STRINGS_ERROR, fuzzy_find_and_replace
 
 
 class TestExactMatch:
@@ -29,11 +29,7 @@ class TestExactMatch:
         new, count, _, err = fuzzy_find_and_replace("abc", "abc", "abc")
         assert count == 0
         assert new == "abc"
-        assert err == (
-            "No edit was applied because old_string and new_string are identical. "
-            "Provide the existing text to replace in old_string and the changed "
-            "replacement text in new_string."
-        )
+        assert err == IDENTICAL_STRINGS_ERROR
 
     def test_multiline_exact(self):
         content = "line1\nline2\nline3"
@@ -442,12 +438,7 @@ class TestFormatNoMatchHint:
 
     def test_silent_on_identical_strings(self):
         """old_string == new_string — hint irrelevant."""
-        result = self.fmt(
-            "No edit was applied because old_string and new_string are identical. "
-            "Provide the existing text to replace in old_string and the changed "
-            "replacement text in new_string.",
-            0, "foo", "foo bar\n",
-        )
+        result = self.fmt(IDENTICAL_STRINGS_ERROR, 0, "foo", "foo bar\n")
         assert result == ""
 
     def test_silent_when_match_count_nonzero(self):

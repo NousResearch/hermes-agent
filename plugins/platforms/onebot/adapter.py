@@ -75,10 +75,29 @@ ACTION_TIMEOUT = 30.0
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 MAX_RECONNECT_ATTEMPTS = 100
 IMAGE_MAX_BYTES = 8 * 1024 * 1024  # skip absurdly large CQ image downloads
+MEDIA_MAX_BYTES = 20 * 1024 * 1024  # voice/video/file base64 cap (NapCat upload)
+_FORWARD_RE = re.compile(r"\[\[qq_forward\]\](.*?)\[\[/qq_forward\]\]", re.S)
 MAX_MESSAGE_LENGTH = 4000  # QQ per-message cap (UTF-16-ish, keep safe)
 
 _CQ_AT_RE = re.compile(r"\[CQ:at,qq=(\d+|all)\]")
+
+
+def _cq_unescape(s: str) -> str:
+    """反转义 CQ 码中的 HTML 实体（& → &amp;，[ → &#91; 等）。
+
+    CQ 码字符串里 url 等参数值会被转义，下载前必须还原，
+    否则 URL 里带 &amp; 会导致请求失败（图片获取失败根因）。
+    """
+    return (
+        s.replace("&amp;", "&")
+        .replace("&#91;", "[")
+        .replace("&#93;", "]")
+        .replace("&#44;", ",")
+    )
+
+
 _CQ_IMAGE_RE = re.compile(r"\[CQ:image,[^\]]*?url=([^,\]]+)\]")
+_CQ_IMAGE_ALL_RE = re.compile(r"\[CQ:image,([^\]]*)\]")
 _CQ_IMAGE_NOURL_RE = re.compile(r"\[CQ:image(?:,[^\]]*)?\]")
 _CQ_RECORD_RE = re.compile(r"\[CQ:record,[^\]]*?url=([^,\]]+)\]")
 _CQ_RECORD_NOURL_RE = re.compile(r"\[CQ:record(?:,[^\]]*)?\]")
@@ -149,93 +168,19 @@ def _build_font_chain(size: int):
     return chain
 
 
-def render_text_image(text: str) -> bytes:
-    """Render *text* onto a white PNG (black text) and return PNG bytes.
+def render_text_image(text: str, title: Optional[str] = None) -> bytes:
+    """Render *text* as a styled Markdown card image (AstrBot-style renderer).
 
-    Uses a font fallback chain (Noto CJK → WenQuanYi → Unifont) so every
-    glyph renders — no tofu boxes. Wraps per-character at the width cap;
-    explicit newlines are preserved.
+    See t2i_render.py for the element-based Markdown renderer (bold/italic/
+    headers/quotes/lists/code/table support) with glyph-level font fallback.
+    ``title`` (e.g. "To 昵称") is drawn as a top bar on the card.
     """
-    from PIL import Image, ImageDraw
+    try:
+        from .t2i_render import render_text_image as _render
+    except ImportError:  # 插件以裸模块方式加载时
+        from t2i_render import render_text_image as _render
 
-    chain = _build_font_chain(_TEXT_IMAGE_FONT_SIZE)
-    if not chain:
-        raise RuntimeError("no usable fonts for text-image rendering")
-    primary_font = chain[0][0]
-    max_width = _TEXT_IMAGE_WIDTH - 2 * _TEXT_IMAGE_MARGIN
-
-    # Resolve every char to a font; unmapped chars become '?'.
-    # Explicit newlines are kept as line breaks.
-    lines: List[str] = []
-    cur = ""
-    cur_width = 0.0
-    for ch in text:
-        if ch == "\n":
-            lines.append(cur)
-            cur = ""
-            cur_width = 0.0
-            continue
-        font = None
-        for pf, cmap in chain:
-            if ord(ch) in cmap:
-                font = pf
-                break
-        if font is None:
-            ch = "?"
-            font = primary_font
-        w = font.getlength(ch)
-        if cur and cur_width + w > max_width:
-            lines.append(cur)
-            cur = ch
-            cur_width = w
-        else:
-            cur += ch
-            cur_width += w
-    if cur:
-        lines.append(cur)
-
-    ascent, descent = primary_font.getmetrics()
-    line_h = int((ascent + descent) * 1.3)
-    height = 2 * _TEXT_IMAGE_MARGIN + max(len(lines), 1) * line_h
-    img = Image.new("RGB", (_TEXT_IMAGE_WIDTH, height), "white")
-    draw = ImageDraw.Draw(img)
-
-    y = _TEXT_IMAGE_MARGIN
-    for line in lines:
-        # Draw the line in runs of equal font so fallback glyphs mix cleanly.
-        x = float(_TEXT_IMAGE_MARGIN)
-        i = 0
-        while i < len(line):
-            ch = line[i]
-            font = None
-            for pf, cmap in chain:
-                if ord(ch) in cmap:
-                    font = pf
-                    break
-            if font is None:
-                font = primary_font
-            j = i + 1
-            while j < len(line):
-                c2 = line[j]
-                f2 = None
-                for pf, cmap in chain:
-                    if ord(c2) in cmap:
-                        f2 = pf
-                        break
-                if f2 is None:
-                    f2 = primary_font
-                if f2 is not font:
-                    break
-                j += 1
-            run = line[i:j]
-            draw.text((x, y), run, font=font, fill="black")
-            x += font.getlength(run)
-            i = j
-        y += line_h
-
-    buf = io.BytesIO()
-    img.save(buf, format="PNG")
-    return buf.getvalue()
+    return _render(text, title)
 
 
 def _split_reply(content: str, limit: int = DEFAULT_SPLIT_LENGTH) -> List[str]:
@@ -433,6 +378,7 @@ class OneBotAdapter(BasePlatformAdapter):
         # Runtime state
         self._ws: Optional[Any] = None  # live OneBot connection (read/write)
         self._self_id: Optional[str] = None  # bot's own QQ, learned from events
+        self._nicknames: Dict[str, str] = {}  # chat_id -> last known user nickname
         self._pending_actions: Dict[str, asyncio.Future] = {}
         self._runner: Optional[Any] = None  # reverse-mode web runner
         self._site: Optional[Any] = None
@@ -506,6 +452,7 @@ class OneBotAdapter(BasePlatformAdapter):
         app.router.add_get("/ws", self._handle_reverse_ws)
         app.router.add_get("/onebot", self._handle_reverse_ws)
         app.router.add_get("/", self._handle_reverse_ws)
+        app.router.add_get("/api/group_history", self._handle_group_history)
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         self._site = web.TCPSite(self._runner, self._host, self._port)
@@ -514,6 +461,27 @@ class OneBotAdapter(BasePlatformAdapter):
             "[onebot] reverse WS server listening on ws://%s:%s/ws (NapCat ws-reverse → this URL)",
             self._host, self._port,
         )
+
+    async def _handle_group_history(self, request: web.Request) -> web.Response:
+        """Local helper endpoint: pull group message history via NapCat API.
+
+        GET /api/group_history?group_id=492373722&count=20[&message_seq=N]
+        Reuses the reverse-WS echo mechanism, so it works without an HTTP API
+        on the NapCat side. No auth (loopback/LAN only) — same posture as /ws.
+        """
+        try:
+            group_id = int(request.query.get("group_id", "0") or "0")
+            count = int(request.query.get("count", "20") or "20")
+            seq_raw = request.query.get("message_seq")
+            if group_id <= 0:
+                return web.json_response({"status": "error", "error": "group_id required"}, status=400)
+            params = {"group_id": group_id, "count": max(1, min(count, 50))}
+            if seq_raw:
+                params["message_seq"] = int(seq_raw)
+            data = await self._call_action("get_group_msg_history", params, timeout=15.0)
+            return web.json_response({"status": "ok", "data": data})
+        except Exception as exc:
+            return web.json_response({"status": "error", "error": str(exc)}, status=500)
 
     async def _handle_reverse_ws(self, request: web.Request) -> web.WebSocketResponse:
         # Optional auth: NapCat sends `Authorization: Bearer <token>` when an
@@ -641,6 +609,7 @@ class OneBotAdapter(BasePlatformAdapter):
             user_id = str(data.get("user_id", "") or "")
             self._learn_self_id(data.get("self_id"))
             raw = data.get("raw_message", "") or ""
+            message = data.get("message")
             sender = data.get("sender") or {}
             nickname = sender.get("card") or sender.get("nickname") or ""
 
@@ -653,14 +622,22 @@ class OneBotAdapter(BasePlatformAdapter):
                 group_id = str(data.get("group_id", "") or "")
                 if not self._group_allowed(group_id):
                     return
-                if self._require_mention and not self._is_mentioned(raw):
+                if self._require_mention and not self._is_mentioned(raw, message):
                     return
                 chat_id = _build_chat_id("group", group_id)
                 chat_type = "group"
             else:
                 return
 
-            text, media_urls, media_types = await self._parse_content(raw)
+            # 记录最近发言者昵称（文字图顶栏 "To XXX" 用）
+            if nickname:
+                self._nicknames[chat_id] = nickname
+
+            message = data.get("message")
+            if isinstance(message, list) and message:
+                text, media_urls, media_types = await self._parse_message_array(message)
+            else:
+                text, media_urls, media_types = await self._parse_content(raw)
 
             has_voice = any(t.startswith("audio/") for t in media_types)
             if not text and not media_urls:
@@ -708,13 +685,27 @@ class OneBotAdapter(BasePlatformAdapter):
             return group_id in self._group_allow_from
         return True
 
-    def _is_mentioned(self, raw: str) -> bool:
+    def _is_mentioned(self, raw: str, message: Optional[list] = None) -> bool:
         """True when the bot was @'d or the message replies to something.
 
+        Prefer the structured message array (OneBot 11 default); fall back
+        to CQ string parsing for text-format clients.
         With an unknown bot id and no configured bot_qq we fail closed in
         group chats (no accidental reply to every message).
         """
         self_id = self._self_id or self._bot_qq or ""
+        if message is not None and isinstance(message, list):
+            for seg in message:
+                if not isinstance(seg, dict):
+                    continue
+                if seg.get("type") == "at" and str(
+                    (seg.get("data") or {}).get("qq", "")
+                ) == self_id:
+                    return True
+                if seg.get("type") == "reply":
+                    # Replying to a message is an explicit nudge — treat as a call.
+                    return True
+            return False
         if self_id and f"[CQ:at,qq={self_id}]" in raw:
             return True
         if "[CQ:reply" in raw:
@@ -734,9 +725,16 @@ class OneBotAdapter(BasePlatformAdapter):
         record_urls = _CQ_RECORD_RE.findall(raw)
         media_urls: List[str] = []
         media_types: List[str] = []
-        for url in image_urls:
+        # 完整解析每个 CQ:image 的 url/file 属性（url 可能为空，需 get_image 换取）
+        for m in _CQ_IMAGE_ALL_RE.finditer(raw):
+            attrs = {}
+            for kv in m.group(1).split(","):
+                if "=" in kv:
+                    k, _, v = kv.partition("=")
+                    attrs[k.strip()] = _cq_unescape(v)
+            logger.info("[onebot] CQ:image attrs: %s", attrs)
             try:
-                path = await self._download_image(url)
+                path = await self._resolve_image(attrs.get("url", ""), attrs.get("file", ""))
                 if path:
                     media_urls.append(path)
                     media_types.append("image")
@@ -744,7 +742,7 @@ class OneBotAdapter(BasePlatformAdapter):
                 logger.debug("[onebot] image download failed: %s", e)
         for url in record_urls:
             try:
-                path = await self._download_audio(url)
+                path = await self._download_audio(_cq_unescape(url))
                 if path:
                     media_urls.append(path)
                     media_types.append("audio/wav")
@@ -762,7 +760,109 @@ class OneBotAdapter(BasePlatformAdapter):
         text = _CQ_FACE_RE.sub(lambda m: _FACE_EMOJI.get(m.group(1), "[表情]"), text)
         text = _CQ_ANY_RE.sub("", text)
         text = re.sub(r"[ \t]+", " ", text).strip()
+        text = _cq_unescape(text)
         return text, media_urls, media_types
+
+    async def _parse_message_array(
+        self, segments: List[dict]
+    ) -> Tuple[str, List[str], List[str]]:
+        """从 OneBot 段数组解析 (text, media_urls, media_types)。
+
+        OneBot 11 事件的 message 字段是段数组
+        [{"type": "image", "data": {"file": ..., "url": ...}}, ...]。
+        结构化解析比 CQ 字符串正则更可靠（图片 url/file 天然可取）。
+        """
+        text_parts: List[str] = []
+        media_urls: List[str] = []
+        media_types: List[str] = []
+        for seg in segments or []:
+            if not isinstance(seg, dict):
+                continue
+            seg_type = seg.get("type", "")
+            data = seg.get("data") or {}
+            if seg_type == "text":
+                text_parts.append(data.get("text", ""))
+            elif seg_type == "image":
+                try:
+                    path = await self._resolve_image(
+                        data.get("url", ""), data.get("file", "")
+                    )
+                    if path:
+                        media_urls.append(path)
+                        media_types.append("image")
+                except Exception as e:
+                    logger.debug("[onebot] image resolve failed: %s", e)
+                text_parts.append("[图片]")
+            elif seg_type == "record":
+                try:
+                    path = await self._download_audio(
+                        data.get("url", "") or data.get("file", "")
+                    )
+                    if path:
+                        media_urls.append(path)
+                        media_types.append("audio/wav")
+                except Exception as e:
+                    logger.debug("[onebot] voice download failed: %s", e)
+                text_parts.append("[语音]")
+            elif seg_type == "video":
+                text_parts.append("[视频]")
+            elif seg_type == "file":
+                text_parts.append(f"[文件:{data.get('name', '')}]")
+            elif seg_type == "face":
+                text_parts.append(_FACE_EMOJI.get(str(data.get("id", "")), "[表情]"))
+            elif seg_type == "at":
+                qq = str(data.get("qq", ""))
+                text_parts.append("@" + ("全体成员" if qq == "all" else qq))
+            elif seg_type == "reply":
+                pass  # 用户偏好不显示引用
+            elif seg_type == "json":
+                text_parts.append("[卡片]")
+            elif seg_type == "poke":
+                text_parts.append("[戳一戳]")
+            # 未知段类型: 忽略
+        text = "".join(text_parts)
+        text = re.sub(r"[ \t]+", " ", text).strip()
+        return text, media_urls, media_types
+
+    async def _resolve_image(self, url: str, file: str) -> Optional[str]:
+        """把 CQ:image 的 url/file 解析为可读的本地图片路径。
+
+        - url 非空: 直接下载
+        - file=base64://...: 直接落盘
+        - file=file://...: 本地路径直接用
+        - file 是 hash: 调 OneBot get_image API 换取真实 url 再下载
+        """
+        if url:
+            return await self._download_image(url)
+        if not file:
+            return None
+        if file.startswith("base64://"):
+            try:
+                data = base64.b64decode(file[len("base64://"):])
+            except Exception:
+                return None
+            if len(data) > IMAGE_MAX_BYTES:
+                return None
+            tmp = Path(tempfile.gettempdir()) / "hermes_onebot"
+            tmp.mkdir(exist_ok=True)
+            path = tmp / f"img_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}.jpg"
+            path.write_bytes(data)
+            return str(path)
+        if file.startswith("file://"):
+            p = Path(file[len("file://"):])
+            return str(p) if p.exists() else None
+        # hash → get_image API 换取真实 URL
+        try:
+            data = await self._call_action("get_image", {"file": file}, timeout=10.0)
+            real = data.get("url") or data.get("file", "")
+            if real.startswith(("http://", "https://")):
+                return await self._download_image(real)
+            if real and not real.startswith(("base64://", "file://")):
+                p = Path(real)
+                return str(p) if p.exists() else None
+        except Exception as e:
+            logger.info("[onebot] get_image failed for file=%s: %s", file, e)
+        return None
 
     async def _download_image(self, url: str) -> Optional[str]:
         if not url or url.lower().startswith("base64://"):
@@ -830,16 +930,23 @@ class OneBotAdapter(BasePlatformAdapter):
         QQ voice messages are silk/amr — the gateway STT pipeline expects
         a standard audio file, so ffmpeg converts it (best effort; returns
         None on any failure and the caller degrades to a [语音] marker).
+        Accepts http(s) URL or base64:// payload (segment-array file field).
         """
-        if not url or url.lower().startswith("base64://"):
+        if not url:
             return None
-        headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
-        timeout = aiohttp.ClientTimeout(total=25.0)
-        async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
-            async with session.get(url) as resp:
-                if resp.status != 200:
-                    return None
-                data = await resp.read()
+        if url.lower().startswith("base64://"):
+            try:
+                data = base64.b64decode(url[len("base64://"):])
+            except Exception:
+                return None
+        else:
+            headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
+            timeout = aiohttp.ClientTimeout(total=25.0)
+            async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.read()
         if len(data) > AUDIO_MAX_BYTES:
             logger.debug("[onebot] voice too large, skipping (%d bytes)", len(data))
             return None
@@ -907,6 +1014,24 @@ class OneBotAdapter(BasePlatformAdapter):
             else:
                 params["user_id"] = int(target)
 
+            # QQ 合并转发指令: [[qq_forward]]名字\n内容\n---\n名字\n内容[[/qq_forward]]
+            # 仅群聊支持 send_forward_msg; 私聊忽略该标记走普通文本。
+            raw_content = content or ""
+            fwd_match = _FORWARD_RE.search(raw_content)
+            if fwd_match and kind == "group":
+                nodes = self._parse_forward_blocks(fwd_match.group(1))
+                if nodes:
+                    try:
+                        await self._call_action(
+                            "send_forward_msg",
+                            {"group_id": int(target), "messages": nodes},
+                            timeout=30.0,
+                        )
+                    except Exception as e:
+                        logger.warning("[onebot] send_forward_msg failed: %s", e)
+                raw_content = _FORWARD_RE.sub("", raw_content).strip()
+            content = raw_content
+
             # No [CQ:reply] prefix — user prefers plain replies without a
             # quoted reference to the triggering message.
             media_segments: List[Dict[str, Any]] = []
@@ -920,19 +1045,27 @@ class OneBotAdapter(BasePlatformAdapter):
                         )
 
             # QQ doesn't render Markdown — convert common syntax to readable
-            # plain text BEFORE splitting/rendering so chunks and text images
-            # are both clean.
-            content = strip_markdown(content or "")
+            # plain text BEFORE splitting so text chunks are clean.
+            raw_content = content or ""
+            content = strip_markdown(raw_content)
 
             parts = _split_reply(content or "", self._split_length)
 
             # Long content → single text-image message instead of text.
+            # Text-image path receives the RAW markdown so the AstrBot-style
+            # renderer can draw bold/headers/tables etc. properly.
             if (
                 self._text_image_threshold > 0
-                and len(content or "") > self._text_image_threshold
+                and len(raw_content) > self._text_image_threshold
             ):
                 try:
-                    png_bytes = await asyncio.to_thread(render_text_image, content)
+                    title = None
+                    nick = self._nicknames.get(chat_id, "")
+                    if nick:
+                        title = f"To {nick}"
+                    png_bytes = await asyncio.to_thread(
+                        render_text_image, raw_content, title
+                    )
                     b64 = base64.b64encode(png_bytes).decode("ascii")
                     image_params = dict(params)
                     image_params["message"] = [
@@ -973,10 +1106,10 @@ class OneBotAdapter(BasePlatformAdapter):
             logger.warning("[onebot] send failed: %s", e)
             return SendResult(success=False, error=str(e), retryable=True)
 
-    async def _file_to_base64(self, path: str) -> Optional[str]:
+    async def _file_to_base64(self, path: str, max_bytes: int = IMAGE_MAX_BYTES) -> Optional[str]:
         try:
             p = Path(path)
-            if not p.exists() or p.stat().st_size > IMAGE_MAX_BYTES:
+            if not p.exists() or p.stat().st_size > max_bytes:
                 return None
             data = await asyncio.to_thread(p.read_bytes)
             return base64.b64encode(data).decode("ascii")
@@ -1042,6 +1175,185 @@ class OneBotAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             logger.debug("[onebot] stop_typing failed: %s", e)
+
+    # ------------------------------------------------------------------
+    # Rich media delivery (OneBot segments)
+    # ------------------------------------------------------------------
+    def _parse_forward_blocks(self, inner: str) -> Optional[List[Dict[str, Any]]]:
+        """解析 [[qq_forward]] 内容为 OneBot node 数组。
+
+        块格式: 第一行是转发者名字, 其余为内容; 块之间用 --- 分隔。
+        """
+        uin = str(self._self_id or 2512172957)
+        nodes: List[Dict[str, Any]] = []
+        for block in inner.split("\n---\n"):
+            lines = [l.rstrip() for l in block.split("\n") if l.strip()]
+            if not lines:
+                continue
+            name = lines[0][:24]
+            text = "\n".join(lines[1:]).strip()
+            if not text:
+                continue
+            nodes.append(
+                {
+                    "type": "node",
+                    "data": {
+                        "uin": uin,
+                        "name": name,
+                        "content": [
+                            {"type": "text", "data": {"text": text[:500]}}
+                        ],
+                    },
+                }
+            )
+        return nodes or None
+
+    async def _send_media(
+        self,
+        chat_id: str,
+        segments: List[Dict[str, Any]],
+        reply_to: Optional[str] = None,
+        caption: Optional[str] = None,
+    ) -> SendResult:
+        kind, target = _split_chat_id(chat_id)
+        params: Dict[str, Any] = {}
+        if kind == "group":
+            params["group_id"] = int(target)
+        else:
+            params["user_id"] = int(target)
+        msg = list(segments)
+        if caption:
+            msg.insert(0, {"type": "text", "data": {"text": caption}})
+        params["message"] = msg
+        try:
+            data = await self._call_action("send_msg", params)
+            mid = data.get("message_id")
+            return SendResult(
+                success=True, message_id=str(mid) if mid is not None else None
+            )
+        except Exception as e:
+            logger.warning("[onebot] media send failed: %s", e)
+            return SendResult(success=False, error=str(e), retryable=True)
+
+    async def send_image(
+        self,
+        chat_id: str,
+        image_url: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """URL 图片直发: image segment 的 url 字段, NapCat 自行下载."""
+        return await self._send_media(
+            chat_id,
+            [{"type": "image", "data": {"url": image_url}}],
+            reply_to,
+            caption,
+        )
+
+    async def send_image_file(
+        self,
+        chat_id: str,
+        image_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        b64 = await self._file_to_base64(str(image_path))
+        if not b64:
+            return SendResult(success=False, error="image too large or unreadable", retryable=False)
+        return await self._send_media(
+            chat_id,
+            [{"type": "image", "data": {"file": f"base64://{b64}"}}],
+            reply_to,
+            caption,
+        )
+
+    async def send_multiple_images(
+        self,
+        chat_id: str,
+        images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+    ) -> None:
+        """批量图片: file:// → base64, http(s):// → URL 直发; 一条消息最多 9 图."""
+        from urllib.parse import unquote
+
+        segs: List[Dict[str, Any]] = []
+        for uri, _alt in images:
+            if human_delay > 0:
+                await asyncio.sleep(human_delay)
+            if uri.startswith("file://"):
+                path = unquote(uri[7:])
+                b64 = await self._file_to_base64(path)
+                if b64:
+                    segs.append({"type": "image", "data": {"file": f"base64://{b64}"}})
+            elif uri.startswith(("http://", "https://")):
+                segs.append({"type": "image", "data": {"url": uri}})
+        for i in range(0, len(segs), 9):
+            batch = segs[i : i + 9]
+            if batch:
+                await self._send_media(chat_id, batch)
+
+    async def send_voice(
+        self,
+        chat_id: str,
+        audio_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        b64 = await self._file_to_base64(str(audio_path), max_bytes=MEDIA_MAX_BYTES)
+        if not b64:
+            return SendResult(success=False, error="voice too large or unreadable", retryable=False)
+        return await self._send_media(
+            chat_id,
+            [{"type": "record", "data": {"file": f"base64://{b64}"}}],
+            reply_to,
+            caption,
+        )
+
+    async def send_video(
+        self,
+        chat_id: str,
+        video_path: str,
+        caption: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        b64 = await self._file_to_base64(str(video_path), max_bytes=MEDIA_MAX_BYTES)
+        if not b64:
+            return SendResult(success=False, error="video too large or unreadable", retryable=False)
+        return await self._send_media(
+            chat_id,
+            [{"type": "video", "data": {"file": f"base64://{b64}"}}],
+            reply_to,
+            caption,
+        )
+
+    async def send_document(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        b64 = await self._file_to_base64(str(file_path), max_bytes=MEDIA_MAX_BYTES)
+        if not b64:
+            return SendResult(success=False, error="file too large or unreadable", retryable=False)
+        name = file_name or Path(str(file_path)).name
+        return await self._send_media(
+            chat_id,
+            [{"type": "file", "data": {"file": f"base64://{b64}", "name": name}}],
+            reply_to,
+            caption,
+        )
 
 
 # ---------------------------------------------------------------------------

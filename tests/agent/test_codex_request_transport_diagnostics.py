@@ -9,7 +9,16 @@ import httpx
 import pytest
 from openai import APIConnectionError
 
-from agent.codex_runtime import run_codex_stream
+from agent.codex_runtime import _codex_request_failure_details, run_codex_stream
+
+
+def test_transport_failure_without_attached_request_reports_unknown_size():
+    error = httpx.RemoteProtocolError("connection closed")
+
+    request_body_bytes, exception_chain = _codex_request_failure_details(error)
+
+    assert request_body_bytes is None
+    assert exception_chain == "RemoteProtocolError"
 
 
 def test_transport_failure_logs_exact_request_bytes_and_class_chain(caplog):

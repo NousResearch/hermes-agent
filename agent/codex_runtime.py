@@ -46,7 +46,10 @@ def _codex_request_failure_details(error: BaseException) -> tuple[int | None, st
         exception_classes.append(type(current).__name__)
 
         if request_body_bytes is None:
-            request = getattr(current, "request", None)
+            try:
+                request = getattr(current, "request", None)
+            except Exception:
+                request = None
             if request is not None:
                 try:
                     content = request.content

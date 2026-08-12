@@ -3467,6 +3467,13 @@ def _cold_start_windows_gateway_after_update() -> None:
     Best-effort and idempotent: re-checks that nothing is running first so a
     concurrent start (e.g. the autostart entry firing) can't produce a
     duplicate gateway.
+
+    A successful ``Popen`` only proves the process was created, not that it
+    survived (e.g. a Windows job object denying breakaway kills it before it
+    logs anything — #84185). So the success line is gated on the same
+    post-spawn liveness poll every other ``_spawn_detached`` caller uses
+    (``gateway_windows._report_gateway_start``), instead of being printed
+    unconditionally from the returned PID.
     """
     if not _m()._is_windows():
         return
@@ -3495,7 +3502,7 @@ def _cold_start_windows_gateway_after_update() -> None:
 
     if pid:
         print()
-        print(f"  ✓ Starting Windows gateway after update (PID {pid})")
+        gateway_windows._report_gateway_start(f"cold-start after update (PID {pid})")
 
 def _for_each_systemd_gateway_unit(
     list_units_stdout: str,

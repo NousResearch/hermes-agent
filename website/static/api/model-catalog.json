@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-03T22:03:15Z",
+  "updated_at": "2026-08-12T17:23:25Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -85,7 +85,7 @@
           "description": ""
         },
         {
-          "id": "x-ai/grok-4.5",
+          "id": "x-ai/grok-4.6",
           "description": ""
         },
         {
@@ -226,7 +226,7 @@
           "id": "google/gemini-3.6-flash"
         },
         {
-          "id": "x-ai/grok-4.5"
+          "id": "x-ai/grok-4.6"
         },
         {
           "id": "deepseek/deepseek-v4-pro"

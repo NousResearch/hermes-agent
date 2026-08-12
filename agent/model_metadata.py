@@ -506,6 +506,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok-2-vision": 8192,      # grok-2-vision, -1212, -latest
     "grok-4-fast": 2000000,     # grok-4-fast-(non-)reasoning, also matches -reasoning
     "grok-4.20": 2000000,       # grok-4.20-0309-(non-)reasoning, -multi-agent-0309
+    "grok-4.6": 500000,         # grok-4.6 — 500K context (OpenRouter / docs.x.ai)
     "grok-4.5": 500000,         # grok-4.5, grok-4.5-latest — 500K context per docs.x.ai
     "grok-4.3": 1000000,        # grok-4.3, grok-4.3-latest — 1M context per docs.x.ai
     "grok-4": 256000,           # grok-4, grok-4-0709
@@ -580,6 +581,8 @@ _GROK_EFFORT_CAPABLE_PREFIXES = (
     # "none" ("This model does not support `reasoning_effort` value `none`"),
     # unlike grok-4.3. models.dev agrees: effort values [low, medium, high].
     "grok-4.5",
+    # grok-4.6: drop-in successor of grok-4.5 (same effort dial).
+    "grok-4.6",
 )
 
 

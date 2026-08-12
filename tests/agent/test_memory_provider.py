@@ -389,6 +389,46 @@ class TestUserInstalledProviderDiscovery:
         holo_count = sum(1 for n, _, _ in providers if n == "holographic")
         assert holo_count == 1
 
+    def test_profile_home_loads_root_shared_user_plugin(self, tmp_path, monkeypatch):
+        """A named profile can load a plugin installed once at the Hermes root."""
+        from plugins.memory import load_memory_provider
+        import plugins.memory as memory
+
+        profile_plugins = tmp_path / "profiles" / "remii" / "plugins"
+        profile_plugins.mkdir(parents=True)
+        root_plugins = tmp_path / "plugins"
+        self._make_user_memory_plugin(tmp_path, "rootshared")
+        monkeypatch.setattr(memory, "_get_user_plugins_dir", lambda: profile_plugins)
+        monkeypatch.setattr(memory, "_get_shared_user_plugins_dir", lambda: root_plugins, raising=False)
+
+        provider = load_memory_provider("rootshared")
+        assert provider is not None
+        assert provider.name == "rootshared"
+
+    def test_profile_local_user_plugin_precedes_root_shared_plugin(self, tmp_path, monkeypatch):
+        """Profile-local installations override root-shared user installations."""
+        from plugins.memory import load_memory_provider
+        import plugins.memory as memory
+
+        profile_home = tmp_path / "profiles" / "remii"
+        profile_plugins = profile_home / "plugins"
+        root_plugins = tmp_path / "plugins"
+        self._make_user_memory_plugin(profile_home, "sameprovider")
+        self._make_user_memory_plugin(tmp_path, "sameprovider")
+        profile_init = profile_plugins / "sameprovider" / "__init__.py"
+        profile_init.write_text(
+            profile_init.read_text(encoding="utf-8").replace(
+                "return 'sameprovider'", "return 'profile-local'"
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(memory, "_get_user_plugins_dir", lambda: profile_plugins)
+        monkeypatch.setattr(memory, "_get_shared_user_plugins_dir", lambda: root_plugins, raising=False)
+
+        provider = load_memory_provider("sameprovider")
+        assert provider is not None
+        assert provider.name == "profile-local"
+
 
 
 

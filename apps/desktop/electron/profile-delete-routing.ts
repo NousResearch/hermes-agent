@@ -1,4 +1,4 @@
-// Profile-delete routing logic for the `hermes:api` IPC handler.
+// Profile lifecycle routing logic for the `hermes:api` IPC handler.
 //
 // When the renderer issues DELETE /api/profiles/<name>, the handler must
 // tear down every local backend for that profile and route the DELETE itself
@@ -45,6 +45,27 @@ export function profileNameFromDeleteRequest(request) {
   }
 
   return profileNameFromPath(request.path)
+}
+
+/**
+ * Parse a successful profile-create request so Desktop-owned per-profile data
+ * can be reset. This prevents an orphaned wallpaper from an older profile with
+ * the same name being silently adopted by the newly created profile.
+ */
+export function profileNameFromCreateRequest(request): string | null {
+  if (!request || String(request.method || 'GET').toUpperCase() !== 'POST') {
+    return null
+  }
+
+  if (!/^\/api\/profiles\/?(?:[?#].*)?$/.test(String(request.path || ''))) {
+    return null
+  }
+
+  const name = String(request.body?.name ?? '')
+    .trim()
+    .toLowerCase()
+
+  return name !== 'default' && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(name) ? name : null
 }
 
 export type ProfileDeleteAction = 'noop' | 'teardown-primary' | 'teardown-pool'
@@ -243,4 +264,40 @@ export function resolveRouteProfile(
   profile: string | null | undefined
 ): string | null | undefined {
   return tornDownProfile ? null : profile
+}
+
+export interface ProfileAppearanceCleanupDeps {
+  logCleanupFailure: (profile: string, error: unknown) => void
+  notifyProfileReset: (profile: string) => void
+  removeWallpaper: (profile: string) => Promise<unknown>
+}
+
+/**
+ * Run local appearance cleanup only after the backend create/delete promise
+ * has resolved. Cleanup is best-effort: it must not turn a successful profile
+ * operation into an apparent failure, so errors are logged while renderer
+ * preferences are still reset whenever possible.
+ */
+export async function completeProfileAppearanceCleanup<T>(
+  profile: string | null,
+  result: T,
+  deps: ProfileAppearanceCleanupDeps
+): Promise<T> {
+  if (!profile) {
+    return result
+  }
+
+  try {
+    await deps.removeWallpaper(profile)
+  } catch (error) {
+    deps.logCleanupFailure(profile, error)
+  }
+
+  try {
+    deps.notifyProfileReset(profile)
+  } catch (error) {
+    deps.logCleanupFailure(profile, error)
+  }
+
+  return result
 }

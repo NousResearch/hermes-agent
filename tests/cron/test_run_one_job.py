@@ -10,6 +10,8 @@ The first test characterizes the sequence as driven through `tick()` (proving
 the extraction didn't change `tick`'s behavior); the rest unit-test the
 extracted helper directly.
 """
+import pytest
+
 import cron.scheduler as s
 
 
@@ -64,6 +66,154 @@ def test_run_one_job_success_sequence(monkeypatch):
     assert ok is True
     assert [c[0] for c in calls] == ["run_job", "save", "deliver", "mark"]
     assert calls[-1] == ("mark", "j2", True)
+
+
+def test_run_one_job_routes_failure_to_configured_target_without_mutating_job(monkeypatch):
+    """A failed run uses cron.failure_deliver without changing the stored job."""
+    _patch_pipeline(monkeypatch, success=False, final="", error="boom")
+    delivered = []
+    monkeypatch.setattr(
+        s,
+        "_deliver_result",
+        lambda job, content, adapters=None, loop=None: delivered.append((job, content)),
+    )
+    monkeypatch.setattr(
+        s,
+        "load_config",
+        lambda: {"cron": {"failure_deliver": "  whatsapp:operator-id  "}},
+    )
+    original = {
+        "id": "j-failure-route",
+        "name": "user reminder",
+        "deliver": "whatsapp:user-id",
+        "origin": {"platform": "whatsapp", "chat_id": "user-id"},
+    }
+
+    s.run_one_job(original)
+
+    delivery_job, content = delivered[0]
+    assert delivery_job is not original
+    assert delivery_job["deliver"] == "whatsapp:operator-id"
+    assert delivery_job["origin"] == original["origin"]
+    assert content == "⚠️ Cron 'user reminder' failed: boom"
+    assert original["deliver"] == "whatsapp:user-id"
+
+
+def test_run_one_job_success_ignores_failure_delivery_target(monkeypatch):
+    """A successful run still uses the job's normal delivery target."""
+    _patch_pipeline(monkeypatch, success=True, final="completed")
+    delivered = []
+    monkeypatch.setattr(
+        s,
+        "_deliver_result",
+        lambda job, content, adapters=None, loop=None: delivered.append((job, content)),
+    )
+    monkeypatch.setattr(
+        s,
+        "load_config",
+        lambda: {"cron": {"failure_deliver": "whatsapp:operator-id"}},
+    )
+    original = {
+        "id": "j-success-route",
+        "name": "user reminder",
+        "deliver": "whatsapp:user-id",
+    }
+
+    s.run_one_job(original)
+
+    assert delivered == [(original, "completed")]
+
+
+@pytest.mark.parametrize(
+    "config",
+    [
+        {},
+        None,
+        {"cron": {"failure_deliver": ""}},
+        {"cron": {"failure_deliver": 42}},
+        {"cron": []},
+    ],
+)
+def test_run_one_job_failure_delivery_falls_back_for_invalid_config(
+    monkeypatch, config
+):
+    """Absent or invalid failure routing preserves the job's normal target."""
+    _patch_pipeline(monkeypatch, success=False, final="", error="boom")
+    delivered = []
+    monkeypatch.setattr(
+        s,
+        "_deliver_result",
+        lambda job, content, adapters=None, loop=None: delivered.append(job),
+    )
+    monkeypatch.setattr(s, "load_config", lambda: config)
+    original = {
+        "id": "j-failure-fallback",
+        "name": "user reminder",
+        "deliver": "whatsapp:user-id",
+    }
+
+    s.run_one_job(original)
+
+    assert delivered == [original]
+    assert original["deliver"] == "whatsapp:user-id"
+
+
+def test_run_one_job_failure_delivery_falls_back_when_config_load_fails(monkeypatch):
+    """A config read failure must not suppress the normal failure notice."""
+    _patch_pipeline(monkeypatch, success=False, final="", error="boom")
+    delivered = []
+    monkeypatch.setattr(
+        s,
+        "_deliver_result",
+        lambda job, content, adapters=None, loop=None: delivered.append(job),
+    )
+
+    def fail_config_load():
+        raise OSError("config unavailable")
+
+    monkeypatch.setattr(s, "load_config", fail_config_load)
+    original = {
+        "id": "j-failure-config-error",
+        "name": "user reminder",
+        "deliver": "whatsapp:user-id",
+    }
+
+    s.run_one_job(original)
+
+    assert delivered == [original]
+
+
+def test_run_one_job_records_delivery_outcome_for_failure_target(monkeypatch):
+    """Execution metadata reflects the effective failure route."""
+    _patch_pipeline(monkeypatch, success=False, final="", error="boom")
+    delivered = []
+    outcomes = []
+    monkeypatch.setattr(
+        s,
+        "_deliver_result",
+        lambda job, content, adapters=None, loop=None: delivered.append(job),
+    )
+    monkeypatch.setattr(
+        s,
+        "load_config",
+        lambda: {"cron": {"failure_deliver": "local"}},
+    )
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda execution_id, **kwargs: outcomes.append(kwargs),
+    )
+    job = {
+        "id": "j-failure-outcome",
+        "execution_id": "exec-failure-outcome",
+        "name": "user reminder",
+        "deliver": "whatsapp:user-id",
+    }
+
+    s.run_one_job(job)
+
+    assert delivered[0]["deliver"] == "local"
+    assert outcomes[-1]["delivery_outcome"] == "suppressed"
 
 
 def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path):

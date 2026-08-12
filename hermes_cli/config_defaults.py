@@ -2291,6 +2291,10 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a header (task name) and footer
         # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,
+        # Optional profile-scoped destination for failed-run notices. Empty
+        # preserves the job's normal `deliver` target. Uses the same delivery
+        # syntax as jobs (for example `telegram:123456` or `whatsapp`).
+        "failure_deliver": "",
         # Make cron deliveries CONTINUABLE: a user can reply to a cron brief
         # and the agent has it in context (no "what is Task #2?" amnesia).
         # Default False preserves the historical isolation guarantee (cron

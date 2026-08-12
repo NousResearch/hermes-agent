@@ -151,6 +151,32 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     return f"⚠️ Cron '{job_name}' failed: {cleaned}"
 
 
+def _job_for_failure_delivery(job: dict) -> dict:
+    """Return a copy routed to ``cron.failure_deliver`` when configured.
+
+    Failure routing is profile-scoped because ``load_config`` resolves against
+    the active ``HERMES_HOME``. Invalid or unavailable config deliberately
+    falls back to the job's normal destination.
+    """
+    try:
+        config = load_config() or {}
+    except Exception:
+        return job
+
+    cron_config = config.get("cron") if isinstance(config, dict) else None
+    failure_deliver = (
+        cron_config.get("failure_deliver")
+        if isinstance(cron_config, dict)
+        else None
+    )
+    if not isinstance(failure_deliver, str) or not failure_deliver.strip():
+        return job
+
+    delivery_job = job.copy()
+    delivery_job["deliver"] = failure_deliver.strip()
+    return delivery_job
+
+
 class CronPromptInjectionBlocked(Exception):
     """Raised by _build_job_prompt when the fully-assembled prompt trips the
     injection scanner. Caught in run_job so the operator sees a clean
@@ -4743,6 +4769,7 @@ def run_one_job(
                 )
             else:
                 deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+            delivery_job = job if success else _job_for_failure_delivery(job)
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
@@ -4762,11 +4789,16 @@ def run_one_job(
 
             if should_deliver:
                 unresolved_origin = (
-                    _normalize_deliver_value(job.get("deliver", "local")) == "origin"
-                    and not _resolve_delivery_targets(job)
+                    _normalize_deliver_value(delivery_job.get("deliver", "local")) == "origin"
+                    and not _resolve_delivery_targets(delivery_job)
                 )
                 try:
-                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                    delivery_error = _deliver_result(
+                        delivery_job,
+                        deliver_content,
+                        adapters=adapters,
+                        loop=loop,
+                    )
                 except Exception as de:
                     delivery_error = str(de)
                     logger.error("Delivery failed for job %s: %s", job["id"], de)
@@ -4792,7 +4824,7 @@ def run_one_job(
                 )
             else:
                 mark_job_run(job["id"], success, error, delivery_error=delivery_error)
-        normalized_deliver = _normalize_deliver_value(job.get("deliver", "local"))
+        normalized_deliver = _normalize_deliver_value(delivery_job.get("deliver", "local"))
         if delivery_error:
             delivery_outcome = "failed"
         elif should_deliver and unresolved_origin:

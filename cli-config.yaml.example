@@ -384,6 +384,15 @@ terminal:
 #   sudo_password: "your-password-here"
 
 # =============================================================================
+# Cron Configuration
+# =============================================================================
+cron:
+  # Optional destination for failed-run notices. Successful output still uses
+  # each job's `deliver` target. Accepts the same delivery syntax as cron jobs.
+  # Example: "telegram:123456", "telegram:-100123:17585", or "whatsapp".
+  failure_deliver: ""  # Empty = use each job's normal delivery target
+
+# =============================================================================
 # Security Scanning (tirith)
 # =============================================================================
 # Optional pre-exec command security scanning via tirith.

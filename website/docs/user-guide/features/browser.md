@@ -353,7 +353,7 @@ AGENT_BROWSER_ENGINE=lightpanda
 
 Hermes drives Lightpanda through `agent-browser` over CDP, the same way it drives local Chrome.
 
-**Automatic Chrome fallback.** Lightpanda doesn't yet cover everything Chrome does, so the integration is non-disruptive: Lightpanda handles the actions it supports, and Hermes transparently retries on Chrome for anything it doesn't. The supported set covers the core agent workflow — navigate, snapshot, click, type, scroll, back, press, and eval. Actions that fall back to Chrome include screenshots (Lightpanda has no graphical renderer), PDF generation, file uploads, and clipboard operations. Because Lightpanda skips visual rendering, `browser_vision` is pre-routed straight to Chrome.
+**Automatic Chrome fallback.** Lightpanda doesn't yet cover everything Chrome does, so the integration is non-disruptive: Lightpanda handles the actions it supports, and Hermes transparently retries on Chrome for anything it doesn't. The supported set covers the core agent workflow — navigate, snapshot, click, type, scroll, back, press, and eval. Screenshots also fall back to Chrome because Lightpanda has no graphical renderer; `browser_vision` is pre-routed straight to Chrome for the same reason.
 
 ### Local Chromium-family browser via CDP (`/browser connect`)
 

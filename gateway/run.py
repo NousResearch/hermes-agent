@@ -27830,6 +27830,19 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     InProcessCronScheduler().start(stop_event, adapters=adapters, loop=loop, interval=interval)
 
 
+def _stop_cron_provider(provider) -> None:
+    """Stop a cron provider without letting it choose the gateway exit code."""
+    try:
+        provider.stop()
+    except SystemExit as exc:
+        logger.warning(
+            "Cron provider stop() attempted to exit the gateway with code %s; ignoring",
+            exc.code,
+        )
+    except Exception as exc:
+        logger.debug("Cron provider stop() error: %s", exc)
+
+
 # Upper bound for cooperatively draining the cron ticker on shutdown. The cron
 # thread delivers via ``safe_schedule_threadsafe`` and blocks on
 # ``future.result(timeout=60)`` (see cron/scheduler.py::_deliver_result), so a
@@ -28493,10 +28506,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     # silently dropped (#58818). Awaiting keeps the loop alive so the in-flight
     # delivery finishes before we tear down.
     cron_stop.set()
-    try:
-        cron_provider.stop()
-    except Exception as e:
-        logger.debug("Cron provider stop() error: %s", e)
+    _stop_cron_provider(cron_provider)
     if not await _await_thread_exit(cron_thread, timeout=_CRON_SHUTDOWN_DRAIN_TIMEOUT):
         logger.warning(
             "Cron ticker did not exit within %.0fs of shutdown — an in-flight "

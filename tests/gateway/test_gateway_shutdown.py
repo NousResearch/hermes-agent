@@ -49,6 +49,16 @@ def test_cleanup_agent_resources_reaps_stale_aux_clients():
     cleanup_mock.assert_called_once()
 
 
+def test_cron_provider_stop_cannot_override_gateway_exit_code(caplog):
+    provider = MagicMock()
+    provider.stop.side_effect = SystemExit(GATEWAY_SERVICE_RESTART_EXIT_CODE)
+
+    gateway_run._stop_cron_provider(provider)
+
+    provider.stop.assert_called_once_with()
+    assert "attempted to exit the gateway with code 75; ignoring" in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_gateway_stop_interrupts_running_agents_and_cancels_adapter_tasks():
     runner, adapter = make_restart_runner()

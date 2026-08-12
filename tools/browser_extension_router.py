@@ -1,0 +1,200 @@
+"""Phase 4 registry-level browser extension router.
+
+This module is the *agent-side* half of the browser-extension-control
+feature: it decides, for one registry ``browser_*`` handler invocation,
+whether the command is executed by an attached extension controller (via
+the :mod:`gateway.browser_control_broker`) or by the existing legacy
+browser backend.
+
+Routing contract (exercised by ``tests/tools/test_browser_extension_router.py``):
+
+- **Feature off ⇒ legacy, untouched.** When ``enabled`` is false the broker
+  is never touched and ``fallback()`` is called exactly once. This is the
+  default: ``browser.extension_control.enabled`` is false unless explicitly
+  configured, so every real browser action keeps its exact legacy path.
+
+- **No exact server-bound scope ⇒ legacy.** ``broker.scope_for_session(...)``
+  must return exactly one attached controller scope for the caller's session,
+  authenticated principal, and transport family. Missing identity, no match,
+  or ambiguity preserves the existing backend.
+
+- **No exact capable controller ⇒ legacy.** ``broker.select(scope, action)``
+  must return a controller whose capability set contains the action.
+  Controllers currently register with only ``controller.noop``, so real
+  browser actions never match and always fall back.
+
+- **Selected controller ⇒ authoritative.** Once a controller is selected the
+  command is dispatched to it and its result returned; the legacy backend
+  is *never* retried, even when the controller fails (timeout, cancellation,
+  rejection, transport error all propagate to the caller).
+
+- **Arguments are never mutated.** ``args`` is passed through untouched;
+  the broker copies arguments into its command frame itself.
+
+The lazy wrapper :func:`routed_browser_handler` is what the ``browser_*``
+registry handlers call. It resolves the feature flag and the process-local
+broker lazily on every invocation so importing this module (or
+``tools.browser_tool``) never pulls in the gateway, and so a mid-process
+config change is honored without restart.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Callable, Dict, Optional
+
+logger = logging.getLogger(__name__)
+
+
+def route_browser_tool(
+    action: str,
+    args: Dict[str, Any],
+    *,
+    fallback: Callable[[], Any],
+    broker: Any,
+    enabled: bool,
+    session_id: Optional[str] = None,
+    task_id: Optional[str] = None,
+    principal_id: Optional[str] = None,
+    transport_family: Optional[str] = None,
+    tool_call_id: Optional[str] = "",
+) -> Any:
+    """Route one browser action through the extension-control broker.
+
+    Parameters
+    ----------
+    action:
+        Registry tool name / controller capability, e.g. ``"browser_navigate"``.
+    args:
+        Tool arguments as received from the model. Never mutated.
+    fallback:
+        The existing backend handler, called exactly once when the router
+        decides the extension path must not run (feature off, no scope, or
+        no capable controller). Must be a zero-argument callable.
+    broker:
+        Object exposing ``scope_for_session(**identity) -> scope|None``,
+        ``select(scope, capability) -> controller|None`` and
+        ``dispatch(scope, *, action, arguments, tool_call_id)``. The real
+        implementation is ``gateway.browser_control_broker``.
+    enabled:
+        Feature flag; false bypasses the broker entirely.
+    session_id/task_id:
+        Caller session hints forwarded to ``scope_for_session``.
+    principal_id/transport_family:
+        Server-bound caller identity. Both are mandatory when the feature is
+        enabled; missing values fail closed to the existing backend.
+    tool_call_id:
+        Caller tool-call id forwarded verbatim to ``dispatch``.
+
+    Returns
+    -------
+    The legacy backend's return value when falling back, or the controller's
+    completion result when routed. Exceptions from a selected controller are
+    propagated — the legacy backend is never retried after selection.
+    """
+    if not enabled:
+        return fallback()
+
+    if not str(principal_id or "").strip() or not str(transport_family or "").strip():
+        return fallback()
+
+    scope = broker.scope_for_session(
+        session_id=session_id,
+        task_id=task_id,
+        principal_id=principal_id,
+        transport_family=transport_family,
+    )
+    if scope is None:
+        # No unambiguous attached session scope: preserve existing backend.
+        return fallback()
+
+    controller = broker.select(scope, action)
+    if controller is None:
+        # No controller capable of this exact action: preserve existing backend.
+        return fallback()
+
+    # A controller was selected: it is authoritative. Never retry through the
+    # existing backend, whatever happens here.
+    return broker.dispatch(
+        scope, action=action, arguments=args, tool_call_id=tool_call_id
+    )
+
+
+def current_tool_call_id() -> str:
+    """Return the active tool_call_id, or ``""`` when none is bound.
+
+    The agent executor binds the id via
+    ``tools.approval.set_current_observability_context`` immediately before
+    registry dispatch, so the registry handler (and this router) can read it
+    back from the same context. Bare/offline callers have no binding.
+    """
+    try:
+        from tools.approval import _approval_tool_call_id
+
+        return _approval_tool_call_id.get() or ""
+    except Exception:
+        return ""
+
+
+def routed_browser_handler(
+    action: str,
+    args: Dict[str, Any],
+    *,
+    fallback: Callable[[], Any],
+    task_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    principal_id: Optional[str] = None,
+    transport_family: Optional[str] = None,
+    tool_call_id: Optional[str] = None,
+) -> Any:
+    """Lazy registry-handler route wrapper for ``browser_*`` tools.
+
+    Resolves the Phase 4 feature flag and process-local broker lazily so the
+    default (feature off) path costs one cached config read and an immediate
+    fallback, and so importing ``tools.browser_tool`` never imports the
+    gateway. When the gateway cannot be imported or the feature is off, the
+    legacy handler runs unchanged.
+    """
+    try:
+        from gateway.browser_control_broker import (
+            browser_control_enabled,
+            get_browser_control_broker,
+        )
+    except Exception as exc:  # pragma: no cover - defensive, gateway always present
+        logger.debug(
+            "browser extension router unavailable (%s); using legacy backend",
+            exc,
+        )
+        return fallback()
+
+    if not browser_control_enabled():
+        return fallback()
+
+    if tool_call_id is None:
+        tool_call_id = current_tool_call_id()
+
+    try:
+        from gateway.session_context import get_session_env
+
+        session_id = session_id or get_session_env("HERMES_SESSION_ID", "") or None
+        principal_id = principal_id or get_session_env(
+            "HERMES_BROWSER_CONTROL_PRINCIPAL", ""
+        ) or None
+        transport_family = transport_family or get_session_env(
+            "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY", ""
+        ) or None
+    except Exception:
+        pass
+
+    return route_browser_tool(
+        action,
+        args,
+        fallback=fallback,
+        broker=get_browser_control_broker(),
+        enabled=True,
+        session_id=session_id,
+        task_id=task_id,
+        principal_id=principal_id,
+        transport_family=transport_family,
+        tool_call_id=tool_call_id,
+    )

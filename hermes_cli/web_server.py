@@ -16010,7 +16010,16 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         internal = ws.query_params.get("internal", "")
         if internal:
             try:
-                consume_internal_credential(internal)
+                info = consume_internal_credential(internal)
+                # Stamp the server-minted identity onto the WS object so the
+                # connection (and any transport built from it) can never be
+                # impersonated by RPC params. Internal peers are marked
+                # ``server-internal`` and are excluded from privileged
+                # controller registration downstream.
+                ws._hermes_auth_identity = {
+                    "user_id": info.get("user_id"),
+                    "provider": info.get("provider"),
+                }
                 return None, "internal"
             except TicketInvalid as exc:
                 audit_log(
@@ -16026,7 +16035,18 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
             return "no_credential", "none"
 
         try:
-            consume_ticket(ticket)
+            info = consume_ticket(ticket)
+            # The ticket binds a server-minted {user_id, provider}; stamp it
+            # onto the WS object so ``gateway_ws`` can hand it to the gateway
+            # transport, where it is the sole identity authority for
+            # browser-controller registration. A client can never supply or
+            # spoof this value through RPC params. Only the two identity
+            # fields are carried — bookkeeping (e.g. ``minted_at``) is not
+            # part of the identity contract.
+            ws._hermes_auth_identity = {
+                "user_id": info.get("user_id"),
+                "provider": info.get("provider"),
+            }
             return None, "ticket"
         except TicketInvalid as exc:
             audit_log(
@@ -17147,7 +17167,11 @@ async def gateway_ws(ws: WebSocket) -> None:
 
     from tui_gateway.ws import handle_ws
 
-    await handle_ws(ws)
+    # The authenticated identity (ticket / internal credential) was stamped
+    # onto the WS object by _ws_auth_reason; carry it into the gateway
+    # transport where it becomes the identity authority for privileged RPCs
+    # (browser.controller.register). None on the legacy token path.
+    await handle_ws(ws, auth_identity=getattr(ws, "_hermes_auth_identity", None))
 
 
 # ---------------------------------------------------------------------------

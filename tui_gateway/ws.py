@@ -89,10 +89,19 @@ class WSTransport:
         loop: asyncio.AbstractEventLoop,
         *,
         peer: str = "unknown",
+        auth_identity: dict | None = None,
     ) -> None:
         self._ws = ws
         self._loop = loop
         self._peer = peer
+        #: Server-verified identity carried from the WS-upgrade credential
+        #: (dashboard ticket / internal credential) — stamped by
+        #: ``hermes_cli.web_server._ws_auth_reason`` onto the WS object and
+        #: passed through ``handle_ws``. None for transports that
+        #: authenticated via the legacy token path or stdio. RPC params can
+        #: never populate this: it is the only identity authority for
+        #: browser-controller registration.
+        self.auth_identity = auth_identity
         self._closed = False
         # Token-coalescing buffer (CF-2). Streamed token frames land here and a
         # short timer flushes the batch. The lock guards the buffer + the
@@ -283,8 +292,16 @@ def _disable_nagle(ws: Any) -> None:
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
 
-async def handle_ws(ws: Any) -> None:
-    """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``."""
+async def handle_ws(ws: Any, *, auth_identity: dict | None = None) -> None:
+    """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``.
+
+    *auth_identity* is the server-minted ``{user_id, provider}`` recorded at
+    WS-upgrade authentication (``hermes_cli.web_server._ws_auth_reason``); it
+    is stored on the transport as ``WSTransport.auth_identity`` and is the
+    only identity authority for browser-controller registration. Existing
+    callers (stdio-free harnesses, the embedded TUI child) omit it and get a
+    ``None`` transport identity — unchanged behaviour.
+    """
     peer = _ws_peer_label(ws)
     transport: WSTransport | None = None
     messages = 0
@@ -301,7 +318,12 @@ async def handle_ws(ws: Any) -> None:
         _disable_nagle(ws)
         _log.info("ws accepted peer=%s", peer)
 
-        transport = WSTransport(ws, asyncio.get_running_loop(), peer=peer)
+        transport = WSTransport(
+            ws,
+            asyncio.get_running_loop(),
+            peer=peer,
+            auth_identity=auth_identity,
+        )
 
         # resolve_skin() reads config + initializes the skin engine —
         # synchronous I/O + CPU work that should not block the event loop
@@ -431,6 +453,22 @@ async def handle_ws(ws: Any) -> None:
         detached_sessions = 0
         if transport is not None:
             server.unregister_live_transport(transport)
+
+            # Owner-safely detach browser controllers this transport
+            # registered (Phase 4 Cloud). The socket itself is closing, so no
+            # peer cancel write is attempted; every server-side pending command
+            # is still failed closed immediately.
+            try:
+                from gateway.browser_control_broker import (
+                    get_browser_control_broker,
+                )
+
+                get_browser_control_broker().detach_owner(
+                    transport, notify_controller=False
+                )
+            except Exception:
+                _log.exception("ws browser-controller detach failed peer=%s", peer)
+
             transport.close()
 
             try:

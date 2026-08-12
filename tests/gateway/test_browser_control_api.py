@@ -1,0 +1,390 @@
+import asyncio
+import time
+
+import pytest
+from aiohttp import WSServerHandshakeError, web
+from aiohttp.test_utils import TestClient, TestServer
+
+from gateway.browser_control_broker import ControllerRejected, ControllerScope
+from gateway.config import PlatformConfig
+from gateway.platforms.api_server import APIServerAdapter
+
+
+API_KEY = "-".join(("fixture", "neutral", "api", "key", "123"))
+CONTROL_PROTOCOL = "hermes-browser-control-v1"
+
+
+class _SessionDB:
+    def __init__(self):
+        self.sessions = {
+            "session-fixture": {"id": "session-fixture", "source": "api_server"},
+            "remote-session-fixture": {
+                "id": "remote-session-fixture",
+                "source": "api_server",
+            },
+        }
+
+    def get_session(self, session_id):
+        return self.sessions.get(session_id)
+
+
+def _ticket_protocol(ticket):
+    return f"hermes-browser-control-ticket.{ticket}"
+
+
+def _adapter(*, key=API_KEY):
+    adapter = APIServerAdapter(
+        PlatformConfig(enabled=True, extra={"key": key} if key else {})
+    )
+    adapter._session_db = _SessionDB()
+    return adapter
+
+
+def _app(adapter):
+    app = web.Application()
+    app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
+    app.router.add_post(
+        "/v1/browser-control/register", adapter._handle_browser_control_register
+    )
+    app.router.add_get(
+        "/v1/browser-control/ws", adapter._handle_browser_control_ws
+    )
+    return app
+
+
+def _registration_body(**overrides):
+    payload = {
+        "protocol_version": 1,
+        "controller_id": "controller-fixture",
+        "browser_profile_id": "browser-profile-fixture",
+        "session_id": "session-fixture",
+        "capabilities": ["controller.noop", "browser_navigate"],
+        "principal_id": "spoofed-client-principal",
+        "product": {
+            "id": "chromium",
+            "engine": "chromium",
+            "label": "Chromium browser",
+        },
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_route_table_advertises_registration_and_controller_ws_without_replacing_existing_routes():
+    adapter = _adapter()
+    routes = {(method, path) for method, path, _handler in adapter._http_route_table()}
+    assert ("POST", "/v1/browser-control/register") in routes
+    assert ("GET", "/v1/browser-control/ws") in routes
+    assert ("POST", "/v1/chat/completions") in routes
+
+
+def test_api_agent_context_binds_server_principal_and_transport_family():
+    from gateway.session_context import clear_session_vars, get_session_env
+
+    adapter = _adapter()
+    tokens = adapter._bind_api_server_session(
+        session_id="session-fixture",
+        browser_control_principal="principal-fixture",
+        browser_control_transport_family="local-api",
+    )
+    try:
+        assert (
+            get_session_env("HERMES_BROWSER_CONTROL_PRINCIPAL")
+            == "principal-fixture"
+        )
+        assert (
+            get_session_env("HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY")
+            == "local-api"
+        )
+    finally:
+        clear_session_vars(tokens)
+
+
+@pytest.mark.asyncio
+async def test_capabilities_are_truthful_and_disabled_by_default(monkeypatch):
+    adapter = _adapter()
+    monkeypatch.setattr(adapter, "_browser_control_enabled", lambda: False)
+    async with TestClient(TestServer(_app(adapter))) as client:
+        response = await client.get(
+            "/v1/capabilities", headers={"Authorization": f"Bearer {API_KEY}"}
+        )
+        assert response.status == 200
+        data = await response.json()
+
+    control = data["features"]["browser_extension_control"]
+    assert control == {
+        "enabled": False,
+        "protocol_version": 1,
+        "capabilities": ["controller.noop"],
+        "real_browser_actions": False,
+        "transports": {
+            "local_vps": "websocket-subprotocol-ticket",
+            "cloud": "authenticated-gateway-rpc",
+        },
+    }
+    assert data["endpoints"]["browser_control_register"] == {
+        "method": "POST",
+        "path": "/v1/browser-control/register",
+    }
+    assert data["endpoints"]["browser_control_ws"] == {
+        "method": "GET",
+        "path": "/v1/browser-control/ws",
+    }
+
+
+@pytest.mark.asyncio
+async def test_api_middleware_stamps_server_control_identity_for_agent_entry():
+    from gateway.platforms.api_server import (
+        _api_request_browser_control_principal,
+        _api_request_browser_control_transport_family,
+    )
+
+    adapter = _adapter()
+
+    async def inspect(_request):
+        return web.json_response(
+            {
+                "principal": _api_request_browser_control_principal.get(),
+                "transport_family": (
+                    _api_request_browser_control_transport_family.get()
+                ),
+            }
+        )
+
+    app = web.Application(middlewares=[adapter._make_profile_prefix_middleware()])
+    app.router.add_get("/inspect", inspect)
+    async with TestClient(TestServer(app)) as client:
+        response = await client.get("/inspect")
+        body = await response.json()
+
+    assert body == {
+        "principal": adapter._derive_browser_control_principal("default"),
+        "transport_family": "local-api",
+    }
+
+
+@pytest.mark.asyncio
+async def test_registration_requires_enabled_feature_and_configured_bearer_auth(monkeypatch):
+    disabled = _adapter()
+    monkeypatch.setattr(disabled, "_browser_control_enabled", lambda: False)
+    async with TestClient(TestServer(_app(disabled))) as client:
+        response = await client.post(
+            "/v1/browser-control/register",
+            json=_registration_body(),
+            headers={"Authorization": f"Bearer {API_KEY}"},
+        )
+        assert response.status == 404
+
+    unkeyed = _adapter(key="")
+    monkeypatch.setattr(unkeyed, "_browser_control_enabled", lambda: True)
+    async with TestClient(TestServer(_app(unkeyed))) as client:
+        response = await client.post(
+            "/v1/browser-control/register", json=_registration_body()
+        )
+        assert response.status == 403
+        assert (await response.json())["error"]["code"] == "browser_control_auth_required"
+
+    keyed = _adapter()
+    monkeypatch.setattr(keyed, "_browser_control_enabled", lambda: True)
+    async with TestClient(TestServer(_app(keyed))) as client:
+        response = await client.post(
+            "/v1/browser-control/register", json=_registration_body()
+        )
+        assert response.status == 401
+        response = await client.post(
+            "/v1/browser-control/register",
+            json=_registration_body(session_id=""),
+            headers={"Authorization": f"Bearer {API_KEY}"},
+        )
+        assert response.status == 400
+
+        response = await client.post(
+            "/v1/browser-control/register",
+            json=_registration_body(session_id="not-a-server-session"),
+            headers={"Authorization": f"Bearer {API_KEY}"},
+        )
+        assert response.status == 403
+        assert (await response.json())["error"]["code"] == (
+            "browser_control_session_forbidden"
+        )
+
+
+@pytest.mark.asyncio
+async def test_controller_ws_rechecks_feature_flag_before_consuming_ticket(monkeypatch):
+    adapter = _adapter()
+    monkeypatch.setattr(adapter, "_browser_control_enabled", lambda: True)
+    async with TestClient(TestServer(_app(adapter))) as client:
+        response = await client.post(
+            "/v1/browser-control/register",
+            json=_registration_body(),
+            headers={"Authorization": f"Bearer {API_KEY}"},
+        )
+        ticket = (await response.json())["ticket"]
+        monkeypatch.setattr(adapter, "_browser_control_enabled", lambda: False)
+        with pytest.raises(WSServerHandshakeError) as disabled:
+            await client.ws_connect(
+                "/v1/browser-control/ws",
+                protocols=[CONTROL_PROTOCOL, _ticket_protocol(ticket)],
+            )
+        assert disabled.value.status == 404
+
+        # Neither a missing protocol nor the legacy query-string shape may
+        # consume the one-shot credential.
+        monkeypatch.setattr(adapter, "_browser_control_enabled", lambda: True)
+        with pytest.raises(WSServerHandshakeError) as query_ticket:
+            await client.ws_connect(f"/v1/browser-control/ws?ticket={ticket}")
+        assert query_ticket.value.status == 401
+        ws = await client.ws_connect(
+            "/v1/browser-control/ws",
+            protocols=[CONTROL_PROTOCOL, _ticket_protocol(ticket)],
+        )
+        await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_local_api_ticket_ws_noop_round_trip_filters_spoofed_identity_and_disabled_actions(monkeypatch):
+    adapter = _adapter()
+    monkeypatch.setattr(adapter, "_browser_control_enabled", lambda: True)
+    async with TestClient(TestServer(_app(adapter))) as client:
+        response = await client.post(
+            "/v1/browser-control/register",
+            json=_registration_body(),
+            headers={"Authorization": f"Bearer {API_KEY}"},
+        )
+        assert response.status == 201
+        registration = await response.json()
+        assert registration["protocol_version"] == 1
+        assert registration["ticket"]
+        assert registration["ticket_expires_at"] > time.time()
+        assert 0 < registration["ticket_expires_in_seconds"] <= 30
+        assert registration["ws_path"] == "/v1/browser-control/ws"
+        assert registration["scope"]["principal_id"] != "spoofed-client-principal"
+        assert registration["scope"]["transport_family"] == "local-api"
+        assert registration["scope"]["capabilities"] == ["controller.noop"]
+
+        ws = await client.ws_connect(
+            "/v1/browser-control/ws",
+            protocols=[CONTROL_PROTOCOL, _ticket_protocol(registration["ticket"])],
+        )
+        scope = ControllerScope(
+            principal_id=registration["scope"]["principal_id"],
+            profile_id=registration["scope"]["profile_id"],
+            session_id=registration["scope"]["session_id"],
+            controller_id=registration["scope"]["controller_id"],
+            browser_profile_id=registration["scope"]["browser_profile_id"],
+            transport_family=registration["scope"]["transport_family"],
+            capabilities=frozenset(registration["scope"]["capabilities"]),
+        )
+
+        pending = asyncio.create_task(
+            asyncio.to_thread(
+                adapter._browser_control_broker.dispatch,
+                scope,
+                action="controller.noop",
+                arguments={"echo": "local-api"},
+                tool_call_id="tool-call-fixture",
+            )
+        )
+        command = await ws.receive_json(timeout=2.0)
+        assert command["method"] == "browser.controller.command"
+        assert command["params"]["action"] == "controller.noop"
+        await ws.send_json(
+            {
+                "method": "browser.controller.result",
+                "params": {
+                    "command_id": command["params"]["command_id"],
+                    "ok": True,
+                    "result": {"echo": "local-api"},
+                },
+            }
+        )
+        assert await asyncio.wait_for(pending, timeout=2.0) == {"echo": "local-api"}
+
+        rejected = asyncio.create_task(
+            asyncio.to_thread(
+                adapter._browser_control_broker.dispatch,
+                scope,
+                action="controller.noop",
+                arguments={"echo": "reject"},
+                tool_call_id="tool-call-rejected",
+            )
+        )
+        rejected_command = await ws.receive_json(timeout=2.0)
+        await ws.send_json(
+            {
+                "method": "browser.controller.result",
+                "params": {
+                    "command_id": rejected_command["params"]["command_id"],
+                    "ok": "false",
+                    "error": {"code": "controller_rejected", "message": "fixture rejection"},
+                },
+            }
+        )
+        with pytest.raises(ControllerRejected, match="controller_rejected"):
+            await asyncio.wait_for(rejected, timeout=2.0)
+        await ws.close()
+
+        with pytest.raises(WSServerHandshakeError) as replay:
+            await client.ws_connect(
+                "/v1/browser-control/ws",
+                protocols=[CONTROL_PROTOCOL, _ticket_protocol(registration["ticket"])],
+            )
+        assert replay.value.status == 401
+
+
+@pytest.mark.asyncio
+async def test_remote_api_uses_the_same_authenticated_noop_round_trip(monkeypatch):
+    adapter = _adapter()
+    monkeypatch.setattr(adapter, "_browser_control_enabled", lambda: True)
+    monkeypatch.setattr(
+        adapter,
+        "_browser_control_transport_family",
+        lambda request: "remote-api",
+    )
+    async with TestClient(TestServer(_app(adapter))) as client:
+        response = await client.post(
+            "/v1/browser-control/register",
+            json=_registration_body(session_id="remote-session-fixture"),
+            headers={"Authorization": f"Bearer {API_KEY}"},
+        )
+        registration = await response.json()
+        assert response.status == 201
+        assert registration["scope"]["transport_family"] == "remote-api"
+
+        ws = await client.ws_connect(
+            "/v1/browser-control/ws",
+            protocols=[CONTROL_PROTOCOL, _ticket_protocol(registration["ticket"])],
+        )
+        scope = ControllerScope(
+            principal_id=registration["scope"]["principal_id"],
+            profile_id=registration["scope"]["profile_id"],
+            session_id=registration["scope"]["session_id"],
+            controller_id=registration["scope"]["controller_id"],
+            browser_profile_id=registration["scope"]["browser_profile_id"],
+            transport_family="remote-api",
+            capabilities=frozenset(registration["scope"]["capabilities"]),
+        )
+        pending = asyncio.create_task(
+            asyncio.to_thread(
+                adapter._browser_control_broker.dispatch,
+                scope,
+                action="controller.noop",
+                arguments={"family": "remote-api"},
+                tool_call_id="tool-call-remote",
+            )
+        )
+        command = await ws.receive_json(timeout=2.0)
+        await ws.send_json(
+            {
+                "method": "browser.controller.result",
+                "params": {
+                    "command_id": command["params"]["command_id"],
+                    "ok": True,
+                    "result": {"family": "remote-api"},
+                },
+            }
+        )
+        assert await asyncio.wait_for(pending, timeout=2.0) == {
+            "family": "remote-api"
+        }
+        await ws.close()

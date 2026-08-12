@@ -3433,6 +3433,8 @@ def _set_session_context(
         # it instead of falling back to the gateway launch dir.
         resolved = cwd if cwd is not None else _cwd_for_session_key(session_key)
         source = _resolve_session_platform()
+        browser_control_principal = ""
+        browser_control_transport_family = ""
         # Derive the live conversation id so terminal/execute_code subprocesses
         # can read HERMES_SESSION_ID. Without this, set_session_vars leaves the
         # session-id contextvar as "" (explicitly empty), and the subprocess-env
@@ -3450,11 +3452,22 @@ def _set_session_context(
                     session_id = (
                         getattr(sess.get("agent"), "session_id", None) or session_key
                     )
+                    transport = sess.get("transport")
+                    identity = getattr(transport, "auth_identity", None)
+                    if _methods_browser_control._is_authenticated_identity(identity):
+                        browser_control_principal = (
+                            _methods_browser_control._principal_digest(identity)
+                        )
+                        browser_control_transport_family = (
+                            _methods_browser_control._CLOUD_TRANSPORT_FAMILY
+                        )
                     break
         return set_session_vars(
             session_key=session_key,
             session_id=session_id,
             source=source,
+            browser_control_principal=browser_control_principal,
+            browser_control_transport_family=browser_control_transport_family,
             cwd=resolved,
             ui_session_id=ui_session_id,
             cron_session="",
@@ -15621,6 +15634,7 @@ def _mcp_summarize_server(name, cfg):  # noqa: E402
 # Imported at the end of this module so every global the handlers close
 # over already exists; register() rebinds them onto this namespace.
 from . import (  # noqa: E402
+    methods_browser_control as _methods_browser_control,
     methods_complete as _methods_complete,
     methods_config as _methods_config,
     methods_images as _methods_images,
@@ -15631,6 +15645,7 @@ from . import (  # noqa: E402
 )
 
 for _m in (
+    _methods_browser_control,
     _methods_session,
     _methods_prompt,
     _methods_config,

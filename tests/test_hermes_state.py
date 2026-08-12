@@ -115,7 +115,7 @@ class TestConnectionLifecycle:
 
         assert not any("wal_checkpoint" in sql.lower() for sql in executed)
 
-    def test_writable_close_retains_truncate_checkpoint(self, tmp_path):
+    def test_writable_close_uses_passive_checkpoint(self, tmp_path):
         db_path = tmp_path / "state.db"
         writable = SessionDB(db_path=db_path)
         executed = []
@@ -123,8 +123,15 @@ class TestConnectionLifecycle:
 
         writable.close()
 
-        assert any(
+        # close() must NOT TRUNCATE: transient per-cron-run connections firing
+        # full WAL resets race the gateway's live writer and corrupt B-tree
+        # pages (issue #45383). It uses PASSIVE instead.
+        assert not any(
             "pragma wal_checkpoint(truncate)" == " ".join(sql.lower().split())
+            for sql in executed
+        )
+        assert any(
+            "pragma wal_checkpoint(passive)" == " ".join(sql.lower().split())
             for sql in executed
         )
 

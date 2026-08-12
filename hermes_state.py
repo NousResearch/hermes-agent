@@ -3550,9 +3550,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         cannot corrupt B-tree pages under I/O pressure.
 
         PASSIVE does not truncate the WAL file — it stays at its
-        high-water mark.  WAL truncation happens in :meth:`close`
-        (TRUNCATE) and pre-VACUUM checkpoints, which run infrequently
-        under controlled conditions.
+        high-water mark. Explicit checkpoints on the shared ``state.db`` no
+        longer truncate the WAL; it is bounded by ``journal_size_limit`` and
+        the writer's natural post-checkpoint reset rather than by a TRUNCATE
+        at every close or maintenance command.
 
         Previous TRUNCATE strategy caused B-tree corruption on large
         databases (65K+ pages) due to the exclusive-lock I/O pressure
@@ -3575,9 +3576,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """Close the database connection.
 
         Drains queued token deltas first (the background writer needs the
-        connection). Writable connections then attempt a TRUNCATE WAL
-        checkpoint so exiting writer processes help shrink the WAL file.
-        Read-only connections never request a checkpoint.
+        connection). Writable connections then attempt a PASSIVE WAL
+        checkpoint (NOT TRUNCATE: transient per-cron-run connections close
+        many times an hour, and a TRUNCATE fires a full WAL reset that
+        races the gateway's live writer and tears B-tree pages — issue
+        #45383). Read-only connections never request a checkpoint.
         """
         self._stop_token_writer()
         # The atexit hook holds a strong reference to this instance (bound
@@ -3601,11 +3604,18 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         with self._lock:
             if self._conn:
                 if not self.read_only:
+                    # PASSIVE, not TRUNCATE. Every cron run_agent opens+closes a
+                    # transient SessionDB, so a TRUNCATE here fires a full WAL
+                    # reset many times/hour, racing the gateway's long-lived
+                    # writer on large WAL databases and tearing hot B-tree
+                    # pages -- the #45383 corruption this class's own periodic
+                    # checkpoint was already made PASSIVE to avoid. TRUNCATE
+                    # belongs only on a sole-opener/quiescent connection.
                     try:
-                        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                        self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
                     except Exception as exc:
                         logger.debug(
-                            "WAL checkpoint (TRUNCATE) at close failed: %s",
+                            "WAL checkpoint (PASSIVE) at close failed: %s",
                             exc,
                         )
                 self._conn.close()
@@ -10893,11 +10903,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             logger.warning("FTS optimize before VACUUM failed: %s", exc)
         # VACUUM cannot be executed inside a transaction.
         with self._lock:
-            # Best-effort WAL checkpoint first, then VACUUM.
+            # Best-effort WAL checkpoint first, then VACUUM. PASSIVE, not
+            # TRUNCATE: a manual `hermes sessions vacuum` runs in a transient
+            # CLI process, and a TRUNCATE reset here would race a live gateway
+            # writer and tear B-tree pages (#45383). VACUUM folds the WAL back
+            # itself; journal_size_limit bounds the file.
             try:
-                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
             except Exception as exc:
-                logger.debug("WAL checkpoint (TRUNCATE) before VACUUM failed: %s", exc)
+                logger.debug("WAL checkpoint (PASSIVE) before VACUUM failed: %s", exc)
             self._conn.execute("VACUUM")
         return optimized
 

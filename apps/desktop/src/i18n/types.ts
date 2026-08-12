@@ -386,6 +386,9 @@ export interface Translations {
       terminalFontReset: string
       translucencyTitle: string
       translucencyDesc: string
+      translucencyGlassDesc: string
+      translucencyModeClear: string
+      translucencyModeGlass: string
       backdropTitle: string
       backdropDesc: string
       reactionsTitle: string

@@ -1,13 +1,27 @@
+// @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { onPersistenceEvent, type PersistenceEvent } from '@/lib/storage'
 
-import { $translucency, setTranslucency, TRANSLUCENCY_MAX, TRANSLUCENCY_MIN, TRANSLUCENCY_STEP } from './translucency'
+import {
+  $translucency,
+  $translucencyMode,
+  GLASS_SUPPORTED,
+  glassSurfaceKeep,
+  setTranslucency,
+  setTranslucencyMode,
+  TRANSLUCENCY_MAX,
+  TRANSLUCENCY_MIN,
+  TRANSLUCENCY_STEP
+} from './translucency'
 
 const KEY = 'hermes.desktop.translucency.v1'
 
 describe('window translucency lever', () => {
-  beforeEach(() => setTranslucency(TRANSLUCENCY_MIN))
+  beforeEach(() => {
+    setTranslucency(TRANSLUCENCY_MIN)
+    setTranslucencyMode('clear')
+  })
 
   it('steps in single percent so the readable low end is reachable', () => {
     expect(TRANSLUCENCY_STEP).toBe(1)
@@ -55,5 +69,48 @@ describe('window translucency lever', () => {
     }
 
     expect(writes).toContainEqual({ key: KEY, op: 'write', value: '23' })
+  })
+
+  it('mirrors intensity and mode to the desktop bridge', () => {
+    const calls: Array<{ intensity: number; mode?: string }> = []
+    window.hermesDesktop = {
+      setTranslucency: (payload: { intensity: number; mode?: 'clear' | 'glass' }) => calls.push(payload)
+    } as never
+
+    setTranslucency(40)
+    expect(calls.at(-1)).toEqual({ intensity: 40, mode: 'clear' })
+  })
+
+  it('rejects glass off macOS and applies it on macOS', () => {
+    setTranslucency(50)
+    setTranslucencyMode('glass')
+
+    if (GLASS_SUPPORTED) {
+      expect($translucencyMode.get()).toBe('glass')
+      expect(document.documentElement.hasAttribute('data-hermes-glass')).toBe(true)
+      expect(document.documentElement.style.getPropertyValue('--translucency-glass-keep')).toBe('65%')
+    } else {
+      expect($translucencyMode.get()).toBe('clear')
+      expect(document.documentElement.hasAttribute('data-hermes-glass')).toBe(false)
+    }
+  })
+
+  it('removes the glass attribute at zero intensity or back on clear', () => {
+    setTranslucency(50)
+    setTranslucencyMode('glass')
+    setTranslucency(0)
+    expect(document.documentElement.hasAttribute('data-hermes-glass')).toBe(false)
+
+    setTranslucency(50)
+    setTranslucencyMode('clear')
+    expect(document.documentElement.hasAttribute('data-hermes-glass')).toBe(false)
+  })
+})
+
+describe('glassSurfaceKeep', () => {
+  it('mirrors the clear-mode opacity ramp with its 30% floor', () => {
+    expect(glassSurfaceKeep(0)).toBe(100)
+    expect(glassSurfaceKeep(50)).toBe(65)
+    expect(glassSurfaceKeep(100)).toBeCloseTo(30)
   })
 })

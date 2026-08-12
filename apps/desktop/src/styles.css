@@ -558,6 +558,44 @@
     --ui-widget-surface-background: color-mix(in srgb, var(--ui-bg-editor) 88%, #000);
   }
 
+  /* ── Window glass (Settings → Appearance → Window Translucency: Glass) ──
+     Set on <html> by store/translucency.ts; macOS chat windows only. Every
+     chat window already carries an NSVisualEffectView (`vibrancy: 'sidebar'`
+     in electron/main.ts) that WindowServer composites BELOW the web contents;
+     the page normally buries it under fully opaque surfaces. Glass thins
+     exactly the two field surfaces — the chat surface and the sidebar — to
+     `--translucency-glass-keep` (set inline from the intensity slider, floor
+     30%) so the material shows through as a matte desktop blur, while cards,
+     popovers, the composer and every raised control keep their opaque fills
+     and text keeps full contrast. Unlike Clear, nothing on the page fades.
+     Surfaces that MASK in-page content are deliberately not thinned: the
+     editor surface backs the diff gutter's sticky line-number mask and the
+     active pane tab, and the find bar reads --ui-surface-background —
+     in-page transparency there reads as text bleeding through text, not as
+     glass. The two thinned surfaces already cover the window, so the pane
+     container behind them never shows.
+
+     The boot script in index.html pins an opaque inline background on <html>
+     before first paint; it has to go transparent here or it sits behind the
+     translucent <body> and blocks the material. The terminal surface is
+     pinned back to the opaque chrome mix: xterm resolves its surface var to a
+     concrete color for its canvas (see right-sidebar/terminal/selection.ts),
+     which does not composite page alpha. */
+  :root[data-hermes-glass] {
+    background-color: transparent !important;
+    --ui-chat-surface-background: color-mix(
+      in srgb,
+      var(--ui-bg-chrome) var(--translucency-glass-keep, 100%),
+      transparent
+    );
+    --ui-sidebar-surface-background: color-mix(
+      in srgb,
+      var(--ui-bg-sidebar) var(--translucency-glass-keep, 100%),
+      transparent
+    );
+    --ui-terminal-surface-background: var(--ui-bg-chrome);
+  }
+
   * {
     box-sizing: border-box;
     border-color: var(--dt-border);

@@ -22,7 +22,10 @@ import { $sessionListDensity, type SessionListDensity, setSessionListDensity } f
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import {
   $translucency,
+  $translucencyMode,
+  GLASS_SUPPORTED,
   setTranslucency,
+  setTranslucencyMode,
   TRANSLUCENCY_MAX,
   TRANSLUCENCY_MIN,
   TRANSLUCENCY_STEP
@@ -264,6 +267,7 @@ export function AppearanceSettings() {
   const embedAllowed = useStore($embedAllowed)
   const composerPopoutGesturesEnabled = useStore($composerPopoutGesturesEnabled)
   const translucency = useStore($translucency)
+  const translucencyMode = useStore($translucencyMode)
   const reactionsEnabled = useStore($reactionsEnabled)
   const backdrop = useStore($backdrop)
   const installs = useStore($marketplaceInstalls)
@@ -469,6 +473,19 @@ export function AppearanceSettings() {
           <ListRow
             action={
               <div className="flex items-center gap-3">
+                {GLASS_SUPPORTED && (
+                  <SegmentedControl
+                    onChange={id => {
+                      triggerHaptic('selection')
+                      setTranslucencyMode(id)
+                    }}
+                    options={[
+                      { id: 'clear' as const, label: a.translucencyModeClear },
+                      { id: 'glass' as const, label: a.translucencyModeGlass }
+                    ]}
+                    value={translucencyMode}
+                  />
+                )}
                 <input
                   aria-label={a.translucencyTitle}
                   className="h-1 w-40 cursor-pointer appearance-none rounded-full bg-(--ui-stroke-tertiary)"
@@ -488,7 +505,7 @@ export function AppearanceSettings() {
                 </span>
               </div>
             }
-            description={a.translucencyDesc}
+            description={translucencyMode === 'glass' ? a.translucencyGlassDesc : a.translucencyDesc}
             title={a.translucencyTitle}
           />
 

@@ -228,6 +228,32 @@ class TestStartRun:
                 interrupted.set()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("headers", [{}, {"Idempotency-Key": "new-mobile-turn"}])
+    async def test_new_run_is_rate_limited_before_body_parsing(self, adapter, headers):
+        adapter._max_concurrent_runs = 1
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent, ready, interrupted = _make_slow_agent()
+                mock_create.return_value = mock_agent
+
+                first = await cli.post("/v1/runs", json={"input": "hello"})
+                assert first.status == 202
+                assert ready.wait(timeout=3.0)
+
+                limited = await cli.post(
+                    "/v1/runs",
+                    data="not-json",
+                    headers={"Content-Type": "application/json", **headers},
+                )
+                data = await limited.json()
+
+                assert limited.status == 429
+                assert data["error"]["code"] == "rate_limit_exceeded"
+                mock_agent.run_conversation.assert_called_once()
+                interrupted.set()
+
+    @pytest.mark.asyncio
     async def test_idempotency_key_is_bounded(self, adapter):
         app = _create_runs_app(adapter)
         async with TestClient(TestServer(app)) as cli:

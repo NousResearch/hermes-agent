@@ -6491,11 +6491,6 @@ class APIServerAdapter(BasePlatformAdapter):
         if key_err is not None:
             return key_err
 
-        try:
-            body = await request.json()
-        except Exception:
-            return web.json_response(_openai_error("Invalid JSON"), status=400)
-
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key is not None:
             idempotency_key = idempotency_key.strip()
@@ -6507,6 +6502,32 @@ class APIServerAdapter(BasePlatformAdapter):
                     ),
                     status=400,
                 )
+
+        idempotency_scope: Optional[tuple[str, str]] = None
+        prior_idempotent_run: Optional[Dict[str, str]] = None
+        if idempotency_key is not None:
+            request_profile = _api_request_profile.get() or ""
+            idempotency_scope = (request_profile, idempotency_key)
+            prior_idempotent_run = self._run_idempotency.get(idempotency_scope)
+            if (
+                prior_idempotent_run is not None
+                and prior_idempotent_run["run_id"] not in self._run_statuses
+            ):
+                self._run_idempotency.pop(idempotency_scope, None)
+                prior_idempotent_run = None
+
+        # Preserve the concurrency guard's original pre-parse boundary for
+        # genuinely new work. A live replay may pass so its body can be
+        # fingerprinted, then return the original run without consuming a slot.
+        if prior_idempotent_run is None:
+            limited = self._concurrency_limited_response()
+            if limited is not None:
+                return limited
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON"), status=400)
 
         raw_input = body.get("input")
         if not raw_input:
@@ -6576,11 +6597,8 @@ class APIServerAdapter(BasePlatformAdapter):
         if selection_error:
             return web.json_response(_openai_error(selection_error), status=400)
 
-        idempotency_scope: Optional[tuple[str, str]] = None
         idempotency_fingerprint: Optional[str] = None
         if idempotency_key is not None:
-            request_profile = _api_request_profile.get() or ""
-            idempotency_scope = (request_profile, idempotency_key)
             idempotency_fingerprint = hashlib.sha256(
                 json.dumps(
                     {"body": body, "session_key": gateway_session_key},
@@ -6589,7 +6607,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     ensure_ascii=False,
                 ).encode("utf-8")
             ).hexdigest()
-            prior = self._run_idempotency.get(idempotency_scope)
+            prior = prior_idempotent_run
             if prior is not None and prior["run_id"] not in self._run_statuses:
                 self._run_idempotency.pop(idempotency_scope, None)
                 prior = None

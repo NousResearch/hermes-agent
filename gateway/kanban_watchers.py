@@ -185,9 +185,10 @@ class GatewayKanbanWatchersMixin:
         ``review_requested``, ``block_loop_detected``). Sends one
         message per new event to ``(platform, chat_id, thread_id)``,
         then advances the cursor. The subscription is removed only when the
-        task reaches a truly final *status* (``done`` / ``archived``), not on
-        any terminal event kind — so review cycles and re-block loops keep
-        notifying.
+        task is ``archived``. A ``done`` task can be reopened for review or
+        continuation, so its subscription and origin-session ownership must
+        survive completion. Cursor advancement prevents old events replaying
+        when that happens.
 
         Runs in the gateway event loop; all SQLite work is pushed to a
         thread via ``asyncio.to_thread`` so the loop never blocks on the
@@ -214,11 +215,13 @@ class GatewayKanbanWatchersMixin:
         # writes — surface those transitions to subscribers too.
         # ``review_requested`` wakes the origin subscriber like a block does,
         # but is not a block (see kanban_db.request_review); the task is not
-        # done/archived, so the subscription stays alive and later review
+        # archived, so the subscription stays alive and later review
         # cycles keep notifying.
         TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested")
-        # Subscriptions are removed only when the task reaches a truly final
-        # status (done / archived). We used to also unsub on any terminal
+        # Subscriptions are removed only when the task reaches the irreversible
+        # archived status. ``done`` is reversible in review/controller flows,
+        # so removing its subscription would silence a later reopen. We used
+        # to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
         # silently dropped the user out of the loop whenever the dispatcher
         # respawned the task: a worker that crashes, gets reclaimed, runs
@@ -226,7 +229,7 @@ class GatewayKanbanWatchersMixin:
         # crash because the subscription was deleted after the first event.
         # Same shape as the reblock-after-unblock cycle that PR #22941
         # fixed for `blocked`. Keeping the subscription alive until the
-        # task is genuinely done lets the cursor (advanced atomically by
+        # task is archived lets the cursor (advanced atomically by
         # claim_unseen_events_for_sub) handle dedup, and any retry-loop
         # event reaches the user.
         # Per-subscription send-failure counter. Adapter.send raising
@@ -706,7 +709,7 @@ class GatewayKanbanWatchersMixin:
                         #   advances after it succeeds — a failure rewinds the
                         #   claim exactly like a failed send() above, so the
                         #   next tick retries.
-                        task_terminal = task and task.status in {"done", "archived"}
+                        task_terminal = task and task.status == "archived"
                         _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
                         _wake_kinds = (
                             {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
@@ -925,13 +928,11 @@ class GatewayKanbanWatchersMixin:
                             # Nothing left to deliver on this path (the wake,
                             # if any, already succeeded above).
                             sub_fail_counts.pop(sub_key, None)
-                        # Unsubscribe only when the task has reached a truly
-                        # final status (done / archived). For blocked /
-                        # gave_up / crashed / timed_out the subscription is
-                        # kept alive so the user gets notified again if the
-                        # dispatcher respawns the task and it cycles into the
-                        # same state. See the longer comment on TERMINAL_KINDS
-                        # above for the failure mode this prevents.
+                        # Unsubscribe only on archive. Completion (``done``)
+                        # remains reversible: controllers reopen completed
+                        # work for review corrections and continuation. The
+                        # retained cursor prevents replay while preserving the
+                        # original delivery and wake ownership for that cycle.
                         if _is_push_adapter and send_passive and _wake_kinds:
                             # notify+wake: the text ping above was the
                             # delivery and the cursor has advanced; the wake

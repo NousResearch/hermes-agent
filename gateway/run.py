@@ -3384,7 +3384,10 @@ def _channel_override_lookup_keys(
     """
     keys: list[str] = []
     seen: set[str] = set()
-    for key in (chat_id, thread_id, parent_id):
+    composite_thread_key = (
+        f"{chat_id}:{thread_id}" if chat_id and thread_id else None
+    )
+    for key in (composite_thread_key, thread_id, chat_id, parent_id):
         if not key:
             continue
         sk = str(key)
@@ -8382,6 +8385,47 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             override,
             _resolve_gateway_model(user_config),
         )
+
+    def _resolve_toolsets_for_source(
+        self,
+        user_config: dict,
+        platform_key: str,
+        source: Optional[SessionSource],
+    ) -> list[str]:
+        """Resolve per-channel toolsets without allowing an empty tool surface."""
+        from hermes_cli.tools_config import _get_platform_tools
+
+        defaults = sorted(_get_platform_tools(user_config, platform_key))
+        if source is None:
+            return defaults
+
+        config = getattr(self, "config", None)
+        if config is None:
+            return defaults
+        override = _get_channel_override(
+            config,
+            source.platform,
+            str(source.chat_id or ""),
+            thread_id=(
+                str(source.thread_id)
+                if getattr(source, "thread_id", None)
+                else None
+            ),
+            parent_id=(
+                str(source.parent_chat_id)
+                if getattr(source, "parent_chat_id", None)
+                else None
+            ),
+        )
+        if not override or not override.toolsets:
+            return defaults
+
+        topic_config = dict(user_config)
+        platform_toolsets = dict(topic_config.get("platform_toolsets") or {})
+        platform_toolsets[platform_key] = list(override.toolsets)
+        topic_config["platform_toolsets"] = platform_toolsets
+        resolved = sorted(_get_platform_tools(topic_config, platform_key))
+        return resolved or defaults
 
     def _get_system_prompt_for_channel(
         self,
@@ -20358,8 +20402,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             platform_key = _platform_config_key(source.platform)
 
-            from hermes_cli.tools_config import _get_platform_tools
-            enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+            enabled_toolsets = self._resolve_toolsets_for_source(
+                user_config, platform_key, source
+            )
             agent_cfg = user_config.get("agent") or {}
             disabled_toolsets = agent_cfg.get("disabled_toolsets") or None
 
@@ -25456,8 +25501,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         user_config = _load_gateway_config()
         platform_key = _platform_config_key(source.platform)
 
-        from hermes_cli.tools_config import _get_platform_tools
-        enabled_toolsets = sorted(_get_platform_tools(user_config, platform_key))
+        enabled_toolsets = self._resolve_toolsets_for_source(
+            user_config, platform_key, source
+        )
         agent_cfg_local = user_config.get("agent") or {}
         disabled_toolsets = agent_cfg_local.get("disabled_toolsets") or None
 

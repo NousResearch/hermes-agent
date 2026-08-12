@@ -278,7 +278,7 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.authz_mixin import _coerce_allow_set
-from gateway.config import Platform, PlatformConfig
+from gateway.config import ChannelOverride, Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -9653,6 +9653,9 @@ class TelegramAdapter(BasePlatformAdapter):
                     if str(chat_entry.get("chat_id")) == chat_id:
                         for t in chat_entry.get("topics", []):
                             if t.get("name") == topic_name:
+                                self._register_dm_topic_runtime_override(
+                                    chat_id, thread_id, t
+                                )
                                 return t
                 return {"name": topic_name}
 
@@ -9667,10 +9670,34 @@ class TelegramAdapter(BasePlatformAdapter):
                     if str(chat_entry.get("chat_id")) == chat_id:
                         for t in chat_entry.get("topics", []):
                             if t.get("name") == topic_name:
+                                self._register_dm_topic_runtime_override(
+                                    chat_id, thread_id, t
+                                )
                                 return t
                 return {"name": topic_name}
 
         return None
+
+    def _register_dm_topic_runtime_override(
+        self,
+        chat_id: str,
+        thread_id: str,
+        topic_info: Dict[str, Any],
+    ) -> None:
+        """Bridge a configured DM topic into the gateway channel override path."""
+        if not isinstance(topic_info, dict):
+            return
+        if not any(
+            topic_info.get(key) not in (None, "", [])
+            for key in ("model", "provider", "toolsets")
+        ):
+            return
+        key = f"{chat_id}:{thread_id}"
+        # An explicit channel_overrides entry is the canonical architecture
+        # and wins over the dm_topics compatibility bridge.
+        if key in self.config.channel_overrides:
+            return
+        self.config.channel_overrides[key] = ChannelOverride.from_dict(topic_info)
 
     def _cache_dm_topic_from_message(self, chat_id: str, thread_id: str, topic_name: str) -> None:
         """Cache a thread_id -> topic_name mapping discovered from an incoming message."""

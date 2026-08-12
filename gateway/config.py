@@ -588,7 +588,7 @@ class SessionResetPolicy:
 @dataclass
 class ChannelOverride:
     """
-    Per-channel override for model, provider, and system prompt.
+    Per-channel override for model, provider, system prompt, and toolsets.
 
     Used in config under platforms.<name>.channel_overrides[channel_id].
     Enables different channels (e.g. Discord #daily vs #dev) to use different
@@ -597,6 +597,7 @@ class ChannelOverride:
     model: Optional[str] = None
     provider: Optional[str] = None
     system_prompt: Optional[str] = None
+    toolsets: Optional[List[str]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         out: Dict[str, Any] = {}
@@ -606,6 +607,8 @@ class ChannelOverride:
             out["provider"] = self.provider
         if self.system_prompt is not None:
             out["system_prompt"] = self.system_prompt
+        if self.toolsets is not None:
+            out["toolsets"] = list(self.toolsets)
         return out
 
     @classmethod
@@ -616,6 +619,16 @@ class ChannelOverride:
             model=data.get("model"),
             provider=data.get("provider"),
             system_prompt=data.get("system_prompt"),
+            toolsets=(
+                [str(value).strip() for value in data.get("toolsets", []) if str(value).strip()]
+                if isinstance(data.get("toolsets"), list)
+                else (
+                    [str(data["toolsets"]).strip()]
+                    if isinstance(data.get("toolsets"), str)
+                    and str(data["toolsets"]).strip()
+                    else None
+                )
+            ),
         )
 
 

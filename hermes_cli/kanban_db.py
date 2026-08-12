@@ -1617,11 +1617,19 @@ def _dispatch_tick_lock(db_path: Path):
 
 # Periodic WAL checkpoint state for the dispatcher tick path. The kanban
 # connections run with ``wal_autocheckpoint=100``, but a passive
-# autocheckpoint can be starved forever on a busy multi-process board (any
-# reader with an open snapshot blocks the WAL reset), letting the -wal file
-# grow without bound between gateway restarts. Once per coarse interval the
-# dispatcher — the board's single writer during a tick, and holding the
-# dispatch flock — issues an explicit ``wal_checkpoint(TRUNCATE)``.
+# autocheckpoint can be starved on a busy multi-process board (any reader
+# with an open snapshot blocks the WAL reset), letting the -wal file grow
+# between gateway restarts. Once per coarse interval the dispatcher issues
+# an explicit ``wal_checkpoint(PASSIVE)``.
+#
+# PASSIVE, not TRUNCATE (same class fix as the state.db checkpoints,
+# #45383/#80255/#44795): the dispatch flock only makes the dispatcher the
+# sole *dispatcher* — CLI kanban commands in other processes write to the
+# same board without taking that flock, so a TRUNCATE here races live
+# writers exactly like the state.db close() path did. PASSIVE never takes
+# the exclusive checkpoint lock; the WAL file size is instead bounded by
+# ``journal_size_limit`` (set at connection init) which truncates the file
+# on the writer's natural post-checkpoint reset.
 # Best-effort: a busy/locked checkpoint is logged at DEBUG and retried next
 # interval. Keyed per resolved DB path so multi-board dispatchers checkpoint
 # each board on its own clock.
@@ -1631,7 +1639,7 @@ _WAL_CHECKPOINT_LOCK = threading.Lock()
 
 
 def _maybe_checkpoint_wal(conn: sqlite3.Connection, db_path: Path) -> None:
-    """Run ``PRAGMA wal_checkpoint(TRUNCATE)`` at a coarse interval.
+    """Run ``PRAGMA wal_checkpoint(PASSIVE)`` at a coarse interval.
 
     Called from the dispatcher tick while the board's dispatch lock is
     held. No-ops (cheaply) until ``_WAL_CHECKPOINT_INTERVAL_SECONDS`` has
@@ -1651,9 +1659,9 @@ def _maybe_checkpoint_wal(conn: sqlite3.Connection, db_path: Path) -> None:
         # threads in this process) don't double-checkpoint on the boundary.
         _LAST_WAL_CHECKPOINT[key] = now
     try:
-        row = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        row = conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
         _log.debug(
-            "kanban WAL checkpoint (TRUNCATE) on %s -> %s "
+            "kanban WAL checkpoint (PASSIVE) on %s -> %s "
             "(busy, wal_frames, checkpointed_frames)",
             key, tuple(row) if row is not None else None,
         )
@@ -2195,6 +2203,11 @@ def connect(
                 apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
                 conn.execute("PRAGMA synchronous=FULL")
                 conn.execute("PRAGMA wal_autocheckpoint=100")
+                # Bound the WAL file size now that the periodic explicit
+                # checkpoint is PASSIVE (never truncates): on the writer's
+                # natural post-checkpoint reset SQLite trims the -wal file
+                # to this limit. 8 MiB is generous for a kanban board.
+                conn.execute("PRAGMA journal_size_limit=8388608")
                 conn.execute("PRAGMA foreign_keys=ON")
                 conn.execute("PRAGMA secure_delete=ON")
                 conn.execute("PRAGMA cell_size_check=ON")
@@ -2235,6 +2248,11 @@ def connect(
                 # crash window that can leave a b-tree page header torn.
                 conn.execute("PRAGMA synchronous=FULL")
                 conn.execute("PRAGMA wal_autocheckpoint=100")
+                # Bound the WAL file size now that the periodic explicit
+                # checkpoint is PASSIVE (never truncates): on the writer's
+                # natural post-checkpoint reset SQLite trims the -wal file
+                # to this limit. 8 MiB is generous for a kanban board.
+                conn.execute("PRAGMA journal_size_limit=8388608")
                 conn.execute("PRAGMA foreign_keys=ON")
                 # Zero freed pages so a later torn write cannot expose stale
                 # cell content; persisted in the DB header for new DBs.

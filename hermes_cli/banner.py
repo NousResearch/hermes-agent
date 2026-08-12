@@ -239,12 +239,8 @@ def _is_full_sha(value: Optional[str]) -> bool:
     )
 
 
-def _check_via_rev(local_rev: str) -> Optional[int]:
-    """Compare an embedded git revision to upstream main via ls-remote.
-
-    Returns 0 if up-to-date, ``UPDATE_AVAILABLE_NO_COUNT`` if behind,
-    or ``None`` on failure.
-    """
+def _upstream_main_sha() -> Optional[str]:
+    """Tip SHA of upstream main via HTTPS ls-remote (no auth, no prompts)."""
     try:
         result = subprocess.run(
             ["git", "ls-remote", _UPSTREAM_REPO_URL, "refs/heads/main"],
@@ -256,6 +252,17 @@ def _check_via_rev(local_rev: str) -> Optional[int]:
     if result.returncode != 0 or not result.stdout:
         return None
     upstream_rev = result.stdout.split()[0]
+    return upstream_rev or None
+
+
+def _check_via_rev(local_rev: str) -> Optional[int]:
+    """Compare an embedded git revision to upstream main via ls-remote.
+
+    Returns 0 if up-to-date, the exact behind-count when the GitHub compare
+    API can recover it, ``UPDATE_AVAILABLE_NO_COUNT`` if behind by an unknown
+    amount, or ``None`` on failure.
+    """
+    upstream_rev = _upstream_main_sha()
     if not upstream_rev:
         return None
     if upstream_rev == local_rev:
@@ -273,17 +280,32 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     origin_url = _git_stdout(["remote", "get-url", "origin"], cwd=repo_dir)
     if _is_official_ssh_remote(origin_url):
         head_rev = _git_stdout(["rev-parse", "HEAD"], cwd=repo_dir)
-        # ls-remote against the upstream URL only tells us tip SHAs — there
-        # is no local history to count commits against. Return the
-        # UPDATE_AVAILABLE_NO_COUNT sentinel so the banner and CLI renderers
-        # print "update available" instead of fabricating a "1 commit behind"
-        # message. The dashboard's REST /api/hermes/update/check already
-        # treats any nonzero behind as update_available=true (see
-        # hermes_cli/web_server.py::check_hermes_update), and the desktop
-        # store clamps behind<=0 to 0 and reads update_available separately
-        # (apps/desktop/src/store/updates.ts::mapBackendCheck), so no UI
-        # consumer depends on a fabricated count here.
-        return _check_via_rev(head_rev) if head_rev else None
+        if not head_rev:
+            return None
+        # Passive probe via HTTPS ls-remote (never SSH — no hardware-key
+        # prompts). Tip SHAs alone can't distinguish "behind" from a local
+        # carried commit sitting AHEAD of origin/main, and misreporting an
+        # ahead checkout as behind nudges the user into `hermes update`,
+        # which can wipe their carried work.
+        upstream_rev = _upstream_main_sha()
+        if upstream_rev is None:
+            return None
+        if upstream_rev == head_rev:
+            return 0
+        # Local-ahead: the remote tip is an ancestor of HEAD. Checked against
+        # the FRESH upstream SHA (not the possibly stale origin/main tracking
+        # ref) so a stale ref can't fake an up-to-date report.
+        ancestor = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", upstream_rev, "HEAD"],
+            capture_output=True, timeout=5, cwd=str(repo_dir),
+        )
+        if ancestor.returncode == 0:
+            return 0
+        # Genuinely behind (or diverged). Recover the exact count via the
+        # GitHub compare API; a local-only HEAD 404s there, which safely
+        # degrades to the honest no-count sentinel — never a fabricated 1.
+        counted = _github_compare_behind(head_rev, upstream_rev)
+        return counted if counted is not None else UPDATE_AVAILABLE_NO_COUNT
 
     # Installer checkouts are shallow (`git clone --depth 1`). On a shallow
     # clone the history stops at a single commit, so a plain `git fetch` would

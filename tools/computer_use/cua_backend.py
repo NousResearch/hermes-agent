@@ -380,6 +380,53 @@ def _wsl_windows_path_to_posix(path: str) -> str:
     return os.path.join("/mnt", drive, *(str(part) for part in win.parts[1:]))
 
 
+def _validated_macos_cua_app_path(driver_command: str) -> str:
+    """Return the signed CuaDriver.app containing *driver_command*.
+
+    Launching by display name would let LaunchServices select a different app
+    with the same name.  Derive the exact bundle from the already-resolved
+    driver command and fail closed unless its signature is valid and belongs to
+    the expected bundle identifier.
+    """
+    resolved = os.path.realpath(driver_command)
+    marker = f".app{os.sep}Contents{os.sep}MacOS{os.sep}"
+    marker_index = resolved.find(marker)
+    if marker_index < 0:
+        raise RuntimeError(
+            "macOS unrestricted computer use requires the signed "
+            "CuaDriver.app installation; resolved driver is outside an app bundle"
+        )
+    app_path = resolved[: marker_index + len(".app")]
+    verify = subprocess.run(
+        ["/usr/bin/codesign", "--verify", "--deep", "--strict", app_path],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+        timeout=10.0,
+    )
+    details = subprocess.run(
+        ["/usr/bin/codesign", "-dv", app_path],
+        stdin=subprocess.DEVNULL,
+        capture_output=True,
+        text=True,
+        timeout=10.0,
+    )
+    signature = f"{details.stdout}\n{details.stderr}"
+    if (
+        verify.returncode != 0
+        or details.returncode != 0
+        or "Identifier=com.trycua.driver" not in signature
+        or "TeamIdentifier=" not in signature
+        or "TeamIdentifier=not set" in signature
+    ):
+        raise RuntimeError(
+            "refusing to launch unrestricted CuaDriver: app signature or "
+            "bundle identity is invalid"
+        )
+    return app_path
+
+
 class _EmbeddedCuaDaemon:
     """Private host-owned daemon used for an explicit unrestricted session.
 
@@ -439,8 +486,7 @@ class _EmbeddedCuaDaemon:
             raise RuntimeError(cua_driver_install_hint())
         self._command, self._mcp_args = _resolve_mcp_invocation(self._driver_cmd)
         env = _sanitize_subprocess_env(self.child_env())
-        command = [
-            self._command,
+        daemon_args = [
             "serve",
             "--embedded",
             "--socket",
@@ -450,6 +496,25 @@ class _EmbeddedCuaDaemon:
             "unrestricted",
             "--dangerously-bypass-approvals",
         ]
+        # On macOS TCC grants are attached to the CuaDriver.app bundle identity,
+        # not merely to the signed Mach-O inside it.  Spawning the executable as
+        # a raw child leaves the process without a CFBundleIdentifier, so an
+        # unrestricted/private daemon cannot see windows even though System
+        # Settings says CuaDriver is approved.  LaunchServices supplies the app
+        # identity; -W keeps `open` alive as our lifecycle handle.
+        if sys.platform == "darwin":
+            app_path = _validated_macos_cua_app_path(self._command)
+            command = [
+                "/usr/bin/open",
+                "-n",
+                "-g",
+                "-W",
+                app_path,
+                "--args",
+                *daemon_args,
+            ]
+        else:
+            command = [self._command, *daemon_args]
         self._process = subprocess.Popen(
             command,
             stdin=subprocess.DEVNULL,

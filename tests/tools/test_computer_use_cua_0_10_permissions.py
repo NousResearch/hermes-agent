@@ -174,7 +174,7 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
     stopped = SimpleNamespace(returncode=0, stdout="", stderr="")
 
     daemon = cua_backend._EmbeddedCuaDaemon("cua-driver", "unrestricted")
-    with patch.object(
+    with patch.object(cua_backend.sys, "platform", "linux"), patch.object(
         cua_backend,
         "_resolve_mcp_invocation",
         return_value=("/opt/cua-driver", ["mcp"]),
@@ -195,6 +195,74 @@ def test_unrestricted_embedded_daemon_uses_private_socket_and_two_part_ack():
     assert env["CUA_DRIVER_DANGEROUSLY_BYPASS_APPROVALS"] == "1"
     assert proxy_command == "/opt/cua-driver"
     assert proxy_args == ["mcp", "--embedded", "--socket", daemon.socket_path]
+
+
+def test_macos_unrestricted_daemon_launches_via_app_bundle_for_tcc_identity():
+    """A raw Mach-O child has no bundle identity, so macOS ignores the
+    Accessibility and Screen Recording grants attached to CuaDriver.app."""
+    from tools.computer_use import cua_backend
+
+    process = Mock()
+    process.poll.return_value = None
+    process.stderr = []
+    status = SimpleNamespace(returncode=0, stdout="running", stderr="")
+
+    daemon = cua_backend._EmbeddedCuaDaemon("cua-driver", "unrestricted")
+    with patch.object(cua_backend.sys, "platform", "darwin"), patch.object(
+        cua_backend,
+        "_validated_macos_cua_app_path",
+        return_value="/Applications/CuaDriver.app",
+    ), patch.object(
+        cua_backend,
+        "_resolve_mcp_invocation",
+        return_value=("/Applications/CuaDriver.app/Contents/MacOS/cua-driver", ["mcp"]),
+    ), patch.object(cua_backend.subprocess, "Popen", return_value=process) as popen, patch.object(
+        cua_backend.subprocess, "run", return_value=status
+    ):
+        daemon.start()
+
+    command = popen.call_args.args[0]
+    assert command[:6] == [
+        "/usr/bin/open",
+        "-n",
+        "-g",
+        "-W",
+        "/Applications/CuaDriver.app",
+        "--args",
+    ]
+    assert command[6:8] == ["serve", "--embedded"]
+    assert "/Applications/CuaDriver.app/Contents/MacOS/cua-driver" not in command
+
+
+def test_macos_cua_app_validation_accepts_expected_signed_bundle():
+    from tools.computer_use import cua_backend
+
+    verified = SimpleNamespace(returncode=0, stdout="", stderr="")
+    details = SimpleNamespace(
+        returncode=0,
+        stdout="",
+        stderr="Identifier=com.trycua.driver\nTeamIdentifier=4YEC26S9KF\n",
+    )
+    with patch.object(
+        cua_backend.os.path,
+        "realpath",
+        return_value="/Applications/CuaDriver.app/Contents/MacOS/cua-driver",
+    ), patch.object(cua_backend.subprocess, "run", side_effect=[verified, details]):
+        assert (
+            cua_backend._validated_macos_cua_app_path("/usr/local/bin/cua-driver")
+            == "/Applications/CuaDriver.app"
+        )
+
+
+def test_macos_cua_app_validation_rejects_driver_outside_app_bundle():
+    from tools.computer_use import cua_backend
+
+    with patch.object(
+        cua_backend.os.path,
+        "realpath",
+        return_value="/tmp/cua-driver",
+    ), pytest.raises(RuntimeError, match="outside an app bundle"):
+        cua_backend._validated_macos_cua_app_path("/tmp/cua-driver")
 
 
 def test_standard_backend_does_not_spawn_an_embedded_daemon():

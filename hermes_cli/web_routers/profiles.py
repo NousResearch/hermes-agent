@@ -1157,10 +1157,21 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
     ``ok: false`` with a reason rather than an HTTP error so the UI can
     surface it inline and let the operator fix config and retry.
     """
+    # Resolution stays on the loop: it is a name check plus one stat, and it
+    # owns the 400/404 mapping that the ``except Exception`` below would
+    # otherwise flatten into a 500.
     _resolve_profile_dir(name)
-    try:
+
+    def _run():
         from hermes_cli import profile_describer
-        outcome = profile_describer.describe_profile(name, overwrite=bool(body.overwrite))
+        return profile_describer.describe_profile(name, overwrite=bool(body.overwrite))
+
+    try:
+        # describe_profile() is a plain def that reaches auxiliary_client's
+        # call_llm() — a synchronous provider round-trip with a 60 s ceiling,
+        # six times the desktop's WebSocket disconnect threshold. Held on the
+        # loop it stalls every other dashboard request for that whole window.
+        outcome = await asyncio.get_running_loop().run_in_executor(None, _run)
     except Exception as e:
         _log.exception("POST /api/profiles/%s/describe-auto failed", name)
         raise HTTPException(status_code=500, detail=str(e))

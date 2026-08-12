@@ -14,6 +14,21 @@ from tui_gateway.methods_browser_control import _broker_event_writer, _principal
 def _fake_ticket_ws(ticket):
     return SimpleNamespace(
         query_params={"ticket": ticket},
+        headers={},
+        client=SimpleNamespace(host="203.0.113.7"),
+        url=SimpleNamespace(path="/api/ws"),
+    )
+
+
+def _fake_ticket_subprotocol_ws(ticket):
+    return SimpleNamespace(
+        query_params={},
+        headers={
+            "sec-websocket-protocol": (
+                f"{web_server._GATEWAY_WS_PROTOCOL}, "
+                f"{web_server._GATEWAY_WS_TICKET_PROTOCOL_PREFIX}{ticket}"
+            )
+        },
         client=SimpleNamespace(host="203.0.113.7"),
         url=SimpleNamespace(path="/api/ws"),
     )
@@ -41,6 +56,19 @@ def test_dashboard_ticket_identity_is_carried_forward_without_trusting_rpc_param
         "provider": "provider-fixture",
     }
     assert web_server._ws_auth_ok(_fake_ticket_ws(ticket)) is False
+
+
+def test_dashboard_ticket_subprotocol_carries_the_same_server_identity(gated_dashboard):
+    _reset_for_tests()
+    ticket = mint_ticket(user_id="subprotocol-user", provider="provider-fixture")
+    ws = _fake_ticket_subprotocol_ws(ticket)
+
+    assert web_server._ws_auth_ok(ws) is True
+    assert ws._hermes_auth_identity == {
+        "user_id": "subprotocol-user",
+        "provider": "provider-fixture",
+    }
+    assert ws._hermes_ws_subprotocol == web_server._GATEWAY_WS_PROTOCOL
 
 
 def test_ws_transport_records_only_server_authenticated_identity():
@@ -216,6 +244,28 @@ def test_cloud_gateway_noop_round_trip_is_bound_to_ticket_identity_and_session_t
             transport_family="cloud-ticket-ws",
         )
         assert scope is not None
+        heartbeat_response = server.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 42,
+                "method": "browser.controller.heartbeat",
+                "params": {"session_id": "session-fixture"},
+            },
+            transport,
+        )
+        assert heartbeat_response["result"] == {"ok": True}
+
+        foreign_transport = Transport()
+        foreign_heartbeat = server.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 43,
+                "method": "browser.controller.heartbeat",
+                "params": {"session_id": "session-fixture"},
+            },
+            foreign_transport,
+        )
+        assert foreign_heartbeat["error"]["code"] == 4403
         outcome = {}
 
         def dispatch_noop():

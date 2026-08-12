@@ -292,7 +292,12 @@ def _disable_nagle(ws: Any) -> None:
         _log.debug("ws TCP_NODELAY skip: %s", exc)
 
 
-async def handle_ws(ws: Any, *, auth_identity: dict | None = None) -> None:
+async def handle_ws(
+    ws: Any,
+    *,
+    auth_identity: dict | None = None,
+    subprotocol: str | None = None,
+) -> None:
     """Run one WebSocket session. Wire-compatible with ``tui_gateway.entry``.
 
     *auth_identity* is the server-minted ``{user_id, provider}`` recorded at
@@ -311,7 +316,10 @@ async def handle_ws(ws: Any, *, auth_identity: dict | None = None) -> None:
     disconnect_reason = "not_connected"
 
     try:
-        await ws.accept()
+        if subprotocol:
+            await ws.accept(subprotocol=subprotocol)
+        else:
+            await ws.accept()
         disconnect_reason = "connected"
         # Push small streamed frames out immediately instead of letting Nagle
         # batch them — keeps the live token cadence intact for GUI clients.

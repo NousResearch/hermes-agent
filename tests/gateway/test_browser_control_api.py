@@ -12,6 +12,18 @@ from gateway.platforms.api_server import APIServerAdapter
 
 API_KEY = "-".join(("fixture", "neutral", "api", "key", "123"))
 CONTROL_PROTOCOL = "hermes-browser-control-v1"
+REAL_BROWSER_CAPABILITIES = {
+    "browser_back",
+    "browser_click",
+    "browser_navigate",
+    "browser_press",
+    "browser_screenshot",
+    "browser_scroll",
+    "browser_snapshot",
+    "browser_tab_activate",
+    "browser_tabs",
+    "browser_type",
+}
 
 
 class _SessionDB:
@@ -70,6 +82,33 @@ def _registration_body(**overrides):
     return payload
 
 
+@pytest.mark.asyncio
+async def test_phase6_registration_grants_only_the_exact_real_action_allowlist(monkeypatch):
+    adapter = _adapter()
+    monkeypatch.setattr(adapter, "_browser_control_enabled", lambda: True)
+    requested = [
+        "controller.noop",
+        *sorted(REAL_BROWSER_CAPABILITIES),
+        "browser_cdp",
+        "browser_evaluate",
+        "browser_upload",
+        "arbitrary.capability",
+    ]
+    async with TestClient(TestServer(_app(adapter))) as client:
+        response = await client.post(
+            "/v1/browser-control/register",
+            json=_registration_body(capabilities=requested),
+            headers={"Authorization": f"Bearer {API_KEY}"},
+        )
+        assert response.status == 201
+        registration = await response.json()
+
+    assert set(registration["scope"]["capabilities"]) == {
+        "controller.noop",
+        *REAL_BROWSER_CAPABILITIES,
+    }
+
+
 def test_route_table_advertises_registration_and_controller_ws_without_replacing_existing_routes():
     adapter = _adapter()
     routes = {(method, path) for method, path, _handler in adapter._http_route_table()}
@@ -112,15 +151,13 @@ async def test_capabilities_are_truthful_and_disabled_by_default(monkeypatch):
         data = await response.json()
 
     control = data["features"]["browser_extension_control"]
-    assert control == {
-        "enabled": False,
-        "protocol_version": 1,
-        "capabilities": ["controller.noop"],
-        "real_browser_actions": False,
-        "transports": {
-            "local_vps": "websocket-subprotocol-ticket",
-            "cloud": "authenticated-gateway-rpc",
-        },
+    assert control["enabled"] is False
+    assert control["protocol_version"] == 1
+    assert set(control["capabilities"]) == {"controller.noop", *REAL_BROWSER_CAPABILITIES}
+    assert control["real_browser_actions"] is True
+    assert control["transports"] == {
+        "local_vps": "websocket-subprotocol-ticket",
+        "cloud": "authenticated-gateway-rpc",
     }
     assert data["endpoints"]["browser_control_register"] == {
         "method": "POST",
@@ -260,12 +297,26 @@ async def test_local_api_ticket_ws_noop_round_trip_filters_spoofed_identity_and_
         assert registration["ws_path"] == "/v1/browser-control/ws"
         assert registration["scope"]["principal_id"] != "spoofed-client-principal"
         assert registration["scope"]["transport_family"] == "local-api"
-        assert registration["scope"]["capabilities"] == ["controller.noop"]
+        assert set(registration["scope"]["capabilities"]) == {
+            "controller.noop",
+            "browser_navigate",
+        }
 
         ws = await client.ws_connect(
             "/v1/browser-control/ws",
             protocols=[CONTROL_PROTOCOL, _ticket_protocol(registration["ticket"])],
         )
+        await ws.send_json(
+            {
+                "method": "browser.controller.heartbeat",
+                "params": {"nonce": "heartbeat-api-fixture"},
+            }
+        )
+        heartbeat = await ws.receive_json(timeout=2.0)
+        assert heartbeat == {
+            "method": "browser.controller.heartbeat",
+            "params": {"nonce": "heartbeat-api-fixture", "ok": True},
+        }
         scope = ControllerScope(
             principal_id=registration["scope"]["principal_id"],
             profile_id=registration["scope"]["profile_id"],

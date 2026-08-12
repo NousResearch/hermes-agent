@@ -80,10 +80,21 @@ _api_request_browser_control_transport_family: ContextVar[str] = ContextVar(
 #: Phase 4 browser-extension control protocol version (advertised in
 #: /v1/capabilities and echoed in registration responses).
 _BROWSER_CONTROL_PROTOCOL_VERSION = 1
-#: Capabilities this phase actually grants a controller. Only the no-op
-#: probe is real until the action protocol ships; any requested capability
-#: outside this set is filtered out rather than advertised.
-_BROWSER_CONTROL_CAPABILITIES = frozenset({"controller.noop"})
+#: Exact Phase 6 browser-extension action allowlist. Any requested capability
+#: outside this set is filtered out rather than advertised or dispatched.
+_BROWSER_CONTROL_CAPABILITIES = frozenset({
+    "controller.noop",
+    "browser_back",
+    "browser_click",
+    "browser_navigate",
+    "browser_press",
+    "browser_screenshot",
+    "browser_scroll",
+    "browser_snapshot",
+    "browser_tab_activate",
+    "browser_tabs",
+    "browser_type",
+})
 _BROWSER_CONTROL_WS_PROTOCOL = "hermes-browser-control-v1"
 _BROWSER_CONTROL_TICKET_PROTOCOL_PREFIX = "hermes-browser-control-ticket."
 
@@ -3256,16 +3267,14 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_continuity_header": "X-Hermes-Session-Id",
                 "session_key_header": "X-Hermes-Session-Key",
                 "cors": bool(self._cors_origins),
-                # Phase 4 browser-extension control. Always advertised (so
-                # clients can feature-detect), but truthful: disabled until
-                # browser.extension_control.enabled is set, and Phase 4
-                # exposes no real browser actions — only the no-op controller
-                # capability is ever granted.
+                # Browser-extension control is always advertised so clients
+                # can feature-detect it, but remains disabled until
+                # browser.extension_control.enabled is explicitly set.
                 "browser_extension_control": {
                     "enabled": self._browser_control_enabled(),
                     "protocol_version": _BROWSER_CONTROL_PROTOCOL_VERSION,
                     "capabilities": list(_BROWSER_CONTROL_CAPABILITIES),
-                    "real_browser_actions": False,
+                    "real_browser_actions": True,
                     "transports": {
                         "local_vps": "websocket-subprotocol-ticket",
                         "cloud": "authenticated-gateway-rpc",
@@ -3314,8 +3323,8 @@ class APIServerAdapter(BasePlatformAdapter):
         single-use ticket to open the controller WebSocket. Identity is NOT
         taken from the request body: the scope principal is derived
         server-side from the authenticated key/profile as a non-reversible
-        digest, and the capability set is filtered to what this phase
-        actually grants (``controller.noop``), so a spoofed
+        digest, and the capability set is filtered to the exact Phase 6
+        action allowlist, so a spoofed
         ``principal_id`` or inflated capability list in the payload is
         ignored rather than honored. The named session must already exist in
         the active profile's server-owned SessionDB before a ticket is minted.
@@ -3514,7 +3523,9 @@ class APIServerAdapter(BasePlatformAdapter):
                     except Exception:
                         continue
                     if isinstance(frame, dict):
-                        self._handle_browser_control_frame(scope, frame)
+                        reply = self._handle_browser_control_frame(scope, frame)
+                        if isinstance(reply, dict):
+                            await ws.send_json(reply)
                 elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
                     break
         finally:
@@ -3531,6 +3542,17 @@ class APIServerAdapter(BasePlatformAdapter):
         params = frame.get("params")
         if not isinstance(params, dict):
             return
+        if method == "browser.controller.heartbeat":
+            nonce = str(params.get("nonce") or "").strip()
+            if not nonce or len(nonce) > 128:
+                return
+            # Echo only the caller's opaque nonce on the already authenticated,
+            # exact-scope controller socket. This proves the socket path is live
+            # without granting a new capability or touching broker commands.
+            return {
+                "method": "browser.controller.heartbeat",
+                "params": {"nonce": nonce, "ok": True},
+            }
         if method == "browser.controller.result":
             command_id = params.get("command_id")
             if isinstance(command_id, str) and command_id:

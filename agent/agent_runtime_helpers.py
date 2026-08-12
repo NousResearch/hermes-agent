@@ -2015,6 +2015,8 @@ def plan_cache_sections_for_destination(
     api_mode: str,
     model: str,
     cache_disabled: Optional[bool] = None,
+    cache_ttl: Optional[str] = None,
+    static_system_prefix: Optional[str] = None,
 ) -> Tuple[list, list]:
     """Plan request-local cache sections for one resolved destination.
 
@@ -2032,9 +2034,18 @@ def plan_cache_sections_for_destination(
     disable into the blank policy stub. When omitted, the live config is
     consulted so MoA/auxiliary paths cannot re-enable markers after the
     user turned caching off (#76085).
+
+    ``cache_ttl`` threads the operator's configured tier (default ``5m``)
+    into the destination plan so MoA/auxiliary requests stop regressing to
+    the 5m default while the main loop honors ``1h`` (#84733); it is
+    clamped per-destination by :func:`effective_cache_ttl` (Qwen → 5m).
+    ``static_system_prefix`` threads the builder-declared stable prefix so
+    the destination system prompt receives the same early breakpoint the
+    main loop applies instead of marking the whole prompt as a breakpoint.
     """
     from agent.prompt_caching import (
         build_prompt_cache_plan,
+        effective_cache_ttl,
         strip_anthropic_cache_control,
         strip_anthropic_tool_cache_control,
     )
@@ -2054,7 +2065,15 @@ def plan_cache_sections_for_destination(
     plan = build_prompt_cache_plan(
         messages,
         tools,
+        cache_ttl=effective_cache_ttl(
+            cache_ttl or "5m",
+            provider=provider,
+            model=model,
+        ),
         native_anthropic=native_layout,
+        static_system_prefix=(
+            static_system_prefix if isinstance(static_system_prefix, str) else None
+        ),
         direct_native_tool_cache=_direct_native_anthropic_tool_cache_capability(
             stub,
             provider=provider,

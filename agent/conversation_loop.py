@@ -76,6 +76,7 @@ from agent.model_metadata import (
 from agent.process_bootstrap import _install_safe_stdio
 from agent.prompt_caching import (
     build_prompt_cache_plan,
+    effective_cache_ttl,
     strip_anthropic_cache_control,
     strip_anthropic_tool_cache_control,
 )
@@ -1276,7 +1277,13 @@ def _redecorate_prompt_cache_for_provider(
         plan = build_prompt_cache_plan(
             messages,
             planned_tools,
-            cache_ttl=agent._cache_ttl,
+            # Clamp per-destination: a configured 1h regresses to 5m on
+            # Qwen/Alibaba routes, whose context cache is 5m-only (#84733).
+            cache_ttl=effective_cache_ttl(
+                agent._cache_ttl,
+                provider=agent.provider,
+                model=agent.model,
+            ),
             native_anthropic=agent._use_native_cache_layout,
             static_system_prefix=static if isinstance(static, str) else None,
             direct_native_tool_cache=direct_tool_cache,
@@ -2119,7 +2126,13 @@ def run_conversation(
             _initial_cache_plan = build_prompt_cache_plan(
                 api_messages,
                 tools_for_api,
-                cache_ttl=agent._cache_ttl,
+                # Clamp per-destination: a configured 1h regresses to 5m on
+                # Qwen/Alibaba routes, whose context cache is 5m-only (#84733).
+                cache_ttl=effective_cache_ttl(
+                    agent._cache_ttl,
+                    provider=agent.provider,
+                    model=agent.model,
+                ),
                 native_anthropic=agent._use_native_cache_layout,
                 static_system_prefix=(
                     _static_system_prefix
@@ -2458,7 +2471,13 @@ def run_conversation(
                             retry_count = 0
                             compression_attempts = 0
                             _retry.primary_recovery_attempted = False
-                            continue
+                            # Failover shrank the compressor's context window to
+                            # the fallback's; restart the outer iteration so the
+                            # pre-API preflight re-runs against the new threshold
+                            # before the first fallback call (#84733).
+                            _preflight_compression_blocked = False
+                            _retry.restart_with_rebuilt_messages = True
+                            break
                         # No fallback available — surface buffered context
                         # so user sees the rate-limit message that led here.
                         agent._flush_status_buffer()
@@ -2910,7 +2929,13 @@ def run_conversation(
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
-                        continue
+                        # Failover shrank the compressor's context window to
+                        # the fallback's; restart the outer iteration so the
+                        # pre-API preflight re-runs against the new threshold
+                        # before the first fallback call (#84733).
+                        _preflight_compression_blocked = False
+                        _retry.restart_with_rebuilt_messages = True
+                        break
 
                     # Check for error field in response (some providers include this)
                     error_msg = "Unknown"
@@ -2983,7 +3008,13 @@ def run_conversation(
                             retry_count = 0
                             compression_attempts = 0
                             _retry.primary_recovery_attempted = False
-                            continue
+                            # Failover shrank the compressor's context window to
+                            # the fallback's; restart the outer iteration so the
+                            # pre-API preflight re-runs against the new threshold
+                            # before the first fallback call (#84733).
+                            _preflight_compression_blocked = False
+                            _retry.restart_with_rebuilt_messages = True
+                            break
                         # Terminal — flush buffered retry trace so user sees what happened.
                         agent._flush_status_buffer()
                         agent._emit_status(f"❌ Max retries ({max_retries}) exceeded for invalid responses. Giving up.")
@@ -3160,7 +3191,13 @@ def run_conversation(
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
-                        continue
+                        # Failover shrank the compressor's context window to
+                        # the fallback's; restart the outer iteration so the
+                        # pre-API preflight re-runs against the new threshold
+                        # before the first fallback call (#84733).
+                        _preflight_compression_blocked = False
+                        _retry.restart_with_rebuilt_messages = True
+                        break
 
                     agent._flush_status_buffer()
                     _refusal_log = (
@@ -4861,7 +4898,13 @@ def run_conversation(
                             retry_count = 0
                             compression_attempts = 0
                             _retry.primary_recovery_attempted = False
-                            continue
+                            # Failover shrank the compressor's context window to
+                            # the fallback's; restart the outer iteration so the
+                            # pre-API preflight re-runs against the new threshold
+                            # before the first fallback call (#84733).
+                            _preflight_compression_blocked = False
+                            _retry.restart_with_rebuilt_messages = True
+                            break
 
                 # ── Auth-failure provider failover ───────────────────────
                 # A 401/403 that survives the per-provider credential-refresh
@@ -4894,7 +4937,13 @@ def run_conversation(
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
-                        continue
+                        # Failover shrank the compressor's context window to
+                        # the fallback's; restart the outer iteration so the
+                        # pre-API preflight re-runs against the new threshold
+                        # before the first fallback call (#84733).
+                        _preflight_compression_blocked = False
+                        _retry.restart_with_rebuilt_messages = True
+                        break
 
                 # ── Nous Portal: record rate limit & skip retries ─────
                 # When Nous returns a 429 that is a genuine account-
@@ -5501,7 +5550,13 @@ def run_conversation(
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
-                        continue
+                        # Failover shrank the compressor's context window to
+                        # the fallback's; restart the outer iteration so the
+                        # pre-API preflight re-runs against the new threshold
+                        # before the first fallback call (#84733).
+                        _preflight_compression_blocked = False
+                        _retry.restart_with_rebuilt_messages = True
+                        break
                     if api_kwargs is not None:
                         agent._dump_api_request_debug(
                             api_kwargs, reason="non_retryable_client_error", error=api_error,
@@ -5724,7 +5779,13 @@ def run_conversation(
                         retry_count = 0
                         compression_attempts = 0
                         _retry.primary_recovery_attempted = False
-                        continue
+                        # Failover shrank the compressor's context window to
+                        # the fallback's; restart the outer iteration so the
+                        # pre-API preflight re-runs against the new threshold
+                        # before the first fallback call (#84733).
+                        _preflight_compression_blocked = False
+                        _retry.restart_with_rebuilt_messages = True
+                        break
                     # Terminal — flush buffered retry/fallback trace.
                     agent._flush_status_buffer()
                     _final_summary = agent._summarize_api_error(api_error)
@@ -7247,7 +7308,13 @@ def run_conversation(
                                 "now using %s on %s",
                                 agent.model, agent.provider,
                             )
-                            continue
+                            # Failover shrank the compressor's context window to
+                            # the fallback's; restart the outer iteration so the
+                            # pre-API preflight re-runs against the new threshold
+                            # before the first fallback call (#84733).
+                            _preflight_compression_blocked = False
+                            _retry.restart_with_rebuilt_messages = True
+                            break
 
                     # Exhausted retries and fallback chain (or no
                     # fallback configured).  Fall through to the

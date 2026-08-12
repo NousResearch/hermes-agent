@@ -5819,17 +5819,44 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ttl_seconds: float = 300.0,
         wait_seconds: float = 1800.0,
         poll_interval_seconds: float = 0.1,
+        on_wait=None,
+        wait_notice_interval_seconds: float = 15.0,
     ) -> bool:
-        """Wait for a cross-process turn lease without holding a SQLite lock."""
+        """Wait for a cross-process turn lease without holding a SQLite lock.
+
+        ``on_wait(elapsed_seconds)`` is best-effort: invoked when the first
+        attempt fails (elapsed ~0) and again about every
+        ``wait_notice_interval_seconds`` while still waiting, so UIs can show
+        that another process holds the conversation.
+        """
         deadline = time.monotonic() + max(0.0, float(wait_seconds))
+        wait_started = None
+        last_notice_at = None
+        notice_every = max(0.0, float(wait_notice_interval_seconds))
         while True:
             if self.try_acquire_session_turn_lease(
                 session_id, holder, ttl_seconds=ttl_seconds
             ):
                 return True
-            remaining = deadline - time.monotonic()
+            now = time.monotonic()
+            remaining = deadline - now
             if remaining <= 0:
                 return False
+            if wait_started is None:
+                wait_started = now
+            if on_wait is not None and (
+                last_notice_at is None
+                or notice_every == 0.0
+                or (now - last_notice_at) >= notice_every
+            ):
+                try:
+                    on_wait(max(0.0, now - wait_started))
+                except Exception:
+                    logger.debug(
+                        "session turn lease on_wait callback failed",
+                        exc_info=True,
+                    )
+                last_notice_at = now
             time.sleep(min(max(0.01, float(poll_interval_seconds)), remaining))
 
     def refresh_session_turn_lease(

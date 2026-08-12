@@ -126,3 +126,42 @@ def test_expired_turn_lease_is_reclaimed(tmp_path):
     assert db.try_acquire_session_turn_lease(
         "shared", "pid=202:turn=reclaimer", ttl_seconds=5
     )
+
+
+def test_acquire_turn_lease_notifies_wait_callback(tmp_path):
+    """Waiters get a progress callback while another holder owns the lease."""
+    path = tmp_path / "state.db"
+    first = SessionDB(path)
+    second = SessionDB(path)
+    first.create_session("shared", source="test")
+
+    first_holder = f"pid={os.getpid()}:turn=first"
+    second_holder = f"pid={os.getpid()}:turn=second"
+    assert first.try_acquire_session_turn_lease(
+        "shared", first_holder, ttl_seconds=5
+    )
+
+    notices = []
+
+    def release_first():
+        time.sleep(0.12)
+        first.release_session_turn_lease("shared", first_holder)
+
+    thread = threading.Thread(target=release_first, daemon=True)
+    thread.start()
+    try:
+        assert second.acquire_session_turn_lease(
+            "shared",
+            second_holder,
+            ttl_seconds=5,
+            wait_seconds=2,
+            poll_interval_seconds=0.02,
+            on_wait=notices.append,
+            wait_notice_interval_seconds=0.05,
+        )
+    finally:
+        thread.join(timeout=2)
+
+    assert notices
+    assert notices[0] < 0.05
+    second.release_session_turn_lease("shared", second_holder)

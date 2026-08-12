@@ -8111,19 +8111,69 @@ class AIAgent:
                 # prologue. We just proved this row exists, so suppress the
                 # redundant create attempt after acquiring it.
                 self._session_db_created = True
-                durable_turn_lease = (
+                _durable_holder = (
                     f"pid={os.getpid()}:turn={relay_turn_id}:platform="
                     f"{task_context['platform'] or 'unknown'}"
                 )
                 _lease_ttl = 300.0
+                _lease_waited = False
+
+                def _on_session_turn_lease_wait(elapsed: float) -> None:
+                    nonlocal _lease_waited
+                    _lease_waited = True
+                    if elapsed < 1.0:
+                        self._emit_status(
+                            "⏳ Another Hermes process is using this session; "
+                            "waiting for it to finish before starting your turn..."
+                        )
+                    else:
+                        self._emit_status(
+                            "⏳ Still waiting for the other Hermes process on "
+                            f"this session ({int(elapsed)}s)..."
+                        )
+
                 if not _turn_db.acquire_session_turn_lease(
                     session_id,
-                    durable_turn_lease,
+                    _durable_holder,
                     ttl_seconds=_lease_ttl,
                     wait_seconds=1800.0,
+                    on_wait=_on_session_turn_lease_wait,
                 ):
-                    raise TimeoutError(
-                        f"session turn lease wait timed out for {session_id}"
+                    # Fail closed like gateway TurnLeaseTimeoutError: do not
+                    # enter load/run/flush, and surface a resend notice instead
+                    # of a bare TimeoutError that looks like a hang.
+                    timeout_msg = (
+                        "⏳ Another Hermes process kept this session busy too "
+                        "long. Your message was not processed - wait for the "
+                        "other process to finish, then send it again."
+                    )
+                    logger.error(
+                        "session turn lease wait timed out for %s",
+                        session_id,
+                    )
+                    try:
+                        self._emit_warning(timeout_msg)
+                    except Exception:
+                        logger.debug(
+                            "Failed to emit session turn lease timeout warning",
+                            exc_info=True,
+                        )
+                    relay_outcome = "timed_out"
+                    return {
+                        "final_response": timeout_msg,
+                        "messages": list(conversation_history or []),
+                        "api_calls": 0,
+                        "completed": False,
+                        "failed": True,
+                        "error": f"session_turn_lease_timeout:{session_id}",
+                    }
+
+                # Assign only after admission so finally release cannot target a
+                # holder string that never owned the row.
+                durable_turn_lease = _durable_holder
+                if _lease_waited:
+                    self._emit_status(
+                        "Session is free; loading the latest transcript..."
                     )
 
                 # The holder may have compressed and rotated the session while

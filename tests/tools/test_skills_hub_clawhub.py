@@ -156,9 +156,12 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIsNotNone(meta)
         self.assertNotIn("owner", meta.extra or {})
 
+    @patch("tools.skills_hub._guarded_http_stream")
     @patch("tools.skills_hub._ssrf_safe_http_get")
     @patch("tools.skills_hub.httpx.get")
-    def test_fetch_resolves_latest_version_and_downloads_raw_files(self, mock_get, mock_safe_get):
+    def test_fetch_resolves_latest_version_and_downloads_raw_files(
+        self, mock_get, mock_safe_get, mock_stream
+    ):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
                 return _MockResponse(
@@ -182,6 +185,7 @@ class TestClawHubSource(unittest.TestCase):
 
         mock_get.side_effect = side_effect
         mock_safe_get.return_value = _MockResponse(status_code=200, text="# Skill")
+        mock_stream.return_value.__enter__.return_value = _MockResponse(status_code=404)
 
         bundle = self.src.fetch("caldav-calendar")
 
@@ -209,11 +213,14 @@ class TestClawHubSource(unittest.TestCase):
         self.assertIsNotNone(bundle)
         self.assertEqual(bundle.files["SKILL.md"], "# Skill")
 
+    @patch("tools.skills_hub._guarded_http_stream")
     @patch("tools.skills_hub.check_website_access", return_value=None)
     @patch("tools.skills_hub.is_safe_url")
     @patch("tools.skills_hub.httpx.get")
     @patch("tools.skills_hub._ssrf_safe_http_get")
-    def test_fetch_blocks_private_raw_url(self, mock_safe_get, mock_get, mock_safe, _mock_policy):
+    def test_fetch_blocks_private_raw_url(
+        self, mock_safe_get, mock_get, mock_safe, _mock_policy, mock_stream
+    ):
         def side_effect(url, *args, **kwargs):
             if url.endswith("/skills/caldav-calendar"):
                 return _MockResponse(
@@ -238,11 +245,12 @@ class TestClawHubSource(unittest.TestCase):
 
         mock_get.side_effect = side_effect
         mock_safe.side_effect = lambda url: not url.startswith("http://127.0.0.1/")
+        mock_stream.return_value.__enter__.return_value = _MockResponse(status_code=404)
 
         bundle = self.src.fetch("caldav-calendar")
 
         self.assertIsNone(bundle)
-        self.assertEqual(mock_get.call_count, 3)
+        self.assertEqual(mock_get.call_count, 2)
         mock_safe_get.assert_not_called()
 
     @patch("tools.skills_hub._write_index_cache")

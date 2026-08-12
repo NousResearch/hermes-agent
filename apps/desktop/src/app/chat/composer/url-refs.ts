@@ -134,8 +134,8 @@ function splitUrlTail(raw: string) {
   return { trailing: raw.slice(url.length), url }
 }
 
-/** A URL needs a host past the scheme to be worth chipping. */
-const hasHost = (url: string) => /^https?:\/\/[^/\s]/i.test(url)
+/** A URL needs a host past the scheme to be worth treating as a URL reference. */
+export const hasHttpUrlHost = (url: string) => /^https?:\/\/[^/\s]/i.test(splitUrlTail(url).url)
 
 /** Rewrite bare links in `text` as `@url:` directives, leaving links that are
  *  already part of a directive alone. Returns `text` unchanged when there are
@@ -161,7 +161,7 @@ export function linkifyUrls(text: string) {
     const start = match.index ?? 0
     const { url } = splitUrlTail(match[0])
 
-    if (!hasHost(url) || containsIndex(protectedRanges, start)) {
+    if (!hasHttpUrlHost(url) || containsIndex(protectedRanges, start)) {
       continue
     }
 
@@ -188,7 +188,7 @@ export function resolveExactLinkPaste(raw: string): string | null {
   const { trailing, url } = splitUrlTail(unwrapped)
 
   // Trailing sentence punctuation means the user copied prose, not a link.
-  if (trailing || !hasHost(url)) {
+  if (trailing || !hasHttpUrlHost(url)) {
     return null
   }
 
@@ -270,7 +270,7 @@ export function chipTypedUrlOnSpace(event: KeyboardEvent<HTMLDivElement>) {
 
   const { trailing, url } = splitUrlTail(token)
 
-  if (!hasHost(url)) {
+  if (!hasHttpUrlHost(url)) {
     return false
   }
 

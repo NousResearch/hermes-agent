@@ -8087,10 +8087,19 @@ class AIAgent:
                 try:
                     _durable_session_exists = _turn_db.get_session(session_id) is not None
                 except Exception:
-                    logger.debug(
-                        "Could not check durable session before turn lease",
+                    # A locked / non-WAL read is not proof the row is absent.
+                    # Treating probe failure as "fresh session" skipped the
+                    # lease this block exists to take and ran fail-open on
+                    # the exact contention point (#84234). Acquire (or fail
+                    # closed if acquire itself cannot) rather than start
+                    # load/run/flush unsynchronized. get_session returns
+                    # None — it does not raise — when the row is missing.
+                    logger.warning(
+                        "Could not check durable session before turn lease; "
+                        "will acquire rather than run without serialization",
                         exc_info=True,
                     )
+                    _durable_session_exists = True
             if (
                 _turn_db is not None
                 and session_id
@@ -8146,13 +8155,33 @@ class AIAgent:
                             session_id,
                         )
                         relay_outcome = "cancelled"
-                        return {
-                            "final_response": "",
+                        interrupt_msg = (
+                            "Stopped waiting for another Hermes process on "
+                            "this session. Your message was not processed."
+                        )
+                        interrupt_result = {
+                            "final_response": interrupt_msg,
                             "messages": list(conversation_history or []),
                             "api_calls": 0,
                             "completed": False,
                             "interrupted": True,
                         }
+                        interrupt_message = getattr(
+                            self, "_interrupt_message", None
+                        )
+                        if interrupt_message:
+                            interrupt_result["interrupt_message"] = (
+                                interrupt_message
+                            )
+                        # Conversation-loop finalizer never runs on this
+                        # early return. Clear so a cached agent cannot
+                        # fail-close the next turn as interrupted.
+                        try:
+                            self.clear_interrupt()
+                        except Exception:
+                            self._interrupt_requested = False
+                            self._interrupt_message = None
+                        return interrupt_result
                     # Fail closed like gateway TurnLeaseTimeoutError: do not
                     # enter load/run/flush, and surface a resend notice instead
                     # of a bare TimeoutError that looks like a hang.
@@ -8218,6 +8247,11 @@ class AIAgent:
                                 durable_turn_lease,
                                 ttl_seconds=_lease_ttl,
                             ):
+                                # finally sets the stop event then releases.
+                                # A late holder-fenced miss after that join
+                                # timeout must not hard-interrupt the next turn.
+                                if durable_turn_lease_stop.is_set():
+                                    return
                                 logger.error(
                                     "Lost session turn lease while turn is active: %s",
                                     getattr(self, "session_id", None) or session_id,

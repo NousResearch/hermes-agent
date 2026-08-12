@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 import threading
 import time
 from types import SimpleNamespace
@@ -89,6 +90,166 @@ def test_turn_lease_does_not_serialize_delegate_child_with_parent(tmp_path):
     assert db.try_acquire_session_turn_lease(
         "delegate", delegate_holder, ttl_seconds=5
     )
+
+
+def test_turn_lease_walks_compression_child_that_inherited_fork_markers(tmp_path):
+    """Inherited ``_delegate_from`` / ``_branched_from`` must not stop the walk.
+
+    ``publish_compression_child`` copies ``model_config`` verbatim, so a
+    delegate or branch continuation carries a marker pointing at some other
+    session. Presence-only fork detection would key the child separately:
+    the holder still owns the parent-key lease, but the first refresh after
+    rotation looks up the child id and fail-closes with a hard interrupt.
+    """
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("original-parent", source="test")
+    db.create_session(
+        "delegate",
+        source="delegate",
+        parent_session_id="original-parent",
+        model_config={"_delegate_from": "original-parent"},
+    )
+    db.end_session("delegate", "compression")
+    db.create_session(
+        "delegate-continuation",
+        source="delegate",
+        parent_session_id="delegate",
+        model_config={"_delegate_from": "original-parent"},
+    )
+    db.create_session(
+        "branch",
+        source="test",
+        parent_session_id="original-parent",
+        model_config={"_branched_from": "original-parent"},
+    )
+    db.end_session("branch", "compression")
+    db.create_session(
+        "branch-continuation",
+        source="test",
+        parent_session_id="branch",
+        model_config={"_branched_from": "original-parent"},
+    )
+
+    assert db._session_turn_lease_key("delegate-continuation") == "delegate"
+    assert db._session_turn_lease_key("branch-continuation") == "branch"
+
+    delegate_holder = f"pid={os.getpid()}:turn=delegate"
+    assert db.try_acquire_session_turn_lease(
+        "delegate", delegate_holder, ttl_seconds=5
+    )
+    assert not db.try_acquire_session_turn_lease(
+        "delegate-continuation",
+        f"pid={os.getpid()}:turn=delegate-child",
+        ttl_seconds=5,
+    )
+    assert db.refresh_session_turn_lease(
+        "delegate-continuation", delegate_holder, ttl_seconds=5
+    )
+
+    branch_holder = f"pid={os.getpid()}:turn=branch"
+    assert db.try_acquire_session_turn_lease(
+        "branch", branch_holder, ttl_seconds=5
+    )
+    assert not db.try_acquire_session_turn_lease(
+        "branch-continuation",
+        f"pid={os.getpid()}:turn=branch-child",
+        ttl_seconds=5,
+    )
+    assert db.refresh_session_turn_lease(
+        "branch-continuation", branch_holder, ttl_seconds=5
+    )
+
+    original_holder = f"pid={os.getpid()}:turn=original"
+    assert db.try_acquire_session_turn_lease(
+        "original-parent", original_holder, ttl_seconds=5
+    )
+    db.release_session_turn_lease("delegate-continuation", delegate_holder)
+    db.release_session_turn_lease("branch-continuation", branch_holder)
+    db.release_session_turn_lease("original-parent", original_holder)
+
+
+def test_turn_lease_write_txn_does_not_trust_fail_open_key_helper(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """Acquire/refresh/release walk inside the write txn.
+
+    The old helper swallowed get_session failures and returned the child id.
+    P2 then proceeded to acquire; the write succeeded under that child key
+    and the first working refresh walked to the parent and hard-interrupted.
+    Poisoning the outer helper must not change the conversation key.
+    """
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session(
+        "delegate",
+        source="delegate",
+        model_config={"_delegate_from": "original-parent"},
+    )
+    db.end_session("delegate", "compression")
+    db.create_session(
+        "delegate-continuation",
+        source="delegate",
+        parent_session_id="delegate",
+        model_config={"_delegate_from": "original-parent"},
+    )
+
+    monkeypatch.setattr(db, "_session_turn_lease_key", lambda sid: sid)
+    holder = f"pid={os.getpid()}:turn=delegate"
+    assert db.try_acquire_session_turn_lease(
+        "delegate", holder, ttl_seconds=5
+    )
+    assert not db.try_acquire_session_turn_lease(
+        "delegate-continuation",
+        f"pid={os.getpid()}:turn=child",
+        ttl_seconds=5,
+    )
+    assert db.refresh_session_turn_lease(
+        "delegate-continuation", holder, ttl_seconds=5
+    )
+    db.release_session_turn_lease("delegate-continuation", holder)
+    assert db.try_acquire_session_turn_lease(
+        "delegate", f"pid={os.getpid()}:turn=next", ttl_seconds=5
+    )
+
+
+def test_turn_lease_retries_locked_in_txn_key_walk(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """A locked lineage walk must retry, not INSERT under the child id."""
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session(
+        "delegate",
+        source="delegate",
+        model_config={"_delegate_from": "original-parent"},
+    )
+    db.end_session("delegate", "compression")
+    db.create_session(
+        "delegate-continuation",
+        source="delegate",
+        parent_session_id="delegate",
+        model_config={"_delegate_from": "original-parent"},
+    )
+
+    attempts = {"n": 0}
+    original = db._session_turn_lease_key_on_conn
+
+    def flaky_walk(conn, session_id):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return original(conn, session_id)
+
+    monkeypatch.setattr(db, "_session_turn_lease_key_on_conn", flaky_walk)
+    holder = f"pid={os.getpid()}:turn=delegate"
+    assert db.try_acquire_session_turn_lease(
+        "delegate-continuation", holder, ttl_seconds=5
+    )
+    assert attempts["n"] >= 2
+    monkeypatch.setattr(db, "_session_turn_lease_key_on_conn", original)
+    assert not db.try_acquire_session_turn_lease(
+        "delegate", f"pid={os.getpid()}:turn=other", ttl_seconds=5
+    )
+    assert db.refresh_session_turn_lease("delegate", holder, ttl_seconds=5)
+    db.release_session_turn_lease("delegate-continuation", holder)
 
 
 def test_turn_lease_refresh_and_release_are_owner_fenced(tmp_path):
@@ -201,6 +362,52 @@ def test_acquire_turn_lease_honors_should_abort(tmp_path):
     assert time.monotonic() - started < 1.0
     assert abort_checks["count"] >= 1
     first.release_session_turn_lease("shared", first_holder)
+
+
+def test_acquire_turn_lease_retries_sqlite_lock(tmp_path, monkeypatch):
+    """Write-lock exhaustion is contended, not a hard abort of the wait."""
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("shared", source="test")
+    holder = f"pid={os.getpid()}:turn=waiter"
+    attempts = {"n": 0}
+    original = db.try_acquire_session_turn_lease
+
+    def flaky_acquire(*args, **kwargs):
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            raise sqlite3.OperationalError(
+                "database is locked (another Hermes process held the "
+                "state.db write lock for over 20s)"
+            )
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(db, "try_acquire_session_turn_lease", flaky_acquire)
+    assert db.acquire_session_turn_lease(
+        "shared",
+        holder,
+        wait_seconds=2,
+        poll_interval_seconds=0.02,
+        acquire_patience_s=0.05,
+    )
+    assert attempts["n"] >= 2
+    db.release_session_turn_lease("shared", holder)
+
+
+def test_acquire_turn_lease_reraises_non_lock_sqlite_error(tmp_path, monkeypatch):
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("shared", source="test")
+
+    def disk_full(*args, **kwargs):
+        raise sqlite3.OperationalError("database or disk is full")
+
+    monkeypatch.setattr(db, "try_acquire_session_turn_lease", disk_full)
+    with pytest.raises(sqlite3.OperationalError, match="disk is full"):
+        db.acquire_session_turn_lease(
+            "shared",
+            f"pid={os.getpid()}:turn=waiter",
+            wait_seconds=1,
+            poll_interval_seconds=0.02,
+        )
 
 
 def test_non_expired_turn_lease_from_dead_pid_is_reclaimed(

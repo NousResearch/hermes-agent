@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import sqlite3
+import threading
 import time
 
 from run_agent import AIAgent
@@ -53,6 +55,11 @@ def _agent_with_db(db, *, session_id="stale-parent", platform="desktop"):
     agent.log_prefix = ""
     agent._vprint = lambda *a, **k: None
     agent.status_callback = None
+    agent._interrupt_requested = False
+    agent._interrupt_message = None
+    agent._pending_redirect = None
+    agent._execution_thread_id = None
+    agent._interrupt_thread_signal_pending = False
     return agent
 
 
@@ -111,6 +118,43 @@ def test_run_conversation_acquires_then_reloads_latest_tip(monkeypatch):
         and "loading the latest transcript" in text
         for kind, text in status_events
     )
+
+
+def test_run_conversation_acquires_lease_when_session_probe_raises(monkeypatch):
+    """A locked / non-WAL get_session must not skip the durable lease."""
+    db = _DB()
+
+    def locked_get_session(_session_id):
+        raise sqlite3.OperationalError("database is locked")
+
+    db.get_session = locked_get_session
+    agent = _agent_with_db(db)
+
+    observed = {}
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        observed["history"] = history
+        observed["session_id"] = _agent.session_id
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    result = AIAgent.run_conversation(
+        agent,
+        "new message",
+        conversation_history=[{"role": "user", "content": "stale"}],
+    )
+
+    assert result["final_response"] == "ok"
+    assert observed == {
+        "history": [{"role": "user", "content": "durable latest"}],
+        "session_id": "compressed-tip",
+    }
+    assert [event[0] for event in db.events] == [
+        "acquire",
+        "resolve",
+        "reload",
+        "release",
+    ]
 
 
 def test_fresh_session_keeps_caller_seed_without_durable_lease(monkeypatch):
@@ -173,13 +217,13 @@ def test_run_conversation_lease_timeout_returns_resend_notice(monkeypatch):
 def test_run_conversation_lease_wait_honors_interrupt(monkeypatch):
     db = _DB()
     agent = _agent_with_db(db)
-    agent._interrupt_requested = False
 
     def acquire_with_abort(session_id, holder, **kwargs):
         db.events.append(("acquire", session_id, holder))
         should_abort = kwargs.get("should_abort")
         assert callable(should_abort)
         agent._interrupt_requested = True
+        agent._interrupt_message = "follow-up while waiting"
         assert should_abort()
         return False
 
@@ -197,8 +241,51 @@ def test_run_conversation_lease_wait_honors_interrupt(monkeypatch):
 
     assert result.get("interrupted") is True
     assert result.get("failed") is not True
+    assert result.get("final_response")
+    assert "not processed" in result["final_response"]
+    assert result.get("interrupt_message") == "follow-up while waiting"
     assert "session_turn_lease_timeout" not in str(result.get("error", ""))
     assert [event[0] for event in db.events] == ["acquire"]
+    assert agent._interrupt_requested is False
+    assert agent._interrupt_message is None
+
+
+def test_run_conversation_second_turn_after_lease_wait_abort(monkeypatch):
+    db = _DB()
+    agent = _agent_with_db(db)
+    turns = {"n": 0}
+
+    def acquire_then_succeed(session_id, holder, **kwargs):
+        db.events.append(("acquire", session_id, holder))
+        should_abort = kwargs.get("should_abort")
+        if turns["n"] == 0:
+            agent._interrupt_requested = True
+            agent._interrupt_message = "follow-up while waiting"
+            assert should_abort()
+            return False
+        assert not should_abort()
+        return True
+
+    db.acquire_session_turn_lease = acquire_then_succeed
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    first = AIAgent.run_conversation(
+        agent,
+        "new message",
+        conversation_history=[{"role": "user", "content": "stale"}],
+    )
+    assert first.get("interrupted") is True
+    turns["n"] = 1
+    second = AIAgent.run_conversation(
+        agent,
+        "follow-up",
+        conversation_history=[{"role": "user", "content": "stale"}],
+    )
+    assert second["final_response"] == "ok"
+    assert agent._interrupt_requested is False
 
 
 def test_run_conversation_interrupts_when_lease_refresh_lost(monkeypatch):
@@ -248,3 +335,47 @@ def test_run_conversation_interrupts_when_lease_refresh_lost(monkeypatch):
     assert interrupt_calls
     assert interrupt_calls[0][1] is True
     assert "lease lost" in str(interrupt_calls[0][0]).lower()
+
+
+def test_late_refresh_miss_after_release_does_not_interrupt(monkeypatch):
+    db = _DB()
+    agent = _agent_with_db(db)
+    agent._session_turn_lease_refresh_interval = 0.01
+    released = threading.Event()
+    interrupt_calls = []
+
+    def track_interrupt(message=None, hard_cancel=False):
+        interrupt_calls.append((message, hard_cancel))
+        agent._interrupt_requested = True
+
+    agent.interrupt = track_interrupt
+
+    def refresh_after_release(session_id, holder, **kwargs):
+        released.wait(timeout=2.0)
+        return False
+
+    db.refresh_session_turn_lease = refresh_after_release
+
+    orig_release = db.release_session_turn_lease
+
+    def release_and_signal(session_id, holder):
+        orig_release(session_id, holder)
+        released.set()
+
+    db.release_session_turn_lease = release_and_signal
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        time.sleep(0.03)
+        return {"final_response": "ok", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    result = AIAgent.run_conversation(
+        agent,
+        "new message",
+        conversation_history=[{"role": "user", "content": "seed"}],
+    )
+
+    time.sleep(0.05)
+    assert result["final_response"] == "ok"
+    assert interrupt_calls == []
+    assert agent._interrupt_requested is False

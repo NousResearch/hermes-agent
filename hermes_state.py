@@ -5740,25 +5740,56 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 session_id, exc,
             )
 
-    def _session_turn_lease_key(self, session_id: str) -> str:
-        """Return the stable serialization key for every compression segment."""
+    def _session_turn_lease_key_on_conn(self, conn, session_id: str) -> str:
+        """Walk compression parents on ``conn`` to the conversation lease key.
+
+        Must run on the same connection as the lease INSERT/UPDATE/DELETE.
+        A prior ``get_session`` failure must not compute a child id that the
+        later write then persists: refresh would walk to the parent and
+        fail-close. Markers bind to ``parent_session_id`` (same contract as
+        ``_NON_CONTINUATION_CHILD_FILTER_SQL``). Lock errors propagate so
+        ``_execute_write`` / ``acquire_session_turn_lease`` can retry.
+        """
         if not session_id:
             return session_id
-        try:
-            current = self.get_session(session_id)
-            seen = {session_id}
-            while current and self._is_compression_child_row(current):
-                parent_id = current.get("parent_session_id")
-                if not parent_id or parent_id in seen:
-                    break
-                parent = self.get_session(parent_id)
-                if not parent:
-                    break
-                seen.add(parent_id)
-                current = parent
-            return str(current.get("id") or session_id) if current else session_id
-        except Exception:
+
+        def _row(sid: str):
+            row = conn.execute(
+                "SELECT id, parent_session_id, source, model_config, end_reason "
+                "FROM sessions WHERE id = ?",
+                (sid,),
+            ).fetchone()
+            return dict(row) if row else None
+
+        current = _row(session_id)
+        seen = {session_id}
+        while current:
+            parent_id = current.get("parent_session_id")
+            if (
+                not parent_id
+                or parent_id in seen
+                or self._is_explicit_fork_child_row(current)
+            ):
+                break
+            parent = _row(parent_id)
+            if not parent or parent.get("end_reason") != "compression":
+                break
+            seen.add(parent_id)
+            current = parent
+        return str(current.get("id") or session_id) if current else session_id
+
+    def _session_turn_lease_key(self, session_id: str) -> str:
+        """Return the stable serialization key for every compression segment.
+
+        Acquire/refresh/release resolve this inside their write transaction.
+        This helper is for tests and diagnostics; it does not swallow lock
+        errors (a swallowed walk plus a later successful write was the
+        fail-open that replayed the post-rotation refresh miss).
+        """
+        if not session_id:
             return session_id
+        with self._read_ctx() as conn:
+            return self._session_turn_lease_key_on_conn(conn, session_id)
 
     def try_acquire_session_turn_lease(
         self,
@@ -5766,21 +5797,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         holder: str,
         *,
         ttl_seconds: float = 300.0,
+        patience_s: Optional[float] = None,
     ) -> bool:
         """Atomically acquire the cross-process turn lease for a conversation.
 
         Compression rotates a session into child segments, so the durable key
-        is the lineage root rather than the current segment id. Expired leases
-        and leases whose structured local holder PID is known dead are reclaimed
-        in the same write transaction as acquisition.
+        is the lineage root rather than the current segment id. The walk and
+        INSERT share one write transaction. Expired leases and leases whose
+        structured local holder PID is known dead are reclaimed in that same
+        transaction.
         """
         if not session_id or not holder:
             return False
-        conversation_id = self._session_turn_lease_key(session_id)
         now = time.time()
         expires_at = now + max(0.1, float(ttl_seconds))
 
         def _do(conn):
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             row = conn.execute(
                 "SELECT holder, expires_at FROM session_turn_leases "
                 "WHERE conversation_id = ?",
@@ -5809,7 +5842,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             ).fetchone()
             return owner is not None and owner["holder"] == holder
 
-        return bool(self._execute_write(_do))
+        return bool(self._execute_write(_do, patience_s=patience_s))
 
     def acquire_session_turn_lease(
         self,
@@ -5822,6 +5855,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         on_wait=None,
         wait_notice_interval_seconds: float = 15.0,
         should_abort=None,
+        acquire_patience_s: float = 0.5,
     ) -> bool:
         """Wait for a cross-process turn lease without holding a SQLite lock.
 
@@ -5848,10 +5882,20 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         "session turn lease should_abort callback failed",
                         exc_info=True,
                     )
-            if self.try_acquire_session_turn_lease(
-                session_id, holder, ttl_seconds=ttl_seconds
-            ):
-                return True
+            try:
+                if self.try_acquire_session_turn_lease(
+                    session_id,
+                    holder,
+                    ttl_seconds=ttl_seconds,
+                    patience_s=acquire_patience_s,
+                ):
+                    return True
+            except sqlite3.Error as exc:
+                # Long holder transactions (compression publish, large
+                # flushes) can exhaust a single write-patience budget.
+                # Keep polling until wait_seconds or should_abort.
+                if classify_persistence_error(exc) != "locked":
+                    raise
             now = time.monotonic()
             remaining = deadline - now
             if remaining <= 0:
@@ -5883,10 +5927,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """Extend a turn lease only while ``holder`` still owns it."""
         if not session_id or not holder:
             return False
-        conversation_id = self._session_turn_lease_key(session_id)
         expires_at = time.time() + max(0.1, float(ttl_seconds))
 
         def _do(conn):
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             cursor = conn.execute(
                 "UPDATE session_turn_leases SET expires_at = ? "
                 "WHERE conversation_id = ? AND holder = ?",
@@ -5900,9 +5944,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """Release a turn lease iff ``holder`` still owns it; idempotent."""
         if not session_id or not holder:
             return
-        conversation_id = self._session_turn_lease_key(session_id)
 
         def _do(conn):
+            conversation_id = self._session_turn_lease_key_on_conn(conn, session_id)
             conn.execute(
                 "DELETE FROM session_turn_leases "
                 "WHERE conversation_id = ? AND holder = ?",
@@ -10041,6 +10085,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # =========================================================================
 
     def _is_explicit_fork_child_row(self, session: Dict[str, Any]) -> bool:
+        """True when ``session`` is a branch, delegate, or tool child of its parent.
+
+        Markers only count as a fork when they point at ``parent_session_id``.
+        Compression copies ``model_config`` onto the continuation
+        (``publish_compression_child`` callers pass
+        ``agent._session_init_model_config``), so a delegate's continuation
+        carries ``_delegate_from=<the delegate's own parent>``. Presence-only
+        matching would treat that real continuation as a fork — the same
+        misclassification ``_NON_CONTINUATION_CHILD_FILTER_SQL`` already
+        avoids by binding both markers to the queried parent.
+        """
         if session.get("source") == "tool":
             return True
         raw = session.get("model_config")
@@ -10050,10 +10105,14 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             cfg = json.loads(raw) if isinstance(raw, str) else raw
         except (TypeError, json.JSONDecodeError):
             return False
-        return isinstance(cfg, dict) and (
-            cfg.get("_branched_from") is not None
-            or cfg.get("_delegate_from") is not None
-        )
+        if not isinstance(cfg, dict):
+            return False
+        parent_id = session.get("parent_session_id")
+        branched = cfg.get("_branched_from")
+        delegated = cfg.get("_delegate_from")
+        if parent_id:
+            return branched == parent_id or delegated == parent_id
+        return branched is not None or delegated is not None
 
     def _is_compression_child_row(self, child: Dict[str, Any]) -> bool:
         parent_id = child.get("parent_session_id")

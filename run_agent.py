@@ -2290,6 +2290,9 @@ class AIAgent:
                     compression_lock_holder=getattr(
                         self, "_active_compression_lock_holder", None
                     ),
+                    turn_lease_holder=getattr(
+                        self, "_active_session_turn_lease_holder", None
+                    ),
                 )
                 for _written in _batch_msgs:
                     _written[_DB_PERSISTED_MARKER] = True
@@ -3728,6 +3731,14 @@ class AIAgent:
                     + "the turn was stopped because another process was "
                     "compressing this session. Your message should already be "
                     "saved — please send it again after compression completes."
+                )
+            if cause == "turn_lease":
+                return (
+                    prefix
+                    + "the turn was stopped because another Hermes process "
+                    "took over this session. Your reply was not saved — wait "
+                    "for the other process to finish, then send your message "
+                    "again."
                 )
             if cause == "locked":
                 return (
@@ -8212,8 +8223,11 @@ class AIAgent:
                     }
 
                 # Assign only after admission so finally release cannot target a
-                # holder string that never owned the row.
+                # holder string that never owned the row. Persist paths read
+                # the agent attr so a late flush after reclaim is fenced in
+                # the same SQLite write transaction as the transcript insert.
                 durable_turn_lease = _durable_holder
+                self._active_session_turn_lease_holder = _durable_holder
                 if _lease_waited:
                     self._emit_status(
                         "Session is free; loading the latest transcript..."
@@ -8396,6 +8410,11 @@ class AIAgent:
                                 session_id,
                                 exc_info=True,
                             )
+                        if (
+                            getattr(self, "_active_session_turn_lease_holder", None)
+                            == durable_turn_lease
+                        ):
+                            self._active_session_turn_lease_holder = None
                     # Always clear mid-turn labels when the turn exits — including
                     # interrupted early returns that skip finalize_turn. Keep ts.
                     try:

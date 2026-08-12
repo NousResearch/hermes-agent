@@ -5,7 +5,9 @@ from __future__ import annotations
 import sqlite3
 import threading
 import time
+from types import SimpleNamespace
 
+from hermes_state import SessionDB
 from run_agent import AIAgent
 
 
@@ -379,3 +381,128 @@ def test_late_refresh_miss_after_release_does_not_interrupt(monkeypatch):
     assert result["final_response"] == "ok"
     assert interrupt_calls == []
     assert agent._interrupt_requested is False
+
+
+def test_run_conversation_exposes_holder_for_fenced_flush(monkeypatch):
+    """The acquired holder is visible to persist, then cleared on release."""
+    db = _DB()
+    captured = {}
+
+    def append_messages_batch(session_id, messages, **kwargs):
+        captured["session_id"] = session_id
+        captured["turn_lease_holder"] = kwargs.get("turn_lease_holder")
+        captured["count"] = len(messages)
+        return len(messages)
+
+    db.append_messages_batch = append_messages_batch
+    agent = _agent_with_db(db)
+    agent._last_flushed_db_idx = 0
+    agent._flushed_db_message_ids = set()
+    agent._flushed_db_message_session_id = None
+    agent._db_flush_scan_prefix = None
+    agent._pending_cli_user_message = None
+    agent._session_persist_lock = None
+
+    def fake_run(_agent, _message, _system, history, *_args, **_kwargs):
+        captured["active"] = getattr(
+            _agent, "_active_session_turn_lease_holder", None
+        )
+        ok = _agent._flush_messages_to_session_db(
+            [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "done"},
+            ],
+            [],
+        )
+        captured["flush_ok"] = ok
+        return {"final_response": "done", "messages": history, "failed": False}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", fake_run)
+    result = AIAgent.run_conversation(
+        agent,
+        "new message",
+        conversation_history=[{"role": "user", "content": "durable latest"}],
+    )
+
+    assert result["final_response"] == "done"
+    assert captured["flush_ok"] is True
+    assert captured["active"]
+    assert captured["active"].startswith("pid=")
+    assert captured["turn_lease_holder"] == captured["active"]
+    assert captured["session_id"] == "compressed-tip"
+    assert captured["count"] == 2
+    assert getattr(agent, "_active_session_turn_lease_holder", None) is None
+    assert [event[0] for event in db.events] == [
+        "acquire",
+        "resolve",
+        "reload",
+        "release",
+    ]
+
+
+def _flush_agent(db, session_id):
+    """Bind the real flush onto a stand-in so we can use a live SessionDB."""
+    agent = SimpleNamespace(
+        _session_db=db,
+        _session_db_created=True,
+        _persist_disabled=False,
+        session_id=session_id,
+        _session_persist_lock=None,
+        _flushed_db_message_ids=set(),
+        _flushed_db_message_session_id=None,
+        _last_flushed_db_idx=0,
+        _db_flush_scan_prefix=None,
+        _persist_user_message_idx=None,
+        _persist_user_message_override=None,
+        _persist_user_message_timestamp=None,
+        _pending_cli_user_message=None,
+        _active_session_turn_lease_holder=None,
+        _last_persistence_error_cause=None,
+    )
+    agent._ensure_db_session = lambda: None
+    agent._flush_messages_to_session_db = (
+        AIAgent._flush_messages_to_session_db.__get__(agent, AIAgent)
+    )
+    agent._flush_messages_to_session_db_unlocked = (
+        AIAgent._flush_messages_to_session_db_unlocked.__get__(agent, AIAgent)
+    )
+    return agent
+
+
+def test_flush_messages_to_session_db_fences_stale_holder_on_live_db(tmp_path):
+    """A-loses / B-acquires / A-late-flush, through the real persist path."""
+    path = tmp_path / "state.db"
+    first = SessionDB(path)
+    second = SessionDB(path)
+    first.create_session("shared", source="test")
+    stale_holder = "pid=1:turn=stale"
+    next_holder = "pid=2:turn=next"
+    assert first.try_acquire_session_turn_lease(
+        "shared", stale_holder, ttl_seconds=5
+    )
+
+    agent = _flush_agent(first, "shared")
+    agent._active_session_turn_lease_holder = stale_holder
+    owned = [{"role": "user", "content": "stale-owned"}]
+    assert agent._flush_messages_to_session_db(owned, []) is True
+    assert [m["content"] for m in first.get_messages("shared")] == ["stale-owned"]
+
+    first.release_session_turn_lease("shared", stale_holder)
+    assert second.try_acquire_session_turn_lease(
+        "shared", next_holder, ttl_seconds=5
+    )
+
+    late = [{"role": "assistant", "content": "late stale reply"}]
+    assert agent._flush_messages_to_session_db(late, []) is False
+    assert agent._last_persistence_error_cause == "turn_lease"
+    assert [m["content"] for m in second.get_messages("shared")] == ["stale-owned"]
+
+    agent._active_session_turn_lease_holder = next_holder
+    assert agent._flush_messages_to_session_db(late, []) is True
+    assert [m["content"] for m in second.get_messages("shared")] == [
+        "stale-owned",
+        "late stale reply",
+    ]
+    second.release_session_turn_lease("shared", next_holder)
+    first.close()
+    second.close()

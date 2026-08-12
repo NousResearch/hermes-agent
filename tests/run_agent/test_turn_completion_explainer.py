@@ -119,6 +119,18 @@ def test_explanation_persistence_compression_cause_is_specific():
     assert "disk" not in lower
 
 
+def test_explanation_persistence_turn_lease_cause_is_specific():
+    out = AIAgent._format_turn_completion_explanation(
+        "session_persistence_failed", "turn_lease"
+    )
+    lower = out.lower()
+    assert "took over" in lower
+    assert "not saved" in lower
+    assert "disk" not in lower
+    assert "compression" not in lower
+    assert "hermes doctor" not in lower
+
+
 def test_explanation_persistence_disk_cause_keeps_disk_wording():
     out = AIAgent._format_turn_completion_explanation(
         "session_persistence_failed", "disk"
@@ -232,6 +244,19 @@ def test_classify_persistence_error_compression_busy_is_distinct():
     ) == "compression"
 
 
+def test_classify_persistence_error_turn_lease_lost_is_distinct():
+    from hermes_state import SessionTurnLeaseLostError, classify_persistence_error
+
+    assert classify_persistence_error(
+        SessionTurnLeaseLostError(
+            "Session turn lease lost; refusing transcript write for 'abc'"
+        )
+    ) == "turn_lease"
+    assert classify_persistence_error(
+        "Session turn lease lost; refusing transcript write for 'abc'"
+    ) == "turn_lease"
+
+
 def test_persistence_error_causes_tuple_matches_classifier():
     """PERSISTENCE_ERROR_CAUSES must cover every value the classifier can
     return (consumers like cron suppression iterate it)."""
@@ -240,6 +265,7 @@ def test_persistence_error_causes_tuple_matches_classifier():
     probes = (
         "database is locked",
         "Session 'abc' is being compressed by another writer",
+        "Session turn lease lost; refusing transcript write for 'abc'",
         "database or disk is full",
         "something else entirely",
         None,

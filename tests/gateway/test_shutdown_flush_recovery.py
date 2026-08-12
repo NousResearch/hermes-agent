@@ -129,3 +129,152 @@ class TestSpoolReplayOrder:
         # reported by the loop's own handler.
         assert broken.exists()
         assert "Failed to recover pending message" in caplog.text
+
+
+class TestSpoolReplayFidelity:
+    """The full transcript message must survive the restart round trip."""
+
+    def test_structured_fields_are_preserved(self, flush_dir):
+        tool_calls = [
+            {
+                "id": "call-1",
+                "type": "function",
+                "function": {"name": "send_payment", "arguments": "{}"},
+            }
+        ]
+        message = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": tool_calls,
+            "reasoning": "deliberating",
+            "reasoning_content": "chain",
+            "reasoning_details": [{"type": "text"}],
+            "codex_reasoning_items": [{"id": "r1"}],
+            "codex_message_items": [{"id": "m1"}],
+            "platform_message_id": "tg-42",
+            "observed": True,
+            "timestamp": 12345,
+            "api_content": "exact bytes sent to the API",
+        }
+        _write_spool(
+            flush_dir, "pending-aaa.json", "sess-1", message, ts=100, seq=0,
+        )
+
+        mock_db = MagicMock()
+        assert recover_pending_to_db(mock_db) == 1
+
+        kwargs = mock_db.append_message.call_args.kwargs
+        assert kwargs["session_id"] == "sess-1"
+        assert kwargs["role"] == "assistant"
+        # An assistant tool-call row legitimately has no content; forcing it
+        # to "" would rewrite the message.
+        assert kwargs["content"] is None
+        assert kwargs["tool_calls"] == tool_calls
+        assert kwargs["reasoning"] == "deliberating"
+        assert kwargs["reasoning_content"] == "chain"
+        assert kwargs["reasoning_details"] == [{"type": "text"}]
+        assert kwargs["codex_reasoning_items"] == [{"id": "r1"}]
+        assert kwargs["codex_message_items"] == [{"id": "m1"}]
+        assert kwargs["platform_message_id"] == "tg-42"
+        assert kwargs["observed"] is True
+        assert kwargs["timestamp"] == 12345
+        assert kwargs["api_content"] == "exact bytes sent to the API"
+
+    def test_tool_result_keeps_its_call_id_and_name(self, flush_dir):
+        """Losing tool_call_id orphans the result and breaks replay."""
+        _write_spool(
+            flush_dir, "pending-aaa.json", "sess-1",
+            {
+                "role": "tool",
+                "content": "receipt-1",
+                "tool_call_id": "call-1",
+                "tool_name": "send_payment",
+            },
+            ts=100, seq=0,
+        )
+
+        mock_db = MagicMock()
+        assert recover_pending_to_db(mock_db) == 1
+
+        kwargs = mock_db.append_message.call_args.kwargs
+        assert kwargs["tool_call_id"] == "call-1"
+        assert kwargs["tool_name"] == "send_payment"
+
+    def test_reasoning_is_not_fabricated_for_non_assistant_roles(
+        self, flush_dir
+    ):
+        """Mirrors the live writer, which gates reasoning on role."""
+        _write_spool(
+            flush_dir, "pending-aaa.json", "sess-1",
+            {"role": "user", "content": "hi", "reasoning": "leaked"},
+            ts=100, seq=0,
+        )
+
+        mock_db = MagicMock()
+        assert recover_pending_to_db(mock_db) == 1
+        assert mock_db.append_message.call_args.kwargs["reasoning"] is None
+
+    def test_message_id_is_used_when_platform_message_id_is_absent(
+        self, flush_dir
+    ):
+        _write_spool(
+            flush_dir, "pending-aaa.json", "sess-1",
+            {"role": "user", "content": "hi", "message_id": "tg-7"},
+            ts=100, seq=0,
+        )
+
+        mock_db = MagicMock()
+        assert recover_pending_to_db(mock_db) == 1
+        assert (
+            mock_db.append_message.call_args.kwargs["platform_message_id"]
+            == "tg-7"
+        )
+
+    def test_payload_ts_is_the_timestamp_fallback(self, flush_dir):
+        _write_spool(
+            flush_dir, "pending-aaa.json", "sess-1",
+            {"role": "user", "content": "hi"}, ts=999, seq=0,
+        )
+
+        mock_db = MagicMock()
+        assert recover_pending_to_db(mock_db) == 1
+        assert mock_db.append_message.call_args.kwargs["timestamp"] == 999
+
+
+class TestSpoolReplayFailure:
+    """A failed replay must not let newer messages overtake older ones."""
+
+    def test_failure_blocks_later_messages_for_that_session_only(
+        self, flush_dir
+    ):
+        first = _write_spool(
+            flush_dir, "pending-aaa.json", "sess-1",
+            {"role": "user", "content": "first"}, ts=100, seq=0,
+        )
+        second = _write_spool(
+            flush_dir, "pending-bbb.json", "sess-1",
+            {"role": "user", "content": "second"}, ts=101, seq=1,
+        )
+        other = _write_spool(
+            flush_dir, "pending-ccc.json", "sess-2",
+            {"role": "user", "content": "other-session"}, ts=102, seq=2,
+        )
+
+        mock_db = MagicMock()
+
+        def append_message(**kwargs):
+            if kwargs["content"] == "first":
+                raise RuntimeError("controlled database outage")
+            return 1
+
+        mock_db.append_message.side_effect = append_message
+
+        assert recover_pending_to_db(mock_db) == 1
+
+        # "second" must NOT be written: it would land with a lower row id
+        # than "first" once "first" is retried on a later start.
+        assert _contents(mock_db) == ["first", "other-session"]
+        assert first.exists()
+        assert second.exists()
+        # A different session is unaffected by sess-1's outage.
+        assert not other.exists()

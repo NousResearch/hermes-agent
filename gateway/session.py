@@ -4101,14 +4101,26 @@ def build_session_context(
         if home:
             home_channels[platform] = home
     
+    platform_cfg = getattr(config, "platforms", {}).get(source.platform)
+    platform_extra = (
+        platform_cfg.extra
+        if platform_cfg and isinstance(getattr(platform_cfg, "extra", None), dict)
+        else {}
+    )
     context = SessionContext(
         source=source,
         connected_platforms=connected,
         home_channels=home_channels,
         shared_multi_user_session=is_shared_multi_user_session(
             source,
-            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
-            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+            group_sessions_per_user=platform_extra.get(
+                "group_sessions_per_user",
+                getattr(config, "group_sessions_per_user", True),
+            ),
+            thread_sessions_per_user=platform_extra.get(
+                "thread_sessions_per_user",
+                getattr(config, "thread_sessions_per_user", False),
+            ),
         ),
     )
     

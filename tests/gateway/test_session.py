@@ -299,6 +299,65 @@ class TestBuildSessionContextPrompt:
         assert "\n**Platform notes:** hacked" not in prompt
 
 
+class TestPerPlatformSharedSessionAttribution:
+    def test_context_uses_per_platform_isolation_override(self):
+        config = GatewayConfig(
+            group_sessions_per_user=True,
+            platforms={
+                Platform.WHATSAPP: PlatformConfig(
+                    enabled=True,
+                    extra={"group_sessions_per_user": False},
+                )
+            },
+        )
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363000000000000@g.us",
+            chat_type="group",
+            user_id="alice@lid",
+            user_name="Alice",
+        )
+
+        context = build_session_context(source, config)
+        prompt = build_session_context_prompt(context)
+
+        assert context.shared_multi_user_session is True
+        assert "**Session type:** Multi-user session" in prompt
+        assert "**User:**" not in prompt
+
+    @pytest.mark.asyncio
+    async def test_inbound_message_uses_sender_prefix_for_platform_override(self):
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            group_sessions_per_user=True,
+            platforms={
+                Platform.WHATSAPP: PlatformConfig(
+                    enabled=True,
+                    extra={"group_sessions_per_user": False},
+                )
+            },
+        )
+        runner.adapters = {}
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363000000000000@g.us",
+            chat_type="group",
+            user_id="alice@lid",
+            user_name="Alice",
+        )
+        event = MessageEvent(text="hello", source=source)
+
+        result = await runner._prepare_inbound_message_text(
+            event=event,
+            source=source,
+            history=[],
+        )
+
+        assert result == "[Alice] hello"
+
+
 class TestSenderPrefixWithBackfill:
     """Regression: sender prefix must not wrap the backfill context block.
 

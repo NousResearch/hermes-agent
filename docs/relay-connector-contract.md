@@ -440,21 +440,30 @@ clarify pickers) with NATIVE controls: Discord button components, Telegram
 inline keyboards, Slack Block Kit actions, WhatsApp button messages (≤3
 options) / list messages (4–10; >10 degrades to the numbered-text fallback).
 `prompt_kind` (`approval`/`clarify`/`choice`) is a styling hint only.
-`prompt_id` is gateway-minted (8 hex) and opaque to the connector; each
+`prompt_id` is gateway-minted and opaque to the connector; each
 option's callback payload carries the token `hp1:<prompt_id>:<option_id>`
 (≤64 bytes — Telegram's `callback_data` cap binds every lane; option ids are
-`[A-Za-z0-9_.-]`, ≤32 chars). `style` maps per-platform
+`[A-Za-z0-9_.-]`, ≤32 chars). The gateway mints the prompt id as
+`<per-process nonce>.<8 hex>` within that same alphabet and budget: the
+connector fans a passthrough forward (a Discord press) out to EVERY live
+gateway session of the tenant, unlike a message, which it narrows to the
+admitted instance set, so the nonce is how a gateway tells its OWN prompt
+from a sibling's. `style` maps per-platform
 (primary/success/danger/secondary). `timeout_s` is advisory on the wire —
 expiry is enforced GATEWAY-side (the pending-prompt registry drops expired
-entries; a stale press falls through as typed text, mirroring the native
-adapters' "approval expired" edit).
+entries; the owning gateway then replies with a short "no longer waiting"
+notice).
 
 **`prompt_response` (Phase 3 inbound).** The user's press crosses back as a
 normal inbound MessageEvent carrying
 `prompt_response: {prompt_id, option_id, label?, prompt_message_id?}` — never
 a bare platform `custom_id`. The event's `text` mirrors `/{option_id}` with
 `message_type: "command"` so a gateway predating the field routes the press
-as a typed reply instead of dropping it. The SOURCE is the authentic
+as a typed reply instead of dropping it. A gateway that DOES understand the
+field always consumes the press instead: a prompt id it did not mint belongs
+to a sibling gateway that the same fan-out also reached, and letting the
+`/{option_id}` text reach the chat lane made every sibling answer
+"Unknown command" under the owner's single ack. The SOURCE is the authentic
 CLICKING user (connector-observed: Telegram `callback_query.from`, Slack
 `block_actions.user`, WhatsApp `messages[].from`, Discord interaction
 member/user), so gateway-side authorization gates apply to a button press

@@ -656,6 +656,16 @@ Connect Hermes to an IRC server. No external dependencies. See [the IRC messagin
 | `IRC_ALLOW_ALL_USERS` | Allow anyone in the channel to talk to the bot (dev only). |
 | `IRC_HOME_CHANNEL` | Channel for cron / notification delivery (defaults to `IRC_CHANNEL`). |
 
+### QQ (OneBot)
+
+Connect Hermes to QQ through a local OneBot 11 bridge (NapCat / Lagrange / LLOneBot / go-cqhttp). See [the QQ (OneBot) messaging guide](/user-guide/messaging/qq-onebot).
+
+| Variable | Description |
+|----------|-------------|
+| `ONEBOT_ALLOWED_USERS` | Comma-separated QQ user ids allowed to talk to the bot. |
+| `ONEBOT_ALLOW_ALL_USERS` | Allow any user to talk to the bot (dev only). |
+| `ONEBOT_HOME_CHANNEL` | Default chat id (`private:<qq>` or `group:<qq>`) for cron / notification delivery. |
+
 ### SimpleX
 
 Connect Hermes to a [SimpleX Chat](https://simplex.chat/) network via a local `simplex-chat` daemon. See [the SimpleX messaging guide](/user-guide/messaging/simplex).

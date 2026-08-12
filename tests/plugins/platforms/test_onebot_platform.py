@@ -1,0 +1,391 @@
+"""Tests for the OneBot 11 platform adapter (NapCat / Lagrange / LLOneBot).
+
+Covers reply splitting at sentence boundaries, CQ-code parsing, mention
+gating, DM/group policies, outbound segment-array payloads, text-image
+rendering, and a live reverse-WS round trip against a fake NapCat client.
+"""
+
+import asyncio
+import base64
+import json
+from unittest.mock import patch
+
+import pytest
+
+from gateway.config import Platform, PlatformConfig
+from plugins.platforms.onebot.adapter import (
+    DEFAULT_SPLIT_LENGTH,
+    MAX_MESSAGE_LENGTH,
+    OneBotAdapter,
+    _split_reply,
+    render_text_image,
+)
+
+
+# ---------------------------------------------------------------------------
+# _split_reply
+# ---------------------------------------------------------------------------
+
+
+def test_split_reply_short_message_unchanged() -> None:
+    assert _split_reply("短消息。", 100) == ["短消息。"]
+
+
+def test_split_reply_breaks_at_sentence_boundaries() -> None:
+    text = "第一句完整的话。第二句完整的话！第三句问号？" * 8
+    parts = _split_reply(text, 100)
+    assert len(parts) > 1
+    for part in parts:
+        assert 0 < len(part) <= 100
+        # Every non-final chunk must end on a sentence boundary.
+        assert part[-1] in "。！？!?；;\n"
+
+
+def test_split_reply_hard_cut_without_boundaries() -> None:
+    text = "x" * 250
+    parts = _split_reply(text, 100)
+    assert [len(p) for p in parts] == [100, 100, 50]
+
+
+def test_split_reply_respects_explicit_newlines() -> None:
+    # Newlines are sentence boundaries: a >limit text full of newlines
+    # breaks at the newlines (each line is short).
+    text = ("行" * 30 + "\n") * 5  # 155 chars, newline every 31 chars
+    parts = _split_reply(text, 100)
+    assert len(parts) >= 2
+    for part in parts[:-1]:
+        assert part.endswith("\n")
+    assert all(len(p) <= 100 for p in parts)
+
+
+# ---------------------------------------------------------------------------
+# Text-image rendering
+# ---------------------------------------------------------------------------
+
+_DEJAVU = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
+
+@pytest.mark.skipif(
+    not __import__("os").path.exists(_DEJAVU),
+    reason="DejaVu font not available in this environment",
+)
+def test_render_text_image_produces_png(monkeypatch) -> None:
+    from PIL import Image
+    import io
+
+    import plugins.platforms.onebot.adapter as ob
+
+    monkeypatch.setattr(ob, "_TEXT_IMAGE_FALLBACK_FONTS", [_DEJAVU])
+    png = render_text_image("Hello world! " * 20)
+    assert png[:8] == b"\x89PNG\r\n\x1a\n"
+    img = Image.open(io.BytesIO(png))
+    assert img.size[0] == ob._TEXT_IMAGE_WIDTH
+    assert img.size[1] > 0
+
+
+def test_render_text_image_preserves_newlines(monkeypatch) -> None:
+    import io
+
+    from PIL import Image
+
+    import plugins.platforms.onebot.adapter as ob
+
+    if not __import__("os").path.exists(_DEJAVU):
+        pytest.skip("DejaVu font not available")
+    monkeypatch.setattr(ob, "_TEXT_IMAGE_FALLBACK_FONTS", [_DEJAVU])
+    single = render_text_image("line1\nline2\nline3")
+    joined = render_text_image("line1line2line3")
+    img1 = Image.open(io.BytesIO(single))
+    img2 = Image.open(io.BytesIO(joined))
+    # Three explicit lines need more height than one joined paragraph.
+    assert img1.size[1] > img2.size[1]
+
+
+# ---------------------------------------------------------------------------
+# Adapter behavior
+# ---------------------------------------------------------------------------
+
+
+def _make_adapter(**extra) -> OneBotAdapter:
+    return OneBotAdapter(PlatformConfig(enabled=True, extra=extra or {}))
+
+
+def test_adapter_has_max_message_length() -> None:
+    assert MAX_MESSAGE_LENGTH == 4000
+    assert OneBotAdapter.MAX_MESSAGE_LENGTH == MAX_MESSAGE_LENGTH
+
+
+def test_cq_parse_at_and_face() -> None:
+    adapter = _make_adapter()
+    raw = "[CQ:at,qq=12345] 你好 [CQ:face,id=0]"
+    text, media = asyncio.run(adapter._parse_content(raw))
+    assert text == "@12345 你好 😊"
+    assert media == []
+
+
+def test_cq_parse_at_all_and_reply() -> None:
+    adapter = _make_adapter()
+    raw = "[CQ:reply,id=99][CQ:at,qq=all] 注意"
+    text, _ = asyncio.run(adapter._parse_content(raw))
+    assert text == "@全体成员 注意"
+
+
+def test_cq_parse_image_no_url_falls_back() -> None:
+    adapter = _make_adapter()
+    raw = "看图 [CQ:image,file=abc.jpg]"
+    text, media = asyncio.run(adapter._parse_content(raw))
+    assert text == "看图 [图片]"
+    assert media == []
+
+
+def test_is_mentioned() -> None:
+    adapter = _make_adapter()
+    adapter._self_id = "2512172957"
+    assert adapter._is_mentioned("[CQ:at,qq=2512172957] 嗨")
+    assert adapter._is_mentioned("带回复 [CQ:reply,id=5]")
+    assert not adapter._is_mentioned("没 @ 的消息")
+
+
+def test_is_mentioned_fails_closed_without_self_id() -> None:
+    adapter = _make_adapter()
+    adapter._self_id = None
+    assert not adapter._is_mentioned("随便说点什么")
+
+
+def test_dm_policy_allowlist() -> None:
+    adapter = _make_adapter(dm_policy="allowlist", allow_from=["10001"])
+    assert adapter._dm_allowed("10001")
+    assert not adapter._dm_allowed("99999")
+
+
+def test_dm_policy_disabled() -> None:
+    adapter = _make_adapter(dm_policy="disabled")
+    assert not adapter._dm_allowed("10001")
+
+
+def test_group_policy_allowlist() -> None:
+    adapter = _make_adapter(group_policy="allowlist", group_allow_from=["888888"])
+    assert adapter._group_allowed("888888")
+    assert not adapter._group_allowed("777777")
+
+
+# ---------------------------------------------------------------------------
+# Outbound send() — fake WebSocket with echo replies
+# ---------------------------------------------------------------------------
+
+
+class _FakeWS:
+    def __init__(self, adapter: OneBotAdapter) -> None:
+        self.adapter = adapter
+        self.sent: list[dict] = []
+        self._next_id = 1
+
+    async def send_str(self, payload: str) -> None:
+        data = json.loads(payload)
+        self.sent.append(data)
+        fut = self.adapter._pending_actions.get(data.get("echo"))
+        if fut is not None and not fut.done():
+            fut.set_result(
+                {
+                    "status": "ok",
+                    "retcode": 0,
+                    "echo": data.get("echo"),
+                    "data": {"message_id": self._next_id},
+                }
+            )
+            self._next_id += 1
+
+
+def test_send_uses_segment_array_without_reply() -> None:
+    adapter = _make_adapter()
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    result = asyncio.run(adapter.send("private:841859784", "你好"))
+    assert result.success
+    payload = ws.sent[0]
+    assert payload["action"] == "send_msg"
+    assert payload["params"]["user_id"] == 841859784
+    assert payload["params"]["message"] == [
+        {"type": "text", "data": {"text": "你好"}}
+    ]
+    # User asked for no reply-quoting: never emit a reply segment.
+    assert all(seg["type"] != "reply" for seg in payload["params"]["message"])
+
+
+def test_send_splits_long_text_into_multiple_messages() -> None:
+    # Disable the text-image path so we exercise the chunking logic.
+    adapter = _make_adapter(split_length=50, text_image_threshold=0)
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    long_text = "第一句。第二句。" * 20  # 160 chars, sentence boundaries
+    result = asyncio.run(adapter.send("group:888888", long_text))
+    assert result.success
+    assert len(ws.sent) > 1
+    for payload in ws.sent:
+        assert payload["params"]["group_id"] == 888888
+        segs = payload["params"]["message"]
+        assert segs and segs[0]["type"] == "text"
+        assert len(segs[0]["data"]["text"]) <= 50
+
+
+def test_send_long_content_uses_text_image(monkeypatch) -> None:
+    adapter = _make_adapter(text_image_threshold=50)
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+
+    def fake_render(text: str) -> bytes:
+        return b"\x89PNG\r\n\x1a\n" + b"0" * 64
+
+    monkeypatch.setattr(
+        "plugins.platforms.onebot.adapter.render_text_image", fake_render
+    )
+    result = asyncio.run(adapter.send("private:1", "很长" * 30))
+    assert result.success
+    assert len(ws.sent) == 1
+    segs = ws.sent[0]["params"]["message"]
+    assert segs[0]["type"] == "image"
+    assert segs[0]["data"]["file"].startswith("base64://")
+
+
+def test_send_attaches_media_to_final_chunk() -> None:
+    # 80 chars: >50 (splits) but <150 (no text image).
+    adapter = _make_adapter(split_length=50)
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    long_text = "第一句。第二句。" * 10
+    result = asyncio.run(
+        adapter.send(
+            "private:1",
+            long_text,
+            metadata={"media_files": ["/nonexistent/img.png"]},
+        )
+    )
+    # Missing local file is skipped gracefully; text still delivered.
+    assert result.success
+    assert len(ws.sent) > 1
+    for payload in ws.sent:
+        assert all(seg["type"] == "text" for seg in payload["params"]["message"])
+
+
+def test_send_fails_fast_when_disconnected() -> None:
+    adapter = _make_adapter()
+    adapter._ws = None
+    result = asyncio.run(adapter.send("private:1", "你好"))
+    assert not result.success
+    assert result.retryable
+
+
+# ---------------------------------------------------------------------------
+# Reverse-WS round trip against a fake NapCat client
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reverse_ws_round_trip(monkeypatch) -> None:
+    import socket
+
+    import aiohttp
+
+    # The live gateway (if running) holds the per-mode platform lock; tests
+    # must bypass it.
+    monkeypatch.setattr(
+        OneBotAdapter, "_acquire_platform_lock", lambda self, *a, **k: True
+    )
+
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+
+    adapter = _make_adapter(host="127.0.0.1", port=port)
+    assert await adapter.connect()
+    try:
+        received = []
+        adapter._message_handler = lambda event: received.append(event) or _noop()
+
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(f"ws://127.0.0.1:{port}/ws") as ws:
+                # Heartbeat meta event → learn self id.
+                await ws.send_str(
+                    json.dumps(
+                        {
+                            "post_type": "meta_event",
+                            "meta_event_type": "heartbeat",
+                            "self_id": 2512172957,
+                        }
+                    )
+                )
+                await asyncio.sleep(0.05)
+                assert adapter._self_id == "2512172957"
+
+                # Private message → dispatched as DM event.
+                await ws.send_str(
+                    json.dumps(
+                        {
+                            "post_type": "message",
+                            "message_type": "private",
+                            "user_id": 10001,
+                            "self_id": 2512172957,
+                            "message_id": 111,
+                            "raw_message": "你好[CQ:face,id=0]",
+                            "sender": {"user_id": 10001, "nickname": "测试员"},
+                        }
+                    )
+                )
+                await asyncio.sleep(0.15)
+                assert received, "private message should be dispatched"
+                ev = received[-1]
+                assert ev.text == "你好😊"
+                assert ev.source.chat_id == "private:10001"
+                assert ev.source.chat_type == "dm"
+
+                # Group message without @ → ignored under require_mention.
+                before = len(received)
+                await ws.send_str(
+                    json.dumps(
+                        {
+                            "post_type": "message",
+                            "message_type": "group",
+                            "group_id": 888888,
+                            "user_id": 10002,
+                            "self_id": 2512172957,
+                            "message_id": 222,
+                            "raw_message": "没 @ 的消息",
+                            "sender": {"user_id": 10002, "nickname": "群友"},
+                        }
+                    )
+                )
+                await asyncio.sleep(0.15)
+                assert len(received) == before
+
+                # Group message with @ → dispatched.
+                await ws.send_str(
+                    json.dumps(
+                        {
+                            "post_type": "message",
+                            "message_type": "group",
+                            "group_id": 888888,
+                            "user_id": 10002,
+                            "self_id": 2512172957,
+                            "message_id": 333,
+                            "raw_message": "[CQ:at,qq=2512172957] 在吗",
+                            "sender": {
+                                "user_id": 10002,
+                                "nickname": "群友",
+                                "card": "卡",
+                            },
+                        }
+                    )
+                )
+                await asyncio.sleep(0.15)
+                assert len(received) == before + 1
+                ev = received[-1]
+                assert ev.text == "@2512172957 在吗"
+                assert ev.source.chat_id == "group:888888"
+                assert ev.source.chat_type == "group"
+                assert ev.source.user_name == "卡"  # group card preferred
+    finally:
+        await adapter.disconnect()
+
+
+async def _noop() -> None:
+    return None

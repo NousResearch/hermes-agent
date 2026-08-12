@@ -330,6 +330,34 @@ def test_send_fails_fast_when_disconnected() -> None:
     assert result.retryable
 
 
+def test_send_typing_private_chat() -> None:
+    adapter = _make_adapter()
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    asyncio.run(adapter.send_typing("private:841859784"))
+    assert len(ws.sent) == 1
+    payload = ws.sent[0]
+    assert payload["action"] == "set_input_status"
+    assert payload["params"] == {"user_id": "841859784", "event_type": 1}
+
+
+def test_send_typing_group_chat_is_noop() -> None:
+    adapter = _make_adapter()
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    asyncio.run(adapter.send_typing("group:888888"))
+    assert ws.sent == []
+
+
+def test_stop_typing_private_chat() -> None:
+    adapter = _make_adapter()
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    asyncio.run(adapter.stop_typing("private:841859784"))
+    assert len(ws.sent) == 1
+    assert ws.sent[0]["params"] == {"user_id": "841859784", "event_type": 0}
+
+
 # ---------------------------------------------------------------------------
 # Reverse-WS round trip against a fake NapCat client
 # ---------------------------------------------------------------------------

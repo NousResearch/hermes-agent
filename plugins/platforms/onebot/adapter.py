@@ -964,6 +964,43 @@ class OneBotAdapter(BasePlatformAdapter):
         kind, target = _split_chat_id(chat_id)
         return {"name": chat_id, "type": "group" if kind == "group" else "dm"}
 
+    async def send_typing(self, chat_id: str, metadata=None) -> None:
+        """Show the QQ "typing…" bubble — NapCat `set_input_status`.
+
+        QQ only surfaces input status for C2C (private) chats; group
+        chats have no typing indicator, so those are skipped. Failures
+        are silently ignored (the gateway bounds this call itself).
+        """
+        if self._ws is None:
+            return
+        kind, target = _split_chat_id(chat_id)
+        if kind != "private":
+            return
+        try:
+            await self._call_action(
+                "set_input_status",
+                {"user_id": target, "event_type": 1},
+                timeout=3.0,
+            )
+        except Exception as e:
+            logger.debug("[onebot] send_typing failed: %s", e)
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Clear the QQ input-status bubble (private chats only)."""
+        if self._ws is None:
+            return
+        kind, target = _split_chat_id(chat_id)
+        if kind != "private":
+            return
+        try:
+            await self._call_action(
+                "set_input_status",
+                {"user_id": target, "event_type": 0},
+                timeout=3.0,
+            )
+        except Exception as e:
+            logger.debug("[onebot] stop_typing failed: %s", e)
+
 
 # ---------------------------------------------------------------------------
 # Plugin registration

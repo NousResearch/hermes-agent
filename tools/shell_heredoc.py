@@ -296,8 +296,13 @@ def strip_inert_heredoc_bodies(command: str) -> str:
     # machine entirely. This function runs on every terminal tool call.
     if "<<" not in command:
         return command
+    # No heredoc opener can start after the last '<<' occurrence; once the
+    # scan passes it, the rest of the command needs no per-char walk.
+    last_opener_index = command.rfind("<<")
 
     while command_start < len(command):
+        if command_start > last_opener_index:
+            break
         command_end, specs, unknown_operator, has_list_operator = (
             _scan_heredoc_command_unit(command, command_start)
         )
@@ -339,8 +344,16 @@ def strip_inert_heredoc_bodies(command: str) -> str:
                 ranges.extend(body_ranges)
         command_start = body_cursor
 
-    result = command
-    for start, end in reversed(ranges):
-        replacement = "\n" * result[start:end].count("\n")
-        result = result[:start] + replacement + result[end:]
-    return result
+    if not ranges:
+        return command
+    # Single-pass rebuild: ranges are sorted and non-overlapping, so join the
+    # kept segments with newline-preserving replacements (avoids a quadratic
+    # full-string copy per masked range on heredoc-heavy commands).
+    parts: list[str] = []
+    previous = 0
+    for start, end in ranges:
+        parts.append(command[previous:start])
+        parts.append("\n" * command.count("\n", start, end))
+        previous = end
+    parts.append(command[previous:])
+    return "".join(parts)

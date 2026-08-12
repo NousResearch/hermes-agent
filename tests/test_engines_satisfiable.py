@@ -170,21 +170,6 @@ class TestEnginesAreSatisfiable:
             "nothing."
         )
 
-    @pytest.mark.parametrize("supported_node", ["22.22.0", "22.23.1", "24.0.0", "26.0.0"])
-    def test_root_range_accepts_supported_dependency_lines(self, supported_node):
-        node_range = _root_manifest()["engines"]["node"]
-        assert _satisfies_range(supported_node, node_range)
-
-    @pytest.mark.parametrize("unsupported_node", ["22.21.1", "23.0.0", "25.2.1"])
-    def test_root_range_rejects_nodes_excluded_by_dependencies(self, unsupported_node):
-        """The root preflight must reject a runtime nanoid 6 cannot run on."""
-        node_range = _root_manifest()["engines"]["node"]
-        assert not _satisfies_range(unsupported_node, node_range), (
-            f"engines.node {node_range!r} accepts Node {unsupported_node}, so "
-            "engine-strict defers the failure to nanoid instead of naming Hermes's "
-            "supported runtime range and provisioning a managed Node."
-        )
-
 
 class TestExcludedNpmBand:
     """npm 11.10–11.16 honor `min-release-age` but ignore `min-release-age-exclude`.

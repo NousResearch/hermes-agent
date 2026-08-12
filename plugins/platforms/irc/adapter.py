@@ -191,7 +191,10 @@ class IRCAdapter(BasePlatformAdapter):
         try:
             from gateway.status import acquire_scoped_lock, release_scoped_lock
             lock_key = f"{self.server}:{self.nickname}"
-            if not acquire_scoped_lock("irc", lock_key):
+            # acquire_scoped_lock returns (acquired, existing) — unpack before
+            # the boolean check so lock-conflict branches remain reachable.
+            acquired, _existing = acquire_scoped_lock("irc", lock_key)
+            if not acquired:
                 logger.error("IRC: %s@%s already in use by another profile", self.nickname, self.server)
                 self._set_fatal_error("lock_conflict", "IRC identity in use by another profile", retryable=False)
                 return False

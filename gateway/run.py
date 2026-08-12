@@ -2486,6 +2486,7 @@ from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
+    is_global_startup_conflict,
     parse_restart_after_turn_timeout,
     parse_restart_drain_timeout,
 )
@@ -5909,6 +5910,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _stop_task: Optional[asyncio.Task] = None
     _restart_task: Optional[asyncio.Task] = None
     _profile_failed_platforms: Optional[Dict[str, Dict[Platform, asyncio.Task]]] = None
+    # profile -> platform -> {credential_claim, listener_claim} held while a
+    # secondary is queued for reconnect. Same-process machine locks are not
+    # enough: another multiplexed profile must not consume the credential.
+    _profile_retry_resource_claims: Optional[
+        Dict[str, Dict[Platform, Dict[str, Any]]]
+    ] = None
     _systemd_watchdog: Optional[Any] = None
     _startup_restore_in_progress: bool = False
 
@@ -6074,6 +6081,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._exit_code: Optional[int] = None
         self._draining = False
         self._profile_failed_platforms: Dict[str, Dict[Platform, asyncio.Task]] = {}
+        self._profile_retry_resource_claims: Dict[
+            str, Dict[Platform, Dict[str, Any]]
+        ] = {}
         self._systemd_watchdog = None
         # External (NAS-driven) drain state — distinct from the shutdown
         # ``_draining`` flag above. Set by ``_drain_control_watcher`` when the
@@ -10972,9 +10982,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     def _startup_should_abort(self) -> bool:
         return (
-            self._restart_requested
-            or self._draining
-            or self._shutdown_event.is_set()
+            bool(getattr(self, "_restart_requested", False))
+            or bool(getattr(self, "_draining", False))
+            or bool(
+                getattr(getattr(self, "_shutdown_event", None), "is_set", lambda: False)()
+            )
         )
 
     async def _abort_startup_if_shutdown_requested(
@@ -11469,9 +11481,136 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         connected_count = 0
         enabled_platform_count = 0
-        startup_nonretryable_errors: list[str] = []
+        # Startup failure buckets. Classification inspects real conflict
+        # semantics (lock / polling ownership) before the adapter's
+        # retryable flag — production token locks are emitted retryable
+        # so reconnect can recover later, but pure single-writer conflicts
+        # at zero-connected startup still exit 78.
+        # global/local entries: (label, error_code|None, human message)
+        startup_global_conflicts: list[tuple[str, str | None, str]] = []
+        startup_local_nonretryable: list[tuple[str, str | None, str]] = []
         startup_retryable_errors: list[str] = []
-        
+        # Secondary multiplex retryable failures cannot use the primary
+        # ``_failed_platforms`` registry (different HERMES_HOME/secrets).
+        # Collect them here and arm ``_profile_failed_platforms`` once the
+        # runner is marked running — otherwise exit-78 is suppressed while
+        # nothing ever retries (live but deaf secondary).
+        startup_secondary_retries: list[tuple[str, "Platform", "BasePlatformAdapter"]] = []
+
+        def _format_startup_entries(
+            entries: list[tuple[str, str | None, str]],
+        ) -> str:
+            return "; ".join(f"{label}: {msg}" for label, _code, msg in entries)
+
+        def _record_startup_adapter_failure(
+            platform: Platform,
+            adapter: "BasePlatformAdapter | None",
+            *,
+            platform_config: "PlatformConfig | None" = None,
+            profile_name: str | None = None,
+            fallback_message: str = "failed to connect",
+            queue_retry: bool = True,
+        ) -> bool:
+            """Classify one failed connect before generic retry routing.
+
+            Returns True when the failure was entered into a retry registry
+            (primary ``_failed_platforms`` or secondary startup retry list).
+            Callers use that to hold credential/listener claims across the
+            retry window so another profile cannot consume the same resource.
+            """
+            label = (
+                f"{profile_name}/{platform.value}"
+                if profile_name
+                else platform.value
+            )
+            if adapter is not None and adapter.has_fatal_error:
+                code = adapter.fatal_error_code
+                message = adapter.fatal_error_message or fallback_message
+                detail = f"{label}: {message}"
+                if is_global_startup_conflict(code, message):
+                    # True single-writer conflict — park fatal, never
+                    # retry-storm the token/identity while a live holder
+                    # owns it. Exit-78 decision uses this bucket alone.
+                    self._update_platform_runtime_status(
+                        platform.value,
+                        platform_state="fatal",
+                        error_code=code,
+                        error_message=message,
+                    )
+                    startup_global_conflicts.append((label, code, message))
+                    return False
+                if adapter.fatal_error_retryable:
+                    self._update_platform_runtime_status(
+                        platform.value,
+                        platform_state="retrying",
+                        error_code=code,
+                        error_message=message,
+                    )
+                    startup_retryable_errors.append(detail)
+                    if profile_name is not None:
+                        # Profile-scoped retry registry (not primary
+                        # _failed_platforms — secrets/home differ).
+                        startup_secondary_retries.append(
+                            (profile_name, platform, adapter)
+                        )
+                        return True
+                    if queue_retry and platform_config is not None:
+                        self._failed_platforms[platform] = {
+                            "config": platform_config,
+                            "attempts": 1,
+                            "next_retry": time.monotonic() + 30,
+                            "credential_claim": self._adapter_credential_claim(
+                                platform, adapter
+                            ),
+                            "listener_claim": self._adapter_listener_claim(
+                                platform, adapter
+                            ),
+                        }
+                        return True
+                    return False
+                self._update_platform_runtime_status(
+                    platform.value,
+                    platform_state="fatal",
+                    error_code=code,
+                    error_message=message,
+                )
+                startup_local_nonretryable.append((label, code, message))
+                return False
+
+            message = fallback_message
+            detail = f"{label}: {message}"
+            self._update_platform_runtime_status(
+                platform.value,
+                platform_state="retrying",
+                error_code=None,
+                error_message=message,
+            )
+            startup_retryable_errors.append(detail)
+            if profile_name is not None and adapter is not None:
+                # Treat unknown secondary connect failure as retryable and
+                # enter the profile-scoped reconnect registry.
+                startup_secondary_retries.append((profile_name, platform, adapter))
+                return True
+            if (
+                queue_retry
+                and profile_name is None
+                and platform_config is not None
+                and adapter is not None
+            ):
+                self._failed_platforms[platform] = {
+                    "config": platform_config,
+                    "attempts": 1,
+                    "next_retry": time.monotonic() + 30,
+                    "credential_claim": self._adapter_credential_claim(
+                        platform, adapter
+                    ),
+                    "listener_claim": self._adapter_listener_claim(
+                        platform, adapter
+                    ),
+                }
+                return True
+            return False
+
         # Initialize and connect each configured platform
         _multiplex_on = bool(getattr(self.config, "multiplex_profiles", False))
         _multiplex_skipped_platforms: list[Platform] = []
@@ -11568,81 +11707,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     # are expected to be idempotent and tolerate
                     # partial-init state.
                     await self._safe_adapter_disconnect(adapter, platform)
-                    if adapter.has_fatal_error:
-                        self._update_platform_runtime_status(
-                            platform.value,
-                            platform_state="retrying" if adapter.fatal_error_retryable else "fatal",
-                            error_code=adapter.fatal_error_code,
-                            error_message=adapter.fatal_error_message,
-                        )
-                        target = (
-                            startup_retryable_errors
-                            if adapter.fatal_error_retryable
-                            else startup_nonretryable_errors
-                        )
-                        target.append(
-                            f"{platform.value}: {adapter.fatal_error_message}"
-                        )
-                        # Queue for reconnection if the error is retryable
-                        if adapter.fatal_error_retryable:
-                            self._failed_platforms[platform] = {
-                                "config": platform_config,
-                                "attempts": 1,
-                                "next_retry": time.monotonic() + 30,
-                                "credential_claim": self._adapter_credential_claim(
-                                    platform, adapter
-                                ),
-                                "listener_claim": self._adapter_listener_claim(
-                                    platform, adapter
-                                ),
-                            }
-                    else:
-                        self._update_platform_runtime_status(
-                            platform.value,
-                            platform_state="retrying",
-                            error_code=None,
-                            error_message="failed to connect",
-                        )
-                        startup_retryable_errors.append(
-                            f"{platform.value}: failed to connect"
-                        )
-                        # No fatal error info means likely a transient issue — queue for retry
-                        self._failed_platforms[platform] = {
-                            "config": platform_config,
-                            "attempts": 1,
-                            "next_retry": time.monotonic() + 30,
-                            "credential_claim": self._adapter_credential_claim(
-                                platform, adapter
-                            ),
-                            "listener_claim": self._adapter_listener_claim(
-                                platform, adapter
-                            ),
-                        }
+                    _record_startup_adapter_failure(
+                        platform,
+                        adapter,
+                        platform_config=platform_config,
+                    )
             except Exception as e:
                 logger.error("✗ %s error: %s", platform.value, e)
                 # Same defensive cleanup path for exceptions — an adapter
                 # that raised mid-connect may still have a live
                 # aiohttp.ClientSession or child subprocess.
                 await self._safe_adapter_disconnect(adapter, platform)
-                self._update_platform_runtime_status(
-                    platform.value,
-                    platform_state="retrying",
-                    error_code=None,
-                    error_message=str(e),
+                _record_startup_adapter_failure(
+                    platform,
+                    adapter if "adapter" in locals() else None,
+                    platform_config=platform_config,
+                    fallback_message=str(e),
                 )
-                startup_retryable_errors.append(f"{platform.value}: {e}")
-                # Unexpected exceptions are typically transient — queue for retry
-                self._failed_platforms[platform] = {
-                    "config": platform_config,
-                    "attempts": 1,
-                    "next_retry": time.monotonic() + 30,
-                    "credential_claim": self._adapter_credential_claim(
-                        platform, adapter
-                    ),
-                    "listener_claim": self._adapter_listener_claim(
-                        platform, adapter
-                    ),
-                }
             if await self._abort_startup_if_shutdown_requested():
                 return True
 
@@ -11650,8 +11731,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # this gateway serves. Each profile's adapters connect under that
         # profile's home + credential scope and stamp their inbound events with
         # the profile so the agent turn resolves correctly. No-op when off.
+        # Secondary lock_conflict / token-lock failures feed the same
+        # classification buckets as primary — they are not silently dropped.
         try:
-            _secondary_connected = await self._start_secondary_profile_adapters()
+            _secondary_connected = await self._start_secondary_profile_adapters(
+                record_startup_failure=_record_startup_adapter_failure,
+            )
             connected_count += _secondary_connected
         except MultiplexConfigError as e:
             # Invalid multiplexer config — abort startup cleanly so the operator
@@ -11694,8 +11779,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
 
         if connected_count == 0:
-            if startup_nonretryable_errors and not startup_retryable_errors:
-                reason = "; ".join(startup_nonretryable_errors)
+            # True single-writer / exclusive-ownership conflicts remain fatal
+            # whenever nothing is connected and nothing is merely retryable.
+            # Classification already peeled lock conflicts out of the
+            # retryable bucket even when adapters emit retryable=True
+            # (production _acquire_platform_lock).
+            # Platform-local auth/config failures alone must not kill
+            # cron/Kanban/other gateway duties (production: optional Buzz
+            # relay_membership_required previously exited 78).
+            if startup_global_conflicts and not startup_retryable_errors:
+                reason = _format_startup_entries(startup_global_conflicts)
+                if startup_local_nonretryable:
+                    reason = (
+                        f"{reason}; also parked: "
+                        f"{_format_startup_entries(startup_local_nonretryable)}"
+                    )
                 logger.error("Gateway hit a non-retryable startup conflict: %s", reason)
                 try:
                     from gateway.status import write_runtime_status
@@ -11706,26 +11804,28 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._request_clean_exit(reason)
                 self._startup_restore_in_progress = False
                 return True
-            if startup_nonretryable_errors:
-                # Mixed failure mode (NS-609): some platforms are fatally
-                # misconfigured (e.g. WhatsApp enabled but never paired) while
-                # others hit merely transient errors (e.g. Telegram TimedOut
-                # during polling startup).  Exiting with
+            parked = startup_local_nonretryable + (
+                startup_global_conflicts if startup_retryable_errors else []
+            )
+            if parked:
+                # Platform-local-only and/or mixed-with-retryable failure mode
+                # (NS-609 + optional-platform isolation). Exiting with
                 # GATEWAY_FATAL_CONFIG_EXIT_CODE here is wrong in both
                 # supervision worlds: under supervisors that honor the
                 # exit-78 contract (systemd RestartPreventExitStatus, s6
                 # finish→125 since #51228) the gateway goes PERMANENTLY down
-                # over a network blip; under anything else it crash-loops.
-                # Either way the retryable platforms never get their retry.
-                # Log the fatal side loudly, then fall through to the
-                # degraded/retry path below: the reconnect watcher recovers
-                # the retryable platforms; the non-retryable ones remain
-                # fatal-parked and visible in runtime status.
+                # over an optional adapter; under anything else it crash-loops.
+                # Log the fatal side loudly, then fall through so cron/Kanban
+                # and any retryable platforms keep running. Lifecycle stays
+                # "running" — per-platform fatal/retrying status holds the
+                # detail. Do NOT persist gateway_state=degraded: busy/drain
+                # controls only treat "running" as busy/drainable.
                 logger.error(
                     "%d platform(s) fatally misconfigured and parked: %s. "
-                    "Staying alive so retryable platforms can recover.",
-                    len(startup_nonretryable_errors),
-                    "; ".join(startup_nonretryable_errors),
+                    "Staying alive so gateway duties and any recoverable "
+                    "platforms can continue.",
+                    len(parked),
+                    _format_startup_entries(parked),
                 )
             if enabled_platform_count > 0:
                 if startup_retryable_errors:
@@ -11739,32 +11839,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     #     proxy, etc.)
                     # Exiting here used to convert a single misconfigured
                     # platform into an infinite systemd restart loop.
+                    # Secondary multiplex failures land in the profile-
+                    # scoped retry registry (armed after _running=True);
+                    # primary failures land in ``_failed_platforms``.
                     reason = "; ".join(startup_retryable_errors)
+                    queued = len(self._failed_platforms) + len(startup_secondary_retries)
                     logger.warning(
                         "Gateway started with no connected platforms — "
                         "%d platform(s) queued for retry: %s",
-                        len(self._failed_platforms), reason,
+                        queued, reason,
                     )
-                    try:
-                        from gateway.status import write_runtime_status
-                        write_runtime_status(
-                            gateway_state="degraded",
-                            exit_reason=None,
-                        )
-                    except Exception:
-                        pass
                     # Fall through to the normal "running" state — reconnect
-                    # watcher takes it from here.
-                # All enabled platforms had no adapter (missing library or credentials).
-                # In fleet deployments the same config.yaml is shared across nodes that
-                # may only have credentials for a subset of platforms.  Rather than
-                # failing hard, degrade gracefully and allow cron jobs to run (#5196).
-                logger.warning(
-                    "No adapter could be created for any of the %d configured platform(s). "
-                    "Check that required dependencies are installed and credentials are set. "
-                    "Gateway will continue for cron job execution.",
-                    enabled_platform_count,
-                )
+                    # watcher takes it from here. Lifecycle remains "running"
+                    # so busy/drain contracts stay valid while cron/Kanban work.
+                elif not startup_local_nonretryable and not startup_global_conflicts:
+                    # All enabled platforms had no adapter (missing library or credentials).
+                    # In fleet deployments the same config.yaml is shared across nodes that
+                    # may only have credentials for a subset of platforms.  Rather than
+                    # failing hard, degrade gracefully and allow cron jobs to run (#5196).
+                    logger.warning(
+                        "No adapter could be created for any of the %d configured platform(s). "
+                        "Check that required dependencies are installed and credentials are set. "
+                        "Gateway will continue for cron job execution.",
+                        enabled_platform_count,
+                    )
             else:
                 logger.warning("No messaging platforms enabled.")
                 logger.info("Gateway will continue running for cron job execution.")
@@ -11776,7 +11874,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._wire_teams_pipeline_runtime()
 
         self._running = True
+        # Always publish lifecycle "running" once startup continues. Optional
+        # platform fatal/retrying detail lives on per-platform status so
+        # busy/drain controls keep working for active cron/Kanban work.
         self._update_runtime_status("running")
+
+        # Arm profile-scoped reconnects only after _running is True —
+        # ``_schedule_secondary_profile_reconnect`` refuses work while the
+        # runner is still starting. Secondary retryable startup failures
+        # must not suppress exit 78 without entering this registry.
+        for _sec_profile, _sec_platform, _sec_adapter in startup_secondary_retries:
+            try:
+                self._schedule_secondary_profile_reconnect(
+                    _sec_profile, _sec_platform, _sec_adapter
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to schedule secondary %s reconnect for profile %s",
+                    _sec_platform.value,
+                    _sec_profile,
+                    exc_info=True,
+                )
 
         # Loop-liveness heartbeat (#66892): an asyncio task so a frozen loop
         # stops refreshing ``state/gateway.heartbeat``. Cancelled with the
@@ -13079,6 +13197,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     len(unfinished),
                 )
         pending.clear()
+        retry_claims = getattr(self, "_profile_retry_resource_claims", None)
+        if isinstance(retry_claims, dict):
+            retry_claims.clear()
 
     def _start_systemd_watchdog(self) -> bool:
         """Start sd_notify only after a configured gateway is truly running."""
@@ -13652,7 +13773,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Wait for shutdown signal."""
         await self._shutdown_event.wait()
 
-    async def _start_secondary_profile_adapters(self) -> int:
+    async def _start_secondary_profile_adapters(
+        self,
+        record_startup_failure: "Callable[..., bool | None] | None" = None,
+    ) -> int:
         """Bring up adapters for every non-active profile this gateway serves.
 
         Returns the number of secondary adapters that connected. No-op (returns
@@ -13666,6 +13790,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         skills, and credentials. Same-platform credential collisions (two
         profiles polling the same bot token) are detected and refused here, the
         only point that sees every profile's resolved credentials together.
+
+        ``record_startup_failure`` (when provided) receives secondary connect
+        failures so lock_conflict / token-lock errors follow the same fatal
+        contract as primary adapters instead of being silently disconnected.
         """
         if not getattr(self.config, "multiplex_profiles", False):
             return 0
@@ -13696,6 +13824,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 retry_claim = retry_info.get(claim_name)
                 if isinstance(retry_claim, tuple):
                     claimed[retry_claim] = active
+        # Same hold for secondary profiles already queued for reconnect — a
+        # transient failure must keep exclusive ownership of the credential
+        # until reconnect succeeds or the claim is explicitly released.
+        retry_claims = getattr(self, "_profile_retry_resource_claims", {})
+        if isinstance(retry_claims, dict):
+            for prof_name, platforms in retry_claims.items():
+                if not isinstance(platforms, dict):
+                    continue
+                for _plat, info in platforms.items():
+                    if not isinstance(info, dict):
+                        continue
+                    for claim_name in ("credential_claim", "listener_claim"):
+                        retry_claim = info.get(claim_name)
+                        if isinstance(retry_claim, tuple):
+                            claimed.setdefault(retry_claim, prof_name)
 
         profile_homes = _multiplex_profile_homes(self.config)
         for profile_name, profile_home in profile_homes:
@@ -13703,7 +13846,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 continue  # handled by the primary startup loop
             try:
                 connected += await self._start_one_profile_adapters(
-                    profile_name, profile_home, claimed
+                    profile_name,
+                    profile_home,
+                    claimed,
+                    record_startup_failure=record_startup_failure,
                 )
             except SecondaryPortBindingConfigError as e:
                 logger.warning(
@@ -13747,7 +13893,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         return connected
 
     async def _start_one_profile_adapters(
-        self, profile_name: str, profile_home: "Path", claimed: Dict[tuple, str]
+        self,
+        profile_name: str,
+        profile_home: "Path",
+        claimed: Dict[tuple, str],
+        record_startup_failure: "Callable[..., bool | None] | None" = None,
     ) -> int:
         """Create+connect one profile's adapters under its runtime scope."""
         from gateway.config import load_gateway_config
@@ -13862,6 +14012,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     success = await self._connect_initial_adapter_with_timeout(
                         adapter, platform
                     )
+                # stop()/registry teardown can complete while connect is blocked.
+                # Fence publication on the same startup/shutdown state primary
+                # uses: disconnect the late-success adapter and never register it.
+                if success and self._startup_should_abort():
+                    logger.warning(
+                        "✗ %s connected after shutdown began — discarding "
+                        "(profile: %s)",
+                        platform.value,
+                        profile_name,
+                    )
+                    try:
+                        await adapter.cancel_background_tasks()
+                    except Exception as e:
+                        logger.debug(
+                            "✗ %s background-task cancel error: %s",
+                            platform.value,
+                            e,
+                        )
+                    await self._safe_adapter_disconnect(adapter, platform)
+                    continue
                 if success:
                     profile_map[platform] = adapter
                     if credential_claim is not None:
@@ -13872,9 +14042,59 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.info("✓ %s connected (profile: %s)", platform.value, profile_name)
                 else:
                     logger.warning("✗ %s failed to connect (profile: %s)", platform.value, profile_name)
+                    queued_retry = False
+                    if record_startup_failure is not None:
+                        # Secondary lock_conflict / token-lock must follow the
+                        # same fatal contract as primary — not a silent drop.
+                        queued_retry = bool(
+                            record_startup_failure(
+                                platform,
+                                adapter,
+                                platform_config=platform_config,
+                                profile_name=profile_name,
+                                queue_retry=False,
+                            )
+                        )
+                    if queued_retry:
+                        # Hold exclusive claims while the secondary is queued
+                        # for reconnect so another profile cannot consume the
+                        # same token/listener before the retry runs.
+                        if credential_claim is not None:
+                            claimed[credential_claim] = profile_name
+                        if listener_claim is not None:
+                            claimed[listener_claim] = profile_name
+                        self._remember_secondary_retry_claims(
+                            profile_name,
+                            platform,
+                            credential_claim=credential_claim,
+                            listener_claim=listener_claim,
+                        )
                     await self._safe_adapter_disconnect(adapter, platform)
             except Exception as e:
                 logger.error("✗ %s error (profile: %s): %s", platform.value, profile_name, e)
+                queued_retry = False
+                if record_startup_failure is not None:
+                    queued_retry = bool(
+                        record_startup_failure(
+                            platform,
+                            adapter,
+                            platform_config=platform_config,
+                            profile_name=profile_name,
+                            fallback_message=str(e),
+                            queue_retry=False,
+                        )
+                    )
+                if queued_retry:
+                    if credential_claim is not None:
+                        claimed[credential_claim] = profile_name
+                    if listener_claim is not None:
+                        claimed[listener_claim] = profile_name
+                    self._remember_secondary_retry_claims(
+                        profile_name,
+                        platform,
+                        credential_claim=credential_claim,
+                        listener_claim=listener_claim,
+                    )
                 await self._safe_adapter_disconnect(adapter, platform)
         return connected
 
@@ -13924,6 +14144,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     with _profile_runtime_scope(profile_home):
                         profile_config = load_gateway_config().platforms.get(platform)
                         if profile_config is None or not profile_config.enabled:
+                            self._forget_secondary_retry_claims(profile_name, platform)
                             return
                         adapter = self._create_adapter(platform, profile_config)
                         if adapter is None:
@@ -13932,10 +14153,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                                 platform.value,
                                 profile_name,
                             )
+                            self._forget_secondary_retry_claims(profile_name, platform)
                             return
                         self._configure_profile_adapter(
                             adapter, profile_name, platform
                         )
+                        # Enforce the same shared ownership registry used at
+                        # startup *before* any external connect/publication.
+                        # Machine locks alone cannot stop two in-process
+                        # profiles from polling one Telegram token.
+                        conflict_owner = self._secondary_reconnect_claim_conflict(
+                            profile_name, platform, adapter
+                        )
+                        if conflict_owner is not None:
+                            logger.error(
+                                "Secondary %s reconnect refused for profile '%s': "
+                                "credential/listener already owned by profile '%s'",
+                                platform.value,
+                                profile_name,
+                                conflict_owner,
+                            )
+                            await self._safe_adapter_disconnect(adapter, platform)
+                            self._forget_secondary_retry_claims(profile_name, platform)
+                            return
                         success = await self._connect_adapter_with_timeout(
                             adapter, platform, is_reconnect=True
                         )
@@ -13944,6 +14184,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         profile_map = self._profile_adapters.setdefault(profile_name, {})
                         if platform not in profile_map:
                             profile_map[platform] = adapter
+                            self._forget_secondary_retry_claims(profile_name, platform)
                             self._sync_voice_mode_state_to_adapter(adapter)
                             logger.info(
                                 "✓ %s reconnected (profile: %s)",
@@ -13968,6 +14209,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         getattr(adapter, "has_fatal_error", False)
                         and not getattr(adapter, "fatal_error_retryable", True)
                     ):
+                        self._forget_secondary_retry_claims(profile_name, platform)
                         return
                 except asyncio.CancelledError:
                     if adapter is not None:
@@ -14018,6 +14260,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         profile_pending = pending.setdefault(profile_name, {})
         if platform in profile_pending:
             return
+        # Preserve exclusive claims for the duration of the reconnect window.
+        self._remember_secondary_retry_claims(
+            profile_name,
+            platform,
+            credential_claim=self._adapter_credential_claim(platform, adapter),
+            listener_claim=self._adapter_listener_claim(platform, adapter),
+        )
         task = asyncio.create_task(
             self._run_secondary_profile_reconnect(profile_name, platform),
             name=f"secondary-reconnect:{profile_name}:{platform.value}",
@@ -14164,6 +14413,119 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except (TypeError, ValueError):
             return None
         return ("listener", "photon", bind.strip().lower(), port)
+
+    def _remember_secondary_retry_claims(
+        self,
+        profile_name: str,
+        platform: Platform,
+        *,
+        credential_claim: Optional[tuple] = None,
+        listener_claim: Optional[tuple] = None,
+    ) -> None:
+        """Hold exclusive resource claims while a secondary reconnect is pending."""
+        claims = getattr(self, "_profile_retry_resource_claims", None)
+        if not isinstance(claims, dict):
+            claims = {}
+            self._profile_retry_resource_claims = claims
+        profile_claims = claims.setdefault(profile_name, {})
+        entry = profile_claims.get(platform)
+        if not isinstance(entry, dict):
+            entry = {}
+            profile_claims[platform] = entry
+        if isinstance(credential_claim, tuple):
+            entry["credential_claim"] = credential_claim
+        if isinstance(listener_claim, tuple):
+            entry["listener_claim"] = listener_claim
+
+    def _forget_secondary_retry_claims(
+        self, profile_name: str, platform: Platform
+    ) -> None:
+        """Drop secondary retry claims after success, refusal, or non-retryable exit."""
+        claims = getattr(self, "_profile_retry_resource_claims", None)
+        if not isinstance(claims, dict):
+            return
+        profile_claims = claims.get(profile_name)
+        if not isinstance(profile_claims, dict):
+            return
+        profile_claims.pop(platform, None)
+        if not profile_claims:
+            claims.pop(profile_name, None)
+
+    def _collect_adapter_resource_ownership(self) -> Dict[tuple, str]:
+        """Map exclusive credential/listener claims to the owning profile name."""
+        ownership: Dict[tuple, str] = {}
+
+        def _take(claim: Any, owner: str) -> None:
+            if isinstance(claim, tuple) and claim not in ownership:
+                ownership[claim] = owner
+
+        try:
+            from hermes_cli.profiles import get_active_profile_name
+
+            active = get_active_profile_name() or "default"
+        except Exception:
+            active = "default"
+
+        for plat, adapter in list(getattr(self, "adapters", {}).items()):
+            _take(self._adapter_credential_claim(plat, adapter), active)
+            _take(self._adapter_listener_claim(plat, adapter), active)
+
+        for info in list(getattr(self, "_failed_platforms", {}).values()):
+            if not isinstance(info, dict):
+                continue
+            _take(info.get("credential_claim"), active)
+            _take(info.get("listener_claim"), active)
+
+        for prof, amap in list(getattr(self, "_profile_adapters", {}).items()):
+            if not isinstance(amap, dict):
+                continue
+            for plat, adapter in list(amap.items()):
+                _take(self._adapter_credential_claim(plat, adapter), prof)
+                _take(self._adapter_listener_claim(plat, adapter), prof)
+
+        retry_claims = getattr(self, "_profile_retry_resource_claims", {})
+        if isinstance(retry_claims, dict):
+            for prof, platforms in retry_claims.items():
+                if not isinstance(platforms, dict):
+                    continue
+                for _plat, info in platforms.items():
+                    if not isinstance(info, dict):
+                        continue
+                    _take(info.get("credential_claim"), prof)
+                    _take(info.get("listener_claim"), prof)
+        return ownership
+
+    def _secondary_reconnect_claim_conflict(
+        self,
+        profile_name: str,
+        platform: Platform,
+        adapter: Any,
+    ) -> Optional[str]:
+        """Return the foreign owner of a reconnect adapter's claims, if any.
+
+        The reconnecting profile may already hold the claims via the retry
+        registry. Any other profile that currently owns the credential or
+        listener wins — reconnect must not connect or publish in that case.
+        """
+        ownership = self._collect_adapter_resource_ownership()
+        for claim in (
+            self._adapter_credential_claim(platform, adapter),
+            self._adapter_listener_claim(platform, adapter),
+        ):
+            if not isinstance(claim, tuple):
+                continue
+            owner = ownership.get(claim)
+            if owner is not None and owner != profile_name:
+                return owner
+        # Re-assert our hold before external connect so a racing secondary
+        # startup sees the same shared registry.
+        self._remember_secondary_retry_claims(
+            profile_name,
+            platform,
+            credential_claim=self._adapter_credential_claim(platform, adapter),
+            listener_claim=self._adapter_listener_claim(platform, adapter),
+        )
+        return None
 
     @staticmethod
     def _adapter_credential_fingerprint(adapter: Any) -> Optional[str]:

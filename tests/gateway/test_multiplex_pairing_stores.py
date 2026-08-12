@@ -39,7 +39,7 @@ def test_secondary_profile_pairing_stores_created(tmp_path, monkeypatch):
 
     runner = _bare_runner()
 
-    async def _no_secondary(profile_name, profile_home, claimed):
+    async def _no_secondary(profile_name, profile_home, claimed, **kwargs):
         return 0
 
     runner._start_one_profile_adapters = _no_secondary
@@ -68,7 +68,7 @@ def test_pairing_store_scoped_to_profile_dir(tmp_path, monkeypatch):
 
     runner = _bare_runner()
 
-    async def _no_secondary(profile_name, profile_home, claimed):
+    async def _no_secondary(profile_name, profile_home, claimed, **kwargs):
         return 0
 
     runner._start_one_profile_adapters = _no_secondary

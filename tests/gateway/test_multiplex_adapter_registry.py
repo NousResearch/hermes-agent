@@ -238,6 +238,264 @@ class TestSecondaryProfileFatalRecovery:
         assert runner._profile_failed_platforms == {}
 
 
+class TestSecondaryRetryOwnershipAndStartupShutdown:
+    """HIGH-2 regressions: exclusive secondary claims + late-connect fence."""
+
+    @pytest.mark.asyncio
+    async def test_secondary_retry_holds_credential_against_peer_and_reconnect(
+        self, monkeypatch
+    ):
+        """A fails transiently, B presents the same Telegram token, A retries.
+
+        Exactly one profile may own/connect the credential; reconnect must
+        consult the shared ownership registry before any external connect.
+        """
+        shared_token = "shared-telegram-token"
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._running = True
+        runner._draining = False
+        runner._restart_requested = False
+        runner._shutdown_event = asyncio.Event()
+        runner._profile_adapters = {}
+        runner._profile_failed_platforms = {}
+        runner._profile_retry_resource_claims = {}
+        runner._failed_platforms = {}
+        runner.adapters = {}
+        runner.session_store = object()
+        runner._busy_text_mode = "queue"
+        runner._background_tasks = set()
+        runner._make_adapter_auth_check = lambda platform, profile_name=None: object()
+        runner._adapter_disconnect_timeout_secs = lambda: 0
+        runner._sync_voice_mode_state_to_adapter = lambda adapter: None
+        runner._handle_active_session_busy_message = object()
+        runner._recover_telegram_topic_thread_id = object()
+
+        class _TokAdapter:
+            platform = Platform.TELEGRAM
+
+            def __init__(self, token, *, fail_once=False):
+                self.token = token
+                self.config = PlatformConfig(enabled=True, token=token)
+                self.fail_once = fail_once
+                self.has_fatal_error = False
+                self.fatal_error_retryable = True
+                self.fatal_error_code = "telegram_connect_error"
+                self.fatal_error_message = "temporary upstream blip"
+                self.connected = False
+                self.disconnect_called = False
+                self.connect_calls = 0
+
+            def __getattr__(self, name):
+                if name.startswith("set_"):
+                    return lambda *args, **kwargs: None
+                raise AttributeError(name)
+
+            async def disconnect(self):
+                self.disconnect_called = True
+                self.connected = False
+
+            async def cancel_background_tasks(self):
+                return None
+
+        a_first = _TokAdapter(shared_token, fail_once=True)
+        a_retry = _TokAdapter(shared_token)
+        b_adapter = _TokAdapter(shared_token)
+        a_adapters = iter((a_first, a_retry))
+
+        claimed: dict = {}
+        startup_retries: list = []
+
+        def record_failure(platform, adapter, **kwargs):
+            profile_name = kwargs.get("profile_name")
+            if profile_name is not None and adapter is not None:
+                adapter.has_fatal_error = True
+                startup_retries.append((profile_name, platform, adapter))
+                return True
+            return False
+
+        async def connect_initial(adapter, platform, *, is_reconnect=False):
+            adapter.connect_calls += 1
+            if getattr(adapter, "fail_once", False):
+                adapter.has_fatal_error = True
+                return False
+            adapter.connected = True
+            adapter.has_fatal_error = False
+            return True
+
+        # Profile A: transient failure → holds claim.
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config",
+            lambda: GatewayConfig(
+                multiplex_profiles=True,
+                platforms={
+                    Platform.TELEGRAM: PlatformConfig(
+                        enabled=True, token=shared_token
+                    )
+                },
+            ),
+        )
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: next(a_adapters))
+        monkeypatch.setattr(
+            runner, "_connect_initial_adapter_with_timeout", connect_initial
+        )
+        monkeypatch.setattr(
+            runner, "_connect_adapter_with_timeout", connect_initial
+        )
+
+        a_connected = await runner._start_one_profile_adapters(
+            "alpha", "/tmp/alpha", claimed, record_startup_failure=record_failure
+        )
+        assert a_connected == 0
+        assert startup_retries and startup_retries[0][0] == "alpha"
+        claim = GatewayRunner._adapter_credential_claim(Platform.TELEGRAM, a_first)
+        assert claim is not None
+        assert claimed.get(claim) == "alpha"
+        assert (
+            runner._profile_retry_resource_claims.get("alpha", {})
+            .get(Platform.TELEGRAM, {})
+            .get("credential_claim")
+            == claim
+        )
+
+        # Profile B: same token — must be refused before connect/publication.
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: b_adapter)
+        b_connected = await runner._start_one_profile_adapters(
+            "bravo", "/tmp/bravo", claimed, record_startup_failure=record_failure
+        )
+        assert b_connected == 0
+        assert b_adapter.connect_calls == 0
+        assert b_adapter.connected is False
+        assert Platform.TELEGRAM not in runner._profile_adapters.get("bravo", {})
+        assert claimed.get(claim) == "alpha"
+
+        # Profile A reconnects: shared registry allows A only; B never owns it.
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: a_retry)
+        monkeypatch.setattr(
+            "hermes_cli.profiles.get_profile_dir",
+            lambda name: Path("/tmp") / name,
+        )
+        await runner._run_secondary_profile_reconnect("alpha", Platform.TELEGRAM)
+
+        assert runner._profile_adapters.get("alpha", {}).get(Platform.TELEGRAM) is a_retry
+        assert a_retry.connected is True
+        assert Platform.TELEGRAM not in runner._profile_adapters.get("bravo", {})
+        # Exactly one live owner; retry claim released after successful publish.
+        assert (
+            Platform.TELEGRAM
+            not in runner._profile_retry_resource_claims.get("alpha", {})
+        )
+        owners = runner._collect_adapter_resource_ownership()
+        assert owners.get(claim) == "alpha"
+
+        # If bravo somehow scheduled a reconnect, shared registry must refuse
+        # before connect — no duplicate poller.
+        b_retry = _TokAdapter(shared_token)
+        b_connect_calls = {"n": 0}
+
+        async def b_connect(adapter, platform, *, is_reconnect=False):
+            b_connect_calls["n"] += 1
+            adapter.connected = True
+            return True
+
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: b_retry)
+        monkeypatch.setattr(runner, "_connect_adapter_with_timeout", b_connect)
+        await runner._run_secondary_profile_reconnect("bravo", Platform.TELEGRAM)
+        assert b_connect_calls["n"] == 0
+        assert b_retry.connected is False
+        assert Platform.TELEGRAM not in runner._profile_adapters.get("bravo", {})
+        assert runner._profile_adapters["alpha"][Platform.TELEGRAM] is a_retry
+
+    @pytest.mark.asyncio
+    async def test_secondary_initial_connect_discarded_after_stop_teardown(
+        self, monkeypatch
+    ):
+        """Blocked initial connect + completed stop() → disconnect, never register."""
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(multiplex_profiles=True)
+        runner._running = False
+        runner._draining = False
+        runner._restart_requested = False
+        runner._shutdown_event = asyncio.Event()
+        runner._stop_task = None
+        runner._profile_adapters = {}
+        runner._profile_failed_platforms = {}
+        runner._profile_retry_resource_claims = {}
+        runner._failed_platforms = {}
+        runner.adapters = {}
+        runner.session_store = object()
+        runner._busy_text_mode = "queue"
+        runner._make_adapter_auth_check = lambda platform, profile_name=None: object()
+        runner._adapter_disconnect_timeout_secs = lambda: 0
+        runner._sync_voice_mode_state_to_adapter = lambda adapter: None
+        runner._handle_active_session_busy_message = object()
+        runner._recover_telegram_topic_thread_id = object()
+
+        class _LateAdapter:
+            platform = Platform.TELEGRAM
+            token = "late-token"
+            config = PlatformConfig(enabled=True, token="late-token")
+            connected = False
+            disconnect_called = False
+            cancel_called = False
+
+            def __getattr__(self, name):
+                if name.startswith("set_"):
+                    return lambda *args, **kwargs: None
+                raise AttributeError(name)
+
+            async def disconnect(self):
+                self.disconnect_called = True
+                self.connected = False
+
+            async def cancel_background_tasks(self):
+                self.cancel_called = True
+
+        adapter = _LateAdapter()
+        connect_started = asyncio.Event()
+        release_connect = asyncio.Event()
+
+        async def blocked_connect(adapter_arg, platform):
+            connect_started.set()
+            await release_connect.wait()
+            adapter_arg.connected = True
+            return True
+
+        monkeypatch.setattr(
+            "gateway.config.load_gateway_config",
+            lambda: GatewayConfig(
+                multiplex_profiles=True,
+                platforms={
+                    Platform.TELEGRAM: PlatformConfig(
+                        enabled=True, token="late-token"
+                    )
+                },
+            ),
+        )
+        monkeypatch.setattr(runner, "_create_adapter", lambda p, c: adapter)
+        monkeypatch.setattr(
+            runner, "_connect_initial_adapter_with_timeout", blocked_connect
+        )
+
+        start_task = asyncio.create_task(
+            runner._start_one_profile_adapters("work", "/tmp/work", {})
+        )
+        await connect_started.wait()
+
+        # Simulate stop() completing: drain flag + registry teardown.
+        runner._draining = True
+        runner._running = False
+        runner._profile_adapters.clear()
+        release_connect.set()
+        connected = await asyncio.wait_for(start_task, timeout=0.5)
+
+        assert connected == 0
+        assert adapter.disconnect_called is True
+        assert adapter.connected is False
+        assert runner._profile_adapters == {}
+        assert "work" not in runner._profile_adapters
+
+
 class TestSecondaryProfileConfigHandling:
     """Secondary config errors degrade only when the profile is safe to skip."""
 
@@ -293,7 +551,7 @@ class TestSecondaryProfileConfigHandling:
         }
         runner.pairing_store = runner.pairing_stores["default"]
 
-        async def fake_start_one(profile_name, profile_home, claimed):
+        async def fake_start_one(profile_name, profile_home, claimed, **kwargs):
             if profile_name == "bad":
                 from gateway.run import SecondaryPortBindingConfigError
                 raise SecondaryPortBindingConfigError("bad enables webhook")
@@ -344,7 +602,7 @@ class TestSecondaryProfileConfigHandling:
         runner.adapters = {}
         runner._profile_adapters = {}
 
-        async def fake_start_one(profile_name, profile_home, claimed):
+        async def fake_start_one(profile_name, profile_home, claimed, **kwargs):
             raise MultiplexConfigError(
                 f"Profile '{profile_name}' enables open policy without allow-all opt-in"
             )

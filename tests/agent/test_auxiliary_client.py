@@ -2734,7 +2734,8 @@ class TestAuxiliaryProviderProfileReasoning:
             base_url="https://api.moonshot.ai/v1",
         )
 
-        assert kwargs["reasoning_effort"] == "medium"
+        # K3 maps medium → high (ref: K3 model docs)
+        assert kwargs["reasoning_effort"] == "high"
         assert "reasoning" not in kwargs.get("extra_body", {})
         assert "thinking" not in kwargs.get("extra_body", {})
 

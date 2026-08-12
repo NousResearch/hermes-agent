@@ -252,6 +252,34 @@ class TestMiniMaxAnthropicWire:
         )
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
+    def test_minimax_m3_via_provider_anthropic_proxy_does_not_cache(self):
+        # provider="anthropic" pointed at a MiniMax /anthropic proxy is a
+        # supported override (_anthropic_base_url_override_ok accepts
+        # MiniMax-style /anthropic hosts and _resolve_explicit_runtime
+        # preserves provider="anthropic"). The M3 exclusion must run
+        # BEFORE the native-Anthropic early return, or this route keeps
+        # emitting markers while the direct minimax/minimax-cn routes
+        # don't.
+        agent = _make_agent(
+            provider="anthropic",
+            base_url="https://api.minimax.io/anthropic",
+            api_mode="anthropic_messages",
+            model="MiniMax-M3",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_minimax_m27_via_provider_anthropic_proxy_still_caches(self):
+        # The proxy-route exclusion is M3-only: M2.x through the same
+        # provider="anthropic" MiniMax proxy keeps explicit cache_control
+        # (the native-Anthropic return still applies).
+        agent = _make_agent(
+            provider="anthropic",
+            base_url="https://api.minimax.io/anthropic",
+            api_mode="anthropic_messages",
+            model="MiniMax-M2.7",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
     def test_minimax_m27_still_caches_after_m3_opt_out(self):
         # Regression guard: the M3 substring check must not collide with
         # M2.7 / M2.5 / M2.1 / M2 model names. "minimax-m3" is not a

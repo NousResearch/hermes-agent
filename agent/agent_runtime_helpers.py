@@ -2181,6 +2181,27 @@ def anthropic_prompt_cache_policy(
         and (eff_provider == "anthropic" or base_url_hostname(eff_base_url) == "api.anthropic.com")
     )
 
+    # MiniMax-M3 rides MiniMax's server-side automatic prefix cache on the
+    # Anthropic wire (content-keyed, no marker needed); explicit cache_control
+    # is documented for M2.7/M2.5/M2.1/M2 only, so markers on M3 are dead
+    # weight — never observable (cache_creation always 0) nor billable.
+    # Checked BEFORE the native-Anthropic return: provider="anthropic"
+    # pointed at a MiniMax /anthropic proxy is a supported override
+    # (_anthropic_base_url_override_ok) that would otherwise return
+    # (True, True) above this exclusion.
+    # Docs: https://platform.minimax.io/docs/api-reference/text-prompt-caching
+    is_minimax_provider = provider_lower in {"minimax", "minimax-cn"}
+    is_minimax_host = (
+        base_url_host_matches(eff_base_url, "api.minimax.io")
+        or base_url_host_matches(eff_base_url, "api.minimaxi.com")
+    )
+    is_minimax_route = is_minimax_provider or is_minimax_host
+    if is_anthropic_wire and is_minimax_route:
+        from agent.model_metadata import _model_name_suggests_minimax_m3
+
+        if _model_name_suggests_minimax_m3(eff_model):
+            return False, False
+
     if is_native_anthropic:
         return True, True
     # Envelope layout is an OpenAI-wire construct. Portal Claude on the native
@@ -2213,29 +2234,11 @@ def anthropic_prompt_cache_policy(
     # explicitly via provider id or host match so users on
     # provider=minimax / minimax-cn (or custom endpoints pointing at
     # api.minimax.io/anthropic / api.minimaxi.com/anthropic) get the
-    # same cost reduction as Claude traffic.
+    # same cost reduction as Claude traffic.  MiniMax-M3 never reaches
+    # here — it is excluded before the native-Anthropic return above.
     # Docs: https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache
-    #
-    # MiniMax-M3 is intentionally excluded: M3 ships server-side automatic
-    # prefix caching on this wire format (content-keyed, no marker needed —
-    # see https://platform.minimax.io/docs/api-reference/text-prompt-caching),
-    # and cache_control markers are NOT on its explicit-cache support list
-    # (M2.7/M2.5/M2.1/M2 only). Emitting markers on M3 wasted serialization
-    # overhead, risked perturbing the server-side prefix hash, and gave users
-    # a false sense of explicit-cache savings. Empirically verified against
-    # api.minimaxi.com/anthropic/v1/messages with MiniMax-M3[1m]: identical
-    # system prompt hit-rate with and without markers; cache_read field has
-    # a +128 floor and cache_creation is always 0, so the marker path is
-    # neither observable nor billable for M3 users.
-    if is_anthropic_wire:
-        is_minimax_provider = provider_lower in {"minimax", "minimax-cn"}
-        is_minimax_host = (
-            base_url_host_matches(eff_base_url, "api.minimax.io")
-            or base_url_host_matches(eff_base_url, "api.minimaxi.com")
-        )
-        is_minimax_m3 = "minimax-m3" in model_lower
-        if (is_minimax_provider or is_minimax_host) and not is_minimax_m3:
-            return True, True
+    if is_anthropic_wire and is_minimax_route:
+        return True, True
 
     # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire
     # transport that accepts Anthropic-style cache_control markers and

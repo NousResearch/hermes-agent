@@ -18436,6 +18436,12 @@ def main(
                             ) in ("rate_limit", "billing", "auth", "auth_permanent"):
                                 try:
                                     from hermes_cli import kanban_db as _kanban_db
+                                    _kanban_db.write_worker_provider_failure(
+                                        failure_reason=result["failure_reason"],
+                                        error=result.get("error") or result.get("final_response") or "provider unavailable",
+                                        provider=getattr(cli.agent, "provider", None),
+                                        model=getattr(cli.agent, "model", None),
+                                    )
                                     _exit_code = {
                                         "rate_limit": _kanban_db.KANBAN_RATE_LIMIT_EXIT_CODE,
                                         "auth": _kanban_db.KANBAN_AUTH_EXIT_CODE,

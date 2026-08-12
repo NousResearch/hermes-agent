@@ -344,6 +344,60 @@ def test_provider_auth_exit_is_parked_without_protocol_violation(
         assert "protocol_violation" not in (runs[-1]["metadata"] or "")
 
 
+def test_provider_exit_preserves_worker_boundary_cause_and_provider(
+    kanban_home, monkeypatch,
+):
+    """The dispatcher must retain the bounded classifier summary, not infer a generic exit cause."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+    log_dir = kanban_home / "kanban" / "logs"
+    monkeypatch.setenv("HERMES_KANBAN_LOG_DIR", str(log_dir))
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        tid = kb.create_task(conn, title="auth cause", assignee="dev")
+        kb.claim_task(conn, tid, claimer=f"{host}:auth-cause")
+        pid = 71003
+        conn.execute("UPDATE tasks SET worker_pid=? WHERE id=?", (pid, tid))
+        conn.commit()
+        monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+        _kb.write_worker_provider_failure(
+            failure_reason="auth",
+            error="HTTP 401: openai-codex OAuth token expired; fallback openrouter HTTP 402 insufficient credits",
+            provider="openai-codex -> openrouter",
+            model="gpt-5",
+        )
+        _kb._record_worker_exit(pid, _exited_status(_kb.KANBAN_AUTH_EXIT_CODE))
+
+        assert kb.detect_crashed_workers(conn) == []
+        task = kb.get_task(conn, tid)
+        assert task.status == "blocked"
+        assert "HTTP 401" in (task.last_failure_error or "")
+        assert "openrouter" in (task.last_failure_error or "")
+        assert "openai-codex -> openrouter" in (task.last_failure_error or "")
+        assert "protocol violation" not in (task.last_failure_error or "").lower()
+
+
+def test_provider_boundary_payload_is_bounded_and_missing_is_safe(kanban_home, monkeypatch):
+    """Boundary persistence is bounded and absent sidecar data never breaks reap."""
+    import hermes_cli.kanban_db as _kb
+
+    log_dir = kanban_home / "kanban" / "logs"
+    monkeypatch.setenv("HERMES_KANBAN_LOG_DIR", str(log_dir))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_boundary")
+    path = _kb.write_worker_provider_failure(
+        failure_reason="billing",
+        error="x" * 5000,
+        provider="provider",
+        model="model",
+    )
+    assert path is not None
+    payload = _kb.read_worker_provider_failure("t_boundary")
+    assert len(payload["error"]) == 500
+    assert _kb.read_worker_provider_failure("missing") == {}
+
+
 def test_provider_billing_exit_is_parked_without_respawn_loop(
     kanban_home, monkeypatch,
 ):

@@ -291,6 +291,62 @@ KANBAN_AUTH_EXIT_CODE = 76
 KANBAN_BILLING_EXIT_CODE = 77
 
 
+def write_worker_provider_failure(
+    *,
+    failure_reason: str,
+    error: str,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    board: Optional[str] = None,
+) -> Optional[str]:
+    """Persist a bounded provider failure for the dispatcher boundary.
+
+    The worker's exit status only carries a category.  Keep the redacted
+    provider summary beside the worker log so the parent dispatcher can retain
+    the actual exhausted chain without relying on inherited process state.
+    """
+    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+    if not task_id:
+        return None
+    root = os.environ.get("HERMES_KANBAN_LOG_DIR", "").strip()
+    if not root:
+        return None
+    path = Path(root) / f"{task_id}.provider.json"
+    payload = {
+        "failure_reason": str(failure_reason)[:64],
+        "error": str(error)[:500],
+        "provider": str(provider or "configured provider")[:100],
+        "model": str(model or "")[:200],
+    }
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+        tmp.replace(path)
+        return str(path)
+    except OSError:
+        return None
+
+
+def read_worker_provider_failure(task_id: str, *, board: Optional[str] = None) -> dict:
+    """Read and validate the worker-boundary provider failure, if present."""
+    root = os.environ.get("HERMES_KANBAN_LOG_DIR", "").strip()
+    if not root:
+        root = str(worker_logs_dir(board=board))
+    path = Path(root) / f"{task_id}.provider.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, TypeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        key: str(payload[key])[:limit]
+        for key, limit in (("failure_reason", 64), ("error", 500), ("provider", 100), ("model", 200))
+        if payload.get(key)
+    }
+
+
 def _resolve_crash_grace_seconds() -> int:
     """Return the crash-detection grace period in seconds.
 
@@ -8612,6 +8668,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 protocol_violation = False
                 provider_unavailable_exit = True
                 category = "authentication" if kind == "provider_auth" else "billing/credits"
+                boundary = read_worker_provider_failure(row["id"])
                 try:
                     task_metadata = json.loads(row["metadata"] or "{}")
                 except (TypeError, ValueError, json.JSONDecodeError):
@@ -8619,16 +8676,20 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 if not isinstance(task_metadata, dict):
                     task_metadata = {}
                 provider = str(
+                    boundary.get("provider")
+                    or
                     task_metadata.get("provider_override")
                     or task_metadata.get("provider")
                     or "configured provider"
                 ).strip()
                 profile = str(row["assignee"] or "unknown").strip()
+                cause = boundary.get("error")
                 error_text = (
-                    f"provider {category} failure for profile {profile} ({provider}) "
-                    f"(worker exit {code}) — refresh credentials or restore provider "
-                    "account credits; task parked without retrying"
-                )
+                    f"provider {category} failure for profile {profile} ({provider}): "
+                    f"{cause or 'provider initialization unavailable'} — "
+                    "refresh credentials or restore provider account credits; "
+                    "task parked without retrying"
+                )[:500]
                 event_kind = "provider_unavailable"
                 event_payload = {
                     "pid": pid,
@@ -8639,6 +8700,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     "profile": profile,
                     "provider": provider,
                     "safe_cause": error_text,
+                    "worker_cause": cause,
                 }
             else:
                 protocol_violation = False
@@ -10331,6 +10393,7 @@ def _default_spawn(
 
     # Use 'a' so a re-run on unblock appends rather than overwrites.
     log_f = open(log_path, "ab")
+    env["HERMES_KANBAN_LOG_DIR"] = str(log_dir)
     try:
         proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
             cmd,

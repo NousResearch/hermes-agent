@@ -95,9 +95,18 @@ duplicate-submit guard. See `docs/control-room-security-review.md`.
 
 ## 6. Activation decision — DECIDED
 
-- **B. HOLD (SELECTED 2026-08-12)** — no merge, no activation, until:
-  1. CR-603 live two-session peer E2E passes, and
-  2. Desktop vitest suite passes after a working workspace install.
+- **A + C (SELECTED 2026-08-12)** — activate (merge to canonicals) AND adopt
+  pnpm lockfile as the new standard. Round-2 independent review returned
+  **READY** (deleg_55aaa63f, 12/08/26 20:12) with two cosmetic doc nits,
+  both fixed in df526d9a84.
+- **Merge pre-verified conflict-free** in disposable shared clones:
+  - KenseiAgent: merged tree = branch + main's 2 delegation commits only
+    (byte-verified); Python 522/1 green on merged tree.
+  - Dashboard: merged tree at ae999b1; backend 7 pass, web 4 pass, tsc 0.
+- **Final merge into live canonicals requires Hermes stopped** — the
+  agent's safety guard blocks rewriting the running source checkout.
+  Commands below are for an external shell (Sahil or a maintenance
+  window); run with Hermes stopped, then restart.
 
 ## 7. Follow-up tasks to close the HOLD — STATUS 12/08/26: BOTH CLOSED
 
@@ -116,6 +125,28 @@ duplicate-submit guard. See `docs/control-room-security-review.md`.
    unavailable by design).
 4. Update the operator guide if any activation-step differences emerge.
 
+## 8. External activation commands (run with Hermes STOPPED)
+
+```bash
+# 1. KenseiAgent canonical (live source checkout)
+cd /home/kensei/repos/KenseiAgent
+git merge --no-ff feat/control-room-v1-20260812 \
+  -m "merge: Control Room V1 — CLI, Ink TUI, Desktop, Dashboard (Phases 0-6); A + C activation"
+
+# 2. Dashboard canonical
+cd /home/kensei/repos/kensei-dashboard
+git merge --no-ff feat/control-room-v1-20260812 \
+  -m "merge: Control Room V1 dashboard — Phase 5 BFF + SPA; A + C activation"
+
+# 3. Verify (after restart)
+cd /home/kensei/repos/KenseiAgent && .venv/bin/python -m pytest tests/control_room/ tests/tui_gateway/ -q
+```
+
+Both branches already live in the shared object store (same .git as canonicals);
+the merges are pre-verified conflict-free. `pnpm install` will be needed on the
+canonical checkout before TUI/desktop tests run there (lockfile now committed).
+
 ---
 KENSEI sign-off on claims: verified against terminal output above; gaps are
-explicit and not buried. Awaiting Sahil's selection.
+explicit and not buried. Activation: **A + C selected by Sahil; review READY;
+merge pending external execution with Hermes stopped** (section 8).

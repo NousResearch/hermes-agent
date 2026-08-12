@@ -381,6 +381,12 @@ def _model_id_missing_known_prefix(model: str, provider: str) -> bool:
 # loop stops looping.  The empty-stub creation is the root cause (fixed in
 # chat_completion_helpers); this pattern stops the misclassification symptom
 # for transcripts that already contain a poisoned stub.
+# Qwen/vLLM chat-template raise_exception("No user query found in messages")
+# — shared between _INVALID_MESSAGE_BODY_PATTERNS (→ format_error) and the
+# llama.cpp grammar exclusion guard below. Keeping a single constant prevents
+# the two sites from silently drifting if the phrase is ever changed.
+_NO_USER_QUERY_SIGNAL = "no user query found"
+
 _INVALID_MESSAGE_BODY_PATTERNS = [
     "must have non-empty content",
     "messages must have non-empty",
@@ -396,7 +402,7 @@ _INVALID_MESSAGE_BODY_PATTERNS = [
     # do not thrash the compression loop or mis-route into llama.cpp
     # grammar recovery when local engines wrap the raise_exception as
     # applyPromptTemplate / "Unable to generate parser for this template".
-    "no user query found",
+    _NO_USER_QUERY_SIGNAL,
 ]
 
 # Request-validation patterns — the request is malformed and will fail
@@ -821,18 +827,20 @@ def classify_api_error(
     # not a tool-schema grammar rejection — matching it here strips
     # pattern/format keywords and retries uselessly while the real fix
     # is /new (or a successful compression that preserves a user turn).
-    _llama_cpp_grammar_hit = (
-        "error parsing grammar" in error_msg
-        or "json-schema-to-grammar" in error_msg
-        or (
-            "unable to generate parser" in error_msg
-            and "template" in error_msg
+    if status_code == 400:
+        _llama_cpp_grammar_hit = (
+            "error parsing grammar" in error_msg
+            or "json-schema-to-grammar" in error_msg
+            or (
+                "unable to generate parser" in error_msg
+                and "template" in error_msg
+            )
         )
-    )
+    else:
+        _llama_cpp_grammar_hit = False
     if (
-        status_code == 400
-        and _llama_cpp_grammar_hit
-        and "no user query found" not in error_msg
+        _llama_cpp_grammar_hit
+        and _NO_USER_QUERY_SIGNAL not in error_msg
     ):
         return _result(
             FailoverReason.llama_cpp_grammar_pattern,

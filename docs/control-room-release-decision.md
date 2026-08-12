@@ -51,7 +51,8 @@ Dashboard worktree `feat/control-room-v1-20260812` (base e1de73a):
 | Suite | Result |
 |-------|--------|
 | control_room + tui_gateway Python | **522 passed, 1 skipped** |
-| CLI status bar | **20 passed** |
+| CLI control-room (tests/control_room/test_cli_phase3.py) | **5 passed** |
+| CLI status bar (pre-baseline upstream suite) | **20 passed** (not control-room-specific; untouched by this branch) |
 | TUI vitest | **1559 passed, 1 skipped, 0 failed** (fully green — the prior 12 baseline env failures are fixed by the pnpm workspace install, commit 4e2278b7ca) |
 | Dashboard BFF pytest | **7 passed** |
 | Dashboard web vitest | **4 passed** |
@@ -79,6 +80,11 @@ TS mirror gate: `python -m control_room.export_ts_schema --check` — pass.
    `delegation_control` are hardcoded unavailable in v1 — correct per contract
    (no live path), but they become real only when the BFF gains a gateway RPC
    client. Kanban + process + system rows are real.
+4. **Plugin E2E-909 (hermes-peer install/enable/restart/uninstall) fails in
+   THIS environment**: hermes-peer is editable-installed in the hermes env, so
+   `hermes plugins list` sees it even after uninstall — an environment
+   interaction, not a control-room defect. Other plugin E2Es pass (E2E-910
+   two-session exchange, E2E-909's siblings).
 
 ## 5. Security verdict
 

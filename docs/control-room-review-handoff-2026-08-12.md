@@ -207,7 +207,8 @@ grep -rn "kanban_db\.\(create_task\|block_task\|unblock_task\|complete_task\)" c
   control_room/ is a finding.
 
 ## Honest limitations (documented, not hidden — verify they exist in
-docs/control-room-release-decision.md section 7)
+docs/control-room-release-decision.md section 4 (honest gaps) and
+section 7 (follow-up tasks))
 
 1. Post-activation hardening open by design: dashboard BFF has NO
    gateway RPC client; approvals/peer/delegation capabilities render as

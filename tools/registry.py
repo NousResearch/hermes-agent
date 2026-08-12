@@ -573,8 +573,10 @@ class ToolRegistry:
         max_result_size_chars: int | float | None = None,
         dynamic_schema_overrides: Callable = None,
         override: bool = False,
-    ):
-        """Register a tool.  Called at module-import time by each tool file.
+    ) -> bool:
+        """Register a tool and return whether the registry accepted it.
+
+        Called at module-import time by each tool file.
 
         ``override=True`` is an explicit opt-in for plugins that intend to
         replace an existing built-in tool implementation (e.g. swap the
@@ -587,14 +589,18 @@ class ToolRegistry:
             if existing and existing.toolset != toolset:
                 if override:
                     _owner = self._plugin_owner_of(handler)
-                    if _owner is not None and not self._plugin_override_policy.get(_owner, False):
+                    if _owner is not None and not self._plugin_override_policy.get(
+                        _owner, False
+                    ):
                         logger.error(
                             "Tool registration REJECTED: plugin %r attempted to "
                             "override built-in tool %r (existing toolset %r) without "
                             "operator opt-in. Set "
                             "plugins.entries.<plugin_id>.allow_tool_override: true "
                             "in config.yaml to allow it.",
-                            _owner, name, existing.toolset,
+                            _owner,
+                            name,
+                            existing.toolset,
                         )
                         raise PermissionError(
                             f"Plugin module {_owner!r} cannot override built-in "
@@ -606,7 +612,9 @@ class ToolRegistry:
                     logger.info(
                         "Tool '%s': toolset '%s' overriding existing toolset '%s' "
                         "(override=True opt-in)",
-                        name, toolset, existing.toolset,
+                        name,
+                        toolset,
+                        existing.toolset,
                     )
                 else:
                     # Reject every cross-toolset shadow, including MCP-to-MCP
@@ -617,9 +625,11 @@ class ToolRegistry:
                         "shadow existing tool from toolset '%s'. Pass "
                         "override=True to register() if the replacement is "
                         "intentional, or deregister the existing tool first.",
-                        name, toolset, existing.toolset,
+                        name,
+                        toolset,
+                        existing.toolset,
                     )
-                    return
+                    return False
             self._tools[name] = ToolEntry(
                 name=name,
                 toolset=toolset,
@@ -642,6 +652,7 @@ class ToolRegistry:
             if check_fn and toolset not in self._toolset_checks:
                 self._toolset_checks[toolset] = check_fn
             self._generation += 1
+            return True
 
     def deregister(self, name: str) -> None:
         """Remove a tool from the registry.

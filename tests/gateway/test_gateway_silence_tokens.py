@@ -166,8 +166,8 @@ async def test_prose_mentioning_silence_token_is_delivered(monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
-async def test_agent_end_hook_includes_model_and_provider(monkeypatch, tmp_path):
-    """Gateway hooks receive the actual model/provider for post-turn routing."""
+async def test_agent_end_hook_includes_model_provider_and_outcome(monkeypatch, tmp_path):
+    """Gateway hooks receive actual route and terminal outcome metadata."""
     runner = _runner(monkeypatch, tmp_path)
     runner._run_agent = AsyncMock(return_value={
         "final_response": "done",
@@ -180,6 +180,7 @@ async def test_agent_end_hook_includes_model_and_provider(monkeypatch, tmp_path)
         "last_prompt_tokens": 0,
         "api_calls": 1,
         "failed": False,
+        "completed": True,
         "model": "gpt-5.6-terra",
         "provider": "openai-codex",
     })
@@ -195,3 +196,36 @@ async def test_agent_end_hook_includes_model_and_provider(monkeypatch, tmp_path)
     )
     assert end_context["model"] == "gpt-5.6-terra"
     assert end_context["provider"] == "openai-codex"
+    assert end_context["failed"] is False
+    assert end_context["completed"] is True
+
+
+@pytest.mark.asyncio
+async def test_agent_end_hook_marks_failed_turn(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": "Authentication failed.",
+        "messages": [{"role": "user", "content": "question"}],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": True,
+        "completed": False,
+        "model": "gpt-5.6-terra",
+        "provider": "openai-codex",
+        "error": "auth failure",
+    })
+
+    await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    hook_calls = getattr(runner.hooks.emit, "await_args_list", [])
+    end_context = next(
+        call.args[1]
+        for call in hook_calls
+        if call.args[0] == "agent:end"
+    )
+    assert end_context["failed"] is True
+    assert end_context["completed"] is False

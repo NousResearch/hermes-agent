@@ -3496,10 +3496,12 @@ class TestRunConversation:
         # Partial reply is surfaced and persisted as an assistant turn so the
         # next turn remembers what the model said.
         assert result["final_response"] == "Sure, here's how to do it: first"
-        assert result["messages"][-1] == {
-            "role": "assistant",
-            "content": "Sure, here's how to do it: first",
-        }
+        assert result["messages"][-1]["role"] == "assistant"
+        assert (
+            result["messages"][-1]["content"]
+            == "Sure, here's how to do it: first"
+        )
+        assert isinstance(result["messages"][-1]["timestamp"], float)
 
     def test_redirect_during_thinking_retries_same_turn_with_context(self, agent):
         """A corrective follow-up does not end the turn, and displayed reasoning

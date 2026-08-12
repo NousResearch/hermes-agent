@@ -22,6 +22,7 @@ cache later without changing this interface.
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional
@@ -286,21 +287,28 @@ def _peer_provider(ctx: Dict[str, Any]) -> List[Dict[str, Any]]:
         raise RuntimeError("hermes_peer plugin not registered in this process")
 
     rows: List[Dict[str, Any]] = []
-    # Public tool surface returns text; the manager exposes counts via the
-    # public inbox list. Use the public tool commands (not _manager internals).
-    inbox_text = peer_tools.peer_read_inbox({"limit": 10})
-    # The public command surface is the contract; parse minimal state hints.
-    for line in (inbox_text or "").splitlines():
-        stripped = line.strip()
-        if not stripped:
+    # Public tool surface returns JSON: {"messages": [{message_id, peer_id,
+    # content, state, from, created_at}, ...]}. Parse that shape; never fall
+    # back to scraping text.
+    raw = peer_tools.peer_read_inbox({"limit": 10})
+    try:
+        payload = json.loads(raw) if isinstance(raw, str) else (raw or {})
+    except (TypeError, ValueError):  # noqa: BLE001 - defensive against tool drift
+        payload = {}
+    for msg in payload.get("messages") or []:
+        if not isinstance(msg, dict):
             continue
+        sender = str(msg.get("from") or msg.get("peer_id") or "unknown")
+        content = str(msg.get("content") or "")
+        state = str(msg.get("state") or "held")
+        message_id = str(msg.get("message_id") or "")
         rows.append(
             {
                 "kind": "peer_message",
-                "id": stripped[:24],
-                "title": stripped[:70],
-                "state": "queued" if "from" in stripped else "held",
-                "sender": stripped,
+                "id": (message_id or sender)[:24],
+                "title": (content or sender)[:70],
+                "state": state,
+                "sender": sender,
             }
         )
     return rows[:10]

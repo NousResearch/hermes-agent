@@ -206,6 +206,34 @@ When you call `ctx.register_platform()`, the following integration points are ha
 | Token lock (multi-profile) | Use `acquire_scoped_lock()` in your `connect()` |
 | Orphaned config warning | Descriptive log when plugin is missing |
 
+### Extending or replacing Telegram handlers
+
+A plugin that needs Telegram update types not handled by Hermes — for example, `InlineQueryHandler` — can subclass the bundled `TelegramAdapter` and override `_register_handlers(application)`. Hermes calls this method for the initial `python-telegram-bot` `Application` and again whenever connection recovery rebuilds the application.
+
+Call `super()` to preserve the built-in text, command, location, media, and callback-query handlers and add your own:
+
+```python
+from telegram.ext import InlineQueryHandler
+
+from plugins.platforms.telegram.adapter import TelegramAdapter
+
+
+class InlineTelegramAdapter(TelegramAdapter):
+    def _register_handlers(self, application):
+        super()._register_handlers(application)
+        application.add_handler(InlineQueryHandler(self._handle_inline_query))
+```
+
+Omit `super()` when the plugin intentionally replaces the complete handler set:
+
+```python
+class ReplacementTelegramAdapter(TelegramAdapter):
+    def _register_handlers(self, application):
+        application.add_handler(MyReplacementHandler(...))
+```
+
+A plugin providing either subclass should register it under the concrete platform name `telegram` with `ctx.register_platform(..., adapter_factory=...)`. That concrete plugin registration takes precedence over the bundled lazy adapter. Replacing all handlers also replaces Hermes' normal message and command intake, so use that form only when the plugin owns the complete Telegram update flow.
+
 ## Env-Driven Auto-Configuration
 
 Most users set up a platform by dropping env vars into `~/.hermes/.env` rather than editing `config.yaml`. The `env_enablement_fn` hook lets your plugin pick those env vars up **before** the adapter is constructed, so `hermes gateway status`, `get_connected_platforms()`, and cron delivery see the correct state without instantiating the platform SDK.

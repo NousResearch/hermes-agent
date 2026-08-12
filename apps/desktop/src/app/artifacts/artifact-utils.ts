@@ -30,7 +30,7 @@ export interface ArtifactLoadResult {
 const MARKDOWN_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)\)/g
 const MARKDOWN_LINK_RE = /\[([^\]]+)\]\(([^)\s]+)\)/g
 const URL_RE = /https?:\/\/[^\s<>"')]+/g
-const PATH_RE = /(^|[\s("'`])((?:\/|~\/|\.\.?\/)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
+const PATH_RE = /(^|[\s("'`])((?:[a-zA-Z]:[\\/]|\/|~\/|\.\.?\/)[^\s"'`<>]+(?:\.[a-z0-9]{1,8})?)/gi
 const IMAGE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp)(?:\?.*)?$/i
 const FILE_EXT_RE = /\.(?:png|jpe?g|gif|webp|svg|bmp|pdf|txt|json|md|csv|zip|tar|gz|mp3|wav|mp4|mov)(?:\?.*)?$/i
 const KEY_HINT_RE = /(path|file|url|image|artifact|output|download|result|target)/i
@@ -64,7 +64,8 @@ function looksLikePathOrUrl(value: string): boolean {
     value.startsWith('/') ||
     value.startsWith('./') ||
     value.startsWith('../') ||
-    value.startsWith('~/')
+    value.startsWith('~/') ||
+    /^[a-zA-Z]:[\\/]/.test(value)
   )
 }
 
@@ -90,7 +91,8 @@ function artifactKind(value: string): ArtifactKind {
     value.startsWith('./') ||
     value.startsWith('../') ||
     value.startsWith('~/') ||
-    value.startsWith('file://')
+    value.startsWith('file://') ||
+    /^[a-zA-Z]:[\\/]/.test(value)
   ) {
     return 'file'
   }
@@ -103,7 +105,11 @@ function artifactHref(value: string): string {
     return value
   }
 
-  if (value.startsWith('file://') || value.startsWith('/')) {
+  // Windows absolute paths (C:\... / C:/...) are file paths too — normalize
+  // them to file:// so openExternalUrl doesn't parse `C:` as a scheme and
+  // reject it. (The artifacts panel surfaces kanban attachments / local files
+  // as plain Windows paths on Windows hosts.)
+  if (value.startsWith('file://') || value.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(value)) {
     return mediaExternalUrl(value)
   }
 
@@ -123,6 +129,14 @@ export async function artifactImageSrc(value: string, href = artifactHref(value)
 }
 
 function artifactLabel(value: string): string {
+  // Windows drive-letter paths parse `C:` as a scheme (protocol "c:") with a
+  // backslash pathname that split('/') cannot reduce — C:\Work\a.md would
+  // label as \Work\a.md (drive letter swallowed). Split on both separators
+  // up front so backslash and forward-slash forms label identically.
+  if (/^[a-zA-Z]:[\\/]/.test(value)) {
+    return value.split(/[\\/]/).filter(Boolean).pop() || value
+  }
+
   try {
     const url = new URL(value)
     const item = url.pathname.split('/').filter(Boolean).pop()

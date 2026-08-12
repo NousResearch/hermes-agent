@@ -1308,10 +1308,16 @@ function openExternalUrl(rawUrl) {
     return false
   }
 
+  // Windows absolute paths (C:\... or C:/...) arrive as plain paths (e.g. from
+  // the artifacts panel). `new URL('C:\Users\...')` parses as a bogus `c:`
+  // scheme instead of `file:`, which would trip the protocol allowlist below
+  // and surface a confusing "Invalid external URL". Normalize to file:// first.
+  const urlInput = /^[a-zA-Z]:[\\/]/.test(raw) ? pathToFileURL(raw).toString() : raw
+
   let parsed
 
   try {
-    parsed = new URL(raw)
+    parsed = new URL(urlInput)
   } catch {
     return false
   }

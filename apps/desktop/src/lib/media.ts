@@ -116,6 +116,18 @@ export function mediaExternalUrl(path: string): string {
     }
   }
 
+  // Windows absolute paths (C:\... / C:/...) arrive as plain paths. Build the
+  // canonical file:/// form (pathToFileURL shape) so the main process can
+  // resolve and open them; `file://C:\...` (bare backslash, one slash) is not
+  // a valid file URL. # and % are legal in Windows filenames — encode them so
+  // URL parsing doesn't treat `#...` as a fragment or double-decode `%XX`.
+  // `%` must be replaced first or the %25 we emit would itself get re-encoded.
+  if (/^[a-zA-Z]:[\\/]/.test(path)) {
+    const p = path.replace(/\\/g, '/').replace(/%/g, '%25').replace(/#/g, '%23').replace(/\?/g, '%3F')
+
+    return `file:///${p}`
+  }
+
   return /^file:/i.test(path) ? path : `file://${path}`
 }
 

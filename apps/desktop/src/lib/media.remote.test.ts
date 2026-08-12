@@ -62,6 +62,58 @@ describe('mediaExternalUrl', () => {
     expect(mediaExternalUrl('file:///tmp/a.png')).toBe('file:///tmp/a.png')
   })
 
+  it('normalizes Windows absolute paths to file:/// form (regression: c: scheme)', () => {
+    $connection.set({ mode: 'local' } as never)
+    expect(mediaExternalUrl('C:\\Work\\a.md')).toBe('file:///C:/Work/a.md')
+    expect(mediaExternalUrl('C:/Work/a.md')).toBe('file:///C:/Work/a.md')
+    expect(mediaExternalUrl('d:\\data\\file.txt')).toBe('file:///d:/data/file.txt')
+  })
+
+  it('encodes # in Windows paths so URL parsing cannot treat it as a fragment', () => {
+    $connection.set({ mode: 'local' } as never)
+    expect(mediaExternalUrl('C:\\Work\\a#b.md')).toBe('file:///C:/Work/a%23b.md')
+  })
+
+  it('encodes % in Windows paths so %25 is not double-decoded', () => {
+    $connection.set({ mode: 'local' } as never)
+    expect(mediaExternalUrl('C:\\Work\\100%25.md')).toBe('file:///C:/Work/100%2525.md')
+  })
+
+  it('leaves spaces raw in the emitted URL (WHATWG parses them as %20)', () => {
+    $connection.set({ mode: 'local' } as never)
+    expect(mediaExternalUrl('C:\\Work\\My Docs\\a b.md')).toBe('file:///C:/Work/My Docs/a b.md')
+    // Behavior contract: URL parsing must recover the exact filesystem path.
+    expect(new URL(mediaExternalUrl('C:\\Work\\My Docs\\a b.md')).pathname).toBe('/C:/Work/My%20Docs/a%20b.md')
+  })
+
+  it('handles a drive root', () => {
+    $connection.set({ mode: 'local' } as never)
+    expect(mediaExternalUrl('C:\\')).toBe('file:///C:/')
+  })
+
+  // UNC paths and the legacy `file://C:` form are out of scope for this PR
+  // (declared in the PR description). These tests lock in current behavior so
+  // a future change has to consciously extend the drive-letter branch.
+  it('does not touch UNC paths (out of scope, documented)', () => {
+    $connection.set({ mode: 'local' } as never)
+    expect(mediaExternalUrl('\\\\server\\share\\a.md')).toBe('file://\\\\server\\share\\a.md')
+  })
+
+  it('passes legacy file://C: URLs through unchanged (out of scope, documented)', () => {
+    $connection.set({ mode: 'local' } as never)
+    expect(mediaExternalUrl('file://C:/x/a.md')).toBe('file://C:/x/a.md')
+  })
+
+  it('rewrites Windows paths through the authenticated download URL in remote mode', () => {
+    $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 't' } as never)
+    expect(mediaExternalUrl('C:\\Work\\a.md')).toBe('https://gw/api/files/download?path=C%3A%5CWork%5Ca.md&token=t')
+  })
+
+  it('URL-encodes special characters in the remote download query', () => {
+    $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 't' } as never)
+    expect(mediaExternalUrl('C:\\a b#c.md')).toBe('https://gw/api/files/download?path=C%3A%5Ca%20b%23c.md&token=t')
+  })
+
   it('rewrites gateway-local paths to an authenticated download URL', () => {
     $connection.set({ mode: 'remote', baseUrl: 'https://gw', token: 's e/cret' } as never)
     expect(mediaExternalUrl('file:///tmp/a b.png')).toBe(

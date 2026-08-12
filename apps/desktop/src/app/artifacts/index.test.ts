@@ -67,6 +67,45 @@ describe('collectArtifactsForSession', () => {
     })
   })
 
+  it('indexes Windows absolute paths from assistant text as file artifacts', () => {
+    const artifacts = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Report saved to C:\\Work\\a.md for review.',
+        role: 'assistant',
+        timestamp: 2000
+      }
+    ])
+
+    expect(artifacts).toHaveLength(1)
+    expect(artifacts[0]).toMatchObject({
+      href: 'file:///C:/Work/a.md',
+      kind: 'file',
+      label: 'a.md',
+      value: 'C:\\Work\\a.md'
+    })
+  })
+
+  it('labels forward-slash and backslash Windows paths identically', () => {
+    const backslash = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Report saved to C:\\Work\\a.md for review.',
+        role: 'assistant',
+        timestamp: 2000
+      }
+    ])
+
+    const forwardSlash = collectArtifactsForSession(makeSession(), [
+      {
+        content: 'Report saved to C:/Work/a.md for review.',
+        role: 'assistant',
+        timestamp: 2000
+      }
+    ])
+
+    expect(backslash[0]?.label).toBe('a.md')
+    expect(forwardSlash[0]?.label).toBe('a.md')
+  })
+
   it('resolves remote image artifact thumbnails through the desktop fs bridge', async () => {
     const api = vi.fn(async ({ path }: { path: string }) => {
       if (path.startsWith('/api/fs/read-data-url?')) {

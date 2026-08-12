@@ -993,6 +993,10 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # 1 when this task was created by decompose_triage_task. Consulted by
+    # the gateway dispatcher's per-tick recompute_ready to honour
+    # kanban.auto_promote_children=false (#79608).
+    created_from_decompose: bool = False
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -1086,6 +1090,11 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            created_from_decompose=(
+                bool(row["created_from_decompose"])
+                if "created_from_decompose" in keys and row["created_from_decompose"]
+                else False
             ),
         )
 
@@ -1274,7 +1283,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Set to 1 on decompose-created children. While ``kanban.auto_promote_children``
+    -- is false, the gateway dispatcher's per-tick ``recompute_ready`` skips these
+    -- (they stay in ``todo`` for manual review); the decompose-time promotion
+    -- (auto_promote=True) and every other call site still promotes them (#79608).
+    created_from_decompose INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -2472,6 +2486,16 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "tasks",
             "block_recurrences",
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
+        )
+
+    if "created_from_decompose" not in cols:
+        # Decompose-children marker (#79608). Existing rows start at 0
+        # (not decompose-created), preserving pre-migration behaviour.
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "created_from_decompose",
+            "created_from_decompose INTEGER NOT NULL DEFAULT 0",
         )
 
     # Indexes over additive ``tasks`` columns must be created after the
@@ -4245,6 +4269,7 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
 
 def recompute_ready(
     conn: sqlite3.Connection, failure_limit: int = None,
+    skip_decompose_children: bool = False,
 ) -> int:
     """Promote ``todo`` tasks to ``ready`` when all parents are ``done`` or ``archived``.
 
@@ -4280,7 +4305,8 @@ def recompute_ready(
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT id, status, consecutive_failures, max_retries, "
+            "created_from_decompose "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
@@ -4299,6 +4325,23 @@ def recompute_ready(
                 (task_id,),
             ).fetchall()
             if all(p["status"] in ("done", "archived") for p in parents):
+                if (
+                    skip_decompose_children
+                    and cur_status == "todo"
+                    and not parents
+                    and int(row["created_from_decompose"] or 0)
+                ):
+                    # Manual-review gate: a decompose-created child stays in
+                    # 'todo' until a human promotes it while
+                    # auto_promote_children=false (#79608). This fires only
+                    # for PARENT-FREE decompose children — the exact gap the
+                    # issue names. A child with parents (dependency-gated)
+                    # flows through the parents check unchanged: once its
+                    # parents complete it promotes normally, and a 'blocked'
+                    # decompose child still unblocks via the circuit-breaker
+                    # path below. (parent-free = empty parent set; the
+                    # all(...) above is vacuously True for it.)
+                    continue
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":
                     # Don't auto-recover tasks that have hit the
@@ -6464,6 +6507,15 @@ def promote_task(
         )
         if upd.rowcount != 1:
             return False, f"task {task_id} status changed during promotion"
+        # Manual promotion IS the review pass for the #79608 gate: clear the
+        # decompose marker so a reviewed child that later returns to 'todo'
+        # (claim_task parents_not_done demote, link_tasks, unblock_task) is
+        # not gated again — the gate applies once, to children awaiting
+        # their first review, and releases permanently after it.
+        conn.execute(
+            "UPDATE tasks SET created_from_decompose = 0 WHERE id = ?",
+            (task_id,),
+        )
         _append_event(
             conn,
             task_id,
@@ -7055,8 +7107,9 @@ def decompose_triage_task(
             conn.execute(
                 "INSERT INTO tasks "
                 "(id, title, body, assignee, status, workspace_kind, "
-                " workspace_path, tenant, created_at, created_by) "
-                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?)",
+                " workspace_path, tenant, created_at, created_by, "
+                " created_from_decompose) "
+                "VALUES (?, ?, ?, ?, 'todo', ?, ?, ?, ?, ?, 1)",
                 (
                     new_id,
                     title,
@@ -9222,6 +9275,7 @@ def dispatch_once(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    skip_decompose_children: bool = False,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -9257,6 +9311,7 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            skip_decompose_children=skip_decompose_children,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -9274,6 +9329,7 @@ def dispatch_once(
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
+            skip_decompose_children=skip_decompose_children,
         )
         # Still under the dispatch lock: opportunistically truncate the WAL
         # at a coarse interval so it cannot grow unbounded between restarts.
@@ -9295,6 +9351,7 @@ def _dispatch_once_locked(
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
     reconcile_orphans: bool = True,
+    skip_decompose_children: bool = False,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -9356,7 +9413,11 @@ def _dispatch_once_locked(
     if _crash_rate_limited:
         result.rate_limited.extend(_crash_rate_limited)
     result.timed_out = enforce_max_runtime(conn)
-    result.promoted = recompute_ready(conn, failure_limit=failure_limit)
+    result.promoted = recompute_ready(
+        conn,
+        failure_limit=failure_limit,
+        skip_decompose_children=skip_decompose_children,
+    )
 
     # Both knobs are total in-flight caps. Collapse them before either lane
     # dispatches so ready and review workers consume the same budget without

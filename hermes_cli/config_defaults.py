@@ -2390,6 +2390,13 @@ DEFAULT_CONFIG = {
         # decomposition is manual via `hermes kanban decompose <id>` or
         # the dashboard's Decompose button.
         "auto_decompose": True,
+        # When true (default), decompose-created children are automatically
+        # promoted to ready once their parent tasks complete. When false,
+        # children stay in 'todo' for manual review — the gateway
+        # dispatcher's per-tick recompute_ready skips them (#79608).
+        # Changing this mid-run requires a gateway restart (read once at
+        # watcher boot, like the other background watcher knobs).
+        "auto_promote_children": True,
         # Max triage tasks to decompose per dispatcher tick. Prevents a
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.

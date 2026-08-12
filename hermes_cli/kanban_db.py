@@ -328,7 +328,11 @@ def write_worker_provider_failure(
             # Provider failures are control-plane egress, not file content:
             # retain the full mandatory redaction set, including ENV and JSON
             # credential fields.
-            return redact_sensitive_text(original, force=True)[:limit]
+            return redact_sensitive_text(
+                original,
+                force=True,
+                redact_url_credentials=True,
+            )[:limit]
         except Exception:
             return "«redacted-provider-failure»"
 

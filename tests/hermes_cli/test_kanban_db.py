@@ -451,6 +451,28 @@ def test_provider_boundary_redacts_config_and_json_secrets_from_every_field(
     assert "OPENAI_API_KEY" in payload["failure_reason"]
 
 
+def test_provider_boundary_redacts_url_userinfo_credentials(kanban_home, monkeypatch):
+    """Provider egress must not persist credentials embedded in provider URLs."""
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setenv("HERMES_KANBAN_LOG_DIR", str(kanban_home / "kanban" / "logs"))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_url_secret_boundary")
+    marker = "url-secret-marker"
+    path = _kb.write_worker_provider_failure(
+        failure_reason="auth",
+        error=f"HTTP 401 https://user:{marker}@api.example.test/v1",
+        provider=f"https://user:{marker}@api.example.test/v1",
+        model=f"https://user:{marker}@api.example.test/v1",
+    )
+
+    assert path is not None
+    raw = Path(path).read_text(encoding="utf-8")
+    payload = _kb.read_worker_provider_failure("t_url_secret_boundary")
+    assert marker not in raw
+    assert marker not in json.dumps(payload)
+    assert "401" in payload["error"]
+
+
 @pytest.mark.parametrize(
     ("failure_reason", "exit_code", "exit_kind"),
     [

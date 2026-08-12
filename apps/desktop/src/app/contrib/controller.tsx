@@ -42,6 +42,7 @@ import { Download, FileText, LayoutDashboard, PanelBottom, Terminal, Upload, Zap
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { setYoloEnabled } from '@/lib/yolo-session'
 import { pruneComposerPopoutZones } from '@/store/composer-popout'
+import { watchDeadSessionPrune } from '@/store/dead-session-prune'
 import {
   $fileBrowserOpen,
   $panesFlipped,
@@ -419,6 +420,10 @@ $layoutTree.subscribe(tree => {
 // Mirror sidebar pins into the backend keep-flag so the auto-archive sweep
 // never hides a pinned chat (and pre-existing pins migrate transparently).
 watchSessionPins()
+
+// Drop local pins/drafts/queued prompts whose sessions no longer exist on the
+// backend — otherwise every boot re-requests the dead ids and 404s on each.
+watchDeadSessionPrune()
 
 // The main tab reads as its SESSION (the loaded title, "New session" on a
 // fresh draft) — a stack of main + tiles is then just a row of session names.

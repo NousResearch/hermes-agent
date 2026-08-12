@@ -16,7 +16,7 @@ vi.mock('@/hermes', () => ({
 import { $pinnedSessionIds } from '@/store/layout'
 import { $sessions } from '@/store/session'
 
-import { resetSessionPinMirror, watchSessionPins } from './session-pin-sync'
+import { forgetPinSyncState, resetSessionPinMirror, watchSessionPins } from './session-pin-sync'
 
 const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
@@ -95,6 +95,21 @@ describe('watchSessionPins', () => {
 
     // A session-list refresh that doesn't change the pinned set.
     $sessions.set([row('d'), row('e')])
+    await flush()
+
+    expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('forgetPinSyncState suppresses the re-PATCH of a rowless pin being pruned', async () => {
+    // The dead-session prune unpins a rowless (dead) pin; without forgetting
+    // its pending bookkeeping first, the reconcile would re-PATCH the dead id
+    // (a fresh 404 on every boot — the noise the prune exists to remove).
+    $pinnedSessionIds.set(['c'])
+    await flush()
+    expect(patch).not.toHaveBeenCalled()
+
+    forgetPinSyncState('c')
+    $pinnedSessionIds.set([])
     await flush()
 
     expect(patch).not.toHaveBeenCalled()

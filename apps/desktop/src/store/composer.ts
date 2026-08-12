@@ -316,6 +316,15 @@ export function takeSessionDraft(scope: string | null | undefined): SessionDraft
 export const clearSessionDraft = (scope: string | null | undefined) => stashSessionDraft(scope, '', [])
 
 /**
+ * Stored draft scopes that hold content, excluding the new-chat key. The
+ * dead-session prune sweeps these to discard drafts whose sessions no longer
+ * exist on the backend; the new-chat draft is never a session reference.
+ */
+export function stashedDraftScopes(): string[] {
+  return [...draftsBySession.keys()].filter(key => key !== NEW_SESSION_DRAFT_KEY)
+}
+
+/**
  * Move a stashed composer draft from one session key onto another.
  *
  * Auto-compression rotates the live stored tip id (root → continuation) while

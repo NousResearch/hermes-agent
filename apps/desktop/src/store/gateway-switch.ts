@@ -4,6 +4,7 @@ import { resetLiveRuntimeTracking } from '@/app/contrib/hooks/use-background-syn
 import { resetSidebarBatchCapability } from '@/hermes'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { clearArtifactRegistry } from '@/store/artifacts'
+import { resetDeadSessionPrune } from '@/store/dead-session-prune'
 import { resetSessionsLimit } from '@/store/layout'
 import { resetLiveSync } from '@/store/live-sync'
 import {
@@ -50,6 +51,12 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // next reconcile re-assert the whole set against the new backend.
   resetSessionPinMirror()
   setSessions([])
+  // Reset AFTER the wipe: the wipe's empty payload schedules a sweep, and
+  // resetting first would leave that timer live — sweeping every stored id
+  // against a backend that hasn't answered yet. The reset cancels the timer,
+  // clears the alive cache, and marks the list unloaded, so the next real
+  // payload starts a fresh first-pass window against the new backend.
+  resetDeadSessionPrune()
   setSessionProfilesTruncated({})
   setSessionProfilesUsage({})
   setCronSessions([])

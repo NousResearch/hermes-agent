@@ -4,11 +4,7 @@
 
 import { expect, test, type Page } from '@playwright/test'
 
-import {
-  type MockBackendFixture,
-  setupMockBackend,
-  waitForAppReady,
-} from './fixtures'
+import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
 import { MOCK_REPLY, receivedUserTexts, restartMockServer } from './mock-server'
 
 async function send(page: Page, text: string, delay = 15): Promise<void> {
@@ -25,12 +21,11 @@ async function pasteAndSend(page: Page, text: string): Promise<void> {
   await page.keyboard.press('Enter')
 }
 
-
 async function waitForTranscript(page: Page, text: string, timeout = 90_000): Promise<void> {
   await page.waitForFunction(
     expected => document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent?.includes(expected) ?? false,
     text,
-    { timeout },
+    { timeout }
   )
 }
 
@@ -62,23 +57,16 @@ test.describe('session compression', () => {
     await send(page, 'E2E_COMPRESSION_THIRD')
     await expect.poll(() => receivedUserTexts().filter(text => text === 'E2E_COMPRESSION_THIRD').length).toBe(1)
 
-    // Commit the command before typing its argument. This waits for the async
-    // completion request on cold CI workers, then uses the composer's own
-    // keyboard accept path to replace the `/compress` trigger with a command
-    // chip. Clicking a later completion after typing the argument can insert a
-    // second command token (for example `//compress ...`) as plain text.
+    // This test covers compression and continuation, not slash completion.
+    // Insert the complete command atomically and click Send so an async
+    // completion response cannot consume Enter as a picker acceptance.
     const composer = page.locator('[contenteditable="true"]').first()
     await composer.click()
-    await composer.type('/compress', { delay: 15 })
-    await page.getByText('/compress').first().waitFor({ state: 'visible' })
-    await page.keyboard.press('Enter')
-    await composer.type(' preserve the three test turns', { delay: 15 })
-    await page.keyboard.press('Enter')
+    await page.keyboard.insertText('/compress preserve the three test turns')
+    await expect.poll(() => composer.textContent()).toContain('preserve the three test turns')
+    await page.getByRole('button', { name: 'Send', exact: true }).click()
     await expect
-      .poll(
-        () => page.locator('[data-slot="aui_thread-viewport"]').textContent(),
-        { timeout: 90_000 },
-      )
+      .poll(() => page.locator('[data-slot="aui_thread-viewport"]').textContent(), { timeout: 90_000 })
       .toMatch(/Compressed|No changes from compression/)
 
     // Compression rotates the agent's live session id. A post-compression
@@ -105,7 +93,7 @@ auxiliary:
     provider: custom
     model: mock-model`,
       mockServer: {
-        holdFirstCompletionContaining: 'You are a summarization agent creating a context checkpoint.',
+        holdFirstCompletionContaining: 'You are a summarization agent creating a context checkpoint.'
       }
     })
     await waitForAppReady(fixture, 120_000)

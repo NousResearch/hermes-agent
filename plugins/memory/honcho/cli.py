@@ -516,12 +516,17 @@ def _ensure_sdk_installed() -> bool:
         return False
 
     print("  Installing honcho-ai...", flush=True)
-    from hermes_cli.tools_config import _pip_install
+    # Environment-aware install: sealed hosted venvs redirect to the durable
+    # data-volume target instead of writing to /opt/hermes (NS-605).
+    from tools.lazy_deps import install_specs
 
-    result = _pip_install(["honcho-ai==2.2.0"])
-    if result.returncode == 0:
+    result = install_specs(["honcho-ai==2.2.0"])
+    if result.ok:
         print("  Installed.\n")
         return True
+    elif result.blocked:
+        print(f"  Cannot install: {result.reason}\n")
+        return False
     else:
         print(f"  Install failed:\n{(result.stderr or '').strip()}")
         print("  Run manually: uv pip install 'honcho-ai==2.2.0'\n")
@@ -1536,8 +1541,15 @@ def cmd_identity(args) -> None:
         return
 
     if show:
+        from plugins.memory.honcho.session import HonchoAuthError
+        try:
+            user_card = mgr.get_peer_card(session_key)
+            ai_rep = mgr.get_ai_representation(session_key)
+        except HonchoAuthError as e:
+            print(f"  Honcho authentication failed: {e}\n")
+            return
+
         # ── User peer ────────────────────────────────────────────────────────
-        user_card = mgr.get_peer_card(session_key)
         print(f"\nUser peer ({hcfg.peer_name or 'not set'})\n" + "─" * 40)
         if user_card:
             for fact in user_card:
@@ -1546,7 +1558,6 @@ def cmd_identity(args) -> None:
             print("  No user peer card yet. Send a few messages to build one.")
 
         # ── AI peer ──────────────────────────────────────────────────────────
-        ai_rep = mgr.get_ai_representation(session_key)
         print(f"\nAI peer ({hcfg.ai_peer})\n" + "─" * 40)
         if ai_rep.get("representation"):
             print(ai_rep["representation"])

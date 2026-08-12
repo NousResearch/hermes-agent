@@ -23,6 +23,10 @@ import os
 import re
 import smtplib
 import socket
+
+# Profile-scoped secret reader for multiplexing support (PR #50094)
+from agent.secret_scope import UnscopedSecretError as _UnscopedSecretError
+from agent.secret_scope import get_secret as _scoped_get_secret
 import ssl
 import uuid
 from email.header import decode_header
@@ -43,9 +47,50 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
 )
 from gateway.config import Platform, PlatformConfig
-from utils import env_int, env_bool
+from utils import is_truthy_value
 
 logger = logging.getLogger(__name__)
+
+
+def _get_esecret(name: str, default: str = "") -> str:
+    """Scope-aware ``EMAIL_*`` read with the default-profile startup fallback.
+
+    Secondary profiles run under ``_profile_runtime_scope`` — the scope is
+    authoritative and a scoped miss returns ``default`` (no cross-profile
+    borrow). The DEFAULT profile's adapter constructs and sends *unscoped*
+    under multiplexing, where a bare ``get_secret`` would raise
+    ``UnscopedSecretError`` and crash its email path; there ``os.environ``
+    is that profile's own value, so fall back to it. Same pattern as the
+    Slack ``SLACK_APP_TOKEN`` read (#59739) and the WhatsApp
+    ``_get_wsecret`` fix (5438e9c629).
+    """
+    try:
+        val = _scoped_get_secret(name, default)
+    except _UnscopedSecretError:
+        val = os.getenv(name)
+    return val if val is not None else default
+
+
+# Backwards-compatible alias for the name used by the original #59076 hunks.
+_get_secret = _get_esecret
+
+
+def _esecret_int(name: str, default: int) -> int:
+    """Scope-aware integer read (``env_int`` variant of ``_get_esecret``)."""
+    raw = str(_get_esecret(name, "")).strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
+
+
+def _esecret_bool(name: str, default: bool = False) -> bool:
+    """Scope-aware boolean read (``env_bool`` variant of ``_get_esecret``)."""
+    return is_truthy_value(_get_esecret(name, ""), default=default)
+
+
 # Automated sender patterns — emails from these are silently ignored
 _NOREPLY_PATTERNS = (
     "noreply", "no-reply", "no_reply", "donotreply", "do-not-reply",
@@ -164,20 +209,63 @@ def check_email_requirements() -> bool:
     Treats blank/whitespace-only values as missing so an abandoned setup that
     left empty ``EMAIL_*`` keys in ``.env`` does not enable the platform (#40715).
     """
-    addr = os.getenv("EMAIL_ADDRESS", "").strip()
-    pwd = os.getenv("EMAIL_PASSWORD", "").strip()
-    imap = os.getenv("EMAIL_IMAP_HOST", "").strip()
-    smtp = os.getenv("EMAIL_SMTP_HOST", "").strip()
+    addr = _get_secret("EMAIL_ADDRESS", "").strip()
+    pwd = _get_secret("EMAIL_PASSWORD", "").strip()
+    imap = _get_secret("EMAIL_IMAP_HOST", "").strip()
+    smtp = _get_secret("EMAIL_SMTP_HOST", "").strip()
     return all([addr, pwd, imap, smtp])
 
 
+_CHARSET_ALIASES = {
+    # Aliases seen in the wild that Python's codec registry doesn't know.
+    # "unknown-8bit" / "x-unknown" are RFC 1428 placeholders some MTAs (QQ
+    # Mail among them) emit when the original charset was lost (#35901).
+    "unknown-8bit": "utf-8",
+    "unknown": "utf-8",
+    "x-unknown": "utf-8",
+    "default": "utf-8",
+    "ansi_x3.110-1983": "latin-1",
+    "cp-850": "cp850",
+    "gb2312": "gb18030",  # superset; avoids failures on GBK extensions
+    "gbk": "gb18030",
+    "ks_c_5601-1987": "cp949",
+}
+
+
+def _safe_decode(payload: bytes, charset: "Optional[str]") -> str:
+    """Decode *payload* without ever raising.
+
+    Unknown or malformed charset labels (``unknown-8bit``, misspelled names,
+    attacker-controlled garbage) previously raised ``LookupError`` from
+    ``bytes.decode`` — ``errors="replace"`` only guards decode errors, not a
+    missing codec — which aborted the whole IMAP fetch and dropped every
+    message in the batch (#35901, #55381, #55383). Fall back through a small
+    alias table, then UTF-8, then latin-1 (which never fails).
+    """
+    label = (charset or "utf-8").strip().strip("\"'").lower() or "utf-8"
+    label = _CHARSET_ALIASES.get(label, label)
+    for candidate in (label, "utf-8"):
+        try:
+            return payload.decode(candidate, errors="replace")
+        except (LookupError, ValueError):
+            continue
+    return payload.decode("latin-1", errors="replace")
+
+
 def _decode_header_value(raw: str) -> str:
-    """Decode an RFC 2047 encoded email header into a plain string."""
-    parts = decode_header(raw)
+    """Decode an RFC 2047 encoded email header into a plain string.
+
+    Never raises: malformed encoded-words or unknown charsets degrade to
+    replacement characters instead of crashing the fetch loop (#55381).
+    """
+    try:
+        parts = decode_header(raw)
+    except Exception:  # malformed RFC 2047 structure
+        return raw
     decoded = []
     for part, charset in parts:
         if isinstance(part, bytes):
-            decoded.append(part.decode(charset or "utf-8", errors="replace"))
+            decoded.append(_safe_decode(part, charset))
         else:
             decoded.append(part)
     return " ".join(decoded)
@@ -195,8 +283,7 @@ def _extract_text_body(msg: email_lib.message.Message) -> str:
             if content_type == "text/plain":
                 payload = part.get_payload(decode=True)
                 if payload:
-                    charset = part.get_content_charset() or "utf-8"
-                    return payload.decode(charset, errors="replace")
+                    return _safe_decode(payload, part.get_content_charset())
         # Fallback: try text/html and strip tags
         for part in msg.walk():
             content_type = part.get_content_type()
@@ -206,15 +293,13 @@ def _extract_text_body(msg: email_lib.message.Message) -> str:
             if content_type == "text/html":
                 payload = part.get_payload(decode=True)
                 if payload:
-                    charset = part.get_content_charset() or "utf-8"
-                    html = payload.decode(charset, errors="replace")
+                    html = _safe_decode(payload, part.get_content_charset())
                     return _strip_html(html)
         return ""
     else:
         payload = msg.get_payload(decode=True)
         if payload:
-            charset = msg.get_content_charset() or "utf-8"
-            text = payload.decode(charset, errors="replace")
+            text = _safe_decode(payload, msg.get_content_charset())
             if msg.get_content_type() == "text/html":
                 return _strip_html(text)
             return text
@@ -434,13 +519,13 @@ class EmailAdapter(BasePlatformAdapter):
         # misleading ``[Errno 8] nodename nor servname`` (an unresolvable name)
         # instead of an obvious "host not set" error.
         extra = config.extra or {}
-        self._address = (os.getenv("EMAIL_ADDRESS", "") or extra.get("address", "")).strip()
-        self._password = os.getenv("EMAIL_PASSWORD", "")
-        self._imap_host = (os.getenv("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
-        self._imap_port = env_int("EMAIL_IMAP_PORT", 993)
-        self._smtp_host = (os.getenv("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
-        self._smtp_port = env_int("EMAIL_SMTP_PORT", 587)
-        self._poll_interval = env_int("EMAIL_POLL_INTERVAL", 15)
+        self._address = (_get_secret("EMAIL_ADDRESS", "") or extra.get("address", "")).strip()
+        self._password = _get_secret("EMAIL_PASSWORD", "")
+        self._imap_host = (_get_secret("EMAIL_IMAP_HOST", "") or extra.get("imap_host", "")).strip()
+        self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
+        self._smtp_host = (_get_secret("EMAIL_SMTP_HOST", "") or extra.get("smtp_host", "")).strip()
+        self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
+        self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
 
         # Skip attachments — configured via config.yaml:
         #   platforms:
@@ -464,7 +549,7 @@ class EmailAdapter(BasePlatformAdapter):
         # gate below is skipped.
         if "require_authenticated_sender" in extra:
             self._require_authenticated_sender = bool(extra["require_authenticated_sender"])
-        elif env_bool("EMAIL_TRUST_FROM_HEADER", False):
+        elif _esecret_bool("EMAIL_TRUST_FROM_HEADER", False):
             self._require_authenticated_sender = False
         else:
             self._require_authenticated_sender = True
@@ -473,7 +558,7 @@ class EmailAdapter(BasePlatformAdapter):
         # own receiving server (defends against an injected header that sorts
         # first). Defaults to the From-domain of the agent's own address.
         self._authserv_id = (
-            extra.get("authserv_id", "") or os.getenv("EMAIL_AUTHSERV_ID", "")
+            extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")
         ).strip().lower()
 
         # Track message IDs we've already processed to avoid duplicates
@@ -756,7 +841,7 @@ class EmailAdapter(BasePlatformAdapter):
         """
         truthy = {"true", "1", "yes"}
         return (
-            os.getenv("EMAIL_ALLOW_ALL_USERS", "").strip().lower() in truthy
+            _get_secret("EMAIL_ALLOW_ALL_USERS", "").strip().lower() in truthy
             or os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() in truthy
         )
 
@@ -771,7 +856,7 @@ class EmailAdapter(BasePlatformAdapter):
         and the authentication gate is unnecessary.
         """
         return bool(
-            os.getenv("EMAIL_ALLOWED_USERS", "").strip()
+            _get_secret("EMAIL_ALLOWED_USERS", "").strip()
             or os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
         )
 
@@ -793,9 +878,9 @@ class EmailAdapter(BasePlatformAdapter):
         # that the gateway will never authorize.  Without this early guard,
         # a race between dispatch and authorization can result in the adapter
         # sending a reply even though the handler returned None.
-        allowed_raw = os.getenv("EMAIL_ALLOWED_USERS", "").strip()
+        allowed_raw = _get_secret("EMAIL_ALLOWED_USERS", "").strip()
         if not allowed_raw:
-            if os.getenv("EMAIL_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"} and (
+            if _get_secret("EMAIL_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"} and (
                 os.getenv("GATEWAY_ALLOW_ALL_USERS", "").strip().lower() not in {"true", "1", "yes"}
             ):
                 logger.debug(
@@ -1204,11 +1289,11 @@ async def _standalone_send(
     from email.utils import formatdate
 
     extra = getattr(pconfig, "extra", {}) or {}
-    address = extra.get("address") or os.getenv("EMAIL_ADDRESS", "")
-    password = os.getenv("EMAIL_PASSWORD", "")
-    smtp_host = extra.get("smtp_host") or os.getenv("EMAIL_SMTP_HOST", "")
+    address = extra.get("address") or _get_secret("EMAIL_ADDRESS", "")
+    password = _get_secret("EMAIL_PASSWORD", "")
+    smtp_host = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", "")
     try:
-        smtp_port = int(os.getenv("EMAIL_SMTP_PORT", "587"))
+        smtp_port = int(_get_secret("EMAIL_SMTP_PORT", "587") or "587")
     except (ValueError, TypeError):
         smtp_port = 587
 

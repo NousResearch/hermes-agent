@@ -1,12 +1,12 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
-import type { BillingBlock } from '@hermes/shared'
+import { type BillingBlock, skillInvocationText } from '@hermes/shared'
 
 import { extractImageRefs } from '@/lib/embedded-images'
 import { dedupeGeneratedImageEchoesInParts } from '@/lib/generated-images'
 import { mediaDisplayLabel, mediaMarkdownHref } from '@/lib/media'
 import { normalize } from '@/lib/text'
 import { parseTodos } from '@/lib/todos'
-import type { SessionMessage, UsageStats } from '@/types/hermes'
+import type { MessageReaction, SessionMessage, UsageStats } from '@/types/hermes'
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number]
 
@@ -25,6 +25,10 @@ export type ChatMessage = {
   interim?: boolean
   /** Composer attachment ref strings (`@file:...`, `@image:...`) sent with this user message. */
   attachmentRefs?: string[]
+  /** Durable backend `messages.id`. Absent until the row is persisted. */
+  rowId?: number
+  /** Emoji reactions on this message — one per author (see MessageReaction). */
+  reactions?: MessageReaction[]
 }
 
 export type GatewayEventPayload = {
@@ -57,6 +61,7 @@ export type GatewayEventPayload = {
   running?: boolean
   cwd?: string
   branch?: string
+  terminal_backend?: string
   credential_warning?: string
   install_warning?: string
   personality?: string
@@ -77,13 +82,20 @@ export type GatewayEventPayload = {
   // secret.request (skill credential capture)
   env_var?: string
   prompt?: string
-  // terminal.read.request (GUI agent reading the in-app terminal pane)
+  // terminal.read.request / preview.read.request (GUI agent reading the
+  // in-app terminal pane or the browser/preview pane)
   start?: number
   count?: number
   // status.update (kind=process → background process completion/watch-match)
   kind?: string
   // pane.reveal (agent focusing a desktop pane via the focus_pane tool)
   pane?: string
+  // message.reaction (agent reacting via the react_to_message tool) — the
+  // durable messages.id, that row's full reaction list after the write, and
+  // the row's role so a live (not-yet-round-tripped) message can be matched.
+  row_id?: number
+  reactions?: MessageReaction[]
+  role?: string
   // session.title (live auto-title push) — stored session id + generated title
   session_id?: string
   title?: string
@@ -301,6 +313,15 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
     return textContent
   }
 
+  // A `/skill` turn is stored expanded (the whole skill body). Current
+  // gateways project it to the invocation before it ever reaches us; this is
+  // the fallback for an older backend that still ships the raw payload.
+  const invocation = skillInvocationText(textContent)
+
+  if (invocation) {
+    return invocation
+  }
+
   const marker = textContent.match(ATTACHED_CONTEXT_MARKER_RE)
 
   if (!marker || marker.index === undefined) {
@@ -311,7 +332,12 @@ function displayContentForMessage(role: SessionMessage['role'], content: unknown
   const attachedContext = textContent.slice(marker.index + marker[0].length)
   const refs = [...new Set(Array.from(attachedContext.matchAll(CONTEXT_REF_RE)).map(match => match[0]))]
 
-  return [refs.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
+  // The prose keeps the `@file:` token the user typed, so it already chips in
+  // place. Only hoist a ref the prose is missing — a turn persisted by an older
+  // backend that stripped the tokens. Re-listing an inline ref would chip twice.
+  const missing = refs.filter(ref => !visibleText.includes(ref))
+
+  return [missing.join('\n'), visibleText].filter(Boolean).join('\n\n') || visibleText
 }
 
 function transcriptContent(displayKind: SessionMessage['display_kind'], content: string): string | null {
@@ -320,24 +346,36 @@ function transcriptContent(displayKind: SessionMessage['display_kind'], content:
 
 // A remote backend older than this app serves display_metadata as raw JSON text,
 // and `in` throws on a primitive — which used to fail the whole session resume.
-function timelineTaskCount(metadata: SessionMessage['display_metadata']): number | undefined {
+function parseDisplayMetadata(metadata: SessionMessage['display_metadata']): null | Record<string, unknown> {
   let parsed: unknown = metadata
 
   if (typeof parsed === 'string') {
     try {
       parsed = JSON.parse(parsed)
     } catch {
-      return undefined
+      return null
     }
   }
 
-  if (!parsed || typeof parsed !== 'object') {
-    return undefined
-  }
+  return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null
+}
 
-  const count = (parsed as { task_count?: unknown }).task_count
+function timelineTaskCount(metadata: SessionMessage['display_metadata']): number | undefined {
+  const count = parseDisplayMetadata(metadata)?.task_count
 
   return typeof count === 'number' ? count : undefined
+}
+
+export function messageReactions(metadata: SessionMessage['display_metadata']): MessageReaction[] {
+  const reactions = parseDisplayMetadata(metadata)?.reactions
+
+  if (!Array.isArray(reactions)) {
+    return []
+  }
+
+  return reactions.filter(
+    (r): r is MessageReaction => Boolean(r) && typeof r === 'object' && typeof (r as MessageReaction).emoji === 'string'
+  )
 }
 
 function timelineDisplayContent(message: SessionMessage, content: string): string {
@@ -347,6 +385,10 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
 
   if (message.display_kind === 'auto_continue') {
     return 'resumed interrupted turn'
+  }
+
+  if (message.display_kind === 'personality_switch') {
+    return 'personality changed'
   }
 
   if (message.display_kind === 'async_delegation_complete') {
@@ -823,7 +865,12 @@ function applyStoredToolResultToParts(parts: ChatMessagePart[], toolMessage: Ses
 function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex: number): ChatMessagePart {
   const name = toolMessage.tool_name || toolMessage.name || 'tool'
   const context = textFromUnknown(toolMessage.context || toolMessage.text || toolMessage.content || '')
-  const args = context ? { context } : {}
+  // Prefer the full arguments when the gateway projection carries them:
+  // `context` is an 80-char display preview, and the expanded tool row
+  // rebuilds the real command from args. Keep `context` alongside as the
+  // title-side placeholder.
+  const storedArgs = parseMaybeJsonObject(toolMessage.args)
+  const args = { ...storedArgs, ...(context ? { context } : {}) }
 
   return {
     type: 'tool-call',
@@ -950,7 +997,8 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const displayRole =
       message.display_kind === 'model_switch' ||
       message.display_kind === 'async_delegation_complete' ||
-      message.display_kind === 'auto_continue'
+      message.display_kind === 'auto_continue' ||
+      message.display_kind === 'personality_switch'
         ? 'system'
         : message.role
 
@@ -1030,11 +1078,19 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       flushPendingTools(index)
     }
 
+    const reactions = messageReactions(message.display_metadata)
+    // Gateway resume names the durable row id `row_id`; the REST transcript
+    // prefetch ships the same messages.id as a numeric `id`. Either one lets
+    // reactions address this exact row later.
+    const rowId = message.row_id ?? (typeof message.id === 'number' ? message.id : undefined)
+
     result.push({
       id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
       role: displayRole,
       parts,
       timestamp: message.timestamp,
+      ...(rowId !== undefined ? { rowId } : {}),
+      ...(reactions.length ? { reactions } : {}),
       ...(extractedAttachmentRefs ? { attachmentRefs: extractedAttachmentRefs } : {})
     })
 

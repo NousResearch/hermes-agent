@@ -38,7 +38,6 @@ function makeSidebarActions(): SidebarActions {
     onBranchSession: vi.fn(),
     onDeleteSession: vi.fn(),
     onLoadMoreMessaging: vi.fn(),
-    onLoadMoreProfileSessions: vi.fn(),
     onLoadMoreSessions: vi.fn(),
     onManageCronJob: vi.fn(),
     onNavigate: vi.fn(),
@@ -100,12 +99,10 @@ describe('latestActions adapters', () => {
 
     const sidebar = makeSidebarActions()
     sidebar.onLoadMoreMessaging = undefined
-    sidebar.onLoadMoreProfileSessions = undefined
 
     const adaptedSidebar = latestSidebarActions(sidebar)
 
     expect(adaptedSidebar.onLoadMoreMessaging).toBeUndefined()
-    expect(adaptedSidebar.onLoadMoreProfileSessions).toBeUndefined()
   })
 
   it('still late-binds a PRESENT optional handler to the latest closure', async () => {

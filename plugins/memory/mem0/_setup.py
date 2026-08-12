@@ -863,11 +863,17 @@ def _install_provider_deps(llm_id: str, embedder_id: str, vector_id: str) -> Non
     for dep in sorted(deps):
         try:
             print(f"  Installing {dep}...")
-            subprocess.run(
-                ["uv", "pip", "install", "--python", sys.executable, dep],
-                capture_output=True, timeout=60,
-            )
-            print(f"  ✓ Installed {dep}")
+            # Environment-aware install: sealed hosted venvs redirect to the
+            # durable data-volume target instead of /opt/hermes (NS-605).
+            from tools.lazy_deps import install_specs
+
+            outcome = install_specs([dep], timeout=60)
+            if outcome.ok:
+                print(f"  ✓ Installed {dep}")
+            elif outcome.blocked:
+                print(f"  Warning: cannot install {dep}: {outcome.reason}")
+            else:
+                print(f"  Warning: Could not install {dep}. Install manually: uv pip install {dep}")
         except Exception:
             print(f"  Warning: Could not install {dep}. Install manually: uv pip install {dep}")
     if deps:

@@ -487,6 +487,9 @@ THREAT_PATTERNS = [
     (r'AKIA[0-9A-Z]{16}',
      "aws_access_key_leaked", "critical", "credential_exposure",
      "AWS access key ID in skill content"),
+    (r'glpat-[A-Za-z0-9_\-]{20,}',
+     "gitlab_token_leaked", "critical", "credential_exposure",
+     "GitLab personal access token in skill content"),
 
     # ── Additional prompt injection: jailbreak patterns ──
     (r'\bDAN\s+mode\b|Do\s+Anything\s+Now',
@@ -518,6 +521,11 @@ THREAT_PATTERNS = [
     (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://',
      "send_to_url", "high", "exfiltration",
      "instructs agent to send data to a URL"),
+]
+
+_COMPILED_THREAT_PATTERNS = [
+    (re.compile(pattern, re.IGNORECASE), pid, severity, category, description)
+    for pattern, pid, severity, category, description in THREAT_PATTERNS
 ]
 
 # Structural limits for skill directories
@@ -591,11 +599,11 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     seen = set()  # (pattern_id, line_number) for deduplication
 
     # Regex pattern matching
-    for pattern, pid, severity, category, description in THREAT_PATTERNS:
+    for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
         for i, line in enumerate(lines, start=1):
             if (pid, i) in seen:
                 continue
-            if re.search(pattern, line, re.IGNORECASE):
+            if pattern.search(line):
                 seen.add((pid, i))
                 matched_text = line.strip()
                 if len(matched_text) > 120:
@@ -689,14 +697,27 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
 
 
 def _content_digest(skill_path: Path) -> str:
-    """Canonical SHA-256 over relative paths and exact file bytes."""
+    """Canonical SHA-256 over relative paths and exact file bytes.
+
+    Files are keyed and ORDERED by their POSIX relative path string,
+    case-sensitively. Ordering by ``sorted(rglob(...))`` diverged from the
+    bundle side on Windows: Path comparison is case-insensitive there
+    (normcase), while ``bundle_content_hash`` sorts plain strings — the
+    same skill hashed to different digests and every installed skill
+    reported ``update_available`` forever (#62310). Sorting the rel-posix
+    strings makes the digest OS-independent and byte-symmetric with
+    ``tools.skills_hub.bundle_content_hash``.
+    """
     h = hashlib.sha256()
     if skill_path.is_dir():
-        for file_path in sorted(skill_path.rglob("*")):
-            if file_path.is_file():
-                rel = file_path.relative_to(skill_path).as_posix()
-                h.update(rel.encode("utf-8") + b"\x00")
-                h.update(file_path.read_bytes())
+        entries = sorted(
+            (file_path.relative_to(skill_path).as_posix(), file_path)
+            for file_path in skill_path.rglob("*")
+            if file_path.is_file()
+        )
+        for rel, file_path in entries:
+            h.update(rel.encode("utf-8") + b"\x00")
+            h.update(file_path.read_bytes())
     else:
         h.update(skill_path.read_bytes())
     return h.hexdigest()

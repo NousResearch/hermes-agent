@@ -2,6 +2,8 @@ import { type ConnectionState, type GatewayEvent, resolveGatewayWsUrl } from '@h
 import { atom } from 'nanostores'
 
 import { HermesGateway } from '@/hermes'
+import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
+import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setGatewayState } from '@/store/session'
 
 // ── Multi-profile gateway routing ──────────────────────────────────────────
@@ -136,6 +138,12 @@ export function activeGateway(): HermesGateway | null {
 // composer reflect the active profile's socket without a background reconnect
 // flipping the foreground enabled/disabled state.
 function reportGatewayState(profile: string, state: ConnectionState): void {
+  // Any socket opening replays parked prompts; hold OS notifications so a
+  // launch/reconnect doesn't alert about state that already existed.
+  if (state === 'open') {
+    markNativeNotifyBaseline()
+  }
+
   if (normKey(profile) === g.activeKey) {
     setGatewayState(state)
   }
@@ -177,8 +185,9 @@ function scheduleReconnect(entry: Secondary): void {
     return
   }
 
-  // 1s, 2s, 4s … capped at 15s — same backoff shape as the primary.
-  const delay = Math.min(15_000, 1_000 * 2 ** Math.min(entry.reconnectAttempt, 4))
+  // Full-jitter exponential backoff — same shape (and same reason: avoid a
+  // reconnect storm against a restarting gateway) as the primary's.
+  const delay = reconnectBackoffDelayMs(entry.reconnectAttempt)
   entry.reconnectAttempt += 1
   entry.reconnectTimer = setTimeout(() => {
     entry.reconnectTimer = null

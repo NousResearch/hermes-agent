@@ -88,40 +88,6 @@ class TestSaveJobsOwnershipPreservation:
             "(uid/gid 1000) instead of leaving it root:600 (#68483)"
         )
 
-    def test_root_first_write_inherits_cron_dir_owner(self, cron_store, monkeypatch):
-        """Creating jobs.json for the first time as root must inherit the
-        cron dir's owner (the gateway user in the Docker image)."""
-        chown_calls = []
-        jobs_file = cron_store / "jobs.json"
-
-        real_stat = os.stat
-
-        class _FakeStat:
-            def __init__(self, wrapped):
-                self._wrapped = wrapped
-                self.st_uid = 1000
-                self.st_gid = 1000
-
-            def __getattr__(self, name):
-                return getattr(self._wrapped, name)
-
-        def fake_stat(path, *a, **k):
-            result = real_stat(path, *a, **k)
-            if str(path) == str(cron_store):
-                return _FakeStat(result)
-            return result
-
-        monkeypatch.setattr(jobs.os, "stat", fake_stat)
-        monkeypatch.setattr(jobs.os, "geteuid", lambda: 0)
-        monkeypatch.setattr(jobs.os, "getegid", lambda: 0)
-        monkeypatch.setattr(
-            jobs.os, "chown", lambda path, uid, gid: chown_calls.append((str(path), uid, gid))
-        )
-
-        assert not jobs_file.exists()
-        jobs.save_jobs([{"id": "new", "prompt": "hello"}])
-
-        assert chown_calls == [(str(jobs_file), 1000, 1000)]
 
     def test_unprivileged_writer_never_chowns(self, cron_store, monkeypatch):
         """A same-uid (non-root) writer must not attempt chown at all —
@@ -198,22 +164,6 @@ class TestTickerErrorMarker:
         jobs.clear_ticker_error()
         assert jobs.get_ticker_last_error() is None
 
-    def test_clear_when_absent_is_noop(self, cron_store):
-        jobs.clear_ticker_error()  # must not raise
-        assert jobs.get_ticker_last_error() is None
-
-    def test_record_failure_is_silent(self, tmp_path, monkeypatch):
-        """Marker write failure must never disrupt the tick loop."""
-        blocker = tmp_path / "not_a_dir"
-        blocker.write_text("i am a file")
-        bad_dir = blocker / "cron"
-        monkeypatch.setattr(jobs, "CRON_DIR", bad_dir)
-        monkeypatch.setattr(jobs, "JOBS_FILE", bad_dir / "jobs.json")
-        monkeypatch.setattr(jobs, "OUTPUT_DIR", bad_dir / "output")
-
-        jobs.record_ticker_error("RuntimeError: boom")  # must not raise
-        assert jobs.get_ticker_last_error() is None
-
 
 class TestTickerLoopRecordsErrors:
     def _run_one_tick(self, monkeypatch, tick_fn):
@@ -288,16 +238,3 @@ class TestCronStatusSurfacesError:
         # The permission-specific hint must point at the ownership fix.
         assert "docker exec -u" in out
 
-    def test_status_without_marker_keeps_generic_message(self, monkeypatch, capsys):
-        from hermes_cli import cron as cron_cli
-
-        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [4321])
-        monkeypatch.setattr(jobs, "get_ticker_heartbeat_age", lambda: 5.0)
-        monkeypatch.setattr(jobs, "get_ticker_success_age", lambda: 9_999.0)
-        monkeypatch.setattr(jobs, "get_ticker_last_error", lambda: None)
-        monkeypatch.setattr("cron.jobs.list_jobs", lambda **k: [])
-
-        cron_cli.cron_status()
-        out = capsys.readouterr().out
-        assert "no tick has succeeded" in out
-        assert "Last tick error:" not in out

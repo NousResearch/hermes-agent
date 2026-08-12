@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { ExternalLink, RefreshCw, Trash2, Eye, EyeOff } from "lucide-react";
 import type { Translations } from "@/i18n/types";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { api } from "@/lib/api";
 import type {
   HubAgentPluginRow,
@@ -32,7 +32,7 @@ import { usePageHeader } from "@/contexts/usePageHeader";
 /** Select value for built-in memory (`config` uses empty string). Never use `""` — UI Select maps empty value to an empty label. */
 const MEMORY_PROVIDER_BUILTIN = "__hermes_memory_builtin__";
 
-type MemoryFormValue = string | boolean;
+type MemoryFormValue = string | boolean | number;
 
 const MEMORY_STATUS_LABEL: Record<MemoryProviderInfo["status"], string> = {
   ready: "ready",
@@ -664,7 +664,18 @@ export default function PluginsPage() {
                               <div className="flex items-center gap-2">
                                 <Input
                                   id={`memory-${field.key}`}
-                                  type={field.kind === "secret" && !secretIsVisible ? "password" : "text"}
+                                  type={
+                                    field.kind === "secret" && !secretIsVisible
+                                      ? "password"
+                                      : field.kind === "integer" || field.kind === "number"
+                                        ? "number"
+                                        : "text"
+                                  }
+                                  min={field.minimum ?? undefined}
+                                  max={field.maximum ?? undefined}
+                                  step={
+                                    field.step ?? (field.kind === "integer" ? 1 : undefined)
+                                  }
                                   value={String(value ?? "")}
                                   placeholder={
                                     field.kind === "secret" && field.is_set

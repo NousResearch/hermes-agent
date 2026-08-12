@@ -19,7 +19,19 @@ that don't set it are unaffected — exactly the same shape as ``gateway.proxy_u
 from __future__ import annotations
 
 import os
+import re
 from typing import Optional
+
+# Shape gate for ambient-endpoint token bodies (mode 1b in
+# _resolve_relay_identity_token). Accepts a bearer-token-shaped string:
+# either a multi-segment dotted token (JWT: header.payload.signature) or a
+# single long opaque token (>= 32 chars of the base64url alphabet). Short
+# bare words — 'unauthorized', 'error', 'null' — match the alphabet but are
+# plain-text error bodies, not credentials, and must fail closed.
+_AMBIENT_TOKEN_SHAPE = re.compile(
+    r"[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]+){2,}"  # JWT-like: 3+ dotted segments
+    r"|[A-Za-z0-9_-]{32,}"  # long opaque bearer token
+)
 
 
 def relay_url() -> Optional[str]:
@@ -492,14 +504,22 @@ def _resolve_relay_identity_token() -> str:
     """Resolve the caller-identity bearer token the connector introspects to a tenant.
 
     Canonical resolver shared by the runtime self-provision path and the
-    ``hermes gateway enroll`` CLI. Two modes, in precedence order:
+    ``hermes gateway enroll`` CLI. Three modes, in precedence order:
 
       1. **Generic OIDC client-credentials** (air-gapped / self-hosted-IdP, NO
          Nous Portal): when ``gateway.idp.token_url`` (or
-         ``GATEWAY_RELAY_IDP_TOKEN_URL``) is configured, obtain a workload access
-         token via the OAuth2 ``client_credentials`` grant against the operator's
-         own IdP (Entra; Authentik in the sandbox). The connector's Seam-A OIDC
+         ``GATEWAY_RELAY_IDP_TOKEN_URL``) is configured together with a client
+         id/secret, obtain a workload access token via the OAuth2
+         ``client_credentials`` grant against the operator's own IdP (Entra;
+         Keycloak; Authentik in the sandbox). The connector's Seam-A OIDC
          verifier reads a claim (default ``tid``) off it as the tenant.
+      1b. **Ambient token endpoint**: when ``token_url`` is configured with
+         NEITHER client_id nor client_secret, the URL is treated as a metadata-server-style
+         ambient credential endpoint (e.g. Domino's
+         ``$DOMINO_API_PROXY/access-token``): a plain GET whose response body
+         IS the token — either a raw JWT string or a JSON envelope with an
+         ``access_token`` field. No client registration involved; possession
+         of the (typically loopback) endpoint is the credential.
       2. **Nous Portal** (default): ``resolve_nous_access_token()`` — existing
          managed/hosted behaviour.
 
@@ -528,16 +548,56 @@ def _resolve_relay_identity_token() -> str:
 
         return resolve_nous_access_token()
 
-    # Mode 1 — generic OAuth2 client_credentials grant.
     import json
     import urllib.error
     import urllib.parse
     import urllib.request
 
-    if not client_id or not client_secret:
-        raise RuntimeError(
-            "gateway.idp.token_url configured but client_id/client_secret missing"
+    if not client_id and not client_secret:
+        # Mode 1b — ambient token endpoint (no client credentials configured).
+        # Plain GET; the body is the token, raw or JSON-enveloped.
+        req = urllib.request.Request(
+            token_url,
+            method="GET",
+            headers={"Accept": "application/json, text/plain"},
         )
+        with urllib.request.urlopen(req, timeout=15.0) as resp:
+            body = resp.read().decode().strip()
+        token = ""
+        if body.startswith("{"):
+            try:
+                envelope_token = (json.loads(body) or {}).get("access_token")
+            except ValueError:
+                envelope_token = None
+            # Same contract as the client_credentials path below: the value
+            # must be a non-empty STRING. No shape gate here — a JSON envelope
+            # is a deliberate token response (and opaque tokens may use the
+            # standard-base64 alphabet the raw-body gate would reject).
+            if isinstance(envelope_token, str):
+                token = envelope_token.strip()
+        elif _AMBIENT_TOKEN_SHAPE.fullmatch(body):
+            token = body
+        if not token:
+            raise RuntimeError(
+                "no client_id/client_secret configured, so gateway.idp.token_url was "
+                "treated as an ambient token endpoint (GET), but the response body "
+                "was not a token. For the OAuth2 client_credentials grant, configure "
+                "client_id and client_secret alongside token_url."
+            )
+        return token
+
+    if not client_id or not client_secret:
+        # Exactly one credential configured: this is a mistyped client_credentials
+        # setup, not an ambient endpoint. Keep the loud error (never GET the IdP).
+        missing = "client_secret" if client_id else "client_id"
+        raise RuntimeError(
+            f"gateway.idp.token_url is configured with a partial client credential "
+            f"({missing} missing). Configure both client_id and client_secret for "
+            f"the OAuth2 client_credentials grant, or neither to treat token_url "
+            f"as an ambient token endpoint (plain GET returning the token)."
+        )
+
+    # Mode 1 — generic OAuth2 client_credentials grant.
     form = {
         "grant_type": "client_credentials",
         "client_id": client_id,

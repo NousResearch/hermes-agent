@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.config import cfg_get
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -261,10 +262,22 @@ def _repo_name_from_url(url: str) -> str:
 
 
 def _read_manifest(plugin_dir: Path) -> dict:
-    """Read plugin.yaml and return the parsed dict, or empty dict."""
+    """Read a native or portable manifest, preferring native YAML."""
     manifest_file = plugin_dir / "plugin.yaml"
     if not manifest_file.exists():
-        return {}
+        manifest_file = plugin_dir / "plugin.yml"
+    if not manifest_file.exists():
+        portable_file = plugin_dir / "plugin.json"
+        if not portable_file.exists() and not portable_file.is_symlink():
+            return {}
+        try:
+            from hermes_cli.agent_plugins import read_agent_plugin_manifest
+
+            manifest, _ = read_agent_plugin_manifest(plugin_dir)
+            return manifest
+        except Exception as e:
+            logger.warning("Failed to read plugin.json in %s: %s", plugin_dir, e)
+            return {}
     try:
         import yaml
 
@@ -474,6 +487,8 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
                 capture_output=True,
                 text=True, encoding='utf-8', errors='replace',
                 timeout=60,
+                stdin=subprocess.DEVNULL,
+                env=noninteractive_git_env(),
             )
         except FileNotFoundError as e:
             raise PluginOperationError(
@@ -494,7 +509,25 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
         else:
             tmp_target = tmp_clone
 
-        manifest = _read_manifest(tmp_target)
+        has_native_manifest = (tmp_target / "plugin.yaml").exists() or (
+            tmp_target / "plugin.yml"
+        ).exists()
+        has_portable_manifest = (tmp_target / "plugin.json").exists() or (
+            tmp_target / "plugin.json"
+        ).is_symlink()
+        if not has_native_manifest and has_portable_manifest:
+            try:
+                from hermes_cli.agent_plugins import read_agent_plugin_manifest
+
+                manifest, diagnostics = read_agent_plugin_manifest(tmp_target)
+                for diagnostic in diagnostics:
+                    logger.warning("Agent Plugin install: %s", diagnostic.message)
+            except Exception as exc:
+                raise PluginOperationError(
+                    f"Portable plugin manifest validation failed: {exc}"
+                ) from exc
+        else:
+            manifest = _read_manifest(tmp_target)
         plugin_name = manifest.get("name") or (
             subdir.rstrip("/").rsplit("/", 1)[-1] if subdir else _repo_name_from_url(git_url)
         )
@@ -533,7 +566,8 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
         shutil.move(str(tmp_target), str(target))
 
     has_yaml = (target / "plugin.yaml").exists() or (target / "plugin.yml").exists()
-    if not has_yaml and not (target / "__init__.py").exists():
+    has_portable = (target / "plugin.json").exists()
+    if not has_yaml and not has_portable and not (target / "__init__.py").exists():
         logger.warning(
             "%s has no plugin.yaml / __init__.py; may not be a valid plugin",
             plugin_name,
@@ -587,12 +621,12 @@ def cmd_install(
         console.print(f"[red]Error:[/red] {e}")
         sys.exit(1)
 
-    if not (target / "plugin.yaml").exists() and not (target / "plugin.yml").exists() and not (
+    if not (target / "plugin.yaml").exists() and not (target / "plugin.yml").exists() and not (target / "plugin.json").exists() and not (
         target / "__init__.py"
     ).exists():
         console.print(
-            f"[yellow]Warning:[/yellow] {installed_name} doesn't contain plugin.yaml "
-            f"or __init__.py. It may not be a valid Hermes plugin.",
+            f"[yellow]Warning:[/yellow] {installed_name} doesn't contain plugin.yaml, "
+            f"plugin.json, or __init__.py. It may not be a valid Hermes plugin.",
         )
 
     _prompt_plugin_env_vars(installed_manifest, console)
@@ -659,6 +693,11 @@ def cmd_update(name: str) -> None:
     if not ok:
         console.print(f"[red]Error:[/red] {output}")
         sys.exit(1)
+
+    # Same stale-bytecode class as the main checkout (#6207/#60242): the
+    # pull just changed .py files under this plugin dir, so drop any
+    # __pycache__ compiled from the previous revision.
+    _clear_plugin_bytecode(target)
 
     # Copy any new .example files
     _copy_example_files(target, console)
@@ -977,7 +1016,7 @@ def _plugin_exists(name: str) -> bool:
 
 
 def _read_manifest_info(d: Path, prefix: str):
-    """Read a plugin.yaml manifest and return (name, version, description, key).
+    """Read a native or portable manifest and return display metadata.
 
     Returns None if no manifest file exists.
     """
@@ -985,7 +1024,23 @@ def _read_manifest_info(d: Path, prefix: str):
     if not manifest_file.exists():
         manifest_file = d / "plugin.yml"
     if not manifest_file.exists():
-        return None
+        portable_file = d / "plugin.json"
+        if not portable_file.exists() and not portable_file.is_symlink():
+            return None
+        try:
+            from hermes_cli.agent_plugins import read_agent_plugin_manifest
+
+            manifest, _ = read_agent_plugin_manifest(d)
+            name = manifest["name"]
+            key = f"{prefix}/{d.name}" if prefix else name
+            return (
+                name,
+                manifest.get("version", ""),
+                manifest.get("description", ""),
+                key,
+            )
+        except Exception:
+            return None
     try:
         import yaml
     except ImportError:
@@ -1004,6 +1059,47 @@ def _read_manifest_info(d: Path, prefix: str):
             pass
     key = f"{prefix}/{d.name}" if prefix else name
     return name, version, description, key
+
+
+def _is_portable_plugin_dir(dir_path) -> bool:
+    """True when *dir_path* is an Agent Plugins v1 package (``plugin.json``
+    only — a native ``plugin.yaml`` takes precedence, matching the loader)."""
+    try:
+        d = Path(dir_path)
+        if not d.is_dir():
+            return False
+        if (d / "plugin.yaml").exists() or (d / "plugin.yml").exists():
+            return False
+        portable_file = d / "plugin.json"
+        return portable_file.exists() or portable_file.is_symlink()
+    except OSError:
+        return False
+
+
+# Manifest kinds that are active-by-default when bundled: backends auto-load,
+# platforms register lazily but are available out of the box, model providers
+# run through providers/ discovery (see PluginManager.discover_and_load).
+_BUNDLED_DEFAULT_ON_KINDS = frozenset({"backend", "platform", "model-provider"})
+
+
+def _bundled_default_on(dir_path) -> bool:
+    """True when a bundled plugin at *dir_path* is active without an explicit
+    ``plugins.enabled`` entry. Standalone/exclusive kinds stay opt-in, and
+    portable packages (``plugin.json``) have no kind at all."""
+    manifest_file = Path(dir_path) / "plugin.yaml"
+    if not manifest_file.exists():
+        manifest_file = Path(dir_path) / "plugin.yml"
+    if not manifest_file.exists():
+        return False
+    try:
+        import yaml
+
+        with open(manifest_file, encoding="utf-8") as f:
+            manifest = yaml.safe_load(f) or {}
+        kind = str(manifest.get("kind", "standalone")).strip().lower()
+        return kind in _BUNDLED_DEFAULT_ON_KINDS
+    except Exception:
+        return False
 
 
 def _scan_level(
@@ -1954,11 +2050,39 @@ def dashboard_update_user_plugin(name: str) -> dict[str, Any]:
     if not ok:
         return {"ok": False, "error": msg}
 
+    # Sibling of the CLI ``hermes plugins update`` path: drop bytecode
+    # compiled from the pre-pull plugin revision.
+    _clear_plugin_bytecode(target)
+
     from rich.console import Console
 
     _copy_example_files(target, Console())
     unchanged = "Already up to date" in msg
     return {"ok": True, "name": name, "output": msg, "unchanged": unchanged}
+
+
+def _clear_plugin_bytecode(target: Path) -> int:
+    """Remove ``__pycache__`` dirs under a just-updated plugin checkout.
+
+    Plugin dirs live outside the main repo, so the launch-time checkout
+    fingerprint sweep in ``hermes_cli.main`` never covers them. After a
+    ``git pull`` changes a plugin's ``.py`` files, stale bytecode here can
+    produce the same ImportError class as #6207/#60242 in whichever
+    process imports the plugin next. Never raises.
+    """
+    removed = 0
+    try:
+        for cache_dir in target.rglob("__pycache__"):
+            if not cache_dir.is_dir():
+                continue
+            try:
+                shutil.rmtree(cache_dir)
+                removed += 1
+            except OSError:
+                pass
+    except OSError:
+        pass
+    return removed
 
 
 def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
@@ -1972,6 +2096,8 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
             text=True, encoding='utf-8', errors='replace',
             timeout=60,
             cwd=str(target),
+            stdin=subprocess.DEVNULL,
+            env=noninteractive_git_env(),
         )
     except FileNotFoundError:
         return False, "git is not installed or not in PATH."

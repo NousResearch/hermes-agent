@@ -26,6 +26,7 @@ import subprocess
 import urllib.parse
 
 from hermes_cli.config import clear_model_endpoint_credentials
+from hermes_cli.providers import custom_provider_slug
 
 
 # AWS cross-region inference profile prefixes. Any geo-prefixed profile only
@@ -74,6 +75,13 @@ def bedrock_model_routable_from_region(model_id: str, region_name: str) -> bool:
         # Asia-Pacific regions can carry ap./apac./jp. profile spellings.
         return matched_geo in ("ap.", "apac.", "jp.")
     return matched_geo == geo
+
+
+def _existing_api_key_for_model_flow(provider_id: str, pconfig) -> tuple[str, str]:
+    """Resolve an existing wizard credential without changing its storage."""
+    from hermes_cli.auth import _resolve_api_key_provider_secret
+
+    return _resolve_api_key_provider_secret(provider_id, pconfig)
 
 
 def _prune_replaced_custom_model_config_credentials(
@@ -177,8 +185,6 @@ def _model_flow_openrouter(config, current_model=""):
         _save_model_choice,
         deactivate_provider,
     )
-    from hermes_cli.config import get_env_value
-
     # Route through _prompt_api_key so users can replace a stale/broken key
     # in-flow (K/R/C) instead of having to edit ~/.hermes/.env by hand. The
     # previous bypass-when-key-exists branch left no way to recover from a
@@ -190,11 +196,16 @@ def _model_flow_openrouter(config, current_model=""):
         auth_type="api_key",
         api_key_env_vars=("OPENROUTER_API_KEY",),
     )
-    existing_key = get_env_value("OPENROUTER_API_KEY") or ""
+    existing_key, existing_source = _existing_api_key_for_model_flow("openrouter", pconfig)
     if not existing_key:
         print("Get one at: https://openrouter.ai/keys")
         print()
-    _resolved, abort = _prompt_api_key(pconfig, existing_key, provider_id="openrouter")
+    _resolved, abort = _prompt_api_key(
+        pconfig,
+        existing_key,
+        provider_id="openrouter",
+        existing_source=existing_source,
+    )
     if abort:
         return
 
@@ -243,6 +254,60 @@ def _print_moa_preset(name: str, preset: dict) -> None:
         print(f"    {idx}. {slot.get('provider')}:{slot.get('model')}")
     agg = preset.get("aggregator") or {}
     print(f"  Aggregator:  {agg.get('provider')}:{agg.get('model')}")
+
+
+def _model_flow_ai_gateway(config, current_model=""):
+    """Vercel AI Gateway provider: ensure API key, then pick model with pricing."""
+    from hermes_constants import AI_GATEWAY_BASE_URL
+    from hermes_cli.main import _prompt_api_key
+    from hermes_cli.auth import (
+        PROVIDER_REGISTRY,
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value
+
+    # Route through _prompt_api_key so users can replace a stale/broken key
+    # in-flow (K/R/C) instead of having to edit ~/.hermes/.env by hand.
+    pconfig = PROVIDER_REGISTRY["ai-gateway"]
+    existing_key = get_env_value("AI_GATEWAY_API_KEY") or ""
+    if not existing_key:
+        print(
+            "Create API key here: https://vercel.com/d?to=%2F%5Bteam%5D%2F%7E%2Fai-gateway&title=AI+Gateway"
+        )
+        print("Add a payment method to get $5 in free credits.")
+        print()
+    _resolved, abort = _prompt_api_key(pconfig, existing_key, provider_id="ai-gateway")
+    if abort:
+        return
+
+    from hermes_cli.models import ai_gateway_model_ids, get_pricing_for_provider
+
+    models_list = ai_gateway_model_ids(force_refresh=True)
+    pricing = get_pricing_for_provider("ai-gateway", force_refresh=True)
+
+    selected = _prompt_model_selection(
+        models_list, current_model=current_model, pricing=pricing
+    )
+    if selected:
+        _save_model_choice(selected)
+
+        from hermes_cli.config import load_config, save_config
+
+        cfg = load_config()
+        model = cfg.get("model")
+        if not isinstance(model, dict):
+            model = {"default": model} if model else {}
+            cfg["model"] = model
+        model["provider"] = "ai-gateway"
+        model["base_url"] = AI_GATEWAY_BASE_URL
+        model["api_mode"] = "chat_completions"
+        save_config(cfg)
+        deactivate_provider()
+        print(f"Default model set to: {selected} (via Vercel AI Gateway)")
+    else:
+        print("No change.")
 
 
 def _model_flow_moa(config, current_model=""):
@@ -1496,11 +1561,24 @@ def _model_flow_named_custom(config, provider_info):
         fetch_kwargs = {"timeout": 8.0}
         if api_mode:
             fetch_kwargs["api_mode"] = api_mode
-        models = fetch_api_models(api_key, base_url, **fetch_kwargs)
+        live_models = fetch_api_models(api_key, base_url, **fetch_kwargs)
         # If the probe came back empty but the operator configured an explicit
         # list, fall back to it rather than forcing manual entry.
-        if not models and configured_models:
-            models = configured_models
+        models = live_models or configured_models
+        # Persist the live catalog back to the custom_providers entry so that
+        # no-probe surfaces (dashboard, desktop, ACP) show the full model list
+        # instead of collapsing to the single ``model:`` default. Mirrors the
+        # picker path in model_switch.py::_save_discovered_models_to_config; a
+        # failed save is non-fatal.
+        if live_models:
+            try:
+                from hermes_cli.model_switch import (
+                    _save_discovered_models_to_config,
+                )
+
+                _save_discovered_models_to_config(base_url, live_models)
+            except Exception:
+                pass
 
     if models:
         default_idx = 0
@@ -1572,7 +1650,7 @@ def _model_flow_named_custom(config, provider_info):
         model = {"default": model} if model else {}
         cfg["model"] = model
     if provider_key:
-        model["provider"] = "custom:" + provider_key.strip().lower().replace(" ", "-")
+        model["provider"] = custom_provider_slug(name, provider_key)
         model.pop("base_url", None)
         model.pop("api_key", None)
     else:
@@ -1971,18 +2049,16 @@ def _model_flow_kimi(config, current_model=""):
 
     provider_id = "kimi-coding"
     pconfig = PROVIDER_REGISTRY[provider_id]
-    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
     # Step 1: Check / prompt for API key
-    existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
 
     existing_key, abort = _prompt_api_key(
-        pconfig, existing_key, provider_id=provider_id
+        pconfig,
+        existing_key,
+        provider_id=provider_id,
+        existing_source=existing_source,
     )
     if abort:
         return
@@ -2057,17 +2133,15 @@ def _model_flow_stepfun(config, current_model=""):
 
     provider_id = "stepfun"
     pconfig = PROVIDER_REGISTRY[provider_id]
-    key_env = pconfig.api_key_env_vars[0] if pconfig.api_key_env_vars else ""
     base_url_env = pconfig.base_url_env_var or ""
 
-    existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
 
     existing_key, abort = _prompt_api_key(
-        pconfig, existing_key, provider_id=provider_id
+        pconfig,
+        existing_key,
+        provider_id=provider_id,
+        existing_source=existing_source,
     )
     if abort:
         return
@@ -2166,18 +2240,28 @@ def _model_flow_bedrock_api_key(config, region, current_model=""):
     from hermes_cli.config import (
         load_config,
         save_config,
-        get_env_value,
         save_env_value,
     )
     from hermes_cli.models import _PROVIDER_MODELS
 
     mantle_base_url = f"https://bedrock-mantle.{region}.api.aws/v1"
 
-    # Prompt for API key
-    existing_key = get_env_value("AWS_BEARER_TOKEN_BEDROCK") or ""
+    # Check env var and credential pool (keys added via `hermes auth`)
+    from hermes_cli.auth import _resolve_api_key_provider_secret, ProviderConfig
+    bedrock_pconfig = ProviderConfig(
+        id="bedrock",
+        name="Bedrock",
+        auth_type="api_key",
+        api_key_env_vars=("AWS_BEARER_TOKEN_BEDROCK",),
+    )
+    existing_key, existing_source = _resolve_api_key_provider_secret(
+        "bedrock", bedrock_pconfig
+    )
     if existing_key:
         from hermes_cli.env_loader import format_secret_source_suffix
-        source_suffix = format_secret_source_suffix("AWS_BEARER_TOKEN_BEDROCK")
+        source_suffix = format_secret_source_suffix(
+            existing_source or "AWS_BEARER_TOKEN_BEDROCK"
+        )
         print(f"  Bedrock API Key: {existing_key[:12]}... ✓{source_suffix}")
     else:
         print(f"  Endpoint: {mantle_base_url}")
@@ -2642,14 +2726,13 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
     base_url_env = pconfig.base_url_env_var or ""
 
     # Check / prompt for API key
-    existing_key = ""
-    for ev in pconfig.api_key_env_vars:
-        existing_key = get_env_value(ev) or os.getenv(ev, "")
-        if existing_key:
-            break
+    existing_key, existing_source = _existing_api_key_for_model_flow(provider_id, pconfig)
 
     existing_key, abort = _prompt_api_key(
-        pconfig, existing_key, provider_id=provider_id
+        pconfig,
+        existing_key,
+        provider_id=provider_id,
+        existing_source=existing_source,
     )
     if abort:
         return

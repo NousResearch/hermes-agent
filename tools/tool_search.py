@@ -44,6 +44,8 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from tools.registry import tool_error
+
 logger = logging.getLogger("tools.tool_search")
 
 
@@ -93,7 +95,7 @@ class ToolSearchConfig:
     listing: str = "auto"  # "auto" | "on" | "off"
     # Absolute cap on the embedded listing, regardless of context size.
     # Effective budget = min(listing_max_tokens, threshold_pct% of context).
-    listing_max_tokens: int = 20000
+    listing_max_tokens: int = 4000
 
     @classmethod
     def from_raw(cls, raw: Any) -> "ToolSearchConfig":
@@ -141,7 +143,7 @@ class ToolSearchConfig:
             listing = listing_raw
         else:
             listing = "auto"
-        listing_max_tokens = max(200, min(60000, _safe_int(raw.get("listing_max_tokens"), 20000)))
+        listing_max_tokens = max(200, min(60000, _safe_int(raw.get("listing_max_tokens"), 4000)))
 
         return cls(
             enabled=enabled,
@@ -510,7 +512,7 @@ def _listing_group_label(source_name: str) -> str:
 def build_catalog_listing(
     deferrable: List[Dict[str, Any]],
     *,
-    max_tokens: int = 20000,
+    max_tokens: int = 4000,
 ) -> Optional[str]:
     """Render a skills-style manifest of the deferred catalog.
 
@@ -543,7 +545,7 @@ def build_catalog_listing(
 def build_catalog_listing_with_form(
     deferrable: List[Dict[str, Any]],
     *,
-    max_tokens: int = 20000,
+    max_tokens: int = 4000,
 ) -> Tuple[Optional[str], str]:
     """Like :func:`build_catalog_listing` but also reports the form used.
 
@@ -859,6 +861,26 @@ def _format_search_hit(entry: CatalogEntry) -> Dict[str, Any]:
     }
 
 
+def _available_source_summary(catalog: List[CatalogEntry]) -> List[Dict[str, Any]]:
+    """Return a compact, deterministic summary of connected deferred sources.
+
+    Included only when search returns no matches. This gives the model enough
+    evidence to retry with a source/action query instead of treating a lexical
+    miss as proof that the capability is unavailable, without adding anything
+    to the fixed per-turn prompt.
+    """
+    counts: Dict[str, int] = {}
+    for entry in catalog:
+        # _listing_group_label already falls back to "other" for empty
+        # source names, matching the listing path's grouping.
+        label = _listing_group_label(entry.source_name)
+        counts[label] = counts.get(label, 0) + 1
+    return [
+        {"name": name, "tool_count": counts[name]}
+        for name in sorted(counts)
+    ]
+
+
 def dispatch_tool_search(args: Dict[str, Any],
                          *,
                          current_tool_defs: List[Dict[str, Any]],
@@ -868,7 +890,7 @@ def dispatch_tool_search(args: Dict[str, Any],
         config = load_config()
     query = str(args.get("query") or "").strip()
     if not query:
-        return json.dumps({"error": "query is required"}, ensure_ascii=False)
+        return tool_error("query is required")
 
     raw_limit = args.get("limit")
     if raw_limit is None:
@@ -879,11 +901,20 @@ def dispatch_tool_search(args: Dict[str, Any],
     _, deferrable = classify_tools(current_tool_defs)
     catalog = build_catalog(deferrable)
     hits = search_catalog(catalog, query, limit=limit)
-    return json.dumps({
+    result: Dict[str, Any] = {
         "query": query,
         "total_available": len(catalog),
         "matches": [_format_search_hit(h) for h in hits],
-    }, ensure_ascii=False)
+    }
+    if not hits and catalog:
+        result["available_sources"] = _available_source_summary(catalog)
+        result["hint"] = (
+            "No lexical match was found, but the sources above are connected "
+            "and their tools remain available. Retry tool_search with the "
+            "service name plus a concrete action or object before concluding "
+            "the capability is unavailable."
+        )
+    return json.dumps(result, ensure_ascii=False)
 
 
 def dispatch_tool_describe(args: Dict[str, Any],
@@ -892,14 +923,12 @@ def dispatch_tool_describe(args: Dict[str, Any],
     """Execute the ``tool_describe`` bridge tool. Returns a JSON string."""
     name = str(args.get("name") or "").strip()
     if not name:
-        return json.dumps({"error": "name is required"}, ensure_ascii=False)
+        return tool_error("name is required")
     if not is_deferrable_tool_name(name):
-        return json.dumps({
-            "error": (
-                f"'{name}' is not a deferrable tool. If you see it in the tools list "
-                "already, call it directly; otherwise check the spelling against tool_search."
-            ),
-        }, ensure_ascii=False)
+        return tool_error(
+            f"'{name}' is not a deferrable tool. If you see it in the tools list "
+            "already, call it directly; otherwise check the spelling against tool_search."
+        )
     _, deferrable = classify_tools(current_tool_defs)
     for td in deferrable:
         fn = td.get("function") or {}
@@ -909,9 +938,9 @@ def dispatch_tool_describe(args: Dict[str, Any],
                 "description": fn.get("description", ""),
                 "parameters": fn.get("parameters", {}),
             }, ensure_ascii=False)
-    return json.dumps({
-        "error": f"'{name}' is not currently available. Re-run tool_search to refresh.",
-    }, ensure_ascii=False)
+    return tool_error(
+        f"'{name}' is not currently available. Re-run tool_search to refresh."
+    )
 
 
 def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
@@ -932,6 +961,59 @@ def scoped_deferrable_names(tool_defs: List[Dict[str, Any]]) -> frozenset[str]:
         if name and is_deferrable_tool_name(name):
             names.add(name)
     return frozenset(names)
+
+
+def validate_deferred_call_args(name: str, args: Dict[str, Any]) -> Optional[str]:
+    """Probe-validate ``tool_call`` arguments against the deferred tool's schema.
+
+    A deferred tool's parameter schema is invisible to the model until it
+    calls ``tool_describe`` — so models routinely invoke deferred tools
+    "blind" by name alone, omitting required arguments. Dispatching such a
+    call produces an opaque downstream failure (``KeyError: 'document_id'``)
+    that tells the model nothing about what the tool expects, and cheap
+    models loop on it until the iteration budget dies.
+
+    Port of the describe-first probe-validation fix from nearai/ironclaw#5149:
+    when required arguments are missing, return the tool's parameter schema
+    instead of dispatching blind — the model repairs the call in one
+    round-trip. Valid calls (and any call we can't confidently validate)
+    dispatch untouched, so this can never block a legitimate invocation.
+
+    Only *key absence* of schema-``required`` fields counts as invalid.
+    No type checking, no null rejection — nullable/typed edge cases are the
+    tool's own business, and ``coerce_tool_args`` already handles type repair
+    downstream. Returns a JSON error string when invalid, ``None`` when the
+    call should dispatch.
+    """
+    try:
+        from tools.registry import registry as _registry
+        schema = _registry.get_schema(name)
+        if not isinstance(schema, dict):
+            return None
+        fn = schema.get("function") if schema.get("type") == "function" else schema
+        if not isinstance(fn, dict):
+            return None
+        params = fn.get("parameters")
+        if not isinstance(params, dict):
+            return None
+        required = params.get("required")
+        if not isinstance(required, list) or not required:
+            return None
+        missing = [r for r in required if isinstance(r, str) and r not in args]
+        if not missing:
+            return None
+        return tool_error(
+            f"tool_call to '{name}' is missing required argument(s): "
+            f"{', '.join(missing)}. The tool was NOT invoked.",
+            parameters=params,
+            hint=(
+                "Retry tool_call with 'arguments' matching the parameters "
+                "schema above."
+            ),
+        )
+    except Exception:  # pragma: no cover — never block dispatch on validator bugs
+        logger.debug("validate_deferred_call_args failed for %s", name, exc_info=True)
+        return None
 
 
 def resolve_underlying_call(args: Dict[str, Any]) -> Tuple[Optional[str], Dict[str, Any], Optional[str]]:
@@ -992,4 +1074,5 @@ __all__ = [
     "dispatch_tool_describe",
     "resolve_underlying_call",
     "scoped_deferrable_names",
+    "validate_deferred_call_args",
 ]

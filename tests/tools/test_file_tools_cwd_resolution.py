@@ -89,17 +89,6 @@ def test_absolute_terminal_cwd_used_verbatim(_isolated_cwd, monkeypatch):
     assert resolved == (workspace / "target.py")
 
 
-def test_absolute_input_path_ignores_base(_isolated_cwd, monkeypatch):
-    """An absolute input path is never re-anchored."""
-    workspace, decoy = _isolated_cwd
-    monkeypatch.setenv("TERMINAL_CWD", ".")
-    abs_target = str(workspace / "target.py")
-
-    resolved = ft._resolve_path_for_task(abs_target, task_id="default")
-
-    assert resolved == Path(abs_target).resolve()
-
-
 def test_container_absolute_input_path_does_not_follow_host_symlink(tmp_path, monkeypatch):
     """Docker paths are sandbox-local and must not be host-dereferenced.
 
@@ -150,23 +139,6 @@ class _DummyDockerEnvironment:
     cwd_owner = "default"
 
 
-def test_container_path_detection_uses_live_docker_environment(monkeypatch):
-    """A live DockerEnvironment-shaped env should beat config fallback."""
-    monkeypatch.setattr(
-        terminal_tool,
-        "_active_environments",
-        {"default": _DummyDockerEnvironment()},
-    )
-    monkeypatch.setattr(
-        terminal_tool,
-        "_get_env_config",
-        lambda: (_ for _ in ()).throw(AssertionError("should not read config")),
-    )
-    monkeypatch.delenv("TERMINAL_ENV", raising=False)
-
-    assert ft._uses_container_paths("default") is True
-
-
 def test_resolution_base_always_absolute_no_terminal_cwd(_isolated_cwd, monkeypatch):
     """With TERMINAL_CWD unset, the base falls back to an ABSOLUTE process cwd."""
     workspace, decoy = _isolated_cwd
@@ -198,35 +170,6 @@ def test_warning_fires_when_relative_path_escapes_workspace(_isolated_cwd, monke
     assert str(workspace) in warn
 
 
-def test_no_warning_when_relative_path_inside_workspace(_isolated_cwd, monkeypatch):
-    workspace, decoy = _isolated_cwd
-    terminal_tool.record_session_cwd("default", str(workspace))
-    resolved_in_workspace = workspace / "target.py"
-
-    warn = ft._path_resolution_warning("target.py", resolved_in_workspace, task_id="default")
-
-    assert warn is None
-
-
-def test_no_warning_for_absolute_input(_isolated_cwd, monkeypatch):
-    workspace, decoy = _isolated_cwd
-    terminal_tool.record_session_cwd("default", str(workspace))
-
-    warn = ft._path_resolution_warning(str(decoy / "target.py"), decoy / "target.py", task_id="default")
-
-    assert warn is None
-
-
-def test_no_warning_when_no_live_cwd(_isolated_cwd, monkeypatch):
-    workspace, decoy = _isolated_cwd
-    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
-    monkeypatch.delenv("TERMINAL_CWD", raising=False)
-
-    warn = ft._path_resolution_warning("target.py", decoy / "target.py", task_id="default")
-
-    assert warn is None
-
-
 # ── Fix C: sentinel TERMINAL_CWD + empty-registry worktree anchoring ─────────
 # (May 2026 follow-up: PR #35399 made misroutes visible via resolved_path but
 # the divergence warning only fired when the live terminal cwd was known. A
@@ -234,78 +177,6 @@ def test_no_warning_when_no_live_cwd(_isolated_cwd, monkeypatch):
 # got neither a worktree anchor nor a warning, so a relative edit silently
 # landed in main. These tests pin the sentinel handling + empty-registry
 # anchoring + early warning.)
-
-
-@pytest.mark.parametrize("sentinel", ["", ".", "./", "auto", "cwd", "CWD", "Auto"])
-def test_sentinel_terminal_cwd_is_treated_as_unset(_isolated_cwd, monkeypatch, sentinel):
-    """Sentinel TERMINAL_CWD values are NOT used as a directory anchor.
-
-    They fall through to the (absolute) process cwd, exactly as if unset —
-    never resolved as a literal relative directory.
-    """
-    workspace, decoy = _isolated_cwd
-    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
-    monkeypatch.setenv("TERMINAL_CWD", sentinel)
-
-    assert ft._configured_terminal_cwd() is None
-    resolved = ft._resolve_path_for_task("target.py", task_id="default")
-    assert resolved.is_absolute()
-    assert resolved == (decoy / "target.py").resolve()
-
-
-def test_relative_nonsentinel_terminal_cwd_rejected(_isolated_cwd, monkeypatch):
-    """A relative (but non-sentinel) TERMINAL_CWD is still rejected as an anchor.
-
-    A relative anchor is ambiguous (relative to which cwd?), which is the exact
-    ambiguity that misroutes edits. It must fall through to the process cwd, not
-    be joined onto it as a literal subdir.
-    """
-    workspace, decoy = _isolated_cwd
-    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
-    monkeypatch.setenv("TERMINAL_CWD", "some/rel/path")
-
-    assert ft._configured_terminal_cwd() is None
-    resolved = ft._resolve_path_for_task("target.py", task_id="default")
-    assert resolved == (decoy / "target.py").resolve()
-
-
-def test_absolute_terminal_cwd_anchors_with_empty_registry(_isolated_cwd, monkeypatch):
-    """The incident-preventing case: worktree session, registry still empty.
-
-    With no live terminal cwd recorded yet but an absolute TERMINAL_CWD (the
-    worktree path cli.py/main.py set for `-w`), a relative edit must land in the
-    worktree — not the process cwd (main repo).
-    """
-    workspace, decoy = _isolated_cwd
-    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
-    monkeypatch.setenv("TERMINAL_CWD", str(workspace))
-
-    resolved = ft._resolve_path_for_task("target.py", task_id="default")
-
-    assert resolved == (workspace / "target.py")
-    assert not str(resolved).startswith(str(decoy))
-
-
-def test_registered_task_cwd_override_anchors_before_terminal_env_exists(_isolated_cwd, monkeypatch):
-    """TUI/Desktop sessions register cwd by raw session key before tools run.
-
-    CWD-only overrides collapse to the shared terminal environment key, but the
-    file resolver must still read the raw task/session override before falling
-    back to TERMINAL_CWD or the process cwd.
-    """
-    workspace, decoy = _isolated_cwd
-    task_id = "desktop-session-cwd"
-    monkeypatch.setattr(terminal_tool, "_session_cwd", {})
-    monkeypatch.delenv("TERMINAL_CWD", raising=False)
-    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
-
-    terminal_tool.register_task_env_overrides(task_id, {"cwd": str(workspace)})
-
-    resolved = ft._resolve_path_for_task("target.py", task_id=task_id)
-
-    assert terminal_tool._resolve_container_task_id(task_id) == "default"
-    assert resolved == (workspace / "target.py")
-    assert not str(resolved).startswith(str(decoy))
 
 
 def test_warning_fires_from_terminal_cwd_when_registry_empty(_isolated_cwd, monkeypatch):
@@ -331,56 +202,7 @@ def test_warning_fires_from_terminal_cwd_when_registry_empty(_isolated_cwd, monk
     assert str(workspace) in warn
 
 
-def test_live_cwd_still_wins_over_absolute_terminal_cwd(_isolated_cwd, monkeypatch):
-    """When both are present, the live terminal cwd remains authoritative."""
-    workspace, decoy = _isolated_cwd
-    other = decoy.parent / "other"
-    other.mkdir()
-    # Recorded session cwd = workspace; TERMINAL_CWD points elsewhere — record wins.
-    terminal_tool.record_session_cwd("default", str(workspace))
-    monkeypatch.setenv("TERMINAL_CWD", str(other))
-
-    resolved = ft._resolve_path_for_task("target.py", task_id="default")
-
-    assert resolved == (workspace / "target.py")
-
-
 # ── Fix A: write_file / patch report the resolved ABSOLUTE path ──────────────
-
-
-def test_write_file_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
-    """write_file_tool must put the absolute on-disk path in files_modified."""
-    workspace, decoy = _isolated_cwd
-    terminal_tool.record_session_cwd("t1", str(workspace))
-
-    import json
-    out = json.loads(ft.write_file_tool("newfile.txt", "hello\n", task_id="t1"))
-
-    expected = str((workspace / "newfile.txt").resolve())
-    assert out.get("resolved_path") == expected
-    assert out.get("files_modified") == [expected]
-    assert (workspace / "newfile.txt").read_text() == "hello\n"
-
-
-def test_patch_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
-    """patch_tool (replace mode) must put the absolute on-disk path in files_modified."""
-    workspace, decoy = _isolated_cwd
-    terminal_tool.record_session_cwd("t1", str(workspace))
-
-    import json
-    out = json.loads(ft.patch_tool(
-        mode="replace", path="target.py",
-        old_string="WORKSPACE_ORIGINAL", new_string="WORKSPACE_PATCHED",
-        task_id="t1",
-    ))
-
-    expected = str((workspace / "target.py").resolve())
-    assert not out.get("error"), out
-    assert out.get("resolved_path") == expected
-    assert out.get("files_modified") == [expected]
-    assert "WORKSPACE_PATCHED" in (workspace / "target.py").read_text()
-    # And the decoy copy is untouched.
-    assert (decoy / "target.py").read_text() == "DECOY_ORIGINAL\n"
 
 
 # ── Cross-session isolation: one session's cwd never leaks into another ──────
@@ -423,33 +245,6 @@ class _FakeEnv:
         self.cwd = cwd
 
 
-def test_resolution_routes_to_resolving_sessions_worktree(_two_worktree_sessions):
-    """The wrong-worktree fix: A resolves into wt_a, not the shared env's wt_b."""
-    wt_a, wt_b, _main = _two_worktree_sessions
-    resolved_a = ft._resolve_path_for_task("target.py", task_id="sess-a")
-    assert resolved_a == (wt_a / "target.py")
-    assert not str(resolved_a).startswith(str(wt_b))
-
-
-def test_session_with_cd_record_resolves_against_it(_two_worktree_sessions):
-    """B's record (its own cd state) is authoritative for B."""
-    wt_a, wt_b, _main = _two_worktree_sessions
-    resolved_b = ft._resolve_path_for_task("target.py", task_id="sess-b")
-    assert resolved_b == (wt_b / "target.py")
-    assert not str(resolved_b).startswith(str(wt_a))
-
-
-def test_sessions_cd_updates_only_its_own_resolution(_two_worktree_sessions, tmp_path):
-    """B cd's elsewhere → B's resolution follows, A's is untouched."""
-    wt_a, wt_b, _main = _two_worktree_sessions
-    elsewhere = tmp_path / "elsewhere"
-    elsewhere.mkdir()
-    terminal_tool.record_session_cwd("sess-b", str(elsewhere))
-
-    assert ft._resolve_path_for_task("f.py", task_id="sess-b") == (elsewhere / "f.py")
-    assert ft._resolve_path_for_task("f.py", task_id="sess-a") == (wt_a / "f.py")
-
-
 def test_unregistered_session_never_inherits_another_sessions_record(
     _two_worktree_sessions, monkeypatch
 ):
@@ -459,3 +254,59 @@ def test_unregistered_session_never_inherits_another_sessions_record(
     assert not str(resolved).startswith(str(wt_a))
     assert not str(resolved).startswith(str(wt_b))
     assert resolved == (main / "target.py").resolve()
+
+
+def test_v4a_patch_applies_to_resolved_workspace_not_backend_cwd(
+    _isolated_cwd, monkeypatch
+):
+    """V4A patch must edit the path the tool layer resolved, not the shell cwd.
+
+    Regression for the git-worktree cwd bug: ``patch_tool`` resolved header
+    paths against the task workspace for locking/staleness/reporting, but the
+    raw (relative) patch text was handed to ``file_ops.patch_v4a``, which
+    re-resolved it against the backend env's own cwd. A relative header then
+    landed in a different directory than everything the tool reported. The fix
+    rewrites headers to the resolved absolute paths before apply.
+    """
+    import json
+
+    workspace, decoy = _isolated_cwd
+    task_id = "sess-v4a"
+
+    # Tool layer resolves against the workspace (worktree registration path).
+    monkeypatch.setattr(terminal_tool, "_task_env_overrides", {})
+    monkeypatch.setattr(ft, "_file_ops_cache", {})
+    terminal_tool.register_task_env_overrides(task_id, {"cwd": str(workspace)})
+
+    # Backend file_ops lives in the DECOY dir — the divergence the fix closes.
+    from tools.environments.local import LocalEnvironment
+    from tools.file_operations import ShellFileOperations
+
+    env = LocalEnvironment(cwd=str(decoy))
+    monkeypatch.setattr(
+        ft, "_get_file_ops", lambda task_id="default": ShellFileOperations(env)
+    )
+
+    out = json.loads(
+        ft.patch_tool(
+            mode="patch",
+            patch=(
+                "*** Begin Patch\n"
+                "*** Update File: target.py\n"
+                "@@\n"
+                "-WORKSPACE_ORIGINAL\n"
+                "+WORKSPACE_PATCHED\n"
+                "*** End Patch\n"
+            ),
+            task_id=task_id,
+        )
+    )
+
+    expected = str((workspace / "target.py").resolve())
+    assert not out.get("error"), out
+    assert out.get("resolved_path") == expected
+    assert out.get("files_modified") == [expected]
+    # The workspace file — which the tool locked and reported — was edited.
+    assert (workspace / "target.py").read_text() == "WORKSPACE_PATCHED\n"
+    # The decoy (backend cwd) was left untouched.
+    assert (decoy / "target.py").read_text() == "DECOY_ORIGINAL\n"

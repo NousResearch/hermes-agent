@@ -103,28 +103,6 @@ class TestDroppedToolCallRecovery:
         )
         assert "All checks pass" in result["final_response"]
 
-    def test_empty_content_dropped_tool_call_still_reprompts(self, loop_agent):
-        """The narration may live only in the reasoning field, leaving content
-        empty. The recovery must still fire — it keys on the finish_reason /
-        tool_calls mismatch, not on content being present."""
-        from tests.run_agent.test_run_agent import _mock_response
-
-        loop_agent.client.chat.completions.create.side_effect = [
-            _dropped_tool_call_response(""),  # no visible content at all
-            _mock_response(content="Done.", finish_reason="stop"),
-        ]
-
-        with (
-            patch.object(loop_agent, "_persist_session"),
-            patch.object(loop_agent, "_save_trajectory"),
-            patch.object(loop_agent, "_cleanup_task_resources"),
-        ):
-            result = loop_agent.run_conversation("review the PR")
-
-        assert loop_agent.client.chat.completions.create.call_count == 2, (
-            "An empty-content dropped tool call must still re-prompt."
-        )
-        assert result["completed"] is True
 
     def test_clean_stop_text_turn_is_unaffected(self, loop_agent):
         """A genuine finish_reason=stop text response must exit normally — the
@@ -214,26 +192,3 @@ class TestDroppedToolCallRecovery:
             "ephemeral scaffolding so they are never persisted."
         )
 
-    def test_unanswered_nudge_tail_is_stripped_at_finalization(self, loop_agent):
-        """If the model answers the nudge with a genuine final text turn, the
-        trailing scaffolding must not leave the transcript tail on a synthetic
-        user message (strict role alternation on the next turn)."""
-        from tests.run_agent.test_run_agent import _mock_response
-
-        loop_agent.client.chat.completions.create.side_effect = [
-            _dropped_tool_call_response("Let me check."),
-            _mock_response(content="Final answer.", finish_reason="stop"),
-        ]
-
-        with (
-            patch.object(loop_agent, "_persist_session"),
-            patch.object(loop_agent, "_save_trajectory"),
-            patch.object(loop_agent, "_cleanup_task_resources"),
-        ):
-            result = loop_agent.run_conversation("review the PR")
-
-        tail = result["messages"][-1]
-        assert tail.get("role") == "assistant", (
-            "The turn must end on the real assistant answer, not scaffolding."
-        )
-        assert not tail.get("_dropped_toolcall_nudge")

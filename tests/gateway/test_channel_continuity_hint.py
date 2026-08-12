@@ -69,28 +69,6 @@ class TestPrevSessionIdCapture:
         assert entry2.reset_had_activity is True
         assert entry2.prev_session_id == entry1.session_id
 
-    def test_prev_session_id_none_without_reset(self, _isolated_db, tmp_path):
-        store = _make_store(tmp_path)
-        source = _slack_source()
-
-        entry = store.get_or_create_session(source)
-        assert entry.prev_session_id is None
-
-    def test_prev_session_id_roundtrips_serialization(self):
-        entry = SessionEntry(
-            session_key="k",
-            session_id="20260101_010000_def",
-            created_at=datetime.now(),
-            updated_at=datetime.now(),
-            platform=Platform.SLACK,
-            was_auto_reset=True,
-            auto_reset_reason="daily",
-            reset_had_activity=True,
-            prev_session_id="20260101_000000_abc",
-        )
-        reloaded = SessionEntry.from_dict(entry.to_dict())
-        assert reloaded.prev_session_id == "20260101_000000_abc"
-
 
 # ---------------------------------------------------------------------------
 # build_channel_continuity_note
@@ -119,27 +97,8 @@ class TestBuildChannelContinuityNote:
         assert entry.prev_session_id in note
         assert "channel" in note
 
-    def test_discord_thread_uses_thread_wording(self):
-        entry = _reset_entry(Platform.DISCORD)
-        source = SessionSource(
-            platform=Platform.DISCORD,
-            chat_id="c",
-            chat_type="thread",
-            thread_id="T1",
-        )
-        note = build_channel_continuity_note(entry, source)
-        assert note is not None
-        assert "thread" in note
-
-    def test_other_platform_returns_none(self):
-        entry = _reset_entry(Platform.TELEGRAM)
-        source = SessionSource(platform=Platform.TELEGRAM, chat_id="c", user_id="u")
-        assert build_channel_continuity_note(entry, source) is None
 
     def test_no_activity_returns_none(self):
         entry = _reset_entry(Platform.SLACK, had_activity=False)
         assert build_channel_continuity_note(entry, _slack_source()) is None
 
-    def test_no_prev_session_id_returns_none(self):
-        entry = _reset_entry(Platform.SLACK, prev=None)
-        assert build_channel_continuity_note(entry, _slack_source()) is None

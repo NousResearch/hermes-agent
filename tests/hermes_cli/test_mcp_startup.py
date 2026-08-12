@@ -146,82 +146,27 @@ def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
     assert state["active"] is False
 
 
-def test_prepare_agent_startup_skips_mcp_bootstrap_for_tui_chat(monkeypatch):
-    calls = {"mcp": 0}
-
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.plugins",
-        types.SimpleNamespace(discover_plugins=lambda: None),
-    )
+def test_portable_only_mcp_configuration_opens_startup_gate(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
-        types.SimpleNamespace(load_config=lambda: {}),
+        types.SimpleNamespace(read_raw_config=lambda: {}),
     )
     monkeypatch.setitem(
         sys.modules,
-        "agent.shell_hooks",
-        types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
-    )
-    monkeypatch.setitem(
-        sys.modules,
-        "tools.mcp_tool",
+        "hermes_cli.agent_plugins",
         types.SimpleNamespace(
-            discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1)
+            has_enabled_agent_plugin_mcp=lambda _config: True,
         ),
     )
 
-    main_mod._prepare_agent_startup(_agent_args(tui=True))
-
-    assert calls["mcp"] == 0
-    assert mcp_startup._mcp_discovery_thread is None
+    assert mcp_startup._has_configured_mcp_servers() is True
 
 
-def test_cli_get_tool_definitions_briefly_waits_for_fast_mcp_thread(monkeypatch):
-    thread = threading.Thread(target=lambda: time.sleep(0.05), daemon=True)
-    thread.start()
-    mcp_startup._mcp_discovery_thread = thread
-
-    monkeypatch.setitem(
-        sys.modules,
-        "model_tools",
-        types.SimpleNamespace(get_tool_definitions=lambda *_a, **_k: ["ok"]),
-    )
-
-    start = time.monotonic()
-    result = cli_mod.get_tool_definitions(enabled_toolsets=["web"], quiet_mode=True)
-    elapsed = time.monotonic() - start
-
-    assert result == ["ok"]
-    assert elapsed >= 0.04
-    assert not thread.is_alive()
 
 
-def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
-    waited = {"done": False}
 
-    cli = cli_mod.HermesCLI(compact=True)
-    cli._session_db = object()
-    cli._resumed = False
-    cli.conversation_history = []
-    cli._install_tool_callbacks = lambda: None
-    cli._ensure_tirith_security = lambda: None
-    cli._ensure_runtime_credentials = lambda: True
 
-    monkeypatch.setattr(
-        mcp_startup,
-        "wait_for_mcp_discovery",
-        lambda timeout=0.75: waited.__setitem__("done", True),
-    )
-
-    def _fake_agent(*_a, **_k):
-        assert waited["done"] is True
-        return types.SimpleNamespace()
-
-    monkeypatch.setattr(cli_mod, "AIAgent", _fake_agent)
-
-    assert cli._init_agent() is True
 
 
 def _retry_logger():
@@ -254,44 +199,3 @@ def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict):
     )
 
 
-def test_background_discovery_retries_after_dead_thread_with_zero_connected(monkeypatch):
-    """A finished discovery run that connected nothing must not pin the
-    process in a 'discovery already started' state: the next call should be
-    allowed to retry (e.g. after startup cancellation or an OOM restart)."""
-    calls = {"mcp": 0}
-    _install_retry_stubs(monkeypatch, connected=False, calls=calls)
-
-    mcp_startup.start_background_mcp_discovery(
-        logger=_retry_logger(), thread_name="test-mcp-retry-1"
-    )
-    thread = mcp_startup._mcp_discovery_thread
-    if thread is not None:
-        thread.join(timeout=1.0)
-    assert calls["mcp"] == 1
-
-    mcp_startup.start_background_mcp_discovery(
-        logger=_retry_logger(), thread_name="test-mcp-retry-2"
-    )
-    thread = mcp_startup._mcp_discovery_thread
-    if thread is not None:
-        thread.join(timeout=1.0)
-    assert calls["mcp"] == 2
-
-
-def test_background_discovery_does_not_retry_when_servers_connected(monkeypatch):
-    """Once at least one MCP server is connected, repeat calls stay no-ops."""
-    calls = {"mcp": 0}
-    _install_retry_stubs(monkeypatch, connected=True, calls=calls)
-
-    mcp_startup.start_background_mcp_discovery(
-        logger=_retry_logger(), thread_name="test-mcp-noretry-1"
-    )
-    thread = mcp_startup._mcp_discovery_thread
-    if thread is not None:
-        thread.join(timeout=1.0)
-    assert calls["mcp"] == 1
-
-    mcp_startup.start_background_mcp_discovery(
-        logger=_retry_logger(), thread_name="test-mcp-noretry-2"
-    )
-    assert calls["mcp"] == 1

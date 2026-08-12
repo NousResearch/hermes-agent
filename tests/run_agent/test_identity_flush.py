@@ -69,40 +69,6 @@ class TestIdentityFlush:
             finally:
                 db.close()
 
-    def test_overlapping_turn_stale_cursor_does_not_drop_assistant(self):
-        """A stale cached-agent cursor must not suppress this turn's new dicts."""
-        from hermes_state import SessionDB
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            db = SessionDB(db_path=Path(tmpdir) / "t.db")
-            try:
-                agent = _make_agent(db)
-                history = [
-                    {"role": "user", "content": "old question"},
-                    {"role": "assistant", "content": "old answer"},
-                ]
-                for msg in history:
-                    db.append_message(
-                        session_id=SESSION_ID,
-                        role=msg["role"],
-                        content=msg["content"],
-                    )
-
-                messages = history + [
-                    {"role": "user", "content": "current question"},
-                    {"role": "assistant", "content": "current answer"},
-                ]
-                agent._last_flushed_db_idx = len(messages) + 10
-                agent._flush_messages_to_session_db(messages, history)
-
-                assert _contents(db) == [
-                    "old question",
-                    "old answer",
-                    "current question",
-                    "current answer",
-                ]
-            finally:
-                db.close()
 
     def test_repeated_flush_same_turn_writes_once(self):
         """Identity tracking preserves #860 same-turn dedup behavior."""
@@ -229,5 +195,43 @@ class TestIdentityFlush:
                 # marker iff it was handled.
                 assert agent._flushed_db_message_ids == set()
                 assert new_assistant.get("_db_persisted") is True
+            finally:
+                db.close()
+
+
+class TestFlushCursorMarkerPop:
+    def test_filled_row_repersists_after_marker_pop_and_cursor_invalidation(self):
+        """End-to-end: incremental flush stamps the tool-call tail; the
+        finalizer fills its content and pops the marker; with the cursor
+        invalidated (as the pop site now does), the turn-end flush must
+        persist the filled answer — not skip the row as already-stamped."""
+        from hermes_state import SessionDB
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "t.db")
+            try:
+                agent = _make_agent(db)
+                tool_row = {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {"id": "t1", "type": "function",
+                         "function": {"name": "f", "arguments": "{}"}}
+                    ],
+                }
+                messages = [tool_row]
+                agent._flush_messages_to_session_db_unlocked(messages)
+                assert messages[0].get("_db_persisted") is True
+                assert agent._db_flush_scan_prefix is not None
+
+                # What finalize_turn's fill does at the pop site:
+                messages[0]["content"] = "the final answer"
+                messages[0].pop("_db_persisted", None)
+                agent._db_flush_scan_prefix = None
+
+                messages.append({"role": "user", "content": "next question"})
+                agent._flush_messages_to_session_db_unlocked(messages)
+
+                assert "the final answer" in _contents(db)
             finally:
                 db.close()

@@ -45,11 +45,18 @@ const projectActivityTime = (project: SidebarProjectTree): number =>
 export const latestProjectSessions = (project: SidebarProjectTree, limit: number): SessionInfo[] =>
   [...projectSessions(project)].sort((a, b) => sessionRecency(b) - sessionRecency(a)).slice(0, limit)
 
+// Home is a fixture, not a project: it always leads the overview, above the
+// active project and outside any hand-picked order.
+const homeFirst = (projects: SidebarProjectTree[]): SidebarProjectTree[] =>
+  projects[0]?.isNoProject || !projects.some(project => project.isNoProject)
+    ? projects
+    : [...projects.filter(project => project.isNoProject), ...projects.filter(project => !project.isNoProject)]
+
 export function sortProjectsForOverview(
   projects: SidebarProjectTree[],
   activeProjectId: null | string
 ): SidebarProjectTree[] {
-  return [...projects].sort((a, b) => {
+  const sorted = [...projects].sort((a, b) => {
     const aActive = Boolean(activeProjectId && a.id === activeProjectId && !a.isAuto)
     const bActive = Boolean(activeProjectId && b.id === activeProjectId && !b.isAuto)
 
@@ -73,6 +80,8 @@ export function sortProjectsForOverview(
       a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
     )
   })
+
+  return homeFirst(sorted)
 }
 
 // Layer the user's manual drag-order over the deterministic sort.
@@ -98,14 +107,14 @@ export function orderProjectsByIds(projects: SidebarProjectTree[], orderIds: str
   const fresh = projects.filter(project => !seen.has(project.id))
 
   if (!fresh.length) {
-    return ordered
+    return homeFirst(ordered)
   }
 
-  return [
+  return homeFirst([
     ...fresh.filter(project => project.sessionCount > 0),
     ...ordered,
     ...fresh.filter(project => project.sessionCount <= 0)
-  ]
+  ])
 }
 
 // Project drill-in lanes are git-driven: source them from `git worktree list` so

@@ -34,6 +34,7 @@ so plugin-defined tools appear alongside the built-in tools.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import importlib.metadata
 import importlib.util
 import inspect
@@ -44,7 +45,7 @@ import threading
 import types
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set, Union
+from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Union
 
 from hermes_constants import get_hermes_home
 from utils import env_var_enabled, fast_safe_load
@@ -161,6 +162,9 @@ VALID_HOOKS: Set[str] = {
     "on_session_end",
     "on_session_finalize",
     "on_session_reset",
+    # Successful skill lifecycle facts. The local skill name is available to
+    # plugins, while built-in shared metrics emit only bounded classifications.
+    "on_skill_lifecycle",
     "subagent_start",
     "subagent_stop",
     # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
@@ -277,6 +281,29 @@ def _get_enabled_plugins() -> Optional[set]:
 _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
 
 
+def _portable_skill_namespace(key: str) -> str:
+    """Return a readable, collision-resistant namespace for a portable plugin."""
+
+    slug = "".join(
+        ch if ch.isascii() and (ch.isalnum() or ch in "_-") else "-"
+        for ch in key.lower()
+    )
+    slug = slug.strip("-_") or "plugin"
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
+    return f"agent-plugin-{slug}-{digest}"
+
+
+def _display_author(value: object) -> str:
+    """Normalize a manifest author value for the string PluginManifest field."""
+    if isinstance(value, Mapping):
+        return ", ".join(
+            str(value[field])
+            for field in ("name", "email", "url")
+            if value.get(field)
+        )
+    return "" if value is None else str(value)
+
+
 @dataclass
 class PluginManifest:
     """Parsed representation of a plugin.yaml manifest."""
@@ -312,6 +339,8 @@ class PluginManifest:
     # category plugin at ``plugins/image_gen/openai/`` the key is
     # ``image_gen/openai``. When empty, falls back to ``name``.
     key: str = ""
+    portable: bool = False
+    skill_namespace: str = ""
 
 
 @dataclass
@@ -344,6 +373,7 @@ class PluginContext:
         self._manager = manager
         # Lazy-built host-owned LLM facade — see ctx.llm property below.
         self._llm: Any = None
+        self._subagent_lifecycle: Any = None
 
     # -- host-owned LLM access ----------------------------------------------
 
@@ -363,6 +393,24 @@ class PluginContext:
             plugin_id = self.manifest.key or self.manifest.name
             self._llm = PluginLlm(plugin_id=plugin_id)
         return self._llm
+
+    @property
+    def subagent_lifecycle(self) -> Any:
+        """Return the public, plugin-safe subagent lifecycle service.
+
+        The service only resolves the active host-owned parent agent when a
+        child is launched. Plugins receive serializable handles and immutable
+        snapshots; they never receive a live agent or a private registry.
+        """
+        if self._subagent_lifecycle is None:
+            from agent.subagent_lifecycle import (
+                SubagentLifecycleService,
+                get_active_subagent_parent,
+            )
+            self._subagent_lifecycle = SubagentLifecycleService(
+                get_active_subagent_parent
+            )
+        return self._subagent_lifecycle
 
     # -- profile awareness --------------------------------------------------
 
@@ -942,12 +990,20 @@ class PluginContext:
         """Register a gateway platform adapter.
 
         The adapter_factory receives a ``PlatformConfig`` and returns a
-        ``BasePlatformAdapter`` subclass instance.  The gateway calls
-        ``check_fn()`` before instantiation to verify dependencies.
+        ``BasePlatformAdapter`` subclass instance.
+
+        ``check_fn`` is a PASSIVE dependency probe — "are deps importable
+        right now?".  It must never install anything: status displays and
+        config loading call it freely.  If your platform's SDK is
+        lazy-installable, pass the ACTIVE installer separately as
+        ``ensure_deps_fn`` (forwarded via ``entry_kwargs``); the gateway
+        calls it from ``create_adapter()`` when ``check_fn`` is False,
+        right before connecting the platform.
 
         Extra keyword arguments are forwarded to ``PlatformEntry`` (e.g.
-        ``setup_fn``, ``emoji``, ``allowed_users_env``, ``platform_hint``).
-        Unknown keys raise TypeError from the dataclass constructor.
+        ``setup_fn``, ``emoji``, ``allowed_users_env``, ``platform_hint``,
+        ``ensure_deps_fn``).  Unknown keys raise TypeError from the
+        dataclass constructor.
 
         Example::
 
@@ -1200,6 +1256,7 @@ class PluginContext:
         name: str,
         path: Path,
         description: str = "",
+        frontmatter: Optional[Mapping[str, Any]] = None,
     ) -> None:
         """Register a read-only skill provided by this plugin.
 
@@ -1228,12 +1285,16 @@ class PluginContext:
         if not path.exists():
             raise FileNotFoundError(f"SKILL.md not found at {path}")
 
-        qualified = f"{self.manifest.name}:{name}"
+        namespace = self.manifest.skill_namespace or self.manifest.name
+        qualified = f"{namespace}:{name}"
+        if self.manifest.portable and qualified in self._manager._plugin_skills:
+            raise ValueError(f"Plugin skill '{qualified}' is already registered")
         self._manager._plugin_skills[qualified] = {
             "path": path,
-            "plugin": self.manifest.name,
+            "plugin": namespace,
             "bare_name": name,
             "description": description,
+            "frontmatter": dict(frontmatter or {}),
         }
         logger.debug(
             "Plugin %s registered skill: %s",
@@ -1261,6 +1322,7 @@ class PluginManager:
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
+        self._portable_mcp_servers: Dict[str, Dict[str, Any]] = {}
         # Plugin-registered auxiliary tasks: key → {key, display_name,
         # description, defaults, plugin}. See PluginContext.register_auxiliary_task.
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
@@ -1298,6 +1360,7 @@ class PluginManager:
             self._cli_commands.clear()
             self._plugin_commands.clear()
             self._plugin_skills.clear()
+            self._portable_mcp_servers.clear()
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
             self._context_engine = None
@@ -1316,56 +1379,11 @@ class PluginManager:
 
     def _discover_and_load_inner(self) -> None:
         """The actual discovery sweep — see :meth:`discover_and_load`."""
-        manifests: List[PluginManifest] = []
+        manifests: List[PluginManifest] = self._collect_directory_manifests()
 
-        # 1. Bundled plugins (<repo>/plugins/<name>/)
-        #
-        # Repo-shipped plugins live next to hermes_cli/. Two layouts are
-        # supported (see ``_scan_directory`` for details):
-        #
-        #   - flat: ``plugins/disk-cleanup/plugin.yaml`` (standalone)
-        #   - category: ``plugins/image_gen/openai/plugin.yaml`` (backend)
-        #
-        # ``memory/``, ``context_engine/``, and ``model-providers/`` are
-        # skipped at the top level — they have their own discovery systems
-        # (plugins/memory/__init__.py, providers/__init__.py). ``platforms/``
-        # is a category holding platform adapters (scanned one level deeper
-        # below).
-        repo_plugins = get_bundled_plugins_dir()
-        logger.debug("Scanning bundled plugins: %s", repo_plugins)
-        bundled = self._scan_directory(
-            repo_plugins,
-            source="bundled",
-            skip_names={"memory", "context_engine", "platforms", "model-providers"},
-        )
-        logger.debug("  bundled (top-level): %d manifest(s)", len(bundled))
-        manifests.extend(bundled)
-        bundled_platforms = self._scan_directory(
-            repo_plugins / "platforms", source="bundled"
-        )
-        logger.debug("  bundled/platforms: %d manifest(s)", len(bundled_platforms))
-        manifests.extend(bundled_platforms)
-
-        # 2. User plugins (~/.hermes/plugins/)
-        user_dir = get_hermes_home() / "plugins"
-        logger.debug("Scanning user plugins: %s", user_dir)
-        user_manifests = self._scan_directory(user_dir, source="user")
-        logger.debug("  user: %d manifest(s)", len(user_manifests))
-        manifests.extend(user_manifests)
-
-        # 3. Project plugins (./.hermes/plugins/)
-        if _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
-            project_dir = Path.cwd() / ".hermes" / "plugins"
-            logger.debug("Scanning project plugins: %s", project_dir)
-            project_manifests = self._scan_directory(project_dir, source="project")
-            logger.debug("  project: %d manifest(s)", len(project_manifests))
-            manifests.extend(project_manifests)
-        else:
-            logger.debug(
-                "Project plugins disabled (set HERMES_ENABLE_PROJECT_PLUGINS=1 to enable)"
-            )
-
-        # 4. Pip / entry-point plugins
+        # Directory plugins are collected above. Pip / entry-point plugins
+        # are intentionally separate: portable packages are directory-only
+        # and the startup MCP probe must not import or register entry points.
         ep_manifests = self._scan_entry_points()
         logger.debug("  entrypoints: %d manifest(s)", len(ep_manifests))
         manifests.extend(ep_manifests)
@@ -1475,6 +1493,113 @@ class PluginManager:
                 sum(1 for p in self._plugins.values() if p.enabled),
             )
 
+    def _collect_directory_manifests(self) -> List[PluginManifest]:
+        """Collect directory manifests in the same order as full discovery.
+
+        This method only reads manifests. It does not load native plugin
+        modules, register deferred platforms, or otherwise mutate manager
+        registries. Keeping the source ordering and scanner calls here lets
+        startup probes share the exact precedence and containment rules used
+        by :meth:`_discover_and_load_inner`.
+        """
+        manifests: List[PluginManifest] = []
+
+        # 1. Bundled plugins (<repo>/plugins/<name>/). The excluded top-level
+        # categories have their own discovery systems; bundled platforms are
+        # scanned explicitly one level below.
+        repo_plugins = get_bundled_plugins_dir()
+        logger.debug("Scanning bundled plugins: %s", repo_plugins)
+        bundled = self._scan_directory(
+            repo_plugins,
+            source="bundled",
+            skip_names={"memory", "context_engine", "platforms", "model-providers"},
+        )
+        logger.debug("  bundled (top-level): %d manifest(s)", len(bundled))
+        manifests.extend(bundled)
+        bundled_platforms = self._scan_directory(
+            repo_plugins / "platforms", source="bundled"
+        )
+        logger.debug("  bundled/platforms: %d manifest(s)", len(bundled_platforms))
+        manifests.extend(bundled_platforms)
+
+        # 2. User plugins (~/.hermes/plugins/)
+        user_dir = get_hermes_home() / "plugins"
+        logger.debug("Scanning user plugins: %s", user_dir)
+        user_manifests = self._scan_directory(user_dir, source="user")
+        logger.debug("  user: %d manifest(s)", len(user_manifests))
+        manifests.extend(user_manifests)
+
+        # 3. Project plugins (./.hermes/plugins/), only when explicitly opted
+        # in. This must match the full discovery gate exactly.
+        if _env_enabled("HERMES_ENABLE_PROJECT_PLUGINS"):
+            project_dir = Path.cwd() / ".hermes" / "plugins"
+            logger.debug("Scanning project plugins: %s", project_dir)
+            project_manifests = self._scan_directory(project_dir, source="project")
+            logger.debug("  project: %d manifest(s)", len(project_manifests))
+            manifests.extend(project_manifests)
+        else:
+            logger.debug(
+                "Project plugins disabled (set HERMES_ENABLE_PROJECT_PLUGINS=1 to enable)"
+            )
+
+        return manifests
+
+    def has_enabled_portable_mcp(self, raw_config: Mapping[str, Any]) -> bool:
+        """Probe enabled portable MCP packages without loading plugins.
+
+        The directory manifest collection is shared with full discovery, so
+        native ``plugin.yaml`` precedence, source ordering, depth limits, and
+        project-plugin gating cannot diverge between startup and runtime.
+        """
+        if _env_enabled("HERMES_SAFE_MODE"):
+            return False
+
+        plugins_config = raw_config.get("plugins")
+        if not isinstance(plugins_config, dict):
+            return False
+        enabled_value = plugins_config.get("enabled")
+        if not isinstance(enabled_value, list):
+            return False
+        enabled = {value for value in enabled_value if isinstance(value, str)}
+        disabled_value = plugins_config.get("disabled", [])
+        disabled = (
+            {value for value in disabled_value if isinstance(value, str)}
+            if isinstance(disabled_value, list)
+            else set()
+        )
+        if not enabled:
+            return False
+
+        winners: Dict[str, PluginManifest] = {}
+        for manifest in self._collect_directory_manifests():
+            winners[manifest.key or manifest.name] = manifest
+
+        for manifest in winners.values():
+            if not manifest.portable:
+                continue
+            lookup_key = manifest.key or manifest.name
+            if lookup_key in disabled or manifest.name in disabled:
+                continue
+            if lookup_key not in enabled and manifest.name not in enabled:
+                continue
+            try:
+                from hermes_cli.agent_plugins import _discover_mcp
+
+                if _discover_mcp(
+                    Path(manifest.path),
+                    get_hermes_home()
+                    / "plugin-data"
+                    / (manifest.skill_namespace or lookup_key),
+                    [],
+                    create_data=False,
+                ):
+                    return True
+            except (OSError, RuntimeError, ValueError):
+                # Full discovery will report component diagnostics. Startup
+                # probing should fail closed for an unreadable package.
+                continue
+        return False
+
     # -----------------------------------------------------------------------
     # Directory scanning
     # -----------------------------------------------------------------------
@@ -1538,6 +1663,36 @@ class PluginManager:
                 )
                 if manifest is not None:
                     manifests.append(manifest)
+                continue
+
+            portable_file = child / "plugin.json"
+            if portable_file.exists() or portable_file.is_symlink():
+                try:
+                    from hermes_cli.agent_plugins import read_agent_plugin_manifest
+
+                    data, diagnostics = read_agent_plugin_manifest(child)
+                    for diagnostic in diagnostics:
+                        logger.warning(
+                            "Agent Plugin '%s': %s",
+                            child,
+                            diagnostic.message,
+                        )
+                    key = f"{prefix}/{child.name}" if prefix else data["name"]
+                    manifests.append(
+                        PluginManifest(
+                            name=data["name"],
+                            version=data.get("version", ""),
+                            description=data.get("description", ""),
+                            author=_display_author(data.get("author", "")),
+                            source=source,
+                            path=str(child),
+                            key=key,
+                            portable=True,
+                            skill_namespace=_portable_skill_namespace(key),
+                        )
+                    )
+                except Exception as exc:
+                    logger.warning("Failed to parse %s: %s", portable_file, exc)
                 continue
 
             # No manifest at this level. If we're still within the depth
@@ -1636,7 +1791,7 @@ class PluginManager:
                 name=name,
                 version=str(data.get("version", "")),
                 description=data.get("description", ""),
-                author=data.get("author", ""),
+                author=_display_author(data.get("author", "")),
                 requires_env=data.get("requires_env", []),
                 provides_tools=data.get("provides_tools", []),
                 provides_hooks=data.get("provides_hooks", []),
@@ -1753,6 +1908,10 @@ class PluginManager:
             manifest.key or manifest.name, manifest.source, manifest.kind, manifest.path,
         )
 
+        if manifest.portable:
+            self._load_portable_plugin(manifest, loaded)
+            return
+
         from tools.registry import registry as _registry
         _plugin_id = manifest.key or manifest.name
         _slug = _plugin_id.replace("/", "__").replace("-", "_")
@@ -1828,6 +1987,58 @@ class PluginManager:
                 manifest.name, exc, exc_info=_PLUGINS_DEBUG,
             )
         self._plugins[manifest.key or manifest.name] = loaded
+
+    def _load_portable_plugin(
+        self, manifest: PluginManifest, loaded: LoadedPlugin
+    ) -> None:
+        """Load validated portable components without importing Python code."""
+
+        lookup_key = manifest.key or manifest.name
+        try:
+            from hermes_cli.agent_plugins import load_agent_plugin
+
+            package = load_agent_plugin(
+                Path(manifest.path),
+                get_hermes_home() / "plugin-data" / manifest.skill_namespace,
+            )
+            ctx = PluginContext(manifest, self)
+            for diagnostic in package.diagnostics:
+                logger.warning(
+                    "Agent Plugin '%s' [%s]: %s",
+                    lookup_key,
+                    diagnostic.scope,
+                    diagnostic.message,
+                )
+            for skill in package.skills:
+                try:
+                    ctx.register_skill(
+                        skill.name,
+                        skill.skill_md,
+                        skill.description,
+                        skill.frontmatter,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Agent Plugin '%s' skill '%s' skipped: %s",
+                        lookup_key,
+                        skill.name,
+                        exc,
+                    )
+            for server_name, config in package.mcp_servers.items():
+                internal_name = f"{manifest.skill_namespace}__{server_name}"
+                if internal_name in self._portable_mcp_servers:
+                    logger.warning(
+                        "Agent Plugin '%s' MCP server collision: %s",
+                        lookup_key,
+                        internal_name,
+                    )
+                    continue
+                self._portable_mcp_servers[internal_name] = dict(config)
+            loaded.enabled = True
+        except Exception as exc:
+            loaded.error = str(exc)
+            logger.warning("Failed to load Agent Plugin '%s': %s", lookup_key, exc)
+        self._plugins[lookup_key] = loaded
 
     def _load_directory_module(self, manifest: PluginManifest) -> types.ModuleType:
         """Import a directory-based plugin as ``hermes_plugins.<slug>``.
@@ -2017,6 +2228,30 @@ class PluginManager:
             if qn.startswith(prefix)
         )
 
+    def list_plugin_skill_metadata(self) -> List[Dict[str, Any]]:
+        """Return progressive-disclosure metadata for registered plugin skills."""
+
+        return [
+            {
+                "name": qualified,
+                "description": str(entry.get("description", "")),
+                "category": "plugin",
+                "frontmatter": dict(entry.get("frontmatter", {})),
+            }
+            for qualified, entry in sorted(self._plugin_skills.items())
+        ]
+
+    def get_portable_mcp_servers(self) -> Dict[str, Dict[str, Any]]:
+        """Return a defensive copy of enabled portable MCP server configs."""
+
+        return {
+            name: dict(config)
+            for name, config in self._portable_mcp_servers.items()
+        }
+
+    def has_portable_mcp_servers(self) -> bool:
+        return bool(self._portable_mcp_servers)
+
     def remove_plugin_skill(self, qualified_name: str) -> None:
         """Remove a stale registry entry (silently ignores missing keys)."""
         self._plugin_skills.pop(qualified_name, None)
@@ -2037,17 +2272,160 @@ def get_plugin_manager() -> PluginManager:
     return _plugin_manager
 
 
+def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
+    """Return whether config enables a portable package with MCP servers.
+
+    A fresh manager performs manifest-only scanning, so this startup gate does
+    not mutate the process-wide plugin registry or import native plugin code.
+    """
+    return PluginManager().has_enabled_portable_mcp(raw_config)
+
+
 def discover_plugins(force: bool = False) -> None:
     """Discover and load all plugins.
 
     Default behavior is idempotent. Pass ``force=True`` to rescan plugin
     manifests and reload state in the current process.
+
+    If a background discovery started via
+    :func:`start_background_plugin_discovery` is still running, this waits
+    for it instead of racing a second scan.
     """
+    _join_background_discovery()
     get_plugin_manager().discover_and_load(force=force)
 
 
+_background_discovery_thread: Optional[threading.Thread] = None
+_background_discovery_lock = threading.Lock()
+
+
+def start_background_plugin_discovery() -> None:
+    """Run plugin discovery in a daemon thread (startup-latency overlap).
+
+    Discovery costs ~150ms of manifest scanning + module imports on the CLI
+    startup path. Interactive chat doesn't need plugins until the first
+    agent turn, so callers on that path can start discovery here and let it
+    overlap the CPU/subprocess-heavy rest of startup. Every synchronous
+    consumer goes through :func:`discover_plugins`, which joins this thread
+    first — so no caller can observe a half-loaded registry. Idempotent;
+    no-op when discovery already ran or is already in flight.
+    """
+    global _background_discovery_thread
+    manager = get_plugin_manager()
+    if manager._discovered:
+        return
+    with _background_discovery_lock:
+        if _background_discovery_thread is not None and _background_discovery_thread.is_alive():
+            return
+
+        def _run() -> None:
+            try:
+                manager.discover_and_load()
+                _persist_plugin_toolset_keys()
+            except Exception:
+                logger.warning("background plugin discovery failed", exc_info=True)
+
+        _background_discovery_thread = threading.Thread(
+            target=_run, name="plugin-discovery", daemon=True
+        )
+        _background_discovery_thread.start()
+
+
+def _join_background_discovery(timeout: float = 30.0) -> None:
+    """Wait for an in-flight background discovery (no-op from its own thread)."""
+    t = _background_discovery_thread
+    if t is None or not t.is_alive() or t is threading.current_thread():
+        return
+    t.join(timeout=timeout)
+
+
+def _plugin_toolset_keys_cache_path():
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "cache" / "plugin_toolset_keys.json"
+
+
+def _persist_plugin_toolset_keys() -> None:
+    """Persist discovered plugin toolset keys + portable MCP names (best-effort)."""
+    try:
+        import json as _json
+        import os as _os
+        import tempfile as _tempfile
+        keys = sorted({ts_key for ts_key, _, _ in get_plugin_toolsets()})
+        try:
+            portable = sorted(get_plugin_manager().get_portable_mcp_servers())
+        except Exception:
+            portable = []
+        path = _plugin_toolset_keys_cache_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = _tempfile.mkstemp(dir=str(path.parent), prefix=".pt_keys.")
+        with _os.fdopen(fd, "w", encoding="utf-8") as fh:
+            _json.dump({"toolset_keys": keys, "portable_mcp": portable}, fh)
+        _os.replace(tmp, path)
+    except Exception:
+        logger.debug("plugin toolset key persist failed", exc_info=True)
+
+
+def _read_plugin_keys_cache() -> Optional[dict]:
+    try:
+        import json as _json
+        blob = _json.loads(
+            _plugin_toolset_keys_cache_path().read_text(encoding="utf-8")
+        )
+        if isinstance(blob, dict):
+            return blob
+    except Exception:
+        pass
+    return None
+
+
+def get_plugin_toolset_keys_nowait() -> "set[str]":
+    """Plugin toolset keys without blocking on in-flight discovery.
+
+    When discovery already completed in this process, reads the live
+    registry. While a background discovery is still running, falls back to
+    the key set persisted by the previous run — callers on the startup path
+    (platform toolset resolution) only use these keys to EXCLUDE plugin
+    toolsets from composite expansion, so a stale set from the last launch
+    is harmless and self-heals as soon as discovery lands. When neither is
+    available, blocks via discover_plugins() (correctness first).
+    """
+    manager = get_plugin_manager()
+    t = _background_discovery_thread
+    if manager._discovered and (t is None or not t.is_alive()):
+        return {ts_key for ts_key, _, _ in get_plugin_toolsets()}
+    if t is not None and t.is_alive():
+        blob = _read_plugin_keys_cache()
+        if blob is not None:
+            keys = blob.get("toolset_keys")
+            if isinstance(keys, list) and all(isinstance(k, str) for k in keys):
+                return set(keys)
+    discover_plugins()
+    return {ts_key for ts_key, _, _ in get_plugin_toolsets()}
+
+
+def get_portable_mcp_server_names_nowait() -> "set[str]":
+    """Portable MCP server names without blocking on in-flight discovery.
+
+    Same contract as :func:`get_plugin_toolset_keys_nowait`: live registry
+    when discovery finished, last launch's persisted set while a background
+    discovery is running, blocking discovery otherwise.
+    """
+    manager = get_plugin_manager()
+    t = _background_discovery_thread
+    if manager._discovered and (t is None or not t.is_alive()):
+        return set(manager.get_portable_mcp_servers())
+    if t is not None and t.is_alive():
+        blob = _read_plugin_keys_cache()
+        if blob is not None:
+            names = blob.get("portable_mcp")
+            if isinstance(names, list) and all(isinstance(n, str) for n in names):
+                return set(names)
+    discover_plugins()
+    return set(manager.get_portable_mcp_servers())
+
+
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
-    """Invoke a lifecycle hook on all loaded plugins.
+    """Invoke a lifecycle hook on loaded plugins.
 
     Returns a list of non-``None`` return values from plugin callbacks.
     """
@@ -2072,7 +2450,7 @@ def has_middleware(kind: str) -> bool:
 
 
 def has_hook(hook_name: str) -> bool:
-    """Return True when a hook has registered callbacks."""
+    """Return True when a loaded plugin handles a hook."""
     return get_plugin_manager().has_hook(hook_name)
 
 
@@ -2142,7 +2520,9 @@ def _get_pre_tool_call_directive_details(
             message=fmt.format(tool_name=tool_name),
         )
 
-    hook_results = invoke_hook(
+    from hermes_cli.lifecycle import invoke_hook as invoke_lifecycle_hook
+
+    hook_results = invoke_lifecycle_hook(
         "pre_tool_call",
         tool_name=tool_name,
         args=args if isinstance(args, dict) else {},
@@ -2258,12 +2638,32 @@ def resolve_pre_tool_block(
         return details.message
     if details.action == "approve":
         try:
-            from tools.approval import request_tool_approval
-            result = request_tool_approval(
-                tool_name,
-                details.message or "",
-                rule_key=details.rule_key or tool_name,
+            from tools.approval import (
+                request_tool_approval,
+                reset_current_observability_context,
+                set_current_observability_context,
             )
+
+            approval_tokens = None
+            try:
+                approval_tokens = set_current_observability_context(
+                    turn_id=turn_id,
+                    tool_call_id=tool_call_id,
+                )
+            except Exception:
+                pass
+            try:
+                result = request_tool_approval(
+                    tool_name,
+                    details.message or "",
+                    rule_key=details.rule_key or tool_name,
+                )
+            finally:
+                if approval_tokens is not None:
+                    try:
+                        reset_current_observability_context(approval_tokens)
+                    except Exception:
+                        pass
         except Exception:
             # Fail-closed: if the gate itself errors, block rather than
             # silently execute an action a plugin flagged for approval.

@@ -9,22 +9,7 @@ import type { ComposerAttachment } from '@/store/composer'
 import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
 
 export const SLASH_COMMAND_RE = /^\/[^\s/]*(?:\s|$)/
-export const BUILTIN_PERSONALITIES = [
-  'helpful',
-  'concise',
-  'technical',
-  'creative',
-  'teacher',
-  'kawaii',
-  'catgirl',
-  'pirate',
-  'shakespeare',
-  'surfer',
-  'noir',
-  'uwu',
-  'philosopher',
-  'hype'
-]
+export { BUILTIN_PERSONALITIES } from '@/lib/personalities'
 
 const THINKING_STATUS_PREFIX_RE =
   /^\s*(?:(?:[^\s.]{1,16})\s+)?(?:processing|thinking|reasoning|analyzing|pondering|contemplating|musing|cogitating|ruminating|deliberating|mulling|reflecting|computing|synthesizing|formulating|brainstorming)\.\.\.\s*/i
@@ -52,6 +37,7 @@ export function createClientSessionState(
     awaitingResponse: false,
     streamId: null,
     sawAssistantPayload: false,
+    adoptedRunningTurn: false,
     pendingBranchGroup: null,
     interrupted: false,
     interimBoundaryPending: false,
@@ -64,6 +50,10 @@ export function createClientSessionState(
 export function sessionTitle(session: SessionInfo): string {
   return session.title?.trim() || session.preview?.trim() || 'Untitled session'
 }
+
+/** What a session is called before it has been sent — and before its composer
+ *  has been typed into, which is the only thing that can name it earlier. */
+export const NEW_SESSION_TITLE = 'New session'
 
 export function coerceGatewayText(value: unknown): string {
   if (typeof value === 'string') {
@@ -283,10 +273,14 @@ export function parseCommandDispatch(raw: unknown): CommandDispatchResponse | nu
       return typeof row.target === 'string' ? { type: 'alias', target: row.target } : null
 
     case 'skill':
-      return typeof row.name === 'string' ? { type: 'skill', name: row.name, message: str(row.message) } : null
+      return typeof row.name === 'string'
+        ? { type: 'skill', name: row.name, message: str(row.message), display: str(row.display) }
+        : null
 
     case 'send':
-      return typeof row.message === 'string' ? { type: 'send', message: row.message, notice: str(row.notice) } : null
+      return typeof row.message === 'string'
+        ? { type: 'send', message: row.message, notice: str(row.notice), display: str(row.display) }
+        : null
 
     case 'prefill':
       return typeof row.message === 'string' ? { type: 'prefill', message: row.message, notice: str(row.notice) } : null
@@ -364,13 +358,31 @@ export function quickModelOptions(
   return options.slice(0, 8)
 }
 
+// A message's display time. `timestamp` (Unix seconds) is authoritative when
+// present. Without it we fall back to *now* rather than digging digits out of
+// the id: message ids come in incompatible shapes — `assistant-<ms>`,
+// `<seconds>-<i>-<role>`, session-style `20260728_184420_…` — and feeding any
+// of them to `new Date()` (which reads ms) lands on the 1970 epoch, rendering
+// as an absurd "20663d ago". A timestamp-less message is a freshly created
+// optimistic/streaming one, so *now* is the right age anyway.
+export function messageCreatedAt(message: Pick<ChatMessage, 'timestamp'>, nowMs = Date.now()): Date {
+  return typeof message.timestamp === 'number' && Number.isFinite(message.timestamp) && message.timestamp > 0
+    ? new Date(message.timestamp * 1000)
+    : new Date(nowMs)
+}
+
 export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   const role =
     message.role === 'user' || message.role === 'assistant' || message.role === 'system' ? message.role : 'assistant'
 
-  const createdAt = message.timestamp
-    ? new Date(message.timestamp * 1000)
-    : new Date(Number(message.id.match(/\d+/)?.[0]) || Date.now())
+  const createdAt = messageCreatedAt(message)
+
+  // Reactions and the durable row id ride metadata.custom for every role — the
+  // established channel for per-message extras (attachmentRefs below).
+  const reactionMeta = {
+    ...(message.rowId !== undefined ? { rowId: message.rowId } : {}),
+    ...(message.reactions?.length ? { reactions: message.reactions } : {})
+  }
 
   if (role === 'user') {
     return {
@@ -379,7 +391,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       content: message.parts.filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text'),
       attachments: [],
       createdAt,
-      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [] } }
+      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [], ...reactionMeta } }
     } as ThreadMessage
   }
 
@@ -411,7 +423,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       unstable_data: [],
       steps: [],
       // Carries ChatMessage.interim to AssistantMessage's footer gate.
-      custom: message.interim ? { interim: true } : {}
+      custom: { ...(message.interim ? { interim: true } : {}), ...reactionMeta }
     }
   } as ThreadMessage
 }

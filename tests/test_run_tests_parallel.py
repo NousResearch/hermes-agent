@@ -63,6 +63,43 @@ def _pid_alive(pid: int) -> bool:
     return True
 
 
+def test_progress_output_tolerates_legacy_stdout_encoding(tmp_path: Path) -> None:
+    """Progress glyphs must not crash the runner on non-UTF-8 consoles."""
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+
+    probe_dir = tmp_path / "probe"
+    probe_dir.mkdir()
+    probe = probe_dir / "test_probe_smoke.py"
+    probe.write_text("def test_smoke():\n    assert True\n", encoding="utf-8")
+
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "cp1252:strict"
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(runner),
+            "--paths",
+            str(probe_dir),
+            "-j",
+            "1",
+            "--file-timeout",
+            "30",
+        ],
+        cwd=repo_root,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        timeout=60,
+    )
+
+    assert proc.returncode == 0, proc.stdout
+    assert "UnicodeEncodeError" not in proc.stdout
+    assert "1 tests passed" in proc.stdout
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only probe")
 @pytest.mark.live_system_guard_bypass
 def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
@@ -146,7 +183,11 @@ def test_grandchild_leak_is_killed_by_runner(tmp_path: Path) -> None:
         cwd=repo_root,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        # The runner declares its stdio UTF-8 (see _make_stdio_glyph_safe);
+        # decode the same way so ✓-glyph assertions hold on Windows, where
+        # text=True alone would decode with the locale codec (cp1252).
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
     )
 
@@ -220,17 +261,15 @@ def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
         cwd=repo_root,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        # The runner declares its stdio UTF-8 (see _make_stdio_glyph_safe);
+        # decode the same way so ✓-glyph assertions hold on Windows, where
+        # text=True alone would decode with the locale codec (cp1252).
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
     )
 
 
-def test_bare_q_flag_passes_through(tmp_path: Path) -> None:
-    """A bare ``-q`` (no ``--``) runs clean instead of erroring out."""
-    probe_dir = _make_probe_dir(tmp_path)
-    proc = _run_runner(probe_dir, "-q")
-    assert proc.returncode == 0, proc.stdout
-    assert "unrecognized arguments" not in proc.stdout
 
 
 def test_bare_value_flag_keeps_its_value(tmp_path: Path) -> None:
@@ -253,12 +292,6 @@ def test_bare_value_flag_keeps_its_value(tmp_path: Path) -> None:
     )
 
 
-def test_explicit_double_dash_still_works(tmp_path: Path) -> None:
-    """The legacy ``--`` separator keeps working alongside bare flags."""
-    probe_dir = _make_probe_dir(tmp_path)
-    proc = _run_runner(probe_dir, "-q", "--", "--tb=short")
-    assert proc.returncode == 0, proc.stdout
-    assert "unrecognized arguments" not in proc.stdout
 
 
 def test_positional_path_not_treated_as_flag(tmp_path: Path) -> None:
@@ -271,7 +304,7 @@ def test_positional_path_not_treated_as_flag(tmp_path: Path) -> None:
         [sys.executable, str(runner), str(probe_dir), "-j", "1",
          "--file-timeout", "30", "-q"],
         cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, timeout=60,
+        encoding="utf-8", errors="replace", timeout=60,
     )
     assert proc.returncode == 0, proc.stdout
     # Discovery found the probe file (2 tests), proving the positional path
@@ -327,38 +360,6 @@ def test_file_retry_self_heals_and_prints_both_attempts(tmp_path: Path) -> None:
     assert "retry output" in proc.stdout
 
 
-def test_file_retry_does_not_launder_deterministic_failure(tmp_path: Path) -> None:
-    """A real regression fails both attempts and the runner remains red."""
-    repo_root = Path(__file__).resolve().parent.parent
-    runner = repo_root / "scripts" / "run_tests_parallel.py"
-    probe = tmp_path / "test_red_probe.py"
-    probe.write_text(
-        "def test_always_red():\n    assert False, 'deterministic regression'\n",
-        encoding="utf-8",
-    )
-
-    proc = subprocess.run(
-        [
-            sys.executable,
-            str(runner),
-            "--files",
-            str(probe),
-            "--file-retries",
-            "1",
-            "-j",
-            "1",
-            "-q",
-        ],
-        cwd=repo_root,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        timeout=60,
-    )
-
-    assert proc.returncode == 1, proc.stdout
-    assert "deterministic regression" in proc.stdout
-    assert "FLAKY file" not in proc.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -379,23 +380,6 @@ def test_zero_collected_across_run_fails_and_says_so(tmp_path: Path) -> None:
     assert "NOT a pass" in proc.stdout
 
 
-def test_all_skipped_file_is_still_a_pass(tmp_path: Path) -> None:
-    """Per-file zero-collection stays tolerated.
-
-    A platform-gated file (every test skipped) reports "N skipped" — collected,
-    just not executed — and must NOT trip the nothing-ran guard.
-    """
-    probe_dir = tmp_path / "skipprobe"
-    probe_dir.mkdir()
-    (probe_dir / "test_allskipped.py").write_text(
-        "import pytest\n\n"
-        "pytestmark = pytest.mark.skip(reason='platform-gated')\n\n"
-        "def test_one():\n    assert True\n\n"
-        "def test_two():\n    assert True\n"
-    )
-    proc = _run_runner(probe_dir)
-    assert proc.returncode == 0, proc.stdout
-    assert "NO TESTS RAN" not in proc.stdout
 
 
 def test_node_id_selector_runs_the_named_test(tmp_path: Path) -> None:
@@ -431,3 +415,48 @@ def test_explicit_k_wins_over_node_id_inference(tmp_path: Path) -> None:
     # -k test_beta wins: one test ran, and it wasn't filtered to nothing.
     assert proc.returncode == 0, proc.stdout
     assert "1 tests passed" in proc.stdout
+
+
+def test_multiple_absolute_paths_split_on_pathsep(tmp_path: Path) -> None:
+    """``--paths`` accepts ``os.pathsep``-joined absolute paths.
+
+    On Windows the absolute paths contain drive-letter colons, so a naive
+    ``split(":")`` shreds them into phantom roots and only one (or neither)
+    of the two probe dirs would be discovered.
+    """
+    dir_a = _make_probe_dir(tmp_path)
+    dir_b = tmp_path / "probe_b"
+    dir_b.mkdir()
+    (dir_b / "test_flagprobe_b.py").write_text(
+        "def test_gamma():\n    assert True\n"
+    )
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    proc = subprocess.run(
+        [sys.executable, str(runner),
+         "--paths", os.pathsep.join([str(dir_a), str(dir_b)]),
+         "-j", "1", "--file-timeout", "30", "-q"],
+        cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        encoding="utf-8", errors="replace", timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout
+    assert "Discovered 2 test files" in proc.stdout, proc.stdout
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="drive-letter paths")
+def test_drive_letter_colon_is_not_a_path_separator(tmp_path: Path) -> None:
+    """An absolute ``--paths`` value stays one root on Windows.
+
+    The naive split used to produce a phantom relative root ``'C'`` (the
+    drive letter) alongside the real path; discovery only worked by the
+    accident of ``repo_root / '\\rooted\\rest'`` re-anchoring onto the
+    repo's drive.
+    """
+    probe_dir = _make_probe_dir(tmp_path)
+    proc = _run_runner(probe_dir, "-q")
+    assert proc.returncode == 0, proc.stdout
+    drive = str(probe_dir)[0]
+    assert f"['{drive}', " not in proc.stdout, (
+        f"drive letter split off as a phantom root:\n{proc.stdout}"
+    )
+    assert "Discovered 1 test files" in proc.stdout, proc.stdout

@@ -25,15 +25,13 @@ Design:
 
 import json
 import logging
-import os
-import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional, Tuple
 
-from utils import atomic_replace
+from utils import atomic_write_text
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
@@ -768,7 +766,15 @@ class MemoryStore:
         if not path.exists():
             return "", True
         try:
-            return path.read_text(encoding="utf-8"), True
+            # utf-8-sig strips a leading UTF-8 BOM (Notepad-edited memory
+            # files on Windows) and is byte-identical to utf-8 otherwise.
+            # Plain utf-8 kept U+FEFF glued to the first entry, corrupting
+            # matching/dedup for that entry forever (#10878 / PR #10888).
+            # Decode errors stay STRICT on purpose: errors="replace" would
+            # hand read-modify-write callers a lossy view that a subsequent
+            # save persists over the real bytes — the wipe class documented
+            # above. Undecodable bytes must surface as read_ok=False.
+            return path.read_text(encoding="utf-8-sig"), True
         except (OSError, IOError, UnicodeDecodeError):
             return "", False
 
@@ -873,23 +879,7 @@ class MemoryStore:
         """
         content = ENTRY_DELIMITER.join(entries) if entries else ""
         try:
-            # Write to temp file in same directory (same filesystem for atomic rename)
-            fd, tmp_path = tempfile.mkstemp(
-                dir=str(path.parent), suffix=".tmp", prefix=".mem_"
-            )
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.write(content)
-                    f.flush()
-                    os.fsync(f.fileno())
-                atomic_replace(tmp_path, path)
-            except BaseException:
-                # Clean up temp file on any failure
-                try:
-                    os.unlink(tmp_path)
-                except OSError:
-                    pass
-                raise
+            atomic_write_text(path, content, tmp_prefix=".mem_")
         except (OSError, IOError) as e:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 

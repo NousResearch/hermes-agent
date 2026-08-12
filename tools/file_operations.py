@@ -3,7 +3,7 @@
 File Operations Module
 
 Provides file manipulation capabilities (read, write, patch, search) that work
-across all terminal backends (local, docker, ssh, singularity, modal, daytona).
+across all terminal backends (local, docker, ssh, singularity, modal, daytona, vercel_sandbox).
 
 The key insight is that all file operations can be expressed as shell commands,
 so we wrap the terminal backend's execute() interface to provide a unified file API.
@@ -25,9 +25,13 @@ Usage:
     result = file_ops.search("TODO", path=".", file_glob="*.py")
 """
 
+import base64
+import binascii
 import os
 import re
 import difflib
+import hashlib
+import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, ClassVar
@@ -178,6 +182,11 @@ class WriteResult:
     """Result from writing a file."""
     bytes_written: int = 0
     dirs_created: bool = False
+    # True when the on-disk sha256 matched the intended content after the
+    # write (post-write verification). None when the backend couldn't
+    # verify (no sha256sum). A mismatch never reaches the caller as a
+    # flag — it becomes a hard error.
+    verified: Optional[bool] = None
     lint: Optional[Dict[str, Any]] = None
     # Semantic diagnostics from the LSP layer, when applicable.  Kept in
     # its own field (not folded into ``lint``) so the model and any
@@ -205,9 +214,18 @@ class PatchResult:
     # See :class:`WriteResult.lsp_diagnostics`.
     lsp_diagnostics: Optional[str] = None
     error: Optional[str] = None
-    
+    # Set on success-shaped no-ops: the requested edit was already present
+    # in the file, so nothing was written. Carries a short note for the
+    # model explaining why no diff is included.
+    no_change: bool = False
+    note: Optional[str] = None
+
     def to_dict(self) -> dict:
-        result = {"success": self.success}
+        result: Dict[str, Any] = {"success": self.success}
+        if self.no_change:
+            result["no_change"] = True
+        if self.note:
+            result["note"] = self.note
         if self.diff:
             result["diff"] = self.diff
         if self.files_modified:
@@ -431,11 +449,75 @@ def _parse_search_context_line(line: str) -> tuple[str, int, str] | None:
 # Abstract Interface
 # =============================================================================
 
+_MAGIC_SIGNATURES: tuple = (
+    # (prefix bytes, human name) — ordered, first match wins. Longest
+    # prefixes for a shared first byte come first.
+    (b"\x89PNG\r\n\x1a\n", "PNG image data"),
+    (b"\xff\xd8\xff", "JPEG image data"),
+    (b"GIF87a", "GIF image data"),
+    (b"GIF89a", "GIF image data"),
+    (b"RIFF", "RIFF container (WAV/AVI/WebP family)"),
+    (b"%PDF-", "PDF document"),
+    (b"PK\x03\x04", "ZIP archive (also docx/xlsx/jar/apk)"),
+    (b"PK\x05\x06", "ZIP archive (empty)"),
+    (b"\x1f\x8b", "gzip compressed data"),
+    (b"BZh", "bzip2 compressed data"),
+    (b"\xfd7zXZ\x00", "xz compressed data"),
+    (b"7z\xbc\xaf\x27\x1c", "7-Zip archive"),
+    (b"\x7fELF", "ELF executable"),
+    (b"MZ", "Windows PE executable"),
+    (b"\xcf\xfa\xed\xfe", "Mach-O executable (64-bit)"),
+    (b"\xca\xfe\xba\xbe", "Mach-O universal binary / Java class"),
+    (b"SQLite format 3\x00", "SQLite database"),
+    (b"OggS", "Ogg container"),
+    (b"fLaC", "FLAC audio"),
+    (b"ID3", "MP3 audio (ID3 tag)"),
+    (b"\x00\x00\x00", "ISO media container (MP4/MOV family)"),  # ftyp at +4
+    (b"BM", "BMP image data"),
+    (b"II*\x00", "TIFF image data (little-endian)"),
+    (b"MM\x00*", "TIFF image data (big-endian)"),
+)
+
+
+def identify_binary_bytes(sample: bytes) -> str:
+    """Best-effort human name for binary content from its magic bytes.
+
+    Returns e.g. ``"PNG image data"`` or ``"unknown binary"``. Never raises.
+    The ISO-media entry additionally checks for ``ftyp`` at offset 4, since
+    the leading size field alone (three NULs) is too weak a signature.
+    """
+    if not sample:
+        return "unknown binary"
+    for prefix, name in _MAGIC_SIGNATURES:
+        if sample.startswith(prefix):
+            if name.startswith("ISO media") and sample[4:8] != b"ftyp":
+                continue
+            return name
+    return "unknown binary"
+
+
+def describe_binary_file(sample: Optional[bytes], file_size: int) -> str:
+    """One-line answer for the binary-file refusal.
+
+    Naming the dead end: "Binary file" alone sends the model hunting for
+    'appropriate tools' that may not exist in its toolset. Naming the TYPE
+    ("PNG image data, 4.1 KB") answers what-is-this in a single read.
+    """
+    kind = identify_binary_bytes(sample or b"")
+    if file_size >= 1024 * 1024:
+        size = f"{file_size / (1024 * 1024):.1f} MB"
+    elif file_size >= 1024:
+        size = f"{file_size / 1024:.1f} KB"
+    else:
+        size = f"{file_size} bytes"
+    return f"Binary file ({kind}, {size}) — cannot display as text."
+
+
 class FileOperations(ABC):
     """Abstract interface for file operations across terminal backends."""
     
     @abstractmethod
-    def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
+    def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """Read a file with pagination support."""
         ...
 
@@ -449,8 +531,13 @@ class FileOperations(ABC):
         """
         ...
 
+    def read_file_bytes(self, path: str, max_bytes: Optional[int] = None) -> ReadResult:
+        """Read complete binary content as base64 across the backend boundary."""
+        return ReadResult(error="Binary reads are not implemented for this backend")
+
     @abstractmethod
-    def write_file(self, path: str, content: str) -> WriteResult:
+    def write_file(self, path: str, content: str,
+                   pre_content: Optional[str] = None) -> WriteResult:
         """Write content to a file, creating directories as needed."""
         ...
 
@@ -645,14 +732,8 @@ def _lint_yaml_inproc(content: str) -> tuple[bool, str]:
 
 def _lint_toml_inproc(content: str) -> tuple[bool, str]:
     """In-process TOML syntax check (stdlib tomllib, Python 3.11+)."""
-    try:
-        import tomllib as _toml
-    except ImportError:
-        # Pre-3.11 fallback via tomli, if installed.
-        try:
-            import tomli as _toml  # type: ignore[no-redef]
-        except ImportError:
-            return True, "__SKIP__"
+    import tomllib as _toml
+
     try:
         _toml.loads(content)
         return True, ""
@@ -711,9 +792,13 @@ MAX_LINES = 2000
 MAX_LINE_LENGTH = 2000
 MAX_FILE_SIZE = 50 * 1024  # 50KB
 DEFAULT_READ_OFFSET = 1
-DEFAULT_READ_LIMIT = 500
+DEFAULT_READ_LIMIT = 2000
 DEFAULT_SEARCH_OFFSET = 0
 DEFAULT_SEARCH_LIMIT = 50
+
+# Echoed by the size probe when the path exists but is not a regular file.
+# `wc -c` prints only digits, so this can never collide with a real size.
+NOT_REGULAR_SENTINEL = "__hermes_not_regular__"
 
 
 def _coerce_int(value: Any, default: int) -> int:
@@ -860,9 +945,16 @@ class ShellFileOperations(FileOperations):
         # Fall through to init-time self.cwd only if the env doesn't track cwd.
         effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
         result = self.env.execute(command, cwd=effective_cwd, **kwargs)
+        exit_code = result.get("returncode", 0)
+        # A stdin write failure with an otherwise-clean child exit is still
+        # a failure: the child never received the intended input. write_file
+        # rejects such content up front (Task 3); this mapping is
+        # defense-in-depth for any other stdin caller.
+        if result.get("stdin_error") and exit_code == 0:
+            exit_code = 1
         return ExecuteResult(
             stdout=result.get("output", ""),
-            exit_code=result.get("returncode", 0)
+            exit_code=exit_code
         )
     
     def _has_command(self, cmd: str) -> bool:
@@ -872,6 +964,72 @@ class ShellFileOperations(FileOperations):
             self._command_cache[cmd] = result.stdout.strip() == 'yes'
         return self._command_cache[cmd]
     
+    def _sample_file_bytes(self, path: str, length: int = 1000):
+        """Fetch the first ``length`` raw bytes of a file through the terminal.
+
+        File operations run through a terminal backend (possibly remote), so
+        raw bytes cannot cross the transport directly — the terminal decodes
+        stdout with ``errors="replace"`` and manufactures U+FFFD at every
+        byte it cannot decode, including a multibyte character cut in half by
+        ``head -c``. Wrapping the sample in base64 lets the original bytes
+        survive the transport, so binary detection can happen at the byte
+        layer where it is well-defined (#80308 and friends).
+
+        Returns the sample bytes, or ``None`` when the transport could not
+        produce clean base64 (exotic shells without ``base64``); callers fall
+        back to the legacy text-sample heuristic in that case.
+        """
+        result = self._exec(
+            f"head -c {length} {self._escape_shell_arg(path)} 2>/dev/null | base64"
+        )
+        if result.exit_code != 0:
+            return None
+        encoded = _strip_terminal_fence_leaks(result.stdout)
+        encoded = "".join(encoded.split())
+        if not encoded:
+            return b""
+        if not re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", encoded):
+            return None
+        try:
+            return base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError):
+            return None
+
+    @staticmethod
+    def _is_likely_binary_bytes(sample: bytes) -> bool:
+        """Byte-layer binary detection (the boundary for the #80308 class).
+
+        Contract: a file is text when its sample is valid UTF-8, allowing one
+        incomplete multibyte sequence at the very end (an artifact of cutting
+        the sample at a byte boundary, not a property of the file). Anything
+        else — NUL bytes, mid-stream invalid UTF-8 such as latin-1 or true
+        binaries — stays read-only, preserving the anti-mojibake guarantee
+        the old U+FFFD check existed for: a read→edit→write round-trip must
+        never rewrite undecodable bytes with replacement characters.
+
+        A file that legitimately *contains* U+FFFD (EF BF BD — e.g. logs of
+        lossy output) is valid UTF-8 and reads as text; the old text-layer
+        check misclassified it because it could not tell a stored replacement
+        character from a transport-manufactured one.
+        """
+        if not sample:
+            return False
+        if b"\x00" in sample:
+            return True
+        try:
+            sample.decode("utf-8")
+            return False
+        except UnicodeDecodeError as exc:
+            # UTF-8 sequences are at most 4 bytes: an error starting in the
+            # last 3 bytes with a clean prefix is a boundary cut, not binary.
+            if exc.start >= len(sample) - 3:
+                try:
+                    sample[: exc.start].decode("utf-8")
+                    return False
+                except UnicodeDecodeError:
+                    pass
+            return True
+
     def _is_likely_binary(self, path: str, content_sample: str = None) -> bool:
         """
         Check if a file is likely binary.
@@ -884,6 +1042,17 @@ class ShellFileOperations(FileOperations):
         
         # Content analysis: >30% non-printable chars = binary
         if content_sample:
+            # Undecodable bytes: the terminal env decodes stdout with
+            # errors="replace", so any non-UTF-8 byte arrives here already
+            # turned into U+FFFD. That char is "printable" (ord 65533), so the
+            # non-printable ratio below never catches it — and returning the
+            # lossy text would let a read→edit→write round-trip silently
+            # overwrite the original bytes with mojibake. Treat a file whose
+            # sample carries the replacement char as binary (read-only) so the
+            # agent can't corrupt it. Legitimate UTF-8 text effectively never
+            # contains U+FFFD.
+            if "\ufffd" in content_sample[:1000]:
+                return True
             non_printable = sum(1 for c in content_sample[:1000]
                                if ord(c) < 32 and c not in '\n\r\t')
             return non_printable / min(len(content_sample), 1000) > 0.30
@@ -975,6 +1144,34 @@ class ShellFileOperations(FileOperations):
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
+    def _escape_native_tool_arg(self, arg: str) -> str:
+        """Escape a path argument destined for a NATIVE Windows binary.
+
+        ``_escape_shell_arg`` rewrites Windows paths to the Git Bash MSYS
+        form (``/c/Users/x``) so bash builtins resolve them. But native
+        Windows binaries invoked from that bash (ripgrep installed via
+        winget/cargo/choco, native git, etc.) do not understand ``/c/...``
+        paths — and Hermes disables MSYS argument conversion for its bash
+        subprocesses (``MSYS_NO_PATHCONV=1`` / ``MSYS2_ARG_CONV_EXCL=*``,
+        see ``_apply_windows_msys_bash_env_defaults``), so nothing ever
+        translates the MSYS form back. The native tool then fails with
+        ``The system cannot find the path specified. (os error 3)``.
+
+        The forward-slash native form (``C:/Users/x``) is the one spelling
+        every layer accepts: bash passes it through untouched (it is not an
+        absolute POSIX path, so no conversion applies even without the
+        opt-outs), and Windows APIs treat ``/`` and ``\\`` as equivalent
+        separators. MSYS builds of the same tools accept it too, so this is
+        safe regardless of which flavor of the binary is installed.
+
+        On non-Windows hosts this is exactly ``_escape_shell_arg``.
+        """
+        from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
+
+        if _IS_WINDOWS and arg:
+            arg = _msys_to_windows_path(arg).replace("\\", "/")
+        return "'" + arg.replace("'", "'\"'\"'") + "'"
+
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
         """Write ``content`` to ``path`` atomically via temp-file + rename.
 
@@ -985,6 +1182,9 @@ class ShellFileOperations(FileOperations):
         On any failure the temp file is removed so we never leak a partial
         ``.hermes-tmp`` file next to the user's data, and the original file
         is left untouched. Content rides stdin so there is no ARG_MAX limit.
+
+        ``mkdir -p`` for the parent directory is folded into this script
+        (one fewer subprocess vs. a separate ``mkdir -p`` call).
 
         Returns an :class:`ExecuteResult`; ``exit_code == 0`` means the file
         was swapped into place atomically. A non-zero exit means nothing was
@@ -999,13 +1199,25 @@ class ShellFileOperations(FileOperations):
         tmpl = self._escape_shell_arg(".hermes-tmp.XXXXXX")
 
         # One shell script, fully quoted. Notes:
+        #  - `mkdir -p "$d"` is folded in here so the parent directory is
+        #    created in the same subprocess that writes the temp file —
+        #    saves one entire subprocess spawn vs. a separate mkdir call.
         #  - `mktemp` lands the temp in the target's own dir (-p) so `mv` is
         #    same-FS atomic; we fall back to a PID-stamped name if the
         #    backend lacks mktemp (rare; busybox/macOS/Linux all ship it).
         #  - `chmod --reference` is GNU-only, so we read the octal mode with
         #    `stat` (GNU `-c%a` or BSD `-f%Lp`) and `chmod` it explicitly;
         #    silent best-effort — a perms-copy failure must not abort the
-        #    write, the file still lands with default umask perms.
+        #    write (the file then lands at mktemp's 0600, same as pre-fix).
+        #  - brand-new targets get `chmod "=rw"` — the POSIX who-less
+        #    symbolic form, which sets rw minus the process umask (e.g.
+        #    0644 under umask 022) instead of mktemp's hardcoded 0600
+        #    (#70856).  Deliberately NOT shell arithmetic on `$(umask)`:
+        #    zsh (reachable via _find_bash's $SHELL fallback) parses
+        #    leading-zero constants as decimal and silently computes a
+        #    garbage mode, while `chmod "=rw"` is spec-identical in
+        #    bash/dash/ash/zsh and degrades to 0600 (pre-fix behavior)
+        #    if an exotic chmod rejects it.
         #  - `trap ... EXIT` guarantees the temp is removed on every error
         #    path (cat failure, mv failure, signal) but NOT after a
         #    successful mv (the temp no longer exists by then).
@@ -1013,17 +1225,36 @@ class ShellFileOperations(FileOperations):
         script = (
             "set -e; "
             f"d={q_parent}; t={q_path}; "
+            # Follow a symlink target so we edit the file the link points at,
+            # rather than replacing the symlink itself with a plain file (which
+            # orphans the real target and destroys the link). Recompute the
+            # temp dir from the RESOLVED target so `mv` stays same-filesystem
+            # atomic. Best-effort: a broken link or missing readlink/realpath
+            # falls back to the original path (pre-fix behavior, no regression).
+            'if [ -L "$t" ]; then '
+            'rt="$(readlink -f "$t" 2>/dev/null || realpath "$t" 2>/dev/null || true)"; '
+            '[ -n "$rt" ] && { t="$rt"; d="$(dirname "$t")"; }; '
+            "fi; "
+            # Create the parent dir in the SAME subprocess that writes the
+            # temp file (one fewer exec vs. a separate mkdir call). Runs
+            # AFTER symlink resolution so a resolved target's directory is
+            # the one created/confirmed.
+            'mkdir -p "$d"; '
             'tmp="$(mktemp -p "$d" ' + tmpl + ' 2>/dev/null '
             '|| mktemp "$d/.hermes-tmp.$$.XXXXXX" 2>/dev/null '
             '|| { tmp="$d/.hermes-tmp.$$"; : > "$tmp" && echo "$tmp"; })"; '
             '[ -n "$tmp" ] || { echo "atomic write: could not create temp file" >&2; exit 1; }; '
-            "trap 'rm -f \"$tmp\"' EXIT; "
+            "trap 'rm -f \\\"$tmp\\\"' EXIT; "
             # preserve mode of an existing target (best-effort, never fatal)
             'if [ -e "$t" ]; then '
             'm="$(stat -c%a "$t" 2>/dev/null || stat -f%Lp "$t" 2>/dev/null || true)"; '
             '[ -n "$m" ] && chmod "$m" "$tmp" 2>/dev/null || true; '
             "fi; "
             'cat > "$tmp"; '
+            # new file: umask-default perms instead of mktemp's 0600 (#70856).
+            # Runs AFTER cat so a write-masking umask can't EACCES the stream;
+            # quoted "=rw" so zsh doesn't =word-expand it.
+            'if [ ! -e "$t" ]; then chmod "=rw" "$tmp" 2>/dev/null || true; fi; '
             'mv -f "$tmp" "$t"; '
             "trap - EXIT"
         )
@@ -1053,13 +1284,16 @@ class ShellFileOperations(FileOperations):
     def _file_has_bom(self, path: str, pre_content: Optional[str] = None) -> bool:
         """Whether the file on disk starts with a UTF-8 BOM.
 
-        Uses ``pre_content`` if we already read the file (zero extra exec
-        calls); otherwise issues a tiny ``head -c 3`` to sample just the
-        marker. A missing/empty file returns False (new writes get no BOM
+        Always probes the first 3 bytes on disk — do NOT trust
+        ``pre_content`` for BOM detection because the most common
+        provider (``read_file_raw``) deliberately strips BOMs so the
+        agent never sees U+FEFF glyphs.  Passing BOM-stripped content
+        through ``pre_content`` would cause a false-negative and
+        silently remove the marker on rewrite.
+
+        A missing/empty file returns False (new writes get no BOM
         unless the caller explicitly includes one).
         """
-        if pre_content is not None:
-            return _has_bom(pre_content)
         head_cmd = f"head -c 3 {self._escape_shell_arg(path)} 2>/dev/null"
         head_result = self._exec(head_cmd)
         if head_result.exit_code != 0 or not head_result.stdout:
@@ -1082,7 +1316,41 @@ class ShellFileOperations(FileOperations):
     # READ Implementation
     # =========================================================================
     
-    def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
+    def _size_probe_cmd(self, path: str) -> str:
+        """Byte size of a regular file, without opening one that never ends.
+
+        ``wc -c < path`` opens the path. On a FIFO with no writer, a socket,
+        or a character device like /dev/zero that never reaches EOF, that
+        read blocks forever — and the read helpers pass no timeout to
+        :meth:`_exec`, so the turn wedges until the process is killed. The
+        device blocklist in ``tools/file_tools.py`` cannot cover this: it
+        matches literal ``/dev/*`` names, while a FIFO is a file *type* and
+        can sit at any path.
+
+        ``[ -f ]`` is a stat, not an open — it answers exactly the question
+        the size probe needs (regular file, symlinks followed) without
+        touching the contents. Non-regular paths that exist report the
+        sentinel so callers can say so instead of claiming the file is
+        missing; a genuinely absent path still exits non-zero.
+        """
+        arg = self._escape_shell_arg(path)
+        return (
+            f"if [ -f {arg} ]; then wc -c < {arg} 2>/dev/null; "
+            f"elif [ -e {arg} ]; then echo {NOT_REGULAR_SENTINEL}; "
+            f"else exit 1; fi"
+        )
+
+    @staticmethod
+    def _not_regular_error(path: str) -> ReadResult:
+        """Error for a path that exists but would block if read."""
+        return ReadResult(
+            error=(
+                f"Cannot read '{path}': not a regular file (directory, FIFO, "
+                "socket, or device). Reading it could block indefinitely."
+            )
+        )
+
+    def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """
         Read a file with pagination, binary detection, and line numbers.
         
@@ -1099,15 +1367,32 @@ class ShellFileOperations(FileOperations):
         
         offset, limit = normalize_read_pagination(offset, limit)
         
-        # Check if file exists and get size (wc -c is POSIX, works on Linux + macOS)
-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
-        
+        # Check if file exists and get size (POSIX, works on Linux + macOS)
+        stat_result = self._exec(self._size_probe_cmd(path))
+
         if stat_result.exit_code != 0:
-            # File not found - try to suggest similar files
+            # File not found. Before failing, try unicode-equivalent
+            # spellings — NFC/NFD, narrow no-break space, curly quotes
+            # render identically in a terminal, so the model retyping a
+            # visually-correct path can never discover the byte mismatch
+            # on its own (retrying is the tool's job, not the model's).
+            variant = self._unicode_variant_match(path)
+            if variant is not None:
+                result = self.read_file(variant, offset=offset, limit=limit)
+                note = (
+                    f"Note: '{path}' not found byte-for-byte; resolved to "
+                    f"the unicode-equivalent file '{variant}' (invisible "
+                    "encoding difference: NFC/NFD or special space/quote "
+                    "characters)."
+                )
+                result.hint = f"{note} {result.hint}" if result.hint else note
+                return result
+            # No equivalent spelling — suggest similar files
             return self._suggest_similar_files(path)
-        
+
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
+        if stat_output.strip() == NOT_REGULAR_SENTINEL:
+            return self._not_regular_error(path)
         try:
             file_size = int(stat_output.strip())
         except ValueError:
@@ -1130,21 +1415,56 @@ class ShellFileOperations(FileOperations):
                 ),
             )
         
-        # Read a sample to check for binary content
-        sample_cmd = f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null"
-        sample_result = self._exec(sample_cmd)
-        sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
-        
-        if self._is_likely_binary(path, sample_output):
+        # Read a sample to check for binary content — at the byte layer when
+        # the transport allows, falling back to the legacy text heuristic.
+        sample_bytes = self._sample_file_bytes(path)
+        if sample_bytes is not None:
+            ext_binary = os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS
+            is_binary = ext_binary or self._is_likely_binary_bytes(sample_bytes)
+        else:
+            sample_cmd = f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null"
+            sample_result = self._exec(sample_cmd)
+            sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
+            is_binary = self._is_likely_binary(path, sample_output)
+
+        if is_binary:
             return ReadResult(
                 is_binary=True,
                 file_size=file_size,
-                error="Binary file - cannot display as text. Use appropriate tools to handle this file type."
+                error=describe_binary_file(sample_bytes, file_size),
             )
         
-        # Read with pagination using sed
+        # Read with pagination using sed, clamping each line to a byte
+        # budget IN THE SHELL so a pathological single-line file (e.g. one
+        # 400MB minified line) never crosses the exec transport. The Python
+        # clamp in _add_line_numbers still runs afterwards; the shell clamp
+        # only bounds what reaches it.
+        #
+        # Why 4*max_line_length + 1 bytes (not max_line_length + 1):
+        # ``cut -c`` on GNU coreutils is byte-based despite its name, and a
+        # byte clamp can split a multibyte UTF-8 codepoint at the boundary.
+        # The transport decodes with errors="replace", so a split codepoint
+        # becomes U+FFFD rather than an exception — but a clamp of
+        # max_line_length+1 BYTES yields far fewer CHARS than
+        # max_line_length for multibyte text, so the Python clamp would
+        # never fire and truncation would be silent (no "... [truncated]"
+        # suffix). UTF-8 codepoints are at most 4 bytes, so any line whose
+        # first max_line_length chars survive occupies at most
+        # 4*max_line_length bytes; keeping one byte more guarantees that
+        # every line longer than max_line_length chars still decodes to
+        # more than max_line_length chars, which triggers the existing
+        # Python-side clamp (len(line) > max_line_length) and its
+        # "... [truncated]" suffix. Any U+FFFD from a boundary split lands
+        # beyond char max_line_length and is always removed by that clamp,
+        # so mojibake is never visible. ``cut -b`` is used explicitly to
+        # document the byte semantics.
+        from tools.tool_output_limits import get_max_line_length
+        line_clamp_bytes = 4 * get_max_line_length() + 1
         end_line = offset + limit - 1
-        read_cmd = f"sed -n '{offset},{end_line}p' {self._escape_shell_arg(path)}"
+        read_cmd = (
+            f"sed -n '{offset},{end_line}p' {self._escape_shell_arg(path)}"
+            f" | cut -b1-{line_clamp_bytes}"
+        )
         read_result = self._exec(read_cmd)
         
         if read_result.exit_code != 0:
@@ -1170,7 +1490,41 @@ class ShellFileOperations(FileOperations):
         hint = None
         if truncated:
             hint = f"Use offset={end_line + 1} to continue reading (showing {offset}-{end_line} of {total_lines} lines)"
-        
+
+        # ``cut`` (unlike sed -n p) always newline-terminates its output,
+        # so a file whose final line has no trailing newline would grow a
+        # phantom empty last line. Only possible when this page reaches the
+        # file's final line; probe the last byte and strip the artifact.
+        if not truncated and read_output.endswith('\n'):
+            tail_cmd = f"tail -c 1 {self._escape_shell_arg(path)} | wc -l"
+            tail_result = self._exec(tail_cmd)
+            tail_output = _strip_terminal_fence_leaks(tail_result.stdout)
+            if tail_result.exit_code == 0 and tail_output.strip() == "0":
+                read_output = read_output[:-1]
+
+        # Ambiguous-silence guards: an empty content string is
+        # indistinguishable, from inside the model, from a broken tool —
+        # it re-reads, widens the window, tries another path. Name the
+        # dead end and its recovery instead.
+        if file_size == 0:
+            return ReadResult(
+                content="",
+                total_lines=0,
+                file_size=0,
+                hint="File is empty (0 bytes).",
+            )
+        if offset > total_lines > 0:
+            return ReadResult(
+                content="",
+                total_lines=total_lines,
+                file_size=file_size,
+                hint=(
+                    f"Note: offset {offset} is beyond the end of the file "
+                    f"({total_lines} lines total). Retry with offset <= "
+                    f"{total_lines}."
+                ),
+            )
+
         return ReadResult(
             content=self._add_line_numbers(read_output, offset),
             total_lines=total_lines,
@@ -1179,6 +1533,50 @@ class ShellFileOperations(FileOperations):
             hint=hint
         )
     
+    def _unicode_variant_match(self, path: str) -> Optional[str]:
+        """Find an existing file whose name is unicode-equivalent to ``path``.
+
+        macOS names screenshots with a NARROW NO-BREAK SPACE (U+202F) before
+        AM/PM, stores names NFD-decomposed, and Finder renames turn ' into
+        \u2019 — all invisible in rendered text. Compare directory entries
+        under a normalization that erases exactly those differences and
+        return the on-disk spelling when exactly one entry matches.
+        """
+        dir_path = os.path.dirname(path) or "."
+        filename = os.path.basename(path)
+        if not filename:
+            return None
+
+        def _canon(name: str) -> str:
+            # NFC first so composed/decomposed collapse together, then the
+            # confusable space/quote characters seen in real filenames.
+            out = unicodedata.normalize("NFC", name)
+            for src, dst in (
+                ("\u202f", " "),  # narrow no-break space
+                ("\u00a0", " "),  # no-break space
+                ("\u2019", "'"),  # right single quotation mark
+                ("\u2018", "'"),  # left single quotation mark
+            ):
+                out = out.replace(src, dst)
+            return out
+
+        target = _canon(filename)
+        ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null"
+        ls_result = self._exec(ls_cmd)
+        if ls_result.exit_code != 0 or not ls_result.stdout.strip():
+            return None
+        candidates = [
+            entry
+            for entry in _strip_terminal_fence_leaks(ls_result.stdout).splitlines()
+            if entry and entry != filename and _canon(entry) == target
+        ]
+        # Exactly one equivalent spelling = unambiguous repair. Zero or
+        # several = fall through to suggestions; guessing among homoglyph
+        # collisions would silently read the wrong file.
+        if len(candidates) == 1:
+            return os.path.join(dir_path, candidates[0]) if dir_path != "." or "/" in path else candidates[0]
+        return None
+
     def _suggest_similar_files(self, path: str) -> ReadResult:
         """Suggest similar files when the requested file is not found."""
         dir_path = os.path.dirname(path) or "."
@@ -1219,6 +1617,13 @@ class ShellFileOperations(FileOperations):
                     common = set(lower_name) & set(lf)
                     if len(common) >= max(len(lower_name), len(lf)) * 0.4:
                         score = 30
+                # Near-miss spelling (AGENT.md -> AGENTS.md): substring
+                # checks above find nothing, but a high sequence ratio
+                # catches 1-2 edit typos without a homegrown levenshtein.
+                if score == 0 and difflib.SequenceMatcher(
+                    None, lower_name, lf
+                ).ratio() >= 0.8:
+                    score = 50
 
                 if score > 0:
                     scored.append((score, os.path.join(dir_path, f)))
@@ -1238,23 +1643,30 @@ class ShellFileOperations(FileOperations):
         Uses cat so the full file is returned regardless of size.
         """
         path = self._expand_path(path)
-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
+        stat_result = self._exec(self._size_probe_cmd(path))
         if stat_result.exit_code != 0:
             return self._suggest_similar_files(path)
         stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
+        if stat_output.strip() == NOT_REGULAR_SENTINEL:
+            return self._not_regular_error(path)
         try:
             file_size = int(stat_output.strip())
         except ValueError:
             file_size = 0
         if self._is_image(path):
             return ReadResult(is_image=True, is_binary=True, file_size=file_size)
-        sample_result = self._exec(f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null")
-        sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
-        if self._is_likely_binary(path, sample_output):
+        sample_bytes = self._sample_file_bytes(path)
+        if sample_bytes is not None:
+            ext_binary = os.path.splitext(path)[1].lower() in BINARY_EXTENSIONS
+            is_binary = ext_binary or self._is_likely_binary_bytes(sample_bytes)
+        else:
+            sample_result = self._exec(f"head -c 1000 {self._escape_shell_arg(path)} 2>/dev/null")
+            sample_output = _strip_terminal_fence_leaks(sample_result.stdout)
+            is_binary = self._is_likely_binary(path, sample_output)
+        if is_binary:
             return ReadResult(
                 is_binary=True, file_size=file_size,
-                error="Binary file — cannot display as text."
+                error=describe_binary_file(sample_bytes, file_size),
             )
         cat_result = self._exec(f"cat {self._escape_shell_arg(path)}")
         if cat_result.exit_code != 0:
@@ -1268,6 +1680,39 @@ class ShellFileOperations(FileOperations):
         return ReadResult(
             content=raw_content,
             file_size=file_size,
+        )
+
+    def read_file_bytes(self, path: str, max_bytes: Optional[int] = None) -> ReadResult:
+        """Read binary-safe bytes from any shell-backed environment."""
+        path = self._expand_path(path)
+        stat_result = self._exec(self._size_probe_cmd(path))
+        if stat_result.exit_code != 0:
+            return ReadResult(error=f"File not found: {path}")
+        stat_output = _strip_terminal_fence_leaks(stat_result.stdout)
+        if stat_output.strip() == NOT_REGULAR_SENTINEL:
+            return self._not_regular_error(path)
+        try:
+            file_size = int(stat_output.strip())
+        except ValueError:
+            return ReadResult(error=f"Could not determine file size: {path}")
+        if max_bytes is not None and file_size > max_bytes:
+            return ReadResult(
+                file_size=file_size,
+                error=f"File is too large ({file_size:,} bytes, limit is {max_bytes:,})",
+            )
+
+        encoded = self._exec(f"base64 < {self._escape_shell_arg(path)}")
+        if encoded.exit_code != 0:
+            return ReadResult(error=f"Failed to read binary file: {encoded.stdout}")
+        compact = "".join(_strip_terminal_fence_leaks(encoded.stdout).split())
+        try:
+            base64.b64decode(compact, validate=True)
+        except (ValueError, base64.binascii.Error):
+            return ReadResult(error=f"Backend returned invalid binary data for: {path}")
+        return ReadResult(
+            base64_content=compact,
+            file_size=file_size,
+            is_binary=True,
         )
 
     def delete_file(self, path: str) -> WriteResult:
@@ -1351,7 +1796,8 @@ class ShellFileOperations(FileOperations):
     # WRITE Implementation
     # =========================================================================
 
-    def write_file(self, path: str, content: str) -> WriteResult:
+    def write_file(self, path: str, content: str,
+                   pre_content: Optional[str] = None) -> WriteResult:
         """
         Write content to a file, creating parent directories as needed.
 
@@ -1378,6 +1824,15 @@ class ShellFileOperations(FileOperations):
         Args:
             path: File path to write
             content: Content to write
+            pre_content: Pre-edit file content if the caller already has it
+                (e.g. patch_replace read the file for fuzzy matching).
+                When provided, skips a redundant ``cat`` subprocess to
+                re-read the file for lint baseline / line-ending
+                detection. BOM detection always probes disk (the most
+                common provider — ``read_file_raw`` — strips BOMs, so
+                trusting ``pre_content`` for BOM would cause false
+                negatives and silent marker loss on rewrite). When
+                None, reads from disk as before.
 
         Returns:
             WriteResult with bytes written, lint summary, or error.
@@ -1389,6 +1844,22 @@ class ShellFileOperations(FileOperations):
         denied = get_write_denied_error(path)
         if denied:
             return WriteResult(error=denied)
+
+        # Reject lone surrogates up front with a regex scan (no encode, no
+        # subprocess). surrogateescape-decoded content (U+DC80–U+DCFF)
+        # round-trips through the pipe fine, but surrogates outside that
+        # range cannot be encoded at all — and letting them reach the pipe
+        # would spawn a child that then hangs, or truncates the target via
+        # empty-stdin `cat`. Refuse synchronously before any subprocess.
+        m = re.search(r"[\ud800-\udc7f\udd00-\udfff]", content)
+        if m:
+            return WriteResult(
+                error=(
+                    f"Refusing to write '{path}': content contains a lone "
+                    f"surrogate character ({m.group(0)!r}) that cannot be "
+                    "encoded as UTF-8. The file was NOT created or modified."
+                )
+            )
 
         # ── Fail-closed pre-write syntax gate ───────────────────────────
         # Validate the CANDIDATE content BEFORE any bytes touch disk —
@@ -1443,17 +1914,21 @@ class ShellFileOperations(FileOperations):
         # the UNION of in-process lint coverage and LSP coverage.  For
         # extensions outside both sets (binaries, opaque formats),
         # skipping the read keeps the hot path fast.
-        pre_content: Optional[str] = None
         want_pre = ext in LINTERS_INPROC or self._lsp_handles_extension(ext)
         if want_pre:
-            # Best-effort read; failure (file missing, permission) leaves
-            # pre_content as None which makes both downstream consumers
-            # degrade gracefully (lint reports all errors; LSP skips the
-            # shift map).
-            read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
-            read_result = self._exec(read_cmd)
-            if read_result.exit_code == 0 and read_result.stdout:
-                pre_content = read_result.stdout
+            if pre_content is not None:
+                # Caller already has file content (e.g. patch_replace read it
+                # for fuzzy matching) — reuse directly, skip redundant cat.
+                pass
+            else:
+                # Best-effort read; failure (file missing, permission) leaves
+                # pre_content as None which makes both downstream consumers
+                # degrade gracefully (lint reports all errors; LSP skips the
+                # shift map).
+                read_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+                read_result = self._exec(read_cmd)
+                if read_result.exit_code == 0 and read_result.stdout:
+                    pre_content = read_result.stdout
 
         # ── Line-ending preservation (Roo Code pattern) ──────────────
         # If the file existed with CRLF endings and the agent's content
@@ -1485,15 +1960,15 @@ class ShellFileOperations(FileOperations):
         # rather than an external IDE.
         self._snapshot_lsp_baseline(path)
 
-        # Create parent directories
+        # Write atomically.  ``mkdir -p`` is folded into _atomic_write
+        # (one fewer subprocess vs. a separate mkdir call).
+        # ``dirs_created`` has always meant "parent dirs ensured" —
+        # ``mkdir -p`` exits 0 even when the dirs pre-exist, so the old
+        # separate-mkdir code reported True in exactly the same cases.
+        # A mkdir failure now surfaces as the atomic-write error return
+        # below, before this field is ever emitted.
         parent = os.path.dirname(path)
-        dirs_created = False
-
-        if parent:
-            mkdir_cmd = f"mkdir -p {self._escape_shell_arg(parent)}"
-            mkdir_result = self._exec(mkdir_cmd)
-            if mkdir_result.exit_code == 0:
-                dirs_created = True
+        dirs_created = bool(parent)
 
         # Write atomically: stream into a temp file in the SAME directory,
         # then ``mv`` it over the target. The rename is atomic on POSIX
@@ -1510,19 +1985,60 @@ class ShellFileOperations(FileOperations):
         # the atomic swap doesn't silently widen or narrow permissions, and
         # clean the temp up on any failure so we never leak a ``.hermes-tmp``
         # turd next to the user's file.
+        # Encode once for byte count + sha256. surrogateescape is the exact
+        # inverse of the decode that may have produced this content, so these
+        # are the bytes the pipe transmits and the bytes on disk. The early
+        # rejection above guarantees this cannot raise; the try/except is
+        # defense for future callers that bypass it.
+        try:
+            content_bytes = content.encode("utf-8", "surrogateescape")
+        except UnicodeEncodeError as exc:
+            return WriteResult(
+                error=(
+                    f"Refusing to write '{path}': content contains a lone "
+                    f"surrogate character ({exc}) that cannot be encoded as "
+                    "UTF-8. The file was NOT created or modified."
+                )
+            )
         write_result = self._atomic_write(path, content)
 
         if write_result.exit_code != 0:
             return WriteResult(error=f"Failed to write file: {write_result.stdout}")
 
-        # Get bytes written (wc -c is POSIX, works on Linux + macOS)
-        stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
-        stat_result = self._exec(stat_cmd)
+        # Bytes written — computed from the exact bytes we just wrote (len
+        # matches wc -c) instead of spawning a ``wc -c`` subprocess. The
+        # encode happened up front with surrogateescape — the inverse of the
+        # decode that produces surrogate content — so content_bytes == what
+        # rode stdin == what is on disk, and the sha256 below compares like
+        # with like.
+        bytes_written = len(content_bytes)
 
+        # Post-write content verification (cheap, one shell call): compare
+        # the on-disk sha256 to the intended content's hash. Production
+        # mining shows models re-reading files right after writing them to
+        # confirm persistence (154 verify-reads in a 400k-msg window) —
+        # an explicit verified flag makes that turn unnecessary, and a
+        # mismatch is surfaced as a hard error instead of silent corruption
+        # (mirrors patch_replace's post-write verification).
+        content_verified: Optional[bool] = None
         try:
-            bytes_written = int(stat_result.stdout.strip())
-        except ValueError:
-            bytes_written = len(content.encode('utf-8'))
+            hash_cmd = f"sha256sum {self._escape_shell_arg(path)} 2>/dev/null"
+            hash_result = self._exec(hash_cmd)
+            if hash_result.exit_code == 0 and hash_result.stdout.strip():
+                disk_sha = hash_result.stdout.strip().split()[0]
+                expected_sha = hashlib.sha256(content_bytes).hexdigest()
+                content_verified = disk_sha == expected_sha
+                if not content_verified:
+                    return WriteResult(
+                        error=(
+                            f"Post-write verification failed for {path}: on-disk "
+                            "content hash differs from the intended write. The "
+                            "write did not persist correctly — re-read the file "
+                            "and retry."
+                        )
+                    )
+        except Exception:
+            content_verified = None
 
         # Post-write lint with delta refinement.
         lint_result = self._check_lint_delta(path, pre_content=pre_content, post_content=content)
@@ -1544,6 +2060,7 @@ class ShellFileOperations(FileOperations):
         return WriteResult(
             bytes_written=bytes_written,
             dirs_created=dirs_created,
+            verified=content_verified,
             lint=lint_result.to_dict() if lint_result else None,
             lsp_diagnostics=lsp_diagnostics,
         )
@@ -1582,6 +2099,9 @@ class ShellFileOperations(FileOperations):
             return PatchResult(error=f"Failed to read file: {path}")
         
         content = read_result.stdout
+        # Preserve raw content (including BOM) for write_file's pre_content
+        # so write_file can detect/restore BOM correctly.
+        raw_content = content
         # Strip a leading UTF-8 BOM before matching so the fuzzy matcher and
         # the diff operate on clean content (a phantom U+FEFF before line 1
         # defeats an exact first-line match). write_file restores the BOM on
@@ -1597,6 +2117,23 @@ class ShellFileOperations(FileOperations):
         )
         
         if error or match_count == 0:
+            # Already-applied detection: the most common patch failure in
+            # production is a re-send of an edit that has already landed
+            # (identical old/new strings, or old_string gone while
+            # new_string is present verbatim). Surface that as an explicit
+            # success-shaped no-op so the model moves on instead of
+            # burning turns on re-reads and re-patches.
+            from tools.fuzzy_match import is_already_applied
+            if is_already_applied(content, old_string, new_string):
+                return PatchResult(
+                    success=True,
+                    no_change=True,
+                    note=(
+                        f"File already contains the target text — the edit "
+                        f"appears to be already applied to {path}. No write "
+                        "performed; do not re-send this patch."
+                    ),
+                )
             err_msg = error or f"Could not find match for old_string in {path}"
             try:
                 from tools.fuzzy_match import format_no_match_hint
@@ -1617,8 +2154,11 @@ class ShellFileOperations(FileOperations):
         if file_ending:
             new_content = _normalize_line_endings(new_content, file_ending)
 
-        # Write back
-        write_result = self.write_file(path, new_content)
+        # Write back — pass pre_content (original read, with BOM) to avoid
+        # a redundant cat subprocess inside write_file.  Must be the raw
+        # content (before _strip_bom) so write_file can detect/restore BOM.
+        write_result = self.write_file(path, new_content,
+                                       pre_content=raw_content)
         if write_result.error:
             return PatchResult(error=f"Failed to write changes: {write_result.error}")
 
@@ -1767,8 +2307,12 @@ class ShellFileOperations(FileOperations):
         if not self._has_command(base_cmd):
             return LintResult(skipped=True, message=f"{base_cmd} not available")
 
-        # Run linter
-        cmd = linter_cmd.replace("{file}", self._escape_shell_arg(path))
+        # Run linter. Linters (python, node, tsc, go, rustfmt) are native
+        # Windows binaries on Windows hosts: they need the C:/... path form.
+        # The MSYS /c/... form makes node resolve the file as C:\c\Users\...
+        # (double-prefixed) — every .js write then reports a phantom ENOENT
+        # lint failure. Native form works for MSYS builds too.
+        cmd = linter_cmd.replace("{file}", self._escape_native_tool_arg(path))
         result = self._exec(cmd, timeout=30)
 
         if result.exit_code != 0 and _looks_like_linter_unusable(base_cmd, result.stdout):
@@ -2077,6 +2621,15 @@ class ShellFileOperations(FileOperations):
         # Validate that the path exists before searching
         check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
         if "not_found" in check.stdout:
+            # Multi-path recovery: models frequently pass several paths in
+            # one string ("dir1 dir2 dir3" or comma-separated). Instead of
+            # failing the whole call, split, search every path that exists,
+            # merge the results, and report the skipped parts.
+            multi = self._try_multi_path_search(
+                pattern, path, target, file_glob, limit, offset, output_mode, context
+            )
+            if multi is not None:
+                return multi
             # Try to suggest nearby paths
             parent = os.path.dirname(path) or "."
             basename_query = os.path.basename(path)
@@ -2113,6 +2666,129 @@ class ShellFileOperations(FileOperations):
             return self._search_content(pattern, path, file_glob, limit, offset, 
                                         output_mode, context)
     
+    def _try_multi_path_search(self, pattern: str, path: str, target: str,
+                               file_glob: Optional[str], limit: int, offset: int,
+                               output_mode: str, context: int) -> Optional[SearchResult]:
+        """Recover a not-found ``path`` that is really several paths in one string.
+
+        Production trajectories show models passing "dir1 dir2 dir3" (or
+        comma-separated lists) as ``path``. Split on whitespace/commas; when
+        at least one candidate exists and at least two candidates were given,
+        search every existing path, merge results, and note skipped parts.
+        Returns None when this doesn't look like a multi-path string.
+        """
+        parts = [p for chunk in path.split(",") for p in chunk.split() if p.strip()]
+        if len(parts) < 2:
+            return None
+        existing, missing = [], []
+        for p in parts:
+            expanded = self._expand_path(p)
+            chk = self._exec(
+                f"test -e {self._escape_shell_arg(expanded)} && echo exists || echo not_found"
+            )
+            (existing if "exists" in chk.stdout else missing).append(expanded)
+        if not existing:
+            return None
+
+        merged = SearchResult()
+        for p in existing:
+            if target == "files":
+                sub = self._search_files(pattern, p, limit, offset)
+            else:
+                sub = self._search_content(pattern, p, file_glob, limit, offset,
+                                           output_mode, context)
+            if sub.error:
+                continue
+            merged.matches.extend(sub.matches)
+            merged.files.extend(sub.files)
+            merged.counts.update(sub.counts)
+            merged.total_count += sub.total_count
+            merged.truncated = merged.truncated or sub.truncated
+        # Respect the caller's limit across the merged set.
+        merged.matches = merged.matches[:limit]
+        merged.files = merged.files[:limit]
+        note = f"path contained {len(parts)} entries; searched {len(existing)} that exist"
+        if missing:
+            note += "; skipped missing: " + ", ".join(missing[:3])
+            if len(missing) > 3:
+                note += f" (+{len(missing) - 3} more)"
+        merged.warning = note
+        return merged
+
+    def _zero_match_probe(self, pattern: str, path: str,
+                          file_glob: Optional[str]) -> Optional[str]:
+        """Return a hint for a 0-match content search, or None.
+
+        13.9% of production content searches return zero matches and give
+        the model nothing to steer by. Run ONE cheap case-insensitive count
+        probe; if it hits, say so. If the pattern contains regex
+        metacharacters, also probe it as a fixed string. Bounded: two rg
+        invocations max, count-only output.
+        """
+        if not self._has_command('rg'):
+            return None
+        glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
+        probe = self._exec(
+            f"rg -i --count-matches{glob_expr} "
+            f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
+            f"2>/dev/null | head -50",
+            timeout=30,
+        )
+        ci_total = 0
+        ci_files = 0
+        for line in (probe.stdout or "").strip().splitlines():
+            _p, _sep, n = line.rpartition(":")
+            if n.isdigit():
+                ci_total += int(n)
+                ci_files += 1
+        if ci_total > 0:
+            return (
+                f"0 exact matches, but {ci_total} case-insensitive match(es) "
+                f"in {ci_files} file(s) — the pattern's casing may be wrong."
+            )
+        # Hidden/ignored probe: rg skips dotdirs and .gitignore'd files by
+        # default. When the pattern exists only there, say so instead of
+        # returning a bare zero (bench case: match in .hidden/ silently
+        # missing from results).
+        hidden = self._exec(
+            f"rg --hidden --no-ignore --count-matches{glob_expr} "
+            f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
+            f"2>/dev/null | head -50",
+            timeout=30,
+        )
+        h_total = 0
+        h_files = 0
+        for line in (hidden.stdout or "").strip().splitlines():
+            _p, _sep, n = line.rpartition(":")
+            if n.isdigit():
+                h_total += int(n)
+                h_files += 1
+        if h_total > 0:
+            return (
+                f"0 matches in visible files, but {h_total} match(es) in "
+                f"{h_files} hidden or gitignored file(s) — these are excluded "
+                "by default. Search the hidden path explicitly to include them."
+            )
+        if re.search(r"[.\[\](){}?*+^$\\|]", pattern):
+            fixed = self._exec(
+                f"rg -F --count-matches{glob_expr} "
+                f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
+                f"2>/dev/null | head -50",
+                timeout=30,
+            )
+            f_total = sum(
+                int(line.rpartition(":")[2])
+                for line in (fixed.stdout or "").strip().splitlines()
+                if line.rpartition(":")[2].isdigit()
+            )
+            if f_total > 0:
+                return (
+                    f"0 regex matches, but {f_total} literal match(es) — the "
+                    "pattern contains regex metacharacters that likely need "
+                    "escaping (or pass a simpler substring)."
+                )
+        return None
+
     def _search_files(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name pattern (glob-like)."""
         # Auto-prepend **/ for recursive search if not already present
@@ -2218,7 +2894,7 @@ class ShellFileOperations(FileOperations):
         # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
         cmd_sorted = (
             f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
-            f"{self._escape_shell_arg(path)} 2>/dev/null "
+            f"{self._escape_native_tool_arg(path)} 2>/dev/null "
             f"| head -n {fetch_limit}"
         )
         result = self._exec(cmd_sorted, timeout=60)
@@ -2229,7 +2905,7 @@ class ShellFileOperations(FileOperations):
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
                 f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
-                f"{self._escape_shell_arg(path)} 2>/dev/null "
+                f"{self._escape_native_tool_arg(path)} 2>/dev/null "
                 f"| head -n {fetch_limit}"
             )
             result = self._exec(cmd_plain, timeout=60)
@@ -2249,7 +2925,9 @@ class ShellFileOperations(FileOperations):
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Search for content inside files (grep-like)."""
         # Try ripgrep first (fast), fallback to grep (slower but works)
+        used_rg = False
         if self._has_command('rg'):
+            used_rg = True
             result = self._search_with_rg(pattern, path, file_glob, limit, offset,
                                           output_mode, context)
         elif self._has_command('grep'):
@@ -2262,13 +2940,39 @@ class ShellFileOperations(FileOperations):
                       "Install ripgrep: https://github.com/BurntSushi/ripgrep#installation"
             )
 
+        # Zero-match steering: a 0-match result with no guidance is a dead
+        # turn. Probe cheaply for near-misses (wrong casing, hidden-only
+        # matches, unescaped regex metacharacters) and attach the finding
+        # as a warning. Runs for BOTH engines.
+        if (not result.error and result.total_count == 0
+                and not result.matches and not result.files and not result.counts):
+            try:
+                hint = self._zero_match_probe(pattern, path, file_glob)
+            except Exception:
+                hint = None
+            if hint:
+                result.warning = hint if not result.warning else f"{result.warning} {hint}"
+
+        # rg auto-enables --multiline for \n patterns, so the line-oriented
+        # explanation only applies to the grep fallback engine.
+        if used_rg:
+            return result
         return _maybe_warn_line_oriented_newline_pattern(result, pattern)
     
     def _search_with_rg(self, pattern: str, path: str, file_glob: Optional[str],
                         limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Search using ripgrep."""
         cmd_parts = ["rg", "--line-number", "--no-heading", "--with-filename"]
-        
+
+        # Auto-multiline: a regex `\n` (or a literal newline in the pattern)
+        # cannot match in rg's default line-oriented mode — it used to hard
+        # error ("the literal \"\\n\" is not allowed") and burn a turn. When
+        # the pattern clearly wants to cross lines, enable -U/--multiline
+        # up front and note it in the result.
+        multiline = _pattern_has_regex_newline(pattern)
+        if multiline:
+            cmd_parts.append("--multiline")
+
         # Add context if requested
         if context > 0:
             cmd_parts.extend(["-C", str(context)])
@@ -2285,7 +2989,10 @@ class ShellFileOperations(FileOperations):
         
         # Add pattern and path
         cmd_parts.append(self._escape_shell_arg(pattern))
-        cmd_parts.append(self._escape_shell_arg(path))
+        # rg is a native Windows binary when installed via winget/cargo/choco:
+        # it needs the C:/... path form, not the MSYS /c/... form (which
+        # nothing converts back — Hermes sets MSYS_NO_PATHCONV for its bash).
+        cmd_parts.append(self._escape_native_tool_arg(path))
         
         # Fetch extra rows so we can report the true total before slicing.
         # For context mode, rg emits separator lines ("--") between groups,
@@ -2318,6 +3025,10 @@ class ShellFileOperations(FileOperations):
 
         # Parse the diagnostic-free payload so error text never becomes a match.
         stdout = payload
+        _ml_note = (
+            "Pattern contains \\n — multiline mode (-U) was enabled automatically "
+            "so the regex can match across line boundaries."
+        ) if multiline else None
         # Parse results based on output mode
         if output_mode == "files_only":
             all_files = [f for f in stdout.strip().split('\n') if f]
@@ -2328,6 +3039,7 @@ class ShellFileOperations(FileOperations):
                 total_count=total,
                 truncated=bool(limit_reason),
                 limit_reason=limit_reason,
+                warning=_ml_note,
             )
         
         elif output_mode == "count":
@@ -2388,12 +3100,13 @@ class ShellFileOperations(FileOperations):
                 total_count=total,
                 truncated=total > offset + limit or bool(limit_reason),
                 limit_reason=limit_reason,
+                warning=_ml_note,
             )
     
     def _search_with_grep(self, pattern: str, path: str, file_glob: Optional[str],
                           limit: int, offset: int, output_mode: str, context: int) -> SearchResult:
         """Fallback search using grep."""
-        cmd_parts = ["grep", "-rnH"]  # -H forces filename even for single-file searches
+        cmd_parts = ["grep", "-rnHE"]  # -H forces filenames; -E matches rg regex behavior
         
         # Exclude hidden directories (matching ripgrep's default behavior).
         # This prevents searching inside .hub/index-cache/, .git/, etc.

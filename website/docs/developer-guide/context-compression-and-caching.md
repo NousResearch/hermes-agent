@@ -91,6 +91,9 @@ compression:
   codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
   codex_gpt55_autoraise_notice: true  # Show the one-time autoraise notice (default: true)
   codex_app_server_auto: native  # native|hermes|off for Codex app-server thread compaction
+  codex_responses_native: false  # gpt-5.6 on direct OpenAI/Codex: server-side compaction (opt-in)
+  codex_responses_compact_threshold: 200000  # Server-side compaction trigger (input tokens)
+  in_place: true             # Compact on the same session id, no rotation (default: true)
 
 # Summarization model/provider configured under auxiliary:
 auxiliary:
@@ -114,6 +117,20 @@ auxiliary:
 | `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.5 on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
 | `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time Codex gpt-5.5 autoraise notice. Set `false` to keep the 85% autoraise but suppress the banner |
 | `codex_app_server_auto` | `native` | `native`, `hermes`, `off` | Thread-compaction mode for Codex app-server sessions (see below) |
+| `codex_responses_native` | `false` | bool | Opt in to OpenAI's server-side compaction on the Responses API. Engages only for gpt-5.6-family models on the direct OpenAI API or a ChatGPT Codex subscription (see below) |
+| `codex_responses_compact_threshold` | `200000` | ≥1 tokens | Server-side compaction trigger in input tokens. Clamped below the local compression threshold at request time so the server compacts first |
+| `in_place` | `true` | bool | Compact on the same session id instead of rotating to a new one (see below) |
+
+### In-place compaction (single stable session id)
+
+With `compression.in_place: true` (the default), a compaction **rewrites the live message list on the same session id**: the system prompt is rebuilt, the summarized middle is swapped in, and the pre-compaction turns are soft-archived under the same id (`active=0, compacted=1` in the session store) — still searchable via `session_search` and recoverable, never deleted. There is no `parent_session_id` chain and no `name #N` renumbering; one conversation keeps one durable id for its whole life. This eliminated the session-rotation bug cluster (lost `/goal` state, orphaned sessions, search gaps across boundaries).
+
+Consumers observe the mode rather than diffing session ids:
+
+- The `session:compress` event carries `in_place: true/false` and `old_session_id` (empty string in in-place mode, since there is no old id).
+- The gateway re-baselines transcript handling from the agent's rotation-independent `_last_compaction_in_place` flag, not from an id-change diff.
+
+Set `in_place: false` to restore the legacy rotating path, where each compaction commits a new session id linked to the previous one via `parent_session_id`.
 
 ### Per-model threshold overrides
 
@@ -194,6 +211,35 @@ mechanism instead:
 Hermes' local transcript is never rewritten on this runtime — state.db records
 the compaction boundary while the visible transcript stays intact. All other
 routes (including Codex OAuth chat sessions) keep Hermes' summary compressor.
+
+### Native Responses compaction (gpt-5.6 on direct OpenAI / Codex subscription)
+
+OpenAI's Responses API supports server-side compaction: when a request includes
+`context_management: [{type: "compaction", compact_threshold: N}]` and the
+rendered input crosses N tokens, the server prunes older context into an opaque
+encrypted `compaction` output item. Hermes captures that item into the
+assistant message's existing replay sidecar and sends it back on subsequent
+turns, standing in for the pruned history — long-horizon recall without a
+client-side summary pass, and ZDR-friendly (`store: false`, no
+`previous_response_id`).
+
+Opt in with `compression.codex_responses_native: true`. The gate is deliberately
+narrow, re-checked on every request:
+
+- **Models:** the gpt-5.6 family only. Other models fail server-side when the
+  field is present (gpt-5.1/5.2 return HTTP 500 or stall the stream — there is
+  no structured rejection to downgrade on, verified live Aug 2026).
+- **Routes:** `api.openai.com` (OpenAI API key) or the ChatGPT Codex backend
+  (Codex subscription OAuth) only. xAI, GitHub/Copilot, OpenRouter, relays, and
+  local servers never see the field.
+
+Everything else about compression is unchanged: the local compressor stays
+armed as the fallback owner (the native threshold is clamped ~8K tokens below
+the local trigger so the server compacts first), and a structured provider
+rejection of the field disables native compaction for the session and retries
+the request without it. Switching the session to a non-eligible model or route
+simply stops the field from being sent — captured checkpoints are dropped from
+replay by the existing cross-issuer guard when the endpoint changes.
 
 ### Computed Values (for a 200K context model at defaults)
 

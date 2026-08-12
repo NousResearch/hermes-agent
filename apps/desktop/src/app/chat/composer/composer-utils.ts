@@ -4,13 +4,23 @@ import type { SlashChipKind } from '@/components/assistant-ui/directive-text'
 import type { ComposerAttachment } from '@/store/composer'
 import { setSessionPickerOpen } from '@/store/session'
 
+import type { TriggerState } from './text-utils'
+
 export const COMPOSER_STACK_BREAKPOINT_PX = 320
 
 // Above the stack breakpoint but still cramped: the model pill sheds its label
-// for its chevron icon (freeing ~120px) so the controls stop crowding the input
-// before the whole row has to stack. Progressive collapse: full pill → icon
-// pill → stacked.
-export const COMPOSER_COMPACT_PILL_PX = 440
+// for its chevron icon so the controls stop crowding the input before the whole
+// row has to stack. Progressive collapse: full pill → icon pill → stacked.
+//
+// Sized off what the controls actually cost, because guessing put the two
+// stages on top of each other. With the full pill the controls take ~284px
+// (pill 111 + the icon cluster), so at the old 440 the inline input was ~156px
+// — barely over its 128px minimum. A few words wrapped, wrapping is what
+// stacks the row, and the pill's chevron arrived at the same moment the row
+// gave up, which is the one thing progressive collapse is supposed to avoid.
+// At 560 the label goes while the input still has ~276px, and the ~110px the
+// chevron frees is spent keeping the row single for another stretch.
+export const COMPOSER_COMPACT_PILL_PX = 560
 
 // A single editor line is ~28px (--composer-input-min-height 1.625rem + 0.5rem
 // vertical padding). Anything taller means the text wrapped to a second line,
@@ -58,6 +68,48 @@ export const slashArgStage = (query: string) => query.includes(' ')
 
 /** The `/command` token of a slash query (`personality x` → `/personality`). */
 export const slashCommandToken = (query: string) => `/${query.split(/\s+/, 1)[0]?.toLowerCase() ?? ''}`
+
+export interface TriggerAcceptInput {
+  /** The user moved the highlight themselves (arrow keys) rather than
+   *  inheriting the list's default first row. */
+  activeExplicit: boolean
+  /** The trigger is a slash command whose argument is arbitrary prose. */
+  freeTextArgStage: boolean
+  key: string
+  kind: TriggerState['kind']
+  query: string
+}
+
+/**
+ * Whether a keypress accepts the highlighted completion while the popover is
+ * open. Tab is always an accept — it has no other meaning in the composer.
+ *
+ * Enter and Space are conditional, because both mean something else while a
+ * free-text argument is being written (`/goal ship the redesign`). Space types
+ * a space, and Enter sends the message; letting either take the popover's
+ * pre-highlighted row would swap the prose the user is mid-sentence on for a
+ * subcommand they never chose. Enter still accepts once the user has arrowed
+ * to a row deliberately, so the highlight never lies about what Enter will do.
+ */
+export function acceptsTriggerCompletion({
+  activeExplicit,
+  freeTextArgStage,
+  key,
+  kind,
+  query
+}: TriggerAcceptInput): boolean {
+  if (key === 'Tab') {
+    return true
+  }
+
+  if (key === 'Enter') {
+    return !freeTextArgStage || activeExplicit
+  }
+
+  // Space is slash-only (an `@` mention takes a literal space) and gated to a
+  // non-empty query so a bare `/ ` still types a space.
+  return key === ' ' && kind === '/' && Boolean(query.trim()) && !freeTextArgStage
+}
 
 export interface QueueEditState {
   attachments: ComposerAttachment[]

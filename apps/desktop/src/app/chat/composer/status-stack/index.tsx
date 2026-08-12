@@ -1,9 +1,8 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { type ReactNode, useEffect, useMemo } from 'react'
+import { useNavigate } from 'react-router'
 
 import { blurComposerInput } from '@/app/chat/composer/focus'
-import { clearSurfaceVar, setSurfaceVar, STATUS_STACK_VAR } from '@/app/chat/surface-vars'
 import { AGENTS_ROUTE } from '@/app/routes'
 import { BillingBanner } from '@/components/billing-banner'
 import { composerDockCard } from '@/components/chat/composer-dock'
@@ -208,43 +207,15 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
     sections.push({ key: 'queue', node: queue })
   }
 
+  // Micro actions are the TOP-MOST thing in the whole overlay lane — above the
+  // status card, above the billing wall, above everything. They're the only
+  // rows up here you press instead of read, so nothing may ever stack on top
+  // of them. Rendered outside the card (below) so the pills float.
   const visible = sections.length > 0
-  const stackRef = useRef<HTMLDivElement | null>(null)
 
-  // The stack is out of flow (overlays the thread), so the composer's measured
-  // height never sees it. Publish our own measured height — bucketed like the
-  // composer's, to avoid style invalidation churn — so the thread's
-  // last-message clearance can add it and the stack never hides messages.
-  // Scoped to THIS surface: tiles render their own stack (see surface-vars.ts).
-  useLayoutEffect(() => {
-    const el = stackRef.current
-
-    if (!visible || !el) {
-      clearSurfaceVar(el, STATUS_STACK_VAR)
-
-      return
-    }
-
-    let last = -1
-
-    const sync = () => {
-      const bucket = Math.round(el.getBoundingClientRect().height / 8) * 8
-
-      if (bucket !== last) {
-        last = bucket
-        setSurfaceVar(el, STATUS_STACK_VAR, `${bucket}px`)
-      }
-    }
-
-    const observer = new ResizeObserver(sync)
-    observer.observe(el)
-    sync()
-
-    return () => {
-      observer.disconnect()
-      clearSurfaceVar(el, STATUS_STACK_VAR)
-    }
-  }, [visible])
+  // No height to publish: the stack is an in-flow child of the composer dock,
+  // so the dock's own measurement (--composer-measured-height) already covers
+  // it and the thread clears both with one number.
 
   if (!visible) {
     return null
@@ -252,12 +223,11 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
 
   return (
     <div
-      // Sits in the overlay lane above the composer. The composer root has pt-2
-      // before the actual surface; translate by that amount so the stack returns
-      // to its original attachment point without intruding into the repo strip.
-      className="absolute inset-x-0 bottom-full z-3 max-h-[40vh] translate-y-2 overflow-y-auto"
+      // In flow in the dock column, directly above the composer. The dock is
+      // bottom-anchored, so this grows upward over the thread without needing
+      // to be positioned — and it shares the dock's left edge for free.
+      className="flex max-h-[40vh] min-h-0 flex-col overflow-y-auto"
       onPointerDownCapture={() => blurComposerInput()}
-      ref={stackRef}
     >
       {/* The card paints the shared --composer-fill (rest / scrolled / focused
           all match the composer surface by construction); on scroll we only
@@ -265,20 +235,22 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
           Rounded top, square bottom; the bottom border is TRANSPARENT — the
           composer surface's visible top border (which sits at a higher z) is the
           single shared seam, so the two read as one fused capsule. */}
-      <div
-        className={cn(
-          composerDockCard('top'),
-          // Inset (mx-2) so the stack reads slightly narrower than the composer
-          // surface below it — the original look.
-          'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent pt-0.5',
-          'transition-opacity duration-200 ease-out',
-          scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
-        )}
-      >
-        {sections.map(section => (
-          <div key={section.key}>{section.node}</div>
-        ))}
-      </div>
+      {sections.length > 0 && (
+        <div
+          className={cn(
+            composerDockCard('top'),
+            // Inset (mx-2) so the stack reads slightly narrower than the composer
+            // surface below it — the original look.
+            'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent pt-0.5',
+            'transition-opacity duration-200 ease-out',
+            scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
+          )}
+        >
+          {sections.map(section => (
+            <div key={section.key}>{section.node}</div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

@@ -13,6 +13,7 @@ from typing import Awaitable, Callable
 
 from agent.model_metadata import estimate_tokens_rough
 from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+from hermes_cli.sizefmt import format_bytes
 
 _QUOTED_REFERENCE_VALUE = r'(?:`[^`\n]+`|"[^"\n]+"|\'[^\'\n]+\')'
 REFERENCE_PATTERN = re.compile(
@@ -213,8 +214,12 @@ async def preprocess_context_references_async(
             f"@ context injection warning: {injected_tokens} tokens exceeds the 25% soft limit ({soft_limit})."
         )
 
-    stripped = _remove_reference_tokens(message, refs)
-    final = stripped
+    # Leave the `@file:`/`@folder:` tokens where the user typed them. The token
+    # IS the reference, not scaffolding around it: clients render each one as an
+    # inline chip, so stripping them left a sentence with a hole in it ("review
+    # and ship") and made the desktop re-derive the refs from the attached block
+    # to show them as a detached list above the prose.
+    final = message
     if warnings:
         final = f"{final}\n\n--- Context Warnings ---\n" + "\n".join(f"- {warning}" for warning in warnings)
     if blocks:
@@ -473,19 +478,6 @@ def _parse_file_reference_value(value: str) -> tuple[str, int | None, int | None
     return _strip_reference_wrappers(value), None, None
 
 
-def _remove_reference_tokens(message: str, refs: list[ContextReference]) -> str:
-    pieces: list[str] = []
-    cursor = 0
-    for ref in refs:
-        pieces.append(message[cursor:ref.start])
-        cursor = ref.end
-    pieces.append(message[cursor:])
-    text = "".join(pieces)
-    text = re.sub(r"\s{2,}", " ", text)
-    text = re.sub(r"\s+([,.;:!?])", r"\1", text)
-    return text.strip()
-
-
 def _is_binary_file(path: Path) -> bool:
     mime, _ = mimetypes.guess_type(path.name)
     if mime and not mime.startswith("text/") and not any(
@@ -563,25 +555,40 @@ def _rg_files(path: Path, cwd: Path, limit: int) -> list[Path] | None:
     return files[:limit]
 
 
-def _human_bytes(n: int) -> str:
-    size = float(n)
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024 or unit == "GB":
-            return f"{int(size)} {unit}" if unit == "B" else f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} GB"
+def _agent_visible_path(path: Path) -> str:
+    """Map a host path to the path the agent's tools can read in the active backend.
+
+    Under a container backend (docker) the gateway host path dangles inside the
+    sandbox — the container has its own filesystem and the host path is not
+    mounted. Files staged into an auto-mounted cache dir (``images/``,
+    ``attachments/``, ...) are translated to their in-container path via the
+    existing ``tools.credential_files`` machinery (#76577). Falls back to the
+    host path when the backend is local or translation is unavailable.
+    """
+    try:
+        # Desktop/in-process gateways may not have bridged ``terminal.*``
+        # config into ``TERMINAL_ENV`` at startup; run the idempotent bridge so
+        # the credential_files translation gate sees the active backend.
+        from tools.terminal_tool import _ensure_terminal_env_bridged
+
+        _ensure_terminal_env_bridged()
+        from tools.credential_files import to_agent_visible_cache_path
+
+        return to_agent_visible_cache_path(str(path))
+    except Exception:
+        return str(path)
 
 
 def _binary_reference_block(ref: ContextReference, path: Path) -> str:
     mime, _ = mimetypes.guess_type(path.name)
     mime = mime or "application/octet-stream"
     try:
-        size = _human_bytes(path.stat().st_size)
+        size = format_bytes(path.stat().st_size)
     except OSError:
         size = "unknown size"
     return (
         f"📎 {ref.raw} ({mime}, {size}) — binary file, not inlined as text. "
-        f"It is available on disk at `{path}`. Use your tools to work with it "
+        f"It is available on disk at `{_agent_visible_path(path)}`. Use your tools to work with it "
         f"(read or convert it, extract its text, or view/render it as needed); "
         f"do not tell the user the file type is unsupported."
     )

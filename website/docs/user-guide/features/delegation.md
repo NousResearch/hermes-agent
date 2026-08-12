@@ -153,15 +153,35 @@ delegation:
 
 If omitted, subagents use the same model as the parent.
 
+### Cost strategy: frontier planner, inexpensive workers
+
+Decomposing a problem into well-specified subtasks takes frontier-level judgment; executing a subtask that already comes with a clear goal, full context, and an output contract usually doesn't. Meanwhile the children are where the tokens go — a parallel batch of subagents typically burns the large majority of a run's total tokens, so the worker model is where the cost actually lives. Pinning `delegation.model` to an inexpensive model while your main session stays on a frontier model keeps the planning quality where it matters and cuts spend where the volume is:
+
+```yaml
+# ~/.hermes/config.yaml
+model:
+  default: "your-frontier-model"     # parent (planner) stays on the frontier model
+delegation:
+  model: "your-inexpensive-model"    # all delegate_task children run on this
+  provider: "openrouter"             # optional: route children to a different provider
+```
+
+Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model.
+
+Note that the pin is global: `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
+
 ## Inherited Tool Access
 
 `delegate_task` does not accept a model-facing `toolsets` parameter. Each subagent inherits the parent's enabled toolsets so the model cannot grant a child capabilities that the parent does not have. Configure the parent's tools before starting the conversation if delegated work needs additional capabilities.
 
 Certain tools are blocked for subagents even when the parent has them:
-- `delegation` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
+- `delegate_task` — blocked for leaf subagents (the default). Retained for `role="orchestrator"` children, bounded by `max_spawn_depth` — see [Depth Limit and Nested Orchestration](#depth-limit-and-nested-orchestration) below.
 - `clarify` — subagents cannot interact with the user
 - `memory` — no writes to shared persistent memory
-- `code_execution` — children should reason step-by-step
+- `send_message` — no cross-platform side effects
+- `cronjob` — no scheduling more work in the parent's name
+
+Both roles retain `execute_code` (programmatic tool calling) so children can batch mechanical work.
 
 ## Max Iterations
 
@@ -179,7 +199,7 @@ delegate_task(
 
 By default there is **no wall-clock timeout** on subagents. Children fail only from what they're actually doing — API errors, tool errors, or hitting their iteration budget — never from a delegation-level stopwatch. Earlier releases shipped a hard cap (300s, later 600s), which kept killing legitimately busy children mid-task: deep code reviews, large research fan-outs, and slow reasoning models routinely need more than 10 minutes while making steady progress the whole time.
 
-Genuinely stuck children are still detected: the heartbeat staleness monitor stops refreshing the parent's activity when a child makes no progress (no API calls, no tool starts), letting the gateway inactivity timeout fire on a truly wedged worker.
+Genuinely stuck children are still detected: the heartbeat staleness monitor stops refreshing the parent's activity when a child makes no progress (no API calls, no tool starts, and no activity-timestamp ticks), letting the gateway inactivity timeout fire on a truly wedged worker. An in-flight model wait still counts as progress — subagents refresh the activity clock while waiting on the provider, so a slow local / long-prefill completion is not treated as stalled.
 
 If you want a hard cap anyway (e.g. cost control on unattended cron-driven delegation), opt in per-install:
 
@@ -191,9 +211,53 @@ delegation:
 
 A positive value enforces a hard wall-clock limit on each child; `0` or a negative value disables it.
 
+When a configured cap fires, the child's result carries structured timeout
+metadata alongside the error message so parents and hooks can distinguish a
+stopwatch kill from other failures without parsing text: `timeout_seconds`
+(the configured cap), `timed_out_after_seconds` (actual wall clock), and
+`timeout_phase` (`before_first_llm_call` when the child never reached its
+first request, `after_llm_calls` otherwise). All three are `null` on
+non-timeout errors.
+
 :::tip Diagnostic dump on zero-call timeout
-With a hard cap configured, if a subagent times out having made **zero** API calls (usually: provider unreachable, auth failure, or tool-schema rejection), `delegate_task` writes a structured diagnostic to `~/.hermes/logs/subagent-timeout-<session>-<timestamp>.log` containing the subagent's config snapshot, credential-resolution trace, and any early error messages. Much easier to root-cause than the previous silent-timeout behavior.
+With a hard cap configured, if a subagent times out having made **zero** API calls (usually: provider unreachable, auth failure, or tool-schema rejection), `delegate_task` writes a structured diagnostic to `~/.hermes/logs/subagent-timeout-<session>-<timestamp>.log` containing the subagent's config snapshot, credential-resolution trace, any early error messages, and stack traces for **all** live threads (not just the child's own) — a child parked waiting on a nested helper thread is indistinguishable from a slow provider without the full picture.
 :::
+
+## Stall Detection for Background Subagents
+
+Background delegations (`delegate_task(background=true)`) are watched by a
+**progress-based stall monitor** — on by default, zero config. Unlike a
+wall-clock timeout, it never touches a child that is making progress, no
+matter how long it runs.
+
+The monitor samples each detached child's progress signals — API-call count,
+current tool, and last-activity timestamp (which ticks on **every streamed
+token**, tool transition, and API-call boundary, so a child mid-stream on a
+long response always counts as alive):
+
+1. **Progressing children are never touched.** Any advancing signal resets
+   the clock.
+2. A child whose progress is completely frozen past the stale threshold
+   (450s idle, 1200s while inside a tool — legitimately slow terminal
+   commands and web fetches get the higher ceiling) is **interrupted** and
+   given a 120s grace window. A child that unwinds in time delivers its
+   partial results through the normal completion path.
+3. A child that never returns is force-finalized with a terminal `stalled`
+   completion event, so the owning session hears an outcome instead of
+   going silent, and the async slot frees for new work.
+
+The `stalled` event carries structured metadata mirroring the sync-path
+timeout fields: `stalled_after_quiet_seconds`, `stall_threshold_seconds`,
+`stall_phase` (`idle` / `in_tool`), and `stall_grace_seconds`.
+
+This closed a long-standing failure mode where a wedged background child
+left its session looking dead until a process restart. The underlying wedge
+(children hanging at their first API call after multi-day gateway uptime)
+was also fixed at the root: delegated children now run their OpenAI-wire
+API requests inline on their own conversation thread instead of a nested
+worker thread — the layer where the wedge lived. The stall monitor remains
+as the safety net for anything else.
+
 
 ## Monitoring Running Subagents (`/agents`)
 
@@ -205,6 +269,40 @@ The TUI ships a `/agents` overlay (alias `/tasks`) that turns recursive `delegat
 - Post-hoc review: step through each subagent's turn-by-turn history even after they've returned to the parent
 
 The classic CLI just prints `/agents` as a text summary; the TUI is where the overlay shines. See [TUI — Slash commands](/user-guide/tui#slash-commands).
+
+On the classic CLI and every gateway platform (Telegram, Discord, Slack, ...),
+`/agents` also lists **background delegations with live per-child activity**,
+sampled directly from each running child:
+
+```
+Background delegations: 1 running
+- deleg_ab12cd34 · running · research the delegation stall monitor
+  - child 1: 4 api calls · in web_search · active 12s ago
+  - child 2: 7 api calls · between turns · active 3s ago
+```
+
+A delegation the stall monitor has flagged shows as
+`stalling · no progress 450s — interrupting`, and long-quiet-but-healthy
+children show their quiet time so you can tell "slow" from "stuck" at a
+glance.
+
+## Steering a Running Subagent
+
+Interrupting a child throws away its in-flight work; often you just want to redirect it. `steer_subagent(subagent_id, text)` in `tools/delegate_tool.py` is the redirection-side mirror of `interrupt_subagent()`: it queues text into a live child through the same mechanism as [`/steer`](/reference/slash-commands) — the text is appended to the child's last tool result at its next iteration boundary, the in-flight tool call is never cut, and the child sees it as an out-of-band user message. Programmatic hosts reach it through the session-scoped `subagent.steer` gateway RPC, which sits beside `subagent.interrupt`:
+
+```json
+{"method": "subagent.steer", "params": {"session_id": "owning-ui-session", "subagent_id": "sa-0-1a2b3c4d", "text": "focus on pricing instead"}}
+```
+
+Subagent ids come from `delegation.status` (or `list_active_subagents()`) — the same place `subagent.interrupt` gets them. The gateway accepts steering only from the exact live UI/gateway session that spawned the child. A missing, foreign, ambiguous, or stale/recycled session identity is rejected; knowing a global subagent id is not authority. Direct in-process callers retain the unscoped helper contract deliberately.
+
+**Queued is not delivered, but it is never synthetic success.** A `"queued"` response means the text was accepted before the child's completion boundary, not necessarily that the child has seen it. Acceptance and completion are synchronized: either the child can still consume the text, or its exact text is drained into the result as `pending_steer`. Calls after closure return `"rejected"`. If a child accepted the steer but had already produced its final answer, the completion entry the parent receives retains it as `missed_steer`, with a note appended to the summary:
+
+```
+[steer did not land — the subagent finished before it could be delivered: focus on pricing instead]
+```
+
+So the parent (or the operator driving it) can tell a steered child from one that finished on the old instructions, and re-issue the guidance as a follow-up instead of trusting that it landed.
 
 ## Live Transcripts
 

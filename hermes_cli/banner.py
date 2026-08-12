@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 from hermes_constants import get_hermes_home
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 # rich and prompt_toolkit are imported lazily (inside the functions that use
 # them) rather than at module level.  Importing this module is on the TUI
@@ -40,7 +40,14 @@ def cprint(text: str):
     """Print ANSI-colored text through prompt_toolkit's renderer."""
     from prompt_toolkit import print_formatted_text as _pt_print
     from prompt_toolkit.formatted_text import ANSI as _PT_ANSI
-    _pt_print(_PT_ANSI(text))
+    try:
+        _pt_print(_PT_ANSI(text))
+    except Exception:
+        # prompt_toolkit needs a real console. On Windows, a redirected or
+        # absent stdout (pythonw.exe, CI, `hermes ... > file`) raises
+        # NoConsoleScreenBufferError from its Win32Output — display helpers
+        # must never crash the caller over that, so degrade to plain print.
+        print(text)
 
 
 # =========================================================================
@@ -89,13 +96,23 @@ HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀�
 # Skills scanning
 # =========================================================================
 
+_available_skills_cache: Optional[tuple] = None  # (result,) once computed
+
+
 def get_available_skills() -> Dict[str, List[str]]:
     """Return skills grouped by category, filtered by platform and disabled state.
 
     Delegates to ``_find_all_skills()`` from ``tools/skills_tool`` which already
     handles platform gating (``platforms:`` frontmatter) and respects the
     user's ``skills.disabled`` config list.
+
+    Cached per-process: this feeds only the startup banner, whose snapshot
+    is taken once anyway, and the underlying skills-tree walk costs ~100ms.
+    ``prefetch_banner_data()`` uses the cache to pay that walk off-thread.
     """
+    global _available_skills_cache
+    if _available_skills_cache is not None:
+        return _available_skills_cache[0]
     try:
         from tools.skills_tool import _find_all_skills
         all_skills = _find_all_skills()  # already filtered
@@ -106,6 +123,7 @@ def get_available_skills() -> Dict[str, List[str]]:
     for skill in all_skills:
         category = skill.get("category") or "general"
         skills_by_category.setdefault(category, []).append(skill["name"])
+    _available_skills_cache = (skills_by_category,)
     return skills_by_category
 
 
@@ -219,7 +237,15 @@ def _check_via_local_git(repo_dir: Path) -> Optional[int]:
     is_shallow = shallow == "true"
 
     try:
-        fetch_args = ["git", "fetch", "origin"]
+        # Scope the fetch to the one branch the behind-count compares against.
+        # An unscoped ``git fetch origin`` transfers every remote head (~1,400
+        # on this repo — measured 3.0 s vs 0.55 s scoped) and can burn the full
+        # 10 s timeout on slow links. ``cmd_update`` already scopes its fetch
+        # for the same reason. Modern git updates the ``origin/main`` tracking
+        # ref on a scoped fetch, so the ``HEAD..origin/main`` count below is
+        # unaffected; the shallow path compares against FETCH_HEAD, which a
+        # scoped fetch also updates.
+        fetch_args = ["git", "fetch", "origin", "main"]
         if is_shallow:
             fetch_args += ["--depth", "1"]
         fetch_args.append("--quiet")
@@ -364,6 +390,9 @@ def _git_short_hash(repo_dir: Path, rev: str) -> Optional[str]:
     return value or None
 
 
+_git_banner_state_cache: Optional[tuple] = None  # (state_or_None,) once computed
+
+
 def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     """Return upstream/local git hashes for the startup banner.
 
@@ -376,7 +405,23 @@ def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     definition pinned to one commit, so "ahead" is always zero and the
     banner correctly shows ``· upstream <sha>`` with no carried-commits
     annotation.
+
+    Cached per-process (default ``repo_dir`` only): the state costs 2-3 git
+    subprocesses (~100ms) and the checkout revision cannot change under a
+    running CLI in a way the banner needs to observe live. The cache also
+    lets ``prefetch_banner_data()`` pay this cost off-thread before the
+    banner renders.
     """
+    global _git_banner_state_cache
+    if repo_dir is None and _git_banner_state_cache is not None:
+        return _git_banner_state_cache[0]
+    state = _compute_git_banner_state(repo_dir)
+    if repo_dir is None:
+        _git_banner_state_cache = (state,)
+    return state
+
+
+def _compute_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
     repo_dir = repo_dir or _resolve_repo_dir()
     if repo_dir is None:
         # No git checkout — try the baked build SHA (Docker image path).
@@ -506,10 +551,95 @@ def prefetch_update_check():
     t.start()
 
 
+_banner_data_prefetch_started = False
+
+
+def prefetch_banner_data():
+    """Warm the banner's subprocess/I/O-heavy inputs in a daemon thread.
+
+    ``build_welcome_banner`` needs git state (2-4 ``git rev-parse``/
+    ``describe`` subprocesses, ~130ms) and the skills index (a skills-tree
+    rglob, ~110ms). Both are cached per-process by their own modules, so
+    warming them here while the main thread pays the CPU-bound ``cli`` /
+    prompt_toolkit imports overlaps subprocess waits and file I/O (which
+    release the GIL) with import work. Idempotent; failures are irrelevant
+    because the banner recomputes anything missing.
+    """
+    global _banner_data_prefetch_started
+    if _banner_data_prefetch_started:
+        return
+    _banner_data_prefetch_started = True
+
+    def _run() -> None:
+        try:
+            get_git_banner_state()
+        except Exception:
+            pass
+        try:
+            get_latest_release_tag()
+        except Exception:
+            pass
+        try:
+            get_available_skills()
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, name="banner-data-prefetch", daemon=True).start()
+
+
 def get_update_result(timeout: float = 0.5) -> Optional[int]:
     """Get result of prefetched check. Returns None if not ready."""
     _update_check_done.wait(timeout=timeout)
     return _update_result
+
+
+def _format_update_notice(behind: int) -> str:
+    """Render the update warning line for a non-zero ``behind`` result."""
+    from hermes_cli.config import get_managed_update_command, recommended_update_command
+    if behind > 0:
+        commits_word = "commit" if behind == 1 else "commits"
+        return (
+            f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
+            f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
+        )
+    # UPDATE_AVAILABLE_NO_COUNT: nix-built hermes; we know an update
+    # exists but not by how much, and we don't know how the user
+    # installed it (nix run, profile, system flake, home-manager).
+    managed_cmd = get_managed_update_command()
+    line = "[bold yellow]⚠ update available[/]"
+    if managed_cmd:
+        line += f"[dim yellow] — run [bold]{managed_cmd}[/bold][/]"
+    return line
+
+
+_deferred_update_notice_started = False
+
+
+def _defer_update_notice(console: "Console", max_wait: float = 30.0) -> None:
+    """Print the update warning once the prefetched check completes.
+
+    Used when the banner rendered before the update prefetch finished so
+    startup never blocks on git/network. Prints at most once per process.
+    """
+    global _deferred_update_notice_started
+    if _deferred_update_notice_started:
+        return
+    _deferred_update_notice_started = True
+
+    def _wait_and_print() -> None:
+        try:
+            if not _update_check_done.wait(timeout=max_wait):
+                return
+            behind = _update_result
+            if behind is None or behind == 0:
+                return
+            console.print(_format_update_notice(behind))
+        except Exception:
+            pass  # never break the session over an update notice
+
+    threading.Thread(
+        target=_wait_and_print, name="update-notice", daemon=True
+    ).start()
 
 
 # =========================================================================
@@ -544,37 +674,124 @@ def _display_toolset_name(toolset_name: str) -> str:
     )
 
 
-def build_welcome_banner(console: "Console", model: str, cwd: str,
-                         tools: List[dict] = None,
-                         enabled_toolsets: List[str] = None,
-                         session_id: str = None,
-                         get_toolset_for_tool=None,
-                         context_length: int = None,
-                         provider: str = None):
-    """Build and print a welcome banner with caduceus on left and info on right.
+# =========================================================================
+# Banner snapshot — warm-launch fast path
+# =========================================================================
+# The banner's tool panel needs the full tool registry (get_tool_definitions:
+# tools/*.py discovery + every check_fn), which costs ~0.5-0.9s cold and is
+# the single largest chunk of CLI time-to-banner. The tool list shown in the
+# banner is a pure function of (config.yaml, .env, code checkout, enabled
+# toolsets), so we snapshot the rendered inputs to disk after each launch
+# and replay them on the next one when the fingerprint matches. The agent's
+# REAL tool list is still computed fresh at first message (agent init) —
+# the snapshot only feeds the cosmetic startup panel, and a background
+# refresh re-verifies it right after the banner renders (see
+# cli.show_banner), so a stale panel self-heals within one launch.
 
-    Args:
-        console: Rich Console instance.
-        model: Current model name.
-        cwd: Current working directory.
-        tools: List of tool definitions.
-        enabled_toolsets: List of enabled toolset names.
-        session_id: Session identifier.
-        get_toolset_for_tool: Callable to map tool name -> toolset name.
-        context_length: Model's context window size in tokens.
-        provider: Active provider id. When ``"moa"``, ``model`` is a MoA
-            preset name and the banner renders the aggregator instead of a
-            bare model slug.
+_BANNER_SNAPSHOT_VERSION = 1
+
+
+def _banner_snapshot_path() -> Path:
+    return get_hermes_home() / "cache" / "banner_snapshot.json"
+
+
+def banner_snapshot_fingerprint() -> Optional[str]:
+    """Fingerprint the inputs the banner tool panel depends on."""
+    import hashlib
+    parts = [f"v{_BANNER_SNAPSHOT_VERSION}"]
+    try:
+        from hermes_cli.config import get_config_path
+        for p in (get_config_path(), get_hermes_home() / ".env"):
+            try:
+                st = p.stat()
+                parts.append(f"{p.name}:{st.st_mtime_ns}:{st.st_size}")
+            except OSError:
+                parts.append(f"{p.name}:absent")
+    except Exception:
+        return None
+    # Code checkout: version + git HEAD when available (post-update change).
+    parts.append(str(VERSION))
+    state = get_git_banner_state()
+    if state:
+        parts.append(str(state.get("local", "")))
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def load_banner_snapshot(enabled_toolsets: List[str] = None) -> Optional[Dict[str, Any]]:
+    """Return the stored banner snapshot when its fingerprint is current."""
+    try:
+        blob = json.loads(_banner_snapshot_path().read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(blob, dict):
+        return None
+    fp = banner_snapshot_fingerprint()
+    if not fp or blob.get("fingerprint") != fp:
+        return None
+    if blob.get("enabled_toolsets") != sorted(enabled_toolsets or []):
+        return None
+    tools = blob.get("tools")
+    toolset_map = blob.get("toolset_map")
+    availability = blob.get("availability")
+    if not isinstance(tools, list) or not isinstance(toolset_map, dict) \
+            or not isinstance(availability, dict):
+        return None
+    if not isinstance(blob.get("skills_by_category"), dict):
+        return None
+    return blob
+
+
+def save_banner_snapshot(
+    tools: List[dict],
+    enabled_toolsets: List[str],
+    availability: Dict[str, Any],
+    toolset_map: Dict[str, str],
+) -> None:
+    """Persist the banner tool panel inputs for next launch (best-effort)."""
+    fp = banner_snapshot_fingerprint()
+    if not fp:
+        return
+    payload = {
+        "fingerprint": fp,
+        "enabled_toolsets": sorted(enabled_toolsets or []),
+        "tools": [
+            {"function": {"name": t["function"]["name"]}}
+            for t in tools
+            if isinstance(t, dict) and t.get("function", {}).get("name")
+        ],
+        "toolset_map": toolset_map,
+        "availability": {
+            "unavailable_toolsets": availability.get("unavailable_toolsets", []),
+            "lazy_tools": list(availability.get("lazy_tools", [])),
+            "disabled_tools": list(availability.get("disabled_tools", [])),
+        },
+        "skills_by_category": get_available_skills(),
+    }
+    path = _banner_snapshot_path()
+    try:
+        import os as _os
+        import tempfile as _tempfile
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = _tempfile.mkstemp(dir=str(path.parent), prefix=".banner_snap.")
+        with _os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        _os.replace(tmp, path)
+    except Exception:
+        pass
+
+
+def compute_toolset_availability(enabled_toolsets: List[str] = None) -> Dict[str, Any]:
+    """Compute the banner's toolset-availability payload.
+
+    Returns ``{"unavailable_toolsets": [...], "lazy_tools": [...],
+    "disabled_tools": [...]}`` — the exact inputs ``build_welcome_banner``
+    needs to annotate disabled/lazy tools. Split out so the result can be
+    snapshotted to disk and replayed on the next launch without importing
+    ``model_tools`` (see ``load_banner_snapshot``).
     """
     from model_tools import check_tool_availability, TOOLSET_REQUIREMENTS
-    from rich.panel import Panel
-    from rich.table import Table
-    if get_toolset_for_tool is None:
-        from model_tools import get_toolset_for_tool
 
-    tools = tools or []
     enabled_toolsets = enabled_toolsets or []
-
     _, unavailable_toolsets = check_tool_availability(quiet=True)
     # The availability check walks the GLOBAL toolset registry, so it includes
     # toolsets that aren't part of this agent's platform set at all (e.g.
@@ -601,6 +818,55 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
             lazy_tools.update(tools_in_ts)
         else:
             disabled_tools.update(tools_in_ts)
+    return {
+        "unavailable_toolsets": unavailable_toolsets,
+        "lazy_tools": sorted(lazy_tools),
+        "disabled_tools": sorted(disabled_tools),
+    }
+
+
+def build_welcome_banner(console: "Console", model: str, cwd: str,
+                         tools: List[dict] = None,
+                         enabled_toolsets: List[str] = None,
+                         session_id: str = None,
+                         get_toolset_for_tool=None,
+                         context_length: int = None,
+                         provider: str = None,
+                         availability: Dict[str, Any] = None,
+                         skills_by_category: Dict[str, List[str]] = None):
+    """Build and print a welcome banner with caduceus on left and info on right.
+
+    Args:
+        console: Rich Console instance.
+        model: Current model name.
+        cwd: Current working directory.
+        tools: List of tool definitions.
+        enabled_toolsets: List of enabled toolset names.
+        session_id: Session identifier.
+        get_toolset_for_tool: Callable to map tool name -> toolset name.
+        context_length: Model's context window size in tokens.
+        provider: Active provider id. When ``"moa"``, ``model`` is a MoA
+            preset name and the banner renders the aggregator instead of a
+            bare model slug.
+        availability: Optional precomputed result of
+            ``compute_toolset_availability`` (e.g. replayed from the banner
+            snapshot). When provided together with ``get_toolset_for_tool``,
+            this function performs no ``model_tools`` import at all.
+    """
+    from rich.panel import Panel
+    from rich.table import Table
+    if get_toolset_for_tool is None:
+        from model_tools import get_toolset_for_tool
+
+    tools = tools or []
+    enabled_toolsets = enabled_toolsets or []
+
+    if availability is None:
+        availability = compute_toolset_availability(enabled_toolsets)
+    unavailable_toolsets = availability.get("unavailable_toolsets", [])
+    lazy_tools = set(availability.get("lazy_tools", []))
+    disabled_tools = set(availability.get("disabled_tools", []))
+    _enabled_ts = {str(t) for t in enabled_toolsets}
 
     layout_table = Table.grid(padding=(0, 2))
     layout_table.add_column("left", justify="center")
@@ -644,13 +910,22 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
         ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
         left_lines.append(f"[{accent}]MoA: {preset_name}[/]{agg_str}{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
     else:
-        model_short = model.split("/")[-1] if "/" in model else model
-        if model_short.endswith(".gguf"):
-            model_short = model_short[:-5]
-        if len(model_short) > 28:
-            model_short = model_short[:25] + "..."
-        ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
-        left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
+        if not (model or "").strip() or (model or "").strip().lower() == "unknown":
+            # Unconfigured install: say so in red instead of a blank/"unknown"
+            # slug — this is the single clearest place to tell the user what
+            # is wrong and how to fix it.
+            left_lines.append(
+                f"[bold red]no model configured[/] "
+                f"[dim {dim}]— run /model or hermes setup[/]"
+            )
+        else:
+            model_short = model.split("/")[-1] if "/" in model else model
+            if model_short.endswith(".gguf"):
+                model_short = model_short[:-5]
+            if len(model_short) > 28:
+                model_short = model_short[:25] + "..."
+            ctx_str = f" [dim {dim}]·[/] [dim {dim}]{_format_context_length(context_length)} context[/]" if context_length else ""
+            left_lines.append(f"[{accent}]{model_short}[/]{ctx_str} [dim {dim}]·[/] [dim {dim}]Nous Research[/]")
 
     if os.getenv("HERMES_YOLO_MODE"):
         left_lines.append(f"[bold red]⚠ YOLO mode[/] [dim {dim}]— all approval prompts bypassed[/]")
@@ -718,12 +993,30 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     if remaining_toolsets > 0:
         right_lines.append(f"[dim {dim}](and {remaining_toolsets} more toolsets...)[/]")
 
-    # MCP Servers section (only if configured)
+    # MCP Servers section (only if configured). Probe cheaply first: the
+    # full get_mcp_status() path resolves portable plugin MCP servers,
+    # which JOINS the in-flight background plugin discovery (~100ms on the
+    # startup path). When neither config.yaml nor the persisted plugin
+    # key cache mentions any MCP server, skip the section outright.
+    mcp_status = []
     try:
-        from tools.mcp_tool import get_mcp_status
-        mcp_status = get_mcp_status()
+        from hermes_cli.config import load_config as _load_cfg
+        _has_native_mcp = bool((_load_cfg() or {}).get("mcp_servers"))
     except Exception:
-        mcp_status = []
+        _has_native_mcp = True  # can't tell — take the full path
+    _has_portable_mcp = False
+    if not _has_native_mcp:
+        try:
+            from hermes_cli.plugins import get_portable_mcp_server_names_nowait
+            _has_portable_mcp = bool(get_portable_mcp_server_names_nowait())
+        except Exception:
+            _has_portable_mcp = True  # can't tell — take the full path
+    if _has_native_mcp or _has_portable_mcp:
+        try:
+            from tools.mcp_tool import get_mcp_status
+            mcp_status = get_mcp_status()
+        except Exception:
+            mcp_status = []
 
     if mcp_status:
         right_lines.append("")
@@ -764,7 +1057,8 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     # the on-disk catalog here is misleading. Reflect the real state instead.
     _skills_enabled = (not _enabled_ts) or ("skills" in _enabled_ts)
     if _skills_enabled:
-        skills_by_category = get_available_skills()
+        if skills_by_category is None:
+            skills_by_category = get_available_skills()
         total_skills = sum(len(s) for s in skills_by_category.values())
     else:
         skills_by_category = {}
@@ -832,26 +1126,19 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
 
     right_lines.append(f"[dim {dim}]{' · '.join(summary_parts)}[/]")
 
-    # Update check — use prefetched result if available
+    # Update check — use prefetched result if available. NEVER block the
+    # banner on it: the prefetch does git/network work that rarely finishes
+    # before the banner renders, so a blocking wait here just adds its full
+    # timeout to every startup (500ms of the banner path pre-fix). If the
+    # result isn't ready yet, defer the warning line: a daemon thread waits
+    # for the prefetch and prints the same notice above the prompt when it
+    # lands (prompt_toolkit's patch_stdout renders late prints safely).
     try:
-        behind = get_update_result(timeout=0.5)
-        if behind is not None and behind != 0:
-            from hermes_cli.config import get_managed_update_command, recommended_update_command
-            if behind > 0:
-                commits_word = "commit" if behind == 1 else "commits"
-                right_lines.append(
-                    f"[bold yellow]⚠ {behind} {commits_word} behind[/]"
-                    f"[dim yellow] — run [bold]{recommended_update_command()}[/bold] to update[/]"
-                )
-            else:
-                # UPDATE_AVAILABLE_NO_COUNT: nix-built hermes; we know an update
-                # exists but not by how much, and we don't know how the user
-                # installed it (nix run, profile, system flake, home-manager).
-                managed_cmd = get_managed_update_command()
-                line = "[bold yellow]⚠ update available[/]"
-                if managed_cmd:
-                    line += f"[dim yellow] — run [bold]{managed_cmd}[/bold][/]"
-                right_lines.append(line)
+        behind = get_update_result(timeout=0.05)
+        if behind is None and not _update_check_done.is_set():
+            _defer_update_notice(console)
+        elif behind is not None and behind != 0:
+            right_lines.append(_format_update_notice(behind))
     except Exception:
         pass  # Never break the banner over an update check
 

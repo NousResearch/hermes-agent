@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -53,6 +54,49 @@ WEBSOCKETS_AVAILABLE = websockets is not None
 # How long to wait for the handshake descriptor and for each outbound result.
 _HANDSHAKE_TIMEOUT_S = 30.0
 _OUTBOUND_TIMEOUT_S = 30.0
+# Bound supervisor/reader/ws.close awaits so a wedged peer cannot stall
+# adapter.disconnect. Three sequential awaits at 1.0s stay under the runner's
+# default 5s adapter disconnect budget (plus the 2s go_idle ACK budget).
+_TEARDOWN_AWAIT_TIMEOUT_S = 1.0
+# Bounded drain for in-flight outbound frames at disconnect: long enough for a
+# platform edit round-trip through the connector, short enough that shutdown
+# stays snappy when the connector is gone. The EFFECTIVE grace is clamped at
+# disconnect time so drain + the three sequential teardown awaits stay inside
+# the runner's adapter-disconnect budget (gateway/run.py wraps disconnect() in
+# asyncio.wait_for; blowing that budget cancels teardown mid-drain, skips the
+# fail-pending loop, and leaves callers blocked on _OUTBOUND_TIMEOUT_S).
+_DISCONNECT_DRAIN_GRACE_S = 5.0
+
+
+def _disconnect_drain_grace_s(budget_s: Optional[float] = None) -> float:
+    """Effective drain grace: clamped to the caller's disconnect budget.
+
+    ``budget_s`` is the REMAINING budget threaded down by the caller
+    (RelayAdapter.disconnect measures what go_idle and monitor teardown
+    already consumed). When None, mirrors
+    gateway/run.py:_adapter_disconnect_timeout_secs (env override with
+    the same variable, same default) rather than importing it — the
+    transport must stay importable without the gateway runner. Reserves
+    the three sequential teardown awaits plus a small margin.
+    """
+    budget = _env_disconnect_budget_s() if budget_s is None else max(0.0, budget_s)
+    reserved = 3 * _TEARDOWN_AWAIT_TIMEOUT_S + 0.5
+    return max(0.0, min(_DISCONNECT_DRAIN_GRACE_S, budget - reserved))
+
+
+def _env_disconnect_budget_s() -> float:
+    """The runner's adapter-disconnect budget, read the same way
+    gateway/run.py:_adapter_disconnect_timeout_secs reads it (same env
+    variable, same default). Callers above the transport use this to
+    apportion the budget across go_idle / monitor teardown / drain."""
+    budget = 5.0  # _ADAPTER_DISCONNECT_TIMEOUT_SECS_DEFAULT in gateway/run.py
+    raw = os.getenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "").strip()
+    if raw:
+        try:
+            budget = max(0.0, float(raw))
+        except ValueError:
+            pass
+    return budget
 
 # Phase 7 Unit 7d-B: the application close code the connector sends when it
 # rejects/revokes a gateway's WS upgrade auth (mirrors the connector's
@@ -219,6 +263,12 @@ def _event_from_wire(raw: Dict[str, Any]) -> MessageEvent:
         # (_is_discord_auto_thread_lane's relay-aware sibling reads these).
         auto_thread_created=bool(src.get("auto_thread_created", False)),
         auto_thread_initial_name=src.get("auto_thread_initial_name"),
+        # Discord auto-thread session continuity: the connector stamps the
+        # thread id this channel message's reply WILL be auto-threaded into
+        # (== the message id) so the gateway keys the initiating channel message
+        # and its later in-thread follow-ups to ONE session. See
+        # build_session_key / SessionSource.prospective_thread_id.
+        prospective_thread_id=src.get("prospective_thread_id"),
         # Authentic upstream-trust signal: this event arrived over the
         # per-instance-authenticated relay WS, so the connector already resolved
         # it to this instance's owner-bound author. ``platform`` is the
@@ -404,6 +454,11 @@ class WebSocketRelayTransport:
         self._reader: Optional[asyncio.Task[None]] = None
         self._inbound: Optional[InboundHandler] = None
         self._descriptor: Optional[CapabilityDescriptor] = None
+        # Phase 1.5 multi-platform: descriptors keyed by the underlying platform
+        # (one per hello'd identity). `_descriptor` above stays the FIRST
+        # (primary-identity) descriptor for back-compat; this map is the
+        # per-platform capability surface read via `descriptor_for_platform`.
+        self._descriptors_by_platform: Dict[str, CapabilityDescriptor] = {}
         self._descriptor_ready: asyncio.Future[CapabilityDescriptor] | None = None
         # requestId -> future awaiting the matching outbound_result.
         self._pending: Dict[str, asyncio.Future[Dict[str, Any]]] = {}
@@ -433,8 +488,10 @@ class WebSocketRelayTransport:
         loop = asyncio.get_running_loop()
         self._descriptor_ready = loop.create_future()
         # A fresh handshake is coming; clear any stale descriptor so handshake()
-        # awaits the new one (matters on a re-dial).
+        # awaits the new one (matters on a re-dial). The per-platform map resets
+        # with it — a reconnected connector re-sends one descriptor per hello.
         self._descriptor = None
+        self._descriptors_by_platform = {}
         # scale-to-zero (D12): a successful (re-)dial ends any dormant state — we
         # are live again, so a subsequent UNEXPECTED close should reconnect on the
         # normal fast backoff, not the dormant cadence.
@@ -483,35 +540,69 @@ class WebSocketRelayTransport:
         token = make_upgrade_token(self._gateway_id, self._upgrade_secret)
         return {"Authorization": f"Bearer {token}"}
 
-    async def disconnect(self) -> None:
+    async def disconnect(self, *, budget_s: Optional[float] = None) -> None:
+        """Tear down the socket, draining in-flight outbound frames first.
+
+        ``budget_s`` is the REMAINING wall-clock budget the caller can spend
+        here (RelayAdapter.disconnect threads it down after go_idle / monitor
+        teardown). When None, the env-mirrored runner default applies.
+        """
         self._closing = True
-        if self._supervisor is not None:
-            self._supervisor.cancel()
-            try:
-                await self._supervisor
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
-                pass
-            self._supervisor = None
-        if self._reader is not None:
-            self._reader.cancel()
-            try:
-                await self._reader
-            except (asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
-                pass
-            self._reader = None
-        if self._ws is not None:
-            try:
-                await self._ws.close()
-            except Exception:  # noqa: BLE001
-                pass
-            self._ws = None
-        # Fail any in-flight outbound waiters so callers don't hang.
-        for fut in self._pending.values():
-            if not fut.done():
-                fut.set_exception(RuntimeError("relay transport closed"))
-        self._pending.clear()
-        if self._going_idle_ack is not None and not self._going_idle_ack.done():
-            self._going_idle_ack.set_exception(RuntimeError("relay transport closed"))
+        try:
+            # Drain grace: a trailing outbound frame (typically the turn's
+            # finalize edit) may still be awaiting its outbound_result. Failing
+            # it immediately loses a message the connector was about to ack —
+            # staging incident 2026-08-09 froze a Slack reply at its preview
+            # snapshot exactly this way. Give in-flight requests a short bounded
+            # window to resolve before tearing the socket down.
+            pending = [f for f in self._pending.values() if not f.done()]
+            if pending:
+                _grace = _disconnect_drain_grace_s(budget_s)
+                if _grace > 0:
+                    try:
+                        # asyncio.wait (not wait_for+gather): on timeout it must NOT
+                        # cancel the futures — the fail-any-remaining loop below owns
+                        # their terminal state.
+                        await asyncio.wait(pending, timeout=_grace)
+                    except Exception:  # noqa: BLE001 - grace is best-effort
+                        pass
+            if self._supervisor is not None:
+                self._supervisor.cancel()
+                try:
+                    await asyncio.wait_for(
+                        self._supervisor, timeout=_TEARDOWN_AWAIT_TIMEOUT_S
+                    )
+                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
+                    pass
+                self._supervisor = None
+            if self._reader is not None:
+                self._reader.cancel()
+                try:
+                    await asyncio.wait_for(self._reader, timeout=_TEARDOWN_AWAIT_TIMEOUT_S)
+                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001 - best-effort teardown
+                    pass
+                self._reader = None
+            if self._ws is not None:
+                try:
+                    await asyncio.wait_for(self._ws.close(), timeout=_TEARDOWN_AWAIT_TIMEOUT_S)
+                except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+                finally:
+                    self._ws = None
+        finally:
+            # Fail any in-flight outbound waiters so callers don't hang.
+            # Runs in a finally so a cancellation landing anywhere in the
+            # drain/teardown above (the runner's wait_for budget, an outer
+            # cleanup deadline) can NEVER leave a registered future
+            # unresolved — a stranded waiter would otherwise block until
+            # _OUTBOUND_TIMEOUT_S (30s). Idempotent: done futures are
+            # skipped, so a second disconnect() pass is safe.
+            for fut in self._pending.values():
+                if not fut.done():
+                    fut.set_exception(RuntimeError("relay transport closed"))
+            self._pending.clear()
+            if self._going_idle_ack is not None and not self._going_idle_ack.done():
+                self._going_idle_ack.set_exception(RuntimeError("relay transport closed"))
 
     async def handshake(self) -> CapabilityDescriptor:
         if self._descriptor is not None:
@@ -519,6 +610,18 @@ class WebSocketRelayTransport:
         if self._descriptor_ready is None:
             raise RuntimeError("handshake() called before connect()")
         return await asyncio.wait_for(self._descriptor_ready, timeout=self._connect_timeout_s)
+
+    def descriptor_for_platform(self, platform: str) -> Optional[CapabilityDescriptor]:
+        """The negotiated descriptor for one fronted platform, or None.
+
+        Phase 1.5 multi-platform: the connector replies one descriptor per
+        hello'd identity; they accumulate here keyed by the descriptor's own
+        ``platform`` field. Callers (RelayAdapter) use this to resolve PER-CHAT
+        capabilities — e.g. Discord's 2000-char max_message_length vs
+        Telegram's 4096 — instead of applying the primary identity's scalar
+        descriptor to every platform this gateway fronts.
+        """
+        return self._descriptors_by_platform.get(platform)
 
     @property
     def auth_revoked(self) -> bool:
@@ -638,9 +741,11 @@ class WebSocketRelayTransport:
         # flip us back to a fast reconnect.
         self._dormant = True
         try:
-            await self._ws.close()
-        except Exception:  # noqa: BLE001 - best-effort; the reader still ends + arms reconnect
-            logger.debug("relay go_dormant: ws.close() raised", exc_info=True)
+            await asyncio.wait_for(
+                self._ws.close(), timeout=_TEARDOWN_AWAIT_TIMEOUT_S
+            )
+        except (asyncio.TimeoutError, Exception):  # noqa: BLE001 - best-effort; the reader still ends + arms reconnect
+            logger.debug("relay go_dormant: ws.close() raised or timed out", exc_info=True)
         return acked
 
     async def _send_inbound_ack(self, buffer_id: str) -> None:
@@ -662,6 +767,12 @@ class WebSocketRelayTransport:
         *,
         platform: Optional[str] = None,
     ) -> Dict[str, Any]:
+        if self._closing:
+            # Teardown in progress: the disconnect() fail-pending loop may
+            # already have run, so a future registered now would never be
+            # resolved or failed — the caller would block the full
+            # _OUTBOUND_TIMEOUT_S for a socket that is going away. Fail fast.
+            return {"success": False, "error": "relay transport closed"}
         if self._ws is None:
             return {"success": False, "error": "relay transport not connected"}
         request_id = uuid.uuid4().hex
@@ -795,7 +906,19 @@ class WebSocketRelayTransport:
         ftype = frame.get("type")
         if ftype == "descriptor":
             descriptor = CapabilityDescriptor.from_json(json.dumps(frame.get("descriptor", {})))
-            self._descriptor = descriptor
+            # Phase 1.5 multi-platform: one descriptor frame arrives per hello'd
+            # identity. Accumulate them keyed by the descriptor's own platform so
+            # the adapter can resolve PER-CHAT capabilities (e.g. Discord's 2000
+            # vs Telegram's 4096 max_message_length) instead of collapsing N
+            # platforms onto whichever descriptor arrived last.
+            if descriptor.platform:
+                self._descriptors_by_platform[descriptor.platform] = descriptor
+            # The FIRST descriptor of this connection generation is the session
+            # default (the primary identity's) — later arrivals must NOT
+            # overwrite it, or the scalar capability surface silently becomes
+            # last-writer-wins across platforms.
+            if self._descriptor is None:
+                self._descriptor = descriptor
             # Phase 7 Unit 7d-B: a received descriptor means the WS upgrade auth
             # passed and the connector accepted us — record that we've handshaked
             # at least once, so a LATER 4401 close is read as a revocation

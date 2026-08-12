@@ -41,6 +41,7 @@ from agent.conversation_compression import (
 from agent.context_engine import automatic_compaction_status_message
 from agent.iteration_budget import IterationBudget
 from agent.memory_manager import build_memory_context_block
+from agent.memory_provider import is_trivial_prompt
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
@@ -169,6 +170,93 @@ def append_notes_to_multimodal_content(content: Any, notes: str) -> bool:
         return False
 
 
+# Surfaces whose sessions must not be auto-titled. The prologue is shared by
+# EVERY agent, not only the ones a human is watching, so membership here is what
+# keeps the titler off machine-driven runs:
+#
+# - cron  — the scheduler names its own session after the job in its `finally`
+#   block, and the opener is the cron delivery hint, not a user's request.
+#   Titling it writes that scaffolding as the visible name for the whole run and
+#   bills a side-LLM call per fire, against the same job that sets
+#   `skip_memory` / `skip_background_review` to avoid exactly that.
+# - subagent — a delegated child's session is hidden from every picker, so its
+#   title is never read. A batch at `max_concurrent_children` would pay N title
+#   calls for N names nobody sees.
+_UNTITLED_PLATFORMS = frozenset({"cron", "subagent"})
+
+
+def _maybe_title_session_at_turn_start(agent: Any, messages: List[Any]) -> None:
+    """Kick off auto-titling for this session's first user message.
+
+    Called from the turn prologue, so every surface a human reads (CLI, gateway,
+    TUI/desktop, ACP) gets identical behavior without each one re-implementing
+    the call. Fully defensive: titling is cosmetic and must never break a turn.
+    """
+    session_db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if not session_db or not session_id:
+        return
+
+    if str(getattr(agent, "platform", "") or "").lower() in _UNTITLED_PLATFORMS:
+        return
+
+    try:
+        from agent.message_content import flatten_message_text
+        from agent.title_generator import maybe_auto_title
+
+        # The turn's own user message, as text. Multimodal turns flatten to
+        # their text parts; an image-only turn yields "" and is skipped, since
+        # there is nothing to title from.
+        user_text = ""
+        for msg in reversed(messages or []):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                user_text = flatten_message_text(msg.get("content")).strip()
+                break
+        if not user_text:
+            return
+
+        # The session row is created lazily on the first persist, which happens
+        # later in the turn. Force it now, or the title write matches zero rows
+        # and the session stays untitled for the whole turn anyway.
+        if not getattr(agent, "_session_db_created", False):
+            ensure = getattr(agent, "_ensure_db_session", None)
+            if callable(ensure):
+                ensure()
+            if not getattr(agent, "_session_db_created", False):
+                return
+
+        # Snapshot the runtime identity; the validator lets the background
+        # titler skip its LLM call if the user switches models before it fires
+        # (a stale request would reload an unloaded Ollama model, #19027).
+        _model = getattr(agent, "model", None)
+        _provider = getattr(agent, "provider", None)
+
+        maybe_auto_title(
+            session_db,
+            session_id,
+            user_text,
+            conversation_history=messages,
+            failure_callback=(
+                getattr(agent, "_title_failure_callback", None)
+                or getattr(agent, "_emit_auxiliary_failure", None)
+            ),
+            main_runtime={
+                "model": _model,
+                "provider": _provider,
+                "base_url": getattr(agent, "base_url", None),
+                "api_key": getattr(agent, "api_key", None),
+                "api_mode": getattr(agent, "api_mode", None),
+            },
+            title_callback=getattr(agent, "_on_session_title", None),
+            runtime_validator=lambda: (
+                getattr(agent, "model", None) == _model
+                and getattr(agent, "provider", None) == _provider
+            ),
+        )
+    except Exception:
+        logger.debug("Turn-start auto-title dispatch failed", exc_info=True)
+
+
 def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> int:
     """Locate this turn's user message after compaction rebuilt ``messages``.
 
@@ -178,24 +266,30 @@ def reanchor_current_turn_user_idx(messages: List[Any], user_message: Any) -> in
     meaningless. Prefer the LAST user message whose content exactly matches
     this turn's text — the surviving copy in the common case — so the
     injection stamp and the #48677 persist override can't land on a
-    todo-snapshot or historical row. Fall back to the last user message when
-    no exact match survives (merge-summary-into-tail rewrites the content but
-    the trackers still need a live anchor). Returns -1 when the list has no
-    user message at all.
+    todo-snapshot or historical row. Fall back to the last *user-originated*
+    turn when no exact match survives (merge-summary-into-tail rewrites the
+    content but the trackers still need a live anchor). Compaction handoffs
+    must never become the fallback anchor (#80622) — they are reference-only
+    scaffolding, not the active ask. Returns -1 when the list has no
+    user-originated message at all.
     """
+    from agent.context_compressor import is_user_originated_turn
+
     fallback = -1
     for i in range(len(messages) - 1, -1, -1):
         msg = messages[i]
         if not (isinstance(msg, dict) and msg.get("role") == "user"):
             continue
-        if fallback < 0:
-            fallback = i
         if msg.get("content") == user_message:
             return i
+        # Prefer a real human turn over a synthetic handoff / continuation
+        # marker when the exact content was rewritten by merge-into-tail.
+        if fallback < 0 and is_user_originated_turn(msg):
+            fallback = i
     return fallback
 
 
-def _compression_made_progress(
+def compression_made_progress(
     orig_len: int, new_len: int, orig_tokens: int, new_tokens: int
 ) -> bool:
     """Return ``True`` if a compression pass materially reduced the request.
@@ -216,6 +310,13 @@ def _compression_made_progress(
     if new_len < orig_len:
         return True
     return orig_tokens > 0 and new_tokens < orig_tokens * 0.95
+
+
+# Back-compat alias: this predicate was module-private until the gateway's
+# session-hygiene recovery gate needed the same semantics (#79624).  Keeping the
+# old name bound means existing callers and any test that patches
+# ``_compression_made_progress`` continue to work unchanged.
+_compression_made_progress = compression_made_progress
 
 
 def _compression_warrants_another_preflight_pass(
@@ -336,6 +437,8 @@ def build_turn_context(
     persist_user_message: Optional[Any],
     persist_user_timestamp: Optional[float] = None,
     *,
+    persist_user_display_kind: Optional[str] = None,
+    persist_user_display_metadata: Optional[Dict[str, Any]] = None,
     restore_or_build_system_prompt,
     install_safe_stdio,
     sanitize_surrogates,
@@ -390,6 +493,7 @@ def build_turn_context(
             api_key=getattr(agent, "api_key", "") or "",
             api_mode=getattr(agent, "api_mode", "") or "",
             auth_mode=getattr(agent, "auth_mode", "") or "",
+            session_id=getattr(agent, "session_id", "") or "",
         )
     except Exception:
         pass
@@ -436,7 +540,12 @@ def build_turn_context(
     # Generate unique task_id if not provided to isolate VMs between tasks.
     effective_task_id = task_id or str(uuid.uuid4())
     agent._current_task_id = effective_task_id
-    turn_id = f"{agent.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
+    turn_id = str(getattr(agent, "_relay_pending_turn_id", "") or "")
+    if not turn_id:
+        turn_id = (
+            f"{agent.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
+        )
+    agent._relay_pending_turn_id = None
     agent._current_turn_id = turn_id
     agent._current_api_request_id = ""
     # Tripwire: warn (with both turn ids) when this turn starts before the
@@ -537,6 +646,19 @@ def build_turn_context(
     # Add the current user message after the prompt/session setup has made
     # close persistence safe. The handoff above preserves any marker already
     # stamped by an earlier close flush.
+    #
+    # A synthesized turn (auto-continue recovery note, delegation completion)
+    # declares how it should READ in a transcript. Stamp that on the live
+    # message so the crash persist below writes the row already typed. Typing
+    # it after the turn instead leaves the row untyped for the whole run — and
+    # forever if the turn crashes — so the raw system note paints as a user
+    # bubble. The model still receives role/content unchanged; the api_messages
+    # build strips both fields from every outgoing copy.
+    if persist_user_display_kind:
+        user_msg["display_kind"] = persist_user_display_kind
+        if persist_user_display_metadata:
+            user_msg["display_metadata"] = persist_user_display_metadata
+
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
@@ -1030,7 +1152,7 @@ def build_turn_context(
     # Plugin hook: pre_llm_call (context injected into user message, not system prompt).
     plugin_user_context = ""
     try:
-        from hermes_cli.plugins import invoke_hook as _invoke_hook
+        from hermes_cli.lifecycle import invoke_hook as _invoke_hook
         _pre_results = _invoke_hook(
             "pre_llm_call",
             session_id=agent.session_id,
@@ -1041,6 +1163,7 @@ def build_turn_context(
             is_first_turn=(not bool(conversation_history)),
             model=agent.model,
             platform=getattr(agent, "platform", None) or "",
+            parent_session_id=getattr(agent, "_parent_session_id", None) or "",
             sender_id=getattr(agent, "_user_id", None) or "",
         )
         _ctx_parts: list[str] = []
@@ -1131,11 +1254,15 @@ def build_turn_context(
             pass
 
     # External memory provider: prefetch once before the tool loop.
+    #
+    # Skip prefetch on trivial prompts (greetings, acknowledgements) to
+    # prevent memory-context injection on turns that carry no semantic signal.
     ext_prefetch_cache = ""
     if agent._memory_manager:
         try:
             _query = original_user_message if isinstance(original_user_message, str) else ""
-            ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
+            if not is_trivial_prompt(_query):
+                ext_prefetch_cache = agent._memory_manager.prefetch_all(_query) or ""
         except Exception:
             pass
 
@@ -1224,6 +1351,16 @@ def build_turn_context(
         # close path must no longer treat it as a pre-worker UI input.
         if not isinstance(pending_cli_message, dict) or pending_cli_message.get("_db_persisted"):
             agent._pending_cli_user_message = None
+
+    # Title the session from this user message, now — the row exists and the
+    # turn has not called the model yet. Titling is derived from the user's
+    # ask alone, so it runs concurrently with the turn instead of waiting for
+    # a final response; on a long tool-heavy first turn that is the difference
+    # between a title in ~1s and a title minutes later (or never, when the
+    # turn failed before producing one). Fire-and-forget on a daemon thread,
+    # a no-op once the session has a title, and shared by every surface
+    # because every surface enters the turn through this prologue.
+    _maybe_title_session_at_turn_start(agent, messages)
 
     return TurnContext(
         user_message=user_message,

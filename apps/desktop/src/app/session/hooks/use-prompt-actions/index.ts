@@ -25,7 +25,10 @@ import { clearAllPrompts } from '@/store/prompts'
 import {
   $busy,
   $connection,
+  $currentCwd,
   $messages,
+  $terminalBackend,
+  setActiveSessionId,
   setAwaitingResponse,
   setBusy,
   setMessages,
@@ -33,6 +36,7 @@ import {
 } from '@/store/session'
 import { clearSessionSubagents } from '@/store/subagents'
 import { clearSessionTodos } from '@/store/todos'
+import { setSessionDraftingTool } from '@/store/tool-drafting'
 
 import type {
   ClientSessionState,
@@ -43,7 +47,6 @@ import type {
   ImageAttachResponse,
   SessionRedirectResponse
 } from '../../../types'
-import { resolveSessionProfile } from '../use-session-actions/utils'
 
 import {
   applyBranchVisibility,
@@ -64,10 +67,10 @@ import {
   friendlyRemoteAttachError,
   type GatewayRequest,
   inlineErrorMessage,
-  isSessionNotFoundError,
   readFileDataUrlForAttach,
   readImageForRemoteAttach,
-  type SubmitTextOptions
+  type SubmitTextOptions,
+  withSessionNotFoundResume
 } from './utils'
 
 interface HandoffResult {
@@ -75,97 +78,140 @@ interface HandoffResult {
   error?: string
 }
 
+const WINDOWS_ABSOLUTE_PATH_RE = /^(?:[A-Za-z]:[\\/]|\\\\)/
+const POSIX_ABSOLUTE_PATH_RE = /^\/(?!\/)/
+
+// Terminal backends whose execution environment has its own filesystem
+// (docker/ssh/singularity/modal/...) cannot see the desktop's host paths —
+// they must be crossed as bytes, like remote attachments. Mirrors the
+// container_backend set in tools/terminal_tool.py::_get_env_config.
+const CONTAINER_TERMINAL_BACKENDS = new Set(['docker', 'ssh', 'singularity', 'modal', 'daytona', 'vercel_sandbox'])
+
+// `mode: local` means the gateway was launched locally, not necessarily that
+// Electron and the gateway share a filesystem. Windows Desktop can front a
+// WSL/Docker backend whose cwd is POSIX, so a Windows host path must cross the
+// boundary as bytes just like a remote attachment. Container terminal backends
+// (docker, ssh, ...) always need bytes: the sandbox has its own filesystem and
+// the host path would dangle inside it (#76577).
+function attachmentPathNeedsUpload(path: string, backendCwd?: null | string, terminalBackend?: string): boolean {
+  if (CONTAINER_TERMINAL_BACKENDS.has((terminalBackend || '').trim().toLowerCase())) {
+    return true
+  }
+
+  return WINDOWS_ABSOLUTE_PATH_RE.test(path.trim()) && POSIX_ABSOLUTE_PATH_RE.test(backendCwd?.trim() || '')
+}
+
 /**
  * Stage one file/image attachment into the session workspace and return the
- * attachment rewritten with the gateway-side ref. Images upload their bytes in
- * remote mode (so vision works) and pass the path locally; non-image files
- * upload bytes remotely and pass the path locally. Throws on failure so callers
- * can surface an error. Shared by submit-time sync, the eager drop-time upload,
- * and the message-edit composer drop — keep them in lockstep.
+ * attachment rewritten with the gateway-side ref. Attachments upload their
+ * bytes for remote gateways and local cross-filesystem backends; otherwise the
+ * gateway receives the shared local path. Throws on failure so callers can
+ * surface an error. Shared by submit-time sync, the eager drop-time upload, and
+ * the message-edit composer drop — keep them in lockstep.
  */
 export async function uploadComposerAttachment(
   attachment: ComposerAttachment,
-  opts: { remote: boolean; requestGateway: GatewayRequest; sessionId: string }
+  opts: {
+    backendCwd?: null | string
+    remote: boolean
+    requestGateway: GatewayRequest
+    sessionId: string
+    /** Durable id used to re-register after sleep/wake or a backend restart. */
+    storedSessionId?: null | string
+    /** Called when the attach recovered onto a fresh live id. */
+    onSessionRecovered?: (sessionId: string) => void
+    terminalBackend?: string
+  }
 ): Promise<ComposerAttachment> {
-  const { remote, requestGateway, sessionId } = opts
+  const { backendCwd, remote, requestGateway, storedSessionId, onSessionRecovered, terminalBackend } = opts
   const path = attachment.path ?? ''
   const label = attachment.label || pathLabel(path)
+  const uploadBytes = remote || attachmentPathNeedsUpload(path, backendCwd, terminalBackend)
 
-  if (attachment.kind === 'image') {
-    let result: ImageAttachResponse
+  // Read bytes/paths ONCE, outside the retry. Only the session-scoped RPC is
+  // replayed on recovery — re-reading a multi-MB file to retry a dead session
+  // id would double the disk/IPC cost of every recovered attach.
+  let imagePayload: Awaited<ReturnType<typeof readImageForRemoteAttach>> | null = null
+  let fileDataUrl: null | string = null
 
-    if (remote) {
-      let payload: Awaited<ReturnType<typeof readImageForRemoteAttach>>
-
-      try {
-        payload = await readImageForRemoteAttach(path)
-      } catch (err) {
-        throw friendlyRemoteAttachError(err, label)
-      }
-
-      if (!payload) {
-        throw new Error(`Could not read ${label}`)
-      }
-
-      result = await requestGateway<ImageAttachResponse>('image.attach_bytes', {
-        session_id: sessionId,
-        content_base64: payload.contentBase64,
-        filename: payload.filename
-      })
-    } else {
-      result = await requestGateway<ImageAttachResponse>('image.attach', {
-        path,
-        session_id: sessionId
-      })
-    }
-
-    if (!result.attached) {
-      throw new Error(result.message || `Could not attach ${label}`)
-    }
-
-    const attachedPath = result.path || path
-
-    return {
-      ...attachment,
-      attachedSessionId: sessionId,
-      label: attachedPath ? pathLabel(attachedPath) : attachment.label,
-      path: attachedPath,
-      uploadState: undefined
-    }
-  }
-
-  // Non-image file.
-  let dataUrl: string | null = null
-
-  if (remote) {
+  if (uploadBytes) {
     try {
-      dataUrl = await readFileDataUrlForAttach(path)
+      if (attachment.kind === 'image') {
+        imagePayload = await readImageForRemoteAttach(path)
+      } else {
+        fileDataUrl = await readFileDataUrlForAttach(path)
+      }
     } catch (err) {
       throw friendlyRemoteAttachError(err, label)
     }
 
-    if (!dataUrl) {
+    if (attachment.kind === 'image' ? !imagePayload : !fileDataUrl) {
       throw new Error(`Could not read ${label}`)
     }
   }
 
-  const result = await requestGateway<FileAttachResponse>('file.attach', {
-    name: label,
-    path,
-    session_id: sessionId,
-    ...(dataUrl ? { data_url: dataUrl } : {})
-  })
+  const stageForSession = async (liveSessionId: string): Promise<ComposerAttachment> => {
+    if (attachment.kind === 'image') {
+      const result = imagePayload
+        ? await requestGateway<ImageAttachResponse>('image.attach_bytes', {
+            session_id: liveSessionId,
+            content_base64: imagePayload.contentBase64,
+            filename: imagePayload.filename
+          })
+        : await requestGateway<ImageAttachResponse>('image.attach', {
+            path,
+            session_id: liveSessionId
+          })
 
-  if (!result.attached || !result.ref_text) {
-    throw new Error(result.message || `Could not attach ${label}`)
+      if (!result.attached) {
+        throw new Error(result.message || `Could not attach ${label}`)
+      }
+
+      const attachedPath = result.path || path
+
+      return {
+        ...attachment,
+        attachedSessionId: liveSessionId,
+        label: attachedPath ? pathLabel(attachedPath) : attachment.label,
+        path: attachedPath,
+        uploadState: undefined
+      }
+    }
+
+    const result = await requestGateway<FileAttachResponse>('file.attach', {
+      name: label,
+      path,
+      session_id: liveSessionId,
+      ...(fileDataUrl ? { data_url: fileDataUrl } : {})
+    })
+
+    if (!result.attached || !result.ref_text) {
+      throw new Error(result.message || `Could not attach ${label}`)
+    }
+
+    return {
+      ...attachment,
+      attachedSessionId: liveSessionId,
+      refText: result.ref_text,
+      uploadState: undefined
+    }
   }
 
-  return {
-    ...attachment,
-    attachedSessionId: sessionId,
-    refText: result.ref_text,
-    uploadState: undefined
+  // Attach runs BEFORE prompt.submit, so submit's own recovery never gets a
+  // chance: a stale runtime id fails here first and the user sees "session not
+  // found" on an image while plain text works.
+  const { result, sessionId: usedSessionId } = await withSessionNotFoundResume(
+    opts.sessionId,
+    storedSessionId,
+    stageForSession,
+    { requestGateway }
+  )
+
+  if (usedSessionId !== opts.sessionId) {
+    onSessionRecovered?.(usedSessionId)
   }
+
+  return result
 }
 
 interface PromptActionsOptions {
@@ -286,10 +332,18 @@ export function usePromptActions({
       sessionId: string,
       attachments: ComposerAttachment[],
       options: { updateComposerAttachments?: boolean } = {}
-    ): Promise<ComposerAttachment[]> => {
+    ): Promise<{ attachments: ComposerAttachment[]; sessionId: string }> => {
       const updateComposerAttachments = options.updateComposerAttachments ?? true
       const remote = $connection.get()?.mode === 'remote'
+      const storedSessionId = selectedStoredSessionIdRef.current
+      let liveSessionId = sessionId
       const synced: ComposerAttachment[] = []
+
+      const onSessionRecovered = (recoveredId: string) => {
+        liveSessionId = recoveredId
+        activeSessionIdRef.current = recoveredId
+        setActiveSessionId(recoveredId)
+      }
 
       for (const original of attachments) {
         let attachment = original
@@ -308,15 +362,25 @@ export function usePromptActions({
 
         // Already-synced or pathless refs (terminal, url, etc.) pass through.
         // A drop-time eager upload may already have staged this one (matching
-        // attachedSessionId) — don't re-upload it.
-        if (!attachment.path || attachment.attachedSessionId === sessionId) {
+        // attachedSessionId) — don't re-upload it. Compare against the LIVE id:
+        // after a mid-loop recovery an earlier chip's attachedSessionId points
+        // at the dead runtime and must be re-staged.
+        if (!attachment.path || attachment.attachedSessionId === liveSessionId) {
           synced.push(attachment)
 
           continue
         }
 
         if (attachment.kind === 'image' || attachment.kind === 'file') {
-          const nextAttachment = await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId })
+          const nextAttachment = await uploadComposerAttachment(attachment, {
+            backendCwd: $currentCwd.get(),
+            remote,
+            requestGateway,
+            sessionId: liveSessionId,
+            storedSessionId,
+            onSessionRecovered,
+            terminalBackend: $terminalBackend.get()
+          })
 
           // Update-only: never resurrect a chip the user removed mid-upload.
           if (updateComposerAttachments) {
@@ -331,9 +395,9 @@ export function usePromptActions({
         synced.push(attachment)
       }
 
-      return synced
+      return { attachments: synced, sessionId: liveSessionId }
     },
-    [requestGateway]
+    [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
   )
 
   // Stage a freshly dropped file as soon as it lands (when a session already
@@ -355,7 +419,15 @@ export function usePromptActions({
       try {
         // Update-only: if the user removed the chip while this was uploading,
         // don't resurrect it — just drop the staged result on the floor.
-        updateComposerAttachment(await uploadComposerAttachment(attachment, { remote, requestGateway, sessionId }))
+        updateComposerAttachment(
+          await uploadComposerAttachment(attachment, {
+            backendCwd: $currentCwd.get(),
+            remote,
+            requestGateway,
+            sessionId,
+            terminalBackend: $terminalBackend.get()
+          })
+        )
       } catch (err) {
         // Leave the chip in place so submit-time sync can retry (or the user can
         // remove it) and flag the card; also toast so a hard failure (unreadable
@@ -592,6 +664,7 @@ export function usePromptActions({
     clearSessionTodos(sessionId)
     clearSessionSubagents(sessionId)
     resetSessionBackground(sessionId)
+    setSessionDraftingTool(sessionId, '')
     // Stop ends the turn, so the gateway is no longer blocked on any prompt it
     // raised. Drop this session's pending clarify / approval / sudo / secret so
     // a dead panel (and the sidebar "needs input" dot) can't linger and accept
@@ -600,37 +673,22 @@ export function usePromptActions({
     clearClarifyRequest(undefined, sessionId)
 
     try {
-      await requestGateway('session.interrupt', { session_id: sessionId })
+      await withSessionNotFoundResume(
+        sessionId,
+        selectedStoredSessionIdRef.current,
+        liveId => requestGateway('session.interrupt', { session_id: liveId }),
+        {
+          requestGateway,
+          onRecovered: recoveredId => {
+            activeSessionIdRef.current = recoveredId
+            setActiveSessionId(recoveredId)
+          }
+        }
+      )
       releaseBusy()
     } catch (err) {
-      let stopError = err
-
-      if (isSessionNotFoundError(err) && selectedStoredSessionIdRef.current) {
-        try {
-          const resumeProfile = await resolveSessionProfile(selectedStoredSessionIdRef.current)
-
-          const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-            session_id: selectedStoredSessionIdRef.current,
-            source: 'desktop',
-            ...(resumeProfile ? { profile: resumeProfile } : {})
-          })
-
-          const recoveredId = resumed?.session_id
-
-          if (recoveredId) {
-            activeSessionIdRef.current = recoveredId
-            await requestGateway('session.interrupt', { session_id: recoveredId })
-            releaseBusy()
-
-            return
-          }
-        } catch (resumeErr) {
-          stopError = resumeErr
-        }
-      }
-
       releaseBusy()
-      notifyError(stopError, copy.stopFailed)
+      notifyError(err, copy.stopFailed)
     }
   }, [activeSessionIdRef, busyRef, copy.stopFailed, requestGateway, selectedStoredSessionIdRef, updateSessionState])
 
@@ -705,32 +763,19 @@ export function usePromptActions({
       }
 
       try {
-        return await send(sessionId)
-      } catch (err) {
-        // A stale runtime id after reconnect 404s ("session not found"): resume
-        // the stored session and retry once, mirroring stopPrompt so a
+        // A stale runtime id after reconnect 404s ("session not found"): the
+        // shared resolver resumes the stored session and retries once, so a
         // correction right after a reconnect isn't lost to the race.
-        if (isSessionNotFoundError(err) && selectedStoredSessionIdRef.current) {
-          try {
-            const resumeProfile = await resolveSessionProfile(selectedStoredSessionIdRef.current)
-
-            const resumed = await requestGateway<{ session_id: string }>('session.resume', {
-              session_id: selectedStoredSessionIdRef.current,
-              source: 'desktop',
-              ...(resumeProfile ? { profile: resumeProfile } : {})
-            })
-
-            const recoveredId = resumed?.session_id
-
-            if (recoveredId) {
-              activeSessionIdRef.current = recoveredId
-
-              return await send(recoveredId)
-            }
-          } catch {
-            // fall through — caller queues so nothing is lost
+        const { result } = await withSessionNotFoundResume(sessionId, selectedStoredSessionIdRef.current, send, {
+          requestGateway,
+          onRecovered: recoveredId => {
+            activeSessionIdRef.current = recoveredId
+            setActiveSessionId(recoveredId)
           }
-        }
+        })
+
+        return result
+      } catch {
         // Swallow — caller queues the text so nothing is lost.
       }
 
@@ -791,8 +836,14 @@ export function usePromptActions({
   // response interrupts + retries through the shared busy gate.
   const submitRewindPrompt = useCallback(
     (sessionId: string, text: string, truncateOrdinal: number | undefined, interruptFirst: boolean) =>
-      runRewindSubmit(requestGateway, sessionId, text, truncateOrdinal, interruptFirst),
-    [requestGateway]
+      runRewindSubmit(requestGateway, sessionId, text, truncateOrdinal, interruptFirst, {
+        storedSessionId: selectedStoredSessionIdRef.current,
+        onSessionRecovered: recoveredId => {
+          activeSessionIdRef.current = recoveredId
+          setActiveSessionId(recoveredId)
+        }
+      }),
+    [activeSessionIdRef, requestGateway, selectedStoredSessionIdRef]
   )
 
   const restoreToMessage = useCallback(

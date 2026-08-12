@@ -12,6 +12,7 @@ all key off these exact strings:
 
   - explicit project id .......... ``p_<hex>`` (from projects.db)
   - auto/discovered project id ... the repo root path
+  - home (no-project) bucket ..... ``__no_project__``
   - repo node id ................. the repo root path
   - main branch lane id .......... ``<repoRoot>::branch::<branch>`` (or ``::branch::``)
   - kanban bucket lane id ........ ``<repoRoot>::kanban``
@@ -47,6 +48,14 @@ Exists = Callable[[str], bool]
 _KANBAN_DIR_RE = re.compile(r"^(.*[/\\]\.worktrees)[/\\]t_[0-9a-f]+[/\\]?$")
 _TRUNK_BRANCHES = {"main", "master", "trunk", "develop"}
 DEFAULT_BRANCH_LABEL = "main"
+
+# The synthetic bucket holding every session no project claimed — a chat with no
+# cwd at all, or one whose folder can't be promoted (the bare home dir, HERMES
+# state, a workspace that has since been deleted). Without it those sessions are
+# invisible in the grouped view. The desktop labels it "Home"; the id/flag stay
+# named for what the bucket MEANS, since that's what membership keys off.
+NO_PROJECT_ID = "__no_project__"
+NO_PROJECT_LABEL = "Home"
 
 # How many sibling candidates to try when recovering a deleted worktree's parent
 # repo (see ``_probe_sibling_worktree``). Each miss costs a git probe, so keep it
@@ -221,7 +230,7 @@ def _place(cwd: str, branch: str, resolve: Optional[Resolve], persisted_root: st
     if info and info.get("repo_root") and info.get("worktree_root"):
         repo_root = info["repo_root"]
         worktree_root = info["worktree_root"]
-        is_main = worktree_root == repo_root or bool(info.get("is_main"))
+        is_main = _path_key(worktree_root) == _path_key(repo_root) or bool(info.get("is_main"))
 
         if is_main:
             # Unrecorded branch folds into the one trunk lane, so a repo never
@@ -496,6 +505,15 @@ def _project_for_session(session: dict, index: _FolderIndex, resolve: Optional[R
 # ---------------------------------------------------------------------------
 
 
+def _session_cost(session: dict) -> float:
+    """A session's spend, billed if the provider reported it, else estimated."""
+    for key in ("actual_cost_usd", "estimated_cost_usd"):
+        value = session.get(key)
+        if value:
+            return float(value)
+    return 0.0
+
+
 def _project_node(
     *,
     pid: str,
@@ -505,9 +523,11 @@ def _project_node(
     session_count: int,
     last_active: float,
     preview_sessions: list[dict],
+    sessions: Optional[list[dict]] = None,
     color: Any = None,
     icon: Any = None,
     is_auto: bool = False,
+    is_no_project: bool = False,
 ) -> dict:
     return {
         "id": pid,
@@ -516,8 +536,14 @@ def _project_node(
         "color": color,
         "icon": icon,
         "isAuto": is_auto,
+        "isNoProject": is_no_project,
         "sessionCount": session_count,
         "lastActive": last_active,
+        # Totals over the same sessions `sessionCount` counts, so a project's
+        # header can add up what its rows show. The window the caller loaded is
+        # the whole truth either way — count and totals can't disagree.
+        "totalTokens": sum((s.get("input_tokens") or 0) + (s.get("output_tokens") or 0) for s in sessions or []),
+        "totalCostUsd": sum(_session_cost(s) for s in sessions or []),
         "repos": repos,
         "previewSessions": preview_sessions,
     }
@@ -601,6 +627,7 @@ def build_tree(
                 session_count=len(psessions),
                 last_active=_last_active(psessions),
                 preview_sessions=_previews(psessions),
+                sessions=psessions,
             )
         )
 
@@ -609,10 +636,13 @@ def build_tree(
     # The pre-Projects desktop grouped every non-empty cwd; keeping that fallback
     # prevents upgrades from flattening those sessions into Recents.
     by_auto_root: dict[str, dict] = {}
+    # Every session no tier could place. These are the Home bucket's rows.
+    homeless: list[dict] = []
 
     def _add_auto(root: str, session: dict) -> None:
         key = _path_key(root)
         if not key:
+            homeless.append(session)
             return
         bucket = by_auto_root.setdefault(key, {"root": root, "sessions": []})
         bucket["sessions"].append(session)
@@ -626,10 +656,13 @@ def build_tree(
             # session ran) and must not resurrect as a project.
             if not _junk(root) and _exists(root):
                 _add_auto(root, session)
+            else:
+                homeless.append(session)
             continue
 
         cwd = (session.get("cwd") or "").strip()
         if not cwd or _junk_cwd(cwd):
+            homeless.append(session)
             continue
         placement = _place(
             cwd,
@@ -642,9 +675,11 @@ def build_tree(
         # also gone from disk (a deleted worktree whose name shares no prefix
         # with its parent, a removed /tmp scratch dir), promoting it mints a
         # phantom project that can never be opened and can only be dismissed by
-        # hand. The session keeps its place in flat Recents.
+        # hand. The session goes to Home instead.
         if placement and _exists(placement["repo_key"]):
             _add_auto(placement["repo_key"], session)
+        else:
+            homeless.append(session)
 
     seen: set[str] = set()
     for bucket in by_auto_root.values():
@@ -661,6 +696,7 @@ def build_tree(
             None,
         )
         if repo_node is None:
+            homeless.extend(auto_sessions)
             continue
         seen.add(auto_key)
         scoped_ids.extend(s["id"] for s in auto_sessions if s.get("id"))
@@ -673,6 +709,7 @@ def build_tree(
                 session_count=repo_node["sessionCount"],
                 last_active=_last_active(auto_sessions),
                 preview_sessions=_previews(auto_sessions),
+                sessions=auto_sessions,
                 is_auto=True,
             )
         )
@@ -707,5 +744,43 @@ def build_tree(
     # repos in different parents). Grow path prefixes so each is distinct.
     # Explicit projects keep their user-chosen names untouched.
     _disambiguate_labels([p for p in result if p.get("isAuto")])
+
+    # Tier 0: everything the tiers above could not place, so the grouped view
+    # loses no session. It has no folder, hence no repo/lane structure — the one
+    # synthetic lane exists purely to carry the rows in the tree's shape. Leads
+    # the list; omitted entirely when empty, so a project-less install is blank.
+    if homeless:
+        homeless.sort(key=_session_time, reverse=True)
+        scoped_ids.extend(s["id"] for s in homeless if s.get("id"))
+        lane = {
+            "id": NO_PROJECT_ID,
+            "label": NO_PROJECT_LABEL,
+            "path": None,
+            "isMain": False,
+            "isKanban": False,
+            "sessions": homeless if hydrate else [],
+        }
+        result.insert(
+            0,
+            _project_node(
+                pid=NO_PROJECT_ID,
+                label=NO_PROJECT_LABEL,
+                path=None,
+                repos=[
+                    {
+                        "id": NO_PROJECT_ID,
+                        "label": NO_PROJECT_LABEL,
+                        "path": None,
+                        "groups": [lane],
+                        "sessionCount": len(homeless),
+                    }
+                ],
+                session_count=len(homeless),
+                last_active=_last_active(homeless),
+                preview_sessions=_previews(homeless),
+                sessions=homeless,
+                is_no_project=True,
+            ),
+        )
 
     return {"projects": result, "scoped_session_ids": scoped_ids}

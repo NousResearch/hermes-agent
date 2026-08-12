@@ -52,6 +52,7 @@ mcp_servers:
 | `tools` | mapping | 两者 | 过滤及工具策略 |
 | `auth` | string | HTTP | 认证方式。设为 `oauth` 可启用带 PKCE 的 OAuth 2.1 |
 | `sampling` | mapping | 两者 | 服务器发起的 LLM 请求策略（参见 MCP 指南） |
+| `trust` | string | 两者 | 信任层级：`full`（默认）或 `untrusted`。在 `untrusted` 服务器上，所有具备写能力的工具调用（即没有 `readOnlyHint: true` 注解的工具）在执行前都需要通过标准审批界面获得用户批准。`readOnlyHint` 是服务器自报的*提示* —— 恶意服务器最多只能让自称只读的工具跳过审批，绝不会因此获得额外权限，因此对不完全受控的服务器请标记为 `untrusted`。无法识别的值按 `untrusted` 处理（失败即关闭） |
 
 ## `tools` 策略键
 

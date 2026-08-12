@@ -19,6 +19,7 @@ Teams meeting summaries, job replay, Graph subscriptions.
 | Version | `1.1.0` |
 | Author | Hermes Agent + Teknium |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `Teams`, `Microsoft Graph`, `Meetings`, `Productivity`, `Operations` |
 
 ## Reference: full SKILL.md

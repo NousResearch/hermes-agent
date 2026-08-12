@@ -120,7 +120,10 @@ async def test_fifo_enqueued_continuation_is_drained_without_new_user_message():
     await adapter._process_message_background(event, key)
     # The in-band drain hands off to a fresh task (#17758); let it run.
     for _ in range(40):
-        if len(handled) >= 2:
+        # Wait for the SENDS, not just the handler calls: the delivery
+        # ledger hops to worker threads around each send, so the handler
+        # can return while reply-2's send is still in flight.
+        if len(adapter.sent) >= 2:
             break
         await asyncio.sleep(0.05)
 

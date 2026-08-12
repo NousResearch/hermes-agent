@@ -43,8 +43,10 @@ When you change a script:
 
 ## Why the explicit `-c` / `-o`?
 
-The parent hermes-agent repo's `pyproject.toml` enables `pytest-xdist` by
-default (`-n auto`). This suite is small enough that parallelism isn't
-worth the complexity, and pytest-xdist isn't always installed in the user's
-environment. The `-c tests/pytest.ini -o addopts="-p no:xdist"` flags make
-the suite run identically regardless of the parent project's config.
+The parent hermes-agent repo used to enable `pytest-xdist` by default
+(`-n auto`); the canonical runner has since moved to per-file subprocess
+isolation via `scripts/run_tests_parallel.py` and no longer uses xdist.
+This suite is small enough that parallelism isn't worth the complexity, and
+pytest-xdist isn't always installed in the user's environment. The
+`-c tests/pytest.ini -o addopts="-p no:xdist"` flags make the suite run
+identically regardless of the parent project's config.

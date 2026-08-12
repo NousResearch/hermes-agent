@@ -1,6 +1,7 @@
 import { useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import { useVirtualizer } from '@tanstack/react-virtual'
+import type * as React from 'react'
 import { type FC, useCallback, useRef } from 'react'
 
 import type { SessionInfo } from '@/hermes'
@@ -17,7 +18,6 @@ interface SessionRowCommonProps {
   branchStem?: string
   isPinned: boolean
   isSelected: boolean
-  isWorking: boolean
   onArchive: () => void
   onBranch?: () => void
   onDelete: () => void
@@ -27,9 +27,11 @@ interface SessionRowCommonProps {
   showProfile?: boolean
 }
 
-interface VirtualSessionListProps {
+export interface VirtualSessionListProps {
   activeSessionId: null | string
   className?: string
+  /** Hover-revealed control for date dividers (the group-level "+"). */
+  dividerAction?: React.ReactNode
   rows: SidebarListRow[]
   onArchiveSession: (sessionId: string) => void
   onBranchSession?: (sessionId: string, profile?: string) => void
@@ -39,7 +41,6 @@ interface VirtualSessionListProps {
   pinned: boolean
   showProfileTags?: boolean
   sortable: boolean
-  workingSessionIdSet: Set<string>
 }
 
 const ROW_ESTIMATE_PX = 28
@@ -48,6 +49,7 @@ const OVERSCAN_ROWS = 12
 export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   activeSessionId,
   className,
+  dividerAction,
   rows: listRows,
   onArchiveSession,
   onBranchSession,
@@ -56,8 +58,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   onTogglePin,
   pinned,
   showProfileTags = false,
-  sortable,
-  workingSessionIdSet
+  sortable
 }) => {
   const { t } = useI18n()
   const dividerLabels = t.sidebar.dateDivider
@@ -93,9 +94,10 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
     if (row.kind === 'divider') {
       return (
         <SidebarDateDivider
+          action={dividerAction}
           data-index={virtualItem.index}
           key={row.key}
-          label={sessionBucketLabel(row.bucket, dividerLabels)}
+          label={'label' in row ? row.label : sessionBucketLabel(row.bucket, dividerLabels)}
           ref={virtualizer.measureElement}
         />
       )
@@ -108,7 +110,6 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
       branchStem,
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
-      isWorking: workingSessionIdSet.has(session.id),
       onArchive: () => onArchiveSession(session.id),
       onBranch: onBranchSession ? () => onBranchSession(session.id, session.profile) : undefined,
       onDelete: () => onDeleteSession(session.id),
@@ -142,7 +143,10 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   // just consume that context via useSortable.
   return (
     <div
-      className={cn('relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain', className)}
+      className={cn(
+        'scrollbar-fade relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain',
+        className
+      )}
       ref={scrollerRef}
     >
       <div className="grid gap-px" style={{ paddingBottom: `${paddingBottom}px`, paddingTop: `${paddingTop}px` }}>

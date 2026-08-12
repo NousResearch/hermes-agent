@@ -57,6 +57,22 @@ def _resolve_auto_decompose_settings(
     return enabled, per_tick
 
 
+def _kanban_dispatch_allowed() -> bool:
+    """Return False while the global emergency stop (`hermes pause`) is engaged.
+
+    Checked every dispatcher tick BEFORE spawning new workers so a pause takes
+    effect on the next tick without a gateway restart. In-flight workers are
+    never touched — this only stops NEW spawns. Fails open: if the estop
+    module is unimportable, dispatch proceeds (the sentinel gate must not
+    become a new crash surface for the dispatcher).
+    """
+    try:
+        from agent.estop import check_paused
+    except ImportError:
+        return True
+    return not check_paused("kanban", logger)
+
+
 def _acquire_singleton_lock(lock_path) -> "tuple[Optional[object], str]":
     """Take an exclusive, non-blocking advisory lock for the sole dispatcher.
 
@@ -112,49 +128,43 @@ def _release_singleton_lock(handle) -> None:
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
+    def _owns_kanban_dispatcher_lock(self) -> bool:
+        """Return whether this gateway currently owns the singleton lock."""
+        return getattr(self, "_kanban_dispatcher_lock_handle", None) is not None
+
+    def _release_kanban_dispatcher_lock(self) -> None:
+        """Clear notifier-visible ownership before releasing the OS lock."""
+        handle = getattr(self, "_kanban_dispatcher_lock_handle", None)
+        self._kanban_dispatcher_lock_handle = None
+        _release_singleton_lock(handle)
+
     async def _kanban_notifier_watcher(self, interval: float = 5.0) -> None:
         """Poll ``kanban_notify_subs`` and deliver terminal events to users.
 
         For each subscription row, fetches ``task_events`` newer than the
         stored cursor with kind in the terminal set (``completed``,
-        ``blocked``, ``gave_up``, ``crashed``, ``timed_out``). Sends one
+        ``blocked``, ``gave_up``, ``crashed``, ``timed_out``,
+        ``review_requested``, ``block_loop_detected``). Sends one
         message per new event to ``(platform, chat_id, thread_id)``,
-        then advances the cursor. When a task reaches a terminal state
-        (``completed`` / ``archived``), the subscription is removed.
+        then advances the cursor. The subscription is removed only when the
+        task reaches a truly final *status* (``done`` / ``archived``), not on
+        any terminal event kind — so review cycles and re-block loops keep
+        notifying.
 
         Runs in the gateway event loop; all SQLite work is pushed to a
         thread via ``asyncio.to_thread`` so the loop never blocks on the
         WAL lock. Failures in one tick don't stop subsequent ticks.
 
         **Multi-board:** iterates every board discovered on disk per
-        tick. Subscriptions live inside each board's own DB and cannot
-        cross boards, so delivery semantics are unchanged — this is
-        purely a fan-out of the single-DB poll.
+        tick. Each gateway polls only subscriptions owned by profiles whose
+        adapters it hosts. The dispatch-owning gateway also handles legacy
+        subscriptions without a profile stamp.
         """
-        # Gate: only the dispatch-owning gateway opens kanban DBs for notifier polling.
-        # Non-dispatch gateways have no subscriptions to deliver — all kanban state lives
-        # in the dispatch owner's per-board DBs. This prevents N-gateway -shm contention.
-        # TODO: gate per-board when per-board dispatcher_owner tracking lands.
-        try:
-            from hermes_cli.config import load_config as _load_config
-        except Exception:
-            logger.warning("kanban notifier: config loader unavailable; disabled")
-            return
-        env_override = os.environ.get("HERMES_KANBAN_DISPATCH_IN_GATEWAY", "").strip().lower()
-        if env_override in {"0", "false", "no", "off"}:
-            logger.info("kanban notifier: disabled via HERMES_KANBAN_DISPATCH_IN_GATEWAY env")
-            return
-        try:
-            cfg = _load_config()
-        except Exception as exc:
-            logger.warning("kanban notifier: cannot load config (%s); disabled", exc)
-            return
-        kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-        if not kanban_cfg.get("dispatch_in_gateway", True):
-            logger.info(
-                "kanban notifier: disabled via config kanban.dispatch_in_gateway=false"
-            )
-            return
+        # Dispatch and delivery have separate ownership. A deployment may run
+        # one dispatcher while each profile has its own gateway credentials;
+        # those adapter-owning gateways must still poll and deliver their own
+        # subscriptions. Legacy rows without a notifier_profile are visible
+        # only while this process holds the actual singleton dispatcher lock.
         from gateway.config import Platform as _Platform
         try:
             from hermes_cli import kanban_db as _kb
@@ -164,7 +174,11 @@ class GatewayKanbanWatchersMixin:
 
         # "status" covers dashboard drag-drop and `_set_status_direct()`
         # writes — surface those transitions to subscribers too.
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected")
+        # ``review_requested`` wakes the origin subscriber like a block does,
+        # but is not a block (see kanban_db.request_review); the task is not
+        # done/archived, so the subscription stays alive and later review
+        # cycles keep notifying.
+        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested")
         # Subscriptions are removed only when the task reaches a truly final
         # status (done / archived). We used to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
@@ -204,6 +218,13 @@ class GatewayKanbanWatchersMixin:
             try:
                 def _collect():
                     deliveries: list[dict] = []
+                    include_unowned = self._owns_kanban_dispatcher_lock()
+                    notifier_profiles = {notifier_profile}
+                    notifier_profiles.update(
+                        str(profile).strip()
+                        for profile in getattr(self, "_profile_adapters", {})
+                        if str(profile).strip()
+                    )
                     active_platforms = {
                         getattr(platform, "value", str(platform)).lower()
                         for platform in self.adapters.keys()
@@ -262,10 +283,14 @@ class GatewayKanbanWatchersMixin:
                         # checkpoint traffic) is exactly the per-tick cost
                         # this skip avoids.
                         try:
-                            if _kb.count_notify_subs(board=slug) == 0:
+                            if _kb.count_notify_subs(
+                                board=slug,
+                                notifier_profiles=notifier_profiles,
+                                include_unowned=include_unowned,
+                            ) == 0:
                                 logger.debug(
-                                    "kanban notifier: board %s has no subscriptions; skipping open",
-                                    slug,
+                                    "kanban notifier: board %s has no subscriptions owned by %s; skipping open",
+                                    slug, sorted(notifier_profiles),
                                 )
                                 continue
                         except Exception as exc:
@@ -292,7 +317,11 @@ class GatewayKanbanWatchersMixin:
                             # a legacy DB. `_add_column_if_missing` now
                             # tolerates that race, but we still skip the
                             # redundant call to avoid the wasted work.
-                            subs = _kb.list_notify_subs(conn)
+                            subs = _kb.list_notify_subs(
+                                conn,
+                                notifier_profiles=notifier_profiles,
+                                include_unowned=include_unowned,
+                            )
                             if not subs:
                                 logger.debug("kanban notifier: board %s has no subscriptions", slug)
                             for sub in subs:
@@ -457,6 +486,16 @@ class GatewayKanbanWatchersMixin:
                             if ev.payload and ev.payload.get("status"):
                                 new_status = str(ev.payload["status"])
                             msg = f"🔄 {board_tag}{tag}Kanban {sub['task_id']} → {new_status}"
+                        elif kind == "review_requested":
+                            # Implementation complete; task moved to the
+                            # first-class review lane. Wake the origin thread.
+                            handoff = ""
+                            if ev.payload and ev.payload.get("summary"):
+                                handoff = f"\n{str(ev.payload['summary'])[:200]}"
+                            msg = (
+                                f"👀 {board_tag}{tag}Kanban {sub['task_id']} ready for review"
+                                f" — {title}{handoff}"
+                            )
                         elif kind == "block_loop_detected":
                             # A task re-blocked for the same cause past the
                             # recurrence limit and was routed to `triage` for a
@@ -1032,7 +1071,7 @@ class GatewayKanbanWatchersMixin:
         # Read max_spawn config to limit concurrent kanban tasks
         max_spawn = kanban_cfg.get("max_spawn", None)
         if max_spawn is not None:
-            logger.info(f"kanban dispatcher: max_spawn={max_spawn}")
+            logger.info("kanban dispatcher: max_spawn=%s", max_spawn)
 
         # Cap the number of simultaneously running tasks so slow workers
         # (local LLMs, resource-constrained hosts) don't pile up and time
@@ -1057,7 +1096,7 @@ class GatewayKanbanWatchersMixin:
                     )
                     max_in_progress = None
                 else:
-                    logger.info(f"kanban dispatcher: max_in_progress={max_in_progress}")
+                    logger.info("kanban dispatcher: max_in_progress=%s", max_in_progress)
 
         raw_failure_limit = kanban_cfg.get("failure_limit", _kb.DEFAULT_FAILURE_LIMIT)
         try:
@@ -1088,6 +1127,12 @@ class GatewayKanbanWatchersMixin:
                 raw_stale,
             )
             stale_timeout_seconds = 0
+
+        # kanban.reconcile_orphans (config.yaml, default true): each tick,
+        # requeue 'running' cards whose claim bookkeeping is broken (no
+        # valid claim, dead/gone worker) — the zombie-card reconciliation
+        # pass. Set false to keep orphans frozen for manual forensics.
+        reconcile_orphans = bool(kanban_cfg.get("reconcile_orphans", True))
 
         # Read kanban.default_assignee — fallback profile for tasks
         # created without an explicit assignee (e.g. via the dashboard).
@@ -1225,6 +1270,7 @@ class GatewayKanbanWatchersMixin:
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
+                    reconcile_orphans=reconcile_orphans,
                 )
             except sqlite3.DatabaseError as exc:
                 if _is_corrupt_board_db_error(exc):
@@ -1292,6 +1338,13 @@ class GatewayKanbanWatchersMixin:
             here keeps the stuck-warn fire only on real failures (broken
             PATH, missing venv, credential loss for a real Hermes profile).
             """
+            # Only probe the review column when autonomous review dispatch is
+            # actually on. With ``review_dispatch`` off (the default — no
+            # sdlc-review agent), a task parked in 'review' is "correctly idle"
+            # waiting for a human, not a stuck dispatcher; probing it here would
+            # fire a false "dispatcher stuck" warning that never clears. Shares
+            # the exact gate the dispatcher uses so the two can't drift.
+            _review_probe = _kb.review_dispatch_enabled()
             try:
                 boards = _kb.list_boards(include_archived=False)
             except Exception:
@@ -1303,7 +1356,7 @@ class GatewayKanbanWatchersMixin:
                     conn = _kb.connect(board=slug)
                     if _kb.has_spawnable_ready(conn):
                         return True
-                    if _kb.has_spawnable_review(conn):
+                    if _review_probe and _kb.has_spawnable_review(conn):
                         return True
                 except Exception:
                     continue
@@ -1429,36 +1482,43 @@ class GatewayKanbanWatchersMixin:
                 logger.exception("kanban dispatcher: zombie reaper failed")
 
             try:
-                # Re-read the auto-decompose toggle live each tick so a user
-                # flipping kanban.auto_decompose=false to STOP runaway fan-out
-                # takes effect on the next tick, not on gateway restart (#49638).
-                _ad_enabled, _ad_per_tick = _read_auto_decompose_settings()
-                if _ad_enabled:
-                    await asyncio.to_thread(_auto_decompose_tick, _ad_per_tick)
-                results = await asyncio.to_thread(_tick_once)
-                any_spawned = False
-                for slug, res in (results or []):
-                    if res is not None and getattr(res, "spawned", None):
-                        any_spawned = True
-                        # Quiet by default — only log when something actually
-                        # happened, so an idle gateway stays silent.
-                        logger.info(
-                            "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
-                            "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
-                            slug,
-                            len(res.spawned),
-                            res.reclaimed,
-                            len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
-                            len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
-                            res.promoted,
-                            len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
-                        )
-                # Health telemetry (aggregate across boards)
-                ready_pending = await asyncio.to_thread(_ready_nonempty)
-                if ready_pending and not any_spawned:
-                    bad_ticks += 1
-                else:
+                # Global emergency stop (`hermes pause`): skip auto-decompose
+                # and dispatch entirely — no new workers while paused. Running
+                # workers finish naturally; zombie reaping above still runs.
+                if not _kanban_dispatch_allowed():
+                    ready_pending = False
                     bad_ticks = 0
+                else:
+                    # Re-read the auto-decompose toggle live each tick so a user
+                    # flipping kanban.auto_decompose=false to STOP runaway fan-out
+                    # takes effect on the next tick, not on gateway restart (#49638).
+                    _ad_enabled, _ad_per_tick = _read_auto_decompose_settings()
+                    if _ad_enabled:
+                        await asyncio.to_thread(_auto_decompose_tick, _ad_per_tick)
+                    results = await asyncio.to_thread(_tick_once)
+                    any_spawned = False
+                    for slug, res in (results or []):
+                        if res is not None and getattr(res, "spawned", None):
+                            any_spawned = True
+                            # Quiet by default — only log when something actually
+                            # happened, so an idle gateway stays silent.
+                            logger.info(
+                                "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
+                                "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
+                                slug,
+                                len(res.spawned),
+                                res.reclaimed,
+                                len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
+                                len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
+                                res.promoted,
+                                len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                            )
+                    # Health telemetry (aggregate across boards)
+                    ready_pending = await asyncio.to_thread(_ready_nonempty)
+                    if ready_pending and not any_spawned:
+                        bad_ticks += 1
+                    else:
+                        bad_ticks = 0
                 if bad_ticks >= HEALTH_WINDOW:
                     now = int(time.time())
                     if now - last_warn_at >= 300:
@@ -1472,8 +1532,7 @@ class GatewayKanbanWatchersMixin:
                         last_warn_at = now
             except asyncio.CancelledError:
                 logger.debug("kanban dispatcher: cancelled")
-                _release_singleton_lock(self._kanban_dispatcher_lock_handle)
-                self._kanban_dispatcher_lock_handle = None
+                self._release_kanban_dispatcher_lock()
                 raise
             except Exception:
                 logger.exception("kanban dispatcher: unexpected watcher error")
@@ -1485,5 +1544,4 @@ class GatewayKanbanWatchersMixin:
                 await asyncio.sleep(min(1.0, interval - slept))
                 slept += 1.0
 
-        _release_singleton_lock(self._kanban_dispatcher_lock_handle)
-        self._kanban_dispatcher_lock_handle = None
+        self._release_kanban_dispatcher_lock()

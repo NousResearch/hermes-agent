@@ -19,7 +19,7 @@ import logging
 import threading
 import time
 from collections import defaultdict, deque
-from typing import Any, Deque, Dict, Tuple
+from typing import Any, Deque, Dict
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
@@ -315,14 +315,31 @@ async def auth_native_authorize(
         raise HTTPException(status_code=400, detail="code_challenge required")
     _validate_loopback_redirect_uri(redirect_uri)
 
-    # Resolve the provider. With exactly one session provider registered
-    # (the common hosted case) an empty ``provider`` selects it, mirroring
-    # the auto-SSO convenience so the desktop needn't hardcode the name.
+    # Resolve the provider. With exactly one brokerable session provider
+    # registered (the common hosted case) an empty ``provider`` selects it,
+    # mirroring the auto-SSO convenience so the desktop needn't hardcode the
+    # name. Password providers are session providers too, but they can never
+    # be the target of the native OAuth broker flow (rejected below), so they
+    # must not count toward "exactly one candidate": otherwise a normal
+    # SSO-with-password-fallback deployment (one OIDC provider + the bundled
+    # ``basic`` provider) would see two session providers, skip the
+    # auto-select, and fail desktop login with a misleading "Unknown provider".
     p = get_provider(provider) if provider else None
     if p is None and not provider:
-        sess_providers = list_session_providers()
-        if len(sess_providers) == 1:
-            p = sess_providers[0]
+        native_eligible = [
+            pp
+            for pp in list_session_providers()
+            if not getattr(pp, "supports_password", False)
+        ]
+        if len(native_eligible) == 1:
+            p = native_eligible[0]
+        elif not native_eligible:
+            # No brokerable provider at all. Preserve the old behaviour of
+            # selecting a lone password provider so the explicit 400 below
+            # (rather than a 404) explains why native OAuth is unavailable.
+            sess_providers = list_session_providers()
+            if len(sess_providers) == 1:
+                p = sess_providers[0]
     if p is None:
         raise HTTPException(
             status_code=404, detail=f"Unknown provider: {provider!r}"

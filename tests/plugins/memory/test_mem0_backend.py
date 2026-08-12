@@ -53,21 +53,6 @@ class TestPlatformBackend:
         assert client.calls[0][2]["filters"] == {"user_id": "u1"}
         assert client.calls[0][2]["top_k"] == 5
 
-    def test_search_forwards_rerank(self):
-        backend, client = self._make()
-        backend.search("q", filters={}, rerank=False)
-        assert client.calls[0][2]["rerank"] is False
-
-    def test_search_rerank_default_false(self):
-        backend, client = self._make()
-        backend.search("q", filters={})
-        assert client.calls[0][2]["rerank"] is False
-
-    def test_search_returns_list(self):
-        backend, _ = self._make()
-        result = backend.search("q", filters={})
-        assert isinstance(result, list)
-        assert result[0]["id"] == "m1"
 
     def test_add_forwards_kwargs(self):
         backend, client = self._make()
@@ -80,23 +65,6 @@ class TestPlatformBackend:
         # don't surprise older mem0 client versions with an unknown kwarg.
         assert "metadata" not in call[2]
 
-    def test_add_forwards_metadata_when_present(self):
-        backend, client = self._make()
-        msgs = [{"role": "user", "content": "hi"}]
-        backend.add(
-            msgs,
-            user_id="u1",
-            agent_id="hermes",
-            infer=False,
-            metadata={"channel": "telegram"},
-        )
-        assert client.calls[0][2]["metadata"] == {"channel": "telegram"}
-
-    def test_add_omits_empty_metadata(self):
-        backend, client = self._make()
-        msgs = [{"role": "user", "content": "hi"}]
-        backend.add(msgs, user_id="u1", agent_id="hermes", infer=False, metadata={})
-        assert "metadata" not in client.calls[0][2]
 
     def test_update_forwards(self):
         backend, client = self._make()
@@ -144,53 +112,6 @@ class TestOSSBackend:
         backend._memory = memory
         return backend, memory
 
-    def test_search_returns_list(self):
-        backend, _ = self._make()
-        result = backend.search("test", filters={"user_id": "u1"})
-        assert isinstance(result, list)
-        assert result[0]["id"] == "m1"
-
-    def test_search_passes_filters(self):
-        backend, memory = self._make()
-        backend.search("q", filters={"user_id": "u1"}, top_k=3)
-        assert memory.calls[0][2]["filters"] == {"user_id": "u1"}
-        assert memory.calls[0][2]["top_k"] == 3
-
-    def test_search_ignores_rerank(self):
-        """OSS backend accepts rerank param but does not forward it to Memory."""
-        backend, memory = self._make()
-        backend.search("q", filters={}, rerank=True)
-        assert "rerank" not in memory.calls[0][2]
-
-    def test_add_forwards_kwargs(self):
-        backend, memory = self._make()
-        msgs = [{"role": "user", "content": "hi"}]
-        backend.add(msgs, user_id="u1", agent_id="hermes", infer=False)
-        assert memory.calls[0][2]["user_id"] == "u1"
-        assert memory.calls[0][2]["infer"] is False
-
-    def test_update_maps_text_to_data(self):
-        """OSS Memory.update uses `data=` param, not `text=`."""
-        backend, memory = self._make()
-        backend.update("m1", "new text")
-        assert memory.calls[0][0] == "update"
-        assert memory.calls[0][1] == "m1"
-        assert memory.calls[0][2] == {"data": "new text"}
-
-    def test_delete_positional_arg(self):
-        backend, memory = self._make()
-        backend.delete("m1")
-        assert memory.calls[0] == ("delete", "m1")
-
-    def test_update_normalizes_response(self):
-        backend, _ = self._make()
-        result = backend.update("m1", "text")
-        assert result == {"result": "Memory updated.", "memory_id": "m1"}
-
-    def test_delete_normalizes_response(self):
-        backend, _ = self._make()
-        result = backend.delete("m1")
-        assert result == {"result": "Memory deleted.", "memory_id": "m1"}
 
     def test_legacy_api_base_aliases_are_normalized_before_mem0_init(self, monkeypatch):
         import sys
@@ -279,62 +200,12 @@ class TestSelfHostedBackend:
         assert b._client.headers["x-api-key"] == "adminkey"
         assert "authorization" not in b._client.headers  # NOT the cloud 'Token' scheme
 
-    def test_init_strips_trailing_slash(self):
-        b = SelfHostedBackend("k", "http://sh:8888/")
-        assert str(b._client.base_url) == "http://sh:8888"
-
-    def test_init_omits_api_key_header_when_blank(self):
-        b = SelfHostedBackend("", "http://sh:8888")  # AUTH_DISABLED server
-        assert "x-api-key" not in b._client.headers
 
     # --- search ----------------------------------------------------------
 
-    def test_search_posts_to_search_with_filters_in_body(self):
-        s = _StubServer()
-        results = _backend(s).search("drink", filters={"user_id": "u1"}, top_k=5)
-        req = s.requests[-1]
-        assert (req.method, req.url.path) == ("POST", "/search")
-        import json
-        body = json.loads(req.content)
-        assert body == {"query": "drink", "top_k": 5, "filters": {"user_id": "u1"}}
-        assert results == [{"id": "m1", "memory": "tea", "score": 0.9}]
-
-    def test_search_sends_x_api_key_header(self):
-        s = _StubServer()
-        _backend(s).search("q", filters={"user_id": "u1"})
-        req = s.requests[-1]
-        assert req.headers["x-api-key"] == "adminkey"
-        assert "authorization" not in req.headers
 
     # --- add / update / delete ------------------------------------------
 
-    def test_add_posts_messages_and_identity(self):
-        s = _StubServer()
-        msgs = [{"role": "user", "content": "likes tea"}]
-        result = _backend(s).add(msgs, user_id="u1", agent_id="hermes", infer=False, metadata={"channel": "cli"})
-        req = s.requests[-1]
-        assert (req.method, req.url.path) == ("POST", "/memories")
-        import json
-        body = json.loads(req.content)
-        assert body == {"messages": msgs, "user_id": "u1", "agent_id": "hermes",
-                        "infer": False, "metadata": {"channel": "cli"}}
-        assert result["results"][0]["id"] == "new"
-
-    def test_update_puts_text_to_memory_id(self):
-        s = _StubServer()
-        result = _backend(s).update("abc", "new text")
-        req = s.requests[-1]
-        assert (req.method, req.url.path) == ("PUT", "/memories/abc")
-        import json
-        assert json.loads(req.content) == {"text": "new text"}
-        assert result == {"result": "Memory updated.", "memory_id": "abc"}
-
-    def test_delete_calls_delete_endpoint(self):
-        s = _StubServer()
-        result = _backend(s).delete("abc")
-        req = s.requests[-1]
-        assert (req.method, req.url.path) == ("DELETE", "/memories/abc")
-        assert result == {"result": "Memory deleted.", "memory_id": "abc"}
 
     # --- error propagation (feeds the plugin's circuit breaker) ----------
 

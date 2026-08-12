@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { deriveDraftTitle } from '@/lib/draft-title'
 import { triggerHaptic } from '@/lib/haptics'
 
 export interface ComposerAttachment {
@@ -20,6 +21,24 @@ export interface ComposerAttachment {
 export const $composerDraft = atom('')
 export const $composerAttachments = atom<ComposerAttachment[]>([])
 export const $composerTerminalSelections = atom<Record<string, string>>({})
+
+// Latched because opening a fresh session may remount the main composer before
+// it can start voice. Session-tile composers deliberately never consume this.
+export const $voiceConversationStartRequest = atom(0)
+let nextVoiceStartRequest = 0
+let handledVoiceStartRequest = 0
+
+export const requestVoiceConversationStart = (): void => $voiceConversationStartRequest.set(++nextVoiceStartRequest)
+
+export const takeVoiceConversationStart = (current: number): boolean => {
+  if (current <= handledVoiceStartRequest) {
+    return false
+  }
+
+  handledVoiceStartRequest = current
+
+  return true
+}
 
 // ---------------------------------------------------------------------------
 // Composer scopes — one live attachment set PER MOUNTED COMPOSER. The main
@@ -133,6 +152,130 @@ function loadPersistedDraftTexts(): [string, SessionDraft][] {
 
 const draftsBySession = new Map<string, SessionDraft>(loadPersistedDraftTexts())
 
+/**
+ * What each unsent draft would be called, keyed the same way its text is.
+ *
+ * A draft has no session to carry a title, so the tab showing it reads this
+ * instead of the "New session" placeholder. Written from `stashSessionDraft`,
+ * the one funnel every composer's text already flows through — the debounce
+ * that persists a draft is the same beat that renames its tab, so typing costs
+ * nothing extra. Only tabs showing a draft subscribe, and each selects its own
+ * key, so a rename repaints one label rather than the strip.
+ *
+ * Seeded from the persisted texts: a draft left open across a restart comes
+ * back already named.
+ */
+export const $draftTitles = atom<Record<string, string>>(
+  Object.fromEntries(
+    [...draftsBySession].map(([key, draft]) => [key, deriveDraftTitle(draft.text)]).filter(([, title]) => title)
+  )
+)
+
+/** Read one draft's title out of the map — for a `useStoreSelector`, so a tab
+ *  repaints on its OWN rename rather than on every draft's. */
+export const draftTitleIn = (titles: Record<string, string>, scope: string | null | undefined): string =>
+  titles[draftKey(scope)] ?? ''
+
+export const draftTitleFor = (scope: string | null | undefined): string => draftTitleIn($draftTitles.get(), scope)
+
+function publishDraftTitle(key: string, title: string): void {
+  const current = $draftTitles.get()
+
+  if ((current[key] ?? '') === title) {
+    return
+  }
+
+  const next = { ...current }
+
+  if (title) {
+    next[key] = title
+  } else {
+    delete next[key]
+  }
+
+  $draftTitles.set(next)
+}
+
+/**
+ * Re-read the persisted drafts written by ANOTHER window into this one's map.
+ *
+ * Drafts are per-renderer state backed by shared localStorage, and the map
+ * above is read exactly once at module load. Two windows on the same session
+ * (HUD mode ⇄ the app window) therefore diverge the moment either one types:
+ * whichever window mounted first keeps its stale copy forever, so text typed
+ * in the HUD is simply gone when you return to the app.
+ *
+ * Merge, don't clobber — the local map may hold attachments (never persisted)
+ * that the incoming text-only snapshot can't know about.
+ */
+export function reloadPersistedDrafts(): void {
+  const incoming = new Map(loadPersistedDraftTexts())
+
+  for (const [key, draft] of incoming) {
+    const local = draftsBySession.get(key)
+    draftsBySession.set(key, local?.attachments.length ? { ...local, text: draft.text } : draft)
+    publishDraftTitle(key, deriveDraftTitle(draft.text))
+  }
+
+  // A key that vanished from storage was cleared (sent) in the other window.
+  for (const key of [...draftsBySession.keys()]) {
+    if (!incoming.has(key)) {
+      draftsBySession.delete(key)
+      publishDraftTitle(key, '')
+    }
+  }
+}
+
+// localStorage `storage` events fire across Electron BrowserWindows of the
+// same origin, so the other window's write is the sync signal.
+if (typeof window !== 'undefined') {
+  window.addEventListener('storage', event => {
+    if (event.key === SESSION_DRAFTS_STORAGE_KEY) {
+      reloadPersistedDrafts()
+    }
+  })
+}
+
+/**
+ * Push a composer's live text into the shared stash (`flush`), or repaint it
+ * from the stash (`reload`).
+ *
+ * Both halves of the HUD handoff need this. The stash is the only draft state
+ * two windows share, but a mounted composer only consults it when its session
+ * scope changes — so entering HUD mode has to flush the app window's in-editor
+ * text down to the stash before the HUD boots and reads it, and leaving has to
+ * repaint the app's editor from whatever the HUD left behind (usually empty,
+ * because the HUD sent it).
+ *
+ * Dispatched synchronously, unlike the focus bus: the flush must complete
+ * before the HUD window is created.
+ */
+const DRAFT_SYNC_EVENT = 'hermes:composer-draft-sync'
+
+export type ComposerDraftSyncMode = 'flush' | 'reload'
+
+interface ComposerDraftSyncDetail {
+  mode: ComposerDraftSyncMode
+  target: string
+}
+
+export function requestComposerDraftSync(mode: ComposerDraftSyncMode, target = 'main'): void {
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new CustomEvent<ComposerDraftSyncDetail>(DRAFT_SYNC_EVENT, { detail: { mode, target } }))
+  }
+}
+
+export function onComposerDraftSyncRequest(handler: (detail: ComposerDraftSyncDetail) => void): () => void {
+  if (typeof window === 'undefined') {
+    return () => undefined
+  }
+
+  const listener = (event: Event) => handler((event as CustomEvent<ComposerDraftSyncDetail>).detail)
+  window.addEventListener(DRAFT_SYNC_EVENT, listener)
+
+  return () => window.removeEventListener(DRAFT_SYNC_EVENT, listener)
+}
+
 function persistDraftTexts() {
   try {
     const entries = [...draftsBySession]
@@ -161,6 +304,7 @@ export function stashSessionDraft(scope: string | null | undefined, text: string
   }
 
   persistDraftTexts()
+  publishDraftTitle(key, deriveDraftTitle(text))
 }
 
 export function takeSessionDraft(scope: string | null | undefined): SessionDraft {

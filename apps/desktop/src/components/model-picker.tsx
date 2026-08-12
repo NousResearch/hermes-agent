@@ -3,6 +3,7 @@ import { useState } from 'react'
 
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
+import { modelSearchText } from '@/lib/model-search-text'
 import { currentPickerSelection } from '@/lib/model-status-label'
 import { normalize } from '@/lib/text'
 import type { ModelOptionProvider, ModelPricing } from '@/types/hermes'
@@ -15,6 +16,7 @@ import { InlineNotice } from './notifications'
 import { Button } from './ui/button'
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from './ui/command'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
+import { HighlightMatches } from './ui/highlight-matches'
 import { Skeleton } from './ui/skeleton'
 
 interface ModelPickerDialogProps {
@@ -27,10 +29,10 @@ interface ModelPickerDialogProps {
   onSelect: (selection: { provider: string; model: string }) => void
   profile?: string
   /**
-   * Optional class to apply to DialogContent. Use to override z-index when
-   * stacking the picker on top of another fixed overlay (e.g. the desktop
-   * onboarding overlay, which sits at z-1300; the default Dialog z-130 ends
-   * up rendering underneath and blocks pointer events).
+   * Optional class for DialogContent. Use it to lift the picker onto a higher
+   * rung of the overlay ladder when it opens over another fixed overlay (the
+   * desktop onboarding overlay, say) — on the default modal rung it renders
+   * underneath and blocks pointer events.
    */
   contentClassName?: string
 }
@@ -84,7 +86,7 @@ export function ModelPickerDialog({
   // Open the full onboarding provider selector to add/switch a provider.
   // Reuses the entire onboarding flow (OAuth rows, API-key form, device-code,
   // model-confirm) instead of duplicating provider UI here. Closes the picker
-  // so the onboarding overlay (z-1300) isn't rendered underneath it.
+  // so the onboarding overlay isn't rendered underneath it.
   const addProvider = () => {
     startManualOnboarding()
     onOpenChange(false)
@@ -92,7 +94,10 @@ export function ModelPickerDialog({
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
-      <DialogContent className={cn('max-h-[85vh] max-w-2xl gap-0 overflow-hidden p-0', contentClassName)}>
+      <DialogContent
+        bodyClassName="gap-0 overflow-hidden p-0"
+        className={cn('max-h-[85vh] max-w-2xl', contentClassName)}
+      >
         <DialogHeader className="border-b border-border px-4 py-3">
           <DialogTitle>{copy.title}</DialogTitle>
           <DialogDescription className="font-mono text-xs leading-relaxed">
@@ -172,7 +177,7 @@ function ModelResults({
 
   const matches = (provider: ModelOptionProvider, model: string) =>
     !q ||
-    model.toLowerCase().includes(q) ||
+    modelSearchText(model).toLowerCase().includes(q) ||
     provider.name.toLowerCase().includes(q) ||
     provider.slug.toLowerCase().includes(q)
 
@@ -224,7 +229,9 @@ function ModelResults({
                   }}
                   value={`${provider.slug}:${model}`}
                 >
-                  <span className="min-w-0 flex-1 truncate">{model}</span>
+                  <span className="min-w-0 flex-1 truncate">
+                    <HighlightMatches query={search} text={model} />
+                  </span>
                   {locked && (
                     <span className="shrink-0 text-[0.62rem] uppercase tracking-wide opacity-80">{copy.pro}</span>
                   )}

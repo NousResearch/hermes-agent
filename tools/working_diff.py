@@ -35,6 +35,7 @@ def _run(args: List[str], cwd: str, timeout: int = _GIT_TIMEOUT):
     proc = subprocess.run(
         ["git", "-c", "core.quotePath=false", *args],
         cwd=cwd, capture_output=True, text=True, timeout=timeout,
+        encoding="utf-8", errors="replace",
     )
     return proc.returncode, proc.stdout
 

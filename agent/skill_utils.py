@@ -49,8 +49,57 @@ EXCLUDED_SKILL_DIRS = frozenset(
 # archive workflow preserves a complete old skill package under references/.
 SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
 
+# ── Org-shared skills (sync contract) ───────────────────────────
+# Org mirrors live under ~/.hermes/skills/_org/<org_id>/. Resolution is
+# TOKEN-GATED via a marker file the sync client writes after verifying the
+# token (skills_sync_client.pull_org_skills): only the marked org's mirror is
+# scanned. No marker ⇒ no org skills load. The marker is plain data (org_id
+# string) so this module stays import-light; the VERIFICATION lives in the
+# sync client, which is the only writer. Offline grace: the marker persists,
+# so already-pulled org skills keep working without connectivity; a VERIFIED
+# org change (or personal-org token) rewrites/removes it.
 
-def is_excluded_skill_path(path) -> bool:
+ORG_MIRROR_DIR_NAME = "_org"
+ORG_ACTIVE_MARKER = ".active_org"
+ORG_PROVENANCE_FILE = ".org-provenance.json"
+# Records the fingerprint of each skill exactly as upstream sent it, so a
+# later local edit is detectable and an org pull can refuse to clobber it.
+ORG_BASELINE_FILE = ".org-baseline.json"
+
+
+def read_active_org_id(skills_dir: Path) -> Optional[str]:
+    """The org id whose mirror may resolve, or None (no org skills load)."""
+    try:
+        marker = skills_dir / ORG_MIRROR_DIR_NAME / ORG_ACTIVE_MARKER
+        if not marker.exists():
+            return None
+        val = marker.read_text(encoding="utf-8").strip()
+        return val or None
+    except OSError:
+        return None
+
+
+def is_org_mirror_path(path, skills_dir: Path) -> bool:
+    """True when *path* is inside the org mirror (``_org/``)."""
+    try:
+        rel = Path(path).resolve().relative_to(Path(skills_dir).resolve())
+    except (OSError, ValueError):
+        return False
+    return bool(rel.parts) and rel.parts[0] == ORG_MIRROR_DIR_NAME
+
+
+def org_id_of_path(path, skills_dir: Path) -> Optional[str]:
+    """The ``<org_id>`` segment for a path under ``_org/<org_id>/...``."""
+    try:
+        rel = Path(path).resolve().relative_to(Path(skills_dir).resolve())
+    except (OSError, ValueError):
+        return None
+    if len(rel.parts) >= 2 and rel.parts[0] == ORG_MIRROR_DIR_NAME:
+        return rel.parts[1]
+    return None
+
+
+def is_excluded_skill_path(path, *, root: Optional[Path] = None) -> bool:
     """True if *path* should be skipped by active skill scanners.
 
     Use this on every ``SKILL.md`` path produced by direct ``rglob`` scans to
@@ -66,11 +115,11 @@ def is_excluded_skill_path(path) -> bool:
         from pathlib import PurePath
         parts = PurePath(str(path)).parts
     return any(part in EXCLUDED_SKILL_DIRS for part in parts) or is_skill_support_path(
-        path
+        path, root=root
     )
 
 
-def is_skill_support_path(path) -> bool:
+def is_skill_support_path(path, *, root: Optional[Path] = None) -> bool:
     """True if *path* is under a support dir of an actual skill root.
 
     ``references/``, ``templates/``, ``assets/``, and ``scripts/`` are
@@ -92,6 +141,8 @@ def is_skill_support_path(path) -> bool:
         if part not in SKILL_SUPPORT_DIRS or idx == 0:
             continue
         skill_root = Path(*parts[:idx])
+        if root is not None and not path_obj.is_absolute():
+            skill_root = root / skill_root
         if (skill_root / "SKILL.md").exists():
             return True
     return False
@@ -238,10 +289,12 @@ _ENV_DETECT_CACHE: Dict[str, bool] = {}
 def _detect_environment(env: str) -> bool:
     """Return True when the named runtime environment is currently active.
 
-    Cached per process. Unknown env names return True (fail-open: never hide a
-    skill because of a tag we don't understand).
+    Cached per process, EXCEPT ``kanban``: that verdict is context-dependent
+    (a delegate_task child or an in-process cron job sees the worker's
+    HERMES_KANBAN_* vars without owning them), so caching it process-wide would
+    freeze whichever context asked first and leak it to the others.
     """
-    if env in _ENV_DETECT_CACHE:
+    if env != "kanban" and env in _ENV_DETECT_CACHE:
         return _ENV_DETECT_CACHE[env]
 
     result = True
@@ -253,6 +306,20 @@ def _detect_environment(env: str) -> bool:
         # gate on (``tools/kanban_tools.py``) so the offer filter agrees with
         # tool availability.
         if os.getenv("HERMES_KANBAN_TASK") or os.getenv("HERMES_KANBAN_BOARD"):
+            # ...but only when this execution actually owns the dispatcher's
+            # task. A delegate_task child or a cron job fired in-process from a
+            # worker sees the worker's vars without being that worker.
+            try:
+                from agent.delegation_context import (
+                    is_dispatcher_owned_worker_context,
+                )
+
+                _owns_dispatcher_task = is_dispatcher_owned_worker_context()
+            except Exception:
+                _owns_dispatcher_task = True
+        else:
+            _owns_dispatcher_task = False
+        if _owns_dispatcher_task:
             result = True
         else:
             try:
@@ -815,11 +882,24 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     scripts) can contain arbitrary markdown and even archived package
     ``SKILL.md`` files, but they are progressive-disclosure data loaded through
     ``skill_view(..., file_path=...)`` rather than active skill roots.
+
+    M2 org mirrors (``_org/``): TOKEN-GATED resolution. Only the active org's
+    subdir (per the sync-client-written ``.active_org`` marker) is walked;
+    every other ``_org/<id>/`` (stale mirror from a previous org, or no
+    marker at all) is pruned — leave an org and its skills stop resolving,
+    without any manual cleanup.
     """
     skills_dir_str = str(skills_dir)
+    active_org = read_active_org_id(skills_dir)
+    org_root = os.path.join(skills_dir_str, ORG_MIRROR_DIR_NAME)
     matches: list[str] = []
     for root, dirs, files in os.walk(skills_dir_str, followlinks=True):
         has_skill_md = "SKILL.md" in files
+        if root == skills_dir_str and ORG_MIRROR_DIR_NAME in dirs and active_org is None:
+            dirs.remove(ORG_MIRROR_DIR_NAME)
+        elif root == org_root:
+            # Inside _org/: descend ONLY into the active org's mirror.
+            dirs[:] = [d for d in dirs if d == active_org]
         dirs[:] = [
             d
             for d in dirs

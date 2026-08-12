@@ -139,6 +139,7 @@ _BILLING_ERROR_CODES = frozenset({
     "no_usable_credits",
     "balance_depleted",
     "model_not_supported_on_free_tier",
+    "member_spend_cap_exceeded",
     _XAI_SPENDING_LIMIT_ERROR_CODE,
 })
 
@@ -159,6 +160,14 @@ _RATE_LIMIT_PATTERNS = [
     "throttlingexception",
     "too many concurrent requests",
     "servicequotaexceededexception",
+    # Generic throttle prefix — Bedrock (and some proxies) surface throttling
+    # as "Throttling error: Too many tokens, please wait before trying
+    # again."  Without this entry the message falls through to the
+    # context-overflow list (which contains "too many tokens") and the retry
+    # loop compresses a healthy session instead of backing off.  Matched
+    # BEFORE _CONTEXT_OVERFLOW_PATTERNS in the message-only path, so the
+    # throttle wins.  (port of anomalyco/opencode#37848's exclusion guard)
+    "throttling",
 ]
 
 # Patterns that indicate provider-side overload, NOT a per-credential rate
@@ -212,6 +221,12 @@ _PAYLOAD_TOO_LARGE_PATTERNS = [
     "request entity too large",
     "payload too large",
     "error code: 413",
+    # Anthropic's structured 413 error type.  Normally arrives with an HTTP
+    # 413 status (handled by the status path), but aggregators/proxies can
+    # re-wrap it into a plain message with no status attribute — route it to
+    # the same compression recovery.  (port of anomalyco/opencode#37848)
+    "request_too_large",
+    "request exceeds the maximum size",
 ]
 
 # Image-size patterns.  Matched against 400 bodies (not 413) because most
@@ -298,6 +313,10 @@ _CONTEXT_OVERFLOW_PATTERNS = [
     "max input token",
     "input token",
     "exceeds the maximum number of input tokens",
+    # Together/Fireworks-style: "Input length 131393 exceeds the maximum
+    # allowed input length of 131040 tokens."  No other pattern in this list
+    # matches that wording.  (port of anomalyco/opencode#37848)
+    "maximum allowed input length",
 ]
 
 # Model not found patterns
@@ -319,6 +338,56 @@ _MODEL_NOT_FOUND_PATTERNS = [
     # and the error surfaces as a confusing "model not found" message
     # instead of automatically failing over.  See PR #58446.
     "no endpoints found that support tool use",
+]
+
+
+def _model_id_missing_known_prefix(model: str, provider: str) -> bool:
+    """True when a bare model id is only known to the provider as ``vendor/id``.
+
+    Some providers answer a malformed model id with a naked 404 that names
+    nothing — NVIDIA NIM returns ``404 page not found`` for a bare
+    ``nemotron-3-ultra-550b-a55b``, indistinguishable from a bad endpoint
+    path. Consulting the curated catalogue tells the two apart: if the id
+    carries no ``/`` but the catalogue has exactly one entry ending in
+    ``/<id>``, the prefix was dropped and the failure is deterministic.
+
+    Never guesses — an id absent from the catalogue (a local NIM container,
+    a proxied model) returns False so genuine endpoint problems keep their
+    retryable ``unknown`` classification.
+    """
+    name = (model or "").strip()
+    if not name or "/" in name:
+        return False
+    try:
+        from hermes_cli.model_normalize import suggest_prefixed_model_id
+
+        return bool(suggest_prefixed_model_id((provider or "").strip(), name))
+    except Exception:
+        return False
+
+
+# Malformed-message-array 400s.  Deterministic request-shape rejections that
+# describe the *transcript* being invalid, not a parameter.  The canonical
+# case: a stream dies mid-response and Hermes persists a content-less
+# assistant stub; on the next turn the Anthropic message schema (and the
+# litellm/Bedrock proxies in front of it) reject the whole request with
+#   "all messages must have non-empty content except for the optional final
+#    assistant message"  /  errorCode INVALID_REQUEST_BODY
+# These are NOT context overflow — the input may be tiny — but a large
+# session used to mis-route them into the compression loop via the generic
+# "400 + large session" heuristic below, ending in "Cannot compress further"
+# every retry (the input is unchanged, so compression cannot help).  Match
+# the message-shape signals explicitly and fail fast as a format_error so the
+# loop stops looping.  The empty-stub creation is the root cause (fixed in
+# chat_completion_helpers); this pattern stops the misclassification symptom
+# for transcripts that already contain a poisoned stub.
+_INVALID_MESSAGE_BODY_PATTERNS = [
+    "must have non-empty content",
+    "messages must have non-empty",
+    "invalid_request_body",
+    "text content blocks must be non-empty",
+    "content field is required",
+    "messages: at least one message is required",
 ]
 
 # Request-validation patterns — the request is malformed and will fail
@@ -794,6 +863,19 @@ def classify_api_error(
         if classified is not None:
             return classified
 
+    # Local MoA streaming compatibility errors are adapter-shape bugs, not a
+    # provider outage. Falling back to another model would silently switch the
+    # user's selected MoA route to a single-model answer (#55933 follow-up).
+    if provider_lower == "moa" and (
+        "'types.SimpleNamespace' object is not iterable" in str(error)
+        or "'types.SimpleNamespace' object has no attribute 'index'" in str(error)
+    ):
+        return _result(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=False,
+        )
+
     # Local MoA config drift is deterministic: a persisted session can retain
     # a preset name that was later renamed/deleted. Retrying the same lookup
     # cannot recover and makes a clear config error look like an API outage.
@@ -1001,6 +1083,18 @@ def _classify_by_status(
                 should_fallback=False,
             )
         if any(p in error_msg for p in _MODEL_NOT_FOUND_PATTERNS):
+            return result_fn(
+                FailoverReason.model_not_found,
+                retryable=False,
+                should_fallback=True,
+            )
+        # A bare id that the provider's catalogue only knows in prefixed form
+        # is a malformed model id, not a routing glitch — NVIDIA NIM answers
+        # one with a naked ``404 page not found`` that names nothing, so the
+        # generic branch below burns three retries and reports what looks
+        # like an outage (#78796). Deterministic: don't retry, and let the
+        # model_not_found surface carry the real cause.
+        if _model_id_missing_known_prefix(model, provider):
             return result_fn(
                 FailoverReason.model_not_found,
                 retryable=False,
@@ -1271,6 +1365,33 @@ def _classify_400(
             should_fallback=True,
         )
 
+    # Malformed message array (empty-content assistant stub, etc.). Must be
+    # checked BEFORE context_overflow: the input can be tiny, so the generic
+    # "400 + large session" heuristic would otherwise mis-route it into the
+    # compression loop and thrash until "Cannot compress further" on every
+    # retry (the request is unchanged, so compression cannot fix it). This is
+    # a deterministic request-shape rejection — fail fast as a non-retryable
+    # format_error and fall back. Checked against the message text AND the
+    # structured error code, since proxies (litellm/Bedrock) surface the
+    # signal in errorCode=INVALID_REQUEST_BODY.
+    if (
+        any(p in error_msg for p in _INVALID_MESSAGE_BODY_PATTERNS)
+        or error_code_lower == "invalid_request_body"
+    ):
+        logger.warning(
+            "Malformed message array 400 (invalid request body) classified as "
+            "format_error, NOT context overflow — failing fast + falling back "
+            "instead of entering the compression loop. This usually means an "
+            "empty-content assistant stub is in the transcript; num_messages=%s "
+            "approx_tokens=%s. error=%.200s",
+            num_messages, approx_tokens, error_msg,
+        )
+        return result_fn(
+            FailoverReason.format_error,
+            retryable=False,
+            should_fallback=True,
+        )
+
     # Empty-provider-response advisories must not enter compression. They
     # often mention "max_tokens" as a possible cause and used to match the
     # bare overflow pattern, then thrash compress until "Cannot compress
@@ -1331,6 +1452,18 @@ def _classify_400(
         # Responses API (and some providers) use flat body: {"message": "..."}
         if not err_body_msg:
             err_body_msg = str(body.get("message") or "").strip().lower()
+        # litellm / Bedrock proxies use a custom shape: {"errorMessage": "...",
+        # "errorCode": "...", "errorArgs": {"reason": "..."}}.  Without these
+        # keys err_body_msg stays "" and a long, descriptive rejection is
+        # wrongly treated as a "generic" (bare) error below, which — on a
+        # large session — mis-routes into the compression loop.  Recognize
+        # them so the is_generic heuristic sees the real message length.
+        if not err_body_msg:
+            err_body_msg = str(body.get("errorMessage") or "").strip().lower()
+        if not err_body_msg:
+            _args = body.get("errorArgs")
+            if isinstance(_args, dict):
+                err_body_msg = str(_args.get("reason") or "").strip().lower()
     is_generic = len(err_body_msg) < 30 or err_body_msg in {"error", ""}
     # Absolute token/message-count thresholds are only a proxy for smaller
     # context windows.  Large-context sessions can have many messages while
@@ -1629,7 +1762,7 @@ def _extract_error_code(body: dict) -> str:
                 return nested_code
 
     # Top-level code
-    code = body.get("code") or body.get("error_code") or ""
+    code = body.get("code") or body.get("error_code") or body.get("errorCode") or ""
     if isinstance(code, (str, int)):
         text = str(code).strip()
         if text and text != "400":
@@ -1649,6 +1782,16 @@ def _extract_message(error: Exception, body: dict) -> str:
         msg = body.get("message", "")
         if isinstance(msg, str) and msg.strip():
             return msg.strip()[:500]
+        # litellm / Bedrock proxy shape: {"errorMessage": "...",
+        # "errorArgs": {"reason": "..."}}.
+        msg = body.get("errorMessage", "")
+        if isinstance(msg, str) and msg.strip():
+            return msg.strip()[:500]
+        args = body.get("errorArgs")
+        if isinstance(args, dict):
+            reason = args.get("reason", "")
+            if isinstance(reason, str) and reason.strip():
+                return reason.strip()[:500]
     # Fallback to str(error)
     return str(error)[:500]
 

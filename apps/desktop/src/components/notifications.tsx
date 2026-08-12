@@ -92,9 +92,9 @@ export function NotificationStack() {
   )
 }
 
-// Portaled to <body> with a z above the Radix dialog layer (overlay z-[120],
-// content z-[130]) — see the top-center variant below for why.
-const REGION_BASE = 'pointer-events-none fixed z-[200] flex gap-2'
+// Portaled to <body> on the over-modal rung so a toast clears an open dialog —
+// see the top-center variant below for why.
+const REGION_BASE = 'pointer-events-none fixed z-(--z-over-modal) flex gap-2'
 
 // Primary stack: top-center, collapsed to the latest toast with a "+N more"
 // expander + clear-all — the noisy/important surface (errors, warnings,

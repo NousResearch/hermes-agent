@@ -23,7 +23,7 @@ import time
 from typing import Any, Callable, Dict, List, Optional
 
 from agent.memory_manager import sanitize_context
-from agent.memory_provider import MemoryProvider
+from agent.memory_provider import TRIVIAL_PROMPT_RE, MemoryProvider, is_trivial_prompt
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -292,6 +292,10 @@ class HonchoMemoryProvider(MemoryProvider):
         self._init_lock = threading.Lock()
         self._init_error = ""
 
+        # Init auth failures live here because the failed manager is discarded.
+        self._init_auth_failure: Optional[str] = None
+        self._init_auth_notice_emitted = False
+
         # Cron and flush contexts disable the plugin entirely.
         self._cron_skipped = False
 
@@ -445,11 +449,19 @@ class HonchoMemoryProvider(MemoryProvider):
             init_session_id = self._lazy_init_session_id or "hermes-default"
 
             def _run() -> None:
+                from plugins.memory.honcho.session import HonchoAuthError
+
                 try:
                     self._do_session_init(cfg, init_session_id, **init_kwargs)
                     self._lazy_init_kwargs = None
                     self._lazy_init_session_id = None
                     self._init_error = ""
+                    self._clear_init_auth_failure()
+                except HonchoAuthError as e:
+                    self._init_error = str(e)
+                    self._record_init_auth_failure(e)
+                    self._manager = None
+                    logger.warning("Honcho background session init failed: authentication rejected")
                 except Exception as e:
                     self._init_error = str(e)
                     self._manager = None
@@ -522,7 +534,7 @@ class HonchoMemoryProvider(MemoryProvider):
                         )
                     except Exception as exc:
                         logger.debug("Honcho dialectic prewarm failed: %s", exc)
-                        self._dialectic_empty_streak += 1
+                        self._note_dialectic_failure(exc)
                         return
                     if r and r.strip():
                         with self._prefetch_lock:
@@ -563,6 +575,8 @@ class HonchoMemoryProvider(MemoryProvider):
         if not self._config or self._lazy_init_kwargs is None:
             return False
 
+        from plugins.memory.honcho.session import HonchoAuthError
+
         try:
             self._do_session_init(
                 self._config,
@@ -572,12 +586,28 @@ class HonchoMemoryProvider(MemoryProvider):
             # Clear lazy refs
             self._lazy_init_kwargs = None
             self._lazy_init_session_id = None
+            self._clear_init_auth_failure()
             return self._manager is not None
+        except HonchoAuthError as e:
+            self._record_init_auth_failure(e)
+            self._manager = None
+            self._session_initialized = False
+            logger.warning("Honcho lazy session init failed: authentication rejected")
+            return False
         except Exception as e:
             self._manager = None
             self._session_initialized = False
             logger.warning("Honcho lazy session init failed: %s", e)
             return False
+
+    def _record_init_auth_failure(self, exc: BaseException) -> None:
+        """Keep the auth detail so the one-time notice survives the manager discard."""
+        self._init_auth_failure = str(exc)
+
+    def _clear_init_auth_failure(self) -> None:
+        if self._init_auth_failure is not None:
+            self._init_auth_failure = None
+            self._init_auth_notice_emitted = False
 
     def _session_ready(self) -> bool:
         """Return whether a manager/session key can be used safely.
@@ -701,7 +731,8 @@ class HonchoMemoryProvider(MemoryProvider):
                         timeout=max(0.0, first_turn_base_deadline - time.monotonic())
                     )
             if not self._session_ready():
-                return ""
+                # A failed auth init still owes the user the one-time notice.
+                return self._pop_auth_notice()
 
         # First-turn mode suppresses only the base layer; dialectic is independent.
         _skip_base = (
@@ -714,6 +745,11 @@ class HonchoMemoryProvider(MemoryProvider):
             return self._truncate_to_budget(ready) if ready else ""
 
         parts = []
+
+        # One-time notice, relayed by the model, that auth is dead and memory is paused.
+        auth_notice = self._pop_auth_notice()
+        if auth_notice:
+            parts.append(auth_notice)
 
         # ----- Layer 1: Base context (representation + card) -----
         if not _skip_base:
@@ -804,7 +840,7 @@ class HonchoMemoryProvider(MemoryProvider):
                         r = self._run_dialectic_depth(query)
                     except Exception as exc:
                         logger.debug("Honcho first-turn dialectic failed: %s", exc)
-                        self._dialectic_empty_streak += 1
+                        self._note_dialectic_failure(exc)
                         return
                     if r and r.strip():
                         with self._prefetch_lock:
@@ -844,6 +880,26 @@ class HonchoMemoryProvider(MemoryProvider):
         result = self._truncate_to_budget(result)
 
         return result
+
+    def _pop_auth_notice(self) -> str:
+        """One-time model-facing notice that Honcho auth expired and memory is paused."""
+        # getattr (not a direct call): test fakes install minimal managers
+        # without pop_auth_notice; exceptions still propagate.
+        pop = getattr(self._manager, "pop_auth_notice", None)
+        msg = pop() if callable(pop) else None
+        if not isinstance(msg, str) or not msg:
+            # Init failures discard the manager; the provider kept the detail.
+            if self._init_auth_failure is None or self._init_auth_notice_emitted:
+                return ""
+            self._init_auth_notice_emitted = True
+            msg = self._init_auth_failure
+        return (
+            "[Honcho memory status] Authentication with the Honcho memory backend "
+            "has expired and automatic token refresh failed, so memory sync and "
+            f"recall are paused. Reason: {msg}\n"
+            "Tell the user (once) that Honcho memory is paused and that running "
+            "'hermes honcho setup' to re-authenticate will restore it."
+        )
 
     def _consume_pending_dialectic(self) -> str:
         """Pop any pending dialectic result, applying the stale-discard guard.
@@ -941,7 +997,7 @@ class HonchoMemoryProvider(MemoryProvider):
                 result = self._run_dialectic_depth(query)
             except Exception as e:
                 logger.debug("Honcho prefetch failed: %s", e)
-                self._dialectic_empty_streak += 1
+                self._note_dialectic_failure(e)
                 return
             if result and result.strip():
                 with self._prefetch_lock:
@@ -1019,6 +1075,21 @@ class HonchoMemoryProvider(MemoryProvider):
         widened = self._dialectic_cadence + self._dialectic_empty_streak
         ceiling = self._dialectic_cadence * self._BACKOFF_MAX
         return min(widened, ceiling)
+
+    def _note_dialectic_failure(self, exc: BaseException) -> None:
+        """Widen the empty-streak backoff after a failed dialectic cycle.
+
+        Auth failures are exempt because waiting cannot fix a dead token.
+        """
+        from plugins.memory.honcho.session import HonchoAuthError
+
+        if isinstance(exc, HonchoAuthError):
+            logger.warning(
+                "Honcho dialectic auth failure (not counted toward cadence backoff): %s",
+                exc,
+            )
+            return
+        self._dialectic_empty_streak += 1
 
     def liveness_snapshot(self) -> dict:
         """In-process snapshot of dialectic liveness state for diagnostics.
@@ -1196,28 +1267,17 @@ class HonchoMemoryProvider(MemoryProvider):
                 return r
         return ""
 
-    # Prompts that carry no semantic signal — trivial acknowledgements, slash
-    # commands, empty input. Skipping injection here saves tokens and prevents
-    # stale user-model context from derailing one-word replies.
-    _TRIVIAL_PROMPT_RE = re.compile(
-        r'^(yes|no|ok|okay|sure|thanks|thank you|y|n|yep|nope|yeah|nah|'
-        r'continue|go ahead|do it|proceed|got it|cool|nice|great|done|next|lgtm|k)$',
-        re.IGNORECASE,
-    )
+    # Prompts that carry no semantic signal — trivial acknowledgements, greetings,
+    # slash commands, empty input. Skipping injection here saves tokens and prevents
+    # stale user-model context from derailing one-word replies. Classification is
+    # fully delegated to the shared agent/memory_provider.is_trivial_prompt so the
+    # provider-side classifier and the core prefetch gate can never drift apart.
+    _TRIVIAL_PROMPT_RE = TRIVIAL_PROMPT_RE
 
     @classmethod
     def _is_trivial_prompt(cls, text: str) -> bool:
         """Return True if the prompt is too trivial to warrant context injection."""
-        if not text:
-            return True
-        stripped = text.strip()
-        if not stripped:
-            return True
-        if stripped.startswith("/"):
-            return True
-        if cls._TRIVIAL_PROMPT_RE.match(stripped):
-            return True
-        return False
+        return is_trivial_prompt(text)
 
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         """Track turn count for cadence and injection_frequency logic."""
@@ -1423,6 +1483,8 @@ class HonchoMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: dict, **kwargs) -> str:
         """Handle a Honcho tool call, with lazy session init for tools-only mode."""
+        from plugins.memory.honcho.session import HonchoAuthError
+
         if self._cron_skipped:
             return tool_error("Honcho is not active (cron context).")
 
@@ -1430,6 +1492,10 @@ class HonchoMemoryProvider(MemoryProvider):
             if self._init_thread and self._init_thread.is_alive():
                 return tool_error("Honcho session is still initializing; try again shortly.")
             if not self._ensure_session():
+                if self._init_auth_failure:
+                    return tool_error(
+                        f"Honcho memory authentication failed: {self._init_auth_failure}"
+                    )
                 return tool_error("Honcho session could not be initialized.")
 
         if not self._manager or not self._session_key:
@@ -1532,6 +1598,10 @@ class HonchoMemoryProvider(MemoryProvider):
 
             return tool_error(f"Unknown tool: {tool_name}")
 
+        except HonchoAuthError as e:
+            # Never report an auth failure as an empty result; the model would read it as "no memory".
+            logger.error("Honcho tool %s failed: authentication rejected", tool_name)
+            return tool_error(f"Honcho memory authentication failed: {e}")
         except Exception as e:
             logger.error("Honcho tool %s failed: %s", tool_name, e)
             return tool_error(f"Honcho {tool_name} failed: {e}")

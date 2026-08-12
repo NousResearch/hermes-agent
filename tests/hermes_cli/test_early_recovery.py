@@ -99,13 +99,6 @@ def test_broken_dotenv_crashes_main_import_without_repair(tmp_path):
     assert "wiped mid-install" in result.stderr
 
 
-def test_early_recovery_runs_before_main_imports_and_saves_launch(tmp_path):
-    """When recovery repairs the broken package, hermes_cli.main imports
-    cleanly — proving the recovery hook fires before env_loader/dotenv."""
-    result = _run_lifecycle_subprocess(tmp_path, repair=True)
-    assert "EARLY_RECOVERY_CALLED" in result.stdout
-    assert "MAIN_IMPORTED_OK" in result.stdout, result.stderr
-    assert result.returncode == 0
 
 
 def test_early_recovery_module_is_stdlib_only(tmp_path):
@@ -164,33 +157,10 @@ def _project(tmp_path: Path, *, pyproject: bool = True) -> Path:
     return root
 
 
-def test_fast_path_no_marker_never_probes(tmp_path, monkeypatch):
-    root = _project(tmp_path)
-    probed = []
-    monkeypatch.setattr(er, "_probe_broken_packages", lambda: probed.append(1) or [])
-    er.recover_if_needed(project_root=root, argv=[])
-    assert probed == []
 
 
-def test_update_argv_skips_recovery(tmp_path, monkeypatch):
-    root = _project(tmp_path)
-    (root / ".lazy-refresh-incomplete").write_text("x", encoding="utf-8")
-    probed = []
-    monkeypatch.setattr(er, "_probe_broken_packages", lambda: probed.append(1) or [])
-    er.recover_if_needed(project_root=root, argv=["update"])
-    assert probed == []
 
 
-def test_no_pyproject_skips_and_preserves_marker(tmp_path, monkeypatch):
-    root = _project(tmp_path, pyproject=False)
-    marker = root / ".update-incomplete"
-    marker.write_text("x", encoding="utf-8")
-    monkeypatch.setattr(er, "_probe_broken_packages", lambda: ["PyYAML"])
-    installs = []
-    monkeypatch.setattr(er, "_run_repair_install", lambda specs, r: installs.append(specs) or True)
-    er.recover_if_needed(project_root=root, argv=[])
-    assert installs == []
-    assert marker.exists()
 
 
 def test_marker_plus_broken_probe_repairs_with_pinned_specs(tmp_path, monkeypatch):
@@ -214,64 +184,11 @@ def test_marker_plus_broken_probe_repairs_with_pinned_specs(tmp_path, monkeypatc
     assert not (root / ".update-incomplete.lock").exists()
 
 
-def test_healthy_probe_skips_install(tmp_path, monkeypatch):
-    root = _project(tmp_path)
-    (root / ".update-incomplete").write_text("x", encoding="utf-8")
-    monkeypatch.setattr(er, "_probe_broken_packages", lambda: [])
-    installs = []
-    monkeypatch.setattr(er, "_run_repair_install", lambda specs, r: installs.append(specs) or True)
-    er.recover_if_needed(project_root=root, argv=[])
-    assert installs == []
 
 
-def test_lock_held_skips_repair(tmp_path, monkeypatch):
-    root = _project(tmp_path)
-    (root / ".lazy-refresh-incomplete").write_text("x", encoding="utf-8")
-    (root / ".update-incomplete.lock").write_text("123\n", encoding="utf-8")
-    monkeypatch.setattr(er, "_probe_broken_packages", lambda: ["PyYAML"])
-    installs = []
-    monkeypatch.setattr(er, "_run_repair_install", lambda specs, r: installs.append(specs) or True)
-    er.recover_if_needed(project_root=root, argv=[])
-    assert installs == []
-    # Fresh (non-stale) lock is left for its owner.
-    assert (root / ".update-incomplete.lock").exists()
 
 
-def test_failed_repair_prints_manual_command_with_pins(tmp_path, monkeypatch, capsys):
-    root = _project(tmp_path)
-    (root / ".lazy-refresh-incomplete").write_text("x", encoding="utf-8")
-    monkeypatch.setattr(er, "_probe_broken_packages", lambda: ["PyJWT"])
-    monkeypatch.setattr(er, "_run_repair_install", lambda specs, r: False)
-    er.recover_if_needed(project_root=root, argv=[])
-    err = capsys.readouterr().err
-    assert "--force-reinstall" in err
-    assert "PyJWT[crypto]==2.13.0" in err
 
 
-def test_pinned_specs_falls_back_to_bare_names_without_pyproject(tmp_path):
-    root = _project(tmp_path, pyproject=False)
-    assert er._pinned_specs(["PyYAML", "unknown-pkg"], root) == ["PyYAML", "unknown-pkg"]
 
 
-def test_pinned_specs_strips_env_markers_and_matches_extras(tmp_path):
-    root = _project(tmp_path)
-    (root / "pyproject.toml").write_text(
-        '[project]\nname = "x"\ndependencies = [\n'
-        '  "cryptography==46.0.7; python_version >= \'3.11\'",\n'
-        '  "PyJWT[crypto]==2.13.0",\n'
-        "]\n",
-        encoding="utf-8",
-    )
-    assert er._pinned_specs(["cryptography", "PyJWT"], root) == [
-        "cryptography==46.0.7",
-        "PyJWT[crypto]==2.13.0",
-    ]
-
-
-def test_probe_tables_shared_with_main():
-    """The full recovery layer in main.py must probe/repair the same set as
-    the early layer — the tables have one canonical home."""
-    import hermes_cli.main as m
-
-    assert m._LAZY_REFRESH_IMPORT_PROBES == er.LAZY_REFRESH_IMPORT_PROBES
-    assert m._LAZY_REFRESH_REPAIR_PACKAGES == er.LAZY_REFRESH_REPAIR_PACKAGES

@@ -67,8 +67,43 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         ),
     )
     cron_create.add_argument(
+        "--monitor-script",
+        dest="monitor_script",
+        help=(
+            "Monitor mode: path to a cheap source script under "
+            "~/.hermes/scripts/ that runs each tick BEFORE the agent. "
+            "Unchanged output (exact-bytes hash) suppresses the agent run "
+            "entirely; changed output injects a MONITOR CHANGE DETECTED "
+            "diff into the prompt. Script output must be stable (no "
+            "timestamps). Mutually exclusive with --monitor-url; "
+            "incompatible with --no-agent."
+        ),
+    )
+    cron_create.add_argument(
+        "--monitor-url",
+        dest="monitor_url",
+        help=(
+            "Monitor mode: http(s) URL fetched with a bounded GET each tick "
+            "instead of a script. Same hash-suppression semantics as "
+            "--monitor-script."
+        ),
+    )
+    cron_create.add_argument(
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
+    )
+    cron_create.add_argument(
+        "--model",
+        help=(
+            "Pin this job to a specific inference model (user-owned; the "
+            "agent's cronjob tool cannot set this). Omit to follow "
+            "cron.model / model.default from config.yaml."
+        ),
+    )
+    cron_create.add_argument(
+        "--provider",
+        dest="model_provider",
+        help="Inference provider paired with --model (e.g. 'openrouter', 'nous').",
     )
 
     # cron edit
@@ -131,8 +166,36 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         help="Disable no-agent mode on this job (reverts to LLM-driven execution).",
     )
     cron_edit.add_argument(
+        "--monitor-script",
+        dest="monitor_script",
+        help=(
+            "Set/replace the monitor source script (see `hermes cron create "
+            "--monitor-script`). Pass empty string to clear."
+        ),
+    )
+    cron_edit.add_argument(
+        "--monitor-url",
+        dest="monitor_url",
+        help=(
+            "Set/replace the monitor source URL. Pass empty string to clear."
+        ),
+    )
+    cron_edit.add_argument(
         "--workdir",
         help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--model",
+        help=(
+            "Pin this job to a specific inference model (user-owned; the "
+            "agent's cronjob tool cannot set this). Pass empty string to "
+            "clear the pin and follow cron.model / model.default."
+        ),
+    )
+    cron_edit.add_argument(
+        "--provider",
+        dest="model_provider",
+        help="Inference provider paired with --model. Pass empty string to clear.",
     )
 
     # lifecycle actions
@@ -161,6 +224,23 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
     )
     cron_runs.add_argument("job_id", nargs="?", help="Optional job ID filter")
     cron_runs.add_argument("--limit", type=int, default=20, help="Rows to show (1-500)")
+
+    # cron notepad — per-job durable KV scratchpad (injected into the job
+    # prompt each run; the running agent writes it via this CLI).
+    cron_notepad = cron_subparsers.add_parser(
+        "notepad",
+        help="Read/write a job's durable notepad (persistent KV across runs)",
+    )
+    cron_notepad.add_argument("job_id", help="Job ID the notepad belongs to")
+    cron_notepad.add_argument(
+        "notepad_action",
+        nargs="?",
+        default="list",
+        choices=["get", "set", "delete", "list"],
+        help="Action (default: list)",
+    )
+    cron_notepad.add_argument("key", nargs="?", help="Notepad key (get/set/delete)")
+    cron_notepad.add_argument("value", nargs="?", help="Value to store (set)")
 
     # cron tick (mostly for debugging)
     cron_tick = cron_subparsers.add_parser("tick", help="Run due jobs once and exit")

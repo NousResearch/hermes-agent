@@ -80,7 +80,7 @@ tools:
     search_default_limit: 5
     max_search_limit: 20
     listing: auto       # embed a grouped name+description catalog manifest
-    listing_max_tokens: 20000
+    listing_max_tokens: 4000
 ```
 
 | Key | Default | Meaning |
@@ -90,7 +90,7 @@ tools:
 | `search_default_limit` | `5` | Hits returned when the model calls `tool_search` without a `limit`. |
 | `max_search_limit` | `20` | Hard upper bound the model can request via `limit`. Range 1–50. |
 | `listing` | `auto` | Embed a skills-style manifest of every deferred tool (name + first sentence of its description, ≤60 chars, grouped by MCP server) in the `tool_search` bridge description. `auto` includes it when it fits the budget (falling back to names-only, then to the tier-2 server summary); `on`/`off` force either way. |
-| `listing_max_tokens` | `20000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. |
+| `listing_max_tokens` | `4000` | Absolute cap on the embedded listing, regardless of context size. Range 200–60000. Large catalogs degrade to names-only or per-server summaries, keeping full schemas available through search. |
 
 ### Why the listing exists
 

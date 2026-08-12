@@ -65,9 +65,13 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
           cache-dependency-path: website/package-lock.json
+
+      - name: grab npm 12
+        run: |
+          npm i -g npm@12
 
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
@@ -184,6 +188,61 @@ jobs:
           if [ -f website/build/llms-full.txt ]; then
             cp website/build/llms-full.txt _site/llms-full.txt
           fi
+
+      # Pages serves exactly the newest artifact, so each deploy used to delete
+      # the previous build's content-hashed JS/CSS while edge caches (Vercel →
+      # Fastly, max-age=300 + stale-while-revalidate=3600) kept serving HTML
+      # that referenced it — every asset request 404'd for up to ~65 minutes
+      # after each deploy. With push-triggered deploys landing every ~15-30
+      # minutes, the docs were in that broken window most of the day (search,
+      # being pure client JS, died first). Fix: keep a rolling pool of prior
+      # builds' hashed assets and union-merge it into every artifact so stale
+      # HTML keeps resolving. Hashed filenames are content-addressed, so a
+      # collision is by definition the identical file — the merge never
+      # overwrites current-build output (cp --update=none).
+      - name: Restore asset retention pool
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: _asset_retention
+          key: docs-asset-retention-${{ github.run_id }}
+          restore-keys: |
+            docs-asset-retention-
+
+      - name: Merge retained assets from previous deploys
+        run: |
+          set -euo pipefail
+          ASSET_DIRS="assets zh-Hans/assets"
+          mkdir -p _asset_retention
+          # 1) Add this build's hashed assets to the pool (fresh mtimes, so
+          #    assets still shipped by current builds never age out).
+          for d in $ASSET_DIRS; do
+            if [ -d "_site/docs/$d" ]; then
+              mkdir -p "_asset_retention/$d"
+              cp -a "_site/docs/$d/." "_asset_retention/$d/"
+            fi
+          done
+          # 2) Drop pool entries no build has produced for 14 days — far
+          #    beyond any edge-cache or open-tab horizon.
+          find _asset_retention -type f -mtime +14 -delete
+          find _asset_retention -type d -empty -delete
+          # 3) Union-merge the pool into the artifact; --update=none keeps the
+          #    current build authoritative for any path it produced.
+          for d in $ASSET_DIRS; do
+            if [ -d "_asset_retention/$d" ]; then
+              mkdir -p "_site/docs/$d"
+              cp -R --update=none "_asset_retention/$d/." "_site/docs/$d/"
+            fi
+          done
+          echo "retention pool:" && du -sh _asset_retention
+          echo "deployed assets:" && du -sh _site/docs/assets
+
+      - name: Save asset retention pool
+        # Always save under a fresh key (caches are immutable); restore-keys
+        # prefix matching picks the newest on the next run.
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        with:
+          path: _asset_retention
+          key: docs-asset-retention-${{ github.run_id }}
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa  # v3

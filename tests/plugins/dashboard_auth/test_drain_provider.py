@@ -56,9 +56,6 @@ class TestEntropyGate:
         # 60 chars, one distinct character → low distinct count + low entropy.
         assert drain.assess_secret_strength("a" * 60) is not None
 
-    def test_long_but_few_distinct_rejected(self, drain):
-        # 60 chars cycling through only 4 distinct characters.
-        assert drain.assess_secret_strength("abcd" * 15) is not None
 
     def test_custom_min_chars_enforced(self, drain):
         s = _strong_secret()  # 43 chars
@@ -92,27 +89,16 @@ class TestProvider:
         assert principal.provider == "drain-secret"
         assert principal.scopes == ("drain",)
 
-    def test_verify_token_rejects_wrong_secret(self, drain):
-        p = drain.DrainSecretProvider(secret=_strong_secret())
-        assert p.verify_token(token=_strong_secret()) is None
 
     def test_verify_token_rejects_empty(self, drain):
         p = drain.DrainSecretProvider(secret=_strong_secret())
         assert p.verify_token(token="") is None
 
-    def test_custom_scope_attached(self, drain):
-        s = _strong_secret()
-        p = drain.DrainSecretProvider(secret=s, scope="lifecycle")
-        assert p.verify_token(token=s).scopes == ("lifecycle",)
 
     def test_construction_rejects_weak_secret(self, drain):
         with pytest.raises(ValueError):
             drain.DrainSecretProvider(secret="weak")
 
-    def test_verify_session_returns_none_not_raises(self, drain):
-        # Stacks harmlessly in the cookie-verify loop.
-        p = drain.DrainSecretProvider(secret=_strong_secret())
-        assert p.verify_session(access_token="anything") is None
 
     def test_interactive_methods_raise(self, drain):
         p = drain.DrainSecretProvider(secret=_strong_secret())

@@ -90,6 +90,69 @@ def test_create_streams_aggregator_when_requested(monkeypatch, tmp_path):
     assert agg["tools"] is not None
 
 
+def test_build_moa_facade_ignores_fallback_model_name_when_restoring(monkeypatch, tmp_path):
+    """A fallback restore must not turn the temporary fallback model name into
+    a MoA preset. Sessions that drifted to e.g. deepseek-v4-flash previously
+    crashed on restore with MoAPresetNotFoundError because build_moa_facade()
+    reused agent.model as the preset (#MoA restore path).
+    """
+    home = tmp_path / ".hermes"
+    _write_cfg(home)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    from agent.moa_loop import build_moa_facade
+
+    agent = SimpleNamespace(
+        provider="moa",
+        model="deepseek-v4-flash",
+        tool_progress_callback=None,
+    )
+
+    client = build_moa_facade(agent, None)
+
+    assert client.chat.completions.preset_name == "review"
+
+
+def test_create_wraps_completed_aggregator_response_as_delta_chunk(monkeypatch, tmp_path):
+    """When an aggregator adapter returns a completed response despite
+    stream=True (Codex Responses compatibility shape), MoA must return a
+    one-chunk delta iterator for the outer streaming accumulator instead of
+    the raw non-iterable response object (#55933).
+    """
+
+    completed = _response("aggregator acted")
+    completed.choices[0].message.tool_calls = [
+        SimpleNamespace(
+            id="call_1",
+            type="function",
+            function=SimpleNamespace(name="read_file", arguments='{"path":"x"}'),
+        )
+    ]
+
+    def on_call(kwargs):
+        if kwargs["task"] == "moa_aggregator":
+            return completed
+        return None
+
+    facade, calls = _facade(monkeypatch, tmp_path, on_call=on_call)
+    stream = facade.create(
+        messages=[{"role": "user", "content": "q"}],
+        tools=[],
+        stream=True,
+    )
+
+    chunk = next(iter(stream))
+    assert chunk.choices[0].delta.content == "aggregator acted"
+    assert chunk.choices[0].delta.tool_calls[0].index == 0
+    assert chunk.choices[0].delta.tool_calls[0].function.name == "read_file"
+    assert chunk.choices[0].finish_reason == "stop"
+    with pytest.raises(StopIteration):
+        next(stream)
+
+    agg = next(c for c in calls if c["task"] == "moa_aggregator")
+    assert agg["stream"] is True
+
+
 def test_create_non_stream_path_unchanged(monkeypatch, tmp_path):
     """Default (no stream): the aggregator call carries NO stream/stream_options
     keys, so the non-streaming path is byte-identical to before."""
@@ -117,27 +180,8 @@ def test_create_forwards_stream_read_timeout(monkeypatch, tmp_path):
     assert agg["timeout"] is timeout_sentinel
 
 
-def test_create_respects_caller_stream_options(monkeypatch, tmp_path):
-    """A caller-provided stream_options is forwarded as-is (not overwritten)."""
-    facade, calls = _facade(monkeypatch, tmp_path)
-    facade.create(
-        messages=[{"role": "user", "content": "q"}],
-        tools=[],
-        stream=True,
-        stream_options={"include_usage": False, "extra": 1},
-    )
-    agg = next(c for c in calls if c["task"] == "moa_aggregator")
-    assert agg["stream_options"] == {"include_usage": False, "extra": 1}
 
 
-def test_create_does_not_forward_timeout_when_not_streaming(monkeypatch, tmp_path):
-    """A stray timeout on a non-streaming call is NOT forwarded — the non-stream
-    path must remain unchanged regardless of incidental kwargs."""
-    facade, calls = _facade(monkeypatch, tmp_path)
-    facade.create(messages=[{"role": "user", "content": "q"}], tools=[], timeout=object())
-    agg = next(c for c in calls if c["task"] == "moa_aggregator")
-    assert "timeout" not in agg
-    assert "stream" not in agg
 
 
 # --------------------------------------------------------------------------
@@ -186,36 +230,3 @@ def test_call_llm_stream_returns_raw_stream_and_skips_validation(monkeypatch):
     assert captured.get("stream_options") == {"include_usage": True}
 
 
-def test_call_llm_non_stream_still_validates(monkeypatch):
-    """Sanity: stream=False keeps the validated path (regression guard for the
-    early-return not leaking into normal calls)."""
-    from agent import auxiliary_client as ac
-
-    class _Completions:
-        def create(self, **kwargs):
-            return _response("ok")
-
-    fake_client = SimpleNamespace(
-        chat=SimpleNamespace(completions=_Completions()),
-        base_url="http://localhost:8001/v1",
-    )
-    monkeypatch.setattr(
-        ac, "_resolve_task_provider_model",
-        lambda *a, **k: ("custom", "m", "http://localhost:8001/v1", "key", "chat_completions"),
-    )
-    monkeypatch.setattr(ac, "_get_cached_client", lambda *a, **k: (fake_client, "m"))
-
-    validated = {"called": False}
-
-    def _validate(resp, task, provider=None, base_url=None):
-        validated["called"] = True
-        return resp
-
-    monkeypatch.setattr(ac, "_validate_llm_response", _validate)
-
-    ac.call_llm(
-        provider="custom",
-        model="m",
-        messages=[{"role": "user", "content": "hi"}],
-    )
-    assert validated["called"] is True

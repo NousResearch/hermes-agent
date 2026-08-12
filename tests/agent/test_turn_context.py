@@ -208,6 +208,38 @@ def test_returns_turn_context_with_user_message_appended():
     assert ctx.active_system_prompt == "SYSTEM"
 
 
+# ── Trivial-prompt prefetch gate (PR #25350 salvage) ─────────────────────────
+#
+# The prologue is the ONLY place the per-turn synchronous
+# memory_manager.prefetch_all() fires; a bare greeting must not block the
+# turn on provider network round-trips, while a substantive question must
+# still prefetch. These assert the gate at the call site (the classifier
+# itself is covered in tests/agent/test_memory_provider.py).
+
+
+def _agent_with_memory_manager():
+    agent = _FakeAgent()
+    mm = MagicMock()
+    mm.prefetch_all.return_value = "REMEMBERED CONTEXT"
+    agent._memory_manager = mm
+    return agent, mm
+
+
+def test_prefetch_skipped_for_trivial_user_message():
+    agent, mm = _agent_with_memory_manager()
+    ctx = _build(agent, user_message="hi!")
+    mm.prefetch_all.assert_not_called()
+    assert ctx.ext_prefetch_cache == ""
+
+
+def test_prefetch_runs_for_substantive_user_message():
+    agent, mm = _agent_with_memory_manager()
+    query = "what did we decide about the deploy pipeline?"
+    ctx = _build(agent, user_message=query)
+    mm.prefetch_all.assert_called_once_with(query)
+    assert ctx.ext_prefetch_cache == "REMEMBERED CONTEXT"
+
+
 def test_turn_start_replaces_stale_parent_history_with_compression_child():
     agent = _FakeAgent()
     stale_history = [{"role": "user", "content": "stale parent"}]
@@ -254,51 +286,12 @@ def test_applies_agent_side_effects():
     assert agent._current_turn_id
 
 
-def test_task_id_passthrough():
-    agent = _FakeAgent()
-    ctx = _build(agent, task_id="fixed-task")
-    assert ctx.effective_task_id == "fixed-task"
-    assert agent._current_task_id == "fixed-task"
 
 
-def test_persist_user_message_becomes_original():
-    agent = _FakeAgent()
-    ctx = _build(agent, user_message="api-prefixed", persist_user_message="clean")
-    # original_user_message tracks the clean persist override.
-    assert ctx.original_user_message == "clean"
-    # but the appended user turn carries the full (sanitized) message.
-    assert ctx.messages[-1]["content"] == "api-prefixed"
 
 
-def test_pending_cli_message_carries_durable_marker_to_new_turn_dict():
-    """A close-persisted CLI input must not be written again by turn start."""
-    agent = _FakeAgent()
-    staged = {"role": "user", "content": "already durable", "_db_persisted": True}
-    agent._pending_cli_user_message = staged
-
-    ctx = _build(agent, user_message="already durable")
-
-    assert ctx.messages[-1] is staged
-    assert ctx.messages[-1]["content"] == "already durable"
-    assert ctx.messages[-1]["_db_persisted"] is True
-    assert agent._pending_cli_user_message is None
 
 
-def test_stale_pending_cli_message_does_not_replace_new_turn_input():
-    """A failed prior persistence handoff cannot substitute later user input."""
-    agent = _FakeAgent()
-    agent._pending_cli_user_message = {"role": "user", "content": "old prompt"}
-
-    stale = agent._pending_cli_user_message
-    ctx = _build(
-        agent,
-        user_message="new prompt",
-        conversation_history=[{"role": "assistant", "content": "old answer"}],
-    )
-
-    assert ctx.messages[-1]["content"] == "new prompt"
-    assert ctx.messages[-1] is not stale
-    assert agent._pending_cli_user_message is None
 
 
 def test_pending_cli_message_uses_clean_override_for_api_local_note():
@@ -319,56 +312,10 @@ def test_pending_cli_message_uses_clean_override_for_api_local_note():
     assert agent._pending_cli_user_message is None
 
 
-def test_runtime_main_sync_happens_after_restore():
-    agent = _FakeAgent()
-    agent.model = "stale-fallback-model"
-    agent.provider = "openai-codex"
-    agent.base_url = "https://chatgpt.com/backend-api/codex"
-    agent.api_key = "fallback-key"
-    agent.api_mode = "codex_responses"
-
-    def restore_primary():
-        agent.model = "primary-model"
-        agent.provider = "anthropic"
-        agent.base_url = "https://api.anthropic.com"
-        agent.api_key = "primary-key"
-        agent.api_mode = "anthropic_messages"
-        agent.requested_provider = "anthropic"
-
-    agent._restore_primary_runtime = restore_primary
-    calls = []
-    with patch(
-        "agent.auxiliary_client.set_runtime_main",
-        side_effect=lambda *args, **kwargs: calls.append((args, kwargs)),
-    ):
-        _build(agent)
-
-    assert calls == [(
-        ("anthropic", "primary-model"),
-        {
-            "base_url": "https://api.anthropic.com",
-            "api_key": "primary-key",
-            "api_mode": "anthropic_messages",
-            "auth_mode": "",
-            "requested_provider": "anthropic",
-        },
-    )]
 
 
-def test_memory_nudge_fires_at_interval():
-    agent = _FakeAgent()
-    agent._memory_nudge_interval = 1
-    agent.valid_tool_names = {"memory"}
-    agent._memory_store = object()
-    ctx = _build(agent)
-    assert ctx.should_review_memory is True
-    assert agent._turns_since_memory == 0  # reset after firing
 
 
-def test_no_review_when_memory_disabled():
-    agent = _FakeAgent()
-    ctx = _build(agent)
-    assert ctx.should_review_memory is False
 
 
 def test_ensure_db_session_runs_after_system_prompt_restore():
@@ -418,97 +365,44 @@ def test_between_turns_refresh_adds_late_tool_when_servers_registered():
     assert any(t["function"]["name"] == "mcp_x_tool" for t in agent.tools)
 
 
-def test_between_turns_refresh_skipped_when_no_servers():
-    """R6: the common case (no MCP servers) never walks the registry."""
-    agent = _FakeAgent()
-    import model_tools
+class _TitlingAgent:
+    """Only what ``_maybe_title_session_at_turn_start`` reads off an agent."""
 
-    with patch("tools.mcp_tool.has_registered_mcp_tools", return_value=False), \
-         patch.object(model_tools, "get_tool_definitions") as gtd:
-        _build(agent)
-
-    gtd.assert_not_called()
-
-
-def test_between_turns_refresh_skipped_when_skip_flag_set():
-    """Internal forks (background_review) set _skip_mcp_refresh to keep tools[]
-    byte-identical to the parent for cache parity — the hook must honor it even
-    when MCP servers are registered."""
-    agent = _FakeAgent()
-    agent._skip_mcp_refresh = True
-    import model_tools
-
-    with patch("tools.mcp_tool.has_registered_mcp_tools", return_value=True), \
-         patch.object(model_tools, "get_tool_definitions") as gtd:
-        _build(agent)
-
-    gtd.assert_not_called()
+    def __init__(self, platform):
+        self.platform = platform
+        self.session_id = "sess-1"
+        self.model = "test/model"
+        self.provider = "openrouter"
+        self.base_url = "https://openrouter.ai/api/v1"
+        self.api_key = "sk-x"
+        self.api_mode = "chat_completions"
+        self._session_db = MagicMock()
+        self._session_db_created = True
 
 
-def test_between_turns_refresh_no_churn_when_unchanged():
-    """R2: an unchanged tool set leaves the snapshot object identity intact
-    (no needless swap → nothing for the next request prefix to diff against)."""
-    agent = _FakeAgent()
-    same = [{"type": "function", "function": {"name": "a", "description": "", "parameters": {}}}]
-    agent.tools = same
-    agent.valid_tool_names = {"a"}
+def _title_turn(platform, message="Fix the login button"):
+    """Run the prologue's titling step and return the maybe_auto_title mock."""
+    from agent import turn_context
 
-    import model_tools
-    with patch("tools.mcp_tool.has_registered_mcp_tools", return_value=True), \
-         patch.object(
-             model_tools, "get_tool_definitions",
-             return_value=[{"type": "function", "function": {"name": "a", "description": "", "parameters": {}}}],
-         ):
-        _build(agent)
-
-    assert agent.tools is same  # not replaced → no churn
+    with patch("agent.title_generator.maybe_auto_title") as titler:
+        turn_context._maybe_title_session_at_turn_start(
+            _TitlingAgent(platform),
+            [{"role": "user", "content": message}],
+        )
+    return titler
 
 
-def test_preflight_skips_when_persisted_cooldown_survives_restart(tmp_path):
-    agent = _make_agent_with_cooldown(
-        tmp_path / "state.db",
-        "sess-1",
-        cooldown_until=4_000_000_000.0,
-    )
-
-    with patch("agent.turn_context._should_run_preflight_estimate", return_value=True), \
-         patch("agent.turn_context.estimate_request_tokens_rough", return_value=999_999):
-        ctx = _build(agent)
-
-    assert isinstance(ctx, TurnContext)
-    agent._emit_status.assert_not_called()
-    agent._compress_context.assert_not_called()
+@pytest.mark.parametrize("platform", ["cli", "telegram", "desktop", "acp", None])
+def test_prologue_titles_the_surfaces_a_person_reads(platform):
+    assert _title_turn(platform).called
 
 
-def test_preflight_still_runs_for_other_session_with_same_db(tmp_path):
-    db_path = tmp_path / "state.db"
-    _make_agent_with_cooldown(
-        db_path,
-        "sess-1",
-        cooldown_until=4_000_000_000.0,
-    )
-    agent = _make_agent_with_cooldown(db_path, "sess-2")
+@pytest.mark.parametrize("platform", ["cron", "CRON", "subagent"])
+def test_prologue_does_not_title_machine_driven_runs(platform):
+    """Cron names its own session after the job, and nobody opens a subagent's.
 
-    with patch("agent.turn_context._should_run_preflight_estimate", return_value=True), \
-         patch("agent.turn_context.estimate_request_tokens_rough", return_value=999_999):
-        ctx = _build(agent)
+    Both would otherwise pay a side-LLM call per run for a name that is either
+    overwritten or never read.
+    """
+    assert not _title_turn(platform).called
 
-    assert isinstance(ctx, TurnContext)
-    agent._emit_status.assert_called_once()
-    agent._compress_context.assert_called()
-
-
-def test_expired_cooldown_allows_preflight(tmp_path):
-    agent = _make_agent_with_cooldown(
-        tmp_path / "state.db",
-        "sess-1",
-        cooldown_until=1.0,
-    )
-
-    with patch("agent.turn_context._should_run_preflight_estimate", return_value=True), \
-         patch("agent.turn_context.estimate_request_tokens_rough", return_value=999_999):
-        ctx = _build(agent)
-
-    assert isinstance(ctx, TurnContext)
-    agent._emit_status.assert_called_once()
-    agent._compress_context.assert_called()

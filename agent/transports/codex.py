@@ -10,6 +10,23 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
+# Cron fires build session_id as ``cron_<job_id>_<YYYYMMDD_HHMMSS>`` (see
+# cron/scheduler.py). The trailing timestamp is per-fire noise; stripped so
+# repeat fires of the same job share a cache scope (see #51395/#52295).
+_CRON_SESSION_ID_RE = re.compile(r"^(cron_.+)_\d{8}_\d{6}$")
+
+
+def _cache_scope_from_session_id(session_id: Optional[str]) -> str:
+    """Normalize a physical session_id into a stable logical cache scope.
+
+    Every non-cron session_id already identifies one conversation/agent
+    instance (main run, a specific child/subagent, a sibling child, ...),
+    so it is used unchanged. Only cron's per-fire timestamp needs stripping.
+    """
+    sid = str(session_id or "")
+    match = _CRON_SESSION_ID_RE.match(sid)
+    return match.group(1) if match else sid
+
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
 
@@ -26,6 +43,52 @@ def _bounded_prompt_cache_key(value: Any) -> Optional[str]:
     # Match _content_cache_key's compact, collision-resistant routing-key shape.
     digest = hashlib.sha256(key.encode("utf-8", errors="replace")).hexdigest()[:24]
     return f"pck_{digest}"
+
+
+# Wire-name used when Hermes keeps client-side web_search on xAI Responses.
+# A function literally named ``web_search`` collides with Grok's native
+# server-side tool (incomplete hang or HTTP 400 duplicate names); this alias
+# avoids that while still dispatching through Hermes's configured provider
+# (Firecrawl / Tavily / …). Mapped back to ``web_search`` in normalize_response.
+_XAI_CLIENT_WEB_SEARCH_ALIAS = "hermes_web_search"
+
+
+def _xai_prefers_native_web_search() -> bool:
+    """True when xAI Responses should use Grok's native ``web_search`` built-in.
+
+    Delegates to the web-search registry's provider resolution (which reads
+    ``web.search_backend`` / ``web.backend`` from config) and checks whether
+    the resolved provider is xAI. Falls back to the legacy ``_get_search_backend``
+    probe when the registry has no providers loaded. On any resolution failure,
+    returns True (fail-closed to native — preserves the #48108 incomplete-hang
+    fix rather than risk reintroducing it).
+    """
+    try:
+        from agent.web_search_registry import get_active_search_provider
+
+        provider = get_active_search_provider()
+        if provider is not None:
+            return getattr(provider, "name", None) == "xai"
+
+        from tools.web_tools import _get_search_backend
+
+        return (_get_search_backend() or "").strip().lower() == "xai"
+    except Exception:
+        # Fail closed to native — same behavior as pre-fix main.
+        return True
+
+
+def _rename_client_web_search_for_xai(response_tools: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Rename client ``web_search`` → alias so xAI won't hijack it server-side."""
+    rewritten: List[Dict[str, Any]] = []
+    for tool in response_tools:
+        if isinstance(tool, dict) and tool.get("name") == "web_search":
+            aliased = dict(tool)
+            aliased["name"] = _XAI_CLIENT_WEB_SEARCH_ALIAS
+            rewritten.append(aliased)
+        else:
+            rewritten.append(tool)
+    return rewritten
 
 
 _EXTENDED_PROMPT_CACHE_MODELS = (
@@ -71,20 +134,26 @@ def _default_prompt_cache_retention_for_request(
     return None
 
 
-def _content_cache_key(instructions: str, tools: Optional[List[Dict[str, Any]]]) -> Optional[str]:
-    """Content-address the prompt cache key from the static request prefix.
+def _content_cache_key(
+    instructions: str,
+    tools: Optional[List[Dict[str, Any]]],
+    scope_id: str = "",
+) -> Optional[str]:
+    """Content-address the prompt cache key within a logical cache scope.
 
-    Returns ``pck_<sha256[:24]>`` of (instructions + sorted tool schemas), or
-    None when there is nothing static to key on. The cache key is a routing
-    hint only — never a correctness boundary — so two requests sharing a system
-    prompt and tool set intentionally resolve to the same warm prefix bucket.
+    Returns ``pck_<sha256[:24]>`` of (scope_id + instructions + sorted tool
+    schemas), or None when there is nothing static to key on. The cache key
+    is a routing hint only — never a correctness boundary — so two requests
+    sharing a scope, system prompt, and tool set intentionally resolve to the
+    same warm prefix bucket.
 
-    The fix this exists for: recurring cron jobs build session_id as
-    ``cron_<id>_<timestamp>``, so using session_id as the cache key made every
-    fire cache-cold. The static prefix (identity + tools) is identical across
-    fires, so hashing it gives a stable key that stays warm within the
-    provider's cache TTL. Sorting tools by name keeps the hash insertion-order
-    independent.
+    ``scope_id`` (pass ``_cache_scope_from_session_id(session_id)``) keeps
+    unrelated sessions — independent conversations, main vs. child/subagent,
+    sibling children — from concentrating onto the same bucket merely because
+    their static prefix matches (see #78941), while still letting recurring
+    cron fires of one job share a stable key across their timestamped
+    session_ids (the original #51395/#52295 fix this built on). Sorting tools
+    by name keeps the hash insertion-order independent.
     """
     if not instructions and not tools:
         return None
@@ -97,9 +166,9 @@ def _content_cache_key(instructions: str, tools: Optional[List[Dict[str, Any]]])
         tools_part = json.dumps(
             sorted_tools, sort_keys=True, ensure_ascii=False, separators=(",", ":")
         )
-    # \x00 separator so instructions ending in the tool JSON can't collide with
-    # a request whose instructions contain that JSON and whose tools are empty.
-    content = f"{instructions or ''}\x00{tools_part}"
+    # \x00 separators so a scope/instructions/tools boundary can't be forged
+    # by content that happens to contain the same bytes.
+    content = f"{scope_id}\x00{instructions or ''}\x00{tools_part}"
     digest = hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:24]
     return f"pck_{digest}"
 
@@ -202,6 +271,11 @@ class ResponsesApiTransport(ProviderTransport):
         replay_encrypted_reasoning = bool(
             params.get("replay_encrypted_reasoning", True)
         )
+        # Native server-side compaction (gpt-5.6 on direct OpenAI/Codex routes
+        # only). The caller resolves eligibility via
+        # agent.native_compaction.native_compaction_context_management();
+        # None means the field is never added to the request.
+        context_management = params.get("context_management")
 
         # Resolve the issuing endpoint for this call. Stashed on the
         # transport so normalize_response can stamp it onto reasoning
@@ -228,67 +302,51 @@ class ResponsesApiTransport(ProviderTransport):
         if params.get("is_xai_responses", False):
             # xAI Responses tops out at high; keep generic stronger values usable.
             _effort_clamp.update({"xhigh": "high", "max": "high", "ultra": "high"})
+        if (params.get("provider") or "").strip().lower() == "actual":
+            # Actual Computer relays to SGLang/vLLM backends that accept only
+            # none/low/medium/high/max for reasoning effort — a forwarded
+            # xhigh/ultra fails with a wrapped HTTP 400 ("Expecting value:
+            # line 1 column 1"). Clamp Hermes' wider set to the supported one.
+            _effort_clamp.update({"xhigh": "high", "ultra": "max"})
         reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
 
         response_tools = _responses_tools(tools)
 
-        # xAI server-side web search.
+        # xAI server-side web search vs Hermes web providers.
         #
-        # grok models on xAI's /v1/responses surface (notably
-        # grok-composer-2.5-fast on SuperGrok OAuth) have a *native*,
-        # server-executed web search.  When the model is handed a
-        # client-side function literally named ``web_search``, it routes
-        # the intent to that native engine — but because the tool is
-        # declared as a plain ``function`` rather than xAI's first-class
-        # ``{"type": "web_search"}`` built-in, the server-side search is
-        # dispatched but never reconciled: the response streams reasoning
-        # + ``web_search_call`` progress items, the searches never reach
-        # ``status="completed"`` in the assembled output, no final
-        # message is emitted, and ``_normalize_codex_response`` correctly
-        # sees reasoning-with-no-answer and reports ``incomplete``.  The
-        # turn then burns 3 continuation retries and fails with "Codex
-        # response remained incomplete after 3 continuation attempts".
-        # Verified live against grok-composer-2.5-fast (2026-06).
+        # grok models on xAI's /v1/responses surface have a *native*,
+        # server-executed web search.  A client-side function literally named
+        # ``web_search`` collides with that engine: declared as a plain
+        # ``function`` rather than ``{"type": "web_search"}``, the search
+        # dispatches but never reconciles → incomplete turn + 3 retries.
+        # Verified live against grok-composer-2.5-fast (2026-06); see #48108.
         #
-        # Fix: when the agent HAS a client-side ``web_search`` function (i.e.
-        # the user enabled the web toolset), declare xAI's native
-        # ``web_search`` built-in instead so the search actually runs to
-        # completion server-side and the model streams a real answer.  The
-        # Responses API rejects two tools sharing the name ``web_search``
-        # (HTTP 400 "Duplicate tool names"), so we drop the client-side
-        # ``web_search`` function for the xAI path and let the native tool
-        # satisfy it.  All other client-side tools (read_file, terminal,
-        # web_extract, MCP tools, …) are untouched and continue to dispatch
-        # through Hermes's agent loop.
+        # Two modes, chosen by the user's web-search backend config:
         #
-        # Scope: we ONLY swap in the native built-in when the client
-        # ``web_search`` was actually present.  We do NOT force-enable Grok
-        # server-side search on turns where the user never had web enabled —
-        # that would silently route around Hermes's web-provider config and
-        # tool-trace/citation plumbing for every xai-oauth turn.  The swap is
-        # a 1:1 replacement of an already-requested capability, not an
-        # additive grant.
-        #
-        # NOTE: for the swapped case this routes ``web_search`` to Grok's
-        # native search engine for xAI sessions instead of Hermes's
-        # configured web provider (Tavily/etc.), and those results bypass
-        # Hermes's tool-trace / citation plumbing (they arrive baked into the
-        # model's answer rather than as a tool result the loop observes).
-        # Scoped to ``is_xai_responses`` deliberately; narrow to specific
-        # models if a future grok variant should keep the client-side
-        # function.
+        # 1. **Native** (active/configured backend is ``xai``, or resolution
+        #    fails): drop the client ``web_search`` function and declare
+        #    xAI's built-in instead. 1:1 swap only when client ``web_search``
+        #    was already present — never an additive grant.
+        # 2. **Client** (Firecrawl / Tavily / Exa / … configured or resolved):
+        #    keep Hermes dispatch so ``web.backend`` / ``web.search_backend``
+        #    is honored, but rename the wire tool to
+        #    ``hermes_web_search`` so Grok cannot hijack the name. The alias
+        #    is mapped back to ``web_search`` in ``normalize_response``.
         if is_xai_responses and response_tools:
             has_client_web_search = any(
                 isinstance(t, dict) and t.get("name") == "web_search"
                 for t in response_tools
             )
             if has_client_web_search:
-                filtered = [
-                    t for t in response_tools
-                    if not (isinstance(t, dict) and t.get("name") == "web_search")
-                ]
-                filtered.append({"type": "web_search"})
-                response_tools = filtered
+                if _xai_prefers_native_web_search():
+                    filtered = [
+                        t for t in response_tools
+                        if not (isinstance(t, dict) and t.get("name") == "web_search")
+                    ]
+                    filtered.append({"type": "web_search"})
+                    response_tools = filtered
+                else:
+                    response_tools = _rename_client_web_search_for_xai(response_tools)
 
         # ``tools`` MUST be omitted entirely when there are no functions to
         # expose: the openai SDK's ``responses.stream()`` / ``responses.parse()``
@@ -314,15 +372,22 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs["tools"] = response_tools
             kwargs["tool_choice"] = "auto"
             kwargs["parallel_tool_calls"] = True
+        if isinstance(context_management, list) and context_management:
+            kwargs["context_management"] = context_management
 
         session_id = params.get("session_id")
         # prompt_cache_key is content-addressed from the static prefix
-        # (instructions + tools), NOT session_id — recurring cron jobs carry a
-        # per-fire timestamp in session_id (cron_<id>_<ts>) that made every run
-        # cache-cold. session_id is left untouched for transcript isolation and
-        # the cache-scope routing headers below. Falls back to session_id when
-        # there is no static content to hash.
-        cache_key = _content_cache_key(instructions, response_tools) or session_id
+        # (instructions + tools) scoped by session, NOT the raw session_id —
+        # recurring cron jobs carry a per-fire timestamp in session_id
+        # (cron_<id>_<ts>) that made every run cache-cold, so the scope strips
+        # that suffix (see _cache_scope_from_session_id). session_id is left
+        # untouched for transcript isolation and the cache-scope routing
+        # headers below. Falls back to session_id when there is no static
+        # content to hash.
+        _cache_scope = _cache_scope_from_session_id(session_id)
+        cache_key = _content_cache_key(
+            instructions, response_tools, _cache_scope
+        ) or _cache_scope
         # xAI Responses takes prompt_cache_key in extra_body (set further
         # down); GitHub Models opts out of cache-key routing entirely.
         if not is_github_responses and not is_xai_responses and cache_key:
@@ -404,13 +469,13 @@ class ResponsesApiTransport(ProviderTransport):
         if is_codex_backend:
             # The Codex backend rejects body-level ``extra_headers`` with
             # HTTP 400, but the OpenAI SDK's ``extra_headers`` kwarg maps
-            # to actual HTTP request headers (not body fields).  We need
-            # these headers for cache-scope routing so prompt cache hits
-            # remain high.  Send session_id / x-client-request-id as HTTP
-            # headers while keeping ``prompt_cache_key`` in the body for
-            # standard OpenAI routing as a belt-and-braces fallback.
-            cache_scope_id = _bounded_prompt_cache_key(session_id)
-            if cache_scope_id:
+            # to actual HTTP request headers (not body fields).  ``session_id``
+            # carries the raw physical session id — transcript/identity, per
+            # the #57012 contract — while ``x-client-request-id`` mirrors the
+            # body's effective ``prompt_cache_key`` so header and body always
+            # agree on the same routing bucket instead of diverging (#78941).
+            final_cache_key = kwargs.get("prompt_cache_key") or _bounded_prompt_cache_key(_cache_scope)
+            if session_id or final_cache_key:
                 existing_extra_headers = kwargs.get("extra_headers")
                 merged_extra_headers: Dict[str, str] = {}
                 if isinstance(existing_extra_headers, dict):
@@ -421,8 +486,10 @@ class ResponsesApiTransport(ProviderTransport):
                             if key and value is not None
                         }
                     )
-                merged_extra_headers["session_id"] = cache_scope_id
-                merged_extra_headers["x-client-request-id"] = cache_scope_id
+                if session_id:
+                    merged_extra_headers["session_id"] = str(session_id)
+                if final_cache_key:
+                    merged_extra_headers["x-client-request-id"] = final_cache_key
                 kwargs["extra_headers"] = merged_extra_headers
 
         max_tokens = params.get("max_tokens")
@@ -440,18 +507,27 @@ class ResponsesApiTransport(ProviderTransport):
                         if key and value is not None
                     }
                 )
-            merged_extra_headers["x-grok-conv-id"] = session_id
+            # Scoped like the body cache key below — otherwise cron's
+            # per-fire timestamp in session_id (cron_<id>_<ts>) pins every
+            # fire of the same job to a different xAI backend server (#78941).
+            merged_extra_headers["x-grok-conv-id"] = _cache_scope
             kwargs["extra_headers"] = merged_extra_headers
 
             # xAI Responses cache-routing — body-level field per
             # https://docs.x.ai/developers/advanced-api-usage/prompt-caching/maximizing-cache-hits.
             # Sent via extra_body (not the typed kwarg) so it survives openai
             # SDK builds whose Responses.stream() signature has dropped the field.
+            # A caller's request_overrides={"prompt_cache_key": ...} lands on
+            # the top-level kwarg set above — read it back here so an explicit
+            # override actually governs the field xAI reads, instead of being
+            # silently outrun by the auto-derived cache_key (#78941).
             existing_extra_body = kwargs.get("extra_body")
             merged_extra_body: Dict[str, Any] = {}
             if isinstance(existing_extra_body, dict):
                 merged_extra_body.update(existing_extra_body)
-            merged_extra_body.setdefault("prompt_cache_key", cache_key)
+            merged_extra_body.setdefault(
+                "prompt_cache_key", kwargs.get("prompt_cache_key", cache_key)
+            )
             kwargs["extra_body"] = merged_extra_body
 
         extra_body = kwargs.get("extra_body")
@@ -487,9 +563,14 @@ class ResponsesApiTransport(ProviderTransport):
                     provider_data["call_id"] = tc.call_id
                 if hasattr(tc, "response_item_id") and tc.response_item_id:
                     provider_data["response_item_id"] = tc.response_item_id
+                name = tc.function.name if hasattr(tc, "function") else getattr(tc, "name", "")
+                # Undo the xAI client-path wire alias so Hermes dispatches
+                # the real ``web_search`` tool (Firecrawl / etc.).
+                if name == _XAI_CLIENT_WEB_SEARCH_ALIAS:
+                    name = "web_search"
                 tool_calls.append(ToolCall(
-                    id=tc.id if hasattr(tc, "id") else (tc.function.name if hasattr(tc, "function") else None),
-                    name=tc.function.name if hasattr(tc, "function") else getattr(tc, "name", ""),
+                    id=tc.id if hasattr(tc, "id") else (name or None),
+                    name=name,
                     arguments=tc.function.arguments if hasattr(tc, "function") else getattr(tc, "arguments", "{}"),
                     provider_data=provider_data or None,
                 ))
@@ -544,10 +625,13 @@ class ResponsesApiTransport(ProviderTransport):
         *,
         allow_stream: bool = False,
         is_github_responses: bool = False,
+        sanitize_harmony_tokens: bool = False,
     ) -> dict:
         """Validate and sanitize Codex API kwargs before the call.
 
         Normalizes input items, strips unsupported fields, validates structure.
+        ``sanitize_harmony_tokens`` is enabled only for the ChatGPT Codex
+        backend, which rejects literal reserved Harmony wire tokens in text.
         """
         from agent.codex_responses_adapter import _preflight_codex_api_kwargs
 
@@ -555,6 +639,7 @@ class ResponsesApiTransport(ProviderTransport):
             api_kwargs,
             allow_stream=allow_stream,
             is_github_responses=is_github_responses,
+            sanitize_harmony_tokens=sanitize_harmony_tokens,
         )
         if "prompt_cache_key" in normalized:
             bounded = _bounded_prompt_cache_key(normalized["prompt_cache_key"])

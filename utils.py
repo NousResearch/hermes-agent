@@ -136,6 +136,73 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     return real_path
 
 
+def atomic_write_text(
+    path: Union[str, Path],
+    content: str,
+    *,
+    encoding: str = "utf-8",
+    tmp_prefix: str = ".tmp_",
+    preserve_mode: bool = False,
+    create_mode: "int | None" = None,
+) -> None:
+    """Write *content* to *path* via temp file + fsync + atomic rename.
+
+    Ensures the target file is never left in a partially-written state if
+    the process crashes or is interrupted.  ``atomic_replace`` preserves
+    symlinks and handles cross-device / busy-file fallbacks.
+
+    Used by the memory store, skill manager, and agent importer so that
+    every destructive file rewrite in the codebase shares one implementation.
+
+    Args:
+        preserve_mode: When True, carry an existing target's permission bits
+            and (POSIX, best-effort) owner across the replace, like
+            ``atomic_yaml_write`` does unconditionally.  ``os.replace`` swaps
+            in mkstemp's 0600 temp file owned by the writing user, so without
+            this a root-run rewrite of a user-owned file flips its owner and
+            tightens its mode.  The mode is applied to the temp fd *before*
+            the replace, so the file never transits through 0600.  Off by
+            default: the historical callers (memory store, skill manager,
+            cron) own their 0600-is-fine files.
+        create_mode: Permission bits to apply when the target does not yet
+            exist (otherwise the new file keeps mkstemp's 0600).  Never
+            applied to an existing file.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    original_mode = _preserve_file_mode(path) if preserve_mode else None
+    original_owner = _preserve_file_owner(path) if preserve_mode else None
+    effective_mode = original_mode
+    if effective_mode is None and create_mode is not None and not path.exists():
+        effective_mode = create_mode
+
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent), prefix=tmp_prefix, suffix=".tmp"
+    )
+    try:
+        with os.fdopen(fd, "w", encoding=encoding) as handle:
+            if effective_mode is not None and hasattr(os, "fchmod"):
+                # fchmod the temp fd BEFORE the replace so the target never
+                # transits through mkstemp's 0600. fchmod is Unix-only; on
+                # Windows the post-replace chmod below applies the mode.
+                os.fchmod(handle.fileno(), effective_mode)
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        real_path = atomic_replace(tmp_path, path)
+        if preserve_mode:
+            _restore_file_owner(Path(real_path), original_owner)
+        if effective_mode is not None and not hasattr(os, "fchmod"):
+            _restore_file_mode(Path(real_path), effective_mode)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def atomic_json_write(
     path: Union[str, Path],
     data: Any,
@@ -272,6 +339,7 @@ def atomic_yaml_write(
     default_flow_style: bool = False,
     sort_keys: bool = False,
     extra_content: str | None = None,
+    create_mode: "int | None" = None,
 ) -> None:
     """Write YAML data to a file atomically.
 
@@ -286,12 +354,17 @@ def atomic_yaml_write(
         sort_keys: Whether to sort dict keys (default False).
         extra_content: Optional string to append after the YAML dump
             (e.g. commented-out sections for user reference).
+        create_mode: Permission bits to apply when the target does not yet
+            exist (a created file otherwise keeps mkstemp's 0600).  Never
+            applied to an existing file, whose mode is always preserved.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
     original_mode = _preserve_file_mode(path)
     original_owner = _preserve_file_owner(path)
+    if original_mode is None and create_mode is not None and not path.exists():
+        original_mode = create_mode
 
     fd, tmp_path = tempfile.mkstemp(
         dir=str(path.parent),
@@ -300,6 +373,12 @@ def atomic_yaml_write(
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
+            if original_mode is not None and hasattr(os, "fchmod"):
+                # Apply the mode to the temp fd BEFORE the replace so the
+                # target never transits through mkstemp's 0600 (the
+                # post-replace _restore_file_mode below then re-applies it
+                # harmlessly, and remains the sole path on Windows).
+                os.fchmod(f.fileno(), original_mode)
             # allow_unicode=True writes emoji/kaomoji (e.g. personalities, skin
             # cursors) as real UTF-8 instead of fragile escape sequences. Without
             # it, PyYAML emits astral-plane chars as `\UXXXXXXXX` (8-digit) escapes
@@ -387,6 +466,124 @@ def atomic_roundtrip_yaml_update(
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             yaml_rt.dump(config, f)
+            f.flush()
+            os.fsync(f.fileno())
+        real_path = atomic_replace(tmp_path, path)
+        real_path_obj = Path(real_path)
+        _restore_file_owner(real_path_obj, original_owner)
+        _restore_file_mode(real_path_obj, original_mode)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_roundtrip_yaml_save(
+    path: Union[str, Path],
+    new_state: dict,
+) -> None:
+    """Persist a full config-state dict while preserving comments and ordering.
+
+    Behaves like ``atomic_yaml_write`` (writes the whole file in one shot from
+    ``new_state``), but routes through ruamel.yaml round-trip mode so existing
+    comments, key order, quotes, and readable Unicode survive.
+
+    Reconciliation rules against the on-disk YAML:
+
+    * Keys present in both are updated in-place via assignment, which keeps
+      ruamel's CommentedMap anchors (and their attached comments) attached to
+      their original positions.
+    * Keys missing from ``new_state`` are deleted.
+    * Keys added in ``new_state`` are appended at the end of their parent map.
+    * Nested ``dict`` values recurse with the same rules.
+    * Non-dict values (lists, scalars) are overwritten wholesale — list
+      element comments are not individually preserved, matching ruamel's
+      semantics.
+
+    This is the comment-safe replacement for ``yaml.safe_dump(cfg, f)`` in
+    callers that mutate a deep-loaded config dict and want to persist the
+    whole thing.
+
+    Shares the fail-closed contract ``hermes_cli.config.atomic_config_write``
+    enforces for plain (non-comment-preserving) full-document writes: an
+    existing-but-unreadable ``config.yaml`` (permission error, broken mount,
+    transient I/O) raises rather than being silently replaced with only
+    ``new_state``. Imported lazily to avoid a module-level circular import —
+    ``hermes_cli.config`` itself imports from this module.
+    """
+    from ruamel.yaml import YAML
+    from ruamel.yaml.comments import CommentedMap
+    from ruamel.yaml.scalarstring import DoubleQuotedScalarString
+
+    from hermes_cli.config import require_readable_config_before_write
+
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    require_readable_config_before_write(path)
+
+    yaml_rt = YAML(typ="rt")
+    yaml_rt.preserve_quotes = True
+    yaml_rt.allow_unicode = True
+    yaml_rt.default_flow_style = False
+    yaml_rt.indent(mapping=2, sequence=4, offset=2)
+
+    if path.exists():
+        with path.open("r", encoding="utf-8") as f:
+            existing = yaml_rt.load(f)
+        if not isinstance(existing, CommentedMap):
+            existing = CommentedMap(existing or {})
+    else:
+        existing = CommentedMap()
+
+    # ruamel's round-trip dumper resolves plain scalars against the YAML 1.2
+    # core schema, where only true/false/null are reserved words — so a plain
+    # python str like "off" or "yes" is emitted unquoted. Every other config
+    # reader in this codebase (atomic_config_write's PyYAML path, yaml.safe_load
+    # call sites, etc.) parses under YAML 1.1 rules, where on/off/yes/no are
+    # boolean synonyms. Without forcing quotes here, a freshly written
+    # `approvals.mode: off` silently round-trips back as `False` under
+    # yaml.safe_load. Force-quote any new string value that YAML 1.1 would
+    # otherwise misparse as bool/null.
+    _YAML11_AMBIGUOUS_WORDS = {
+        "y", "n", "yes", "no", "true", "false", "on", "off", "null", "~",
+    }
+
+    def _quote_if_yaml11_ambiguous(value):
+        if isinstance(value, str) and value.lower() in _YAML11_AMBIGUOUS_WORDS:
+            return DoubleQuotedScalarString(value)
+        return value
+
+    def _merge(dst: CommentedMap, src: dict) -> None:
+        # Update / recurse into keys present in src.
+        for key, value in src.items():
+            if isinstance(value, dict):
+                current = dst.get(key)
+                if not isinstance(current, CommentedMap):
+                    current = CommentedMap()
+                    dst[key] = current
+                _merge(current, value)
+            else:
+                dst[key] = _quote_if_yaml11_ambiguous(value)
+        # Delete keys missing from src — preserves "explicit absence" semantics
+        # of the old _save_cfg(cfg) pattern (e.g. cfg.pop("custom_prompt", None)
+        # then _save_cfg must actually remove the key from disk).
+        for key in [k for k in dst.keys() if k not in src]:
+            del dst[key]
+
+    _merge(existing, new_state)
+
+    original_mode = _preserve_file_mode(path)
+    original_owner = _preserve_file_owner(path)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.stem}_",
+        suffix=".tmp",
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            yaml_rt.dump(existing, f)
             f.flush()
             os.fsync(f.fileno())
         real_path = atomic_replace(tmp_path, path)

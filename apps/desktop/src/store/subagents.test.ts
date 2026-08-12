@@ -147,7 +147,10 @@ describe('subagent store', () => {
 
     pruneFinishedSessionSubagents('s1')
 
-    const ids = listFor('s1').map(item => item.id).sort()
+    const ids = listFor('s1')
+      .map(item => item.id)
+      .sort()
+
     expect(ids).toEqual(['live-a', 'live-b'])
     expect(activeSubagentCount(listFor('s1'))).toBe(2)
   })
@@ -181,6 +184,10 @@ describe('subagent store', () => {
     pruneFinishedSessionSubagents('s1')
 
     expect(listFor('s1').map(item => item.id)).toEqual(['a'])
-    expect(listFor('s2').map(item => item.id).sort()).toEqual(['c', 'd'])
+    expect(
+      listFor('s2')
+        .map(item => item.id)
+        .sort()
+    ).toEqual(['c', 'd'])
   })
 })

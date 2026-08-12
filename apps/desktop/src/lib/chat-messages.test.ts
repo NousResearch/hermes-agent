@@ -17,6 +17,31 @@ import {
 } from './chat-messages'
 
 describe('toChatMessages', () => {
+  it('rebuilds the full command from a gateway tool row carrying args', () => {
+    // Gateway watch-window hydration projects tool rows as
+    // {role:'tool', name, context, args?}. `context` is an 80-char preview;
+    // the backend also ships the full args, and the part must carry them so
+    // the expanded `$` transcript shows the whole command.
+    const longCommand = `echo ${'x'.repeat(200)}`
+
+    const messages = toChatMessages([
+      { role: 'user', content: 'run it', timestamp: 1 },
+      {
+        role: 'tool',
+        name: 'terminal',
+        content: '',
+        context: `${longCommand.slice(0, 79)}…`,
+        args: { command: longCommand },
+        timestamp: 2
+      }
+    ])
+
+    const toolPart = messages.flatMap(m => m.parts).find(part => part.type === 'tool-call')
+
+    expect(toolPart).toBeDefined()
+    expect((toolPart as { args: { command?: string } }).args.command).toBe(longCommand)
+  })
+
   it('keeps a turn with interleaved tool-only rows in a single bubble', () => {
     const messages = toChatMessages([
       { role: 'assistant', content: 'Planning.', timestamp: 1 },
@@ -220,6 +245,58 @@ describe('toChatMessages', () => {
     expect(chatMessageText(message)).toBe('@file:foo.ts\n\nlook')
   })
 
+  it('leaves an inline @ ref in place instead of hoisting a duplicate', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'user',
+        content:
+          'summarize @file:`src/main.ts` for me\n\n--- Attached Context ---\n\n📄 @file:`src/main.ts` (10 tokens)\n```ts\nconst x = 1\n```',
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('summarize @file:`src/main.ts` for me')
+  })
+
+  it('never paints redirect scaffolding as an assistant bubble', () => {
+    // What the desktop actually receives after a mid-stream steer: the runtime
+    // keeps the interrupt scaffolding in a server-only api_content sidecar
+    // (never shipped to the client) so content is already clean, and marks a
+    // prose-free checkpoint display_kind:'hidden'. The transcript must show the
+    // partial reply and the user's correction — never
+    // "[This response was interrupted by a user correction.]".
+    const messages = toChatMessages([
+      { role: 'user', content: 'go', timestamp: 1 },
+      {
+        role: 'assistant',
+        content: 'Hey. I was mid-Figma MCP fix when we paused.',
+        timestamp: 2
+      },
+      { role: 'user', content: 'i love you', timestamp: 3 },
+      {
+        // Nothing had reached the screen — checkpoint exists only for the model.
+        role: 'assistant',
+        content: '[This response was interrupted by a user correction.]',
+        display_kind: 'hidden',
+        timestamp: 4
+      },
+      { role: 'user', content: 'keep going', timestamp: 5 }
+    ])
+
+    expect(messages.map(chatMessageText)).toEqual([
+      'go',
+      'Hey. I was mid-Figma MCP fix when we paused.',
+      'i love you',
+      'keep going'
+    ])
+
+    for (const message of messages) {
+      expect(chatMessageText(message)).not.toContain('This response was interrupted')
+      expect(chatMessageText(message)).not.toContain('Visible response before the interruption')
+      expect(chatMessageText(message)).not.toContain('Context from the interrupted assistant response')
+    }
+  })
+
   it('projects durable timeline kinds without inspecting their text', () => {
     const messages = toChatMessages([
       { role: 'user', content: 'real user turn', timestamp: 1 },
@@ -247,16 +324,23 @@ describe('toChatMessages', () => {
         content: '[System note: Your previous turn was interrupted mid-run…]\n\noriginal prompt',
         display_kind: 'auto_continue',
         timestamp: 6
+      },
+      {
+        role: 'user',
+        content: "[System: The user has changed the assistant's personality…]",
+        display_kind: 'personality_switch',
+        timestamp: 7
       }
     ])
 
-    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'system', 'system', 'system'])
+    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'system', 'system', 'system', 'system'])
     expect(messages.map(chatMessageText)).toEqual([
       'real user turn',
       'real assistant reply',
       'model changed',
       'background agent work finished',
-      'resumed interrupted turn'
+      'resumed interrupted turn',
+      'personality changed'
     ])
   })
 

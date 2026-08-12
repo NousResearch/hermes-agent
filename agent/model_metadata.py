@@ -13,17 +13,39 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TYPE_CHECKING
 from urllib.parse import urlparse
 
-import requests
 import yaml
+
+if TYPE_CHECKING:  # pragma: no cover — runtime import is lazy (see below)
+    import requests
 
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname
 
 from hermes_constants import OPENROUTER_MODELS_URL
 
 logger = logging.getLogger(__name__)
+
+# ``requests`` (with urllib3) costs ~27 ms of the `import cli` waterfall and
+# is only used inside the fetch functions below. It's resolved lazily:
+# ``_ensure_requests()`` populates the module global on the runtime path, and
+# the PEP 562 ``__getattr__`` covers external attribute access — notably
+# ``patch("agent.model_metadata.requests.get")`` in tests, which resolves the
+# attribute at patch time.
+
+
+def _ensure_requests():
+    if "requests" not in globals():
+        import requests as _requests
+        globals()["requests"] = _requests
+    return globals()["requests"]
+
+
+def __getattr__(name: str):
+    if name == "requests":
+        return _ensure_requests()
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def _resolve_requests_verify() -> bool | str:
@@ -44,33 +66,19 @@ def _resolve_requests_verify() -> bool | str:
             return val
     return True
 
-# Provider names that can appear as a "provider:" prefix before a model ID.
-# Only these are stripped — Ollama-style "model:tag" colons (e.g. "qwen3.5:27b")
-# are preserved so the full model name reaches cache lookups and server queries.
-_PROVIDER_PREFIXES: frozenset[str] = frozenset({
-    "openrouter", "nous", "openai-codex", "copilot", "copilot-acp",
-    "gemini", "ollama-cloud", "zai", "kimi-coding", "kimi-coding-cn", "stepfun", "minimax", "minimax-oauth", "minimax-cn", "anthropic", "deepseek", "deepinfra",
-    "opencode-zen", "opencode-go", "kilocode", "alibaba", "novita",
-    "qwen-oauth",
-    "xiaomi",
-    "arcee",
-    "gmi",
-    "tencent-tokenhub",
-    "custom", "local",
-    # Common aliases
-    "google", "google-gemini", "google-ai-studio",
-    "glm", "z-ai", "z.ai", "zhipu", "github", "github-copilot",
-    "github-models", "kimi", "moonshot", "kimi-cn", "moonshot-cn", "claude", "deep-seek", "deep-infra",
-    "ollama",
-    "stepfun", "opencode", "zen", "go", "kilo", "dashscope", "aliyun", "qwen",
-    "mimo", "xiaomi-mimo",
-    "tencent", "tokenhub", "tencent-cloud", "tencentmaas",
-    "arcee-ai", "arceeai",
-    "gmi-cloud", "gmicloud",
-    "xai", "x-ai", "x.ai", "grok",
-    "nvidia", "nim", "nvidia-nim", "nemotron",
-    "qwen-portal", "novita-ai", "novitaai",
-})
+# Compatibility snapshot for callers that inspect this private constant.
+# Prefix routing below queries the registry live so later registrations work.
+try:
+    from providers import list_providers as _list_providers
+except Exception:
+    def _list_providers():
+        return []
+
+_PROVIDER_PREFIXES: frozenset[str] = frozenset(
+    value.lower()
+    for profile in _list_providers()
+    for value in (profile.name, *profile.aliases)
+)
 
 
 _OLLAMA_TAG_PATTERN = re.compile(
@@ -89,6 +97,9 @@ _TAILSCALE_CGNAT = ipaddress.IPv4Network("100.64.0.0/10")
 def _strip_provider_prefix(model: str) -> str:
     """Strip a recognised provider prefix from a model string.
 
+    Provider names and aliases come from the provider-profile registry, so
+    bundled and user plugins are recognised without a core catalog update.
+
     ``"local:my-model"`` → ``"my-model"``
     ``"qwen3.5:27b"``   → ``"qwen3.5:27b"``  (unchanged — not a provider prefix)
     ``"qwen:0.5b"``     → ``"qwen:0.5b"``    (unchanged — Ollama model:tag)
@@ -98,7 +109,13 @@ def _strip_provider_prefix(model: str) -> str:
         return model
     prefix, suffix = model.split(":", 1)
     prefix_lower = prefix.strip().lower()
-    if prefix_lower in _PROVIDER_PREFIXES:
+    try:
+        from providers import get_provider_profile
+
+        is_provider = get_provider_profile(prefix_lower) is not None
+    except Exception:
+        is_provider = False
+    if is_provider:
         # Don't strip if suffix looks like an Ollama tag (e.g. "7b", "latest", "q4_0")
         if _OLLAMA_TAG_PATTERN.match(suffix.strip()):
             return model
@@ -122,6 +139,157 @@ _ENDPOINT_MODEL_CACHE_TTL = 300
 # Values are (server_type, monotonic_timestamp).
 _ENDPOINT_PROBE_TTL_SECONDS = 3600.0
 _endpoint_probe_path_cache: Dict[str, tuple] = {}
+
+# A configured endpoint that is routable-but-dead — e.g. a corp LAN address
+# while off-VPN — blackholes TCP: the SYN draws no SYN-ACK, no RST and no ICMP
+# error, so a probe waits out its full timeout instead of failing fast. Startup
+# runs a whole waterfall of such probes across several functions here, and the
+# stalls stack into a minute-long hang before the banner renders.
+#
+# Once ANY probe has actually observed a connect timeout for an endpoint, the
+# others have nothing to gain by repeating it. Recording that observation and
+# short-circuiting on it performs no network I/O of its own — it adds no probe
+# for callers or tests to mock, and it can only ever fire after a real timeout
+# has already been paid, so it cannot suppress a probe that would have worked.
+_ENDPOINT_BLACKHOLE_TTL_SECONDS = 30.0
+# Values are monotonic timestamps of the last observed connect timeout.
+_endpoint_blackhole_cache: Dict[str, float] = {}
+
+
+def _endpoint_host_key(base_url: str) -> Optional[str]:
+    """Return a ``host:port`` key for ``base_url``, or None if it has no host.
+
+    Keyed on host:port rather than the full URL so every probe path for one
+    server — ``/v1``-suffixed or not, LM Studio root or API root — shares a
+    single entry.
+    """
+    normalized = _normalize_base_url(base_url)
+    if not normalized:
+        return None
+    url = normalized if "://" in normalized else f"http://{normalized}"
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except Exception:
+        return None
+    return f"{host}:{port}" if host else None
+
+
+def _note_endpoint_blackholed(base_url: str) -> None:
+    """Record that a probe to ``base_url`` timed out during TCP connect."""
+    key = _endpoint_host_key(base_url)
+    if key is None:
+        return
+    _endpoint_blackhole_cache[key] = time.monotonic()
+    logger.debug(
+        "Endpoint %s timed out connecting — skipping further probes for %.0fs",
+        key, _ENDPOINT_BLACKHOLE_TTL_SECONDS,
+    )
+
+
+def _endpoint_blackholed(base_url: str) -> bool:
+    """True if a recent probe to ``base_url`` timed out during TCP connect.
+
+    Pure cache lookup; never touches the network. The entry expires after
+    _ENDPOINT_BLACKHOLE_TTL_SECONDS — long enough to collapse one startup's
+    burst of probes, short enough that bringing the VPN up mid-session is
+    picked up without a restart.
+    """
+    if _ENDPOINT_BLACKHOLE_TTL_SECONDS <= 0:
+        return False
+    key = _endpoint_host_key(base_url)
+    if key is None:
+        return False
+    seen = _endpoint_blackhole_cache.get(key)
+    if seen is None:
+        return False
+    if (time.monotonic() - seen) >= _ENDPOINT_BLACKHOLE_TTL_SECONDS:
+        del _endpoint_blackhole_cache[key]
+        return False
+    return True
+
+
+def _is_connect_timeout(exc: BaseException) -> bool:
+    """True for connect-phase timeouts raised by httpx or requests.
+
+    Read timeouts are deliberately excluded: those mean the server accepted
+    the connection, which is the opposite of the blackhole this guards.
+    """
+    try:
+        import httpx
+        if isinstance(exc, httpx.ConnectTimeout):
+            return True
+    except Exception:
+        pass
+    try:
+        from requests.exceptions import ConnectTimeout
+        if isinstance(exc, ConnectTimeout):
+            return True
+    except Exception:
+        pass
+    return False
+
+# ── Disk L2 for local-endpoint probe results ────────────────────────────────
+# The in-process caches above die with the process, so every CLI cold start
+# with a local model re-paid the probe waterfall in AIAgent.__init__:
+# detect_local_server_type (up to 4 HTTP GETs, ≤2 s each on a hung server)
+# + /api/show (≤3 s). A short-TTL disk cache makes back-to-back CLI
+# invocations hit disk instead of the network. Only SUCCESSFUL probes are
+# persisted (a down server must not pin a negative verdict), and the TTL is
+# short enough that swapping the server on a port (stop Ollama, start
+# LM Studio) is picked up within minutes — strictly fresher than the 1 h
+# in-process TTL that already accepts that staleness.
+_LOCAL_PROBE_DISK_TTL_SECONDS = 300.0
+
+
+def _local_probe_disk_cache_path() -> Path:
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / "cache" / "local_endpoint_probes.json"
+
+
+def _load_local_probe_disk_cache() -> Dict[str, Any]:
+    try:
+        with _local_probe_disk_cache_path().open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def _local_probe_disk_get(kind: str, key: str) -> Optional[Any]:
+    """Return a fresh cached value for ``kind:key``, else None."""
+    entry = _load_local_probe_disk_cache().get(f"{kind}:{key}")
+    if not isinstance(entry, dict):
+        return None
+    try:
+        if (time.time() - float(entry["ts"])) >= _LOCAL_PROBE_DISK_TTL_SECONDS:
+            return None
+        return entry["value"]
+    except Exception:
+        return None
+
+
+def _local_probe_disk_put(kind: str, key: str, value: Any) -> None:
+    """Persist a successful probe result. Best-effort; prunes stale entries."""
+    try:
+        now = time.time()
+        data = _load_local_probe_disk_cache()
+        data = {
+            k: v
+            for k, v in data.items()
+            if isinstance(v, dict)
+            and (now - float(v.get("ts", 0))) < _LOCAL_PROBE_DISK_TTL_SECONDS
+        }
+        data[f"{kind}:{key}"] = {"value": value, "ts": now}
+        atomic_json_write(
+            _local_probe_disk_cache_path(),
+            data,
+            indent=0,
+            separators=(",", ":"),
+        )
+    except Exception as e:
+        logger.debug("Failed to save local probe disk cache: %s", e)
 
 
 def _get_model_metadata_cache_path() -> Path:
@@ -189,6 +357,27 @@ CONTEXT_PROBE_TIERS = [
 
 # Default context length when no detection method succeeds.
 DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
+
+# (model, base_url) pairs that already emitted the fallback warning.
+# The fallback result itself is deliberately never cached, so without this
+# the warning would repeat on every resolution for the same unknown model.
+_FALLBACK_WARNED: set = set()
+
+
+def _warn_context_length_fallback(model: str, base_url: str) -> None:
+    """Warn (once per model+endpoint) that context detection failed and the
+    hard default is being used, so small-context models (8K, 32K) don't
+    silently get 256K and cause hard-to-debug API failures."""
+    key = (model, base_url or "")
+    if key in _FALLBACK_WARNED:
+        return
+    _FALLBACK_WARNED.add(key)
+    logger.warning(
+        "Could not determine context length for model %r (base_url=%s) "
+        "— falling back to %s tokens. Set model.context_length in "
+        "config.yaml to override.",
+        model, base_url or "default", f"{DEFAULT_FALLBACK_CONTEXT:,}",
+    )
 
 # Minimum context length required to run Hermes Agent.  Models with fewer
 # tokens cannot maintain enough working memory for tool-calling workflows.
@@ -278,6 +467,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     "llama": 131072,
     # Qwen — specific model families before the catch-all.
     # Official docs: https://help.aliyun.com/zh/model-studio/developer-reference/
+    "qwen3.8-max": 1_000_000,     # 1M context (OpenRouter & Nous portal, verified 2026-08-03)
     "qwen3.6-plus": 1048576,      # 1M context (DashScope/Alibaba & OpenRouter)
     "qwen3.7-plus": 1048576,      # 1M context (DashScope/Alibaba)
     "qwen3-coder-plus": 1000000,  # 1M context
@@ -509,7 +699,6 @@ _URL_TO_PROVIDER: Dict[str, str] = {
 # Auto-extend with hostnames derived from provider profiles.
 # Any provider with a base_url not already in the map gets added automatically.
 try:
-    from providers import list_providers as _list_providers
     for _pp in _list_providers():
         _host = _pp.get_hostname()
         if _host and _host not in _URL_TO_PROVIDER:
@@ -551,12 +740,17 @@ def _is_known_provider_base_url(base_url: str) -> bool:
 
 
 def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
-    """Return metadata confirmed only for the Kimi Coding endpoint.
+    """Return context metadata confirmed for one provider endpoint.
 
     Kimi Coding serves K3 under the bare slug ``k3``, but users may also
     configure or select the public-facing aliases ``kimi-k3`` and
     ``kimi-k3-cot``. Only canonical ``https://api.kimi.com/coding`` endpoints
     (legacy Moonshot keys do not serve K3) get the 1 Mi context window.
+
+    NVIDIA NIM serves ``deepseek-ai/deepseek-v4-pro`` with a 262,144-token
+    window even though DeepSeek's native endpoint serves the V4 family with a
+    1M window. Keep the lower limit scoped to NVIDIA instead of weakening the
+    global model-family metadata.
     """
     normalized = _normalize_base_url(base_url)
     try:
@@ -576,6 +770,18 @@ def _endpoint_scoped_context_length(model: str, base_url: str) -> Optional[int]:
         and model.strip().lower() in {"k3", "kimi-k3", "kimi-k3-cot"}
     ):
         return 1_048_576
+    if (
+        parsed.scheme.lower() == "https"
+        and (parsed.hostname or "").lower() == "integrate.api.nvidia.com"
+        and port in (None, 443)
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path.rstrip("/") == "/v1"
+        and not parsed.query
+        and not parsed.fragment
+        and model.strip().lower() == "deepseek-ai/deepseek-v4-pro"
+    ):
+        return 262_144
     return None
 
 
@@ -715,7 +921,10 @@ def _localhost_to_ipv4(url: str) -> str:
     ``http://localhost...`` (e.g. ``?upstream=http://localhost:11434``)
     passes through untouched.
     """
-    if not url:
+    if not url or not isinstance(url, str):
+        # Non-string values (test doubles, lazily-resolved config objects)
+        # previously flowed through these call sites untouched — keep that
+        # contract; re.sub would raise TypeError.
         return url
     return re.sub(
         r"^(https?://)localhost(?=[:/]|$)",
@@ -752,7 +961,31 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     if cached is not None and (time.monotonic() - cached[1]) < _ENDPOINT_PROBE_TTL_SECONDS:
         return cached[0]
 
+    # The host already blackholed a connect: skip the waterfall below, each leg
+    # of which would otherwise burn its full 2s timeout. Deliberately NOT
+    # written to _endpoint_probe_path_cache — that entry lives for an hour,
+    # which would pin the endpoint to "undetected" long after it comes back.
+    if _endpoint_blackholed(server_url):
+        return None
+
+    # Disk L2: a fresh cross-process verdict skips the HTTP waterfall
+    # entirely (back-to-back CLI invocations, cron ticks).
+    disk_hit = _local_probe_disk_get("server_type", server_url)
+    if isinstance(disk_hit, str):
+        _endpoint_probe_path_cache[server_url] = (disk_hit, time.monotonic())
+        return disk_hit
+
     headers = _auth_headers(api_key)
+
+    def _probe_failed(exc: Exception) -> None:
+        """Swallow a probe error — or abort the waterfall if we were blackholed.
+
+        Re-raising propagates out of the ``with`` block to the outer handler,
+        so the remaining legs are skipped instead of each stalling in turn.
+        """
+        if _is_connect_timeout(exc):
+            _note_endpoint_blackholed(server_url)
+            raise exc
 
     result: Optional[str] = None
     try:
@@ -762,8 +995,8 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                 r = client.get(f"{lmstudio_url}/api/v1/models")
                 if r.status_code == 200:
                     result = "lm-studio"
-            except Exception:
-                pass
+            except Exception as exc:
+                _probe_failed(exc)
             if result is None:
                 # Ollama exposes /api/tags and responds with {"models": [...]}
                 # LM Studio returns {"error": "Unexpected endpoint"} with status 200
@@ -777,8 +1010,8 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                                 result = "ollama"
                         except Exception:
                             pass
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _probe_failed(exc)
             if result is None:
                 # llama.cpp exposes /v1/props (older builds used /props without the /v1 prefix)
                 try:
@@ -787,8 +1020,8 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                         r = client.get(f"{server_url}/props")  # fallback for older builds
                     if r.status_code == 200 and "default_generation_settings" in r.text:
                         result = "llamacpp"
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _probe_failed(exc)
             if result is None:
                 # vLLM: /version
                 try:
@@ -797,13 +1030,14 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
                         data = r.json()
                         if "version" in data:
                             result = "vllm"
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _probe_failed(exc)
     except Exception:
         pass
 
     if result is not None:
         _endpoint_probe_path_cache[server_url] = (result, time.monotonic())
+        _local_probe_disk_put("server_type", server_url, result)
     return result
 
 
@@ -926,6 +1160,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
                 return _model_metadata_cache
 
     try:
+        _ensure_requests()
         # Tuple (connect, read) — flat timeout=10 means urllib3 can block 10s per
         # retry stage through proxies that 403 CONNECT, ballooning to minutes
         # (#46620). 5s connect / 10s read fails fast on unreachable hosts.
@@ -954,7 +1189,7 @@ def fetch_model_metadata(force_refresh: bool = False) -> Dict[str, Dict[str, Any
         return cache
 
     except Exception as e:
-        logger.warning(f"Failed to fetch model metadata from OpenRouter: {e}")
+        logger.warning("Failed to fetch model metadata from OpenRouter: %s", e)
         if _model_metadata_cache:
             return _model_metadata_cache
         disk_cache = _load_model_metadata_disk_cache()
@@ -982,12 +1217,19 @@ def fetch_endpoint_model_metadata(
     normalized = _normalize_base_url(base_url)
     if not normalized or _is_openrouter_base_url(normalized):
         return {}
+    _ensure_requests()
 
     if not force_refresh:
         cached = _endpoint_model_metadata_cache.get(normalized)
         cached_at = _endpoint_model_metadata_cache_time.get(normalized, 0)
         if cached is not None and (time.time() - cached_at) < _ENDPOINT_MODEL_CACHE_TTL:
             return cached
+
+    # Blackholed endpoint: every candidate below would spend its full 5s
+    # connect budget. Returned empty rather than cached, so the endpoint is
+    # retried as soon as the blackhole entry expires.
+    if _endpoint_blackholed(normalized):
+        return {}
 
     candidates = [normalized]
     if normalized.endswith("/v1"):
@@ -1051,11 +1293,36 @@ def fetch_endpoint_model_metadata(
                 return cache
         except Exception as exc:
             last_error = exc
+            if _is_connect_timeout(exc):
+                _note_endpoint_blackholed(normalized)
 
     for candidate in candidates:
-        url = candidate.rstrip("/") + "/models"
+        # A connect timeout on one candidate condemns the host, not the path:
+        # the remaining candidates differ only by URL suffix, so trying them
+        # would repeat the same stall.
+        if _endpoint_blackholed(normalized):
+            break
+        # normalized/candidates stay unrewritten (cache key stability); only
+        # the outbound request target is IPv4-resolved to skip the multi-second
+        # dual-stack IPv6 connect timeout (see _localhost_to_ipv4).
+        request_candidate = _localhost_to_ipv4(candidate)
+        url = request_candidate.rstrip("/") + "/models"
+        response = None
         try:
-            response = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
+            response = requests.get(
+                url,
+                headers=headers,
+                timeout=(5, 10),
+                verify=_resolve_requests_verify(),
+                stream=True,
+            )
+            if response.status_code in (401, 403):
+                logger.debug(
+                    "Model metadata probe received HTTP %s from %s; stopping candidate probing",
+                    response.status_code,
+                    url,
+                )
+                break
             response.raise_for_status()
             payload = response.json()
             cache: Dict[str, Dict[str, Any]] = {}
@@ -1085,7 +1352,7 @@ def fetch_endpoint_model_metadata(
             if is_llamacpp:
                 try:
                     # Try /v1/props first (current llama.cpp); fall back to /props for older builds
-                    base = candidate.rstrip("/").replace("/v1", "")
+                    base = request_candidate.rstrip("/").replace("/v1", "")
                     _verify = _resolve_requests_verify()
                     props_resp = requests.get(base + "/v1/props", headers=headers, timeout=5, verify=_verify)
                     if not props_resp.ok:
@@ -1105,6 +1372,11 @@ def fetch_endpoint_model_metadata(
             return cache
         except Exception as exc:
             last_error = exc
+            if _is_connect_timeout(exc):
+                _note_endpoint_blackholed(normalized)
+        finally:
+            if response is not None:
+                response.close()
 
     if last_error:
         logger.debug("Failed to fetch model metadata from %s/models: %s", normalized, last_error)
@@ -1523,6 +1795,13 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
     if server_type != "ollama":
         return None
 
+    # Disk L2: /api/show results are stable for a given (model, server) on
+    # human timescales — skip the HTTP roundtrip on fresh cross-process hits.
+    _disk_key = f"{server_url}|{bare_model}"
+    disk_hit = _local_probe_disk_get("ollama_num_ctx", _disk_key)
+    if isinstance(disk_hit, int) and disk_hit > 0:
+        return disk_hit
+
     headers = _auth_headers(api_key)
 
     try:
@@ -1540,7 +1819,9 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
                         parts = line.strip().split()
                         if len(parts) >= 2:
                             try:
-                                return int(parts[-1])
+                                _ctx = int(parts[-1])
+                                _local_probe_disk_put("ollama_num_ctx", _disk_key, _ctx)
+                                return _ctx
                             except ValueError:
                                 pass
 
@@ -1548,7 +1829,9 @@ def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Option
             model_info = data.get("model_info", {})
             for key, value in model_info.items():
                 if "context_length" in key and isinstance(value, (int, float)):
-                    return int(value)
+                    _ctx = int(value)
+                    _local_probe_disk_put("ollama_num_ctx", _disk_key, _ctx)
+                    return _ctx
     except Exception:
         pass
     return None
@@ -1654,6 +1937,9 @@ def _query_ollama_api_show_uncached(model: str, base_url: str, api_key: str = ""
     if server_url.endswith("/v1"):
         server_url = server_url[:-3]
 
+    if _endpoint_blackholed(server_url):
+        return None
+
     headers = _auth_headers(api_key)
 
     try:
@@ -1685,8 +1971,9 @@ def _query_ollama_api_show_uncached(model: str, base_url: str, api_key: str = ""
                                     return ctx
                             except ValueError:
                                 pass
-    except Exception:
-        pass
+    except Exception as exc:
+        if _is_connect_timeout(exc):
+            _note_endpoint_blackholed(server_url)
     return None
 
 
@@ -1774,6 +2061,9 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
         server_url = server_url[:-3]
     lmstudio_url = _localhost_to_ipv4(_lmstudio_server_root(base_url))
 
+    if _endpoint_blackholed(server_url):
+        return None
+
     headers = _auth_headers(api_key)
 
     try:
@@ -1844,13 +2134,39 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
             if resp.status_code == 200:
                 data = resp.json()
                 models_list = data.get("data", [])
+                # Match by id; on single-model servers (e.g. llama.cpp) the
+                # configured name rarely equals the reported id (a GGUF path),
+                # so fall back to the sole model when nothing matches.
+                matched = None
                 for m in models_list:
                     if _model_id_matches(m.get("id", ""), model):
-                        ctx = m.get("max_model_len") or m.get("context_length") or m.get("max_tokens")
-                        if ctx and isinstance(ctx, (int, float)):
-                            return int(ctx)
-    except Exception:
-        pass
+                        matched = m
+                        break
+                if matched is None and len(models_list) == 1:
+                    matched = models_list[0]
+                if matched is not None:
+                    # llama.cpp nests the runtime context under meta.n_ctx; the
+                    # vLLM/OpenAI keys are also checked. Runtime n_ctx is
+                    # preferred over n_ctx_train (the training maximum, which
+                    # can be larger than what the server actually allocates).
+                    for source in (matched, matched.get("meta") or {}):
+                        if not isinstance(source, dict):
+                            continue
+                        for key in (
+                            "n_ctx",
+                            "context_length",
+                            "context_window",
+                            "max_model_len",
+                            "max_context_length",
+                            "max_tokens",
+                            "n_ctx_train",
+                        ):
+                            val = source.get(key)
+                            if isinstance(val, (int, float)) and val:
+                                return int(val)
+    except Exception as exc:
+        if _is_connect_timeout(exc):
+            _note_endpoint_blackholed(server_url)
 
     return None
 
@@ -1882,6 +2198,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
         }
+        _ensure_requests()
         resp = requests.get(url, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
         if resp.status_code != 200:
             return None
@@ -1989,6 +2306,7 @@ def _fetch_codex_oauth_context_lengths_with_source(
         headers["ChatGPT-Account-Id"] = acct_id
 
     try:
+        _ensure_requests()
         resp = requests.get(
             "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
             headers=headers,
@@ -2429,21 +2747,27 @@ def get_model_context_length(
         if context_length is not None:
             return context_length
         if not _is_known_provider_base_url(base_url):
-            # 2b. Ollama native /api/show — any URL might be an Ollama server
-            # (local, cloud, or custom hosting).  Non-Ollama servers return
-            # 404/405 quickly.  Fall through on failure.
-            ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
-            if ctx is not None:
-                if not _skip_persistent_context_cache(base_url, provider):
-                    save_context_length(model, base_url, ctx)
-                return ctx
-            # 3. Try querying local server directly
+            # For local endpoints, run the probe that respects configured
+            # Modelfile context values first.  _query_local_context_length
+            # prefers num_ctx from Modelfile, while _query_ollama_api_show
+            # returns the GGUF training max first which can be larger and
+            # would create a false-safe window for compression (#63122).
+            # Non-local endpoints preserve the existing GGUF-first behavior.
             if is_local_endpoint(base_url):
                 local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
                 if local_ctx and local_ctx > 0:
                     if not _skip_persistent_context_cache(base_url, provider):
                         _maybe_cache_local_context_length(model, base_url, local_ctx)
                     return local_ctx
+            # 2b. Ollama native /api/show — non-local endpoints preserve
+            # the existing generic /api/show GGUF-first behavior.
+            # Non-Ollama servers return 404/405 quickly.
+            ctx = _query_ollama_api_show(model, base_url, api_key=api_key)
+            if ctx is not None:
+                if not _skip_persistent_context_cache(base_url, provider):
+                    save_context_length(model, base_url, ctx)
+                return ctx
+            # 3. Probe-down fallback after endpoint-specific detection failed
             logger.info(
                 "Could not detect context length for model %r at %s — "
                 "defaulting to %s tokens (probe-down). Set model.context_length "
@@ -2470,6 +2794,9 @@ def get_model_context_length(
                         f"{length:,}", model, default_model,
                     )
                     return length
+            # Same silent-256K bug class as the step-9 fallback below —
+            # warn here too so custom/local endpoints aren't left invisible.
+            _warn_context_length_fallback(model, base_url)
             return DEFAULT_FALLBACK_CONTEXT
 
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
@@ -2642,7 +2969,10 @@ def get_model_context_length(
         if default_model in model_lower:
             return length
 
-    # 9. Default fallback — 256K
+    # 9. Default fallback — warn (deduped per model+endpoint) so
+    #    small-context models don't silently get 256K. See
+    #    _warn_context_length_fallback for rationale.
+    _warn_context_length_fallback(model, base_url)
     return DEFAULT_FALLBACK_CONTEXT
 
 
@@ -2739,14 +3069,92 @@ def estimate_messages_tokens_rough(messages: List[Dict[str, Any]]) -> int:
     image — the Anthropic pricing model — instead of counting raw base64
     character length. Without this, a single ~1MB screenshot would be
     estimated at ~250K tokens and trigger premature context compression.
+
+    Per-message results are memoized (see ``_estimate_message_tokens_cached``)
+    keyed on a deep *identity fingerprint* of the message, so re-walking a
+    long history every iteration only pays for messages whose object graph
+    actually changed. The memo is exact: equal fingerprints imply identical
+    leaf objects and structure, hence an identical estimate.
     """
     _IMAGE_TOKEN_COST = 1500
-    text_tokens = 0
-    image_tokens = 0
+    total = 0
     for msg in messages:
-        text_tokens += _estimate_message_tokens_without_images(msg)
-        image_tokens += _count_image_tokens(msg, _IMAGE_TOKEN_COST)
-    return text_tokens + image_tokens
+        total += _estimate_message_tokens_cached(msg, _IMAGE_TOKEN_COST)
+    return total
+
+
+# --- Per-message token-estimate memo -------------------------------------
+#
+# ``estimate_messages_tokens_rough`` is called on the full history every
+# loop iteration (conversation_loop preflight), repeatedly during compaction
+# telemetry, and inside an O(n^2) shrink loop in moa_loop. The per-message
+# helpers are pure functions of the message's value, so a memo keyed on a
+# fingerprint that uniquely determines the value is exactly equivalent.
+#
+# Fingerprint design (soundness argument):
+#   * strings are fingerprinted by ``id()`` AND pinned (a strong reference is
+#     stored in the cache entry). While the entry lives, that id cannot be
+#     reused by another object, so id-equality implies object-equality —
+#     strings are immutable, so value-equality too (no #50372-style aliasing).
+#   * ints/floats/bools/None are fingerprinted by value.
+#   * dicts/lists recurse structurally, preserving key order — ``str(shadow)``
+#     depends on insertion order, so order is part of the key.
+#   * any other type aborts the memo and falls through to a direct compute.
+# Equal fingerprints therefore imply deep-equal messages built from identical
+# immutable leaves ⇒ identical ``str(shadow)`` bytes ⇒ identical estimate.
+#
+# Because the api_messages build shallow-copies history dicts each iteration,
+# the copies share the same content strings — so unchanged history messages
+# hit the memo even though the outer dicts are fresh objects every turn.
+_MSG_TOKENS_CACHE: Dict[Any, Tuple[list, int]] = {}
+_MSG_TOKENS_CACHE_MAX = 4096
+
+
+def _msg_fingerprint(value: Any, pins: list) -> Any:
+    if value is None or value is True or value is False:
+        return value
+    t = type(value)
+    if t is str:
+        pins.append(value)
+        return ("s", id(value))
+    if t is int or t is float:
+        return ("n", t.__name__, value)
+    if t is dict:
+        return ("d", tuple(
+            (_msg_fingerprint(k, pins), _msg_fingerprint(v, pins))
+            for k, v in value.items()
+        ))
+    if t is list:
+        return ("l", tuple(_msg_fingerprint(v, pins) for v in value))
+    if t is tuple:
+        return ("t", tuple(_msg_fingerprint(v, pins) for v in value))
+    raise ValueError("unfingerprintable message value")
+
+
+def _estimate_message_tokens_cached(msg: Any, image_cost: int) -> int:
+    try:
+        pins: list = []
+        key = _msg_fingerprint(msg, pins)
+        hash(key)
+    except Exception:
+        return (
+            _estimate_message_tokens_without_images(msg)
+            + _count_image_tokens(msg, image_cost)
+        )
+    cached = _MSG_TOKENS_CACHE.get(key)
+    if cached is not None:
+        return cached[1]
+    tokens = (
+        _estimate_message_tokens_without_images(msg)
+        + _count_image_tokens(msg, image_cost)
+    )
+    _MSG_TOKENS_CACHE[key] = (pins, tokens)
+    while len(_MSG_TOKENS_CACHE) > _MSG_TOKENS_CACHE_MAX:
+        try:
+            _MSG_TOKENS_CACHE.pop(next(iter(_MSG_TOKENS_CACHE)))
+        except (StopIteration, KeyError, RuntimeError):
+            break
+    return tokens
 
 
 def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
@@ -2775,6 +3183,68 @@ def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
     return count * cost_per_image
 
 
+def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
+    """Shadow of a message holding only what the provider actually receives.
+
+    Two adjustments to the raw persisted dict:
+
+    * ``api_content`` is a SUBSTITUTE for ``content``, not an addition to it.
+      ``turn_context.substitute_api_content()`` pops the sidecar and overwrites
+      ``content`` at every API-bound build site, so exactly one of the two is
+      ever sent. Counting both double-counts any message whose sidecar differs
+      from its clean stored content (2.00x on a 40KB sidecar).
+
+      The substitution mirrors that helper's guard exactly: only a non-empty
+      STRING sidecar on a ``user``/``assistant`` row displaces ``content``.
+      Any other sidecar shape is popped and discarded on the wire without
+      touching ``content``, so a shadow that substituted unconditionally
+      would UNDERcount those rows — the dangerous direction, since it makes
+      compaction fire too late and the turn dies on a hard context error.
+    * Base64 image payloads are replaced with a placeholder; they are charged
+      separately at a flat rate by ``_count_image_tokens``, and counting their
+      raw chars here would massively overestimate usage.
+    """
+    sidecar = msg.get("api_content")
+    sidecar_wins = (
+        isinstance(sidecar, str)
+        and bool(sidecar)
+        and msg.get("role") in ("user", "assistant")
+    )
+    shadow: Dict[str, Any] = {}
+    for k, v in msg.items():
+        if k in ("_anthropic_content_blocks", "reasoning_details"):
+            continue
+        if k == "api_content":
+            # Always popped before the request is built; only counted when it
+            # actually replaces ``content``.
+            if sidecar_wins:
+                shadow["content"] = v
+            continue
+        if k == "content":
+            if sidecar_wins:
+                # The sidecar wins on the wire; skip the clean copy so the
+                # same logical content is not counted twice.
+                continue
+            if isinstance(v, list):
+                cleaned = []
+                for part in v:
+                    if isinstance(part, dict):
+                        if part.get("type") in {"image", "image_url", "input_image"}:
+                            cleaned.append({"type": part.get("type"), "image": "[stripped]"})
+                        else:
+                            cleaned.append(part)
+                    else:
+                        cleaned.append(part)
+                shadow[k] = cleaned
+            elif isinstance(v, dict) and v.get("_multimodal"):
+                shadow[k] = v.get("text_summary", "")
+            else:
+                shadow[k] = v
+        else:
+            shadow[k] = v
+    return shadow
+
+
 def _estimate_message_chars(msg: Dict[str, Any]) -> int:
     """Char count for token estimation, excluding base64 image data.
 
@@ -2783,58 +3253,14 @@ def _estimate_message_chars(msg: Dict[str, Any]) -> int:
     """
     if not isinstance(msg, dict):
         return len(str(msg))
-    shadow: Dict[str, Any] = {}
-    for k, v in msg.items():
-        if k == "_anthropic_content_blocks":
-            continue
-        if k == "content":
-            if isinstance(v, list):
-                cleaned = []
-                for part in v:
-                    if isinstance(part, dict):
-                        if part.get("type") in {"image", "image_url", "input_image"}:
-                            cleaned.append({"type": part.get("type"), "image": "[stripped]"})
-                        else:
-                            cleaned.append(part)
-                    else:
-                        cleaned.append(part)
-                shadow[k] = cleaned
-            elif isinstance(v, dict) and v.get("_multimodal"):
-                shadow[k] = v.get("text_summary", "")
-            else:
-                shadow[k] = v
-        else:
-            shadow[k] = v
-    return len(str(shadow))
+    return len(str(_wire_message_shadow(msg)))
 
 
 def _estimate_message_tokens_without_images(msg: Dict[str, Any]) -> int:
     """Token estimate for a message shadow with image payloads stripped."""
     if not isinstance(msg, dict):
         return estimate_tokens_rough(str(msg))
-    shadow: Dict[str, Any] = {}
-    for k, v in msg.items():
-        if k == "_anthropic_content_blocks":
-            continue
-        if k == "content":
-            if isinstance(v, list):
-                cleaned = []
-                for part in v:
-                    if isinstance(part, dict):
-                        if part.get("type") in {"image", "image_url", "input_image"}:
-                            cleaned.append({"type": part.get("type"), "image": "[stripped]"})
-                        else:
-                            cleaned.append(part)
-                    else:
-                        cleaned.append(part)
-                shadow[k] = cleaned
-            elif isinstance(v, dict) and v.get("_multimodal"):
-                shadow[k] = v.get("text_summary", "")
-            else:
-                shadow[k] = v
-        else:
-            shadow[k] = v
-    return estimate_tokens_rough(str(shadow))
+    return estimate_tokens_rough(str(_wire_message_shadow(msg)))
 
 
 def estimate_request_tokens_rough(

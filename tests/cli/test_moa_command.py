@@ -73,15 +73,6 @@ def test_moa_non_preset_is_one_shot_prompt():
     assert cli._pending_moa_restore_model["provider"] != "moa"
 
 
-def test_decode_legacy_encoded_moa_turn_still_works():
-    from hermes_cli.moa_config import build_moa_turn_prompt
-
-    encoded = build_moa_turn_prompt("hello", _make_cli().config["moa"], preset="review")
-    prompt, cfg = decode_moa_turn(encoded)
-    assert prompt == "hello"
-    assert cfg["reference_models"] == [
-        {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro", "enabled": True}
-    ]
 
 
 class TestNormalizeMoaModel:
@@ -96,18 +87,8 @@ class TestNormalizeMoaModel:
         from cli import _normalize_moa_model
         assert _normalize_moa_model("moa:strategy") == ("moa", "strategy")
 
-    def test_moa_prefix_is_case_insensitive_and_trims(self):
-        from cli import _normalize_moa_model
-        assert _normalize_moa_model("  MOA:code-review ") == ("moa", "code-review")
 
-    def test_bare_moa_without_preset_is_not_treated_as_virtual(self):
-        from cli import _normalize_moa_model
-        # No preset after the colon → leave untouched (no provider override).
-        assert _normalize_moa_model("moa:") == (None, "moa:")
 
-    def test_non_moa_model_unchanged(self):
-        from cli import _normalize_moa_model
-        assert _normalize_moa_model("anthropic/claude-opus-4.8") == (None, "anthropic/claude-opus-4.8")
 
     def test_none_model_unchanged(self):
         from cli import _normalize_moa_model

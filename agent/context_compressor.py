@@ -25,7 +25,12 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from agent.auxiliary_client import call_llm, _is_connection_error, aux_interrupt_protection
+from agent.auxiliary_client import (
+    AuxiliaryExplicitCancellation,
+    _is_connection_error,
+    aux_interrupt_protection,
+    call_llm,
+)
 from agent.context_engine import ContextEngine, sanitize_memory_context
 from agent.error_classifier import FailoverReason, classify_api_error
 from agent.model_metadata import (
@@ -101,6 +106,13 @@ SUMMARY_PREFIX = (
     "Respond ONLY to the latest user message that appears AFTER this "
     "summary — that message is the single source of truth for what to do "
     "right now. "
+    "If no user message appears AFTER this summary, do nothing: do not "
+    "resume, wrap up, or continue work from "
+    f"'{HISTORICAL_TASK_HEADING}' or any other section, do not call tools, "
+    "and wait for a new user message. This handoff must never become the "
+    "active turn by itself. (Exception: if tool results or your own "
+    "tool calls appear after this summary, you are mid-way through an "
+    "in-flight exchange — continue that exchange normally.) "
     "Topic overlap with the summary does NOT mean you should resume its "
     "task: even on similar topics, the latest user message WINS. Treat ONLY "
     "the latest message as the active task and discard stale items from "
@@ -137,7 +149,14 @@ LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 # "is_compressed_summary" would reach the wire and trip exactly that.
 COMPRESSED_SUMMARY_METADATA_KEY = "_compressed_summary"
 COMPRESSED_SUMMARY_HAS_USER_TURN_KEY = "_compressed_summary_has_user_turn"
+# Distinguishes rolling micro-compaction markers from batch-compaction
+# markers (both carry COMPRESSED_SUMMARY_METADATA_KEY so resume/handoff
+# treat them alike). Supersede/defrag/rehydration must only ever touch
+# micro markers: a batch marker's content is NOT contained in the micro
+# rolling summary, so dropping or rewriting one destroys history.
+MICRO_COMPACT_MARKER_KEY = "_micro_compact_marker"
 _DB_PERSISTED_MARKER = "_db_persisted"
+PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY = "_proactive_prune_rearm_tokens"
 
 _NO_USER_TASK_SENTINEL = "None. This session contains no user-authored turns."
 COMPRESSION_CONTINUATION_USER_CONTENT = (
@@ -148,6 +167,15 @@ _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT = (
     "Continue from the compressed conversation context above. "
     "This marker exists because the compacted transcript contained "
     "no preserved user turn."
+)
+# Runtime nudge appended by ``handle_max_iterations`` as a ``role="user"`` row.
+# SessionDB projection strips underscore-prefixed metadata, so a synthetic flag
+# would not survive persistence; the stable content string is the authoritative
+# marker for compaction recognizers (mirrors the continuation/todo markers).
+MAX_ITERATIONS_SUMMARY_REQUEST = (
+    "You've reached the maximum number of tool-calling iterations allowed. "
+    "Please provide a final response summarizing what you've found and accomplished so far, "
+    "without calling any more tools."
 )
 
 
@@ -170,6 +198,35 @@ def _fresh_compaction_message_copy(msg: Dict[str, Any]) -> Dict[str, Any]:
     return fresh
 
 
+def _template_visible_role(message: Any) -> Optional[str]:
+    """Role as counted by strict chat-template alternation checks.
+
+    Mistral-family templates (Devstral, Mistral Small 3.x, Magistral)
+    enforce user/assistant alternation at render time but EXEMPT the tool
+    flow from the check: ``tool`` results and assistant messages carrying
+    ``tool_calls`` are skipped. A summary role chosen against the *literal*
+    neighbouring roles can therefore still violate alternation as the
+    template sees it. The canonical failure: the protected head ends
+    ``[user, assistant(tool_calls), tool]``, so the literal last role is
+    ``tool`` and the summary is pinned to ``role="user"`` -- but the last
+    role the template counts is ``user``, the template sees user -> user,
+    and llama.cpp / Mistral-hosted backends reject the ENTIRE request with
+    a Jinja alternation error (HTTP 500). Because the summary persists in
+    the stored conversation, every retry replays the same poisoned history
+    and the session is unrecoverable.
+
+    Returns ``None`` for messages the alternation check skips.
+    """
+    if not isinstance(message, dict):
+        return None
+    role = message.get("role")
+    if role == "tool":
+        return None
+    if role == "assistant" and message.get("tool_calls"):
+        return None
+    return role
+
+
 def _strip_persistence_markers(messages: List[Dict[str, Any]]) -> None:
     """Enforce the compaction invariant: no assembled message carries a
     session-store persistence marker.
@@ -187,6 +244,76 @@ def _strip_persistence_markers(messages: List[Dict[str, Any]]) -> None:
     for msg in messages:
         if isinstance(msg, dict):
             msg.pop(_DB_PERSISTED_MARKER, None)
+
+
+def _prune_stale_reasoning_replay(messages: List[Dict[str, Any]]) -> int:
+    """Strip stale per-turn replay items (``codex_reasoning_items``) from
+    assistant messages that belong to turns older than the active one.
+
+    During Codex/Responses sessions, every retained assistant message carries
+    encrypted reasoning blobs (``codex_reasoning_items``) that are only needed
+    for replaying the *current* turn's reasoning chain.  Prior-turn items are
+    pure re-billed weight: the compaction boundary has already invalidated the
+    prompt-cache prefix, and ``conversation_loop.py`` already drops these
+    wholesale when ``api_mode != "codex_responses"``.
+
+    Operates in place on the fully assembled compacted message list.  Returns
+    the number of messages that were pruned (for diagnostics).  #71058.
+
+    Two safety rules define the prune:
+
+    * **Turn boundary is the last user message, not the last assistant
+      message.** A single Codex turn spans several assistant messages
+      (assistant+tool_calls -> tool -> assistant+tool_calls -> ... -> final
+      assistant), and the Responses API requires the reasoning items that
+      bridge those function calls to be replayed together.  Everything after
+      the last user message is the active turn and keeps its items; only
+      messages at or before that boundary are stale.  (An earlier draft used
+      the last assistant message and would have stripped reasoning mid-chain
+      from the in-flight turn.)
+
+    * **Native compaction checkpoints are exempt.** ``type: "compaction"``
+      items in the same sidecar are the server-side stand-in for already
+      pruned history (see ``agent/native_compaction.py``) — cumulative
+      context carriers, not per-turn reasoning.  They must survive on every
+      retained message, so pruning filters items instead of popping the key.
+    """
+    # Find the last real user message — everything after it is the active
+    # turn.  Synthetic continuation rows and tool results never mark a turn
+    # boundary.
+    last_user_idx = -1
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            last_user_idx = i
+            break
+    if last_user_idx < 0:
+        # No user boundary found — cannot distinguish the active turn, so
+        # prune nothing (fail open toward correctness, not size).
+        return 0
+
+    pruned = 0
+    for i in range(last_user_idx):
+        msg = messages[i]
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        for key in _STALE_REPLAY_PRUNE_KEYS:
+            items = msg.get(key)
+            if not isinstance(items, list) or not items:
+                continue
+            kept = [
+                item
+                for item in items
+                if isinstance(item, dict) and item.get("type") == "compaction"
+            ]
+            if len(kept) == len(items):
+                continue  # nothing stale in this sidecar
+            if kept:
+                msg[key] = kept
+            else:
+                msg.pop(key, None)
+            pruned += 1
+    return pruned
 
 
 # Appended to every standalone summary message (and to the merged-into-tail
@@ -219,7 +346,38 @@ _MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]
 # written by that build generation; prepend only. tests/agent/
 # test_summary_prefix_semantics.py byte-pins every entry to enforce this.
 _HISTORICAL_SUMMARY_PREFIXES = (
-    # Pre-#69619: identical to the current prefix except the stale-item
+    # Pre-#80622: identical to the current prefix except it lacked the
+    # explicit "if no user message appears AFTER this summary, do nothing"
+    # clause. Standalone reference handoffs persisted by that build could
+    # occupy the active user slot after a completed assistant stop and
+    # resume stale Historical Task Snapshot work.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do "
+    "right now. "
+    "Topic overlap with the summary does NOT mean you should resume its "
+    "task: even on similar topics, the latest user message WINS. Treat ONLY "
+    "the latest message as the active task and discard stale items from "
+    "'## Historical Task Snapshot' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly "
+    "asks for it. "
+    "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
+    "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+    "topic) must immediately end any in-flight work described in the "
+    "summary; do not re-surface it in later turns. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "None of the above restricts HOW you work: your tools remain fully "
+    "active — keep calling them normally for the active task (edit files, "
+    "run commands, search) instead of merely narrating what you would do. "
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:",
+    # Pre-#69619: identical to the then-current prefix except the stale-item
     # discard clause named all four historical headings (the three
     # section headers removed by #69619 were still in the template).
     # Summaries persisted by builds immediately before #69619 carry this
@@ -335,6 +493,11 @@ _SUMMARY_RATIO = 0.20
 # itself a context-pressure source and slows every compaction.
 _SUMMARY_TOKENS_CEILING = 10_000
 
+# Micro-compaction failure guard: after this many consecutive failures on the
+# same cursor position, skip the stuck exchange and advance the cursor so the
+# system doesn't busy-loop on an unsummarizable exchange every turn.
+_MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES = 3
+
 # Aggregate cap on the serialized turn block fed to the summarizer prompt
 # (chars). Per-message truncation (_CONTENT_MAX / _TOOL_ARGS_MAX) alone is
 # not enough: a compression window with hundreds of already-truncated turns
@@ -351,6 +514,44 @@ _SUMMARY_INPUT_MAX_CHARS = 160_000
 
 # Placeholder used when pruning old tool results
 _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
+
+# Floor shared by _prune_old_tool_results' ``min_prune_chars`` default, the
+# constructor clamp on ``proactive_prune_min_result_chars``, and the clarify
+# summary cap (which must stay strictly BELOW this so a preserved user answer
+# is never re-summarized away on a later prune pass).
+_PRUNE_MIN_CHARS = 200
+
+# Non-response sentinels the clarify callbacks embed as ``user_response`` when
+# the user never actually answered (timeout / no-user contexts). These must
+# not be quoted as a user answer during compaction. Sources:
+#   cli.py timeout callback, gateway/run.py timeout + delivery-failure paths,
+#   hermes_cli/oneshot.py no-user callback.
+_CLARIFY_NON_RESPONSE_PREFIXES = (
+    "The user did not provide a response",
+    "[user did not respond",
+    "[clarify prompt could not be delivered",
+    "[oneshot mode:",
+)
+
+
+def _is_clarify_non_response_sentinel(response: Any) -> bool:
+    """Return True when a clarify ``user_response`` is runtime sentinel prose
+    (timeout / no-user), not an actual user answer.
+
+    For lists, ANY sentinel item poisons the whole response: every real
+    producer returns a scalar sentinel, so a mixed list means forged or
+    corrupt tool content — fall back to the generic path (may lose info,
+    never misattributes).
+    """
+    if isinstance(response, str):
+        return response.lstrip().startswith(_CLARIFY_NON_RESPONSE_PREFIXES)
+    if isinstance(response, list):
+        return any(
+            isinstance(item, str)
+            and item.lstrip().startswith(_CLARIFY_NON_RESPONSE_PREFIXES)
+            for item in response
+        )
+    return False
 
 # Ghost-skill defense (#32106): when compaction reduces an old ``skill_view``
 # result to a 1-line metadata summary, the model still believes the skill is
@@ -596,6 +797,12 @@ _ACTIVE_TASK_MAX_CHARS = 1400
 # high for small/light tails, but using all 20 as a hard floor here would bring
 # back the old large-tool-output case where nothing can be compacted.
 _MAX_TAIL_MESSAGE_FLOOR = 8
+
+# Pre-LLM feasibility skip (#60451): when the compressible middle is below
+# this fraction of threshold_tokens (and a prior real-usage ineffectiveness
+# strike exists), skip the LLM summary call — deterministic dropping alone
+# recovers the negligible savings such a summary could deliver.
+_FEASIBILITY_SKIP_MIDDLE_FRACTION = 0.10
 # Under context pressure (protected-tail tool bodies alone exceed the soft
 # tail budget), demote large completed tool/file outputs even inside the
 # protected region — but always keep this many trailing messages verbatim so
@@ -724,16 +931,84 @@ def _serialized_length_for_budget(value: Any) -> int:
 # Responses sessions in particular carry ``codex_reasoning_items`` blobs of
 # ``encrypted_content`` that can dominate the serialized session (a measured
 # 214-turn session held ~115K tokens / 27% of its payload there — #55572).
+#
+# ``reasoning_details`` is handled separately (see
+# ``_reasoning_details_text_chars``): its signed/base64 envelope is excluded
+# from the budget, mirroring the preflight estimator's exclusion in
+# ``model_metadata._estimate_message_tokens_without_images`` (#73298).
 _REPLAY_BUDGET_KEYS = (
     "reasoning",
     "reasoning_content",
-    "reasoning_details",
     "codex_reasoning_items",
     "codex_message_items",
 )
 
+# Subset of ``_REPLAY_BUDGET_KEYS`` that every transport replays on EVERY
+# retained assistant turn (Codex Responses items ride the wire each request;
+# message items are required for prefix-cache continuity).  The remaining
+# generic thinking-text keys (``reasoning`` / ``reasoning_content``) are
+# replayed for at most the NEWEST assistant turn on non-Codex transports —
+# Anthropic strips all-but-newest at convert time, Bedrock Converse never
+# replays thinking at all, and strict chat-completions providers either
+# reject the field or receive a one-space echo pad (#73624).  Charging them
+# on every message spent 19-24% of the tail budget on bytes that provably
+# never reach the wire, so the tail cut landed early and each compaction
+# discarded more real transcript than configured.
+_ALWAYS_REPLAYED_BUDGET_KEYS = (
+    "codex_reasoning_items",
+    "codex_message_items",
+)
+_NEWEST_TURN_ONLY_BUDGET_KEYS = (
+    "reasoning",
+    "reasoning_content",
+)
 
-def _estimate_msg_budget_tokens(msg: dict) -> int:
+# Replay keys that can be safely pruned from stale assistant messages during
+# compaction.  ``codex_reasoning_items`` carries encrypted reasoning blobs that
+# are only needed for the current turn's replay — prior-turn items are pure
+# re-billed weight.  Stripping stale items at compaction time is a safe, cheap
+# pre-pass: the compaction boundary has already invalidated the prompt-cache
+# prefix, and the conversation_loop already drops these wholesale when
+# ``api_mode != "codex_responses"`` (#71058).
+_STALE_REPLAY_PRUNE_KEYS = (
+    "codex_reasoning_items",
+)
+
+
+def _reasoning_details_text_chars(value: Any) -> int:
+    """Textual thinking chars inside a ``reasoning_details`` envelope.
+
+    ``reasoning_details`` carries provider thinking blocks: the actual
+    thinking TEXT plus opaque signed/base64 envelope blobs (Anthropic
+    ``signature``, redacted ``data``, encrypted payloads).  The envelope is
+    never billed at anything near chars/4 by the provider and — on every
+    transport except Codex Responses — is replayed for at most the newest
+    assistant turn, so charging it on every message inflated the tail-budget
+    walk and silently shrank the surviving tail (#73298, second site).
+
+    Count only the thinking text (the #51800 lesson: real reasoning text
+    MUST stay visible to the budget), skip everything else.
+    """
+    if not value:
+        return 0
+    if isinstance(value, str):
+        return len(value)
+    total = 0
+    if isinstance(value, dict):
+        value = [value]
+    if isinstance(value, list):
+        for part in value:
+            if isinstance(part, str):
+                total += len(part)
+            elif isinstance(part, dict):
+                for text_key in ("thinking", "text", "summary"):
+                    text = part.get(text_key)
+                    if isinstance(text, str):
+                        total += len(text)
+    return total
+
+
+def _estimate_msg_budget_tokens(msg: dict, charge_stale_thinking: bool = True) -> int:
     """Token estimate for one message in the tail-protection budget walks.
 
     Counts the message content plus the **full** ``tool_call`` envelope —
@@ -744,14 +1019,26 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
     tail overshot ``tail_token_budget`` and compression became ineffective.
     See issue #28053.
 
-    Also counts provider replay fields (``codex_reasoning_items`` etc. —
-    see ``_REPLAY_BUDGET_KEYS``).  The preflight "should I compress?"
-    estimator sees the full message shape, so the tail walk must use the
-    same size class; otherwise an assistant message with tiny visible
-    content but large hidden replay blobs is protected as if it were small,
-    the post-compression session stays near the context limit, and
-    compaction re-fires continuously (#55572).  Accounting-only: replay
-    fields are never mutated or pruned here.
+    Also counts provider replay fields.  Wire-replayed-every-turn fields
+    (``_ALWAYS_REPLAYED_BUDGET_KEYS``) are charged unconditionally: the
+    preflight "should I compress?" estimator sees the full message shape, so
+    the tail walk must use the same size class; otherwise an assistant
+    message with tiny visible content but large hidden replay blobs is
+    protected as if it were small and compaction re-fires continuously
+    (#55572).  Stale replay fields from prior assistant turns are stripped
+    during the compaction assembly pass (``_prune_stale_reasoning_replay``,
+    #71058).  Accounting-only here: this budget walk does not mutate or
+    prune.
+
+    ``charge_stale_thinking`` controls the generic thinking-text keys
+    (``_NEWEST_TURN_ONLY_BUDGET_KEYS`` + the ``reasoning_details`` text
+    charge).  Callers that know the message is NOT the newest assistant turn
+    on a transport that only replays newest-turn thinking pass ``False`` so
+    the tail budget is not spent on bytes that never reach the wire (#73624:
+    19-24% of the budget went to provably-stripped blocks, making the tail
+    cut land early and discard more real transcript than configured).
+    Default ``True`` preserves the conservative full charge for callers
+    without turn-position context.
     """
     content = msg.get("content") or ""
     if isinstance(content, str):
@@ -762,9 +1049,37 @@ def _estimate_msg_budget_tokens(msg: dict) -> int:
     for tc in msg.get("tool_calls") or []:
         if isinstance(tc, dict):
             tokens += estimate_tokens_rough(str(tc))
-    for key in _REPLAY_BUDGET_KEYS:
+    for key in _ALWAYS_REPLAYED_BUDGET_KEYS:
         tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
+    if not charge_stale_thinking:
+        return tokens
+    for key in _NEWEST_TURN_ONLY_BUDGET_KEYS:
+        tokens += _serialized_length_for_budget(msg.get(key)) // _CHARS_PER_TOKEN
+    # reasoning_details: charge only the thinking TEXT, never the signed /
+    # base64 envelope (#73298 second site; mirrors the preflight estimator's
+    # exclusion in model_metadata).  When the same thinking text already rides
+    # in ``reasoning``/``reasoning_content`` (measured byte-identical on
+    # Anthropic-wire sessions), skip it here entirely so the prose is not
+    # charged twice on top of the envelope exclusion.
+    if not (msg.get("reasoning") or msg.get("reasoning_content")):
+        tokens += (
+            _reasoning_details_text_chars(msg.get("reasoning_details"))
+            // _CHARS_PER_TOKEN
+        )
     return tokens
+
+
+def _last_assistant_index(messages: "List[Dict[str, Any]]") -> int:
+    """Index of the newest assistant message, or -1.
+
+    The one turn whose thinking fields every transport may still replay —
+    see ``_NEWEST_TURN_ONLY_BUDGET_KEYS``.
+    """
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, dict) and msg.get("role") == "assistant":
+            return i
+    return -1
 
 
 def _content_text_for_contains(content: Any) -> str:
@@ -1167,6 +1482,50 @@ def _summarize_tool_result_unguarded(tool_name: str, tool_args: str, tool_conten
         return "[todo] updated task list"
 
     if tool_name == "clarify":
+        response_prefix = "[clarify] user responded: "
+        # One char under _PRUNE_MIN_CHARS: the summary survives later
+        # _prune_old_tool_results passes only via the ``len(content) <=
+        # min_prune_chars`` guard (the "already summarized" guard keys on
+        # " chars)" which this shape never contains), and staying strictly
+        # below the floor also keeps it out of the >=200-char dedup pass.
+        max_summary_chars = _PRUNE_MIN_CHARS - 1
+        truncation_marker = "...[truncated]"
+
+        try:
+            result = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            result = {}
+        response = result.get("user_response") if isinstance(result, dict) else None
+        is_answer_shaped = (
+            isinstance(response, str) and bool(response)
+        ) or (
+            isinstance(response, list)
+            and bool(response)
+            and all(isinstance(item, str) and item for item in response)
+        )
+        # Timeout / no-user paths embed sentinel prose as user_response
+        # (gateway "[user did not respond within Nm]", oneshot
+        # "[oneshot mode: ...]", CLI "The user did not provide a
+        # response..."). Quoting those as a user answer would be false
+        # attribution — keep them on the generic path.
+        resolved = is_answer_shaped and not _is_clarify_non_response_sentinel(
+            response
+        )
+        if resolved:
+            # Keep ordinary Unicode intact while escaping lone UTF-16
+            # surrogates so the compacted message remains UTF-8/SQLite safe.
+            serialized_response = (
+                json.dumps(response, ensure_ascii=False)
+                .encode("utf-8", errors="backslashreplace")
+                .decode("utf-8")
+            )
+            summary = response_prefix + serialized_response
+            if len(summary) > max_summary_chars:
+                summary = (
+                    summary[: max_summary_chars - len(truncation_marker)].rstrip()
+                    + truncation_marker
+                )
+            return summary
         return "[clarify] asked user a question"
 
     if tool_name == "text_to_speech":
@@ -1241,11 +1600,13 @@ class ContextCompressor(ContextEngine):
         self._consecutive_timeout_failures = 0
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
+        self._last_feasibility_skip = False
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._anti_thrash_recovery_deadline = 0.0
+        self._prellm_skip_count = 0
         self._fallback_compression_streak = 0
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
@@ -1256,10 +1617,21 @@ class ContextCompressor(ContextEngine):
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
+        self._pending_request_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self._last_compression_telemetry = None
         self._active_compression_telemetry = None
         self._compression_telemetry_seed = None
+        self._proactive_prune_rearm_tokens = 0
+
+        # Micro-compaction state reset
+        self._micro_compact_cursor = 0
+        self._micro_compact_rolling_summary = ""
+        self._micro_compact_consecutive_failures = 0
+        self._micro_compact_last_failure_cursor = -1
+        self._micro_compact_passes = 0
+        self._micro_compact_tokens_saved_total = 0
+        self._micro_compact_turns_since_pass = 0
 
     def _begin_compression_telemetry(
         self,
@@ -1288,6 +1660,7 @@ class ContextCompressor(ContextEngine):
             "protected_head_tokens": None,
             "protected_tail_tokens": None,
             "middle_window_tokens": None,
+            "prellm_skip_count": 0,
             "aux_prompt_tokens": None,
             "aux_output_reservation": None,
             "aux_provider": "",
@@ -1354,6 +1727,125 @@ class ContextCompressor(ContextEngine):
         previous = telemetry.get("aux_call_duration_ms") or 0
         telemetry["aux_call_duration_ms"] = previous + max(0, int(duration_ms))
 
+    def _emit_init_summary_once(self) -> None:
+        """Emit the informative startup line once, on first resolution.
+
+        Deferred out of ``__init__`` (#32221): the line reports resolved token
+        budgets, so emitting it there would force the synchronous
+        ``get_model_context_length()`` probe during construction. Reads via
+        the properties below are safe here because
+        ``_resolved_context_length`` is already set.
+        """
+        if not getattr(self, "_log_init_summary", False):
+            return
+        self._log_init_summary = False
+        logger.info(
+            "Context compressor initialized: model=%s context_length=%d "
+            "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
+            "provider=%s base_url=%s",
+            self.model, self._resolved_context_length, self.threshold_tokens,
+            self.threshold_percent * 100, self.summary_target_ratio * 100,
+            self.tail_token_budget,
+            self.provider or "none", self.base_url or "none",
+        )
+
+    def _resolve_context_length(self) -> int:
+        """Resolve and cache the model's context length on first access."""
+        if self._resolved_context_length is None:
+            self._resolved_context_length = get_model_context_length(
+                self.model,
+                base_url=self.base_url,
+                api_key=self.api_key,
+                config_context_length=self._config_context_length,
+                provider=self.provider,
+            )
+            # Small-context threshold floor: models under 512K trigger at
+            # >=75% so compaction doesn't fire with half the window still
+            # free. Raise-only; must run AFTER context_length is resolved
+            # and BEFORE threshold_tokens is derived (deferred here from
+            # __init__ along with the resolution itself, #32221).
+            # _base_threshold_percent already has the per-model override
+            # applied, so the floor stacks on top of it.
+            self.threshold_percent = self._effective_threshold_percent(
+                self._resolved_context_length, self._base_threshold_percent,
+            )
+            self._emit_init_summary_once()
+        return self._resolved_context_length
+
+    @property
+    def context_length(self) -> int:
+        return self._resolve_context_length()
+
+    @context_length.setter
+    def context_length(self, value: int) -> None:
+        # No-op guard: repeated assignment of the SAME window (e.g. the codex
+        # app-server usage callback re-reports the window on every response)
+        # must not invalidate the derived budgets — that would wipe runtime
+        # corrections applied directly to threshold_tokens/tail_token_budget
+        # (see conversation_compression's aux-context threshold sync), which
+        # persisted on main's eager-init behavior.
+        if value == getattr(self, "_resolved_context_length", None):
+            return
+        self._resolved_context_length = value
+        # Re-apply the small-context floor (raise-only) for the genuinely new
+        # window so the invalidated budgets below recompute coherently —
+        # percent and tokens must derive from the same window. Skipped on
+        # bare test instances built via object.__new__ that never ran
+        # __init__ (no _base_threshold_percent).
+        _base = getattr(self, "_base_threshold_percent", None)
+        if _base is not None:
+            self.threshold_percent = self._effective_threshold_percent(
+                value, _base,
+            )
+        self._threshold_tokens = None
+        self._tail_token_budget = None
+        self._max_summary_tokens = None
+        self._emit_init_summary_once()
+
+    @property
+    def threshold_tokens(self) -> int:
+        if self._threshold_tokens is None:
+            # Resolve the window FIRST (may apply the small-context floor to
+            # threshold_percent as a side effect) so the percent read below
+            # is the floored value regardless of argument evaluation order.
+            _ctx = self.context_length
+            # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even
+            # if the percentage would suggest a lower value (#14690 handles
+            # the degenerate small-window case inside the helper).
+            self._threshold_tokens = self._compute_threshold_tokens(
+                _ctx, self.threshold_percent, self.max_tokens,
+            )
+            # Apply absolute token cap (compression.threshold_tokens) —
+            # takes the lower of the ratio-based threshold and the cap.
+            self._apply_threshold_tokens_cap()
+        return self._threshold_tokens
+
+    @threshold_tokens.setter
+    def threshold_tokens(self, value: int) -> None:
+        self._threshold_tokens = value
+
+    @property
+    def tail_token_budget(self) -> int:
+        if self._tail_token_budget is None:
+            self._tail_token_budget = int(self.threshold_tokens * self.summary_target_ratio)
+        return self._tail_token_budget
+
+    @tail_token_budget.setter
+    def tail_token_budget(self, value: int) -> None:
+        self._tail_token_budget = value
+
+    @property
+    def max_summary_tokens(self) -> int:
+        if self._max_summary_tokens is None:
+            self._max_summary_tokens = min(
+                int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
+            )
+        return self._max_summary_tokens
+
+    @max_summary_tokens.setter
+    def max_summary_tokens(self, value: int) -> None:
+        self._max_summary_tokens = value
+
     def on_session_end(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
         """Clear all per-session compaction state at a real session boundary.
 
@@ -1379,11 +1871,13 @@ class ContextCompressor(ContextEngine):
         self._consecutive_timeout_failures = 0
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
+        self._last_feasibility_skip = False
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
         self._anti_thrash_recovery_deadline = 0.0
+        self._prellm_skip_count = 0
         self._fallback_compression_streak = 0
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
@@ -1395,10 +1889,12 @@ class ContextCompressor(ContextEngine):
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
+        self._pending_request_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         self._last_compression_telemetry = None
         self._active_compression_telemetry = None
         self._compression_telemetry_seed = None
+        self._proactive_prune_rearm_tokens = 0
 
     def bind_session_state(self, session_db: Any = None, session_id: str = "") -> None:
         """Bind the current session row so durable cooldowns can round-trip."""
@@ -1410,10 +1906,13 @@ class ContextCompressor(ContextEngine):
         self._consecutive_timeout_failures = 0
         self._fallback_compression_streak = 0
         self._ineffective_compression_count = 0
+        self._prellm_skip_count = 0
         self._anti_thrash_recovery_deadline = 0.0
+        self._proactive_prune_rearm_tokens = 0
         self.get_active_compression_failure_cooldown()
         self._load_fallback_compression_streak()
         self._load_ineffective_compression_count()
+        self._load_proactive_prune_rearm_tokens()
 
     def on_session_start(self, session_id: str, **kwargs) -> None:
         """Bind session-scoped compression state for a new or resumed session."""
@@ -1488,6 +1987,41 @@ class ContextCompressor(ContextEngine):
         except Exception as exc:
             logger.debug("compression fallback streak lookup failed (non-sqlite): %s", exc)
 
+    def _load_proactive_prune_rearm_tokens(self) -> None:
+        """Restore the cache-boundary runway for a resumed durable session."""
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        getter = getattr(session_db, "get_session_model_config_value", None)
+        if not session_id or not callable(getter):
+            return
+        try:
+            value = getter(session_id, PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY, 0)
+            self._proactive_prune_rearm_tokens = max(
+                0,
+                int(value) if isinstance(value, (int, float, str)) else 0,
+            )
+        except (TypeError, ValueError, json.JSONDecodeError, sqlite3.Error) as exc:
+            logger.debug("proactive prune runway lookup failed: %s", exc)
+        except Exception as exc:
+            logger.debug("proactive prune runway lookup failed (non-sqlite): %s", exc)
+
+    def _clear_durable_proactive_prune_rearm(self) -> None:
+        """Remove the persisted runway key without touching the transcript.
+
+        Best-effort companion to zeroing the in-memory mirror at sites that
+        void the runway (model switch): without it a restart would reload a
+        runway computed under thresholds that no longer apply.
+        """
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        patcher = getattr(session_db, "patch_session_model_config", None)
+        if not session_id or not callable(patcher):
+            return
+        try:
+            patcher(session_id, {PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None})
+        except Exception as exc:
+            logger.debug("proactive prune runway clear failed: %s", exc)
+
     def _persist_fallback_compression_streak(self) -> None:
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
@@ -1554,9 +2088,34 @@ class ContextCompressor(ContextEngine):
         self._ineffective_compression_count = count
         self._persist_ineffective_compression_count()
 
-    def record_completed_compaction(self, *, used_fallback: bool = False) -> None:
-        """Record one completed boundary and its summary quality."""
+    def record_completed_compaction(
+        self, *, used_fallback: bool = False, feasibility_skip: bool = False,
+    ) -> None:
+        """Record one completed boundary and its summary quality.
+
+        ``feasibility_skip=True`` marks a deliberate pre-LLM skip (#60451):
+        the boundary is streak-NEUTRAL for ``_fallback_compression_streak``
+        (neither incremented nor reset). It still arms the real-usage
+        effectiveness verdict (``_verify_compaction_cleared_threshold``) on
+        purpose — a skipped-summary drop that fails to clear the threshold is
+        exactly the incompressible-transcript case the ineffective-strike
+        breaker exists for, and its recovery probe bounds the block.
+        """
         self._verify_compaction_cleared_threshold = True
+        if feasibility_skip:
+            # A deliberate pre-LLM feasibility skip (#60451) is not a
+            # summary-quality verdict: it must neither extend a fallback
+            # streak (two skips would otherwise latch the >= 2 breaker and
+            # disable compression entirely — including the cheap deterministic
+            # dropping the skip exists to reach) nor reset one (a skip proves
+            # nothing about the summary model's health).
+            if not self.quiet_mode:
+                logger.info(
+                    "Compaction completed via pre-LLM feasibility skip; "
+                    "fallback_compression_streak unchanged (%d)",
+                    self._fallback_compression_streak,
+                )
+            return
         if used_fallback:
             self._fallback_compression_streak += 1
             if not self.quiet_mode:
@@ -1575,6 +2134,11 @@ class ContextCompressor(ContextEngine):
         refresh: bool = False,
     ) -> Optional[Dict[str, Any]]:
         """Return the live compression-failure cooldown for the bound session."""
+        if refresh:
+            # Transaction rollback must distinguish an authoritative empty row
+            # from a failed/unavailable durable read. The public return value
+            # cannot do so because it deliberately falls back to local state.
+            self._last_cooldown_refresh_was_authoritative = None
         now_mono = time.monotonic()
         local_state = None
         if self._summary_failure_cooldown_until > now_mono:
@@ -1599,10 +2163,16 @@ class ContextCompressor(ContextEngine):
         try:
             state = getter(session_id)
         except sqlite3.Error as exc:
+            if refresh:
+                self._last_cooldown_refresh_was_authoritative = False
             logger.debug("compression failure cooldown lookup failed: %s", exc)
             return local_state
         except Exception:
+            if refresh:
+                self._last_cooldown_refresh_was_authoritative = False
             return local_state
+        if refresh:
+            self._last_cooldown_refresh_was_authoritative = True
         if not state:
             if refresh:
                 if local_state is not None and self._cooldown_persist_failed:
@@ -1663,7 +2233,43 @@ class ContextCompressor(ContextEngine):
             self._cooldown_persist_failed = True
             logger.debug("compression failure cooldown persist failed (non-sqlite): %s", exc)
 
+    def record_timeout_failure(self, error: str) -> None:
+        """Record a consecutive timeout failure using the shared cooldown ladder.
+
+        Used by both the summary-LLM exception handler (inline at line ~3714)
+        and the host-level ``compress_context`` timeout wrapper in
+        ``run_compress_context_with_progress_timeout``. Avoids re-implementing
+        the ladder at each call site (#62452).
+        """
+        _TIMEOUT_COOLDOWN_LADDER = (60, 300, 900)
+        self._consecutive_timeout_failures = (
+            getattr(self, "_consecutive_timeout_failures", 0) + 1
+        )
+        cooldown = _TIMEOUT_COOLDOWN_LADDER[
+            min(self._consecutive_timeout_failures,
+                len(_TIMEOUT_COOLDOWN_LADDER)) - 1
+        ]
+        self._record_compression_failure_cooldown(float(cooldown), error)
+
     def _clear_compression_failure_cooldown(self) -> None:
+        # #76354 review F4: fence check BEFORE cooldown-clear. A late worker
+        # whose host already timed out (and recorded a timeout cooldown) must
+        # not undo that cooldown when its summary eventually succeeds. The
+        # hook is installed by compress_context for the duration of the
+        # fenced call; when it reports cancellation, keep the host's cooldown.
+        cancelled_check = getattr(self, "_compression_cancelled_check", None)
+        if callable(cancelled_check):
+            try:
+                if cancelled_check():
+                    logger.info(
+                        "Skipping compression cooldown clear: host already "
+                        "cancelled this compression attempt"
+                    )
+                    return
+            except Exception:
+                logger.debug(
+                    "compression cancellation check failed", exc_info=True
+                )
         self._summary_failure_cooldown_until = 0.0
         self._last_summary_error = None
         self._consecutive_timeout_failures = 0
@@ -1761,11 +2367,13 @@ class ContextCompressor(ContextEngine):
         self.last_real_prompt_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
         self.last_compression_rough_tokens = 0
+        self._pending_request_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
         # Strikes were judged against the PREVIOUS threshold; a recomputed
         # trigger invalidates them. Keep the durable copy in sync so a
         # restart doesn't resurrect strikes this recalibration just voided.
         self._record_ineffective_compression_verdict(0)
+        self._prellm_skip_count = 0
         if runtime_changed:
             self._fallback_compression_streak = 0
             self._persist_fallback_compression_streak()
@@ -1774,6 +2382,12 @@ class ContextCompressor(ContextEngine):
             self._clear_compression_failure_cooldown()
         self._verify_compaction_cleared_threshold = False
         self._last_compression_made_progress = False
+        # The prune runway was computed against the PREVIOUS model's trigger
+        # sizes. Same durable-sync discipline as the strike reset above: clear
+        # the model_config copy too, so a restart doesn't resurrect a runway
+        # this recalibration just voided.
+        self._proactive_prune_rearm_tokens = 0
+        self._clear_durable_proactive_prune_rearm()
 
     # When the MINIMUM_CONTEXT_LENGTH floor meets/exceeds a small context
     # window, compacting at the percentage (50% → 32K of a 64K window) wastes
@@ -1958,7 +2572,7 @@ class ContextCompressor(ContextEngine):
         # configured 0 keeps the 8000 default via `or`. Keep the floor well above
         # typical summary length (default 8000) to stay idempotent.
         self.proactive_prune_min_result_chars = max(
-            200, int(proactive_prune_min_result_chars or 8000)
+            _PRUNE_MIN_CHARS, int(proactive_prune_min_result_chars or 8000)
         )
         # Minimum estimated token reclaim before a proactive prune COMMITS.
         # Every commit rewrites messages the provider has already seen, which
@@ -1966,12 +2580,15 @@ class ContextCompressor(ContextEngine):
         # message forward. Without this gate a busy tool loop would re-fire
         # the prune nearly every iteration (each new tool pair ages an old one
         # out of the protected tail), breaking the cache per turn. Requiring a
-        # meaningful batch of reclaimable tokens makes fires episodic and
-        # amortized — the same way full compression is the one sanctioned
-        # cache break. 0 disables the gate (commit any non-zero prune).
+        # meaningful batch of reclaimable tokens, then requiring a full
+        # trigger-sized growth interval before rearming, makes fires episodic
+        # and amortized. 0 disables only the minimum-savings gate.
         self.proactive_prune_min_reclaim_tokens = max(
             0, int(proactive_prune_min_reclaim_tokens or 0)
         )
+        # A committed prune is a prompt-cache boundary. Do not permit the next
+        # one until the prompt has regrown the tokens just reclaimed.
+        self._proactive_prune_rearm_tokens: int = 0
         self.min_tail_user_messages = min_tail_user_messages
         self.summary_target_ratio = max(0.10, min(summary_target_ratio, 0.80))
         self.quiet_mode = quiet_mode
@@ -1988,56 +2605,53 @@ class ContextCompressor(ContextEngine):
         # deterministic "summary unavailable" handoff and drop the middle window.
         self.abort_on_summary_failure = abort_on_summary_failure
 
-        self.context_length = get_model_context_length(
-            model, base_url=base_url, api_key=api_key,
-            config_context_length=config_context_length,
-            provider=provider,
-        )
-        # Small-context threshold floor: models under 512K trigger at >=75%
-        # so compaction doesn't fire with half the window still free (the
-        # incompressible floor makes 50%-triggered compaction thrash on
-        # 128K-262K models). Raise-only; must run AFTER context_length is
-        # resolved and BEFORE threshold_tokens is derived. The pre-floor
-        # value is kept so update_model() can re-derive for a new window
-        # (switching small -> large must drop back to the configured value).
-        # Note: _base_threshold_percent already has the per-model override
-        # applied, so the floor stacks on top of any model-specific threshold.
+        # ── Micro-compaction (per-turn rolling compaction) ─────────
+        # Default: OFF. Each pass rewrites already-sent history, so it breaks
+        # the prompt-cache prefix every turn instead of at an episodic
+        # boundary. Operators opt in via `compression.micro_compact: true`.
+        self._micro_compact_enabled: bool = False
+        self._micro_compact_cursor: int = 0
+        self._micro_compact_rolling_summary: str = ""
+        self._micro_compact_consecutive_failures: int = 0
+        self._micro_compact_last_failure_cursor: int = -1
+        self._micro_compact_defrag_threshold_tokens: int = 2000
+        # Set by _defrag_rolling_summary when it pops _DB_PERSISTED_MARKER
+        # from a live dict in place; consumed by finalize_turn to invalidate
+        # the agent's bounded flush-scan cursor (sibling of the #75170 site).
+        self._flush_scan_cursor_invalidated: bool = False
+        self._micro_compact_passes: int = 0
+        self._micro_compact_tokens_saved_total: int = 0
+        # Cadence: run a pass every Nth completed turn. Each pass rewrites
+        # already-sent history and so breaks the prompt-cache prefix, which
+        # makes this the dial that sets how often that break is paid. 1 =
+        # every turn (most aggressive reclaim, one break per turn).
+        self._micro_compact_every_n_turns: int = 1
+        self._micro_compact_turns_since_pass: int = 0
+
+        # Defer context-length resolution to first access (#32221):
+        # get_model_context_length() can issue a synchronous /models HTTP
+        # probe, which must not block AIAgent construction. The small-context
+        # threshold floor and the absolute threshold cap both need the
+        # resolved window, so they are applied on first resolution (see
+        # _resolve_context_length / the threshold_tokens property) instead
+        # of here. update_model() re-derives the floor for a new window from
+        # _config_threshold_percent (the raw config value snapshotted above),
+        # so switching small -> large correctly drops back to the configured
+        # value.
+        self._config_context_length = config_context_length
         self._configured_threshold_percent = self.threshold_percent
-        self.threshold_percent = self._effective_threshold_percent(
-            self.context_length, self._base_threshold_percent,
-        )
-        threshold_percent = self.threshold_percent
-        # Floor: never compress below MINIMUM_CONTEXT_LENGTH tokens even if
-        # the percentage would suggest a lower value.  This prevents premature
-        # compression on large-context models at 50% while keeping the % sane
-        # for models right at the minimum. _compute_threshold_tokens also
-        # guards the degenerate case where the floor would equal/exceed the
-        # window (small models), so auto-compression can still fire (#14690).
-        self.threshold_tokens = self._compute_threshold_tokens(
-            self.context_length, threshold_percent, self.max_tokens,
-        )
-        # Apply absolute token cap (compression.threshold_tokens) — takes
-        # the lower of the ratio-based threshold and the cap.
-        self._apply_threshold_tokens_cap()
+        self._resolved_context_length: int | None = None
+        self._threshold_tokens: int | None = None
+        self._tail_token_budget: int | None = None
+        self._max_summary_tokens: int | None = None
         self.compression_count = 0
 
-        # Derive token budgets: ratio is relative to the threshold, not total context
-        target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
-        self.tail_token_budget = target_tokens
-        self.max_summary_tokens = min(
-            int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
-        )
-
-        if not quiet_mode:
-            logger.info(
-                "Context compressor initialized: model=%s context_length=%d "
-                "threshold=%d (%.0f%%) target_ratio=%.0f%% tail_budget=%d "
-                "provider=%s base_url=%s",
-                model, self.context_length, self.threshold_tokens,
-                threshold_percent * 100, self.summary_target_ratio * 100,
-                self.tail_token_budget,
-                provider or "none", base_url or "none",
-            )
+        # The "initialized" log reports resolved token budgets, which would
+        # force the deferred get_model_context_length() probe to run inside
+        # __init__ and re-introduce the exact synchronous blocking this change
+        # removes (#32221). Emit it on first context-length resolution instead
+        # so construction stays non-blocking on every path (not just quiet).
+        self._log_init_summary = not quiet_mode
         self._context_probed = False  # True after a step-down from context error
 
         self.last_prompt_tokens = 0
@@ -2045,6 +2659,7 @@ class ContextCompressor(ContextEngine):
         self.last_real_prompt_tokens = 0
         self.last_compression_rough_tokens = 0
         self.last_rough_tokens_when_real_prompt_fit = 0
+        self._pending_request_rough_tokens = 0
         self.awaiting_real_usage_after_compression = False
 
         self.summary_model = summary_model_override or ""
@@ -2066,6 +2681,9 @@ class ContextCompressor(ContextEngine):
         # restart with a persisted tripped counter (#69872) waits a full fresh
         # window before probing (#54923: restart must never disarm a guard).
         self._anti_thrash_recovery_deadline: float = 0.0
+        # Pre-LLM feasibility skips (#60451). Observability only; NEVER feeds
+        # the ineffectiveness strike latch or the fallback streak breaker.
+        self._prellm_skip_count: int = 0
         # Consecutive completed deterministic-fallback boundaries. Unlike the
         # real-usage effectiveness counter, ordinary fitting responses must not
         # reset this breaker; only a healthy completed summary does.
@@ -2087,6 +2705,7 @@ class ContextCompressor(ContextEngine):
         # (gateway hygiene, /compress) can surface a visible warning.
         self._last_summary_dropped_count: int = 0
         self._last_summary_fallback_used: bool = False
+        self._last_feasibility_skip: bool = False
         # When summary generation fails we now ABORT compression entirely
         # and return the original messages unchanged instead of dropping
         # the middle window with a static placeholder.  Callers inspect
@@ -2129,6 +2748,17 @@ class ContextCompressor(ContextEngine):
             if self.last_prompt_tokens < self.threshold_tokens:
                 if self.awaiting_real_usage_after_compression and self.last_compression_rough_tokens > 0:
                     self.last_rough_tokens_when_real_prompt_fit = self.last_compression_rough_tokens
+                elif self._pending_request_rough_tokens > 0:
+                    # Pair the provider's real prompt count with the rough
+                    # estimate of the request that produced it (recorded via
+                    # note_request_rough_estimate just before the call). This
+                    # keeps the defer baseline synchronized with real usage on
+                    # EVERY fitting response, not only right after a
+                    # compaction — without it, sessions that never compressed
+                    # have no baseline and preflight fires on the raw rough
+                    # estimate alone, which overcounts CJK text and provider
+                    # replay blobs severalfold.
+                    self.last_rough_tokens_when_real_prompt_fit = self._pending_request_rough_tokens
                 # Any real provider reading below the trigger proves the prompt
                 # fits again. Clear the real-usage effectiveness latch even
                 # when this response was not immediately after compaction. The
@@ -2137,6 +2767,7 @@ class ContextCompressor(ContextEngine):
                 self._record_ineffective_compression_verdict(0)
             else:
                 self.last_rough_tokens_when_real_prompt_fit = 0
+            self._pending_request_rough_tokens = 0
 
             # Anti-thrashing verdict, judged HERE because this is the only place
             # that sees the provider's real prompt count for the just-compacted
@@ -2187,16 +2818,59 @@ class ContextCompressor(ContextEngine):
             return
         self.last_prompt_tokens = snapshot
 
+    def note_request_rough_estimate(self, rough_tokens: int) -> None:
+        """Record the rough estimate of the request about to be sent.
+
+        ``update_from_response()`` pairs this with the provider's real
+        ``prompt_tokens`` for the same request, giving
+        ``should_defer_preflight_to_real_usage()`` a synchronized
+        (rough, real) anchor to project real usage from rough growth.
+        Usage-less responses do not consume the pending value, so a
+        transport that reports usage separately still pairs correctly.
+        """
+        try:
+            self._pending_request_rough_tokens = max(0, int(rough_tokens))
+        except (TypeError, ValueError):
+            self._pending_request_rough_tokens = 0
+
     def should_defer_preflight_to_real_usage(self, rough_tokens: int) -> bool:
         """Return True when a high rough preflight estimate is known-noisy.
 
         ``estimate_request_tokens_rough(..., tools=...)`` intentionally
-        overestimates schema-heavy requests so Hermes compresses before a
-        provider rejects the payload. After a successful compressed API call,
-        though, provider ``prompt_tokens`` are a better signal than repeating
-        compaction from the same rough schema overhead. Defer only while the
-        rough estimate has grown modestly since a request the provider proved
-        fit under the threshold.
+        overestimates so Hermes compresses before a provider rejects the
+        payload — but the margin is not a fixed percentage: CJK text is
+        counted at ~1.7x its o200k cost and Responses-mode reasoning replay
+        blobs at several times their billed cost, so heavy sessions can show
+        a rough estimate 2-3x real usage and compact at 35-55% of the real
+        window (churn: each pass stalls the turn for minutes and discards
+        detail).
+
+        Instead of tolerating a fixed rough-growth allowance, project real
+        usage from the last synchronized (rough, real) pair::
+
+            projected_real = last_real + (rough_now - rough_at_last_real)
+
+        For ASCII and CJK-dense scripts rough growth over-counts real growth,
+        making the projection an upper bound. Other non-ASCII scripts
+        (Cyrillic, Greek, Thai, Arabic — chars/4 but ~2-3 chars/token on
+        o200k-family tokenizers) can under-count growth by up to ~2x
+        (#62605's direction), so the projection is NOT a strict upper bound
+        there. That residual risk is bounded by two backstops: any real
+        provider reading at/over the threshold clears the baseline (the
+        post-response should_compress gate then fires on real usage within
+        one API call), and the provider's context-overflow error handler
+        compacts reactively with the authoritative signal, as before.
+        Compression fires when the projection — not the raw estimate —
+        crosses the threshold.
+
+        Callers pass two different measurement bases: the turn prologue
+        estimates RAW messages (turn_context.py) while the baseline recorded
+        by note_request_rough_estimate covers the fully assembled request
+        (api_content/plugin injections, prefills, MoA context). The prologue's
+        smaller basis understates growth and can only OVER-defer there — and
+        the loop's own pre-API pressure check re-runs this projection with
+        the aligned basis before every provider call, so a prologue
+        over-defer never skips a needed compaction.
         """
         if rough_tokens < self.threshold_tokens:
             return False
@@ -2221,13 +2895,13 @@ class ContextCompressor(ContextEngine):
         if baseline <= 0:
             return False
 
+        # No baseline ratchet here: the (rough, real) pair is refreshed by
+        # update_from_response() on every fitting response. Advancing the
+        # rough baseline without a matching real reading would shrink
+        # apparent growth and defer on stale data — the unsafe direction.
         growth = max(0, rough_tokens - baseline)
-        tolerated_growth = max(4096, int(self.threshold_tokens * 0.05))
-        if growth > tolerated_growth:
-            return False
-
-        self.last_rough_tokens_when_real_prompt_fit = max(baseline, rough_tokens)
-        return True
+        projected_real = self.last_real_prompt_tokens + growth
+        return projected_real < self.threshold_tokens
 
     def should_compress(self, prompt_tokens: int = None) -> bool:
         """Check if context exceeds the compression threshold.
@@ -2425,7 +3099,7 @@ class ContextCompressor(ContextEngine):
     def _prune_old_tool_results(
         self, messages: List[Dict[str, Any]], protect_tail_count: int,
         protect_tail_tokens: int | None = None,
-        min_prune_chars: int = 200,
+        min_prune_chars: int = _PRUNE_MIN_CHARS,
     ) -> tuple[List[Dict[str, Any]], int]:
         """Replace old tool result contents with informative 1-line summaries.
 
@@ -2488,9 +3162,15 @@ class ContextCompressor(ContextEngine):
                 len(result),
                 _MAX_TAIL_MESSAGE_FLOOR,
             )
+            # Same newest-turn-only thinking charge as the tail-cut walk
+            # (#73624) — this boundary decides which tool results stay
+            # prunable, and overcharging stale thinking shrinks that window.
+            _newest_asst_idx = _last_assistant_index(result)
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
-                msg_tokens = _estimate_msg_budget_tokens(msg)
+                msg_tokens = _estimate_msg_budget_tokens(
+                    msg, charge_stale_thinking=(i == _newest_asst_idx)
+                )
                 if accumulated + msg_tokens > protect_tail_tokens and (len(result) - i) >= min_protect:
                     boundary = i
                     break
@@ -2525,7 +3205,7 @@ class ContextCompressor(ContextEngine):
                 # Multimodal dict envelopes ({_multimodal: True, content: [...]}) and
                 # other non-string tool-result shapes can't be hashed/deduped by text.
                 continue
-            if len(content) < 200:
+            if len(content) < _PRUNE_MIN_CHARS:
                 continue
             h = hashlib.md5(content.encode("utf-8", errors="replace")).hexdigest()[:12]
             if h in content_hashes:
@@ -2740,12 +3420,11 @@ class ContextCompressor(ContextEngine):
         PROMPT-CACHE CONTRACT: a committed prune rewrites message bodies the
         provider has already seen, invalidating the cached prefix from the
         earliest rewritten message forward — exactly like a compression
-        boundary. To keep that break episodic rather than per-turn, the prune
-        only COMMITS when the estimated reclaim meets
-        ``proactive_prune_min_reclaim_tokens`` (measured on the actual pruned
-        output, not guessed up front). Below the gate the INPUT list object is
-        returned unchanged — the standard no-op caller contract (callers gate
-        bookkeeping on ``result is not input``).
+        boundary. A prune therefore commits only when it reclaims
+        ``proactive_prune_min_reclaim_tokens`` and disarms until message history
+        has regrown a full trigger-sized runway. Below either gate the INPUT list
+        object is returned unchanged — the standard no-op caller contract
+        (callers gate bookkeeping on ``result is not input``).
 
         Returns ``(messages, 0)`` — the input object — when disabled, below
         the trigger, or when the reclaim gate rejects the commit.
@@ -2756,6 +3435,21 @@ class ContextCompressor(ContextEngine):
             return messages, 0
         # Nothing to reclaim until there are messages outside the protected tail.
         if len(messages) <= self.protect_last_n + self._protect_head_size(messages) + 1:
+            return messages, 0
+        before = sum(_estimate_msg_budget_tokens(m) for m in messages)
+        if before < self._proactive_prune_rearm_tokens:
+            return messages, 0
+        # Capability gate BEFORE the expensive 3-pass scan: a bound store that
+        # can't persist the prune atomically (duck-typed/plugin session store
+        # without archive_and_compact) makes every prune a permanent no-op, so
+        # don't pay the scan for it on every eligible iteration.
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        if (
+            session_db
+            and session_id
+            and not callable(getattr(session_db, "archive_and_compact", None))
+        ):
             return messages, 0
         pruned_msgs, pruned_count = self._prune_old_tool_results(
             messages,
@@ -2770,11 +3464,41 @@ class ContextCompressor(ContextEngine):
         # Measured-savings gate (prompt-cache hysteresis): only commit when
         # the prune reclaims a meaningful batch of tokens. Estimated on the
         # real before/after messages so dedup + arg truncation count too.
-        if self.proactive_prune_min_reclaim_tokens > 0:
-            before = sum(_estimate_msg_budget_tokens(m) for m in messages)
-            after = sum(_estimate_msg_budget_tokens(m) for m in pruned_msgs)
-            if (before - after) < self.proactive_prune_min_reclaim_tokens:
+        after = sum(_estimate_msg_budget_tokens(m) for m in pruned_msgs)
+        reclaimed = max(0, before - after)
+        if reclaimed < self.proactive_prune_min_reclaim_tokens:
+            return messages, 0
+        # ``after`` includes the tool batch appended since the provider's last
+        # usage reading, so both the low-water mark and future gate use the
+        # same message-token estimate. Require a full trigger-sized growth
+        # interval before another cache-breaking rewrite.
+        runway = max(
+            reclaimed,
+            self.proactive_prune_tokens,
+            self.proactive_prune_min_reclaim_tokens,
+        )
+        next_rearm_tokens = after + runway
+        if session_db and session_id:
+            # The capability gate above guarantees archive_and_compact exists.
+            try:
+                session_db.archive_and_compact(
+                    session_id,
+                    pruned_msgs,
+                    model_config_patch={
+                        PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: next_rearm_tokens,
+                    },
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Proactive tool-result prune DB commit failed; keeping the "
+                    "original transcript: %s",
+                    exc,
+                )
                 return messages, 0
+            for msg in pruned_msgs:
+                if isinstance(msg, dict):
+                    msg[_DB_PERSISTED_MARKER] = True
+        self._proactive_prune_rearm_tokens = next_rearm_tokens
         return pruned_msgs, pruned_count
 
     # ------------------------------------------------------------------
@@ -3868,11 +4592,35 @@ This compaction should PRIORITISE preserving all information related to the focu
         if cls._is_context_summary_content(content):
             return True
         text = _content_text_for_contains(content).strip()
+        # Sibling recovery nudges from agent.conversation_loop's retry loop:
+        # same "ephemeral scaffolding, not a real human turn" class as the
+        # markers above (see _CODEX_INCOMPLETE_NUDGE's own docstring there),
+        # imported lazily to avoid a module-load-order cycle (conversation_loop
+        # already imports FROM this module at call time for the same reason).
+        from agent.conversation_loop import (
+            _CODEX_ACK_CONTINUATION_NUDGE,
+            _CODEX_INCOMPLETE_NUDGE,
+            _DROPPED_TOOLCALL_NUDGE_CONTENT,
+            _EMPTY_TOOL_RESPONSE_NUDGE,
+            _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX,
+            _LENGTH_CONTINUATION_NETWORK_STUB,
+            _LENGTH_CONTINUATION_OUTPUT_LIMIT,
+        )
+
         return text in {
             COMPRESSION_CONTINUATION_USER_CONTENT,
             _LEGACY_COMPRESSION_CONTINUATION_USER_CONTENT,
+            MAX_ITERATIONS_SUMMARY_REQUEST,
+            _CODEX_INCOMPLETE_NUDGE,
+            _CODEX_ACK_CONTINUATION_NUDGE,
+            _DROPPED_TOOLCALL_NUDGE_CONTENT,
+            _EMPTY_TOOL_RESPONSE_NUDGE,
+            _LENGTH_CONTINUATION_NETWORK_STUB,
+            _LENGTH_CONTINUATION_OUTPUT_LIMIT,
         } or text.startswith(
             TODO_INJECTION_HEADER + "\n"
+        ) or text.startswith(
+            _LENGTH_CONTINUATION_DROPPED_TOOLS_PREFIX
         )
 
     @staticmethod
@@ -4075,6 +4823,12 @@ This compaction should PRIORITISE preserving all information related to the focu
         end: int,
     ) -> list[tuple[int, str]]:
         """Find handoff summaries inside a compression window."""
+        n = len(messages)
+        # Defensive: clamp bounds so a caller passing an out-of-range end
+        # (e.g. tail-cut returning len(messages)+1 when head_end >= n)
+        # cannot trigger IndexError.  (#75588)
+        start = max(0, min(start, n))
+        end = max(start, min(end, n))
         summaries: list[tuple[int, str]] = []
         for idx in range(start, end):
             content = messages[idx].get("content")
@@ -4281,8 +5035,46 @@ This compaction should PRIORITISE preserving all information related to the focu
         #    when call_id != id (Codex Responses API format), re-exposing orphans.
         missing_results = surviving_call_ids - result_call_ids
         if missing_results:
+            # --- In-flight tool chain protection (issue #79278) -------------
+            # A strip here must distinguish a *pending* tool_call (the model's
+            # live request whose result the executor has not yet appended) from
+            # an *orphaned* call (one whose result was summarized/truncated away
+            # and can never come back).  Compression can fire mid-chain: the
+            # model emits `assistant(tool_calls)`, and tool_executor.py only
+            # appends the matching `role="tool"` result AFTER it runs the call.
+            # In that window `messages[-1]` is an assistant tool_call whose id
+            # is (not yet) in result_call_ids.  Any tool result would be
+            # appended *after* this message (tool_executor.py), so if it is the
+            # last non-tool message its calls are presumed still pending.
+            # Stripping it as an orphan would delete the live request; when the
+            # executor later appends the real result, repair_message_sequence
+            # would drop it as an unmatched orphan and the completed side
+            # effect — and the model's final synthesis built on it — would be
+            # lost.  We therefore preserve the trailing in-flight call verbatim;
+            # only genuinely orphaned calls in the *discarded* region are
+            # stripped.
+            trailing_inflight: Optional[Dict[str, Any]] = None
+            # Walk back over any trailing tool results first: with a
+            # multi-call batch the executor appends results one at a time, so
+            # a snapshot taken between appends looks like
+            # ``[..., assistant(c1,c2,c3), tool(c1)]`` — the chain is still
+            # in flight even though the last message is a tool result. The
+            # last NON-tool message is presumed the live request in both
+            # shapes; a genuinely unanswered call preserved here is stubbed
+            # pre-API by sanitize_api_messages step 2, so preserving is safe
+            # while stripping a live call silently loses its late result.
+            idx = len(messages) - 1
+            while idx >= 0 and messages[idx].get("role") == "tool":
+                idx -= 1
+            if idx >= 0 and messages[idx].get("role") == "assistant":
+                trailing_inflight = messages[idx]
+            # -----------------------------------------------------------------
             for msg in messages:
                 if msg.get("role") != "assistant":
+                    continue
+                if msg is trailing_inflight:
+                    # Live request, not an orphan — the executor appends its
+                    # result(s) after compress() returns.
                     continue
                 tcs = msg.get("tool_calls")
                 if not tcs:
@@ -4751,9 +5543,17 @@ This compaction should PRIORITISE preserving all information related to the focu
         accumulated = 0
         cut_idx = n  # start from beyond the end
 
+        # Newest assistant turn: the only message whose generic thinking
+        # fields any transport still replays (#73624) — every older turn's
+        # reasoning/reasoning_content is stripped or padded at send time,
+        # so charging it here spends tail budget on bytes that never ship.
+        _newest_asst_idx = _last_assistant_index(messages)
+
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
-            msg_tokens = _estimate_msg_budget_tokens(msg)
+            msg_tokens = _estimate_msg_budget_tokens(
+                msg, charge_stale_thinking=(i == _newest_asst_idx)
+            )
             # Stop once we exceed the soft ceiling (unless we haven't hit min_tail yet)
             if accumulated + msg_tokens > soft_ceiling and (n - i) >= min_tail:
                 break
@@ -4779,7 +5579,9 @@ This compaction should PRIORITISE preserving all information related to the focu
             raw_accumulated = 0
             for j in range(n - 1, head_end - 1, -1):
                 raw_msg = messages[j]
-                raw_tok = _estimate_msg_budget_tokens(raw_msg)
+                raw_tok = _estimate_msg_budget_tokens(
+                    raw_msg, charge_stale_thinking=(j == _newest_asst_idx)
+                )
                 if raw_accumulated + raw_tok > raw_budget and (n - j) >= min_tail:
                     cut_idx = j
                     break
@@ -4844,7 +5646,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # exists to prevent.  Re-align FORWARD (never backward, which would give
         # the floor's message back) so a raised cut skips to the end of the
         # group and the whole call/result pair is summarised together.
-        return self._align_boundary_forward(messages, max(cut_idx, head_end + 1))
+        return min(n, self._align_boundary_forward(messages, max(cut_idx, head_end + 1)))
 
     # ------------------------------------------------------------------
     # ContextEngine: manual /compress preflight
@@ -4865,6 +5667,759 @@ This compaction should PRIORITISE preserving all information related to the focu
     # Main compression entry point
     # ------------------------------------------------------------------
 
+    def _resolve_compact_cursor(
+        self,
+        messages: List[Dict[str, Any]],
+        head_end: int,
+        tail_start: int,
+    ) -> int:
+        """Derive the micro-compaction cursor from in-memory state or transcript scan.
+
+        Returns the index of the first message that has NOT yet been absorbed
+        into the rolling summary.  If the in-memory cursor ``_micro_compact_cursor``
+        is valid (non-zero and within the compressible window), use it directly.
+        Otherwise scan from *head_end* through *tail_start* for the last context
+        summary marker and set the cursor past it.
+        """
+        if self._micro_compact_cursor > head_end and self._micro_compact_cursor < tail_start:
+            return self._micro_compact_cursor
+        # Scan transcript for the last summary marker
+        last_summary_idx = -1
+        for idx in range(head_end, tail_start):
+            if self._is_context_summary_message(messages[idx]):
+                last_summary_idx = idx
+        if last_summary_idx >= head_end:
+            cursor = last_summary_idx + 1
+            # Resumed session: in-memory state is gone but the marker survives.
+            # Carry its text forward so the next pass merges into the existing
+            # history instead of replacing it with a single-exchange summary.
+            if not self._micro_compact_rolling_summary.strip():
+                recovered = self._rolling_summary_from_marker(
+                    messages[last_summary_idx].get("content")
+                )
+                if recovered:
+                    self._micro_compact_rolling_summary = recovered
+                    # Rehydration is containment proof: this marker's text now
+                    # lives inside the rolling summary, so it becomes
+                    # supersede/defrag-eligible. This also covers a BATCH
+                    # marker adopted as the rolling base after a batch
+                    # compaction reset — safe precisely because we just
+                    # absorbed its content. Markers whose content we did NOT
+                    # absorb never get the key and are never dropped.
+                    messages[last_summary_idx][MICRO_COMPACT_MARKER_KEY] = True
+                    logger.info(
+                        "Micro-compaction: recovered rolling summary from "
+                        "transcript (%d chars)", len(recovered),
+                    )
+        else:
+            cursor = head_end
+        self._micro_compact_cursor = cursor
+        return cursor
+
+    def _find_one_exchange(
+        self,
+        messages: List[Dict[str, Any]],
+        start: int,
+        tail_start: int,
+    ) -> Optional[tuple[int, int]]:
+        """Find the next complete exchange starting at *start*.
+
+        An exchange is one full agent turn: the first assistant message after
+        *start* plus everything through the end of that turn — tool results
+        and any follow-up assistant iterations — up to (exclusive) the next
+        ``user`` message.  Returns ``(exchange_start, exchange_end)`` indices
+        into *messages*, or ``None`` if no complete, safely-spliceable turn is
+        available before *tail_start*.
+
+        The full-turn shape is an alternation-safety requirement, not a
+        convenience: the splice replaces the span with a single
+        ``assistant``-role summary marker, so the span must be bounded by
+        user messages on the right (``messages[exchange_end]`` is ``user``).
+        Absorbing only the first assistant+tools group of a multi-iteration
+        turn would leave the marker adjacent to the turn's next assistant
+        message — two consecutive assistant turns, which strict providers
+        reject and ``repair_message_sequence`` would then mangle.
+
+        User messages are deliberately NOT part of an exchange.  The walk skips
+        past them to reach the assistant message, and ``exchange_start`` is that
+        assistant index, so user turns are never absorbed into the rolling
+        summary and their text stays verbatim for the life of the session.
+        This is the intended behaviour, not an oversight: what the assistant
+        emits is largely an account of what it did, which survives summarising,
+        while the user's own words are the instructions everything else is
+        derived from and are the one thing that cannot be reconstructed from
+        context.  They are also cheap — a prompt is normally a tiny fraction
+        of the tokens a single tool result costs.
+        """
+        idx = start
+        n = len(messages)
+        if idx >= n or idx >= tail_start:
+            return None
+
+        # Walk past user messages and existing summary markers until we hit a
+        # real assistant message with actual output (content or tool_calls).
+        # Summary markers are assistant-role themselves, so they must be
+        # skipped explicitly or a rehydrated cursor could try to absorb the
+        # marker that carries the compacted history.
+        while idx < tail_start and idx < n:
+            msg = messages[idx]
+            if msg.get("role") == "assistant" and not self._is_context_summary_message(msg):
+                break
+            idx += 1
+
+        if idx >= tail_start or idx >= n:
+            return None
+
+        exchange_start = idx
+
+        # Consume the full turn: assistant / tool messages until the next
+        # user message (or an existing summary marker) ends the turn.
+        idx += 1
+        while idx < tail_start and idx < n:
+            msg = messages[idx]
+            role = msg.get("role")
+            if role not in ("assistant", "tool"):
+                break
+            if self._is_context_summary_message(msg):
+                break
+            idx += 1
+
+        if idx <= exchange_start:
+            return None
+
+        # Splice-boundary guard: the message right after the exchange must
+        # close the turn. If the walk stopped because it ran into
+        # *tail_start* mid-turn (boundary is assistant or tool — including
+        # an assistant-role summary marker), splicing here would leave the
+        # assistant-role marker adjacent to the turn's remaining
+        # assistant/tool messages — invalid alternation. Skip this pass; the
+        # tail recedes as the conversation grows and the turn becomes
+        # absorbable later. Any other boundary role (user, or a stray
+        # system/injected message) is a safe splice point — the marker is
+        # assistant-role, so no same-role adjacency is possible — and
+        # accepting them keeps one odd message from wedging the cursor
+        # forever.
+        if idx >= n:
+            return None
+        boundary = messages[idx]
+        if not isinstance(boundary, dict) or boundary.get("role") in ("assistant", "tool"):
+            return None
+        return (exchange_start, idx)
+
+    def _serialize_one_exchange(
+        self,
+        messages: List[Dict[str, Any]],
+        start: int,
+        end: int,
+    ) -> str:
+        """Serialize a single exchange for the micro-summarizer.
+
+        Delegates to the batch path's ``_serialize_for_summary`` (same
+        truncation, redaction, think-block stripping, and media labeling),
+        scoped to one exchange — one serializer, one place to fix.
+        """
+        return self._serialize_for_summary(messages[start:end])
+
+    def _build_micro_summary_prompt(
+        self,
+        existing_summary: str,
+        exchange_text: str,
+    ) -> List[Dict[str, str]]:
+        """Build the prompt messages for a single-exchange micro-summary."""
+        if existing_summary.strip():
+            summary_block = existing_summary
+        else:
+            summary_block = "(No previous summary yet.)"
+
+        user_prompt = (
+            "You are a summarization agent creating a compact record of an "
+            "ongoing conversation.  You are given a running summary and the "
+            "next exchange from the conversation.  Merge the exchange's key "
+            "decisions, requirements, file paths, and open questions into the "
+            "summary.  Preserve the summary's structure.  Drop resolved details "
+            "that are no longer relevant.  Add new decisions, file paths, and "
+            "open questions.\n\n"
+            "NEVER include API keys, tokens, passwords, secrets, credentials, "
+            "or connection strings in the summary \u2014 replace any that appear "
+            f"with [REDACTED].\n\n"
+            f"## Current Running Summary\n{summary_block}\n\n"
+            f"## Next Exchange to Merge\n{exchange_text}\n\n"
+            "Return ONLY the updated summary text, no preamble or explanation. "
+            "Do not include this instruction block in your output."
+        )
+
+        return [
+            {"role": "system", "content": "You are a conversation summarization assistant."},
+            {"role": "user", "content": user_prompt},
+        ]
+
+    def _micro_summarize_one(
+        self,
+        exchange_text: str,
+    ) -> Optional[str]:
+        """Micro-summarize one exchange into the rolling summary via aux LLM.
+
+        Calls the same auxiliary compression model as the batch path, with
+        a focused prompt that merges one exchange into the running summary.
+        Returns the updated summary text, or ``None`` on failure.
+        """
+        from agent.auxiliary_client import call_llm, aux_interrupt_protection
+
+        messages = self._build_micro_summary_prompt(
+            self._micro_compact_rolling_summary,
+            exchange_text,
+        )
+
+        call_kwargs = {
+            "task": "compression",
+            "messages": messages,
+            "max_tokens": min(1500, self.max_summary_tokens or 1500),
+            "temperature": 0.1,
+        }
+        if self.summary_model:
+            call_kwargs["model"] = self.summary_model
+        if self.model:
+            call_kwargs.setdefault("main_runtime", {
+                "model": self.model,
+                "provider": self.provider or "",
+                "base_url": self.base_url or "",
+                "api_key": self.api_key or "",
+                "api_mode": getattr(self, "api_mode", "") or "",
+            })
+
+        try:
+            with aux_interrupt_protection():
+                response = call_llm(**call_kwargs)
+        except Exception as exc:
+            logger.info("micro-summarization call failed: %s", exc)
+            return None
+
+        message = response.choices[0].message
+        if isinstance(message, dict):
+            content = message.get("content")
+        else:
+            content = getattr(message, "content", message)
+        if not isinstance(content, str):
+            content = str(content) if content else ""
+        content = content.strip()
+        if not content:
+            logger.info("micro-summarization returned empty content")
+            return None
+
+        from agent.agent_runtime_helpers import strip_think_blocks
+        stripped = strip_think_blocks(None, content).strip()
+        return stripped if stripped else None
+
+    def _needs_defrag(self) -> bool:
+        """Return True when the rolling summary is large enough to defrag."""
+        content_tokens = estimate_tokens_rough(self._micro_compact_rolling_summary)
+        return content_tokens >= self._micro_compact_defrag_threshold_tokens
+
+    def _defrag_rolling_summary(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> bool:
+        """Re-summarize the rolling summary TEXT and rewrite the marker in place.
+
+        Merging exchange after exchange makes the rolling summary baggy —
+        repetitive, and larger than the material justifies. Defrag compacts
+        the summary *itself*: one aux call over the accumulated summary text,
+        then the existing marker's content is rewritten in place.
+
+        Deliberately transcript-shape-neutral: no messages are spliced, no
+        user turns are touched, and the cursor does not move. The original
+        implementation serialized the whole remaining middle (user turns
+        included) and spliced it into the marker, which silently absorbed
+        user messages — violating the feature's core "your messages are never
+        compacted" invariant. Un-absorbed exchanges stay where they are and
+        get absorbed by later per-exchange passes.
+
+        Returns True when a pass actually rewrote the summary.
+        """
+        old_summary = self._micro_compact_rolling_summary
+        if not old_summary.strip():
+            return False
+        # Feed the old summary through the merge prompt with an empty base:
+        # "merge these decisions into (no previous summary)" is exactly a
+        # rewrite-compactly instruction for the accumulated text.
+        self._micro_compact_rolling_summary = ""
+        fresh_summary = self._micro_summarize_one(old_summary)
+        if not fresh_summary:
+            self._micro_compact_rolling_summary = old_summary
+            return False
+        self._micro_compact_rolling_summary = fresh_summary
+        # Rewrite the newest MICRO marker's content in place so the transcript
+        # and the in-memory summary stay in step (resume rehydrates from it).
+        # Scoped to micro-tagged markers: rewriting a batch-compaction marker
+        # would overwrite history the rolling summary does not contain.
+        for idx in range(len(messages) - 1, -1, -1):
+            entry = messages[idx]
+            if (
+                isinstance(entry, dict)
+                and entry.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                and entry.get(MICRO_COMPACT_MARKER_KEY)
+            ):
+                entry["content"] = self._render_micro_marker_content(fresh_summary)
+                # Content changed after a possible flush — clear the persisted
+                # stamp so the DB sync/flush rewrites the row.
+                entry.pop(_DB_PERSISTED_MARKER, None)
+                # Sibling of the finalize_turn pop site (#75170): this pop
+                # also strips the marker from a LIVE dict in place, so the
+                # bounded flush-scan cursor would identity-skip the rewritten
+                # marker and the defragged summary would never reach state.db.
+                # The compressor holds no agent reference, so raise a flag the
+                # finalizer consumes to invalidate agent._db_flush_scan_prefix.
+                # (The pop sites at module scope — fresh copies in
+                # strip-marker helpers — break identity and need no flag.)
+                self._flush_scan_cursor_invalidated = True
+                break
+        logger.info(
+            "Micro-compaction defrag: rolling summary re-summarized "
+            "(%d -> %d chars)", len(old_summary), len(fresh_summary),
+        )
+        return True
+
+    def _micro_compact(
+        self,
+        messages: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Run one round of micro-compaction on the conversation.
+
+        Absorbs the oldest uncompacted exchange into the rolling summary,
+        advancing the in-memory cursor.  Runs in post-turn idle time.
+
+        This is the public entry point called from ``finalize_turn()``.
+        Returns the (possibly modified) message list.
+
+        NOTE: the in-memory splice alone is not persisted — the subsequent
+        ``_persist_session`` flush is append-only, so old DB rows stay
+        ``active=1`` and a session resume double-loads both the summary and
+        the original exchanges.  This method therefore also calls
+        ``archive_and_compact`` on the session DB to soft-archive old rows
+        and insert the compacted set atomically.
+        """
+        if not self._micro_compact_enabled:
+            return messages
+
+        # Cadence gate. A pass rewrites already-sent history, so it costs one
+        # prompt-cache break; `every_n_turns` is how an operator trades reclaim
+        # frequency against that cost. Counted per invocation rather than per
+        # committed pass so a turn that finds nothing to absorb still advances
+        # the cadence and cannot wedge it.
+        every_n = max(1, int(self._micro_compact_every_n_turns or 1))
+        if every_n > 1:
+            self._micro_compact_turns_since_pass += 1
+            if self._micro_compact_turns_since_pass < every_n:
+                return messages
+            self._micro_compact_turns_since_pass = 0
+
+        n_messages = len(messages)
+        if n_messages < 4:
+            return messages
+
+        head_size = self._protect_head_size(messages)
+        compress_start = self._align_boundary_forward(messages, head_size)
+        compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+
+        if compress_start >= compress_end:
+            return messages
+
+        cursor = self._resolve_compact_cursor(messages, compress_start, compress_end)
+        if cursor >= compress_end:
+            return messages
+
+        # Find the next exchange
+        exchange = self._find_one_exchange(messages, cursor, compress_end)
+        if exchange is None:
+            return messages
+
+        exchange_start, exchange_end = exchange
+
+        # Baseline for telemetry. Taken only once an exchange is in hand, so
+        # turns that no-op early don't pay for the scan.
+        _started_at = time.monotonic()
+        _tokens_before = estimate_messages_tokens_rough(messages)
+        _messages_before = n_messages
+
+        def _elapsed_ms() -> int:
+            return int((time.monotonic() - _started_at) * 1000)
+
+        # Check for defrag trigger: the rolling summary itself has grown
+        # baggy. Defrag rewrites the summary text and the existing marker in
+        # place — no splice, no cursor movement, no user turns touched — so
+        # the transcript shape is unchanged and this pass does not also
+        # absorb an exchange (one aux call per turn either way).
+        if self._needs_defrag():
+            defragged = self._defrag_rolling_summary(messages)
+            if defragged:
+                self._sync_micro_compact_to_db(messages)
+                self._micro_compact_consecutive_failures = 0
+                self._micro_compact_last_failure_cursor = -1
+            self._emit_micro_compaction_telemetry(
+                outcome="defrag" if defragged else "defrag_failed",
+                messages_before=_messages_before,
+                messages_after=len(messages),
+                tokens_before=_tokens_before,
+                tokens_after=estimate_messages_tokens_rough(messages),
+                duration_ms=_elapsed_ms(),
+            )
+            return messages
+
+        # Whether this pass's summary will be cumulative — i.e. whether it
+        # subsumes any earlier marker. Captured before summarizing.
+        _cumulative = bool(self._micro_compact_rolling_summary.strip())
+
+        # Micro-summarize one exchange
+        exchange_text = self._serialize_one_exchange(messages, exchange_start, exchange_end)
+        _exchange_tokens = estimate_tokens_rough(exchange_text)
+        updated_summary = self._micro_summarize_one(exchange_text)
+        if updated_summary is None:
+            # Track consecutive failures on the same cursor position so we
+            # don't busy-loop on an unsummarizable exchange every turn.
+            if exchange_start == self._micro_compact_last_failure_cursor:
+                self._micro_compact_consecutive_failures += 1
+            else:
+                self._micro_compact_consecutive_failures = 1
+                self._micro_compact_last_failure_cursor = exchange_start
+
+            if self._micro_compact_consecutive_failures >= _MICRO_COMPACT_MAX_CONSECUTIVE_FAILURES:
+                logger.info(
+                    "Micro-compaction: skipping exchange at cursor %d "
+                    "after %d consecutive failures",
+                    exchange_start, self._micro_compact_consecutive_failures,
+                )
+                # Advance the cursor past the stuck exchange so we don't
+                # retry it every turn. The skipped messages remain in the
+                # transcript and will be absorbed by the next batch
+                # compression or defrag.
+                self._micro_compact_cursor = exchange_end
+                self._micro_compact_consecutive_failures = 0
+                self._micro_compact_last_failure_cursor = -1
+                _outcome = "exchange_skipped"
+            else:
+                _outcome = "summarize_failed"
+            self._emit_micro_compaction_telemetry(
+                outcome=_outcome,
+                messages_before=_messages_before,
+                messages_after=len(messages),
+                tokens_before=_tokens_before,
+                tokens_after=_tokens_before,
+                exchange_tokens=_exchange_tokens,
+                duration_ms=_elapsed_ms(),
+            )
+            return messages
+
+        self._micro_compact_rolling_summary = updated_summary
+        self._micro_compact_cursor = exchange_end
+        self._micro_compact_consecutive_failures = 0
+        self._micro_compact_last_failure_cursor = -1
+
+        result = self._splice_micro_compact_result(
+            messages, exchange_start, exchange_end, supersede=_cumulative,
+        )
+        self._micro_compact_cursor = self._cursor_after_splice(result, exchange_start + 1)
+        self._sync_micro_compact_to_db(result)
+        self._emit_micro_compaction_telemetry(
+            outcome="absorbed",
+            messages_before=_messages_before,
+            messages_after=len(result),
+            tokens_before=_tokens_before,
+            tokens_after=estimate_messages_tokens_rough(result),
+            exchange_tokens=_exchange_tokens,
+            duration_ms=_elapsed_ms(),
+        )
+        return result
+
+    @staticmethod
+    def _rolling_summary_from_marker(content: Any) -> str:
+        """Recover the rolling-summary text from a summary marker's content.
+
+        The rolling summary lives in memory, but a resumed session starts with
+        an empty one while the marker holding every previous exchange is still
+        in the transcript. Without rehydrating from it, the first post-resume
+        pass would build a marker from nothing and supersede the one carrying
+        the whole history.
+        """
+        if not isinstance(content, str) or not content.strip():
+            return ""
+        body = content
+        # rfind, not find: SUMMARY_PREFIX itself references the heading text,
+        # so the first occurrence is inside the preamble, not the real heading.
+        idx = body.rfind(HISTORICAL_TASK_HEADING)
+        if idx != -1:
+            body = body[idx + len(HISTORICAL_TASK_HEADING):]
+        end = body.find(_SUMMARY_END_MARKER)
+        if end != -1:
+            body = body[:end]
+        return body.strip()
+
+    def _cursor_after_splice(
+        self,
+        result: List[Dict[str, Any]],
+        fallback: int,
+    ) -> int:
+        """Cursor position just past the summary marker in *result*.
+
+        The cursor must be derived from the spliced list, never carried over
+        from pre-splice indices. A splice collapses the absorbed span (an
+        assistant plus its tool results -- often several messages) into a
+        single marker, and may also drop a superseded marker further back, so
+        every index after it shifts. Reusing the old ``exchange_end`` left the
+        cursor pointing into the middle of a *later* exchange's tool group;
+        the next pass then walked forward to the following assistant and
+        skipped that exchange entirely, so roughly half the work silently
+        never happened on tool-bearing conversations.
+        """
+        for idx in range(len(result) - 1, -1, -1):
+            entry = result[idx]
+            if isinstance(entry, dict) and entry.get(COMPRESSED_SUMMARY_METADATA_KEY):
+                return idx + 1
+        return fallback
+
+    def _emit_micro_compaction_telemetry(
+        self,
+        *,
+        outcome: str,
+        messages_before: int,
+        messages_after: int,
+        tokens_before: int | None,
+        tokens_after: int | None,
+        exchange_tokens: int | None = None,
+        duration_ms: int | None = None,
+    ) -> None:
+        """Emit one content-free JSON log line describing a micro-compaction pass.
+
+        Mirrors ``_emit_compression_attempt_telemetry`` for the batch path.
+        Message counts move by one or two even when the saving is large, so the
+        token fields are the ones that actually answer "is this helping?".
+        ``tokens_delta`` is negative when the pass shrank the transcript, and
+        the ``*_total`` fields accumulate across the session so a whole run can
+        be summarised from the last line alone.
+        """
+        try:
+            delta = None
+            if tokens_before is not None and tokens_after is not None:
+                delta = tokens_after - tokens_before
+                self._micro_compact_tokens_saved_total -= delta
+            self._micro_compact_passes += 1
+            # Cached reads only. The ``threshold_tokens`` / ``context_length``
+            # properties resolve lazily and can fire a synchronous /models
+            # probe on first access (#32221) — telemetry must never be the
+            # thing that blocks a turn. Unresolved simply reports null.
+            threshold = self._threshold_tokens
+            context_limit = self._resolved_context_length
+            occupancy = None
+            if threshold and tokens_after is not None and threshold > 0:
+                occupancy = round(tokens_after / threshold * 100, 1)
+            payload = {
+                "event": "micro_compaction",
+                "session_id": getattr(self, "_session_id", "") or "",
+                "outcome": outcome,
+                "messages_before": messages_before,
+                "messages_after": messages_after,
+                "tokens_before": _safe_int(tokens_before),
+                "tokens_after": _safe_int(tokens_after),
+                "tokens_delta": _safe_int(delta),
+                "exchange_tokens": _safe_int(exchange_tokens),
+                "rolling_summary_tokens": estimate_tokens_rough(
+                    self._micro_compact_rolling_summary
+                ),
+                "cursor": _safe_int(self._micro_compact_cursor),
+                "passes_total": self._micro_compact_passes,
+                "tokens_saved_total": self._micro_compact_tokens_saved_total,
+                "duration_ms": _safe_int(duration_ms),
+                # Headroom, not efficiency: how full the window is being kept.
+                # This is the number that says whether the session can keep
+                # going without a hard batch compaction.
+                "threshold_tokens": _safe_int(threshold),
+                "context_limit": _safe_int(context_limit),
+                "occupancy_pct": occupancy,
+                "main_model": self.model or "",
+                "aux_model": self.summary_model or "",
+            }
+            logger.info(
+                "micro compaction telemetry: %s",
+                json.dumps(payload, sort_keys=True, separators=(",", ":")),
+            )
+        except Exception as exc:
+            logger.debug("failed to emit micro-compaction telemetry: %s", exc)
+
+    def _sync_micro_compact_to_db(
+        self,
+        compacted_messages: List[Dict[str, Any]],
+    ) -> None:
+        """Persist the micro-compacted message set to the session DB.
+
+        Soft-archives every currently-active message row (``active = 0``)
+        and inserts *compacted_messages* as fresh active rows — atomically,
+        via ``archive_and_compact``.  Then stamps ``_DB_PERSISTED_MARKER`` on
+        every dict so the upcoming append-only flush (``_persist_session`` →
+        ``_flush_messages_to_session_db_unlocked``) skips them: they are
+        already correctly stored.
+
+        Without this, the in-memory-only splice leaves old exchange rows at
+        ``active=1``, and a session resume double-loads both the summary and
+        the original messages — blowing past the model's context limit.
+        """
+        session_db = getattr(self, "_session_db", None)
+        session_id = getattr(self, "_session_id", "")
+        if not session_db or not session_id:
+            return
+        try:
+            session_db.archive_and_compact(session_id, compacted_messages)
+            for msg in compacted_messages:
+                if isinstance(msg, dict):
+                    msg[_DB_PERSISTED_MARKER] = True
+        except Exception:
+            logger.info(
+                "Micro-compaction DB sync failed — resume will double-load "
+                "compacted messages until the next batch compression"
+            )
+
+    def _splice_micro_compact_result(
+        self,
+        messages: List[Dict[str, Any]],
+        splice_start: int,
+        splice_end: int,
+        supersede: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """Replace *messages[splice_start:splice_end]* with a summary marker.
+
+        The summary marker carries the rolling summary text and the
+        ``_compressed_summary`` metadata flag so downstream consumers
+        (resume, handoff, /compress) handle it identically to batch
+        compaction summaries.
+
+        Alternation safety: the marker is ``assistant``-role. An exchange is
+        a full agent turn bounded by user messages on both sides (see
+        ``_find_one_exchange``), so the spliced result is
+        ``user → marker(assistant) → user`` — valid alternation that the
+        pre-request ``repair_message_sequence`` pass leaves untouched. A
+        ``user``-role marker in that position produced ``user → user → user``,
+        and repair then merged the marker into the neighbouring real user
+        message: metadata gone, cursor unrecoverable, and the summary text
+        duplicated into the transcript on every subsequent pass.
+
+        Superseding an earlier marker removes the assistant turn that stood
+        between two real user messages, leaving them adjacent. Those two are
+        merged (plain-text only, ``\\n\\n``-joined — the same repair pass 2
+        would apply) so the transcript is alternation-valid as returned
+        rather than relying on downstream repair to fix it up.
+        """
+        summary_text = self._micro_compact_rolling_summary
+        if not summary_text.strip():
+            return messages
+
+        summary_msg = {
+            "role": "assistant",
+            "content": self._render_micro_marker_content(summary_text),
+            COMPRESSED_SUMMARY_METADATA_KEY: True,
+            # Micro-created marker: eligible for supersede/defrag rewrites.
+            # Batch markers never carry this key and are never touched —
+            # their content is not contained in the rolling summary.
+            MICRO_COMPACT_MARKER_KEY: True,
+            # Honest provenance (#64650): this marker absorbs only
+            # assistant/tool content — user turns are never micro-compacted,
+            # so they remain in the transcript and _transcript_has_real_user_turn
+            # keeps reporting them directly.
+            COMPRESSED_SUMMARY_HAS_USER_TURN_KEY: False,
+        }
+
+        result = messages[:splice_start] + [summary_msg] + messages[splice_end:]
+
+        # The rolling summary is cumulative: this marker already contains
+        # everything every earlier micro-compaction marker held. Leaving those
+        # in place stacks near-duplicate copies of the same text — each with
+        # its own prefix/heading/end-marker scaffolding — so the transcript
+        # grows with every turn instead of shrinking, which defeats the point.
+        # Keep only the newest marker.
+        # Two containment gates before dropping an earlier marker:
+        # 1. supersede (the rolling summary was non-empty going into this
+        #    pass) — a pass that started from nothing (a resume that could
+        #    not rehydrate) covers one exchange, and dropping the previous
+        #    marker would throw away the entire compacted history.
+        # 2. MICRO_COMPACT_MARKER_KEY on the candidate — only markers whose
+        #    text is provably inside the rolling summary (created by our own
+        #    splice, or rehydrated into the summary by
+        #    _resolve_compact_cursor) carry it. A batch-compaction marker
+        #    that landed after our last pass holds MORE history than the
+        #    stale rolling summary; dropping it would destroy that history.
+        if supersede:
+            marker_idxs = [
+                i for i, m in enumerate(result)
+                if isinstance(m, dict)
+                and m.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                and m.get(MICRO_COMPACT_MARKER_KEY)
+            ]
+            if len(marker_idxs) > 1:
+                superseded = set(marker_idxs[:-1])
+                result = [m for i, m in enumerate(result) if i not in superseded]
+                result = self._merge_adjacent_user_turns(result)
+
+        # NOTE: deliberately NO _strip_persistence_markers here. The batch
+        # path strips because compress() copies head/tail into a rotated
+        # child session (#57491); micro-compaction archives in place under
+        # the SAME session id, and the surviving dicts' _db_persisted stamps
+        # are accurate. Stripping them meant an archive_and_compact failure
+        # left every previously-persisted message unstamped, and the next
+        # append-only flush re-inserted them as duplicate active rows on top
+        # of the still-active originals. _sync_micro_compact_to_db re-stamps
+        # everything after a SUCCESSFUL archive; on failure the old stamps
+        # keep the flush idempotent (only the new marker row is appended).
+        return result
+
+    @staticmethod
+    def _render_micro_marker_content(summary_text: str) -> str:
+        """Assemble the marker content wrapper around *summary_text*."""
+        return (
+            f"{SUMMARY_PREFIX}\n\n"
+            f"{HISTORICAL_TASK_HEADING}\n"
+            f"{summary_text.strip()}"
+            f"\n\n{_SUMMARY_END_MARKER}"
+        )
+
+    @staticmethod
+    def _merge_adjacent_user_turns(
+        result: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Merge consecutive plain-text real user turns left by a supersede.
+
+        Dropping a superseded marker removes the assistant turn that separated
+        two real user messages. Merging them here (``\\n\\n``-joined, exactly
+        what ``repair_message_sequence`` pass 2 does) keeps every byte the
+        user typed while restoring alternation deliberately, so the marker
+        and cursor state are never collateral damage of the downstream repair.
+        Multimodal (list) content is left alone, mirroring the repair pass.
+        """
+        from agent.turn_context import drop_stale_api_content
+
+        merged: List[Dict[str, Any]] = []
+        for msg in result:
+            prev = merged[-1] if merged else None
+            if (
+                isinstance(msg, dict)
+                and isinstance(prev, dict)
+                and msg.get("role") == "user"
+                and prev.get("role") == "user"
+                and not msg.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                and not prev.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                and isinstance(prev.get("content"), str)
+                and isinstance(msg.get("content"), str)
+            ):
+                prev_content = prev["content"]
+                new_content = msg["content"]
+                prev["content"] = (
+                    (prev_content + "\n\n" + new_content)
+                    if prev_content and new_content
+                    else (prev_content or new_content)
+                )
+                # Merged content invalidates the api_content sidecar (exact
+                # bytes previously sent for the pre-merge message).
+                drop_stale_api_content(prev)
+                continue
+            merged.append(msg)
+        return merged
+
     def compress(
         self,
         messages: List[Dict[str, Any]],
@@ -4879,7 +6434,11 @@ This compaction should PRIORITISE preserving all information related to the focu
           1. Prune old tool results (cheap pre-pass, no LLM call)
           2. Protect head messages (system prompt + first exchange)
           3. Find tail boundary by token budget (~20K tokens of recent context)
-          4. Summarize middle turns with structured LLM prompt
+          4. Summarize middle turns with structured LLM prompt (skipped
+             pre-LLM when the middle is below
+             ``_FEASIBILITY_SKIP_MIDDLE_FRACTION`` of the threshold after a
+             prior real-usage ineffectiveness strike — the deterministic
+             fallback drop recovers the negligible savings instead)
           5. On re-compression, iteratively update the previous summary
 
         Blank platform-echo user rows trailing the latest actionable user
@@ -4899,7 +6458,9 @@ This compaction should PRIORITISE preserving all information related to the focu
                 everything else.  Inspired by Claude Code's ``/compact``.
             force: If True, clear any active summary-failure cooldown before
                 running so a manual ``/compress`` can retry immediately after
-                an auto-compression abort.  Auto-compress callers pass False.
+                an auto-compression abort, and bypass the pre-LLM feasibility
+                skip so an explicit user request always exercises the full
+                summary path.  Auto-compress callers pass False.
             memory_context: Optional provider-supplied context to preserve in
                 the summary prompt. Whitespace-only values are ignored.
         """
@@ -4907,6 +6468,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # after compress() returns to decide whether to surface a warning.
         self._last_summary_dropped_count = 0
         self._last_summary_fallback_used = False
+        self._last_feasibility_skip = False
         self._last_summary_error = None
         self._last_aux_model_failure_error = None
         self._last_aux_model_failure_model = None
@@ -5035,6 +6597,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # — take the narrow rescan, miss a beyond-window fossil, and discard the
         # rehydrated state as cross-session leakage (#57835).
         _previous_summary_before_scan = self._previous_summary
+        _summary_has_user_turn_before_scan = getattr(self, "_summary_has_user_turn", None)
         # A persisted handoff summary can sit in the protected head after a
         # resume (commonly immediately after the system prompt). Search from
         # the first non-system message through the compression window. On the
@@ -5189,12 +6752,73 @@ This compaction should PRIORITISE preserving all information related to the focu
             )
 
         # Phase 3: Generate structured summary
-        summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
-        summary = self._generate_summary(
-            turns_to_summarize,
-            focus_topic=summary_focus_topic,
-            memory_context=memory_context,
-        )
+
+        # Pre-LLM feasibility check: if the middle section is too small to
+        # yield meaningful token savings, skip the expensive LLM summarization
+        # call and fall through to the deterministic message-dropping path
+        # (which is cheap and always applicable).  Without this guard a
+        # tool-heavy session where the protected tail already holds most of
+        # the tokens can burn 500+ seconds on a summary call that replaces a
+        # few lightweight messages, leaving the total token count essentially
+        # unchanged.
+        #
+        # Only fires after at least one prior real-usage ineffectiveness
+        # strike.  The check READS ``_ineffective_compression_count`` but
+        # never writes it: that strike counter is fed exclusively by real
+        # provider token counts (see the anti-thrashing verdict in
+        # _update_token_usage), and consumers latch at >= 2 to disable
+        # compression entirely.  Feasibility skips are tracked separately
+        # in ``_prellm_skip_count`` for observability.
+        #
+        # Skipped when ``force=True`` (manual /compress) so auth/error
+        # handling paths are always exercised on explicit user request.
+        feasibility_skip = False
+        if not force and self._ineffective_compression_count >= 1:
+            # _record_compression_regions already estimated this exact window
+            # into the telemetry dict above; reuse it so the log line and
+            # telemetry can never disagree. The regions helper no-ops when the
+            # telemetry attr isn't a dict, so fall back to a fresh estimate
+            # when the key is absent/None (0 is a legitimate value).
+            middle_tokens = telemetry.get("middle_window_tokens")
+            if middle_tokens is None:
+                middle_tokens = estimate_messages_tokens_rough(turns_to_summarize)
+            if middle_tokens < int(
+                self.threshold_tokens * _FEASIBILITY_SKIP_MIDDLE_FRACTION
+            ):
+                feasibility_skip = True
+                self._last_feasibility_skip = True
+                self._prellm_skip_count += 1
+                telemetry["prellm_skip_count"] = self._prellm_skip_count
+                if not self.quiet_mode:
+                    logger.warning(
+                        "Compression: middle section (%d tokens at indices "
+                        "%d-%d) is below %.0f%% of threshold (%d tokens) — "
+                        "skipping LLM summarization, proceeding with "
+                        "deterministic message dropping. prellm_skip_count=%d",
+                        middle_tokens, compress_start, compress_end,
+                        _FEASIBILITY_SKIP_MIDDLE_FRACTION * 100,
+                        self.threshold_tokens, self._prellm_skip_count,
+                    )
+
+        if feasibility_skip:
+            summary = None  # No LLM call; Phase 4 inserts the deterministic fallback
+        else:
+            # Deriving the auto focus topic scans recent user turns — only pay
+            # for it when a summary will actually be generated.
+            summary_focus_topic = focus_topic or self._derive_auto_focus_topic(messages)
+            try:
+                summary = self._generate_summary(
+                    turns_to_summarize,
+                    focus_topic=summary_focus_topic,
+                    memory_context=memory_context,
+                )
+            except AuxiliaryExplicitCancellation:
+                # Explicit cancellation is a true no-op. Restore state mutated by
+                # the resume/handoff self-heal scan before the exception escapes to
+                # the outer transaction, which restores the transcript and lease.
+                self._previous_summary = _previous_summary_before_scan
+                self._summary_has_user_turn = _summary_has_user_turn_before_scan
+                raise
 
         # If summary generation failed, behavior splits on
         # ``abort_on_summary_failure`` (config: compression.abort_on_summary_failure):
@@ -5216,7 +6840,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         # of these cases, rotating into a child session with a placeholder
         # summary degrades the conversation for zero benefit. Preserve it
         # unchanged until access is restored or connectivity recovers.
-        if not summary and (
+        if not summary and not feasibility_skip and (
             self.abort_on_summary_failure
             or self._last_summary_auth_failure
             or self._last_summary_network_failure
@@ -5296,15 +6920,26 @@ This compaction should PRIORITISE preserving all information related to the focu
         # content-free "N messages were removed" marker.
         if not summary:
             if not self.quiet_mode:
-                logger.warning("Summary generation failed — inserting deterministic fallback context summary")
+                if feasibility_skip:
+                    logger.info("Feasibility skip — inserting deterministic fallback context summary")
+                else:
+                    logger.warning("Summary generation failed — inserting deterministic fallback context summary")
             n_dropped = compress_end - compress_start
             self._last_summary_dropped_count = n_dropped
             self._last_summary_fallback_used = True
             telemetry["fallback_used"] = True
-            telemetry["failure_class"] = telemetry.get("failure_class") or "summary_generation_failed"
+            if feasibility_skip:
+                # Deliberate optimization, not a summary failure — keep the
+                # telemetry class distinct so dashboards don't count skips
+                # as aux-model breakage.
+                telemetry["failure_class"] = telemetry.get("failure_class") or "feasibility_skip"
+            else:
+                telemetry["failure_class"] = telemetry.get("failure_class") or "summary_generation_failed"
             summary = self._build_static_fallback_summary(
                 turns_to_summarize,
-                reason=self._last_summary_error,
+                # A stale error from an earlier real failure must not be
+                # embedded into a deliberate feasibility skip's fallback.
+                reason=None if feasibility_skip else self._last_summary_error,
             )
 
         tail_messages: List[Dict[str, Any]] = []
@@ -5327,8 +6962,45 @@ This compaction should PRIORITISE preserving all information related to the focu
         # last_head_role reads the assembled (post-strip) head; first_tail_role
         # reads the assembled (post-strip) tail_messages — a stripped stale
         # handoff must not influence alternation-safe role selection.
-        last_head_role = compressed[-1].get("role", "user") if compressed else "user"
-        first_tail_role = tail_messages[0].get("role", "user") if tail_messages else None
+        # Both are TEMPLATE-VISIBLE roles (``_template_visible_role``), not the
+        # literal list neighbours: strict Mistral-style templates skip tool
+        # results and assistant tool-call messages when enforcing
+        # user/assistant alternation, so the summary must alternate against
+        # the nearest message the template actually counts. Selecting against
+        # the literal neighbour (previously ``compressed[-1]``) emitted the
+        # summary as role="user" behind a ``[user, assistant(tool_calls),
+        # tool]`` head — which every Mistral-strict backend rejects with a
+        # Jinja alternation 500, permanently poisoning the session.
+        last_head_role: Optional[str] = "user"
+        if compressed:
+            last_head_role = next(
+                (
+                    role
+                    for role in (
+                        _template_visible_role(m) for m in reversed(compressed)
+                    )
+                    if role is not None
+                ),
+                # Head holds only template-exempt messages: the summary will
+                # be the first message the template counts, and the sequence
+                # must open with "user" (handled below alongside the forced
+                # cases).
+                None,
+            )
+        first_tail_role = None
+        first_tail_visible_idx: Optional[int] = None
+        if tail_messages:
+            first_tail_visible_idx, first_tail_role = next(
+                (
+                    (idx, role)
+                    for idx, role in (
+                        (idx, _template_visible_role(m))
+                        for idx, m in enumerate(tail_messages)
+                    )
+                    if role is not None
+                ),
+                (None, None),
+            )
         # When the only protected head message is the system prompt, the
         # summary becomes the first *visible* message in the API request
         # (most adapters — Anthropic, Bedrock — send the system prompt as
@@ -5354,17 +7026,39 @@ This compaction should PRIORITISE preserving all information related to the focu
         # If no user-role message survives in either the protected head or the
         # preserved tail, the summary MUST carry role="user" so the request
         # always has at least one user turn.
+        #
+        # A bare role check is not enough: the tail's sole surviving user
+        # turn can be image-only (a screenshot with no caption). The newest
+        # image-bearing user message is the ``_strip_historical_media``
+        # anchor and is kept byte-for-byte, so it never gains a text
+        # placeholder — its role is "user" but its text content is empty,
+        # which backends checking for actual query text still reject. Count
+        # only user messages with non-empty text as "surviving"; when the
+        # guard fires, the real (never fabricated) summary text lands in a
+        # role="user" slot, which is always non-empty (falls back to
+        # ``_build_static_fallback_summary`` above when generation fails).
         if not _force_user_leading:
+            def _is_nonempty_user_turn(message: Dict[str, Any]) -> bool:
+                return message.get("role") == "user" and bool(
+                    _content_text_for_contains(message.get("content")).strip()
+                )
+
             _user_survives = any(
-                message.get("role") == "user" for message in compressed
+                _is_nonempty_user_turn(message) for message in compressed
             ) or any(
-                message.get("role") == "user" for message in tail_messages
+                _is_nonempty_user_turn(message) for message in tail_messages
             )
             if not _user_survives:
                 _force_user_leading = True
-        # Pick a role that avoids consecutive same-role with both neighbors.
-        # Priority: avoid colliding with head (already committed), then tail.
-        if last_head_role in {"assistant", "tool"} or _force_user_leading:
+        # Pick a role that alternates with both template-visible neighbors.
+        # Priority: alternate against the head (already committed), then tail.
+        # ``None`` (all-exempt head) means the summary opens the visible
+        # sequence, which strict templates require to start with "user".
+        if (
+            last_head_role is None
+            or last_head_role in {"assistant", "tool"}
+            or _force_user_leading
+        ):
             summary_role = "user"
         else:
             summary_role = "assistant"
@@ -5372,7 +7066,14 @@ This compaction should PRIORITISE preserving all information related to the focu
         # collide with the head, flip it.
         if first_tail_role is not None and summary_role == first_tail_role:
             flipped = "assistant" if summary_role == "user" else "user"
-            if flipped != last_head_role and not _force_user_leading:
+            # ``last_head_role is None`` (all-exempt head) pins the summary to
+            # "user" above; flipping to "assistant" would make the visible
+            # sequence open with "assistant", which strict templates reject.
+            if (
+                flipped != last_head_role
+                and last_head_role is not None
+                and not _force_user_leading
+            ):
                 summary_role = flipped
             else:
                 # Both roles would create consecutive same-role messages
@@ -5401,9 +7102,27 @@ This compaction should PRIORITISE preserving all information related to the focu
                 ),
             })
 
+        # Default merge target: literal tail index 0. For an ordinary
+        # alternation collision the summary only has to stay *invisible* to
+        # the template, and a leading template-exempt row (bare tool-call
+        # assistant message, tool result) is the ideal carrier — it absorbs
+        # the summary without adding a visible turn, and it leaves the live
+        # tail user message intact as the model's actual prompt. Retargeting
+        # to the first template-visible row here would convert that live
+        # request into the summary carrier for no benefit.
+        #
+        # The forced repair path is the exception. There the merge is not
+        # about alternation but about guaranteeing at least one genuinely
+        # non-empty role="user" message (an image-only or otherwise
+        # text-empty surviving user row). An exempt carrier cannot satisfy
+        # that invariant, so the summary text must land on the
+        # template-visible row itself.
+        _merge_target_idx = 0
+        if _force_user_leading and first_tail_visible_idx is not None:
+            _merge_target_idx = first_tail_visible_idx
         for tail_idx, msg in enumerate(tail_messages):
-            if _merge_summary_into_tail and tail_idx == 0:
-                # Merge the summary into the first (post-strip) tail message.
+            if _merge_summary_into_tail and tail_idx == _merge_target_idx:
+                # Merge the summary into the tail message that collided.
                 old_content = msg.get("content", "")
                 if _force_user_leading and summary_role == "user":
                     # The summary must be part of the first user-visible
@@ -5498,7 +7217,56 @@ This compaction should PRIORITISE preserving all information related to the focu
         # are positional; this single terminal sweep makes it structural so a
         # future copy site cannot re-leak the marker into the child-session flush.
         _strip_persistence_markers(compressed)
+        # Prune stale codex_reasoning_items from retained assistant messages
+        # older than the most recent assistant turn (#71058).  These encrypted
+        # reasoning blobs are only needed for the *current* turn's replay;
+        # prior-turn items are pure re-billed weight that keeps compaction from
+        # reaching its target ratio.  The compaction boundary has already
+        # invalidated the prompt-cache prefix, so stripping them here costs
+        # nothing extra cache-wise.  conversation_loop.py already drops these
+        # wholesale when api_mode != "codex_responses", so this is a scoped
+        # strip consistent with existing semantics.
+        _pruned_replay = _prune_stale_reasoning_replay(compressed)
+        if _pruned_replay and not self.quiet_mode:
+            logger.info(
+                "Pruned stale replay items from %d assistant message(s) during compaction",
+                _pruned_replay,
+            )
         self._last_compression_made_progress = True
+
+        # A successful compaction just freed the largest allocation a long
+        # session ever drops (the compressed-away message dicts), which makes
+        # this the natural point to hand allocator pages back to the OS.
+        # #76905's trim lifecycle covers the gateway/TUI housekeeping loops but
+        # not the CLI compression path, so RSS keeps the pre-compaction
+        # high-water mark until exit. The helper is glibc-gated, config-gated
+        # and rate-limited, so this is a safe no-op elsewhere. (#70782)
+        try:
+            from hermes_cli.mem_trim import trim_memory
+
+            trim_memory(reason="post-compression")
+        except Exception as exc:
+            # debug, not warning: sibling trim sites all log failures at
+            # debug, and compression must never fail because of a trim.
+            logger.debug(
+                "post-compression memory trim failed: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+
+        # Batch compaction invalidates micro-compaction state: the batch
+        # marker now holds MORE history than the in-memory rolling summary
+        # (it summarized everything in the window, including exchanges micro
+        # never absorbed). Keeping the stale summary would let the next micro
+        # pass supersede-drop or defrag-rewrite content it does not contain.
+        # Reset instead; the next micro pass rehydrates from the batch marker
+        # via _resolve_compact_cursor, which re-tags it as micro-eligible
+        # only after absorbing its content into the rolling summary.
+        self._micro_compact_rolling_summary = ""
+        self._micro_compact_cursor = 0
+        self._micro_compact_consecutive_failures = 0
+        self._micro_compact_last_failure_cursor = -1
+        self._proactive_prune_rearm_tokens = 0
 
         return compressed
 
@@ -5524,3 +7292,95 @@ def is_compaction_summary_message(message: Any) -> bool:
     else:
         content = message
     return ContextCompressor._is_context_summary_content(content)
+
+
+def _handoff_carries_live_user_content(message: Any) -> bool:
+    """Return True when a summary-bearing row still carries a live user ask.
+
+    Merge-into-tail carriers preserve prior turn content before the summary.
+    Force-user-leading merges prepend the handoff + end marker to the real
+    ask, leaving a non-empty remainder after ``_SUMMARY_END_MARKER``. Either
+    shape must remain actionable (#80622 must not treat them as sole-handoff).
+
+    Delegates to ``_strip_context_summary_handoff_message`` — the canonical
+    "does anything survive once the handoff is removed" logic (it also
+    handles multimodal list content and returns ``None`` for a merged-shaped
+    row whose preserved prior tail is EMPTY, which a bare
+    ``classify_summary_content(...) == "merged"`` check would wrongly treat
+    as live). Callers must pre-filter with ``is_compaction_summary_message``:
+    for non-summary rows the strip helper returns the message unchanged,
+    which would read as "carries live content" here.
+    """
+    if not isinstance(message, dict):
+        return False
+    return (
+        ContextCompressor._strip_context_summary_handoff_message(message)
+        is not None
+    )
+
+
+def reference_handoff_would_drive_next_model_call(
+    messages: Optional[List[Dict[str, Any]]],
+) -> bool:
+    """Return True when the next model call would be driven only by a handoff.
+
+    A reference-only compaction handoff must never become the active user turn
+    by itself after an assistant response has already completed (#80622). Mid
+    tool-loop compression remains allowed: tool results / assistant tool_calls
+    after the handoff mean the loop is continuing an in-flight exchange, not
+    starting a fresh turn from the synthetic summary.
+    """
+    if not messages:
+        return False
+
+    last_driving_handoff = -1
+    for index, message in enumerate(messages):
+        if not is_compaction_summary_message(message):
+            continue
+        if _handoff_carries_live_user_content(message):
+            # Embedded live ask — this row is not a sole-handoff driver.
+            continue
+        last_driving_handoff = index
+
+    if last_driving_handoff < 0:
+        return False
+
+    for message in messages[last_driving_handoff + 1 :]:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        if role == "tool":
+            return False
+        if role == "assistant" and message.get("tool_calls"):
+            return False
+        if (
+            ContextCompressor._is_actionable_user_turn(message)
+            and not ContextCompressor._is_synthetic_compression_user_turn(message)
+        ):
+            return False
+        if is_compaction_summary_message(message) and _handoff_carries_live_user_content(
+            message
+        ):
+            return False
+    return True
+
+
+def is_user_originated_turn(message: Any) -> bool:
+    """Return True for human-authored user turns (not compaction scaffolding).
+
+    Gateway/session dispatchers (retry, undo, active-turn selection) must use
+    this instead of ``role == "user" and not display_kind`` — standalone
+    handoffs with ``_compressed_summary_has_user_turn`` were previously left
+    without ``display_kind=hidden`` and could be mistaken for real asks (#80622).
+    Summary-bearing rows are never user-originated, even when they embed a
+    live ask after the end marker (callers that need that text should unwrap).
+    """
+    if not isinstance(message, dict) or message.get("role") != "user":
+        return False
+    if message.get("display_kind"):
+        return False
+    if is_compaction_summary_message(message):
+        return False
+    if ContextCompressor._is_synthetic_compression_user_turn(message):
+        return False
+    return ContextCompressor._is_actionable_user_turn(message)

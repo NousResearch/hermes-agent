@@ -42,7 +42,7 @@ import subprocess
 import sys
 import time
 from collections import deque
-from typing import Any, Deque, Dict, List, Optional
+from typing import Any, Deque, Dict, Optional
 
 try:
     from aiohttp import web
@@ -552,12 +552,42 @@ class WebhookAdapter(BasePlatformAdapter):
             return None
         try:
             from hermes_cli.profiles import profiles_to_serve
-            served = {name for name, _ in profiles_to_serve(multiplex=True)}
+            served = {
+                name
+                for name, _ in profiles_to_serve(
+                    multiplex=True,
+                    profile_allowlist=getattr(
+                        cfg, "multiplex_profile_allowlist", None
+                    ),
+                )
+            }
         except Exception:
             return _PROFILE_REJECTED
         if profile not in served:
             return _PROFILE_REJECTED
         return profile
+
+    @staticmethod
+    def _route_allows_profile(
+        route_config: dict,
+        request_profile: Optional[str],
+    ) -> bool:
+        """Return whether a route is bound to the URL-selected profile.
+
+        Omitting ``profile`` keeps a route on the default profile. An explicit
+        null, blank, or non-string value is malformed and fails closed.
+        """
+        if "profile" not in route_config:
+            configured_profile = "default"
+        else:
+            configured_profile = route_config.get("profile")
+        if not isinstance(configured_profile, str):
+            return False
+        configured_profile = configured_profile.strip()
+        if not configured_profile:
+            return False
+        effective_profile = request_profile or "default"
+        return configured_profile == effective_profile
 
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
@@ -575,6 +605,19 @@ class WebhookAdapter(BasePlatformAdapter):
             )
 
         if not route_config:
+            return web.json_response(
+                {"error": f"Unknown route: {route_name}"}, status=404
+            )
+
+        if not self._route_allows_profile(route_config, profile):
+            effective_profile = profile or "default"
+            logger.warning(
+                "[webhook] Route %s is not authorized for profile %r",
+                route_name,
+                effective_profile,
+            )
+            # Match the unknown-route response so callers cannot use profile
+            # mismatches to enumerate route bindings.
             return web.json_response(
                 {"error": f"Unknown route: {route_name}"}, status=404
             )

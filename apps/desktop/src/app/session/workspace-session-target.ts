@@ -17,19 +17,6 @@ interface WorkspaceSessionOptions {
   startFreshSessionDraft: (options?: { workspaceTarget: string }) => void
 }
 
-/**
- * Should the sidebar "+" open a NEW TAB rather than replace what's on screen?
- *
- * "+" is a create affordance, never a discard one. Once a conversation is
- * loaded, replacing it with a blank draft would throw away a chat that may
- * still be mid-turn, so the button stacks a tab beside it (⌘T) instead of
- * taking over the surface (⌘N). With nothing open there is no tab worth
- * preserving and the cheaper fresh-draft path applies.
- */
-export function newSessionOpensTab(activeSessionId: null | string, selectedStoredSessionId: null | string): boolean {
-  return Boolean(activeSessionId || selectedStoredSessionId)
-}
-
 export function startWorkspaceSession({
   activeSessionIdRef,
   followActiveSessionCwd: followCwd = followActiveSessionCwd,

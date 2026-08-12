@@ -45,12 +45,25 @@ const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session
 // cookies above. `privy-token` is the access token (the required signal);
 // variants cover the secured-prefix forms and the older `privy-session` name.
 const PRIVY_SESSION_COOKIE_VARIANTS = ['__Host-privy-token', '__Secure-privy-token', 'privy-token', 'privy-session']
+// Keep this aligned with hermes_cli.profiles.validate_profile_name(). `default`
+// is the built-in root alias; these names cannot be created as profiles.
+const RESERVED_REMOTE_PROFILES = new Set(['hermes', 'test', 'tmp', 'root', 'sudo'])
 
 function normalizeRemoteBaseUrl(rawUrl) {
-  const value = String(rawUrl || '').trim()
+  let value = String(rawUrl || '').trim()
 
   if (!value) {
     throw new Error('Remote gateway URL is required.')
+  }
+
+  // Users routinely paste scheme-less "host:port" (a Tailscale IP, a LAN
+  // hostname). Without this, `new URL('100.64.0.1:9119')` either throws or —
+  // worse — parses `host:` as the protocol and produces a baffling
+  // "must be http:// or https://, got myhost:" error. Only a real
+  // `scheme://` prefix opts out, so explicit non-http schemes (ftp://,
+  // file://) still reach the protocol check below and get rejected.
+  if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+    value = `http://${value}`
   }
 
   let parsed
@@ -271,6 +284,16 @@ function normalizeSshConfig(entry) {
     out.remoteHermesPath = remoteHermesPath
   }
 
+  // A Desktop profile can be a local routing label rather than the profile
+  // name used by the remote Hermes installation. Preserve an explicit mapping
+  // when it is a valid Hermes profile identifier; otherwise fall back to the
+  // historical same-name behavior in the caller.
+  const remoteProfile = String(entry.remoteProfile || '').trim()
+
+  if (/^[a-z0-9][a-z0-9_-]{0,63}$/.test(remoteProfile) && !RESERVED_REMOTE_PROFILES.has(remoteProfile)) {
+    out.remoteProfile = remoteProfile
+  }
+
   return out
 }
 
@@ -350,16 +373,68 @@ function profileRemoteOverride(config, profile) {
   return { url, authMode: normAuthMode(entry.authMode), token: entry.token }
 }
 
+export interface ProfileRouteOptions {
+  globalRemote?: boolean
+  primaryProfile?: null | string
+  profileRemoteOverride?: boolean
+}
+
+export interface ProfileBackendRoute {
+  /** Which backend serves this profile: the window backend, or a pooled one. */
+  backend: 'pool' | 'primary'
+  /**
+   * Profile to tag on the returned descriptor when the backend is shared and
+   * therefore not itself scoped to that profile. Null when the backend already
+   * belongs to the profile.
+   */
+  descriptorProfile: null | string
+  /** Whether REST paths on this route must carry `?profile=` to be scoped. */
+  scopePath: boolean
+}
+
 /**
- * In global-remote mode one backend serves every Desktop profile, so REST calls
- * that are scoped by renderer-side `request.profile` must carry that scope as a
- * query parameter. Local pooled backends and per-profile remote overrides do not
- * need this: they already run against a backend scoped to the target profile.
+ * The one place that answers "which backend serves profile P, and does its
+ * REST path need a profile scope?". Four routes, in precedence order:
+ *
+ *  1. The primary profile owns the window backend outright.
+ *  2. A profile with its own remote override gets a pooled descriptor for that
+ *     host, which is already scoped to it.
+ *  3. A profile inheriting the app-global remote shares the primary backend —
+ *     one host serves every profile — so it is scoped per request instead.
+ *  4. Any other local profile gets its own pooled backend, spawned with
+ *     `--profile`, so its `HERMES_HOME` scopes it.
+ *
+ * Routing used to be spread across three overlapping predicates that each
+ * re-derived part of this table, which is how case 3 ended up registering
+ * reapable pool entries for backends it never owned.
  */
-function pathWithGlobalRemoteProfile(path, profile, opts: any = {}) {
+function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): ProfileBackendRoute {
+  const scopedProfile = connectionScopeKey(profile)
+  const primaryProfile = connectionScopeKey(opts.primaryProfile) || 'default'
+
+  if (!scopedProfile || scopedProfile === primaryProfile) {
+    return { backend: 'primary', descriptorProfile: null, scopePath: false }
+  }
+
+  if (opts.profileRemoteOverride) {
+    return { backend: 'pool', descriptorProfile: null, scopePath: false }
+  }
+
+  if (opts.globalRemote) {
+    return { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
+  }
+
+  return { backend: 'pool', descriptorProfile: null, scopePath: false }
+}
+
+/**
+ * Add renderer-side `request.profile` to a REST path when the route says the
+ * serving backend is not already scoped to that profile.
+ */
+function pathWithGlobalRemoteProfile(path, profile, opts: ProfileRouteOptions = {}) {
   const scopedProfile = connectionScopeKey(profile)
 
-  if (!scopedProfile || !opts.globalRemote || opts.profileRemoteOverride) {
+  if (!resolveProfileBackendRoute(profile, opts).scopePath) {
     return path
   }
 
@@ -506,6 +581,7 @@ export {
   profileRemoteOverride,
   profileSshOverride,
   resolveAuthMode,
+  resolveProfileBackendRoute,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   savedProfileSsh,

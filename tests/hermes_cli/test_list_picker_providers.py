@@ -44,6 +44,34 @@ def _make_provider(slug, name=None, models=None, *, is_current=False,
 
 
 
+def test_excluded_models_filter_runs_after_openrouter_live_refresh(monkeypatch):
+    base = [_make_provider("openrouter", models=["placeholder/model"])]
+    live = [
+        ("anthropic/claude-opus-4.8", ""),
+        ("openai/gpt-5.6-sol", ""),
+        ("deepseek/deepseek-v4", ""),
+    ]
+
+    monkeypatch.setattr(
+        model_switch,
+        "list_authenticated_providers",
+        lambda **kw: list(base),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_openrouter_models",
+        lambda *a, **kw: list(live),
+    )
+
+    result = model_switch.list_picker_providers(
+        max_models=50,
+        excluded_models={
+            "openrouter": ["anthropic/*", "openai/*"],
+        },
+    )
+
+    assert result[0]["models"] == ["deepseek/deepseek-v4"]
+    assert result[0]["total_models"] == 1
+
 
 
 

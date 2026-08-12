@@ -1,11 +1,14 @@
 import type { AppendMessage } from '@assistant-ui/react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/lib/chat-messages'
 
 import {
+  acquireSubmitInFlight,
   appendText,
   base64FromDataUrl,
+  clearSessionRecentlyInterrupted,
+  clearSubmitInFlight,
   friendlyRemoteAttachError,
   type GatewayRequest,
   imageFilenameFromPath,
@@ -13,14 +16,88 @@ import {
   isSessionBusyError,
   isSessionIdCandidate,
   isSessionNotFoundError,
+  isSessionRecentlyInterrupted,
+  isSubmitInFlight,
+  markSessionRecentlyInterrupted,
+  RECENT_INTERRUPT_COOLDOWN_MS,
   readFileDataUrlForAttach,
+  releaseSubmitInFlight,
   renderRpcResult,
   SessionRecoveryAborted,
+  shouldInterruptBeforeRewind,
   slashStatusText,
+  SUBMIT_IN_FLIGHT_TTL_MS,
   visibleUserIndexAtOrdinal,
   visibleUserOrdinal,
   withSessionNotFoundResume
 } from './utils'
+
+afterEach(() => {
+  clearSessionRecentlyInterrupted()
+  clearSubmitInFlight()
+})
+
+describe('recent interrupt cooldown', () => {
+  it('is true within the cooldown and false after expiry', () => {
+    const sessionId = 'sess-cooldown'
+    const t0 = 1_000_000
+
+    markSessionRecentlyInterrupted(sessionId, t0)
+
+    expect(isSessionRecentlyInterrupted(sessionId, t0)).toBe(true)
+    expect(isSessionRecentlyInterrupted(sessionId, t0 + RECENT_INTERRUPT_COOLDOWN_MS - 1)).toBe(true)
+    expect(isSessionRecentlyInterrupted(sessionId, t0 + RECENT_INTERRUPT_COOLDOWN_MS)).toBe(false)
+  })
+
+  it('returns false after mark + elapsed past cooldown', () => {
+    const sessionId = 'sess-elapsed'
+    const t0 = 5_000_000
+
+    markSessionRecentlyInterrupted(sessionId, t0)
+    expect(isSessionRecentlyInterrupted(sessionId, t0 + RECENT_INTERRUPT_COOLDOWN_MS + 1)).toBe(false)
+  })
+
+  it('shouldInterruptBeforeRewind is true when recently interrupted even if not busy', () => {
+    const sessionId = 'sess-edit-after-stop'
+    const t0 = 9_000_000
+
+    markSessionRecentlyInterrupted(sessionId, t0)
+
+    expect(shouldInterruptBeforeRewind({ busy: false, sessionId, now: t0 + 500 })).toBe(true)
+    expect(shouldInterruptBeforeRewind({ busy: false, sessionId, now: t0 + RECENT_INTERRUPT_COOLDOWN_MS + 1 })).toBe(
+      false
+    )
+  })
+
+  it('shouldInterruptBeforeRewind stays false for idle sessions with no recent interrupt', () => {
+    expect(shouldInterruptBeforeRewind({ busy: false, sessionId: 'idle-sess' })).toBe(false)
+    expect(shouldInterruptBeforeRewind({ busy: true, sessionId: 'busy-sess' })).toBe(true)
+  })
+})
+
+describe('submit in-flight TTL', () => {
+  it('blocks a second acquire while fresh and frees after TTL without explicit release', () => {
+    const key = 'lock-ttl'
+    const t0 = 2_000_000
+
+    expect(acquireSubmitInFlight(key, t0)).toBe(true)
+    expect(isSubmitInFlight(key, t0 + 1)).toBe(true)
+    expect(acquireSubmitInFlight(key, t0 + 1)).toBe(false)
+
+    expect(isSubmitInFlight(key, t0 + SUBMIT_IN_FLIGHT_TTL_MS)).toBe(false)
+    expect(acquireSubmitInFlight(key, t0 + SUBMIT_IN_FLIGHT_TTL_MS)).toBe(true)
+  })
+
+  it('release clears the lock immediately', () => {
+    const key = 'lock-release'
+    const t0 = 3_000_000
+
+    expect(acquireSubmitInFlight(key, t0)).toBe(true)
+    releaseSubmitInFlight(key)
+    expect(isSubmitInFlight(key, t0 + 1)).toBe(false)
+    expect(acquireSubmitInFlight(key, t0 + 1)).toBe(true)
+  })
+})
 
 describe('isSessionIdCandidate', () => {
   it('accepts the timestamped and hex id forms', () => {

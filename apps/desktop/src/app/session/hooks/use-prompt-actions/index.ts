@@ -70,8 +70,10 @@ import {
   friendlyRemoteAttachError,
   type GatewayRequest,
   inlineErrorMessage,
+  markSessionRecentlyInterrupted,
   readFileDataUrlForAttach,
   readImageForRemoteAttach,
+  shouldInterruptBeforeRewind,
   type SubmitTextOptions,
   withSessionNotFoundResume
 } from './utils'
@@ -649,6 +651,10 @@ export function usePromptActions({
       return
     }
 
+    // Frontend busy clears immediately; gateway wind-down can lag. Mark so a
+    // fast edit/resend still interrupt-first instead of racing 4009 (#83855).
+    markSessionRecentlyInterrupted(sessionId)
+
     updateSessionState(sessionId, state => {
       const streamId = state.streamId
       const messages = finalizeInterruptedMessages(state.messages, streamId)
@@ -908,6 +914,13 @@ export function usePromptActions({
       resetSessionBackground(sessionId)
       clearPreviewArtifacts(sessionId)
 
+      // Capture before optimistic busy=true — otherwise interruptFirst is always
+      // true and idle restores wrongly interrupt (and Stop→edit misses cooldown).
+      const interruptFirst = shouldInterruptBeforeRewind({
+        busy: busyRef.current || $busy.get(),
+        sessionId
+      })
+
       clearNotifications()
       setMutableRef(busyRef, true)
       setBusy(true)
@@ -920,7 +933,7 @@ export function usePromptActions({
           plan.text,
           plan.truncateOrdinal,
           plan.truncateMessageId,
-          busyRef.current || $busy.get(),
+          interruptFirst,
           plan.truncateRowId
         )
 
@@ -965,6 +978,12 @@ export function usePromptActions({
       resetSessionBackground(sessionId)
       clearPreviewArtifacts(sessionId)
 
+      // Before optimistic busy=true — see restoreToMessage (#83855).
+      const interruptFirst = shouldInterruptBeforeRewind({
+        busy: busyRef.current || $busy.get(),
+        sessionId
+      })
+
       clearNotifications()
       setMutableRef(busyRef, true)
       setBusy(true)
@@ -977,7 +996,7 @@ export function usePromptActions({
           plan.text,
           plan.truncateOrdinal,
           plan.truncateMessageId,
-          busyRef.current || $busy.get(),
+          interruptFirst,
           plan.truncateRowId
         )
 

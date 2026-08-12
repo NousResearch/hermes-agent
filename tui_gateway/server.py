@@ -5120,6 +5120,16 @@ def _sync_session_key_after_compress(
         # don't keep targeting the ended row.
         session["session_key"] = new_session_id
 
+    # #84417 (belt): invalidate any in-flight ``_drain_queued_prompt`` claim
+    # that captured generation under the pre-rotation session_key. A raced
+    # drain must not dispatch on the continuation with a stale claim; the
+    # claimed envelope is restored to the queue (see ``_drain_queued_prompt``)
+    # so legitimate follow-ups still survive. Complements self-duplicate
+    # scrubbing on redirect.
+    session["_queued_prompt_generation"] = int(
+        session.get("_queued_prompt_generation", 0)
+    ) + 1
+
     if clear_pending_title:
         session["pending_title"] = None
     if restart_slash_worker:
@@ -7675,6 +7685,20 @@ def _enqueue_prompt(
     sent it even if the session transport is rebound meanwhile.
     """
     image_paths = list(image_paths or [])
+    # #84417: scrub any live-turn self-duplicates first so the consecutive-text
+    # merge below cannot glue "{original}\\n\\n{later}" and re-fire original
+    # on drain after a later correction settles.
+    _drop_queued_duplicates_of_inflight_user(session)
+    # Never queue a text-only self-copy of the live inflight user prompt. The
+    # live turn already owns that text; draining it after settle would restart
+    # the same user turn as a fresh agent invocation.
+    if not image_paths and isinstance(text, str):
+        turn = session.get("inflight_turn")
+        original = (
+            str(turn.get("user") or "").strip() if isinstance(turn, dict) else ""
+        )
+        if original and text.strip() == original:
+            return
     queued = {"text": text, "transport": transport}
     if image_paths:
         queued["image_paths"] = image_paths
@@ -7694,6 +7718,82 @@ def _enqueue_prompt(
         session.setdefault("queued_prompts", []).append(queued)
         return
     session["queued_prompt"] = queued
+
+
+def _sanitize_queued_entry_vs_inflight_user(
+    entry: Any, original: str
+) -> dict | None:
+    """Drop or rewrite a queue envelope that re-carries the live user text.
+
+    Returns ``None`` to drop the envelope, or a (possibly rewritten) dict to
+    keep. Text-only self-duplicates of ``original`` are dropped. A merged
+    slot ``"{original}\\n\\n{later}"`` (from ``_enqueue_prompt``'s consecutive
+    text merge) is rewritten to just ``later`` so a later correction is not
+    lost and the original is not re-fired (#84417). Image-bearing envelopes
+    are left alone — their chronology/ownership is load-bearing.
+    """
+    if not original or not isinstance(entry, dict):
+        return entry if isinstance(entry, dict) else None
+    if entry.get("image_paths"):
+        return entry
+    text = entry.get("text")
+    if not isinstance(text, str):
+        return entry
+    stripped = text.strip()
+    if not stripped:
+        return None
+    if stripped == original:
+        return None
+    # Lossless text-merge glued the live original onto a later follow-up.
+    for sep in ("\n\n", "\n"):
+        prefix = original + sep
+        if text.startswith(prefix):
+            rest = text[len(prefix) :].strip()
+            if not rest or rest == original:
+                return None
+            cleaned = dict(entry)
+            cleaned["text"] = rest
+            return cleaned
+    return entry
+
+
+def _drop_queued_duplicates_of_inflight_user(session: dict) -> None:
+    """Remove server-queue copies of the live turn's original user text.
+
+    A mid-turn ``prompt.submit`` of the same text can land in
+    ``queued_prompt`` when redirect is not yet available (model not active,
+    build window, tool boundary). If the user then corrects the turn with a
+    different prompt via redirect, that stale self-duplicate must not
+    ``_drain_queued_prompt`` after the redirected turn completes — otherwise
+    the original prompt restarts as a fresh agent turn (#84417).
+
+    Unrelated follow-ups (different text, image-bearing envelopes) stay.
+    Merged ``original + later`` slots are rewritten to ``later`` only.
+    """
+    turn = session.get("inflight_turn")
+    if not isinstance(turn, dict):
+        return
+    original = str(turn.get("user") or "").strip()
+    if not original:
+        return
+
+    head = session.get("queued_prompt")
+    rest = list(session.get("queued_prompts") or [])
+    kept: list[dict] = []
+    for entry in ([head] if head else []) + rest:
+        cleaned = _sanitize_queued_entry_vs_inflight_user(entry, original)
+        if cleaned is not None:
+            kept.append(cleaned)
+
+    if not kept:
+        session["queued_prompt"] = None
+        session.pop("queued_prompts", None)
+        return
+    session["queued_prompt"] = kept[0]
+    if len(kept) > 1:
+        session["queued_prompts"] = kept[1:]
+    else:
+        session.pop("queued_prompts", None)
 
 
 def _interrupt_busy_session(sid: str, session: dict, agent: Any) -> None:
@@ -7774,6 +7874,8 @@ def _handle_busy_submit(
         try:
             if agent.steer(plain_text):
                 with session["history_lock"]:
+                    _record_inflight_correction(session, plain_text)
+                    _drop_queued_duplicates_of_inflight_user(session)
                     session["last_active"] = time.time()
                 return _ok(rid, {"status": "steered"})
         except Exception:
@@ -7793,6 +7895,9 @@ def _handle_busy_submit(
             if agent.redirect(plain_text):
                 with session["history_lock"]:
                     _record_inflight_correction(session, plain_text)
+                    # #84417: do not re-fire the live turn's original user text
+                    # from a stale server-queue self-duplicate after settle.
+                    _drop_queued_duplicates_of_inflight_user(session)
                     session["last_active"] = time.time()
                 return _ok(rid, {"status": "redirected"})
         except Exception:
@@ -7837,6 +7942,21 @@ def _drain_queued_prompt(rid, sid: str, session: dict) -> bool:
     use_compute_host = _session_uses_compute_host(session)
     with session["history_lock"]:
         if int(session.get("_queued_prompt_generation", 0)) != queue_generation:
+            # Generation cancelled the claim (Stop, compress re-anchor, …).
+            # Do not dispatch — but put the claimed envelope back so a
+            # legitimate follow-up is not silently dropped. Order: claimed
+            # head first, then whatever advanced into the slot while we held
+            # the claim (#84417 belt accuracy).
+            rest: list = []
+            advanced = session.get("queued_prompt")
+            if advanced:
+                rest.append(advanced)
+            rest.extend(session.get("queued_prompts") or [])
+            session["queued_prompt"] = queued
+            if rest:
+                session["queued_prompts"] = rest
+            else:
+                session.pop("queued_prompts", None)
             session["running"] = False
             return True
     dispatch_failed = False

@@ -3247,6 +3247,10 @@ def _(rid, params: dict) -> dict:
         # text has no user bubble — the "my message vanished on reload" loss.
         with session["history_lock"]:
             _record_inflight_correction(session, text)
+            # #84417: steer does not cancel the live original, but a server
+            # queue self-copy of that original must still not re-fire after
+            # settle (same class as redirect).
+            _drop_queued_duplicates_of_inflight_user(session)
             session["last_active"] = time.time()
     return _ok(rid, {"status": "queued" if accepted else "rejected", "text": text})
 
@@ -3283,6 +3287,9 @@ def _(rid, params: dict) -> dict:
     if accepted:
         with session["history_lock"]:
             _record_inflight_correction(session, text)
+            # #84417: purge server-queue self-duplicates of the live original
+            # so post-turn drain cannot restart the pre-correction prompt.
+            _drop_queued_duplicates_of_inflight_user(session)
             session["last_active"] = time.time()
     return _ok(
         rid,

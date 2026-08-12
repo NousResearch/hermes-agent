@@ -695,6 +695,7 @@ def test_profile_scoped_agent_build_starts_mcp_discovery_in_profile_home(
 ):
     """Agent construction must start MCP discovery under the selected profile."""
     import threading
+    import uuid
 
     from hermes_constants import get_hermes_home
 
@@ -720,19 +721,26 @@ def test_profile_scoped_agent_build_starts_mcp_discovery_in_profile_home(
     monkeypatch.setattr(server, "_SlashWorker", lambda *args: None)
     monkeypatch.setattr(server, "_attach_worker", lambda *args: None)
     monkeypatch.setattr(server, "_config_model_target", lambda: ("", ""))
+    # CI runs this huge file serially under load; a prior session's _build can
+    # still be finishing (session.info emit) when the next test starts, so a
+    # 2s Event wait flakes. Unique sid + longer bound; still fail closed.
+    monkeypatch.setattr(server, "_start_notification_poller", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
 
     ready = threading.Event()
-    sid = "test-sid"
+    sid = f"test-sid-{uuid.uuid4().hex[:8]}"
     session = {
         "agent_ready": ready,
-        "session_key": "test-key",
+        "session_key": f"test-key-{uuid.uuid4().hex[:8]}",
         "profile_home": str(profile_home),
     }
 
     server._sessions[sid] = session
     try:
         server._start_agent_build(sid, session)
-        assert built.wait(timeout=2)
+        assert built.wait(timeout=15), "agent build thread never called _make_agent"
+        assert ready.wait(timeout=5), "agent_ready never set after build"
     finally:
         server._sessions.pop(sid, None)
 
@@ -747,6 +755,7 @@ def test_profile_scoped_agent_build_installs_secret_scope(monkeypatch, tmp_path)
     .env (#67605 item 2).
     """
     import threading
+    import uuid
 
     from agent.secret_scope import current_secret_scope
 
@@ -775,19 +784,25 @@ def test_profile_scoped_agent_build_installs_secret_scope(monkeypatch, tmp_path)
     monkeypatch.setattr(server, "_SlashWorker", lambda *args: None)
     monkeypatch.setattr(server, "_attach_worker", lambda *args: None)
     monkeypatch.setattr(server, "_config_model_target", lambda: ("", ""))
+    # Same CI flake class as the MCP profile-home test: bound wait + less work
+    # on the build thread (no poller / late MCP refresh / session.info emit).
+    monkeypatch.setattr(server, "_start_notification_poller", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_schedule_mcp_late_refresh", lambda *a, **k: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **k: None)
 
     ready = threading.Event()
-    sid = "test-secret-sid"
+    sid = f"test-secret-sid-{uuid.uuid4().hex[:8]}"
     session = {
         "agent_ready": ready,
-        "session_key": "test-secret-key",
+        "session_key": f"test-secret-key-{uuid.uuid4().hex[:8]}",
         "profile_home": str(profile_home),
     }
 
     server._sessions[sid] = session
     try:
         server._start_agent_build(sid, session)
-        assert built.wait(timeout=2)
+        assert built.wait(timeout=15), "agent build thread never called _make_agent"
+        assert ready.wait(timeout=5), "agent_ready never set after build"
     finally:
         server._sessions.pop(sid, None)
 
@@ -9386,6 +9401,89 @@ def test_session_redirect_calls_capable_core_agent(monkeypatch):
     assert session["inflight_turn"]["corrections"] == ["use Postgres"]
     assert session.get("last_active") is not None
     assert before is None or session["last_active"] >= before
+
+
+def test_session_redirect_rpc_drops_queued_duplicate_of_inflight_user():
+    """#84417: Desktop ``session.redirect`` must purge stale self-duplicates.
+
+    Production path: renderer steers via ``session.redirect`` (not
+    ``prompt.submit``). A self-copy of the live original user text already in
+    the server queue must not survive a successful redirect — otherwise
+    post-turn ``_drain_queued_prompt`` restarts prompt P after Q is handled.
+    Unrelated next-turn envelopes stay.
+    """
+    original = "deepseek released a new flash model — I changed all settings to flash"
+    agent = types.SimpleNamespace(
+        _supports_active_turn_redirect=True,
+        redirect=lambda text: True,
+    )
+    session = _session(agent=agent, running=True)
+    session["inflight_turn"] = {
+        "user": original,
+        "assistant": "partial",
+        "streaming": True,
+        "error": "",
+    }
+    session["queued_prompt"] = {"text": original, "transport": "ws-1"}
+    session["queued_prompts"] = [
+        {"text": original, "transport": "ws-1"},
+        {"text": "unrelated later task", "transport": "ws-1"},
+    ]
+    server._sessions["sid"] = session
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.redirect",
+                "params": {
+                    "session_id": "sid",
+                    "text": "what about the pricing instead?",
+                },
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"]["status"] == "redirected"
+    assert session["inflight_turn"]["user"] == original
+    assert session["inflight_turn"]["corrections"] == [
+        "what about the pricing instead?"
+    ]
+    # Self-duplicates of the live original are gone; legitimate follow-up kept.
+    assert session.get("queued_prompt") == {
+        "text": "unrelated later task",
+        "transport": "ws-1",
+    }
+    assert not session.get("queued_prompts")
+
+
+def test_session_redirect_build_window_scrubs_stale_p_when_queuing_q():
+    """#84417: build-window queue of Q must not leave P ahead of Q."""
+    original = "live original P"
+    session = _session(running=True)
+    session["agent"] = None  # async agent build window
+    session["inflight_turn"] = {
+        "user": original,
+        "assistant": "",
+        "streaming": True,
+        "error": "",
+    }
+    session["queued_prompt"] = {"text": original, "transport": "ws-1"}
+    server._sessions["sid"] = session
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.redirect",
+                "params": {"session_id": "sid", "text": "correction Q"},
+            }
+        )
+    finally:
+        server._sessions.pop("sid", None)
+
+    assert resp["result"] == {"status": "queued", "text": "correction Q"}
+    assert session["queued_prompt"]["text"] == "correction Q"
+    assert not session.get("queued_prompts")
 
 
 def test_session_redirect_records_correction_without_erasing_prompt():

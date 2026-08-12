@@ -18,7 +18,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **OpenAI Codex** | `hermes model` (ChatGPT OAuth, uses Codex models) |
 | **GitHub Copilot** | `hermes model` (OAuth device code flow, `COPILOT_GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`) |
 | **GitHub Copilot ACP** | `hermes model` (spawns local `copilot --acp --stdio`) |
-| **Anthropic** | `hermes model` (Claude Max + extra usage credits via OAuth; also supports Anthropic API key or manual setup-token — see note below) |
+| **Anthropic** | `hermes model` (Claude subscription via OAuth — spends your included plan allowance; also supports Anthropic API key or manual setup-token — see note below) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **Fireworks AI** | `FIREWORKS_API_KEY` in `~/.hermes/.env` (provider: `fireworks`; aliases: `fireworks-ai`, `fw`) |
 | **NovitaAI** | `NOVITA_API_KEY` in `~/.hermes/.env` (provider: `novita`, 200+ models, Model API, Agent Sandbox, GPU Cloud) |
@@ -137,10 +137,28 @@ If you'd rather not track per-provider plan semantics at all, [Nous Portal](#nou
 
 Use Claude models directly through the Anthropic API — no OpenRouter proxy needed. Supports three auth methods:
 
-:::caution Requires Claude Max "extra usage" credits
-When you authenticate via `hermes model` → Anthropic OAuth (or via `hermes auth add anthropic --type oauth`), Hermes routes as Claude Code against your Anthropic account. **It only works if you're on a Claude Max plan and have purchased extra usage credits.** The base Max plan allowance (the usage included in Claude Code by default) is not consumed by Hermes — only the extra/overage credits you've added on top are. Claude Pro subscribers cannot use this path.
+:::info Billed against your subscription's included allowance
+When you authenticate via `hermes model` → Anthropic OAuth (or via `hermes auth add anthropic --type oauth`), Hermes routes as Claude Code against your Anthropic account, and requests draw on **the same included plan allowance Claude Code itself uses** — not a separate extra-usage pool.
 
-If you don't have Max + extra credits, use an `ANTHROPIC_API_KEY` instead — requests are billed pay-per-token against that key's organization (standard API pricing, independent of any Claude subscription).
+Purchased "extra usage" credits are **not** required. Verified against a Claude **Team** subscription with the overage lane explicitly disabled (Anthropic returned `anthropic-ratelimit-unified-overage-status: rejected`, `overage-disabled-reason: out_of_credits`): requests were served normally and attributed to the plan window, with `anthropic-ratelimit-unified-representative-claim: five_hour`.
+
+To check your own account, inspect the `anthropic-ratelimit-unified-*` response headers, or run `/usage` in an interactive session to see your remaining plan windows.
+
+Because OAuth spends your subscription allowance, heavy Hermes use competes with your own Claude Code and claude.ai usage for the same budget. Use an `ANTHROPIC_API_KEY` instead if you'd rather bill pay-per-token against an organization's API account, independent of any subscription.
+
+Credits are not required to *use* OAuth, but they are still the spillover once an allowance runs out: Anthropic's own wording is "usage credits cover you when you hit your plan limits." If you exhaust the allowance you will start seeing `You're out of extra usage` — that means a limit was reached and there are no credits to spill into, not that OAuth requires credits to work.
+:::
+
+:::note Untested tiers
+The behavior above was confirmed on a Team plan. Max is expected to behave the same way, and Pro has not been verified — if you have a Pro or Max subscription, the `anthropic-ratelimit-unified-*` headers described above will tell you definitively, and a report either way is welcome.
+:::
+
+:::warning `ANTHROPIC_API_KEY` silently wins if OAuth resolution fails
+`resolve_anthropic_token()` tries the Claude Code credential *before* `ANTHROPIC_API_KEY`, so a working OAuth login always takes precedence. But if OAuth resolution comes up empty and `ANTHROPIC_API_KEY` is set, Hermes falls through to the API key and bills pay-per-token instead — and every diagnostic on that path is logged at `debug`, so **nothing surfaces at default verbosity**. Your plan allowance simply goes untouched, which looks indistinguishable from "OAuth doesn't use the plan."
+
+To tell which lane you're actually on, check the response headers: an OAuth request carries `anthropic-ratelimit-unified-*` plan attribution, an `x-api-key` request does not. `hermes doctor` also reports the resolved auth method.
+
+One known trigger on macOS: Claude Code stores its MCP-server OAuth state under the *same* `Claude Code-credentials` Keychain service as your login credential. `security find-generic-password` returns only the first matching item, so an unscoped lookup could return the MCP item, find no login token in it, and give up — while you were fully signed in. Fixed by scoping the lookup to your account ([#75146](https://github.com/NousResearch/Hermes-Agent/pull/75146)). If you're on an older version and want to be certain, unset `ANTHROPIC_API_KEY` while using OAuth so there is nothing to silently fall back to.
 :::
 
 ```bash

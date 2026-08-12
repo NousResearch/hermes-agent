@@ -979,45 +979,79 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
     if platform.system() != "Darwin":
         return None
 
+    # macOS allows MULTIPLE keychain items to share one service name, and
+    # Claude Code uses that: alongside the login credential it stores its
+    # MCP-server OAuth state under this same service, as a separate item whose
+    # account is "unknown" and whose payload holds only ``mcpOAuth`` — no
+    # ``claudeAiOauth`` key at all.
+    #
+    # ``security find-generic-password`` returns the FIRST match. Without
+    # ``-a`` to disambiguate, that is frequently the MCP item, so this function
+    # parses a valid JSON payload, finds no ``claudeAiOauth``, and returns None.
+    # The user is fully logged in to Claude Code, yet Hermes reports
+    # "No Anthropic credentials found" and every OAuth path fails. There is no
+    # error to notice — the lookup succeeds and yields the wrong item.
+    #
+    # Observed on a real machine: 4 items shared this service name; only the one
+    # under ``acct=<login user>`` carried ``claudeAiOauth``.
+    #
+    # Fix: try the account-scoped read first, then fall back to the historical
+    # unscoped read so any setup whose item account differs from the login
+    # username keeps working exactly as before. A payload that parses but has no
+    # ``claudeAiOauth`` no longer aborts the search — it advances to the next
+    # candidate.
+    candidates: List[List[str]] = []
     try:
-        # Read the "Claude Code-credentials" generic password entry
-        result = subprocess.run(
-            ["security", "find-generic-password",
-             "-s", "Claude Code-credentials",
-             "-w"],
-            capture_output=True,
-            text=True, encoding='utf-8', errors='replace',
-            timeout=5,
-            stdin=subprocess.DEVNULL,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        logger.debug("Keychain: security command not available or timed out")
-        return None
+        import getpass
+        username = getpass.getuser()
+    except Exception:  # pragma: no cover - getuser needs no env on supported OSes
+        username = ""
+    if username:
+        candidates.append(["-s", "Claude Code-credentials", "-a", username, "-w"])
+    candidates.append(["-s", "Claude Code-credentials", "-w"])
 
-    if result.returncode != 0:
-        logger.debug("Keychain: no entry found for 'Claude Code-credentials'")
-        return None
+    for args in candidates:
+        try:
+            # Read the "Claude Code-credentials" generic password entry
+            result = subprocess.run(
+                ["security", "find-generic-password", *args],
+                capture_output=True,
+                text=True, encoding='utf-8', errors='replace',
+                timeout=5,
+                stdin=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            logger.debug("Keychain: security command not available or timed out")
+            return None
 
-    raw = result.stdout.strip()
-    if not raw:
-        return None
+        if result.returncode != 0:
+            logger.debug("Keychain: no entry found for 'Claude Code-credentials'")
+            continue
 
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError:
-        logger.debug("Keychain: credentials payload is not valid JSON")
-        return None
+        raw = result.stdout.strip()
+        if not raw:
+            continue
 
-    oauth_data = data.get("claudeAiOauth")
-    if oauth_data and isinstance(oauth_data, dict):
-        access_token = oauth_data.get("accessToken", "")
-        if access_token:
-            return {
-                "accessToken": access_token,
-                "refreshToken": oauth_data.get("refreshToken", ""),
-                "expiresAt": oauth_data.get("expiresAt", 0),
-                "source": "macos_keychain",
-            }
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.debug("Keychain: credentials payload is not valid JSON")
+            continue
+
+        oauth_data = data.get("claudeAiOauth")
+        if oauth_data and isinstance(oauth_data, dict):
+            access_token = oauth_data.get("accessToken", "")
+            if access_token:
+                return {
+                    "accessToken": access_token,
+                    "refreshToken": oauth_data.get("refreshToken", ""),
+                    "expiresAt": oauth_data.get("expiresAt", 0),
+                    "source": "macos_keychain",
+                }
+
+        # Parsed, but carries no usable claudeAiOauth (e.g. the mcpOAuth-only
+        # item). Keep probing the remaining candidates instead of giving up.
+        logger.debug("Keychain: entry has no claudeAiOauth block, trying next")
 
     return None
 

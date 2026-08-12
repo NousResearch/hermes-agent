@@ -793,6 +793,13 @@ class RelayAdapter(BasePlatformAdapter):
             if guild_id
             else None,  # Discord guild → generic scope slot
             message_id=str(payload.get("id")) if payload.get("id") else None,
+            # The HERMES profile this interaction is routed to (multiplex
+            # mode) — mirrors _event_from_wire's profile stamping for plain
+            # relayed messages (#60586). Without this, a Team-Gateway's
+            # Discord slash-command/button/modal always fell back to the
+            # legacy agent:main namespace even when the connector resolved
+            # a specific profile for it.
+            profile=getattr(forward, "profile", None),
         )
         event = MessageEvent(text=text, message_type=message_type, source=source)
         if itype == 3:

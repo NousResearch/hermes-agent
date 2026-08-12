@@ -770,6 +770,68 @@ class TestByteLayerBinaryDetection:
         ops = ShellFileOperations(mock_env)
         assert ops._sample_file_bytes("/tmp/x.txt") is None
 
+    def test_sample_falls_back_to_od_hex_transport(self, mock_env):
+        # base64 unavailable (127); od hex transport must recover the bytes.
+        payload = (b"a" * 999 + "中文字符".encode("utf-8"))[:1000]
+        hex_lines = " ".join(f"{b:02x}" for b in payload)
+
+        def side_effect(command, **kwargs):
+            if "| base64" in command:
+                return {"output": "", "returncode": 127}
+            if "od -An -v -t x1" in command:
+                return {"output": hex_lines + "\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        assert ops._sample_file_bytes("/tmp/cjk.md") == payload
+
+    def test_base64_garbled_output_falls_back_to_od(self, mock_env):
+        # base64 exits 0 but its stdout is not base64 (terminal fence leak /
+        # prompt contamination) — must fall through to od instead of giving
+        # up. Review ask on #83000.
+        payload = (b"a" * 999 + "中文字符".encode("utf-8"))[:1000]
+        hex_lines = " ".join(f"{b:02x}" for b in payload)
+
+        def side_effect(command, **kwargs):
+            if "| base64" in command:
+                return {"output": "not!base64@", "returncode": 0}
+            if "od -An -v -t x1" in command:
+                return {"output": hex_lines + "\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        assert ops._sample_file_bytes("/tmp/cjk.md") == payload
+
+    def test_base64_empty_output_falls_back_to_od(self, mock_env):
+        # base64 exits 0 but produces nothing (fence stripping emptied it) —
+        # must not short-circuit to b""; let od arbitrate the empty case.
+        payload = b"hello"
+        hex_lines = " ".join(f"{b:02x}" for b in payload)
+
+        def side_effect(command, **kwargs):
+            if "| base64" in command:
+                return {"output": "", "returncode": 0}
+            if "od -An -v -t x1" in command:
+                return {"output": hex_lines + "\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        assert ops._sample_file_bytes("/tmp/x.txt") == payload
+
+    def test_od_transport_rejects_non_hex_shell_error(self, mock_env):
+        # od itself missing: shell error text must not be parsed as bytes.
+        def side_effect(command, **kwargs):
+            if "| base64" in command:
+                return {"output": "", "returncode": 127}
+            return {"output": "sh: od: command not found", "returncode": 127}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        assert ops._sample_file_bytes("/tmp/x.txt") is None
+
     # --- integration: read_file over the mocked terminal ------------------
 
     def _dispatch(self, cjk_bytes):
@@ -800,6 +862,41 @@ class TestByteLayerBinaryDetection:
     def test_read_file_still_blocks_nul_binaries(self, mock_env):
         content = b"\x7fELF\x00\x00binarybinary" + b"\x00" * 100
         mock_env.execute.side_effect = self._dispatch(content)
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/a.out")
+        assert result.is_binary is True
+
+    def _dispatch_no_base64(self, cjk_bytes):
+        """Terminal without base64 but with od (fallback path)."""
+
+        def side_effect(command, **kwargs):
+            if command.startswith("wc -c"):
+                return {"output": f"{len(cjk_bytes)}\n", "returncode": 0}
+            if "| base64" in command:
+                return {"output": "", "returncode": 127}
+            if "| od -An -v -t x1" in command:
+                hex_out = " ".join(f"{b:02x}" for b in cjk_bytes[:1000])
+                return {"output": hex_out + "\n", "returncode": 0}
+            if command.startswith("sed -n"):
+                return {"output": cjk_bytes.decode("utf-8", errors="replace"), "returncode": 0}
+            if command.startswith("wc -l"):
+                return {"output": "1\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        return side_effect
+
+    def test_read_file_od_fallback_reads_cjk_text(self, mock_env):
+        content = ("汉字测试" * 300).encode("utf-8")  # > 1000 bytes, cut mid-char
+        mock_env.execute.side_effect = self._dispatch_no_base64(content)
+        ops = ShellFileOperations(mock_env)
+        result = ops.read_file("/tmp/notes-中文.txt")
+        assert result.is_binary is False
+        assert result.error is None
+        assert "汉字测试" in (result.content or "")
+
+    def test_read_file_od_fallback_still_blocks_nul_binaries(self, mock_env):
+        content = b"\x7fELF\x00\x00binarybinary" + b"\x00" * 100
+        mock_env.execute.side_effect = self._dispatch_no_base64(content)
         ops = ShellFileOperations(mock_env)
         result = ops.read_file("/tmp/a.out")
         assert result.is_binary is True

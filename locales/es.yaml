@@ -834,7 +834,9 @@ gateway:
   no_reply_max_iterations_reached: '⚠️ No reply: the maximum tool-iteration limit was reached before a final answer. Send `continue` to keep going, or raise `max_iterations`.'
   no_reply_error_near_max_iterations: '⚠️ No reply: an error occurred near the iteration limit before a final answer. Check the tool output above, then send `continue`.'
   no_reply_pending_tool_result: '⚠️ No reply: the turn stopped while a tool result was still pending and the model produced no follow-up text. Send `continue` to let it summarize.'
-  no_reply_session_persistence_failed: '⚠️ No reply: the turn was stopped because session storage could not be written (the transcript would have been lost on restart). Check disk space / permissions for the state DB, then send your message again.'
+  no_reply_session_persistence_locked: '⚠️ No reply: the turn was stopped because session storage was busy (another Hermes process was writing to the state database). Your message should already be saved — please send it again in a moment.'
+  no_reply_session_persistence_disk: '⚠️ No reply: the turn was stopped because session storage could not be written (the transcript would have been lost on restart). This is often a full disk — free some space (or fix state.db permissions), then send your message again.'
+  no_reply_session_persistence_failed: '⚠️ No reply: the turn was stopped because session storage could not be written (the transcript would have been lost on restart). Check the state database health (`hermes doctor`), then send your message again.'
   slash_confirm_prompt: '⚠️ **Confirm /{command}**
 
 

@@ -15,6 +15,7 @@ sites unchanged.  Symbols that tests patch on ``run_agent`` (e.g.
 
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import json
 import logging
@@ -64,6 +65,29 @@ _PROVIDER_STREAM_ERROR_TEXT_LIMIT = 4096
 # billing reasons keep their own 60s cooldown (set above); this is the
 # narrower non-rate-limit case.  See issue #24996.
 _FALLBACK_EXHAUSTED_COOLDOWN_S = 5.0
+
+
+_TOOL_REQUEST_SNAPSHOT: contextvars.ContextVar[Optional[tuple[object, int]]]
+_TOOL_REQUEST_SNAPSHOT = contextvars.ContextVar(
+    "hermes_tool_request_snapshot",
+    default=None,
+)
+
+
+@contextlib.contextmanager
+def bind_tool_request_snapshot(tools: object, epoch: int):
+    """Bind one request's tool snapshot while its kwargs are assembled.
+
+    The conversation loop captures the advertised schemas and epoch before
+    calling ``_build_api_kwargs``.  Keeping that pair in a ContextVar lets
+    compatibility wrappers retain the historical builder signature without
+    recapturing a newer snapshot during assembly.
+    """
+    token = _TOOL_REQUEST_SNAPSHOT.set((tools, epoch))
+    try:
+        yield
+    finally:
+        _TOOL_REQUEST_SNAPSHOT.reset(token)
 
 
 def _context_thread_target(callback):
@@ -1844,9 +1868,13 @@ def build_api_kwargs(
     tool_snapshot_epoch: int | None = None,
 ) -> dict:
     """Build the keyword arguments dict for the active API mode."""
-    from tools.mcp_tool import capture_agent_tool_request_snapshot
+    snapshot = _TOOL_REQUEST_SNAPSHOT.get()
+    if snapshot is None:
+        from tools.mcp_tool import capture_agent_tool_request_snapshot
 
-    captured_tools, captured_epoch = capture_agent_tool_request_snapshot(agent)
+        captured_tools, captured_epoch = capture_agent_tool_request_snapshot(agent)
+    else:
+        captured_tools, captured_epoch = snapshot
     if tools_for_api is None:
         tools_for_api = captured_tools
     if tool_snapshot_epoch is None:

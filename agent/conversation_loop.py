@@ -2820,17 +2820,19 @@ def run_conversation(
                         tools_for_api=tools_for_api,
                     )
                 )
-                if tools_for_api == agent.tools:
-                    api_kwargs = agent._build_api_kwargs(
-                        api_messages,
-                        tool_snapshot_epoch=request_tool_snapshot_epoch,
-                    )
-                else:
-                    api_kwargs = agent._build_api_kwargs(
-                        api_messages,
-                        tools_for_api=tools_for_api,
-                        tool_snapshot_epoch=request_tool_snapshot_epoch,
-                    )
+                from agent.chat_completion_helpers import bind_tool_request_snapshot
+
+                with bind_tool_request_snapshot(
+                    tools_for_api,
+                    request_tool_snapshot_epoch,
+                ):
+                    if tools_for_api == agent.tools:
+                        api_kwargs = agent._build_api_kwargs(api_messages)
+                    else:
+                        api_kwargs = agent._build_api_kwargs(
+                            api_messages,
+                            tools_for_api=tools_for_api,
+                        )
                 # Outbound-request surrogate chokepoint (#50959): the messages
                 # were scrubbed above, but the rest of the request body —
                 # tool/function descriptions (session_search's ±-heavy text is

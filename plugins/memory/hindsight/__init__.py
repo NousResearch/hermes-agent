@@ -1609,9 +1609,9 @@ class HindsightMemoryProvider(MemoryProvider):
         and don't pass ``update_mode`` at all — that's the only way the
         resume-overwrite fix (#6654) keeps working on legacy servers.
 
-        Probe is cached at module level per API URL, so this is one HTTP
-        round-trip per (process, api_url) pair regardless of how many
-        retains fire.
+        Probe results are cached at module level per API URL and bank ID,
+        so each target bank's effective document-storage policy is isolated
+        while repeated retains avoid additional HTTP round-trips.
         """
         if not self._session_id:
             return fallback_document_id, None

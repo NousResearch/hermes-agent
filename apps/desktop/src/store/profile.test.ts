@@ -6,7 +6,7 @@ import type { ProfileInfo } from '@/types/hermes'
 
 // Keep profile.ts's side-effecting imports inert: the gateway socket layer and
 // the REST query client must not run for real in a unit test.
-const ensureGatewayForProfile = vi.fn(async () => undefined)
+const ensureGatewayForProfile = vi.fn(async (_profile: string): Promise<void> => undefined)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const $gateway = atom<unknown>({ id: 'live-socket' })
 const resetStarmapGraph = vi.fn()
@@ -19,8 +19,15 @@ vi.mock('@/hermes', () => ({
 vi.mock('@/lib/query-client', () => ({ invalidateProfileScopedQueries: vi.fn() }))
 vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, $profiles, ensureGatewayProfile, prewarmProfileBackend, refreshProfiles } =
-  await import('./profile')
+const {
+  $activeGatewayProfile,
+  $profiles,
+  $showAllProfiles,
+  ensureGatewayProfile,
+  prewarmProfileBackend,
+  refreshProfiles,
+  selectProfile
+} = await import('./profile')
 
 const { $connection } = await import('./session')
 const { invalidateProfileScopedQueries } = await import('@/lib/query-client')
@@ -43,6 +50,7 @@ const localConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
   ({ baseUrl: '', mode: 'local', profile: 'default', ...over }) as HermesConnection
 
 const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnection>>()
+const rememberProfile = vi.fn(async (name: string | null) => ({ profile: name }))
 
 beforeEach(() => {
   getConnection.mockReset()
@@ -52,7 +60,9 @@ beforeEach(() => {
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
   $profiles.set([])
-  vi.stubGlobal('window', { hermesDesktop: { getConnection } })
+  $showAllProfiles.set(false)
+  rememberProfile.mockClear()
+  vi.stubGlobal('window', { hermesDesktop: { getConnection, profile: { remember: rememberProfile } } })
   vi.mocked(invalidateProfileScopedQueries).mockClear()
   resetStarmapGraph.mockClear()
 })
@@ -107,6 +117,38 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     expect(getConnection).not.toHaveBeenCalled()
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
     expect($connection.get()?.mode).toBe('remote')
+  })
+})
+
+describe('selectProfile startup preference', () => {
+  it('remembers the selected workspace for the next Desktop launch', async () => {
+    getConnection.mockResolvedValue(localConn({ profile: 'tilly' }))
+
+    selectProfile('tilly')
+
+    await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('tilly'))
+    expect(ensureGatewayForProfile).toHaveBeenCalledWith('tilly')
+    expect($activeGatewayProfile.get()).toBe('tilly')
+  })
+
+  it('waits for gateway activation before replacing the startup preference', async () => {
+    let resolveGateway!: () => void
+
+    ensureGatewayForProfile.mockImplementationOnce(
+      () =>
+        new Promise<void>(resolve => {
+          resolveGateway = resolve
+        })
+    )
+    getConnection.mockResolvedValue(localConn({ profile: 'tilly' }))
+
+    selectProfile('tilly')
+    await vi.waitFor(() => expect(ensureGatewayForProfile).toHaveBeenCalledWith('tilly'))
+    expect(rememberProfile).not.toHaveBeenCalled()
+
+    resolveGateway()
+
+    await vi.waitFor(() => expect(rememberProfile).toHaveBeenCalledWith('tilly'))
   })
 })
 

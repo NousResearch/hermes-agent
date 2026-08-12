@@ -10431,6 +10431,9 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
 })
 
 ipcMain.handle('hermes:profile:get', async () => ({ profile: readActiveDesktopProfile() }))
+ipcMain.handle('hermes:profile:remember', async (_event, name) => ({
+  profile: writeActiveDesktopProfile(name)
+}))
 ipcMain.handle('hermes:profile:set', async (_event, name) => {
   const next = writeActiveDesktopProfile(name)
 

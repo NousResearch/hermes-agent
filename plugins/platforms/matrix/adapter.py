@@ -156,10 +156,10 @@ class _MautrixCryptoLogger(logging.LoggerAdapter):
     """
 
     def trace(self, msg: Any, *args: Any, **kwargs: Any) -> None:
-        self.debug(msg, *args, **kwargs)
+        self.log(5, msg, *args, **kwargs)
 
     def silly(self, msg: Any, *args: Any, **kwargs: Any) -> None:
-        self.debug(msg, *args, **kwargs)
+        self.log(1, msg, *args, **kwargs)
 
 
 def _mautrix_crypto_logger() -> _MautrixCryptoLogger:

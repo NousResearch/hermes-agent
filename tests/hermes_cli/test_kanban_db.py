@@ -478,6 +478,144 @@ def test_quiet_cli_provider_fallback_success_does_not_emit_failure_sidecar(
     assert kb.read_worker_provider_failure("t_fallback_success") == {}
 
 
+def _provider_error(status_code: int, message: str) -> Exception:
+    error = RuntimeError(message)
+    error.status_code = status_code
+    return error
+
+
+def _provider_boundary_agent(error, *, fallback=False):
+    """Create a real AIAgent whose first provider call fails deterministically."""
+    from unittest.mock import MagicMock, patch
+
+    from run_agent import AIAgent
+
+    with (
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.openai.com/v1",
+            provider="openai-codex",
+            api_mode="chat_completions",
+            model="gpt-test",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+    agent.client = MagicMock()
+    agent.client.chat.completions.create.side_effect = error
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    agent._fallback_chain = [{"provider": "fallback", "model": "fallback-model"}] if fallback else []
+    return agent
+
+
+@pytest.mark.parametrize(
+    ("status_code", "message", "reason"),
+    [
+        (401, "OAuth token expired", "auth"),
+        (402, "insufficient credits", "billing"),
+        (429, "too many requests", "rate_limit"),
+    ],
+)
+def test_real_provider_classifier_to_quiet_cli_boundary(
+    kanban_home, monkeypatch, status_code, message, reason
+):
+    """A real conversation failure must carry classifier output into reap."""
+    from unittest.mock import patch
+    from types import SimpleNamespace
+
+    import cli as hermes_cli_module
+
+    task_id = f"t-real-{status_code}"
+    monkeypatch.setenv("HERMES_KANBAN_LOG_DIR", str(kanban_home / "kanban" / "logs"))
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    agent = _provider_boundary_agent(_provider_error(status_code, message))
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("perform the operational task")
+
+    assert result["failed"] is True
+    assert result["failure_reason"] == reason
+    code = hermes_cli_module._kanban_worker_exit_code(result, agent)
+    expected = {
+        "auth": kb.KANBAN_AUTH_EXIT_CODE,
+        "billing": kb.KANBAN_BILLING_EXIT_CODE,
+        "rate_limit": kb.KANBAN_RATE_LIMIT_EXIT_CODE,
+    }[reason]
+    assert code == expected
+    payload = kb.read_worker_provider_failure(task_id)
+    assert payload["failure_reason"] == reason
+    assert str(status_code) in payload["error"]
+
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="real boundary", assignee="dev")
+        host = kb._claimer_id().split(":", 1)[0]
+        kb.claim_task(conn, tid, claimer=f"{host}:real-{status_code}")
+        monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+        kb.write_worker_provider_failure(
+            failure_reason=reason,
+            error=payload["error"],
+            provider=payload["provider"],
+            model=payload["model"],
+        )
+        pid = 74000 + status_code
+        conn.execute("UPDATE tasks SET worker_pid=? WHERE id=?", (pid, tid))
+        conn.commit()
+        kb._record_worker_exit(pid, _exited_status(code))
+        assert kb.detect_crashed_workers(conn) == []
+        assert not any(e.kind == "protocol_violation" for e in kb.list_events(conn, tid))
+
+
+def test_real_terminal_provider_initialization_never_dispatches_tools(kanban_home):
+    """Provider failure before a response must not execute an operational tool."""
+    from unittest.mock import patch
+
+    agent = _provider_boundary_agent(_provider_error(401, "OAuth token expired"))
+    tool_calls = []
+    agent.tools = [{"type": "function", "function": {"name": "dangerous_tool"}}]
+    agent._handle_function_call = lambda *args, **kwargs: tool_calls.append(args)
+    with (
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("perform the operational task")
+    assert result["failure_reason"] == "auth"
+    assert tool_calls == []
+
+
+def test_real_failed_primary_successful_fallback_is_clean(kanban_home):
+    """A fallback response must not emit a provider sidecar or sentinel."""
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    agent = _provider_boundary_agent(_provider_error(401, "OAuth token expired"), fallback=True)
+    success = SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content="fallback ok", tool_calls=None), finish_reason="stop")],
+        usage=None,
+        model="fallback-model",
+    )
+    agent.client.chat.completions.create.side_effect = [_provider_error(401, "OAuth token expired"), success]
+    with (
+        patch.object(agent, "_try_activate_fallback", return_value=True),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("perform the operational task")
+    assert result.get("failed") is not True
+    assert result["final_response"] == "fallback ok"
+
+
 def test_provider_billing_exit_is_parked_without_respawn_loop(
     kanban_home, monkeypatch,
 ):

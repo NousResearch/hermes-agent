@@ -19,8 +19,16 @@ from hermes_cli.auth import (
 
 logger = logging.getLogger(__name__)
 
-NOUS_AUTH_KEEPALIVE_INTERVAL_SECONDS = 6 * 60 * 60
+# Nous Portal access tokens carry a one-hour lifetime, and the refresh only
+# fires once a token is within ACCESS_TOKEN_REFRESH_SKEW_SECONDS (120s) of
+# expiry. A tick interval must therefore be comfortably below
+# 3600 - 120 = 3480s, or the hour rolls over untouched between ticks and the
+# next inference call pays a 401 plus a re-auth round trip. The previous
+# 6-hour interval could only ever land inside the 2-minute refresh window by
+# coincidence, so in practice every hour expired reactively.
+NOUS_AUTH_KEEPALIVE_INTERVAL_SECONDS = 15 * 60
 NOUS_AUTH_KEEPALIVE_INITIAL_DELAY_SECONDS = 60
+NOUS_AUTH_KEEPALIVE_INTERVAL_ENV = "HERMES_NOUS_KEEPALIVE_INTERVAL_SECONDS"
 
 _keepalive_lock = threading.Lock()
 _keepalive_stop = threading.Event()
@@ -34,6 +42,34 @@ def _timeout_seconds(value: Optional[float]) -> float:
         return float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15"))
     except (TypeError, ValueError):
         return 15.0
+
+
+def _interval_seconds(value: Optional[int]) -> int:
+    """Resolve the keepalive tick interval.
+
+    Explicit argument wins, then the environment override, then the module
+    default. A non-positive result disables the keepalive thread entirely,
+    which is the documented way to turn it off.
+    """
+    if value is not None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return NOUS_AUTH_KEEPALIVE_INTERVAL_SECONDS
+
+    raw = os.getenv(NOUS_AUTH_KEEPALIVE_INTERVAL_ENV)
+    if raw is None or not raw.strip():
+        return NOUS_AUTH_KEEPALIVE_INTERVAL_SECONDS
+    try:
+        return int(float(raw))
+    except (TypeError, ValueError):
+        logger.warning(
+            "Ignoring invalid %s=%r; using %ds",
+            NOUS_AUTH_KEEPALIVE_INTERVAL_ENV,
+            raw,
+            NOUS_AUTH_KEEPALIVE_INTERVAL_SECONDS,
+        )
+        return NOUS_AUTH_KEEPALIVE_INTERVAL_SECONDS
 
 
 def _entry_state(entry: object) -> dict:
@@ -144,12 +180,13 @@ def _keepalive_loop(
 
 def start_nous_auth_keepalive(
     *,
-    interval_seconds: int = NOUS_AUTH_KEEPALIVE_INTERVAL_SECONDS,
+    interval_seconds: Optional[int] = None,
     initial_delay_seconds: int = NOUS_AUTH_KEEPALIVE_INITIAL_DELAY_SECONDS,
     min_key_ttl_seconds: int = NOUS_INVOKE_JWT_MIN_TTL_SECONDS,
     timeout_seconds: Optional[float] = None,
 ) -> Optional[threading.Thread]:
     """Start the process-wide Nous auth keepalive thread."""
+    interval_seconds = _interval_seconds(interval_seconds)
     if interval_seconds <= 0:
         return None
 

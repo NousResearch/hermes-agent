@@ -1,4 +1,44 @@
 from hermes_cli import nous_auth_keepalive as keepalive
+from hermes_cli.auth import ACCESS_TOKEN_REFRESH_SKEW_SECONDS
+
+NOUS_ACCESS_TOKEN_TTL_SECONDS = 3600
+
+
+def test_keepalive_interval_fits_inside_the_token_lifetime():
+    """The tick must land before the hour rolls over, or refresh stays reactive.
+
+    A tick at or above TTL - skew can miss the refresh window entirely, which
+    is what made every hour expire into a 401 plus a re-auth round trip.
+    """
+    assert (
+        keepalive.NOUS_AUTH_KEEPALIVE_INTERVAL_SECONDS
+        < NOUS_ACCESS_TOKEN_TTL_SECONDS - ACCESS_TOKEN_REFRESH_SKEW_SECONDS
+    )
+
+
+def test_interval_precedence_and_disable(monkeypatch):
+    monkeypatch.delenv(keepalive.NOUS_AUTH_KEEPALIVE_INTERVAL_ENV, raising=False)
+    assert (
+        keepalive._interval_seconds(None)
+        == keepalive.NOUS_AUTH_KEEPALIVE_INTERVAL_SECONDS
+    )
+
+    monkeypatch.setenv(keepalive.NOUS_AUTH_KEEPALIVE_INTERVAL_ENV, "600")
+    assert keepalive._interval_seconds(None) == 600
+    # An explicit argument still outranks the environment.
+    assert keepalive._interval_seconds(300) == 300
+
+    # A malformed override falls back to the default rather than disabling.
+    monkeypatch.setenv(keepalive.NOUS_AUTH_KEEPALIVE_INTERVAL_ENV, "not-a-number")
+    assert (
+        keepalive._interval_seconds(None)
+        == keepalive.NOUS_AUTH_KEEPALIVE_INTERVAL_SECONDS
+    )
+
+    # Zero remains the documented way to turn the keepalive off.
+    monkeypatch.setenv(keepalive.NOUS_AUTH_KEEPALIVE_INTERVAL_ENV, "0")
+    assert keepalive._interval_seconds(None) == 0
+    assert keepalive.start_nous_auth_keepalive() is None
 
 
 def test_keepalive_refreshes_stale_pool_entry(monkeypatch):

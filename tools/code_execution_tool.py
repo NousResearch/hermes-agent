@@ -1489,6 +1489,14 @@ def execute_code(
         _pp_parts = [tmpdir]
         if _uses_hermes_python_environment(_child_python):
             _pp_parts.append(_hermes_root)
+        else:
+            # Import behavior changes silently otherwise — surface it so
+            # "import hermes_constants suddenly fails" reports are diagnosable.
+            logger.info(
+                "execute_code: child interpreter %s is outside the Hermes "
+                "environment; hermes root omitted from PYTHONPATH",
+                _child_python,
+            )
         if _existing_pp:
             _pp_parts.append(_existing_pp)
         child_env["PYTHONPATH"] = os.pathsep.join(_pp_parts)
@@ -1839,47 +1847,73 @@ def _is_usable_python(python_path: str) -> bool:
     Requires Python 3.8+ (f-strings and stdlib modules the RPC stubs need).
     Cached so we don't fork a subprocess on every execute_code call.
     """
+    result = _probe_python(
+        python_path,
+        "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)",
+    )
+    return result is not None and result.returncode == 0
+
+
+def _probe_python(python_path: str, code: str, *, text: bool = False):
+    """Run ``python_path -c code`` with the standard interpreter-probe guards.
+
+    Returns the ``CompletedProcess``, or ``None`` when the interpreter is
+    missing, can't be spawned, or hangs past the 5s timeout.
+    """
     try:
         from agent.delegation_context import delegated_child_subprocess_env
 
-        result = subprocess.run(
-            [python_path, "-c",
-             "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)"],
+        return subprocess.run(
+            [python_path, "-c", code],
             timeout=5,
             capture_output=True,
+            text=text,
             creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
             stdin=subprocess.DEVNULL,
             env=delegated_child_subprocess_env(),
         )
-        return result.returncode == 0
     except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
-        return False
+        return None
 
 
-@functools.lru_cache(maxsize=32)
+_python_prefix_cache: dict = {}
+
+
 def _python_environment_prefix(python_path: str) -> str:
-    """Return the resolved ``sys.prefix`` reported by *python_path*, if any."""
-    try:
-        from agent.delegation_context import delegated_child_subprocess_env
+    """Return the resolved ``sys.prefix`` reported by *python_path*, if any.
 
-        result = subprocess.run(
-            [python_path, "-c", "import sys; print(sys.prefix)"],
-            timeout=5,
-            capture_output=True,
-            text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
-            stdin=subprocess.DEVNULL,
-            env=delegated_child_subprocess_env(),
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return os.path.realpath(result.stdout.strip())
-    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
-        pass
+    Successful probes are cached per interpreter path.  Failures are NOT
+    cached: a transient probe failure (fork pressure, 5s timeout on a loaded
+    host) must not stick for the process lifetime — a sticky empty result
+    would silently drop the hermes root from every subsequent execute_code
+    call's PYTHONPATH.
+    """
+    cached = _python_prefix_cache.get(python_path)
+    if cached is not None:
+        return cached
+    result = _probe_python(python_path, "import sys; print(sys.prefix)", text=True)
+    if result is not None and result.returncode == 0 and result.stdout.strip():
+        prefix = os.path.realpath(result.stdout.strip())
+        if len(_python_prefix_cache) < 32:
+            _python_prefix_cache[python_path] = prefix
+        return prefix
     return ""
 
 
 def _uses_hermes_python_environment(python_path: str) -> bool:
-    """Whether *python_path* belongs to Hermes's active Python environment."""
+    """Whether *python_path* belongs to Hermes's active Python environment.
+
+    Short-circuits when *python_path* IS the running interpreter (by path or
+    realpath) — no subprocess probe on the default strict-mode path, and no
+    way for a flaky probe of ``sys.executable`` itself to break the invariant
+    that repo-root modules are importable in strict mode.  The realpath leg
+    also covers venvs whose bin/python resolves to the same binary (e.g.
+    ``uv run`` setting VIRTUAL_ENV without changing sys.prefix).
+    """
+    if python_path == sys.executable or (
+        os.path.realpath(python_path) == os.path.realpath(sys.executable)
+    ):
+        return True
     return _python_environment_prefix(python_path) == os.path.realpath(sys.prefix)
 
 

@@ -324,6 +324,9 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
         from hermes_state_registry import acquire
         session_db = acquire()
     recovered = 0
+    # Sessions whose spool replay already failed this pass. Ordering is a per-session property, so
+    # one unhealthy session must not hold back the others.
+    blocked_sessions: set = set()
     try:
         for path, payload in flush_files:
             # One unparseable payload or rejected append must only skip THIS file: the file is
@@ -340,7 +343,8 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
                 if payload.get("reason") == "shutdown-with-unpersisted-agent-history":
                     continue
                 if _recover_one_payload(session_db, path, payload,
-                                        session_resolver=session_resolver):
+                                        session_resolver=session_resolver,
+                                        blocked_sessions=blocked_sessions):
                     recovered += 1
                     path.unlink(missing_ok=True)
             except Exception as exc:
@@ -356,7 +360,7 @@ def recover_pending_to_db(session_db=None, *, session_resolver=None) -> int:
 
 
 def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
-                         session_resolver=None) -> bool:
+                         session_resolver=None, blocked_sessions: Optional[set] = None) -> bool:
     """Append one flush payload to ``session_db``; False (file kept) when structurally invalid."""
     # Cap-dropped transcript payloads carry the full message dict keyed by session_id — replay directly
     # (#78182). This handles spool files that were never drained before a restart.
@@ -368,7 +372,19 @@ def _recover_one_payload(session_db, path: Path, payload: Dict[str, Any], *,
             logger.warning("Cannot recover structurally invalid transcript spool "
                            "file %s; preserved for manual inspection", path)
             return False
-        session_db.append_message(**_transcript_append_kwargs(spooled_sid, message, payload))
+        if blocked_sessions is not None and spooled_sid in blocked_sessions:
+            # An older message for this session could not be replayed. Writing this one now would give
+            # it a lower row id than the message it follows, permanently inverting the transcript, so
+            # leave it for the next start.
+            return False
+        try:
+            session_db.append_message(**_transcript_append_kwargs(spooled_sid, message, payload))
+        except Exception:
+            # Same contract as drain_transcript_spool: stop this session's replay on the first failure
+            # and keep the remaining spool files for the next attempt.
+            if blocked_sessions is not None:
+                blocked_sessions.add(spooled_sid)
+            raise
         return True
     session_key, data = payload.get("session_key", ""), payload.get("data", {})
     text = data.get("text", "")

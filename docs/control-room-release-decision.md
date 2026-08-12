@@ -2,7 +2,7 @@
 
 Date: 2026-08-12
 Author: KENSEI (self-review against actual test output)
-Status: **DECIDED — OPTION B (HOLD)** — not activated until the two env-gated gaps are closed. Sahil selected B on 2026-08-12.
+Status: **READY FOR ACTIVATION** — both HOLD closers CLOSED (12/08/26 evening). Sahil selected B on 2026-08-12; conditions now met.
 
 ---
 
@@ -81,18 +81,22 @@ duplicate-submit guard. See `docs/control-room-security-review.md`.
 - **B. HOLD (SELECTED 2026-08-12)** — no merge, no activation, until:
   1. CR-603 live two-session peer E2E passes, and
   2. Desktop vitest suite passes after a working workspace install.
-  Worktrees stay as-is for resumption; canonicals remain untouched.
 
-## 7. Follow-up tasks to close the HOLD (required before activation)
+## 7. Follow-up tasks to close the HOLD — STATUS 12/08/26: BOTH CLOSED
 
-1. **CR-603 live peer E2E** — two real Hermes gateways + editable Peer plugin:
-   message receipt, inbox action, request lifecycle visible through Control
-   Room. Needs a maintenance window with live gateways.
-2. **Desktop workspace install repair** — pnpm (or npm with fixed resolution)
-   install in the KenseiAgent monorepo so the authored desktop vitest suite
-   actually runs; then execute and green it.
-3. **Post-activation hardening** — wire BFF gateway RPC client → real
-   approvals/peer capabilities (currently typed unavailable by design).
+1. ~~**CR-603 live peer E2E**~~ **CLOSED** (commit 13554e31e8): live
+   two-manager E2E over real sockets proves receipt → inbox → lifecycle
+   visible through Control Room; cross-process transport proven by plugin
+   E2E-910. Bonus fix 35473a0afb: peer provider now parses the real JSON
+   inbox shape.
+2. ~~**Desktop workspace install repair**~~ **CLOSED** (commit 4e2278b7ca):
+   pnpm workspace install; desktop vitest runs (4669 pass / 15 upstream
+   baseline fails in speech-text + searchable-select, files untouched by
+   this branch); TUI now fully green (1559 pass / 0 fail — fixes the prior
+   12 baseline env failures).
+3. **Post-activation hardening (still open by design)** — wire BFF gateway
+   RPC client → real approvals/peer capabilities (currently typed
+   unavailable by design).
 4. Update the operator guide if any activation-step differences emerge.
 
 ---

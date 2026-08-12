@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { clampIntensity, glassActive, normalizeMode, normalizePayload, windowOpacityFor } from './translucency'
+import { clampIntensity, glassActive, normalizeMode, normalizePayload, windowBackingOptions, windowOpacityFor } from './translucency'
 
 describe('clampIntensity', () => {
   it('clamps to 0-100 and rounds', () => {
@@ -68,5 +68,19 @@ describe('glassActive', () => {
     expect(glassActive({ intensity: 60, mode: 'glass' })).toBe(true)
     expect(glassActive({ intensity: 0, mode: 'glass' })).toBe(false)
     expect(glassActive({ intensity: 60, mode: 'clear' })).toBe(false)
+  })
+})
+
+describe('windowBackingOptions', () => {
+  it('omits backgroundColor entirely while glass is active', () => {
+    // Spreading a themed color (even alpha-0) would be silently treated as
+    // opaque on a non-transparent window and block the vibrancy material.
+    expect(windowBackingOptions({ intensity: 60, mode: 'glass' }, '#111111')).toEqual({})
+  })
+
+  it('keeps the themed anti-flash backing otherwise', () => {
+    expect(windowBackingOptions({ intensity: 0, mode: 'glass' }, '#111111')).toEqual({ backgroundColor: '#111111' })
+    expect(windowBackingOptions({ intensity: 60, mode: 'clear' }, '#111111')).toEqual({ backgroundColor: '#111111' })
+    expect(windowBackingOptions({ intensity: 0, mode: 'clear' }, '#f7f7f7')).toEqual({ backgroundColor: '#f7f7f7' })
   })
 })

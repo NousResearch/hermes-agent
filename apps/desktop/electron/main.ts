@@ -288,7 +288,12 @@ import {
 } from './ssh-connection'
 import { createStreamThrottle } from './stream-throttle'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
-import { glassActive, normalizePayload as normalizeTranslucencyPayload, windowOpacityFor } from './translucency'
+import {
+  glassActive,
+  normalizePayload as normalizeTranslucencyPayload,
+  windowBackingOptions,
+  windowOpacityFor
+} from './translucency'
 import {
   compareApiUrl,
   parseCompareBehindCount,
@@ -915,10 +920,18 @@ function windowOpacity() {
 // Re-apply translucency to a live window (runtime toggle, no recreation).
 // `setOpacity` is a no-op on Linux, which is fine — it just stays opaque there.
 // The backing swap is the glass half: Chromium composites the page against
-// `backgroundColor` BEFORE macOS composites the window, so glass needs an
-// alpha-0 backing for the vibrancy material to reach a transparent page, and
+// the window backing BEFORE macOS composites the window, so glass needs the
+// backing dropped for the vibrancy material to reach a transparent page, and
 // every other state needs the opaque themed backing (anti-flash, and it is
 // what makes clear mode fade to the desktop instead of to black).
+//
+// CAUTION (measured, macOS 26 / Electron 40): a runtime
+// setBackgroundColor('#00000000') is silently LOST on a window whose
+// compositor hasn't been up for a few seconds — including calls from
+// 'ready-to-show' and 'did-finish-load'. Cold launches therefore must not
+// rely on this path: windows are BORN with the right backing
+// (windowBackingOptions at each creation site). This path only has to cover
+// live toggles from Settings, where the window is long settled.
 function applyWindowTranslucency(win) {
   if (!win || win.isDestroyed()) {
     return
@@ -939,11 +952,13 @@ function applyWindowTranslucency(win) {
   }
 }
 
-// Window creation: glass windows must be BORN with a transparent backing —
-// flipping backgroundColor after creation repaints, but the first frames of a
-// cold glass launch would flash the opaque backing first.
-function initialWindowBackgroundColor() {
-  return glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor()
+// Constructor backing for a chat window under the CURRENT translucency state:
+// glass omits backgroundColor so vibrancy shows from the first frame (a
+// non-transparent window silently ignores constructor alpha, and runtime
+// swaps are lost early in a window's life — see applyWindowTranslucency);
+// otherwise the opaque themed anti-flash backing.
+function chatWindowBackingOptions() {
+  return windowBackingOptions(translucencyState, getWindowBackgroundColor())
 }
 
 function isHexColor(value) {
@@ -10679,7 +10694,7 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     // covers it. ready-to-show fires after the boot-time paint in
     // themes/context.tsx, so the window appears already themed.
     show: false,
-    backgroundColor: initialWindowBackgroundColor(),
+    ...chatWindowBackingOptions(),
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
@@ -10777,7 +10792,7 @@ function createInstanceWindow() {
     opacity: windowOpacity(),
     icon,
     show: false,
-    backgroundColor: initialWindowBackgroundColor(),
+    ...chatWindowBackingOptions(),
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
@@ -11644,7 +11659,7 @@ function createWindow() {
     // `backgroundColor` and follows the OS appearance) can't flash a light
     // material before the renderer paints the app theme. See createSessionWindow.
     show: false,
-    backgroundColor: initialWindowBackgroundColor(),
+    ...chatWindowBackingOptions(),
     // Shared with the secondary session windows (chatWindowWebPreferences);
     // stream-aware throttling is applied per-window via streamThrottle so a
     // live answer keeps painting while the window is blurred or minimized,

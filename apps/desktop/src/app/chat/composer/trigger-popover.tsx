@@ -1,5 +1,5 @@
 import type { Unstable_TriggerItem } from '@assistant-ui/core'
-import { Fragment } from 'react'
+import { Fragment, useEffect, useRef } from 'react'
 
 import { referenceKind, referenceStyle } from '@/components/assistant-ui/reference-kinds'
 import { Codicon } from '@/components/ui/codicon'
@@ -91,6 +91,43 @@ export function ComposerTriggerPopover({
   const copy = t.composer
   const isSlash = kind === '/'
   const isEmoji = kind === ':'
+  const listRef = useRef<HTMLDivElement>(null)
+  // Index of the row the mouse last highlighted. Hover-driven highlights must
+  // not scroll (the row is already under the cursor, and a nudge would move
+  // rows under the pointer and re-fire hover in a loop) — only keyboard
+  // navigation may drive the drawer's scroll position.
+  const hoverIndexRef = useRef(-1)
+
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
+  useEffect(() => {
+    // The marker is single-use: it suppresses exactly the activeIndex echo of
+    // the hover that set it. Clearing it on every change keeps a stale marker
+    // from swallowing a later keyboard step that lands on the same index
+    // (e.g. hover the last row, wrap down to 0, wrap back up).
+    const isHoverEcho = activeIndex === hoverIndexRef.current
+
+    hoverIndexRef.current = -1
+
+    if (isHoverEcho) {
+      return
+    }
+
+    const list = listRef.current
+
+    if (!list) {
+      return
+    }
+
+    // At the top, pin the drawer to 0 so the first group header stays visible;
+    // `nearest` alone would stop at the row and leave the header clipped.
+    if (activeIndex <= 0) {
+      list.scrollTop = 0
+
+      return
+    }
+
+    list.querySelector('[data-highlighted]')?.scrollIntoView({ block: 'nearest' })
+  }, [activeIndex, items])
 
   let lastGroup: string | undefined
 
@@ -100,6 +137,10 @@ export function ComposerTriggerPopover({
       data-slot="composer-completion-drawer"
       data-state="open"
       onMouseDown={event => event.preventDefault()}
+      onMouseLeave={() => {
+        hoverIndexRef.current = -1
+      }}
+      ref={listRef}
       role="listbox"
     >
       {scope && <div className={cn(GROUP_HEADER_CLASS, 'pt-0.5')}>{referenceStyle(scope).label}</div>}
@@ -146,7 +187,10 @@ export function ComposerTriggerPopover({
                 className={ROW_CLASS}
                 data-highlighted={active ? '' : undefined}
                 onClick={() => onPick(item)}
-                onMouseEnter={() => onHover(index)}
+                onMouseEnter={() => {
+                  hoverIndexRef.current = index
+                  onHover(index)
+                }}
                 type="button"
               >
                 {isEmoji ? (

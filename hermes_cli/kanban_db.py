@@ -5142,7 +5142,31 @@ def request_review_changes(
         # any branch/worktree identity already attached to the card.  External
         # webhook cards have no implementer, so this is also the point where we
         # synthesize the complete DEV remediation contract.
-        source_metadata = {**task_metadata, **submitted_metadata}
+        submitted_nested = submitted_metadata.get("metadata")
+        if not isinstance(submitted_nested, dict):
+            submitted_nested = {}
+        task_nested = task_metadata.get("metadata")
+        if not isinstance(task_nested, dict):
+            task_nested = {}
+        # Webhook-originated review evidence uses the ingest vocabulary
+        # (repository/url plus nested metadata), while native submissions use
+        # repo/pr_url and top-level identity.  Normalize both forms before
+        # synthesizing the remediation contract so the same PR/head survives
+        # the review -> DEV transition.
+        source_metadata = {
+            **task_metadata,
+            **task_nested,
+            **submitted_nested,
+            **submitted_metadata,
+        }
+        source_metadata.setdefault("repo", source_metadata.get("repository"))
+        source_metadata.setdefault("pr_url", source_metadata.get("url"))
+        if not source_metadata.get("pr_url") and source_metadata.get("repo") and source_metadata.get("number"):
+            source_metadata["pr_url"] = (
+                f"https://github.com/{source_metadata['repo']}/pull/{source_metadata['number']}"
+            )
+        source_metadata.setdefault("branch_name", submitted_nested.get("branch_name"))
+        source_metadata.setdefault("branch", submitted_nested.get("branch"))
         configured_agent = (
             review_metadata.get("coding_agent")
             or submitted_metadata.get("coding_agent")
@@ -5170,8 +5194,9 @@ def request_review_changes(
             "number": source_metadata.get("number") or handoff.get("number") or review_metadata.get("number"),
             "head_sha": source_metadata.get("head_sha") or handoff.get("head_sha") or review_metadata.get("head_sha"),
         })
-        if source_metadata.get("branch_name"):
-            review_metadata["branch_name"] = source_metadata["branch_name"]
+        for identity_key in ("branch_name", "branch", "head_ref", "base_branch"):
+            if source_metadata.get(identity_key):
+                review_metadata[identity_key] = source_metadata[identity_key]
         task_metadata.update(review_metadata)
         if review_metadata.get("coding_agent") not in {"codex", "cursor"}:
             capability_reason = (
@@ -8512,7 +8537,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
+            "SELECT id, worker_pid, claim_lock, started_at, assignee, metadata FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -8588,17 +8613,17 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 provider_unavailable_exit = True
                 category = "authentication" if kind == "provider_auth" else "billing/credits"
                 try:
-                    task_metadata = json.loads(
-                        conn.execute(
-                            "SELECT metadata FROM tasks WHERE id=?", (row["id"],)
-                        ).fetchone()["metadata"] or "{}"
-                    )
+                    task_metadata = json.loads(row["metadata"] or "{}")
                 except (TypeError, ValueError, json.JSONDecodeError):
                     task_metadata = {}
                 if not isinstance(task_metadata, dict):
                     task_metadata = {}
-                provider = str(task_metadata.get("provider") or "configured provider").strip()
-                profile = str(row["claim_lock"] or "worker").split(":", 1)[-1]
+                provider = str(
+                    task_metadata.get("provider_override")
+                    or task_metadata.get("provider")
+                    or "configured provider"
+                ).strip()
+                profile = str(row["assignee"] or "unknown").strip()
                 error_text = (
                     f"provider {category} failure for profile {profile} ({provider}) "
                     f"(worker exit {code}) — refresh credentials or restore provider "
@@ -8611,6 +8636,9 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     "exit_kind": kind,
                     "exit_code": code,
                     "provider_failure": category,
+                    "profile": profile,
+                    "provider": provider,
+                    "safe_cause": error_text,
                 }
             else:
                 protocol_violation = False

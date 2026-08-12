@@ -362,6 +362,7 @@ def test_external_webhook_review_routes_changes_to_dev_on_same_pr(board):
             reviewer="reviewer",
             checks_passed=False,
             mergeable=False,
+            metadata={"branch_name": "feature/external-fix", "head_ref": "feature/external-fix"},
         )
         assert task_id is not None
         review = kb.claim_review_task(conn, task_id, claimer="worker:reviewer")
@@ -383,7 +384,14 @@ def test_external_webhook_review_routes_changes_to_dev_on_same_pr(board):
         assert task.metadata["lane"] == "DEV"
         assert task.metadata["capability"] == "implementation"
         assert task.metadata["coding_agent"] == "codex"
+        assert task.metadata["repo"] == "acme/repo"
+        assert task.metadata["pr_url"] == "https://github.com/acme/repo/pull/77"
+        assert task.metadata["number"] == 77
+        assert task.metadata["head_sha"] == "e" * 40
+        assert task.metadata["branch_name"] == "feature/external-fix"
+        assert task.metadata["head_ref"] == "feature/external-fix"
         assert task.metadata["existing_pr_remediation"] is True
+        assert task.metadata["remediate_existing_pr"] is True
         assert task.metadata["no_replacement_pr"] is True
 
 

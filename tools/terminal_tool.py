@@ -3786,6 +3786,17 @@ TERMINAL_SCHEMA = {
 
 
 def _handle_terminal(args, **kw):
+    # Mirror of execute_code's misplaced-argument recovery: models sometimes
+    # send execute_code's ``code`` argument here. Without this, the call
+    # falls through to command=None and fails with "Invalid command:
+    # expected string, got NoneType" — naming neither the stray argument
+    # nor the right tool.
+    if "command" not in args and "code" in args:
+        return tool_error(
+            "terminal received a 'code' parameter, but it requires a shell "
+            "command in 'command'. Use execute_code(code=...) for Python; "
+            "for shell, retry as terminal(command=...)."
+        )
     return terminal_tool(
         command=args.get("command"),
         background=args.get("background", False),

@@ -577,6 +577,18 @@ class TestExecuteCodeEdgeCases(unittest.TestCase):
         self.assertIn("terminal(command=...)", result["error"])
         self.assertIn("execute_code(code=...)", result["error"])
 
+    def test_terminal_code_argument_points_to_execute_code(self):
+        """Mirror recovery: terminal(code=...) names the stray argument and
+        redirects to execute_code, instead of the opaque
+        'Invalid command: expected string, got NoneType'."""
+        from tools.terminal_tool import _handle_terminal
+        result = json.loads(_handle_terminal({"code": "print(1)"}, task_id="test"))
+        self.assertIn("error", result)
+        self.assertIn("'code' parameter", result["error"])
+        self.assertIn("execute_code(code=...)", result["error"])
+        self.assertIn("terminal(command=...)", result["error"])
+        self.assertNotIn("NoneType", result["error"])
+
     def test_empty_code_explains_required_parameter(self):
         for code in ("", None):
             with self.subTest(code=code):

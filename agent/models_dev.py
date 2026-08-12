@@ -166,6 +166,7 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "minimax-cn": "minimax-cn",
     "deepseek": "deepseek",
     "alibaba": "alibaba",
+    "alibaba-cn": "alibaba-cn",
     "qwen-oauth": "alibaba",
     "copilot": "github-copilot",
     "ai-gateway": "vercel",

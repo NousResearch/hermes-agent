@@ -483,6 +483,50 @@ def _managed_values(
     )
 
 
+# Cadence for the in-flight tool activity heartbeat. Must stay far below the
+# gateway turn-inactivity timeout (default 1800s) so a silent-but-healthy
+# tool call never looks idle to the watchdog.
+_TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S = 30.0
+
+
+def _run_tool_activity_heartbeat(
+    agent,
+    stop_event: threading.Event,
+    label: str,
+    interval: float = _TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S,
+) -> None:
+    """Refresh the agent's activity clock while a tool call is in flight.
+
+    The gateway's turn-inactivity watchdog
+    (``gateway/run.py::_watch_gateway_turn_inactivity``) abandons a turn
+    once ``seconds_since_activity`` exceeds the inactivity timeout
+    (default 30 min). Activity is stamped when a tool *starts* and when it
+    *completes*, but a tool call that runs silently for 30+ minutes
+    (quiet builds, long pytest suites, large downloads, network waits that
+    emit no output) previously froze the clock at "executing tool: <name>"
+    and the watchdog hard-abandoned a turn that was still making progress,
+    reaping the tool's processes mid-execution.
+
+    This daemon thread touches ``agent._touch_activity`` every ``interval``
+    seconds until ``stop_event`` is set (the tool call returned), so the
+    gateway keeps seeing a live turn for the whole duration of the call.
+
+    A tool that truly hangs is still bounded by the tool layer's own
+    timeouts (terminal ``timeout`` default 180s, the concurrent batch
+    deadline ~420s), so the heartbeat only extends the turn's life for as
+    long as the tool call is legitimately executing — it does not unbind
+    wedged tools. The 30-min gateway backstop remains for turns whose
+    agent loop itself stalls (no API call, no tool call in flight).
+    """
+
+    try:
+        while not stop_event.wait(interval):
+            agent._touch_activity(label)
+    except Exception:
+        # A heartbeat must never break the agent loop.
+        pass
+
+
 def _run_agent_tool_execution_middleware(
     agent,
     *,
@@ -611,7 +655,27 @@ def _run_agent_tool_execution_middleware(
             agent._iters_since_skill = 0
 
         _advance_start_order(_begin)
-        return execute(final_args)
+
+        # Keep the gateway turn-inactivity watchdog from abandoning a turn
+        # whose tool call runs silently for longer than the inactivity
+        # timeout (#84491): stamp activity periodically while the tool is
+        # in flight, not just at start/completion. Both the sequential and
+        # the concurrent paths funnel through here, so a single heartbeat
+        # covers every tool.
+        _hb_stop = threading.Event()
+        _hb_thread = threading.Thread(
+            target=_run_tool_activity_heartbeat,
+            args=(agent, _hb_stop, f"tool running: {function_name}"),
+            kwargs={"interval": _TOOL_ACTIVITY_HEARTBEAT_INTERVAL_S},
+            daemon=True,
+            name=f"tool-activity-hb-{function_name[:24]}",
+        )
+        _hb_thread.start()
+        try:
+            return execute(final_args)
+        finally:
+            _hb_stop.set()
+            _hb_thread.join(timeout=2.0)
 
     def _hermes_pipeline(relay_args: dict[str, Any]) -> Any:
         request_result = apply_tool_request_middleware(

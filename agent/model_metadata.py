@@ -389,7 +389,8 @@ DEFAULT_CONTEXT_LENGTHS = {
     "kimi-k3": 1_048_576, "kimi": 262144,
     # Upstage Solar — /v1/models returns no context_length. Later generations and new lineups
     # default to 512K (Upstage /v1/solar/models max_model_len, 2026-09).
-    "solar-open2": 262144, "solar-pro3": 131072, "solar-pro2": 65536, "solar-mini": 32768, "solar-": 524288,
+    "solar-open2": 262144, "solar-pro4": 524288, "solar-pro3": 131072, "solar-pro2": 65536, "solar-mini": 32768, "solar-": 524288,
+    "syn-pro": 65536,
     # Tencent Hunyuan (262144 = 256 × 1024, aligned with OpenRouter live metadata)
     "hy4-preview": 1_048_576, "hy3-preview": 262144, "hy3": 262144,
     # "Ox Alpha" stealth model (OpenCode Zen / OpenRouter slugs); "Union Alpha" stealth model

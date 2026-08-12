@@ -90,6 +90,18 @@ class TestModeDetection:
         assert bu_cli.is_browser_use_cli_mode() is False
 
 
+class TestSubprocessEnvironment:
+    def test_browser_use_telemetry_defaults_off(self, monkeypatch):
+        import sys
+        from types import ModuleType
+
+        browser_tool = ModuleType("tools.browser_tool")
+        browser_tool._build_browser_env = lambda: {}
+        monkeypatch.setitem(sys.modules, "tools.browser_tool", browser_tool)
+        env = bu_cli._base_subprocess_env()
+        assert env["ANONYMIZED_TELEMETRY"] == "false"
+
+
 class TestToolSurfaceSwap:
     def test_legacy_browser_tools_hidden_in_cli_mode(self, monkeypatch):
         import tools.browser_tool as browser_tool

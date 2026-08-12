@@ -59,7 +59,9 @@ def _blocked_url_in_code(code: str) -> Optional[str]:
 def _base_subprocess_env() -> dict:
     from tools.browser_tool import _build_browser_env
 
-    return _build_browser_env()
+    env = _build_browser_env()
+    env.setdefault("ANONYMIZED_TELEMETRY", "false")
+    return env
 
 
 def _read_browser_cfg() -> dict:

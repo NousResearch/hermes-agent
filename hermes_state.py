@@ -5818,9 +5818,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         *,
         ttl_seconds: float = 300.0,
         wait_seconds: float = 1800.0,
-        poll_interval_seconds: float = 0.1,
+        poll_interval_seconds: float = 1.0,
         on_wait=None,
         wait_notice_interval_seconds: float = 15.0,
+        should_abort=None,
     ) -> bool:
         """Wait for a cross-process turn lease without holding a SQLite lock.
 
@@ -5828,12 +5829,25 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         attempt fails (elapsed ~0) and again about every
         ``wait_notice_interval_seconds`` while still waiting, so UIs can show
         that another process holds the conversation.
+
+        When ``should_abort()`` returns True (for example the agent received
+        ``/stop`` while waiting), acquisition stops immediately and returns
+        False without consuming the full ``wait_seconds`` budget.
         """
         deadline = time.monotonic() + max(0.0, float(wait_seconds))
         wait_started = None
         last_notice_at = None
         notice_every = max(0.0, float(wait_notice_interval_seconds))
         while True:
+            if should_abort is not None:
+                try:
+                    if should_abort():
+                        return False
+                except Exception:
+                    logger.debug(
+                        "session turn lease should_abort callback failed",
+                        exc_info=True,
+                    )
             if self.try_acquire_session_turn_lease(
                 session_id, holder, ttl_seconds=ttl_seconds
             ):

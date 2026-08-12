@@ -8138,7 +8138,21 @@ class AIAgent:
                     ttl_seconds=_lease_ttl,
                     wait_seconds=1800.0,
                     on_wait=_on_session_turn_lease_wait,
+                    should_abort=lambda: getattr(self, "_interrupt_requested", False),
                 ):
+                    if getattr(self, "_interrupt_requested", False):
+                        logger.info(
+                            "session turn lease wait aborted by interrupt: %s",
+                            session_id,
+                        )
+                        relay_outcome = "cancelled"
+                        return {
+                            "final_response": "",
+                            "messages": list(conversation_history or []),
+                            "api_calls": 0,
+                            "completed": False,
+                            "interrupted": True,
+                        }
                     # Fail closed like gateway TurnLeaseTimeoutError: do not
                     # enter load/run/flush, and surface a resend notice instead
                     # of a bare TimeoutError that looks like a hang.
@@ -8192,24 +8206,35 @@ class AIAgent:
                 # in a daemon thread; holder-qualified UPDATE and DELETE fence a
                 # late refresher/release from a successor lease.
                 durable_turn_lease_stop = threading.Event()
+                _lease_refresh_interval = float(
+                    getattr(self, "_session_turn_lease_refresh_interval", 60.0)
+                )
 
                 def _refresh_durable_turn_lease() -> None:
-                    while not durable_turn_lease_stop.wait(60.0):
+                    while not durable_turn_lease_stop.wait(_lease_refresh_interval):
                         try:
                             if not _turn_db.refresh_session_turn_lease(
-                                session_id,
+                                getattr(self, "session_id", None) or session_id,
                                 durable_turn_lease,
                                 ttl_seconds=_lease_ttl,
                             ):
                                 logger.error(
                                     "Lost session turn lease while turn is active: %s",
-                                    session_id,
+                                    getattr(self, "session_id", None) or session_id,
                                 )
+                                try:
+                                    self.interrupt(
+                                        "Session turn lease lost; stopping to "
+                                        "protect the transcript.",
+                                        hard_cancel=True,
+                                    )
+                                except Exception:
+                                    self._interrupt_requested = True
                                 return
                         except Exception:
                             logger.warning(
                                 "Failed to refresh session turn lease: %s",
-                                session_id,
+                                getattr(self, "session_id", None) or session_id,
                                 exc_info=True,
                             )
 

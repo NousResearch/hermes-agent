@@ -5,7 +5,11 @@ from __future__ import annotations
 import os
 import threading
 import time
+from types import SimpleNamespace
 
+import pytest
+
+import hermes_state
 from hermes_state import SessionDB
 
 
@@ -165,3 +169,64 @@ def test_acquire_turn_lease_notifies_wait_callback(tmp_path):
     assert notices
     assert notices[0] < 0.05
     second.release_session_turn_lease("shared", second_holder)
+
+
+def test_acquire_turn_lease_honors_should_abort(tmp_path):
+    """Waiters stop immediately when should_abort() returns True."""
+    path = tmp_path / "state.db"
+    first = SessionDB(path)
+    second = SessionDB(path)
+    first.create_session("shared", source="test")
+
+    first_holder = f"pid={os.getpid()}:turn=first"
+    second_holder = f"pid={os.getpid()}:turn=second"
+    assert first.try_acquire_session_turn_lease(
+        "shared", first_holder, ttl_seconds=60
+    )
+
+    abort_checks = {"count": 0}
+
+    def should_abort():
+        abort_checks["count"] += 1
+        return True
+
+    started = time.monotonic()
+    assert not second.acquire_session_turn_lease(
+        "shared",
+        second_holder,
+        wait_seconds=30,
+        poll_interval_seconds=0.05,
+        should_abort=should_abort,
+    )
+    assert time.monotonic() - started < 1.0
+    assert abort_checks["count"] >= 1
+    first.release_session_turn_lease("shared", first_holder)
+
+
+def test_non_expired_turn_lease_from_dead_pid_is_reclaimed(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A holder whose structured pid= no longer exists can be reclaimed early."""
+    db = SessionDB(tmp_path / "state.db")
+    db.create_session("shared", source="test")
+
+    dead_holder = "pid=424242:turn=dead:platform=test"
+    assert db.try_acquire_session_turn_lease(
+        "shared", dead_holder, ttl_seconds=300
+    ) is True
+
+    probed: list[int] = []
+
+    def pid_exists(pid: int) -> bool:
+        probed.append(pid)
+        return False
+
+    monkeypatch.setattr(
+        hermes_state, "psutil", SimpleNamespace(pid_exists=pid_exists)
+    )
+
+    fresh_holder = "pid=525252:turn=fresh:platform=test"
+    assert db.try_acquire_session_turn_lease(
+        "shared", fresh_holder, ttl_seconds=300
+    ) is True
+    assert probed == [424242]

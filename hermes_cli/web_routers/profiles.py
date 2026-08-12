@@ -123,7 +123,7 @@ def get_profiles_sessions(
         targets.append((name, home))
     else:
         try:
-            infos = profiles_mod.list_profiles()
+            infos = profiles_mod.list_profiles(skip_skills=True)
             targets = [(info.name, info.path) for info in infos]
         except Exception:
             _log.exception("GET /api/profiles/sessions: list_profiles failed")

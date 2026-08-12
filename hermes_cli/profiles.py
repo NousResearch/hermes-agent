@@ -746,7 +746,7 @@ def _check_gateway_running(profile_dir: Path) -> bool:
 # when the dir tree's signature (skills_dir + immediate category dirs mtimes)
 # changes (catches skill add/remove) or after a short TTL (catches deep edits).
 _SKILL_COUNT_CACHE: dict[str, tuple[float, float, int]] = {}
-_SKILL_COUNT_TTL_SECONDS = 30.0
+_SKILL_COUNT_TTL_SECONDS = 300.0
 
 
 def _skills_dir_signature(skills_dir: Path) -> float:
@@ -886,8 +886,15 @@ def write_profile_meta(
 # CRUD operations
 # ---------------------------------------------------------------------------
 
-def list_profiles() -> List[ProfileInfo]:
-    """Return info for all profiles, including the default."""
+def list_profiles(*, skip_skills: bool = False) -> List[ProfileInfo]:
+    """Return info for all profiles, including the default.
+
+    When *skip_skills* is True the ``skill_count`` field is left at 0
+    and the per-profile ``rglob("SKILL.md")`` walk is skipped entirely.
+    Callers that only need profile names and paths (e.g. the sessions
+    sidebar endpoint) should pass ``skip_skills=True`` to avoid the
+    potentially expensive directory traversal.
+    """
     profiles = []
     wrapper_dir = _get_wrapper_dir()
 
@@ -905,7 +912,7 @@ def list_profiles() -> List[ProfileInfo]:
             model=model,
             provider=provider,
             has_env=(default_home / ".env").exists(),
-            skill_count=_count_skills(default_home),
+            skill_count=0 if skip_skills else _count_skills(default_home),
             distribution_name=dist_name,
             distribution_version=dist_version,
             distribution_source=dist_source,
@@ -945,7 +952,7 @@ def list_profiles() -> List[ProfileInfo]:
                 model=model,
                 provider=provider,
                 has_env=(entry / ".env").exists(),
-                skill_count=_count_skills(entry),
+                skill_count=0 if skip_skills else _count_skills(entry),
                 alias_path=alias_path if (alias_path and alias_path.exists()) else None,
                 alias_name=alias_name,
                 distribution_name=dist_name,

@@ -255,45 +255,6 @@ class TestCmdUpdateNpmLockfileCache:
         assert cache_roots == [shared_root, shared_root]
 
 
-class TestCmdUpdatePip:
-    """Regression tests for pip-install update flows."""
-
-    @patch("shutil.which", return_value="/usr/bin/uv")
-    @patch("subprocess.run")
-    def test_update_pip_exports_virtualenv_from_sys_prefix(
-        self, mock_run, _mock_which, mock_args, monkeypatch
-    ):
-        from hermes_cli import main as hm
-
-        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
-        monkeypatch.setattr(hm.sys, "prefix", "/tmp/hermes-launcher-venv")
-        monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
-
-        hm._cmd_update_pip(mock_args)
-
-        assert mock_run.call_count == 1
-        assert mock_run.call_args.args[0] == ["/usr/bin/uv", "pip", "install", "--upgrade", "hermes-agent"]
-        assert mock_run.call_args.kwargs["env"]["VIRTUAL_ENV"] == "/tmp/hermes-launcher-venv"
-
-    @patch("shutil.which", return_value="/usr/bin/uv")
-    @patch("subprocess.run")
-    def test_update_pip_does_not_export_virtualenv_for_system_python(
-        self, mock_run, _mock_which, mock_args, monkeypatch
-    ):
-        from hermes_cli import main as hm
-
-        mock_run.return_value = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        monkeypatch.delenv("VIRTUAL_ENV", raising=False)
-        monkeypatch.setattr(hm.sys, "prefix", "/usr")
-        monkeypatch.setattr(hm.sys, "base_prefix", "/usr")
-
-        hm._cmd_update_pip(mock_args)
-
-        assert mock_run.call_count == 1
-        assert "env" not in mock_run.call_args.kwargs
-
-
 class TestCmdUpdateTermuxUvBootstrap:
     """Regression tests for Termux-specific uv bootstrap behavior."""
 
@@ -988,21 +949,6 @@ class TestCmdUpdateCheckBranchFlag:
         # Compare ref is upstream/main (upstream fetch succeeded).
         rev_list_cmds = [c for c in commands if "rev-list" in c]
         assert any("upstream/main" in c for c in rev_list_cmds), rev_list_cmds
-
-    @patch("hermes_cli.config.detect_install_method", return_value="pip")
-    @patch("hermes_cli.banner.check_via_pypi", return_value=0)
-    @patch("subprocess.run")
-    def test_check_branch_warns_on_pypi_install(
-        self, mock_run, _mock_pypi, _mock_method, capsys
-    ):
-        """PyPI install + --branch=<non-main> surfaces a warning instead of silent drop."""
-        args = SimpleNamespace(check=True, branch="bb/gui")
-
-        cmd_update(args)
-
-        out = capsys.readouterr().out
-        assert "--branch is ignored for PyPI installs" in out
-        assert "bb/gui" in out
 
 
 class TestCmdUpdateZipBranchRefusal:

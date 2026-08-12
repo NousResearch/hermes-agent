@@ -14,6 +14,7 @@ import { atom, computed } from 'nanostores'
 
 import { registry } from '@/contrib/registry'
 
+import { $backendThemes } from './backend-sync'
 import { BUILTIN_THEMES } from './presets'
 import type { DesktopTheme, DesktopThemeColors } from './types'
 
@@ -167,18 +168,26 @@ export function contributedThemes(): DesktopTheme[] {
   return out
 }
 
-/** Resolve a theme by name across the merged set (built-in + user + contributed). */
+/** Resolve a theme by name across the merged set (built-in + user + backend + contributed). */
 export function resolveTheme(name: string): DesktopTheme | undefined {
-  return BUILTIN_THEMES[name] ?? $userThemes.get()[name] ?? contributedThemes().find(theme => theme.name === name)
+  return (
+    BUILTIN_THEMES[name] ??
+    $userThemes.get()[name] ??
+    $backendThemes.get()[name] ??
+    contributedThemes().find(theme => theme.name === name)
+  )
 }
 
-/** Built-ins first (stable order), then contributed, then user installs. */
+/** Built-ins first (stable order), then contributed, then backend skins, then user installs. */
 export function listAllThemes(): DesktopTheme[] {
   const user = $userThemes.get()
+  const backend = $backendThemes.get()
+  const shadows = (theme: DesktopTheme) => user[theme.name] || backend[theme.name]
 
   return [
     ...Object.values(BUILTIN_THEMES),
-    ...contributedThemes().filter(theme => !user[theme.name]),
+    ...contributedThemes().filter(theme => !shadows(theme)),
+    ...Object.values(backend).filter(theme => !user[theme.name]),
     ...Object.values(user)
   ]
 }

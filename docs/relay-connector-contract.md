@@ -391,7 +391,7 @@ The gateway calls the transport with action dicts. Source of truth:
 | --- | --- | --- |
 | `send` | `chat_id`, `content`, `reply_to?`, `metadata?` | `{success: bool, message_id?, error?}` |
 | `edit` | `chat_id`, `message_id`, `content`, `metadata?` | `{success: bool, error?}` |
-| `typing` | `chat_id` | `{success: bool}` |
+| `typing` | `chat_id`, `metadata?` | `{success: bool}` |
 | `follow_up` | `session_key`, `kind`, `content`, `metadata?` | `{success: bool, message_id?, error?}` |
 
 `get_chat_info(chat_id)` is a separate proxied call returning at least

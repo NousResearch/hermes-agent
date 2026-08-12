@@ -31,6 +31,7 @@ import {
 import { SidebarProvider } from '@/components/ui/sidebar'
 import { discoverBundledPlugins } from '@/contrib/plugins'
 import { Slot } from '@/contrib/react/slot'
+import { useContributions } from '@/contrib/react/use-contributions'
 import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
@@ -600,6 +601,26 @@ $filePreviewTarget.listen(target => target && revealPreview())
 
 // ---------------------------------------------------------------------------
 
+interface TitlebarSlotProps {
+  area: 'titleBar.center' | 'titleBar.left' | 'titleBar.right'
+  className: string
+  style?: CSSProperties
+}
+
+function TitlebarSlot({ area, className, style }: TitlebarSlotProps) {
+  const items = useContributions(area)
+
+  if (items.length === 0) {
+    return null
+  }
+
+  return (
+    <div className={className} style={style}>
+      <Slot area={area} />
+    </div>
+  )
+}
+
 export function ContribController() {
   const sidebarOpen = useStore($sidebarOpen)
 
@@ -641,26 +662,25 @@ export function ContribController() {
               aria-hidden="true"
               className="pointer-events-none absolute inset-y-0 left-[calc(var(--titlebar-controls-left,14px)+(var(--titlebar-control-size,1.25rem)*2)+0.75rem)] right-[calc(var(--titlebar-tools-right,0.75rem)+var(--titlebar-tools-width,5.5rem)+0.75rem)] [-webkit-app-region:drag]"
             />
-            <div
+            <TitlebarSlot
+              area="titleBar.left"
               className="pointer-events-auto absolute z-10 flex w-max items-center gap-2 [-webkit-app-region:no-drag]"
               style={{
                 left: 'max(calc(var(--workspace-left, 0px) + 0.5rem), calc(var(--titlebar-controls-left, 14px) + 2 * var(--titlebar-control-size, 1.25rem) + 1rem))'
               }}
-            >
-              <Slot area="titleBar.left" />
-            </div>
-            <div className="pointer-events-auto absolute left-1/2 top-1/2 z-10 flex w-max -translate-x-1/2 -translate-y-1/2 items-center gap-2 [-webkit-app-region:no-drag]">
-              <Slot area="titleBar.center" />
-            </div>
-            <div
+            />
+            <TitlebarSlot
+              area="titleBar.center"
+              className="pointer-events-auto absolute left-1/2 top-1/2 z-10 flex w-max -translate-x-1/2 -translate-y-1/2 items-center gap-2 [-webkit-app-region:no-drag]"
+            />
+            <TitlebarSlot
+              area="titleBar.right"
               className="pointer-events-auto absolute z-10 flex w-max items-center gap-2 [-webkit-app-region:no-drag]"
               style={{
                 right:
                   'max(calc(var(--workspace-right, 0px) + 0.5rem), calc(var(--titlebar-tools-right, 0.75rem) + 4 * (var(--titlebar-control-size, 1.25rem) + 0.25rem) + 0.5rem))'
               }}
-            >
-              <Slot area="titleBar.right" />
-            </div>
+            />
           </div>
 
           <LayoutTreeRoot />

@@ -200,13 +200,29 @@ describe('fromSkin', () => {
     expect(fromSkin({ banner_title: '#FF0000' }, {}).color.accent).toBe(DEFAULT_THEME.color.accent)
   })
 
-  it('derives completion current background from resolved completion background', async () => {
-    const { fromSkin } = await importThemeWithCleanEnv()
+  it('derives completion current background from resolved completion background (polarity-compatible)', async () => {
+    // Light terminal + light-authored menu fill: the skin's fill is honored
+    // and the current-row derivation mixes off it.
+    const { fromSkin } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
 
     const theme = fromSkin({ banner_accent: '#000000', completion_menu_bg: '#ffffff' }, {})
 
     expect(theme.color.completionBg).toBe('#ffffff')
-    expect(theme.color.completionCurrentBg).toBe('#bfbfbf')
+    // Active row = authored surface mixed toward the accent (ladder knob).
+    expect(theme.color.completionCurrentBg).toBe('#c7c7c7')
+  })
+
+  it('rejects wrong-polarity fills even when skin-authored (terminal owns the canvas)', async () => {
+    // Dark terminal + white menu fill: unlike the desktop app, the TUI cannot
+    // paint its own canvas, so cross-polarity fills fall back to the derived
+    // ladder values, which are mixed from the real background and therefore
+    // polarity-correct by construction.
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    const theme = fromSkin({ banner_accent: '#000000', completion_menu_bg: '#ffffff' }, {})
+
+    expect(luminance(theme.color.completionBg)).toBeLessThanOrEqual(0.35)
+    expect(luminance(theme.color.completionCurrentBg)).toBeLessThanOrEqual(0.35)
   })
 
   it('uses active completion color as the selection highlight fallback', async () => {
@@ -286,11 +302,56 @@ describe('fromSkin', () => {
     expect(theme.color.prompt).toBe('ansi256(136)')
   })
 
-  it('does not normalize light Apple Terminal when truecolor is advertised', async () => {
-    const { fromSkin } = await importThemeWithEnv({ COLORTERM: 'truecolor', TERM_PROGRAM: 'Apple_Terminal' })
+  // ── A skin that authors a background OWNS its polarity ──────────────
+  // The TUI paints the terminal with the skin's background (OSC-11), so
+  // every adaptation pass must run against the skin's canvas, not the host
+  // profile the skin just covered. The real-world failure: a pure-black
+  // skin on light-mode Apple Terminal got its text ansi256-bucketed for a
+  // light background that no longer exists — invisible on the painted black.
+
+  it('a dark-background skin on light Apple Terminal keeps its truecolor text (no light-mode bucketing)', async () => {
+    const { fromSkin } = await importThemeWithEnv({ TERM_PROGRAM: 'Apple_Terminal' })
+
+    const theme = fromSkin({ background: '#000000', ui_accent: '#ff9e18', ui_text: '#ffa726' }, {})
+
+    expect(theme.color.text).toBe('#ffa726')
+    expect(theme.color.prompt).not.toMatch(/^ansi256/)
+  })
+
+  it('a skin background outranks the cached host background for adaptation and tone derivation', async () => {
+    const { fromSkin } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+
+    const theme = fromSkin({ background: '#000000', ui_text: '#ffa726' }, {})
+
+    // Text is not contrast-lifted toward a white host it painted over…
+    expect(theme.color.text).toBe('#ffa726')
+    // …and derived fills mix against the skin's black, not the host's white.
+    expect(luminance(theme.color.completionBg)).toBeLessThanOrEqual(0.35)
+    expect(luminance(theme.color.statusBg)).toBeLessThanOrEqual(0.35)
+  })
+
+  it('skinIsLight: the authored background decides; host detection only when absent', async () => {
+    const { skinIsLight } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+
+    expect(skinIsLight({ background: '#000000' })).toBe(false)
+    expect(skinIsLight({ background: '#f5f5f5' })).toBe(true)
+    expect(skinIsLight({})).toBe(true) // no canvas of its own → host polarity
+  })
+
+  it('keeps truecolor light Apple Terminal in truecolor (adapting, not ansi256-bucketing)', async () => {
+    const { contrastRatio, fromSkin } = await importThemeWithEnv({
+      COLORTERM: 'truecolor',
+      TERM_PROGRAM: 'Apple_Terminal'
+    })
+
     const theme = fromSkin({ banner_text: '#FFF8DC' }, {})
 
-    expect(theme.color.text).toBe('#FFF8DC')
+    // No ansi256 bucketing on truecolor terminals — a truly invisible cream
+    // (1.08:1 on white) still gets the display shim's gentle light-mode rescue
+    // (floor 1.18: enough to make near-white text appear, not enough to crush
+    // the vivid golds into mud).
+    expect(theme.color.text).toMatch(/^#[0-9a-f]{6}$/i)
+    expect(contrastRatio(theme.color.text, '#ffffff')!).toBeGreaterThanOrEqual(1.18)
   })
 
   it('normalizes Apple Terminal names before matching', async () => {
@@ -311,7 +372,284 @@ describe('fromSkin', () => {
     const { fromSkin } = await importThemeWithCleanEnv()
     const { color } = fromSkin({ ui_ok: '#008000' }, {})
 
-    expect(color.ok).toBe('#008000')
-    expect(color.statusGood).toBe('#008000')
+    // The exact value may be contrast-lifted against the background; the
+    // contract is the cascade (ok drives statusGood) and the hue surviving.
+    expect(color.statusGood).toBe(color.ok)
+    expect(color.ok).toMatch(/^#[0-9a-f]{6}$/i)
+    expect(luminance(color.ok)).toBeGreaterThan(0)
+  })
+})
+
+// Rec. 709-ish relative luminance, local to the test so assertions are
+// independent of the implementation under test.
+const luminance = (hex: string): number => {
+  const n = parseInt(hex.replace('#', ''), 16)
+
+  const channel = (v: number) => {
+    const c = v / 255
+
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+  }
+
+  return 0.2126 * channel((n >> 16) & 0xff) + 0.7152 * channel((n >> 8) & 0xff) + 0.0722 * channel(n & 0xff)
+}
+
+// The bundled slate skin's actual color block — dark-authored (pale pastels,
+// no completion/selection backgrounds defined).
+const SLATE_COLORS = {
+  banner_accent: '#8EA8FF',
+  banner_border: '#4169e1',
+  banner_dim: '#4b5563',
+  banner_text: '#c9d1d9',
+  banner_title: '#7eb8f6',
+  prompt: '#c9d1d9',
+  session_border: '#4b5563',
+  session_label: '#7eb8f6',
+  ui_accent: '#7eb8f6',
+  ui_error: '#F7A072',
+  ui_label: '#8EA8FF',
+  ui_ok: '#63D0A6',
+  ui_warn: '#e6a855'
+}
+
+// Max per-channel deviation between two hexes.
+const channelDelta = (a: string, b: string) => {
+  const pa = parseInt(a.replace('#', ''), 16)
+  const pb = parseInt(b.replace('#', ''), 16)
+
+  return Math.max(
+    Math.abs(((pa >> 16) & 0xff) - ((pb >> 16) & 0xff)),
+    Math.abs(((pa >> 8) & 0xff) - ((pb >> 8) & 0xff)),
+    Math.abs((pa & 0xff) - (pb & 0xff))
+  )
+}
+
+describe('derived tone ladder', () => {
+  it('reproduces the original hand-tuned tones from seeds (reverse-engineered knobs)', async () => {
+    // The ladder's knobs were grid-search fitted so the MATH lands on the
+    // pre-refactor hand-tuned literals. Contract: every derived tone stays
+    // within a-few-RGB-units of the original (imperceptible), so knob edits
+    // that drift the classic look fail here instead of shipping as vibes.
+    const dark = await importThemeWithCleanEnv()
+    const light = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+
+    const cases: Array<[string, string, string]> = [
+      [dark.DARK_THEME.color.muted, '#CC9B1F', 'dark muted'],
+      [dark.DARK_THEME.color.label, '#DAA520', 'dark label'],
+      [dark.DARK_THEME.color.statusFg, '#C0C0C0', 'dark statusFg'],
+      [dark.DARK_THEME.color.completionBg, '#1a1a2e', 'dark surface'],
+      [dark.DARK_THEME.color.completionCurrentBg, '#333355', 'dark chip'],
+      [dark.DARK_THEME.color.selectionBg, '#3a3a55', 'dark selection'],
+      // Light canon = liftForContrast(dark literal, white, 4.5): the exact
+      // colors xterm's minimumContrastRatio rendered on light hosts.
+      [light.LIGHT_THEME.color.muted, '#946C08', 'light muted'],
+      [light.LIGHT_THEME.color.statusFg, '#6F6F6F', 'light statusFg'],
+      [light.LIGHT_THEME.color.completionBg, '#F5F5F5', 'light surface'],
+      [light.LIGHT_THEME.color.completionCurrentBg, '#e0d1bf', 'light chip'],
+      [light.LIGHT_THEME.color.selectionBg, '#D4E4F7', 'light selection']
+    ]
+
+    for (const [got, original, label] of cases) {
+      expect(channelDelta(got, original), `${label}: ${got} vs original ${original}`).toBeLessThanOrEqual(8)
+    }
+  })
+
+  it('derives dim/secondary tones from the skin identity, not another palette', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    // A seeds-only skin (no dim/label/menu keys authored at all).
+    const { color } = fromSkin({ banner_accent: '#DD4A3A', banner_text: '#F1E6CF', banner_title: '#C7A96B' }, {})
+
+    // Muted recedes from THIS skin's text toward the background with an
+    // accent tint — a red-family derivative, never another skin's gold.
+    expect(color.muted).not.toBe(color.text)
+    expect(luminance(color.muted)).toBeLessThan(luminance(color.text))
+
+    const rgb = (hex: string) => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16))
+    const [mr, , mb] = rgb(color.muted)
+
+    expect(mr).toBeGreaterThan(mb!)
+
+    // The active-row chip is the surface tinted with the skin accent —
+    // redder than the plain surface.
+    const [sr] = rgb(color.completionBg)
+
+    expect(rgb(color.completionCurrentBg)[0]).toBeGreaterThan(sr!)
+  })
+
+  it('authored tones still override the ladder', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+    const { color } = fromSkin({ banner_dim: '#AA8844', banner_text: '#F1E6CF' }, {})
+
+    expect(color.muted).toBe('#AA8844')
+    expect(color.sessionLabel).toBe('#AA8844')
+  })
+})
+
+describe('background-aware adaptation (OSC-11 light terminals)', () => {
+  it('renders a dark-authored skin on light like minimumContrastRatio hosts do (the standardized look)', async () => {
+    const { contrastRatio, fromSkin } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+    const { color } = fromSkin(SLATE_COLORS, {})
+
+    // The authored palette IS the design: slate's airy pastels (~1.5:1) pass
+    // through BYTE-IDENTICAL — that receded look is the standardized
+    // rendering, not a washout to fix.
+    expect(color.text.toLowerCase()).toBe('#c9d1d9')
+    expect(color.accent.toLowerCase()).toBe('#7eb8f6')
+    expect(color.muted.toLowerCase()).toBe('#4b5563')
+
+    // Light mode renders the authored palette essentially RAW: a transparent
+    // terminal (the common Cursor case) applies no contrast lift of its own,
+    // and the beloved classic look is the vivid palette, not a WCAG-darkened
+    // one. Foregrounds only clear the near-invisible floor (1.18).
+    for (const key of ['text', 'prompt', 'accent', 'label', 'primary', 'muted', 'border'] as const) {
+      expect(contrastRatio(color[key], '#ffffff'), `${key} ${color[key]}`).toBeGreaterThanOrEqual(1.18)
+    }
+
+    // Semantic alert colors carry meaning — firmer floor, still gentle on light.
+    for (const key of ['ok', 'error', 'warn', 'statusGood', 'statusCritical'] as const) {
+      expect(contrastRatio(color[key], '#ffffff'), `${key} ${color[key]}`).toBeGreaterThanOrEqual(1.6)
+    }
+
+    // Background roles the skin never defined must be light-polarity fills,
+    // not the dark base's navy.
+    for (const key of ['completionBg', 'completionCurrentBg', 'statusBg', 'selectionBg'] as const) {
+      expect(luminance(color[key]), `${key} ${color[key]}`).toBeGreaterThanOrEqual(0.4)
+    }
+  })
+
+  it('rescues near-invisible colors with a hue-preserving multiplicative lift', async () => {
+    const { contrastRatio, fromSkin } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+    // The default dark cream (#FFF8DC, 1.08:1 on white) is genuinely invisible.
+    const { color } = fromSkin({ banner_text: '#FFF8DC' }, {})
+
+    expect(color.text.toLowerCase()).not.toBe('#fff8dc')
+    expect(contrastRatio(color.text, '#ffffff')!).toBeGreaterThanOrEqual(1.18)
+
+    // Multiplicative lift preserves channel ordering (warm stays warm).
+    const [r, g, b] = [1, 3, 5].map(i => parseInt(color.text.slice(i, i + 2), 16))
+
+    expect(r).toBeGreaterThanOrEqual(g!)
+    expect(g).toBeGreaterThanOrEqual(b!)
+  })
+
+  it('leaves the same skin untouched on a dark background', async () => {
+    const { fromSkin } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#1e1e2e' })
+    const { color } = fromSkin(SLATE_COLORS, {})
+
+    expect(color.text).toBe('#c9d1d9')
+    expect(color.accent).toBe('#7eb8f6')
+    expect(luminance(color.completionBg)).toBeLessThanOrEqual(0.35)
+  })
+
+  it('empty skin on a light background resolves to the light base palette', async () => {
+    const { fromSkin, LIGHT_THEME } = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+
+    expect(fromSkin({}, {}).color).toEqual(LIGHT_THEME.color)
+  })
+
+  it('base palettes are fixed points of the adaptation', async () => {
+    const dark = await importThemeWithCleanEnv()
+
+    expect(dark.fromSkin({}, {}).color).toEqual(dark.DARK_THEME.color)
+
+    const light = await importThemeWithEnv({ HERMES_TUI_BACKGROUND: '#ffffff' })
+
+    expect(light.fromSkin({}, {}).color).toEqual(light.LIGHT_THEME.color)
+  })
+
+  it('defaultThemeForCurrentBackground follows a late HERMES_TUI_BACKGROUND write', async () => {
+    const { DARK_THEME, DEFAULT_THEME, defaultThemeForCurrentBackground, LIGHT_THEME } = await importThemeWithCleanEnv()
+
+    // Module loaded dark (clean env)…
+    expect(DEFAULT_THEME.color.completionBg).toBe(DARK_THEME.color.completionBg)
+    expect(luminance(DEFAULT_THEME.color.completionBg)).toBeLessThanOrEqual(0.35)
+
+    // …then the OSC-11 answer lands and is cached into the env slot.
+    expect(defaultThemeForCurrentBackground({ HERMES_TUI_BACKGROUND: '#ffffff' }).color).toEqual(LIGHT_THEME.color)
+  })
+
+  it('gives tool + thinking their own keys, defaulting to accent + muted', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    // Independent override: recoloring tool/thinking doesn't leak into accent.
+    // (Values flow through #20379's contrast adaptation, so assert the
+    //  independence contract, not raw pre-adaptation hexes.)
+    const themed = fromSkin({ ui_accent: '#3aa0ff', ui_tool: '#ff0000', ui_thinking: '#00ff00' }, {})
+    const baseline = fromSkin({ ui_accent: '#3aa0ff' }, {})
+    expect(themed.color.tool).toBe('#ff0000')
+    expect(themed.color.thinking).toBe('#00ff00')
+    expect(themed.color.tool).not.toBe(themed.color.accent)
+    expect(themed.color.accent).toBe(baseline.color.accent) // override didn't touch accent
+
+    // Default: tool follows accent, thinking follows muted — same source →
+    // identical after adaptation.
+    const fallback = fromSkin({ ui_accent: '#3aa0ff', banner_dim: '#8a8a8a' }, {})
+    expect(fallback.color.tool).toBe(fallback.color.accent)
+    expect(fallback.color.thinking).toBe(fallback.color.muted)
+  })
+
+  it('gives code syntax its own keys, defaulting to accent/text/border/muted', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    const themed = fromSkin(
+      { syntax_string: '#aa0000', syntax_number: '#00aa00', syntax_keyword: '#0000aa', syntax_comment: '#888888' },
+      {}
+    )
+
+    expect(themed.color.syntaxString).toBe('#aa0000')
+    expect(themed.color.syntaxNumber).toBe('#00aa00')
+    expect(themed.color.syntaxKeyword).toBe('#0000aa')
+    expect(themed.color.syntaxComment).toBe('#888888')
+
+    const fallback = fromSkin({ ui_accent: '#abcdef' }, {})
+    expect(fallback.color.syntaxString).toBe('#abcdef') // string follows accent
+  })
+
+  it('lets skins override diff colors', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    const { color } = fromSkin(
+      { diff_added: '#0a0', diff_removed: '#a00', diff_added_word: '#0f0', diff_removed_word: '#f00' },
+      {}
+    )
+
+    expect(color.diffAdded).toBe('#0a0')
+    expect(color.diffRemoved).toBe('#a00')
+    expect(color.diffAddedWord).toBe('#0f0')
+    expect(color.diffRemovedWord).toBe('#f00')
+  })
+
+  it('maps the status bar from skin status_bar_* keys', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    const { color } = fromSkin(
+      {
+        status_bar_bg: '#101020',
+        status_bar_text: '#e0e0e0',
+        status_bar_bad: '#ff8800',
+        status_bar_critical: '#ff0000'
+      },
+      {}
+    )
+
+    expect(color.statusBg).toBe('#101020')
+    expect(color.statusFg).toBe('#e0e0e0')
+    expect(color.statusBad).toBe('#ff8800')
+    expect(color.statusCritical).toBe('#ff0000')
+  })
+
+  it('falls the status bar back to background + semantic colors', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+    const { color } = fromSkin({ background: '#0a0a0a', banner_text: '#fafafa', ui_error: '#dd2222' }, {})
+
+    // background paints the surface → status/completion bg; banner_text → status
+    // fg; ui_error → critical. Semantic hues flow through contrast adaptation,
+    // so `statusCritical` is asserted to track `ui_error` identically rather
+    // than pinning an adapted hex.
+    expect(color.statusBg).toBe('#0a0a0a')
+    expect(color.completionBg).toBe('#0a0a0a')
+    expect(color.statusFg).toBe('#fafafa')
+    expect(color.statusCritical).toBe(fromSkin({ ui_error: '#dd2222' }, {}).color.error)
   })
 })

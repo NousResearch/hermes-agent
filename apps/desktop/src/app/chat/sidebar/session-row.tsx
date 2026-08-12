@@ -133,6 +133,7 @@ export function SidebarSessionRow({
               profile={session.profile}
               sessionId={session.id}
               title={title}
+              tooltip={r.actionsFor(title)}
             >
               <Button
                 aria-label={r.actionsFor(title)}

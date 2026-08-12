@@ -173,3 +173,21 @@ class TestResolveDisplayContextLength:
             "The fix ensures custom_providers is passed so per-model overrides "
             "are honored."
         )
+
+    def test_global_context_is_scoped_to_configured_route(self):
+        with patch(
+            "agent.model_metadata.get_model_context_length",
+            return_value=256_000,
+        ) as resolver:
+            ctx = resolve_display_context_length(
+                "shared-model",
+                "custom",
+                base_url="https://small.example/v1",
+                config_context_length=1_048_576,
+                configured_model="shared-model",
+                configured_provider="custom",
+                configured_base_url="https://large.example/v1",
+            )
+
+        assert ctx == 256_000
+        assert resolver.call_args.kwargs["config_context_length"] is None

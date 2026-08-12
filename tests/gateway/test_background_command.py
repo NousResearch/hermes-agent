@@ -248,7 +248,16 @@ class TestRunBackgroundTask:
 
         mock_result = {"final_response": "Hello from background!", "messages": []}
 
+        checkpoint_config = {
+            "checkpoints": {
+                "enabled": True,
+                "max_snapshots": 8,
+                "max_total_size_mb": 222,
+                "max_file_size_mb": 3,
+            }
+        }
         with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("gateway.run._load_gateway_config", return_value=checkpoint_config), \
              patch("run_agent.AIAgent") as MockAgent:
             mock_agent_instance = MagicMock()
             mock_agent_instance.shutdown_memory_provider = MagicMock()
@@ -264,6 +273,11 @@ class TestRunBackgroundTask:
         content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
         assert "Background task complete" in content
         assert "Hello from background!" in content
+        agent_kwargs = MockAgent.call_args.kwargs
+        assert agent_kwargs["checkpoints_enabled"] is True
+        assert agent_kwargs["checkpoint_max_snapshots"] == 8
+        assert agent_kwargs["checkpoint_max_total_size_mb"] == 222
+        assert agent_kwargs["checkpoint_max_file_size_mb"] == 3
         mock_agent_instance.shutdown_memory_provider.assert_called_once()
         mock_agent_instance.close.assert_called_once()
 

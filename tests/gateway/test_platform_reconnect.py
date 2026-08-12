@@ -949,3 +949,71 @@ class TestSpawnSupervised:
         # _MAX_SUPERVISED_RESTARTS + 1; the reset lets it run to completion.
         assert calls["n"] == target
         assert calls["n"] > runner._MAX_SUPERVISED_RESTARTS + 1
+
+
+class TestFatalHandoffCancellationProof:
+    """The fatal-error handoff must survive cancellation of the notifying
+    task, and a retryable platform must never be silently stranded."""
+
+    @pytest.mark.asyncio
+    async def test_caller_cancellation_does_not_strand_platform(self):
+        """The fatal notification arrives on the failing adapter's own
+        polling task, and adapter.disconnect() inside the handler can cancel
+        that task mid-teardown. The platform must still reach the reconnect
+        queue (previously the CancelledError killed the handler between the
+        fatal log and the queue, stranding the platform until a manual
+        restart)."""
+        runner = _make_runner()
+        runner.stop = AsyncMock()
+
+        adapter = StubAdapter(succeed=True)
+        adapter._set_fatal_error("network_error", "DNS failure", retryable=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+
+        release = asyncio.Event()
+
+        async def slow_disconnect():
+            await release.wait()
+
+        adapter.disconnect = slow_disconnect  # hold the handler mid-teardown
+
+        caller = asyncio.create_task(runner._handle_adapter_fatal_error(adapter))
+        for _ in range(5):
+            await asyncio.sleep(0)  # let the handler reach the disconnect await
+        caller.cancel()  # what disconnect() does to the notifying task
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        release.set()  # teardown completes after the caller has died
+
+        for _ in range(200):
+            if Platform.TELEGRAM in runner._failed_platforms:
+                break
+            await asyncio.sleep(0.01)
+        assert Platform.TELEGRAM in runner._failed_platforms
+
+    @pytest.mark.asyncio
+    async def test_stranded_retryable_platform_exits_for_supervisor_restart(self):
+        """If a retryable platform ends up neither reconnected nor queued
+        (e.g. its config entry is gone so queueing is skipped), the gateway
+        must exit with failure so launchd/systemd KeepAlive restarts it,
+        instead of running indefinitely with a dead platform while healthy
+        peers mask the loss (#68693)."""
+        runner = _make_runner()
+
+        async def _stop():
+            runner._shutdown_event.set()
+
+        runner.stop = AsyncMock(side_effect=_stop)
+        runner.config = GatewayConfig(platforms={})  # queueing impossible
+
+        adapter = StubAdapter(succeed=True)
+        adapter._set_fatal_error("network_error", "DNS failure", retryable=True)
+        runner.adapters[Platform.TELEGRAM] = adapter
+        # A healthy peer keeps self.adapters non-empty, so the existing
+        # "no platforms remain" shutdown branches do not fire.
+        runner.adapters[Platform.FEISHU] = StubAdapter(platform=Platform.FEISHU)
+
+        await runner._handle_adapter_fatal_error(adapter)
+
+        assert runner._exit_with_failure is True
+        assert runner.stop.await_count == 1

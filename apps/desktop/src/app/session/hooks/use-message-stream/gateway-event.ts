@@ -1,3 +1,5 @@
+import type { BillingBlock } from '@hermes/shared'
+import type { HermesSkin } from '@hermes/shared/skin'
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
@@ -11,8 +13,10 @@ import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from
 import { playCompletionSound } from '@/lib/completion-sound'
 import { resolveGatewayEventSessionId } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
+import { modelOptionsQueryKey } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
+import { billingCtaLabel, clearBillingBlock, runBillingRecovery, setBillingBlock } from '@/store/billing-block'
 import { clearClarifyRequest, setClarifyRequest } from '@/store/clarify'
 import { setSessionCompacting } from '@/store/compaction'
 import { refreshBackgroundProcesses } from '@/store/composer-status'
@@ -20,6 +24,7 @@ import { $gateway } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { notify } from '@/store/notifications'
 import { requestDesktopOnboarding } from '@/store/onboarding'
+import { revealDesktopPane } from '@/store/pane-focus'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
 import { followActiveSessionCwd } from '@/store/projects'
@@ -45,11 +50,58 @@ import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { reportInstallMethodWarning } from '@/store/updates'
 import { notifyWorkspaceChanged, toolChangedPath, toolMayMutateFiles } from '@/store/workspace-events'
+// Leaf import (not the `@/themes` barrel) to avoid pulling the ThemeProvider
+// module graph into the gateway event hot path.
+import { ingestBackendSkin } from '@/themes/backend-sync'
 import type { RpcEvent } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
 
 import { hasSessionInfoStatePatch, sessionInfoStatePatch, SUBAGENT_EVENT_TYPES, toTodoPayload } from './utils'
+
+function firstBillingLine(text: string): string {
+  return (text || '').split('\n')[0]?.trim() ?? ''
+}
+
+/**
+ * A turn failed on a billing wall (out of credits / payment required). The
+ * gateway forwards the structured descriptor built by `agent/billing_links.py`;
+ * we cache it per-session (drives the in-chat banner) AND raise one sticky,
+ * billing-specific toast — never the generic "Hermes error" — with a smart CTA
+ * (Nous → in-app Settings → Billing, other providers → their billing page).
+ */
+function surfaceBillingBlock(sessionId: string, raw: unknown): void {
+  if (!raw || typeof raw !== 'object') {
+    return
+  }
+
+  const block = raw as BillingBlock
+
+  if (typeof block.provider !== 'string') {
+    return
+  }
+
+  setBillingBlock(sessionId, block)
+
+  const ctaCopy = {
+    addCredits: translateNow('billingBlock.addCredits'),
+    openBilling: translateNow('billingBlock.openBilling')
+  }
+
+  notify({
+    // Collapse repeat walls from the same provider into one toast.
+    id: `billing-block:${block.provider}`,
+    kind: 'warning',
+    icon: 'credit-card',
+    title: block.is_nous
+      ? translateNow('billingBlock.titleNous')
+      : translateNow('billingBlock.titleProvider', block.provider_label),
+    message: firstBillingLine(block.message) || translateNow('billingBlock.fallbackMessage'),
+    // Sticky: a credit wall blocks every turn until resolved.
+    durationMs: 0,
+    action: { label: billingCtaLabel(block, ctaCopy), onClick: () => runBillingRecovery(block) }
+  })
+}
 
 const COMPACTION_RESUME_EVENT_TYPES = new Set([
   'message.delta',
@@ -66,6 +118,7 @@ const COMPACTION_RESUME_EVENT_TYPES = new Set([
 ])
 
 interface GatewayEventDeps {
+  activeGatewayProfile: string
   activeSessionIdRef: MutableRefObject<string | null>
   compactedTurnRef: MutableRefObject<Set<string>>
   lastCwdInfoSessionRef: MutableRefObject<string | null>
@@ -98,6 +151,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
   const {
     appendAssistantDelta,
     appendReasoningDelta,
+    activeGatewayProfile,
     activeSessionIdRef,
     compactedTurnRef,
     lastCwdInfoSessionRef,
@@ -181,6 +235,21 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       }
 
       if (event.type === 'gateway.ready') {
+        // Seed the active skin into the desktop theme registry without applying,
+        // so a fresh connect never overrides the user's persisted desktop theme.
+        ingestBackendSkin((payload as { skin?: HermesSkin } | undefined)?.skin, { apply: false })
+
+        return
+      } else if (event.type === 'skin.changed') {
+        // A runtime skin switch (Hermes activating an authored skin, or `/skin`
+        // on another surface). Only the active profile's change repaints.
+        const fromActiveProfile =
+          !event.profile || normalizeProfileKey(event.profile) === normalizeProfileKey($activeGatewayProfile.get())
+
+        if (fromActiveProfile) {
+          ingestBackendSkin(payload as HermesSkin | undefined, { apply: true })
+        }
+
         return
       } else if (event.type === 'session.info') {
         // Apply session-scoped fields when the event targets the active
@@ -353,7 +422,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         if (modelValueChanged || providerValueChanged) {
           void queryClient.invalidateQueries({
-            queryKey: explicitSid && sessionId ? ['model-options', sessionId] : ['model-options']
+            queryKey:
+              explicitSid && sessionId ? modelOptionsQueryKey(activeGatewayProfile, sessionId) : ['model-options']
           })
         }
       } else if (event.type === 'message.start') {
@@ -366,6 +436,9 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         setSessionCompacting(sessionId, false)
         compactedTurnRef.current.delete(sessionId)
         nativeSubagentSessionsRef.current.delete(sessionId)
+        // A fresh turn on this session optimistically clears its billing wall;
+        // if credits are still exhausted the next failure re-raises it.
+        clearBillingBlock(sessionId)
 
         if (isActiveEvent) {
           triggerHaptic('streamStart')
@@ -483,10 +556,17 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         flushQueuedDeltas(sessionId)
 
-        playCompletionSound()
+        // Keyed by session so only one window beeps when several are open.
+        playCompletionSound(sessionId)
 
         const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
         completeAssistantMessage(sessionId, finalText, payload?.response_previewed)
+
+        // Structured billing wall forwarded by the gateway (out of credits /
+        // payment required) — cache it + raise a billing-specific toast.
+        if (payload?.billing) {
+          surfaceBillingBlock(sessionId, payload.billing)
+        }
 
         if (isActiveEvent) {
           setTurnStartedAt(null)
@@ -726,10 +806,21 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // Agent closed its own read-only tab via the desktop-gated close_terminal tool.
         // The process is untouched — this only drops the view.
         closeAgentTerminalByProc(payload?.process_id ?? '')
+      } else if (event.type === 'pane.reveal') {
+        // Agent revealed a pane via the desktop-gated focus_pane tool, in
+        // response to an explicit user request. Active session only — a
+        // background turn must never move the user's focus (desktop AGENTS.md:
+        // offer, don't hijack).
+        if (isActiveEvent) {
+          revealDesktopPane(payload?.pane ?? '')
+        }
       } else if (event.type === 'status.update') {
         if (sessionId && payload?.kind === 'compacting') {
           setSessionCompacting(sessionId, true)
           compactedTurnRef.current.add(sessionId)
+        } else if (sessionId && payload?.kind === 'compacted') {
+          setSessionCompacting(sessionId, false)
+          compactedTurnRef.current.delete(sessionId)
         } else if (sessionId && payload?.kind === 'process') {
           // The gateway's notification poller announces background process
           // completions / watch matches here — re-sync the status stack.
@@ -817,6 +908,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       appendAssistantDelta,
       appendReasoningDelta,
       activeSessionIdRef,
+      activeGatewayProfile,
       compactedTurnRef,
       completeAssistantMessage,
       failAssistantMessage,

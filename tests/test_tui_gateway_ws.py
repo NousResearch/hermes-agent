@@ -127,6 +127,28 @@ def test_ws_disconnect_preserves_and_repoints_reconnectable_session(monkeypatch)
         server._sessions.clear()
 
 
+def test_ws_connection_registers_then_disconnect_unregisters_live_transport(monkeypatch):
+    """A connected client must be tracked in the live-transport registry so a
+    session-less global broadcast (skin.changed from the background watcher)
+    reaches it, and dropped on disconnect so no stale write targets a dead peer.
+    This is the WS half of the cross-surface live-theme fix."""
+    server._sessions.clear()
+    server._live_transports.clear()
+    seen = {}
+    try:
+        _run_disconnect(
+            monkeypatch,
+            lambda t: seen.__setitem__("registered", t in server._live_transports),
+        )
+        # Seeded at receive_text time — i.e. after gateway.ready registered it.
+        assert seen["registered"] is True
+        # handle_ws's finally must have unregistered it.
+        assert not server._live_transports
+    finally:
+        server._sessions.clear()
+        server._live_transports.clear()
+
+
 def test_ws_write_loop_stall_does_not_latch_transport(monkeypatch):
     """A write that times out because the event loop is stalled (GIL-heavy
     agent turn) must NOT latch the transport closed — the frame is already

@@ -243,6 +243,32 @@ class TestExtractCacheBustingConfig:
         assert out["compression.protect_last_n"] == 25
         assert out["compression.codex_app_server_auto"] == "hermes"
 
+    def test_reads_checkpoint_subkeys(self):
+        from gateway.run import GatewayRunner
+
+        out = GatewayRunner._extract_cache_busting_config(
+            {
+                "checkpoints": {
+                    "enabled": True,
+                    "max_snapshots": 12,
+                    "max_total_size_mb": 333,
+                    "max_file_size_mb": 5,
+                }
+            }
+        )
+
+        assert out["checkpoints.enabled"] is True
+        assert out["checkpoints.max_snapshots"] == 12
+        assert out["checkpoints.max_total_size_mb"] == 333
+        assert out["checkpoints.max_file_size_mb"] == 5
+
+    def test_reads_legacy_checkpoint_boolean(self):
+        from gateway.run import GatewayRunner
+
+        out = GatewayRunner._extract_cache_busting_config({"checkpoints": True})
+
+        assert out["checkpoints.enabled"] is True
+
     def test_missing_keys_yield_none(self):
         """Absent config keys must produce None values (still contribute to signature)."""
         from gateway.run import GatewayRunner

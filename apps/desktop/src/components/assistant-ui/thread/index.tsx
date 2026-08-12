@@ -2,11 +2,7 @@ import { type FC, useCallback, useMemo, useState } from 'react'
 
 import { AssistantMessage } from '@/components/assistant-ui/thread/assistant-message'
 import { ThreadMessageList } from '@/components/assistant-ui/thread/list'
-import {
-  BackgroundResumeNotice,
-  CenteredThreadSpinner,
-  ResponseLoadingIndicator
-} from '@/components/assistant-ui/thread/status'
+import { BackgroundResumeNotice, CenteredThreadSpinner } from '@/components/assistant-ui/thread/status'
 import { SystemMessage } from '@/components/assistant-ui/thread/system-message'
 import { ThreadTimeline } from '@/components/assistant-ui/thread/timeline'
 import { type RestoreMessageTarget } from '@/components/assistant-ui/thread/types'
@@ -100,7 +96,7 @@ export const Thread: FC<{
         clampToComposer={clampToComposer}
         components={messageComponents}
         emptyPlaceholder={emptyPlaceholder}
-        loadingIndicator={loading === 'response' ? <ResponseLoadingIndicator /> : <BackgroundResumeNotice />}
+        loadingIndicator={<BackgroundResumeNotice />}
         sessionKey={sessionKey}
       />
       {loading === 'session' && <CenteredThreadSpinner />}

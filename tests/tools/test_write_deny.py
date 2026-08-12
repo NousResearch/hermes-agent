@@ -39,6 +39,12 @@ class TestWriteDenyExactPaths:
         path = str(get_hermes_home() / ".env")
         assert _is_write_denied(path) is True
 
+    def test_encrypted_bitwarden_cache(self):
+        from hermes_constants import get_hermes_home
+
+        path = get_hermes_home() / "cache" / "bws_cache.enc.json"
+        assert _is_write_denied(str(path)) is True
+
     def test_hermes_root_env_when_running_under_profile(self, tmp_path, monkeypatch):
         """Top-level ``<root>/.env`` stays write-denied even when running under
         a profile (#15981).

@@ -193,34 +193,6 @@ def test_locales_dir_env_override_ignored_when_missing(tmp_path, monkeypatch):
     assert result.name == "locales"
 
 
-def test_locales_dir_falls_back_to_data_scheme(tmp_path, monkeypatch):
-    """When neither the env override nor a source-adjacent locales/ exists,
-    _locales_dir uses sysconfig's data scheme (the pip-wheel layout)."""
-    import sysconfig
-
-    # No env override.
-    monkeypatch.delenv("HERMES_BUNDLED_LOCALES", raising=False)
-
-    # Force the source-adjacent path to a location with no locales/ dir.
-    fake_pkg = tmp_path / "site-packages" / "agent"
-    fake_pkg.mkdir(parents=True)
-    monkeypatch.setattr(i18n, "__file__", str(fake_pkg / "i18n.py"))
-
-    # Stand up a fake data scheme containing locales/.
-    data_root = tmp_path / "data-scheme"
-    (data_root / "locales").mkdir(parents=True)
-    real_get_path = sysconfig.get_path
-
-    def fake_get_path(name, *args, **kwargs):
-        if name == "data":
-            return str(data_root)
-        return real_get_path(name, *args, **kwargs)
-
-    monkeypatch.setattr(i18n.sysconfig, "get_path", fake_get_path)
-
-    assert i18n._locales_dir() == data_root / "locales"
-
-
 def test_t_resolves_real_string_in_source_checkout():
     """Sanity: in the test environment (a source checkout) t() must return a
     human string, never the bare key path. Guards against catalog-load

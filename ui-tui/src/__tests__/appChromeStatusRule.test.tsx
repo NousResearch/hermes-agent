@@ -353,6 +353,52 @@ describe('StatusRule credits notice render priority', () => {
   })
 })
 
+describe('StatusRule battery indicator', () => {
+  it('renders the battery label with a battery glyph on AC-off', () => {
+    const element = StatusRule({
+      ...baseProps,
+      battery: { available: true, category: 'good', percent: 82, plugged: false }
+    })
+
+    expect(textContent(element)).toContain('🔋 82%')
+  })
+
+  it('uses a bolt glyph while charging', () => {
+    const element = StatusRule({
+      ...baseProps,
+      battery: { available: true, category: 'good', percent: 82, plugged: true }
+    })
+
+    expect(textContent(element)).toContain('⚡ 82%')
+  })
+
+  it('colours the read-out by category (critical → theme statusCritical)', () => {
+    const element = StatusRule({
+      ...baseProps,
+      battery: { available: true, category: 'critical', percent: 7, plugged: false }
+    })
+
+    const leaf = findElementWithText(element, '7%')
+    expect(leaf?.props.color).toBe(DEFAULT_THEME.color.statusCritical)
+  })
+
+  it('omits the segment when battery is null', () => {
+    const element = StatusRule({ ...baseProps, battery: null })
+
+    expect(textContent(element)).not.toContain('%🔋')
+    expect(textContent(element)).not.toContain('🔋')
+  })
+
+  it('omits the segment when no battery is available (desktop/server)', () => {
+    const element = StatusRule({
+      ...baseProps,
+      battery: { available: false, category: 'dim', percent: null, plugged: null }
+    })
+
+    expect(textContent(element)).not.toContain('🔋')
+  })
+})
+
 describe('StatusRule idle-since read-out', () => {
   // The IdleSince component uses hooks, so it can't be invoked outside a
   // renderer — assert on the element tree instead (same reason the duration

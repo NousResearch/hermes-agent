@@ -106,10 +106,14 @@ let
             # wheel's data_files — setup.py's _data_file_tree returns []
             # for a missing dir, so the wheel builds fine without them.
             # This keeps SKILL.md edits from rebuilding the Python venv.
-            # NOTE: optional-mcps must stay — pyproject.toml lists its
-            # manifests as explicit data-files, which error when missing.
             "skills"
             "optional-skills"
+            # locales/ and optional-mcps/ are bare data dirs (no
+            # __init__.py) shipped via symlinks + HERMES_BUNDLED_LOCALES
+            # / HERMES_OPTIONAL_MCPS, not via the wheel. Excluding them
+            # keeps catalog edits from rebuilding the Python venv.
+            "locales"
+            "optional-mcps"
           ];
         excludedFiles = [
           # JS root manifests

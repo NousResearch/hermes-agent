@@ -12,7 +12,7 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
-import { canImportHermesCli, hermesRuntimeImportProbe, verifyHermesCli } from './backend-probes'
+import { canImportHermesCli, hermesRuntimeImportProbe, shouldTrustHermesOverride, verifyHermesCli } from './backend-probes'
 
 // Resolve the host's own Node binary -- guaranteed to be on disk and
 // runnable. We use it as both a stand-in for "a python that doesn't
@@ -49,6 +49,15 @@ test('hermes runtime import probe checks config dependencies', () => {
   // passed the old probe and produced an unrecoverable boot loop.
   assert.match(probe, /\bimport dotenv\b/)
   assert.match(probe, /\bimport hermes_cli\.config\b/)
+})
+
+test('explicit Hermes override is authoritative', () => {
+  assert.equal(shouldTrustHermesOverride('/nix/store/abc/bin/hermes'), true)
+})
+
+test('empty Hermes override is not authoritative', () => {
+  assert.equal(shouldTrustHermesOverride(''), false)
+  assert.equal(shouldTrustHermesOverride(undefined), false)
 })
 
 test('verifyHermesCli returns false when command is falsy', () => {

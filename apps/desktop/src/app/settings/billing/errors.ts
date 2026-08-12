@@ -32,19 +32,19 @@ export const resolveRefusal = (refusal: BillingRefusal): BillingRefusalPresentat
     case 'insufficient_scope':
       return {
         action: { type: 'step_up' },
-        message: 'This needs terminal billing enabled. Start a top-up to enable it, then retry.',
-        title: 'Terminal billing needs approval'
+        message: 'This needs Remote Spending allowed. Start a top-up to allow it, then retry.',
+        title: 'Remote Spending needs approval'
       }
     case 'remote_spending_revoked': {
       const who =
         refusal.actor === 'admin'
-          ? 'An admin turned off terminal billing for this terminal.'
-          : 'You turned off terminal billing for this terminal.'
+          ? 'An admin stopped remote spending for this terminal.'
+          : 'You stopped remote spending for this terminal.'
 
       return {
         action: portalAction(refusal.portalUrl),
         message: `${who} Reconnect from Settings → Gateway to re-authorize this device.`,
-        title: 'Terminal billing was turned off'
+        title: 'Remote spending was stopped'
       }
     }
 
@@ -60,8 +60,9 @@ export const resolveRefusal = (refusal: BillingRefusal): BillingRefusalPresentat
     case 'remote_spending_disabled':
       return {
         action: portalAction(refusal.portalUrl),
-        message: 'Terminal billing is off for this account — an admin must enable it on the portal.',
-        title: 'Terminal billing is off'
+        message:
+          "Remote spending is off for this account — a billing admin can turn it on from the portal's Hermes Agent page.",
+        title: 'Remote spending is off'
       }
 
     case 'role_required':

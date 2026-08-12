@@ -37,9 +37,9 @@ const renderBillingError = (
   switch (env.error) {
     case 'insufficient_scope':
       // Reached by non-charge mutations (e.g. auto-reload config) that need
-      // terminal billing enabled. The resumable step-up lives on the buy/charge
+      // Remote Spending allowed. The resumable step-up lives on the buy/charge
       // path; point the user there rather than leaking the raw scope name.
-      sys('This needs terminal billing enabled. Start a top-up to enable it, then retry.')
+      sys('This needs Remote Spending allowed. Start a top-up to allow it, then retry.')
 
       break
     case 'remote_spending_revoked': {
@@ -49,8 +49,8 @@ const renderBillingError = (
 
       const who =
         env.actor === 'admin'
-          ? 'An admin turned off terminal billing for this terminal.'
-          : 'You turned off terminal billing for this terminal.'
+          ? 'An admin stopped remote spending for this terminal.'
+          : 'You stopped remote spending for this terminal.'
 
       sys(`${who} Reconnect to restore — run /portal to re-authorize this terminal.`)
 
@@ -67,9 +67,11 @@ const renderBillingError = (
     case 'cli_billing_disabled':
 
     case 'remote_spending_disabled':
-      // Account-wide switch is OFF (dual-emitted error/code). An admin must flip
-      // it on the portal; this is NOT a per-terminal revoke.
-      sys('Terminal billing is off for this account — an admin must enable it on the portal.')
+      // Account-wide switch is OFF (dual-emitted error/code). A billing admin can
+      // turn it on from the portal's Hermes Agent page; this is NOT a per-terminal stop.
+      sys(
+        "Remote spending is off for this account — a billing admin can turn it on from the portal's Hermes Agent page."
+      )
 
       break
 

@@ -72,3 +72,26 @@ export function coarseElapsed(deltaMs: number): { unit: ElapsedUnit; value: numb
 
   return { unit: 'second', value: Math.floor(ms / SECOND) }
 }
+
+// Localized strings for `formatAgo`; shaped to accept `t.agents` directly.
+export interface AgoLabels {
+  ageNow: string
+  ageSeconds: (seconds: number) => string
+  ageMinutes: (minutes: number) => string
+  ageHours: (hours: number) => string
+  ageDays: (days: number) => string
+}
+
+// Compact localized "2h ago" / "3m ago" / "now" for a past timestamp, bucketed
+// via `coarseElapsed` so every age label reads consistently.
+export function formatAgo(fromMs: number, labels: AgoLabels, nowMs = Date.now()): string {
+  const { unit, value } = coarseElapsed(nowMs - fromMs)
+
+  if (unit === 'second') {
+    return value < 2 ? labels.ageNow : labels.ageSeconds(value)
+  }
+
+  const by = { day: labels.ageDays, hour: labels.ageHours, minute: labels.ageMinutes }
+
+  return by[unit](value)
+}

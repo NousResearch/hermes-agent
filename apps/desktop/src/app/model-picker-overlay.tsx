@@ -16,9 +16,10 @@ import { $focusedRuntimeId, $focusedSessionState } from '@/store/session-states'
 interface ModelPickerOverlayProps {
   gateway?: HermesGateway
   onSelect: (selection: ModelSelection) => void
+  profile: string
 }
 
-export function ModelPickerOverlay({ gateway, onSelect }: ModelPickerOverlayProps) {
+export function ModelPickerOverlay({ gateway, onSelect, profile }: ModelPickerOverlayProps) {
   const primarySessionId = useStore($activeSessionId)
   const primaryModel = useStore($currentModel)
   const primaryProvider = useStore($currentProvider)
@@ -45,6 +46,7 @@ export function ModelPickerOverlay({ gateway, onSelect }: ModelPickerOverlayProp
       onOpenChange={setModelPickerOpen}
       onSelect={selection => onSelect({ ...selection, sessionId })}
       open={open}
+      profile={profile}
       sessionId={sessionId}
     />
   )

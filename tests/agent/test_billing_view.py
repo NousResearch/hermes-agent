@@ -1,4 +1,4 @@
-"""Unit tests for the Phase 2b terminal-billing core + HTTP client.
+"""Unit tests for the Phase 2b Remote Spending core + HTTP client.
 
 Covers:
 - Decimal money parsing/formatting (server emits decimal strings, not 2dp).

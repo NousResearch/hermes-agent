@@ -7,6 +7,7 @@ import { closeActiveTerminal, createTerminal, cycleTerminal } from '@/app/right-
 import { activateTreeTabSlot, cycleTreeTabInFocusedZone, layoutHasRootSide } from '@/components/pane-shell/tree/store'
 import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } from '@/lib/keybinds/actions'
 import { comboAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
+import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
 import { $repoStatus } from '@/store/coding-status'
 import { toggleCommandPalette } from '@/store/command-palette'
 import { $capture, $comboIndex, endCapture, setBinding } from '@/store/keybinds'
@@ -40,7 +41,7 @@ import {
   switcherActive,
   switcherJustClosed
 } from '@/store/session-switcher'
-import { openNewSessionInNewWindow } from '@/store/windows'
+import { openNewWindow } from '@/store/windows'
 import { useTheme } from '@/themes/context'
 
 import { requestComposerFocus, requestVoiceToggle } from '../chat/composer/focus'
@@ -122,7 +123,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
   handlersRef.current = {
     'keybinds.openPanel': () => navigate(`${SETTINGS_ROUTE}?tab=keybinds`),
 
-    'composer.focus': () => requestComposerFocus('main'),
+    'composer.focus': () => requestComposerFocus('active'),
     'composer.modelPicker': () => setModelPickerOpen(true),
     'composer.voice': requestVoiceToggle,
 
@@ -145,7 +146,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
       window.dispatchEvent(new CustomEvent('hermes:new-session-shortcut'))
     },
     'session.newTab': () => deps.openNewSessionTab(),
-    'session.newWindow': () => void openNewSessionInNewWindow(),
+    'session.newWindow': () => void openNewWindow(),
     // ⌃Tab cycles the focused session/main tab strip; only a non-tabbed focus
     // falls through to the recent-session switcher.
     'session.next': () => void (cycleTreeTabInFocusedZone(1) || stepSession(1)),
@@ -242,11 +243,32 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
 
       const actionId = $comboIndex.get().get(combo)
 
+      // Unbound printable → type-to-focus. Bound chords (shift+n, …) win above.
       if (!actionId) {
+        const typeChar = typeToFocusChar(event)
+
+        if (typeChar && composerFocusKeysAllowed(event, 'type')) {
+          event.preventDefault()
+          requestComposerFocus('active', { typeChar })
+        }
+
         return
       }
 
       if (isEditableTarget(event.target) && !comboAllowedInInput(combo)) {
+        return
+      }
+
+      // Soft `/` / Enter: gated so dialogs/buttons/terminal keep those keys.
+      // Rebound chords fall through to the normal handler.
+      if (actionId === 'composer.focus' && isComposerFocusSoftCombo(combo)) {
+        if (!composerFocusKeysAllowed(event, combo)) {
+          return
+        }
+
+        event.preventDefault()
+        requestComposerFocus('active', { typeChar: combo === '/' ? '/' : undefined })
+
         return
       }
 

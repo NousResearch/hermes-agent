@@ -25,12 +25,35 @@ def _has_configured_mcp_servers() -> bool:
 
 
 def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
-    """Spawn one shared background MCP discovery thread for this process."""
+    """Spawn one shared background MCP discovery thread for this process.
+
+    If the first background discovery run exits without connecting any MCP
+    server (for example after startup cancellation / OOM restart), later calls
+    are allowed to retry instead of permanently pinning the process in a
+    "discovery already started" state with zero MCP tools.
+    """
     global _mcp_discovery_started, _mcp_discovery_thread
 
     with _mcp_discovery_lock:
         if _mcp_discovery_started:
-            return
+            thread = _mcp_discovery_thread
+            if thread is not None and thread.is_alive():
+                return
+            try:
+                from tools.mcp_tool import get_mcp_status
+
+                status = get_mcp_status() or []
+                if any(entry.get("connected") for entry in status):
+                    return
+            except Exception:
+                return
+            logger.warning(
+                "Background MCP discovery previously exited with no connected "
+                "servers; retrying discovery thread"
+            )
+            _mcp_discovery_started = False
+            _mcp_discovery_thread = None
+
         _mcp_discovery_started = True
         if not _has_configured_mcp_servers():
             return
@@ -38,8 +61,21 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
         def _discover() -> None:
             try:
                 _discover_mcp_tools_without_interactive_oauth()
+                try:
+                    from tools.mcp_tool import get_mcp_status
+                    status = get_mcp_status() or []
+                    if not any(entry.get("connected") for entry in status):
+                        logger.warning(
+                            "Background MCP discovery completed with zero connected servers"
+                        )
+                except Exception:
+                    logger.debug("Failed to inspect MCP status after background discovery", exc_info=True)
             except Exception:
                 logger.debug("Background MCP tool discovery failed", exc_info=True)
+            finally:
+                with _mcp_discovery_lock:
+                    global _mcp_discovery_thread, _mcp_discovery_started
+                    _mcp_discovery_thread = None
 
         thread = threading.Thread(
             target=_discover,

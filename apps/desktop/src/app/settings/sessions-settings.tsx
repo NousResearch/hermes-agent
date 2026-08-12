@@ -12,7 +12,7 @@ import { untombstoneSessions } from '@/store/projects'
 import { applyConfiguredDefaultProjectDir, ensureDefaultWorkspaceCwd, setSessions } from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
-import { EmptyState, ListRow, LoadingState, SectionHeading, SettingsContent } from './primitives'
+import { EmptyState, ListRow, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
 import { useDeepLinkHighlight } from './use-deep-link-highlight'
 
 const ARCHIVED_FETCH_LIMIT = 200
@@ -107,7 +107,7 @@ export function SessionsSettings() {
   })
 
   if (loading) {
-    return <LoadingState label={s.loading} />
+    return <SettingsSkeleton sections={[{ rows: 1 }, { heading: true, rows: 4 }]} />
   }
 
   return (

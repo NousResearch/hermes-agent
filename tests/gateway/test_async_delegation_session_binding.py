@@ -8,7 +8,6 @@ Three invariants on the messaging-gateway surface, mirroring the TUI rules:
 3. /new interrupts the old conversation's in-flight async delegations.
 """
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -62,61 +61,349 @@ class TestInterruptForSessionByParentId:
 
 
 class TestGatewayPinningFailsClosed:
-    """The gateway injection path must never resurrect an ended session."""
+    """The gateway must follow only verified compression continuations."""
 
-    def _make_runner(self, pinned_row):
+    @staticmethod
+    def _entry(session_id):
+        from datetime import datetime
+
+        from gateway.config import Platform
+        from gateway.session import SessionEntry
+
+        return SessionEntry(
+            session_key="agent:main:telegram:group:-100:4",
+            session_id=session_id,
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="group",
+        )
+
+    def _make_runner(
+        self,
+        rows,
+        *,
+        compression_tip=None,
+        compression_error=None,
+        switched_entry=None,
+    ):
         from gateway.run import GatewayRunner
+        from gateway.session import AsyncSessionStore
 
         runner = object.__new__(GatewayRunner)
         db = MagicMock()
-        db.get_session = AsyncMock(return_value=pinned_row)
+        db.get_session = AsyncMock(side_effect=lambda session_id: rows.get(session_id))
+        db.get_compression_tip = AsyncMock(
+            return_value=compression_tip,
+            side_effect=compression_error,
+        )
         runner._session_db = db
-
-        entry = MagicMock()
-        entry.session_key = "agent:main:telegram:dm:1"
-        entry.session_id = "sess_current"
         runner.session_store = MagicMock()
-        runner.session_store.get_or_create_session.return_value = entry
-        runner.session_store.switch_session.return_value = entry
-        return runner, entry
+        runner.session_store.switch_session = MagicMock(return_value=switched_entry)
+        runner.session_store.advance_compression_session = MagicMock(
+            return_value=switched_entry
+        )
+        runner._async_session_store = AsyncSessionStore(runner.session_store)
+        return runner
 
-    def _run_pinning_prefix(self, runner, pinned_session_id):
-        """Execute the pinning guard logic exactly as _handle_message does."""
+    @staticmethod
+    def _assert_no_route_change(runner):
+        getattr(runner.session_store, "switch_session").assert_not_called()
+        getattr(
+            runner.session_store, "advance_compression_session"
+        ).assert_not_called()
 
-        async def _go():
-            event = MagicMock()
-            event.metadata = {"gateway_session_id": pinned_session_id}
-            session_entry = runner.session_store.get_or_create_session(MagicMock())
-            pinned = str((getattr(event, "metadata", None) or {}).get("gateway_session_id") or "").strip()
-            if pinned and pinned != session_entry.session_id:
-                pinned_row = None
-                try:
-                    if runner._session_db is not None:
-                        pinned_row = await runner._session_db.get_session(pinned)
-                except Exception:
-                    pinned_row = None
-                if pinned_row is None or pinned_row.get("ended_at"):
-                    return "dropped"
-                switched = runner.session_store.switch_session(session_entry.session_key, pinned)
-                if switched is not None:
-                    return "pinned"
-            return "default"
+    @pytest.mark.asyncio
+    async def test_live_spawning_session_stays_pinned(self):
+        current = self._entry("sess_live")
+        runner = self._make_runner(
+            {"sess_live": {"id": "sess_live", "ended_at": None}}
+        )
 
-        return asyncio.run(_go())
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_live"
+        )
 
-    def test_live_spawning_session_pins(self):
-        runner, _ = self._make_runner({"id": "sess_old", "ended_at": None})
-        assert self._run_pinning_prefix(runner, "sess_old") == "pinned"
+        assert resolved is current
+        self._assert_no_route_change(runner)
 
-    def test_ended_spawning_session_drops(self):
-        runner, _ = self._make_runner({"id": "sess_old", "ended_at": "2026-07-08T00:00:00"})
-        assert self._run_pinning_prefix(runner, "sess_old") == "dropped"
-        runner.session_store.switch_session.assert_not_called()
+    @pytest.mark.asyncio
+    async def test_live_spawning_session_rebinds_from_different_route(self):
+        current = self._entry("sess_current")
+        pinned = self._entry("sess_live")
+        runner = self._make_runner(
+            {"sess_live": {"id": "sess_live", "ended_at": None}},
+            switched_entry=pinned,
+        )
 
-    def test_unknown_spawning_session_drops(self):
-        runner, _ = self._make_runner(None)
-        assert self._run_pinning_prefix(runner, "sess_gone") == "dropped"
-        runner.session_store.switch_session.assert_not_called()
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_live"
+        )
+
+        assert resolved is pinned
+        getattr(runner.session_store, "switch_session").assert_called_once_with(
+            current.session_key, "sess_live"
+        )
+
+    @pytest.mark.asyncio
+    async def test_non_compression_ended_parent_drops(self):
+        current = self._entry("sess_old")
+        runner = self._make_runner(
+            {
+                "sess_old": {
+                    "id": "sess_old",
+                    "ended_at": "2026-07-08T00:00:00",
+                    "end_reason": "session_reset",
+                }
+            }
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_old"
+        )
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_compression_parent_advances_stale_route_to_live_tip(self):
+        current = self._entry("sess_parent")
+        tip = self._entry("sess_tip")
+        runner = self._make_runner(
+            {
+                "sess_parent": {
+                    "id": "sess_parent",
+                    "ended_at": "2026-07-08T00:00:00",
+                    "end_reason": "compression",
+                },
+                "sess_tip": {
+                    "id": "sess_tip",
+                    "ended_at": None,
+                    "parent_session_id": "sess_parent",
+                },
+            },
+            compression_tip="sess_tip",
+            switched_entry=tip,
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_parent"
+        )
+
+        assert resolved is tip
+        getattr(
+            runner.session_store, "advance_compression_session"
+        ).assert_called_once_with(current.session_key, "sess_parent", "sess_tip")
+
+    @pytest.mark.asyncio
+    async def test_compression_cas_losing_to_new_drops(self):
+        current = self._entry("sess_parent")
+        runner = self._make_runner(
+            {
+                "sess_parent": {
+                    "id": "sess_parent",
+                    "ended_at": "2026-07-08T00:00:00",
+                    "end_reason": "compression",
+                },
+                "sess_tip": {
+                    "id": "sess_tip",
+                    "ended_at": None,
+                    "parent_session_id": "sess_parent",
+                },
+            },
+            compression_tip="sess_tip",
+            switched_entry=None,
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_parent"
+        )
+
+        assert resolved is None
+        getattr(
+            runner.session_store, "advance_compression_session"
+        ).assert_called_once_with(current.session_key, "sess_parent", "sess_tip")
+
+    @pytest.mark.asyncio
+    async def test_intermediate_compression_route_advances_to_same_live_tip(self):
+        current = self._entry("sess_middle")
+        tip = self._entry("sess_tip")
+        runner = self._make_runner(
+            {
+                "sess_parent": {
+                    "id": "sess_parent",
+                    "ended_at": "2026-07-08T00:00:00",
+                    "end_reason": "compression",
+                },
+                "sess_middle": {
+                    "id": "sess_middle",
+                    "ended_at": "2026-07-08T00:01:00",
+                    "end_reason": "compression",
+                    "parent_session_id": "sess_parent",
+                },
+                "sess_tip": {
+                    "id": "sess_tip",
+                    "ended_at": None,
+                    "parent_session_id": "sess_middle",
+                },
+            },
+            compression_tip="sess_tip",
+            switched_entry=tip,
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_parent"
+        )
+
+        assert resolved is tip
+        getattr(
+            runner.session_store, "advance_compression_session"
+        ).assert_called_once_with(current.session_key, "sess_middle", "sess_tip")
+
+    @pytest.mark.asyncio
+    async def test_compression_parent_follows_real_sessiondb_lineage(self, tmp_path):
+        from gateway.run import GatewayRunner
+        from gateway.session import AsyncSessionStore
+        from hermes_state import AsyncSessionDB, SessionDB
+
+        session_db = SessionDB(db_path=tmp_path / "state.db")
+        session_db.create_session("sess_parent", source="telegram")
+        session_db.end_session("sess_parent", end_reason="compression")
+        session_db.create_session(
+            "sess_tip",
+            source="telegram",
+            parent_session_id="sess_parent",
+        )
+
+        current = self._entry("sess_parent")
+        tip = self._entry("sess_tip")
+        runner = object.__new__(GatewayRunner)
+        runner._session_db = AsyncSessionDB(session_db)
+        runner.session_store = MagicMock()
+        runner.session_store.switch_session = MagicMock(return_value=tip)
+        runner.session_store.advance_compression_session = MagicMock(return_value=tip)
+        runner._async_session_store = AsyncSessionStore(runner.session_store)
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_parent"
+        )
+
+        assert resolved is tip
+        getattr(
+            runner.session_store, "advance_compression_session"
+        ).assert_called_once_with(current.session_key, "sess_parent", "sess_tip")
+
+    @pytest.mark.asyncio
+    async def test_ended_compression_tip_drops(self):
+        current = self._entry("sess_parent")
+        runner = self._make_runner(
+            {
+                "sess_parent": {
+                    "id": "sess_parent",
+                    "ended_at": "2026-07-08T00:00:00",
+                    "end_reason": "compression",
+                },
+                "sess_tip": {
+                    "id": "sess_tip",
+                    "ended_at": "2026-07-08T00:01:00",
+                    "end_reason": "session_reset",
+                    "parent_session_id": "sess_parent",
+                },
+            },
+            compression_tip="sess_tip",
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_parent"
+        )
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_compression_lookup_failure_drops(self):
+        current = self._entry("sess_parent")
+        runner = self._make_runner(
+            {
+                "sess_parent": {
+                    "id": "sess_parent",
+                    "ended_at": "2026-07-08T00:00:00",
+                    "end_reason": "compression",
+                }
+            },
+            compression_error=RuntimeError("db unavailable"),
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_parent"
+        )
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_compression_parent_accepts_already_current_tip(self):
+        current = self._entry("sess_tip")
+        runner = self._make_runner(
+            {
+                "sess_parent": {
+                    "id": "sess_parent",
+                    "ended_at": "2026-07-08T00:00:00",
+                    "end_reason": "compression",
+                },
+                "sess_tip": {
+                    "id": "sess_tip",
+                    "ended_at": None,
+                    "parent_session_id": "sess_parent",
+                },
+            },
+            compression_tip="sess_tip",
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_parent"
+        )
+
+        assert resolved is current
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_compression_parent_does_not_override_new_route(self):
+        current = self._entry("sess_after_new")
+        runner = self._make_runner(
+            {
+                "sess_parent": {
+                    "id": "sess_parent",
+                    "ended_at": "2026-07-08T00:00:00",
+                    "end_reason": "compression",
+                },
+                "sess_tip": {
+                    "id": "sess_tip",
+                    "ended_at": None,
+                    "parent_session_id": "sess_parent",
+                },
+            },
+            compression_tip="sess_tip",
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_parent"
+        )
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_unknown_spawning_session_drops(self):
+        current = self._entry("sess_current")
+        runner = self._make_runner({})
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_gone"
+        )
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
 
 
 class TestResetHandlerInterruptsDelegations:

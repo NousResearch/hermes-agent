@@ -104,3 +104,33 @@ def test_start_gateway_mcp_shutdown_sites_use_run_in_executor():
     assert not bare_calls, (
         f"found synchronous shutdown_mcp_servers() calls: {bare_calls}"
     )
+
+
+def test_mcp_shutdown_drain_fits_supervisor_kill_grace():
+    """The server-shutdown drain must fit inside a container supervisor's
+    ~3s kill grace (#82874 review feedback from the reporter).
+
+    Source-level guard: shutdown_mcp_servers() waits on the shutdown future
+    with ``_MCP_SHUTDOWN_DRAIN_SECONDS`` (2s), not a bare 15s that would
+    hold the clean-exit funnel open past the grace period. If a refactor
+    reintroduces the old long wait, this test fails.
+    """
+    import re
+
+    from tools import mcp_tool
+
+    assert mcp_tool._MCP_SHUTDOWN_DRAIN_SECONDS <= 3, (
+        "MCP shutdown drain must fit the supervisor kill grace (~3s); "
+        f"got {mcp_tool._MCP_SHUTDOWN_DRAIN_SECONDS}s"
+    )
+
+    with open(mcp_tool.__file__, encoding="utf-8") as fh:
+        text = fh.read()
+
+    # No bare 15s on the shutdown-future wait; the site must use the constant.
+    assert "future.result(timeout=15)" not in text, (
+        "bare 15s wait reintroduced on the MCP shutdown future"
+    )
+    assert re.search(
+        r"future\.result\(timeout=_MCP_SHUTDOWN_DRAIN_SECONDS\)", text
+    ), "shutdown future must wait with _MCP_SHUTDOWN_DRAIN_SECONDS"

@@ -1581,12 +1581,16 @@ def _bump_schema_cookie(conn: sqlite3.Connection) -> None:
         logger.warning("Could not bump state.db schema cookie: %s", exc)
 
 
-def _backup_db_file(db_path: Path) -> Optional[Path]:
+def _backup_db_file(db_path: Path) -> "Tuple[Optional[Path], Optional[str]]":
     """Copy a (possibly malformed) DB file to a timestamped backup beside it.
 
     Raw file copy on purpose: the DB won't open cleanly, so we preserve the
     bytes exactly for forensics / manual restore. WAL and SHM sidecars are
-    copied too when present. Returns the backup path, or None on failure.
+    copied too when present. Returns ``(backup_path, None)`` on success or
+    ``(None, reason)`` on failure — callers on the repair path treat a
+    refused backup as a HARD STOP (see #69603: proceeding without the
+    pre-repair backup leaves the writable_schema surgery, FTS deletion and
+    VACUUM strategies mutating the only remaining copy of the damaged DB).
 
     Refuses when a connection to this database is still live in the process:
     reading the file would ``close()`` a descriptor for it and cancel that
@@ -1603,13 +1607,13 @@ def _backup_db_file(db_path: Path) -> Optional[Path]:
         has_live_connection = None  # type: ignore[assignment]
 
     if has_live_connection is not None and has_live_connection(db_path):
-        logger.error(
-            "Refusing to raw-copy %s for backup: a connection to it is still "
-            "open in this process and the copy would cancel that connection's "
-            "POSIX locks. Close all SessionDB handles first.",
-            db_path,
+        reason = (
+            f"a connection to {db_path} is still open in this process; "
+            "raw-copying it would cancel that connection's POSIX advisory "
+            "locks. Close all SessionDB handles first."
         )
-        return None
+        logger.error("Refusing to raw-copy %s for backup: %s", db_path, reason)
+        return None, reason
 
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_path = db_path.with_name(f"{db_path.name}.malformed-backup-{stamp}")
@@ -1619,10 +1623,10 @@ def _backup_db_file(db_path: Path) -> Optional[Path]:
             sidecar = db_path.with_name(db_path.name + suffix)
             if sidecar.exists():
                 shutil.copy2(sidecar, backup_path.with_name(backup_path.name + suffix))
-        return backup_path
+        return backup_path, None
     except Exception as exc:  # pragma: no cover - best effort
         logger.warning("Could not back up malformed DB %s: %s", db_path, exc)
-        return None
+        return None, f"backup copy failed: {exc}"
 
 
 def preflight_db_writability(
@@ -1920,8 +1924,21 @@ def _repair_state_db_schema_locked(
         return report
 
     if backup:
-        bpath = _backup_db_file(db_path)
+        bpath, backup_error = _backup_db_file(db_path)
         report["backup_path"] = str(bpath) if bpath else None
+        if bpath is None:
+            # HARD STOP (#69603): every strategy below mutates the damaged
+            # file in place (FTS rebuild, REINDEX, writable_schema surgery,
+            # VACUUM). Without the pre-repair backup, the damaged DB is the
+            # only copy of the user's data — a failed or interrupted repair
+            # would then be unrecoverable. Abort and surface the reason
+            # instead of proceeding fail-open.
+            report["error"] = (
+                "pre-repair backup refused; aborting schema repair to avoid "
+                f"mutating the only copy of the damaged DB: {backup_error}"
+            )
+            logger.error("state.db repair aborted: %s", report["error"])
+            return report
 
     # ── Strategy 0: rebuild FTS indexes in place (FTS write-corruption) ──
     # The FTS5 'rebuild' command rewrites the internal index from the canonical

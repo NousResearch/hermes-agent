@@ -557,3 +557,68 @@ def test_schema_surgery_bumps_the_schema_cookie(tmp_path):
     finally:
         probe.close()
     assert after != before
+
+
+# ---------------------------------------------------------------------------
+# Backup refusal is a hard stop (#69603)
+# ---------------------------------------------------------------------------
+# The Aug 2026 incident on #69603: the pre-repair backup was refused because
+# another same-process handle was open, and the repair proceeded anyway —
+# every later strategy (writable_schema surgery, FTS deletion, VACUUM) was
+# then reachable against the only remaining copy of the damaged DB.
+
+
+def test_backup_refusal_hard_stops_the_repair(tmp_path, monkeypatch):
+    """A refused pre-repair backup must abort the repair, not fail open."""
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    _corrupt_duplicate_fts(db_path)
+    original_bytes = db_path.read_bytes()
+
+    monkeypatch.setattr(
+        hermes_state,
+        "_backup_db_file",
+        lambda p: (None, "a connection to it is still open in this process"),
+    )
+
+    report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is False
+    assert report["backup_path"] is None
+    assert "backup refused" in (report["error"] or "")
+    assert "still open" in report["error"]
+    # No mutating strategy ran: the damaged source bytes are untouched.
+    assert db_path.read_bytes() == original_bytes
+    assert hermes_state._db_opens_cleanly(db_path) is not None
+
+
+def test_backup_copy_failure_hard_stops_the_repair(tmp_path, monkeypatch):
+    """An OS-level backup copy failure aborts the repair with the reason."""
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    _corrupt_duplicate_fts(db_path)
+
+    monkeypatch.setattr(
+        hermes_state,
+        "_backup_db_file",
+        lambda p: (None, "backup copy failed: [Errno 28] No space left on device"),
+    )
+
+    report = repair_state_db_schema(db_path)
+
+    assert report["repaired"] is False
+    assert "No space left on device" in (report["error"] or "")
+    assert not list(tmp_path.glob("state.db.malformed-backup-*"))
+
+
+def test_backup_false_still_skips_backup_and_repairs(tmp_path):
+    """Explicit backup=False (CLI --no-backup) keeps working."""
+    db_path = tmp_path / "state.db"
+    _build_healthy_db(db_path)
+    _corrupt_duplicate_fts(db_path)
+
+    report = repair_state_db_schema(db_path, backup=False)
+
+    assert report["repaired"] is True
+    assert report["backup_path"] is None
+    assert not list(tmp_path.glob("state.db.malformed-backup-*"))

@@ -1492,7 +1492,7 @@ def is_disk_full_error(exc: BaseException | str | None) -> bool:
 # enumerate causes (e.g. the cron scheduler's explainer-variant suppression)
 # must iterate this tuple instead of hardcoding the list, so adding a bucket
 # can never silently desynchronize them.
-PERSISTENCE_ERROR_CAUSES = ("locked", "disk", "unknown")
+PERSISTENCE_ERROR_CAUSES = ("locked", "compression", "disk", "unknown")
 
 
 def classify_persistence_error(exc_or_str) -> str:
@@ -1505,9 +1505,10 @@ def classify_persistence_error(exc_or_str) -> str:
     send it again", while a full disk or read-only database needs the
     disk-space/permissions advice. Returns one of PERSISTENCE_ERROR_CAUSES:
 
-    * ``"locked"``  — lock/busy contention (another process holds the write
-      lock, or a live compression lease refused the write); transient,
-      retry-later guidance applies.
+    * ``"locked"``  — SQLite lock/busy contention (another process holds the
+      database write lock); transient, retry-later guidance applies.
+    * ``"compression"`` — a live compression lease refused the transcript
+      write; the database itself is healthy and unlocked.
     * ``"disk"``    — disk full / read-only / permission-shaped failures
       (delegates the disk-full patterns to :func:`is_disk_full_error` so the
       two classifiers can never drift apart — e.g. ENOSPC).
@@ -1521,13 +1522,13 @@ def classify_persistence_error(exc_or_str) -> str:
     # "busy", so it must be matched by type and by phrase (for strings that
     # survived RPC wrapping).
     if isinstance(exc_or_str, CompressionSessionBusyError):
-        return "locked"
+        return "compression"
     text = str(exc_or_str).lower()
+    if "being compressed" in text or "compression lease" in text:
+        return "compression"
     if (
         "locked" in text
         or "busy" in text
-        or "being compressed" in text
-        or "compression lease" in text
     ):
         return "locked"
     if (
@@ -5738,6 +5739,136 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 "release_compression_lock(%s) failed: %s",
                 session_id, exc,
             )
+
+    def _session_turn_lease_key(self, session_id: str) -> str:
+        """Return the stable serialization key for every compression segment."""
+        if not session_id:
+            return session_id
+        try:
+            current = self.get_session(session_id)
+            seen = {session_id}
+            while current and self._is_compression_child_row(current):
+                parent_id = current.get("parent_session_id")
+                if not parent_id or parent_id in seen:
+                    break
+                parent = self.get_session(parent_id)
+                if not parent:
+                    break
+                seen.add(parent_id)
+                current = parent
+            return str(current.get("id") or session_id) if current else session_id
+        except Exception:
+            return session_id
+
+    def try_acquire_session_turn_lease(
+        self,
+        session_id: str,
+        holder: str,
+        *,
+        ttl_seconds: float = 300.0,
+    ) -> bool:
+        """Atomically acquire the cross-process turn lease for a conversation.
+
+        Compression rotates a session into child segments, so the durable key
+        is the lineage root rather than the current segment id. Expired leases
+        and leases whose structured local holder PID is known dead are reclaimed
+        in the same write transaction as acquisition.
+        """
+        if not session_id or not holder:
+            return False
+        conversation_id = self._session_turn_lease_key(session_id)
+        now = time.time()
+        expires_at = now + max(0.1, float(ttl_seconds))
+
+        def _do(conn):
+            row = conn.execute(
+                "SELECT holder, expires_at FROM session_turn_leases "
+                "WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            if row is not None:
+                current_holder = row["holder"]
+                if (
+                    float(row["expires_at"]) <= now
+                    or _compression_lock_holder_process_is_dead(current_holder)
+                ):
+                    conn.execute(
+                        "DELETE FROM session_turn_leases "
+                        "WHERE conversation_id = ? AND holder = ?",
+                        (conversation_id, current_holder),
+                    )
+            conn.execute(
+                "INSERT OR IGNORE INTO session_turn_leases "
+                "(conversation_id, holder, acquired_at, expires_at) "
+                "VALUES (?, ?, ?, ?)",
+                (conversation_id, holder, now, expires_at),
+            )
+            owner = conn.execute(
+                "SELECT holder FROM session_turn_leases WHERE conversation_id = ?",
+                (conversation_id,),
+            ).fetchone()
+            return owner is not None and owner["holder"] == holder
+
+        return bool(self._execute_write(_do))
+
+    def acquire_session_turn_lease(
+        self,
+        session_id: str,
+        holder: str,
+        *,
+        ttl_seconds: float = 300.0,
+        wait_seconds: float = 1800.0,
+        poll_interval_seconds: float = 0.1,
+    ) -> bool:
+        """Wait for a cross-process turn lease without holding a SQLite lock."""
+        deadline = time.monotonic() + max(0.0, float(wait_seconds))
+        while True:
+            if self.try_acquire_session_turn_lease(
+                session_id, holder, ttl_seconds=ttl_seconds
+            ):
+                return True
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(max(0.01, float(poll_interval_seconds)), remaining))
+
+    def refresh_session_turn_lease(
+        self,
+        session_id: str,
+        holder: str,
+        *,
+        ttl_seconds: float = 300.0,
+    ) -> bool:
+        """Extend a turn lease only while ``holder`` still owns it."""
+        if not session_id or not holder:
+            return False
+        conversation_id = self._session_turn_lease_key(session_id)
+        expires_at = time.time() + max(0.1, float(ttl_seconds))
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE session_turn_leases SET expires_at = ? "
+                "WHERE conversation_id = ? AND holder = ?",
+                (expires_at, conversation_id, holder),
+            )
+            return cursor.rowcount > 0
+
+        return bool(self._execute_write(_do))
+
+    def release_session_turn_lease(self, session_id: str, holder: str) -> None:
+        """Release a turn lease iff ``holder`` still owns it; idempotent."""
+        if not session_id or not holder:
+            return
+        conversation_id = self._session_turn_lease_key(session_id)
+
+        def _do(conn):
+            conn.execute(
+                "DELETE FROM session_turn_leases "
+                "WHERE conversation_id = ? AND holder = ?",
+                (conversation_id, holder),
+            )
+
+        self._execute_write(_do)
 
     def get_compression_lock_holder(self, session_id: str) -> Optional[str]:
         """Return the current (non-expired) holder for ``session_id``, or None.

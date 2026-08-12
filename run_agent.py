@@ -3722,6 +3722,13 @@ class AIAgent:
             )
         if reason == "session_persistence_failed":
             cause = persistence_cause or "unknown"
+            if cause == "compression":
+                return (
+                    prefix
+                    + "the turn was stopped because another process was "
+                    "compressing this session. Your message should already be "
+                    "saved — please send it again after compression completes."
+                )
             if cause == "locked":
                 return (
                     prefix
@@ -8061,12 +8068,108 @@ class AIAgent:
         )
         relay_lease = None
         relay_turn = None
+        durable_turn_lease = None
+        durable_turn_lease_stop = None
+        durable_turn_lease_thread = None
         token = None
         acct_token = None
         task_started = False
         task_finished = False
         relay_outcome = "failed"
         try:
+            # Serialize the full load -> run -> flush region across Hermes
+            # processes. Gateway's asyncio lease closes alias routing inside one
+            # process; this durable lease covers Desktop, CLI resume, gateway,
+            # and background delivery processes sharing state.db (#84234).
+            _turn_db = getattr(self, "_session_db", None)
+            _durable_session_exists = False
+            if _turn_db is not None and session_id:
+                try:
+                    _durable_session_exists = _turn_db.get_session(session_id) is not None
+                except Exception:
+                    logger.debug(
+                        "Could not check durable session before turn lease",
+                        exc_info=True,
+                    )
+            if (
+                _turn_db is not None
+                and session_id
+                and not getattr(self, "_persist_disabled", False)
+                # A fresh session id is process-unique and has no durable
+                # transcript to race over. More importantly, subagent/new-turn
+                # callers may intentionally supply an in-memory seed before the
+                # row exists; reloading an absent row would erase that seed.
+                and _durable_session_exists
+                # Test doubles and third-party DB shims may accept arbitrary
+                # MagicMock attributes without implementing the protocol. Check
+                # the concrete type so only real implementations opt in.
+                and callable(
+                    getattr(type(_turn_db), "acquire_session_turn_lease", None)
+                )
+            ):
+                # Resumed agents also defer their create check until the turn
+                # prologue. We just proved this row exists, so suppress the
+                # redundant create attempt after acquiring it.
+                self._session_db_created = True
+                durable_turn_lease = (
+                    f"pid={os.getpid()}:turn={relay_turn_id}:platform="
+                    f"{task_context['platform'] or 'unknown'}"
+                )
+                _lease_ttl = 300.0
+                if not _turn_db.acquire_session_turn_lease(
+                    session_id,
+                    durable_turn_lease,
+                    ttl_seconds=_lease_ttl,
+                    wait_seconds=1800.0,
+                ):
+                    raise TimeoutError(
+                        f"session turn lease wait timed out for {session_id}"
+                    )
+
+                # The holder may have compressed and rotated the session while
+                # this process waited. Resolve and reload only AFTER admission;
+                # a caller-provided in-memory snapshot is necessarily stale.
+                latest_session_id = _turn_db.resolve_resume_session_id(session_id)
+                if latest_session_id:
+                    self.session_id = latest_session_id
+                    task_context["session_id"] = latest_session_id
+                conversation_history = _turn_db.get_messages_as_conversation(
+                    self.session_id,
+                    repair_alternation=True,
+                )
+
+                # Long model/tool/compression turns outlive a fixed TTL. Refresh
+                # in a daemon thread; holder-qualified UPDATE and DELETE fence a
+                # late refresher/release from a successor lease.
+                durable_turn_lease_stop = threading.Event()
+
+                def _refresh_durable_turn_lease() -> None:
+                    while not durable_turn_lease_stop.wait(60.0):
+                        try:
+                            if not _turn_db.refresh_session_turn_lease(
+                                session_id,
+                                durable_turn_lease,
+                                ttl_seconds=_lease_ttl,
+                            ):
+                                logger.error(
+                                    "Lost session turn lease while turn is active: %s",
+                                    session_id,
+                                )
+                                return
+                        except Exception:
+                            logger.warning(
+                                "Failed to refresh session turn lease: %s",
+                                session_id,
+                                exc_info=True,
+                            )
+
+                durable_turn_lease_thread = threading.Thread(
+                    target=_refresh_durable_turn_lease,
+                    name="session-turn-lease-refresh",
+                    daemon=True,
+                )
+                durable_turn_lease_thread.start()
+
             relay_lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
                 profile_key=relay_runtime.current_profile_key(),
                 session_id=task_context["session_id"],
@@ -8166,6 +8269,24 @@ class AIAgent:
                             relay_lease
                         )
                 finally:
+                    if durable_turn_lease_stop is not None:
+                        durable_turn_lease_stop.set()
+                    if (
+                        durable_turn_lease_thread is not None
+                        and durable_turn_lease_thread.is_alive()
+                    ):
+                        durable_turn_lease_thread.join(timeout=1.0)
+                    if durable_turn_lease is not None:
+                        try:
+                            _turn_db.release_session_turn_lease(
+                                session_id, durable_turn_lease
+                            )
+                        except Exception:
+                            logger.error(
+                                "Failed to release session turn lease: %s",
+                                session_id,
+                                exc_info=True,
+                            )
                     # Always clear mid-turn labels when the turn exits — including
                     # interrupted early returns that skip finalize_turn. Keep ts.
                     try:

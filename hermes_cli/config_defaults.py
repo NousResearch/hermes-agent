@@ -182,13 +182,16 @@ DEFAULT_CONFIG = {
         # Verification closure: after the agent edits files in a code workspace,
         # do not accept a final answer until fresh verification evidence exists
         # or the agent explains why it cannot run checks. The loop is bounded
-        # and uses the passive verification ledger. Default is "auto" —
-        # surface-aware: on for interactive coding surfaces (CLI, TUI, desktop)
-        # and programmatic callers, off for conversational messaging surfaces
-        # (Telegram, Discord, etc.) where the verification narrative would reach
-        # a human as chat noise. Doc/markdown/skill-only edits never fire it.
-        # Set true to force on everywhere, or false to disable.
-        "verify_on_stop": "auto",
+        # and uses the passive verification ledger. Default is False (opt-in):
+        # the v31/v32 config migrations already switch existing installs off
+        # because the verification narrative proved more noise than signal,
+        # and the docs tell users to treat off as the effective default — a
+        # fresh install must not be the one population that still gets the
+        # nudges. Set true to force on everywhere, or "auto" for the legacy
+        # surface-aware behavior (on for interactive coding surfaces — CLI,
+        # TUI, desktop — and programmatic callers, off for conversational
+        # messaging surfaces). Doc/markdown/skill-only edits never fire it.
+        "verify_on_stop": False,
         # Staged inactivity warning: send a warning to the user at this
         # threshold before escalating to a full timeout.  The warning fires
         # once per run and does not interrupt the agent.  0 = disable warning.

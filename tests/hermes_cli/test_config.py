@@ -714,6 +714,10 @@ class TestConfigSupportFloor:
     }
     _V12_EXPECTED = {
         "_config_version": 33,
+        # agent.verify_on_stop stays materialised here: the fixture's on-disk
+        # config explicitly set it (True), so _explicit_config_paths preserves
+        # the key through the v32 flip even though False now equals the
+        # schema default.
         "agent": {"verify_on_stop": False},
         "auxiliary": {"compression": {"model": "gpt-x"}},
         "compression": {},
@@ -739,7 +743,9 @@ class TestConfigSupportFloor:
     }
     _V20_EXPECTED = {
         "_config_version": 33,
-        "agent": {"verify_on_stop": False},
+        # v31 writes verify_on_stop=False, but False now equals the schema
+        # default (opt-in) so the write invariant strips it from disk.
+        "agent": {},
         "model": {"default": "anthropic/claude-fable-5", "provider": "nous"},
         "model_catalog": {"ttl_hours": 1},
         "plugins": {"disabled": ["foo"], "enabled": []},
@@ -1216,10 +1222,14 @@ feishu:
                 merge_existing=True,
             )
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+            merged = load_config()
 
         assert raw["platforms"]["feishu"]["extra"]["app_id"] == "cli_xxx"
         assert raw["feishu"]["require_mention"] is True
-        assert raw["agent"]["verify_on_stop"] is False
+        # verify_on_stop=False now equals the schema default (opt-in), so
+        # strip_defaults removes it from disk; deep-merge supplies it at read.
+        assert "verify_on_stop" not in raw.get("agent", {})
+        assert merged["agent"]["verify_on_stop"] is False
 
 
     def test_persist_migration_writes_full_read_raw_config(self, tmp_path):
@@ -1247,7 +1257,10 @@ platforms:
             raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
 
         assert raw["platforms"]["feishu"]["extra"]["app_id"] == "cli_xxx"
-        assert raw["agent"]["verify_on_stop"] is False
+        # The migration-write invariant strips schema-default values, and
+        # verify_on_stop=False now IS the default — so it must NOT be
+        # materialised to disk by _persist_migration.
+        assert "verify_on_stop" not in raw.get("agent", {})
         assert raw["agent"]["max_turns"] == 60
         assert raw["_config_version"] == 32
 

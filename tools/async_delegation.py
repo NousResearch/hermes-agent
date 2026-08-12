@@ -278,8 +278,14 @@ def _prune_durable_records() -> None:
     now = time.time()
     cutoff = now - _DURABLE_RETENTION_SECONDS
     with _DB_LOCK, _transaction() as conn:
+        # 'dropped' is a terminal give-up state (an unroutable row converges
+        # here and is never replayed — see the delivery-attempt cap above), so
+        # it is retention-eligible exactly like 'delivered'. Leaving it out of
+        # the age-based purge let dropped rows linger until the size cap
+        # overflowed, instead of aging out with the rest of the history.
         conn.execute(
-            "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?",
+            "DELETE FROM async_delegations "
+            "WHERE delivery_state IN ('delivered', 'dropped') AND updated_at < ?",
             (cutoff,),
         )
         terminal_count = conn.execute(

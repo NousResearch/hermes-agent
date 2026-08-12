@@ -761,3 +761,42 @@ def test_gateway_cli_origin_event_left_unrouted():
     runner._enrich_async_delegation_routing(evt)
     assert "platform" not in evt
 
+
+
+def test_prune_ages_out_dropped_records_like_delivered(tmp_path, monkeypatch):
+    """'dropped' is terminal (an unroutable row converges there and is never
+    replayed), so the age-based purge must treat it like 'delivered'. It used
+    to skip dropped rows, which then lingered until the size cap overflowed."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    old = time.time() - ad._DURABLE_RETENTION_SECONDS - 60
+
+    for delegation_id, state in (
+        ("deleg_delivered", "delivered"),
+        ("deleg_dropped", "dropped"),
+        ("deleg_pending", "pending"),
+    ):
+        ad._persist_dispatch({
+            "delegation_id": delegation_id,
+            "session_key": "owner",
+            "origin_ui_session_id": "",
+            "parent_session_id": None,
+            "dispatched_at": 1.0,
+        })
+        ad._persist_completion(
+            {"delegation_id": delegation_id, "status": "completed",
+             "completed_at": 2.0},
+            {"status": "completed", "summary": delegation_id},
+        )
+        with ad._DB_LOCK, ad._transaction() as conn:
+            conn.execute(
+                "UPDATE async_delegations SET delivery_state=?, updated_at=? "
+                "WHERE delegation_id=?",
+                (state, old, delegation_id),
+            )
+
+    ad._prune_durable_records()
+
+    assert ad.get_durable_delegation("deleg_delivered") is None
+    assert ad.get_durable_delegation("deleg_dropped") is None
+    # An undelivered pending row is never age-purged, no matter how old.
+    assert ad.get_durable_delegation("deleg_pending") is not None

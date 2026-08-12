@@ -30,6 +30,19 @@
  *   `<mark>` carries `data-active`. We re-derive it on every step instead of
  *   keeping a counter, so a stale count after a DOM mutation self-heals on
  *   the next search.
+ * - The transcript is React-owned and re-renders while the bar is open —
+ *   assistant responses stream through `markdown-text.tsx`, which rebuilds
+ *   the markdown DOM on every delta, and a new message is appended whenever
+ *   the assistant answers. React does not know about the `<mark>`s we insert,
+ *   so a re-render of a region whose text or structure changed detaches our
+ *   marks (React re-allocates those nodes) while leaving marks in untouched
+ *   regions intact. To keep highlights consistent across those renders we
+ *   watch the captured scope with a MutationObserver and re-apply the wrap
+ *   whenever an unmarked occurrence of the query reappears — but ONLY then,
+ *   so a responsive render that left every mark in place costs nothing and an
+ *   append that adds no matching text is a no-op. The observer is gated off
+ *   while WE are mutating (a re-entrancy flag), coalesced to one re-apply per
+ *   microtask, and torn down when the bar closes (#81726).
  * - We do NOT call `webContents.findInPage` from here. That bridge still
  *   exists for multi-window secondary sessions (each window searches its
  *   own webContents), but for the primary window it cannot be scoped, so
@@ -42,6 +55,25 @@ const SCOPE_SELECTOR = '[data-chat-surface]'
 const HIGHLIGHT_CLASS = 'find-hit'
 const ACTIVE_ATTR = 'data-find-active'
 const ROOT_ATTR = 'data-find-root'
+
+// ── Re-render watch ─────────────────────────────────────────────────────────
+// The transcript is React-owned and re-renders under us (streaming markdown,
+// message append). React doesn't know about our `<mark>`s, so a render that
+// re-allocates a region detaches the marks in that region. We watch the scope
+// and re-wrap when an unmarked occurrence of the active query appears.
+//
+// `applying` is the re-entrancy guard: it's set for the whole synchronous
+// re-apply, and any observer callback that fires during it flips `pending`
+// so we take one more look afterwards instead of recursing infinitely. All
+// observer work is coalesced to a single microtask so a burst of mutations
+// (one streaming delta) lands as one re-apply.
+let observer: MutationObserver | null = null
+let scopeRoot: HTMLElement | null = null
+let activeQuery = ''
+let lastActiveOrdinal = 0
+let applying = false
+let pending = false
+let scheduled = false
 
 /**
  * The element the open FindBar should search. Captured at bar-open time and
@@ -63,7 +95,23 @@ export function captureFindScope(): HTMLElement | null {
     root.setAttribute(ROOT_ATTR, '')
   }
 
+  resetScopeState()
+  scopeRoot = root
+
   return root
+}
+
+/** Forget a past scope: stop watching it and drop any queued re-apply. Called
+ *  whenever the bar re-opens or closes so state never leaks across searches. */
+function resetScopeState(): void {
+  observer?.disconnect()
+  observer = null
+  scopeRoot = null
+  activeQuery = ''
+  lastActiveOrdinal = 0
+  applying = false
+  pending = false
+  scheduled = false
 }
 
 /** The scope captured by the open bar, or null if none is active. */
@@ -348,6 +396,10 @@ export function performScopedFind(
   if (!query) {
     clearHighlights(root)
     setActiveMark(null)
+    // No query, no marks to maintain — stop watching and forget the query.
+    activeQuery = ''
+    lastActiveOrdinal = 0
+    stopObserver()
 
     return DEFAULT_RESULT
   }
@@ -375,12 +427,24 @@ export function performScopedFind(
   let marks = existingMarks
 
   if (!sameQuery) {
-    clearHighlights(root)
-    marks = highlightMatches(root, query)
+    // Mutate under the re-entrancy guard so the re-render watcher doesn't
+    // fire on the marks WE are replacing (it has nothing to repair yet).
+    applying = true
+
+    try {
+      clearHighlights(root)
+      marks = highlightMatches(root, query)
+    } finally {
+      applying = false
+    }
   }
 
   if (marks.length === 0) {
     setActiveMark(null)
+    // A query that matches nothing has nothing to maintain.
+    activeQuery = ''
+    lastActiveOrdinal = 0
+    stopObserver()
 
     return DEFAULT_RESULT
   }
@@ -404,7 +468,108 @@ export function performScopedFind(
 
   setActiveMark(marks[nextIndex] ?? null)
 
+  // A live search must survive React re-rendering the transcript under us.
+  // Remember the query + active position and start watching the scope; the
+  // observer re-wraps when a render detaches our marks and re-activates the
+  // same ordinal so the user's place doesn't reset to match #1 on the next
+  // streamed token.
+  activeQuery = query
+  lastActiveOrdinal = nextIndex + 1
+  ensureObserver(root)
+
   return { count: marks.length, activeOrdinal: nextIndex + 1 }
+}
+
+// ── Re-apply on React re-render ─────────────────────────────────────────────
+/**
+ * Attach the scope watcher, if it isn't already attached. Only observes the
+ * current scope; a fresh `captureFindScope` (or close) detaches it.
+ */
+function ensureObserver(root: Element): void {
+  if (observer && scopeRoot === root) {
+    return
+  }
+
+  stopObserver()
+  observer = new MutationObserver(() => scheduleReapply())
+  observer.observe(root, { childList: true, subtree: true })
+}
+
+function stopObserver(): void {
+  observer?.disconnect()
+  observer = null
+}
+
+/**
+ * Coalesce a mutation burst (one streaming delta) into a single re-apply that
+ * runs on the next microtask. A no-op when the marks still cover the query —
+ * React reusing an untouched region doesn't need any work.
+ */
+function scheduleReapply(): void {
+  if (applying) {
+    // A mutation landed while we were mutating the tree. We'll look again
+    // once this apply finishes rather than recursing now.
+    pending = true
+
+    return
+  }
+
+  if (scheduled || !scopeRoot || !activeQuery) {
+    return
+  }
+
+  scheduled = true
+
+  queueMicrotask(() => {
+    scheduled = false
+
+    if (applying || !scopeRoot || !activeQuery) {
+      return
+    }
+
+    // Nothing to repair: every occurrence is still wrapped (React only
+    // touched a region that doesn't match the query).
+    if (!hasUnmarkedMatch(scopeRoot, activeQuery)) {
+      return
+    }
+
+    reapplying(scopeRoot)
+  })
+}
+
+/**
+ * Re-wrap every occurrence in the scope after React detached our previous
+ * marks, re-activating the position the user was on. Runs with `applying` set
+ * so the observer ignores the mutations WE make, then drains any `pending`
+ * mutation that arrived during the apply.
+ */
+function reapplying(root: HTMLElement): void {
+  const restoreOrdinal = lastActiveOrdinal
+
+  applying = true
+
+  try {
+    clearHighlights(root)
+    const marks = highlightMatches(root, activeQuery)
+
+    if (marks.length === 0) {
+      return
+    }
+
+    // Re-activate the same ordinal the user last stood on, clamped to the
+    // re-wrapped set, so a mid-stream re-render doesn't bounce their place
+    // back to match #1.
+    const nextIndex = Math.min(restoreOrdinal - 1, marks.length - 1)
+    setActiveMark(marks[nextIndex] ?? null)
+    lastActiveOrdinal = nextIndex + 1
+  } finally {
+    applying = false
+  }
+
+  if (pending) {
+    pending = false
+    scheduleReapply()
+  }
 }
 
 /** Tear down highlights and the scope marker — called when the bar closes. */
@@ -417,4 +582,5 @@ export function releaseFindScope(): void {
   }
 
   setActiveMark(null)
+  resetScopeState()
 }

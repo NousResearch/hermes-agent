@@ -320,3 +320,109 @@ describe('scope lifecycle', () => {
     expect(result.count).toBe(1)
   })
 })
+
+describe('scoped find survives React re-render', () => {
+  // The transcript is React-owned: assistant answers stream, and a new message
+  // is appended whenever the assistant replies. React doesn't know about the
+  // `<mark>`s we insert, so a render that re-allocates a region detaches its
+  // marks. The scope watcher (MutationObserver) must re-wrap after the render
+  // commits. jsdom delivers observer callbacks + our queueMicrotask re-apply
+  // as microtasks, so awaiting a macrotask drains them all.
+  async function flushAll(): Promise<void> {
+    await new Promise(resolve => setTimeout(resolve, 0))
+  }
+
+  it('re-wraps content React re-allocated, keeping the active position', async () => {
+    const surface = plantSurface('surface', '<p>needle hay needle</p>')
+    captureFindScope()
+    performScopedFind(surface, 'needle', { forward: true, findNext: false })
+    expect(surface.querySelectorAll('mark.find-hit').length).toBe(2)
+
+    // Step onto match #2, then mock a React re-render that rebuilds the
+    // paragraph (destroying our marks) while the matching text remains.
+    performScopedFind(surface, 'needle', { forward: true, findNext: true })
+    expect(surface.querySelectorAll('mark.find-hit[data-find-active]')[0]).toBe(
+      surface.querySelectorAll('mark.find-hit')[1]
+    )
+
+    surface.querySelector('p')!.innerHTML = 'needle hay needle'
+    await flushAll()
+
+    // Marks restored, and the active mark is still the second match.
+    expect(surface.querySelectorAll('mark.find-hit').length).toBe(2)
+    expect(surface.querySelectorAll('mark.find-hit[data-find-active]').length).toBe(1)
+    expect(surface.querySelectorAll('mark.find-hit[data-find-active]')[0]).toBe(
+      surface.querySelectorAll('mark.find-hit')[1]
+    )
+    expect(surface.querySelector('p')!.textContent).toBe('needle hay needle')
+  })
+
+  it('keeps existing highlights and wraps a newly appended message', async () => {
+    // The task's target scenario: the bar is open with highlights, then the
+    // assistant appends a NEW message while the list stays mounted. Existing
+    // highlights must persist and the appended content must not be broken.
+    const surface = plantSurface('surface', '<p>needle in the first message</p>')
+    captureFindScope()
+    performScopedFind(surface, 'needle', { forward: true, findNext: false })
+    expect(surface.querySelectorAll('mark.find-hit').length).toBe(1)
+
+    // React appends a new message block.
+    const next = document.createElement('div')
+    next.innerHTML = 'second message needle'
+    surface.appendChild(next)
+    await flushAll()
+
+    // The first highlight survived the append AND the new match was wrapped
+    // too — nothing clobbered, nothing lost.
+    const marks = surface.querySelectorAll('mark.find-hit')
+    expect(marks.length).toBe(2)
+    expect(surface.querySelector('p')!.textContent).toBe('needle in the first message')
+    expect(next.textContent).toBe('second message needle')
+  })
+
+  it('does NOT re-wrap when React touched a region with no unmarked match', async () => {
+    const surface = plantSurface('surface', '<p>needle needle</p>')
+    captureFindScope()
+    performScopedFind(surface, 'needle', { forward: true, findNext: false })
+    expect(surface.querySelectorAll('mark.find-hit').length).toBe(2)
+
+    const before = [...surface.querySelectorAll('mark.find-hit')]
+    // React re-renders a paragraph that doesn't match the query — the marks
+    // are untouched and must not be rebuilt.
+    surface.insertAdjacentHTML('beforeend', '<p>irrelevant</p>')
+    await flushAll()
+
+    const after = [...surface.querySelectorAll('mark.find-hit')]
+    expect(after.length).toBe(before.length)
+    expect(after.every(mark => before.includes(mark))).toBe(true)
+  })
+
+  it('searches a typeahead that clears and re-runs still tears the watcher down', async () => {
+    const surface = plantSurface('surface', '<p>needle</p>')
+    captureFindScope()
+    performScopedFind(surface, 'needle', { forward: true, findNext: false })
+    expect(surface.querySelectorAll('mark.find-hit').length).toBe(1)
+
+    // Clearing the query tears down the watcher; a later React write that
+    // would normally re-wrap must NOT resurrect highlights (the bar closed).
+    performScopedFind(surface, '', { forward: true, findNext: false })
+    surface.querySelector('p')!.innerHTML = 'needle again'
+    await flushAll()
+
+    expect(surface.querySelectorAll('mark.find-hit').length).toBe(0)
+    expect(surface.querySelector('p')!.textContent).toBe('needle again')
+  })
+
+  it('releaseFindScope detaches the watcher so no write can re-highlight', async () => {
+    const surface = plantSurface('surface', '<p>needle</p>')
+    captureFindScope()
+    performScopedFind(surface, 'needle', { forward: true, findNext: false })
+    expect(surface.querySelectorAll('mark.find-hit').length).toBe(1)
+
+    releaseFindScope()
+    surface.querySelector('p')!.innerHTML = 'needle needle'
+    await flushAll()
+
+    expect(surface.querySelectorAll('mark.find-hit').length).toBe(0)
+  })
+})

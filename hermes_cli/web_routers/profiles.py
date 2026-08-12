@@ -84,6 +84,12 @@ _strip_session_list_rows = late("_strip_session_list_rows")
 _write_profile_mcp_servers = late("_write_profile_mcp_servers")
 _write_profile_model = late("_write_profile_model")
 
+# Returned by the offloaded file readers below to mean "the file is not there",
+# which a plain ``None`` cannot express: ``desktop.json`` may legitimately hold
+# the document ``null``, and that is an existing-but-empty overlay rather than
+# an absent one.
+_MISSING = object()
+
 
 # Bounded cache lifetime for the expensive sidebar scan. Short enough that the
 # UI never shows meaningfully stale data, long enough to coalesce the desktop's
@@ -1089,18 +1095,28 @@ async def delete_profile_endpoint(name: str):
 @router.get("/api/profiles/{name}/soul")
 async def get_profile_soul(name: str):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
-    if soul_path.exists():
-        try:
-            return {"content": soul_path.read_text(encoding="utf-8"), "exists": True}
-        except OSError as e:
-            raise HTTPException(status_code=500, detail=f"Could not read SOUL.md: {e}")
-    return {"content": "", "exists": False}
+
+    def _run():
+        # Probe and read in the same hop: two round-trips would also widen the
+        # window between the existence check and the read.
+        if not soul_path.exists():
+            return _MISSING
+        return soul_path.read_text(encoding="utf-8")
+
+    try:
+        content = await asyncio.get_running_loop().run_in_executor(None, _run)
+    except OSError as e:
+        raise HTTPException(status_code=500, detail=f"Could not read SOUL.md: {e}")
+    if content is _MISSING:
+        return {"content": "", "exists": False}
+    return {"content": content, "exists": True}
 
 
 @router.put("/api/profiles/{name}/soul")
 async def update_profile_soul(name: str, body: ProfileSoulUpdate):
     soul_path = _resolve_profile_dir(name) / "SOUL.md"
-    try:
+
+    def _run():
         from utils import atomic_write_text
 
         # PUT replaces the whole persona document from the dashboard editor.
@@ -1120,6 +1136,12 @@ async def update_profile_soul(name: str, body: ProfileSoulUpdate):
         atomic_write_text(
             soul_path, body.content, preserve_mode=True, create_mode=0o644
         )
+
+    try:
+        # atomic_write_text() writes a temp file, fsyncs it and replaces the
+        # original — three syscalls that block for as long as the filesystem
+        # takes to durably commit the persona document.
+        await asyncio.get_running_loop().run_in_executor(None, _run)
     except OSError as e:
         _log.exception("PUT /api/profiles/%s/soul failed", name)
         raise HTTPException(status_code=500, detail=f"Could not write SOUL.md: {e}")
@@ -1137,12 +1159,18 @@ async def update_profile_description_endpoint(name: str, body: ProfileDescriptio
     from hermes_cli import profiles as profiles_mod
     profile_dir = _resolve_profile_dir(name)
     text = (body.description or "").strip()
-    try:
+
+    def _run():
         profiles_mod.write_profile_meta(
             profile_dir,
             description=text,
             description_auto=False,
         )
+
+    try:
+        # write_profile_meta() reads profile.yaml, merges the new keys and
+        # writes the document back out.
+        await asyncio.get_running_loop().run_in_executor(None, _run)
     except Exception as e:
         _log.exception("PUT /api/profiles/%s/description failed", name)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1299,10 +1327,19 @@ async def get_profile_desktop_overlay(name: str):
     """The desktop appearance/interface overlay bundled with an imported
     profile (``desktop.json`` at the profile root), or ``exists: false``."""
     overlay_path = _resolve_profile_dir(name) / "desktop.json"
-    if not overlay_path.is_file():
-        return {"exists": False, "desktop": None}
-    try:
+
+    def _run():
+        if not overlay_path.is_file():
+            return _MISSING
         import json as _json
-        return {"exists": True, "desktop": _json.loads(overlay_path.read_text(encoding="utf-8"))}
+        return _json.loads(overlay_path.read_text(encoding="utf-8"))
+
+    try:
+        overlay = await asyncio.get_running_loop().run_in_executor(None, _run)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Could not read desktop.json: {e}")
+    # _MISSING rather than None: an overlay file holding the document ``null``
+    # exists, and must not be reported as absent.
+    if overlay is _MISSING:
+        return {"exists": False, "desktop": None}
+    return {"exists": True, "desktop": overlay}

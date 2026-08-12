@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { clampIntensity, normalizeMode, normalizePayload, windowOpacityFor } from './translucency'
+import { clampIntensity, glassActive, normalizeMode, normalizePayload, windowOpacityFor } from './translucency'
 
 describe('clampIntensity', () => {
   it('clamps to 0-100 and rounds', () => {
@@ -60,5 +60,13 @@ describe('normalizePayload', () => {
     expect(normalizePayload(null, true)).toEqual({ intensity: 0, mode: 'clear' })
     expect(normalizePayload('nope', true)).toEqual({ intensity: 0, mode: 'clear' })
     expect(normalizePayload({ intensity: 'x', mode: 'glass' }, false)).toEqual({ intensity: 0, mode: 'clear' })
+  })
+})
+
+describe('glassActive', () => {
+  it('is on only for glass with nonzero intensity', () => {
+    expect(glassActive({ intensity: 60, mode: 'glass' })).toBe(true)
+    expect(glassActive({ intensity: 0, mode: 'glass' })).toBe(false)
+    expect(glassActive({ intensity: 60, mode: 'clear' })).toBe(false)
   })
 })

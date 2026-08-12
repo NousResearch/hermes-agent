@@ -47,3 +47,15 @@ export function normalizePayload(payload: unknown, isMac: boolean): { intensity:
     mode: normalizeMode(record.mode, isMac)
   }
 }
+
+/**
+ * Whether glass is visually active. Decides the chat windows' webContents
+ * backing: Chromium composites the page against the window's backgroundColor
+ * BEFORE macOS composites the window, so an opaque backing (the normal
+ * anti-white-flash paint) blocks the vibrancy material even under a fully
+ * transparent page. Glass needs an alpha-0 backing; any other state keeps the
+ * opaque themed backing.
+ */
+export function glassActive(state: { intensity: number; mode: TranslucencyMode }): boolean {
+  return state.mode === 'glass' && state.intensity > 0
+}

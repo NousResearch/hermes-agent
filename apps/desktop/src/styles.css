@@ -595,6 +595,16 @@
     background: color-mix(in srgb, var(--ui-bg-chrome) var(--translucency-glass-keep, 100%), transparent);
   }
 
+  /* The app shell's two full-window opaque painters (the contrib controller
+     root and the SidebarProvider wrapper) sit between <body> and every
+     surface. Their fills are Tailwind utilities (bg-(--ui-bg-chrome) /
+     bg-background), which cascade-layer above these base rules — hence the
+     !important. Clearing them makes <body> the window's only field paint. */
+  :root[data-hermes-glass] [data-contrib-shell],
+  :root[data-hermes-glass] [data-slot='sidebar-wrapper'] {
+    background-color: transparent !important;
+  }
+
   /* Surfaces that MASK sibling content must stay filled under glass — a
      see-through mask reads as text bleeding through text, not as glass. The
      diff panel's sticky line-number gutter wears the editor surface

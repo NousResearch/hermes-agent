@@ -288,7 +288,7 @@ import {
 } from './ssh-connection'
 import { createStreamThrottle } from './stream-throttle'
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
-import { normalizePayload as normalizeTranslucencyPayload, windowOpacityFor } from './translucency'
+import { glassActive, normalizePayload as normalizeTranslucencyPayload, windowOpacityFor } from './translucency'
 import {
   compareApiUrl,
   parseCompareBehindCount,
@@ -902,22 +902,48 @@ function writePersistedTranslucency(state) {
 
 let translucencyState = readPersistedTranslucency()
 
+// Chat windows whose webContents backing follows translucency (primary,
+// instance peers, session windows). The HUD / pet overlay / quick entry /
+// wake indicator are `transparent: true` windows that own their backgrounds —
+// painting a themed backing onto them would turn them into opaque rectangles.
+const translucencyBackedWindows = new WeakSet()
+
 function windowOpacity() {
   return windowOpacityFor(translucencyState.intensity, translucencyState.mode)
 }
 
 // Re-apply translucency to a live window (runtime toggle, no recreation).
 // `setOpacity` is a no-op on Linux, which is fine — it just stays opaque there.
+// The backing swap is the glass half: Chromium composites the page against
+// `backgroundColor` BEFORE macOS composites the window, so glass needs an
+// alpha-0 backing for the vibrancy material to reach a transparent page, and
+// every other state needs the opaque themed backing (anti-flash, and it is
+// what makes clear mode fade to the desktop instead of to black).
 function applyWindowTranslucency(win) {
-  if (!win || win.isDestroyed() || typeof win.setOpacity !== 'function') {
+  if (!win || win.isDestroyed()) {
     return
   }
 
   try {
-    win.setOpacity(windowOpacity())
+    // Backing swap is scoped to registered chat windows (see
+    // translucencyBackedWindows above).
+    if (translucencyBackedWindows.has(win) && typeof win.setBackgroundColor === 'function') {
+      win.setBackgroundColor(glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor())
+    }
+
+    if (typeof win.setOpacity === 'function') {
+      win.setOpacity(windowOpacity())
+    }
   } catch (error) {
     rememberLog(`[translucency] apply failed: ${error.message}`)
   }
+}
+
+// Window creation: glass windows must be BORN with a transparent backing —
+// flipping backgroundColor after creation repaints, but the first frames of a
+// cold glass launch would flash the opaque backing first.
+function initialWindowBackgroundColor() {
+  return glassActive(translucencyState) ? '#00000000' : getWindowBackgroundColor()
 }
 
 function isHexColor(value) {
@@ -10653,9 +10679,13 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
     // covers it. ready-to-show fires after the boot-time paint in
     // themes/context.tsx, so the window appears already themed.
     show: false,
-    backgroundColor: getWindowBackgroundColor(),
+    backgroundColor: initialWindowBackgroundColor(),
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
+
+  // Chat-surface registration: applyWindowTranslucency swaps this window's
+  // backing between opaque-themed and alpha-0 when glass toggles.
+  translucencyBackedWindows.add(win)
 
   if (IS_MAC) {
     win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
@@ -10747,11 +10777,14 @@ function createInstanceWindow() {
     opacity: windowOpacity(),
     icon,
     show: false,
-    backgroundColor: getWindowBackgroundColor(),
+    backgroundColor: initialWindowBackgroundColor(),
     webPreferences: chatWindowWebPreferences(PRELOAD_PATH)
   })
 
   instanceWindows.add(win)
+
+  // Chat-surface registration: see applyWindowTranslucency.
+  translucencyBackedWindows.add(win)
 
   if (IS_MAC) {
     win.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)
@@ -11611,7 +11644,7 @@ function createWindow() {
     // `backgroundColor` and follows the OS appearance) can't flash a light
     // material before the renderer paints the app theme. See createSessionWindow.
     show: false,
-    backgroundColor: getWindowBackgroundColor(),
+    backgroundColor: initialWindowBackgroundColor(),
     // Shared with the secondary session windows (chatWindowWebPreferences);
     // stream-aware throttling is applied per-window via streamThrottle so a
     // live answer keeps painting while the window is blurred or minimized,
@@ -11621,6 +11654,9 @@ function createWindow() {
   })
 
   const createdMainWindow = mainWindow
+
+  // Chat-surface registration: see applyWindowTranslucency.
+  translucencyBackedWindows.add(mainWindow)
 
   if (IS_MAC) {
     mainWindow.setWindowButtonPosition?.(WINDOW_BUTTON_POSITION)

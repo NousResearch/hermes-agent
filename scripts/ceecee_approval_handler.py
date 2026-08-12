@@ -135,6 +135,19 @@ def update_draft_status(draft_id: str, command: str, args: str) -> str | None:
 
         now = datetime.now(timezone.utc).isoformat()
 
+        # G03 audit path: record every approval decision through the
+        # approval_state ledger (append-only log + transition guard). If the
+        # transition is illegal (e.g. approving an already-published draft),
+        # fail loudly instead of silently overwriting state.
+        try:
+            sys.path.insert(0, str(_REPO_ROOT / "content_engine"))
+            from approval_state import ApprovalError, ApprovalLedger
+
+            ledger = ApprovalLedger(db_path=str(DB_PATH))
+            ledger.decide(draft_id, command, actor="sahil", comment=args)
+        except ApprovalError as exc:
+            return f"Blocked: {exc}"
+
         if command == "approve":
             conn.execute(
                 "UPDATE drafts SET status = 'approved', approved_at = ? WHERE id = ?",

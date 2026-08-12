@@ -387,6 +387,10 @@ class _ManagedToolResult:
     dispatched: bool
 
 
+class _ToolTimeoutResult(str):
+    """Marker for a synthesized sequential-tool timeout result."""
+
+
 class _ConcurrentToolAuthorizationGate:
     """Serialize policy prompts and exclude human approval waits from batch deadlines.
 
@@ -659,6 +663,117 @@ def _run_agent_tool_execution_middleware(
         blocked=bool(state["blocked"]),
         dispatched=bool(state["dispatched"]),
     )
+
+
+def _run_sequential_tool_execution_middleware(
+    agent,
+    *,
+    function_name: str,
+    function_args: dict,
+    effective_task_id: str,
+    tool_call_id: str,
+    execute,
+    scope_block: str | None = None,
+    display_index: int | None = None,
+    middleware_trace: list[dict[str, Any]] | None = None,
+) -> _ManagedToolResult:
+    """Run one sequential call with the concurrent executor's deadline."""
+    timeout_s = _resolve_concurrent_tool_timeout()
+    kwargs = {
+        "function_name": function_name,
+        "function_args": function_args,
+        "effective_task_id": effective_task_id,
+        "tool_call_id": tool_call_id,
+        "execute": execute,
+        "scope_block": scope_block,
+        "display_index": display_index,
+        "middleware_trace": middleware_trace,
+    }
+    if timeout_s is None:
+        return _run_agent_tool_execution_middleware(agent, **kwargs)
+
+    from tools.daemon_pool import DaemonThreadPoolExecutor
+
+    authorization_gate = _ConcurrentToolAuthorizationGate()
+    worker_tid: list[int] = []
+
+    def _run() -> _ManagedToolResult:
+        tid = threading.current_thread().ident
+        worker_tid.append(tid)
+        with agent._tool_worker_threads_lock:
+            agent._tool_worker_threads.add(tid)
+        try:
+            return _run_agent_tool_execution_middleware(
+                agent, authorization_gate=authorization_gate, **kwargs
+            )
+        finally:
+            with agent._tool_worker_threads_lock:
+                agent._tool_worker_threads.discard(tid)
+            try:
+                _ra()._set_interrupt(False, tid)
+            except Exception:
+                pass
+
+    executor = DaemonThreadPoolExecutor(max_workers=1)
+    future = executor.submit(propagate_context_to_thread(_run))
+    deadline = time.monotonic() + timeout_s
+    started = time.monotonic()
+    timed_out = False
+    try:
+        while True:
+            remaining = (
+                deadline + authorization_gate.excluded_seconds() - time.monotonic()
+            )
+            if remaining <= 0:
+                timed_out = True
+                break
+            try:
+                return future.result(timeout=min(5.0, remaining))
+            except concurrent.futures.TimeoutError:
+                elapsed = int(time.monotonic() - started)
+                if elapsed > 0 and elapsed % 30 < 5:
+                    agent._touch_activity(
+                        f"sequential tool running ({elapsed}s): {function_name}"
+                    )
+
+        message = (
+            f"Error executing tool '{function_name}': "
+            f"timed out after {timeout_s:.1f}s"
+        )
+        logger.warning(
+            "sequential tool %s timed out after %.1fs", function_name, timeout_s
+        )
+        future.cancel()
+        for tid in worker_tid:
+            try:
+                _ra()._set_interrupt(True, tid)
+            except Exception:
+                pass
+        trace = middleware_trace if middleware_trace is not None else []
+        _emit_terminal_post_tool_call(
+            agent,
+            function_name=function_name,
+            function_args=function_args,
+            result=message,
+            effective_task_id=effective_task_id,
+            tool_call_id=tool_call_id,
+            duration_ms=int(timeout_s * 1000),
+            status="timeout",
+            error_type="tool_timeout",
+            error_message=message,
+            middleware_trace=list(trace),
+        )
+        return _ManagedToolResult(
+            result=_ToolTimeoutResult(message),
+            args=function_args,
+            middleware_trace=trace,
+            blocked=False,
+            dispatched=True,
+        )
+    finally:
+        # Never join a wedged worker. DaemonThreadPoolExecutor also keeps it out
+        # of the stdlib atexit join, matching the concurrent timeout path.
+        executor.shutdown(wait=not timed_out, cancel_futures=timed_out)
 
 
 def _begin_tool_execution(
@@ -1608,6 +1723,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
     """
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
+
+    # Keep every runtime-tool branch on one bounded execution funnel without
+    # duplicating timeout policy across the branch-specific callbacks below.
+    def _run_agent_tool_execution_middleware(agent, **kwargs):
+        return _run_sequential_tool_execution_middleware(agent, **kwargs)
+
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
         if getattr(agent, "_incremental_persistence_failed", False):
             return
@@ -2193,6 +2314,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             tool_duration = time.time() - tool_start_time
 
+        _execution_timed_out = isinstance(function_result, _ToolTimeoutResult)
         if isinstance(function_result, str):
             result_preview = function_result if agent.verbose_logging else (
                 function_result[:200] if len(function_result) > 200 else function_result
@@ -2215,6 +2337,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         from agent.agent_runtime_helpers import agent_runtime_owns_post_tool_hook
         _executor_must_emit_post_hook = (
             not _execution_blocked
+            and not _execution_timed_out
             and (
                 not _execution_dispatched
                 or agent_runtime_owns_post_tool_hook(agent, function_name)
@@ -2287,7 +2410,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
-        tool_message = make_tool_result_message(function_name, _tool_content, tool_call.id)
+        tool_message = make_tool_result_message(
+            function_name,
+            _tool_content,
+            tool_call.id,
+            effect_disposition="unknown" if _execution_timed_out else None,
+        )
         messages.append(tool_message)
         risk_metadata = tool_message.get("_tool_output_risk")
         if not _flush_session_db_after_tool_progress(

@@ -604,6 +604,14 @@ def grok_supports_reasoning_effort(model: str) -> bool:
     return any(name.startswith(prefix) for prefix in _GROK_EFFORT_CAPABLE_PREFIXES)
 
 
+def is_grok_46_family(model: str) -> bool:
+    """Return whether *model* is a Grok 4.6 family identifier."""
+    name = (model or "").strip().lower().replace("_", "-")
+    if "/" in name:
+        name = name.rsplit("/", 1)[-1]
+    return name == "grok-4.6" or name.startswith("grok-4.6-")
+
+
 _CONTEXT_LENGTH_KEYS = (
     "context_length",
     "context_window",

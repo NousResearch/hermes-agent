@@ -58,6 +58,7 @@ from agent.secret_sources._cache import (
     is_valid_env_name as _is_valid_env_name,
 )
 from agent.secret_sources._binary_security import (
+    _get_effective_uid,
     probe_environment as _probe_environment,
     probe_version as _probe_binary_version,
     resolve_executable as _resolve_executable,
@@ -176,7 +177,10 @@ def _verify_managed_bws(path: Path) -> bool:
         if resolved is None or resolved != canonical_path:
             return False
         if os.name != "nt":
-            trusted_owners = {0, os.geteuid()}
+            effective_uid = _get_effective_uid()
+            if effective_uid is None:
+                return False
+            trusted_owners = {0, effective_uid}
             binary_info = path.stat()
             directory_info = path.parent.stat()
             # The sidecar digest is only meaningful when an untrusted user

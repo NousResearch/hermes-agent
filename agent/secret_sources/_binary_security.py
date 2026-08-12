@@ -58,6 +58,17 @@ _POSIX_PROBE_PATH = (
 )
 
 
+def _get_effective_uid() -> Optional[int]:
+    """Return the POSIX effective UID when the platform exposes it."""
+    geteuid = getattr(os, "geteuid", None)
+    if geteuid is None:
+        return None
+    try:
+        return geteuid()
+    except AttributeError:
+        return None
+
+
 def resolve_executable(
     path: Path | str,
     *,
@@ -111,20 +122,18 @@ def resolve_executable(
 
     effective_uid: Optional[int] = None
     if os.name != "nt":
-        try:
-            effective_uid = os.geteuid()
-            # Root-owned system binaries are a valid trust anchor when Hermes
-            # itself runs as root.  A non-root process must still reject a
-            # PATH binary owned by that process, since it can be planted or
-            # replaced by the current user.
-            if (
-                reject_current_owner
-                and effective_uid != 0
-                and info.st_uid == effective_uid
-            ):
-                return None
-        except AttributeError:  # pragma: no cover - Windows has no geteuid
-            pass
+        effective_uid = _get_effective_uid()
+        # Root-owned system binaries are a valid trust anchor when Hermes
+        # itself runs as root.  A non-root process must still reject a PATH
+        # binary owned by that process, since it can be planted or replaced
+        # by the current user.
+        if (
+            reject_current_owner
+            and effective_uid is not None
+            and effective_uid != 0
+            and info.st_uid == effective_uid
+        ):
+            return None
 
         # A group/world-writable executable can be replaced by another user
         # before the credential-bearing child is started.  This applies to
@@ -212,9 +221,8 @@ def resolve_executable(
         # user, but every canonical parent must still be private.  Checking
         # the resolved chain prevents a symlinked ancestor from bypassing the
         # policy before the credential-bearing child starts.
-        try:
-            effective_uid = os.geteuid()
-        except AttributeError:  # pragma: no cover - Windows has no geteuid
+        effective_uid = _get_effective_uid()
+        if effective_uid is None:
             return None
         trusted_owners = {0, effective_uid}
         if info.st_uid not in trusted_owners:

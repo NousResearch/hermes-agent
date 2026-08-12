@@ -603,6 +603,64 @@ export function preserveLocalPendingTurnMessages(
       }
     }
 
+    // Ordinal pairing missed (the committed row shifted ordinal when history
+    // was compacted / the authoritative list is shorter), yet the
+    // authoritative transcript already carries this same reply under its
+    // committed id. The #70209 guard above only covers SETTLED local rows
+    // (`pending !== true`); a still-pending stream row that slips past
+    // pairing falls through to `preserved.push` and renders the answer
+    // twice — the reported A B C D E C D tail duplication.
+    //
+    // Three-way same-turn check against SETTLED authoritative rows only
+    // (a live projection shell must not swallow the richer local row, see
+    // the traces-only replacement test):
+    //  1. identical answer text            -> authoritative already has it
+    //  2. authoritative extends local text -> authoritative is the settled
+    //     final version of the still-streaming local copy
+    //  3. local extends authoritative text -> local is further along; replace
+    //     the committed row with the richer body instead of appending
+    if (isPendingAssistant) {
+      const nextText = textWithoutReferenceLines(chatMessageText(message))
+
+      const committedMatch = nextMessages.find(
+        candidate =>
+          candidate.role === 'assistant' &&
+          !isLiveTailRow(candidate) &&
+          (textWithoutReferenceLines(chatMessageText(candidate)) === nextText ||
+            isStrictAnswerTextExtension(
+              textWithoutReferenceLines(chatMessageText(candidate)),
+              nextText
+            ))
+      )
+
+      if (committedMatch) {
+        continue
+      }
+
+      const committedPrefix = nextMessages.find(
+        candidate =>
+          candidate.role === 'assistant' &&
+          !isLiveTailRow(candidate) &&
+          isStrictAnswerTextExtension(
+            nextText,
+            textWithoutReferenceLines(chatMessageText(candidate))
+          )
+      )
+
+      if (committedPrefix) {
+        // Keep the COMMITTED id (not the local stream id): the turn is
+        // already in the authoritative transcript, so the merged row must
+        // stay addressable as that durable row — a stream id would read as a
+        // live row again next reconcile and re-enter this same path.
+        replacements.set(committedPrefix.id, {
+          ...withAuthoritativeTurnState(message, committedPrefix),
+          id: committedPrefix.id
+        })
+
+        continue
+      }
+    }
+
     preserved.push(message)
   }
 

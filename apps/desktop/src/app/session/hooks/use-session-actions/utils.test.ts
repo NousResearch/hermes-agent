@@ -1086,6 +1086,64 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(chatMessageText(preserved[1])).toBe('first answer')
     expect(preserved.filter(message => message.role === 'assistant')).toHaveLength(2)
   })
+
+  // A still-PENDING stream row whose committed twin the authoritative history
+  // already carries (ordinal shifted under compaction) used to fall through to
+  // `preserved.push` and render the same answer twice — the reported tail
+  // duplication (A B C D E C D). The #70209 guard only covers settled local
+  // rows (`pending !== true`); these cover the pending ones.
+  it('does not re-append a pending stream row the authoritative history already carries', () => {
+    const previous = [
+      msg('1-user', 'user', '查金价'),
+      msg('2-a', 'assistant', 'X'),
+      streamingMsg('assistant-stream-live', '面板内容')
+    ]
+
+    const next = [msg('1-user', 'user', '查金价'), msg('9-assistant', 'assistant', '面板内容')]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('drops a pending stream row whose text the committed authoritative reply extends', () => {
+    const previous = [
+      msg('1-user', 'user', '查金价'),
+      msg('2-a', 'assistant', 'X'),
+      streamingMsg('assistant-stream-live', '面板')
+    ]
+
+    const next = [msg('1-user', 'user', '查金价'), msg('9-assistant', 'assistant', '面板内容完整版')]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('replaces the committed row with a further-along pending copy instead of appending', () => {
+    const previous = [
+      msg('1-user', 'user', '查金价'),
+      msg('2-a', 'assistant', 'X'),
+      streamingMsg('assistant-stream-live', '面板内容完整版')
+    ]
+
+    const next = [msg('1-user', 'user', '查金价'), msg('9-assistant', 'assistant', '面板')]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved.map(message => message.id)).toEqual(['1-user', '9-assistant'])
+    expect(chatMessageText(preserved[1])).toBe('面板内容完整版')
+  })
+
+  // The authoritative history genuinely does not have this reply yet — the
+  // pending row is the only copy and must survive (same contract as the
+  // settled-row variant above).
+  it('still keeps a pending stream row when the authoritative history has no reply', () => {
+    const previous = [msg('1-user', 'user', '查金价'), streamingMsg('assistant-stream-live', '面板内容')]
+
+    const next = [msg('1-user', 'user', '查金价')]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user',
+      'assistant-stream-live'
+    ])
+  })
 })
 
 describe('appendLiveSessionProjection', () => {

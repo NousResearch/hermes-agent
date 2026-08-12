@@ -1042,8 +1042,18 @@ async def delete_profile_endpoint(name: str):
     its own dialog before this request, so we always pass ``yes=True`` to
     skip the CLI's interactive prompt."""
     from hermes_cli import profiles as profiles_mod
+
+    def _run():
+        return profiles_mod.delete_profile(name, yes=True)
+
     try:
-        path = profiles_mod.delete_profile(name, yes=True)
+        # delete_profile() stops a running gateway by polling its PID once
+        # every 500 ms for up to 10 s (profiles._stop_gateway_process) and
+        # then rmtree()s the profile directory. Deleting a profile whose
+        # gateway is up — which this path announces as "⚠ Gateway is running
+        # — it will be stopped" — therefore parks the loop for a full ten
+        # seconds, and the desktop's WebSocket ready-probe gives up at ten.
+        path = await asyncio.get_running_loop().run_in_executor(None, _run)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:

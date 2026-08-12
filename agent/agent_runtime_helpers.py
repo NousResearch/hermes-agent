@@ -3474,7 +3474,14 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
                     seen_assistant_call_ids.add(cid)
                 kept_tcs.append(tc)
             if len(kept_tcs) != len(msg.get("tool_calls") or []):
-                msg = {**msg, "tool_calls": kept_tcs}
+                if kept_tcs:
+                    msg = {**msg, "tool_calls": kept_tcs}
+                else:
+                    # All tool_calls were duplicates of earlier ids — drop
+                    # the key entirely so we never emit ``tool_calls: []`` to
+                    # the API. Strict providers (DeepSeek) reject empty
+                    # arrays outright with HTTP 400 (#58755).
+                    msg = {k: v for k, v in msg.items() if k != "tool_calls"}
             deduped.append(msg)
         elif role == "tool":
             cid = (msg.get("tool_call_id") or "").strip()
@@ -3492,6 +3499,17 @@ def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]
             "Pre-call sanitizer: removed %d duplicate tool_call_id reference(s)",
             removed_dupes,
         )
+
+    # --- Re-run repair after dedup: dedup can empty a previously payload-
+    # bearing assistant message (when every tool_call was a duplicate).
+    # repair_empty_non_final_messages runs before dedup so the placeholder
+    # check ("_msg_has_payload") sees tool_calls present and skips the
+    # message; dedup then strips tool_calls and leaves an empty-content
+    # turn that strict non-empty-content providers (Anthropic native,
+    # litellm/Bedrock) reject. Re-run repair now so the post-dedup shape
+    # also gets the "[response interrupted]" placeholder injected.
+    messages = repair_empty_non_final_messages(messages)
+
     return messages
 
 

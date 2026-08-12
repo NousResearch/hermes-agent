@@ -6761,6 +6761,13 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # --- Update prompt callbacks ---
         if not data.startswith("update_prompt:"):
+            # --- Plugin-registered callback handlers (prefix-claimed) ---
+            # No built-in namespace matched: offer the update to plugin
+            # handlers (the Telegram counterpart of Slack's plugin Block
+            # Kit action handlers). Consulted only after every built-in
+            # prefix above declined, so a plugin can never shadow the
+            # approval/confirm/clarify buttons.
+            await self._dispatch_plugin_callback_handlers(query, data)
             return
         answer = data.split(":", 1)[1]  # "y" or "n"
         caller_id = str(getattr(query.from_user, "id", ""))
@@ -6796,6 +6803,59 @@ class TelegramAdapter(BasePlatformAdapter):
                         answer, getattr(query.from_user, "id", "unknown"))
         except Exception as exc:
             logger.error("Failed to write update response from callback: %s", exc)
+
+    async def _dispatch_plugin_callback_handlers(self, query, data: str) -> bool:
+        """Offer an unclaimed callback_query to plugin-registered handlers.
+
+        Plugins call ``ctx.register_telegram_callback_handler(prefix, cb)``
+        at register() time (the Telegram counterpart of
+        ``register_slack_action_handler``); the manager queues them and the
+        adapter consults the queue here for updates that matched no built-in
+        callback namespace. The first handler whose ``prefix`` matches
+        ``data`` and which returns truthy consumes the update; a falsy
+        return falls through to the next matching handler.
+
+        Each callback is guarded so a misbehaving plugin can't take down
+        the gateway: any exception inside the plugin handler is caught and
+        logged, the tap is answered best-effort so the button stops
+        spinning, and the update counts as consumed — the handler claimed
+        its prefix, and re-dispatching a half-processed tap risks double
+        effects.
+
+        Returns True when a handler consumed the update.
+        """
+        try:
+            from hermes_cli.plugins import get_plugin_manager
+            handlers = get_plugin_manager().get_telegram_callback_handlers()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(
+                "[%s] Could not load plugin callback handlers: %s",
+                self.name, _redact_telegram_error_text(exc),
+            )
+            return False
+        for prefix, callback, plugin_name in handlers:
+            if not data.startswith(prefix):
+                continue
+            try:
+                consumed = await callback(query, data)
+            except Exception as exc:
+                logger.error(
+                    "[%s] Plugin '%s' callback handler raised: %s",
+                    self.name, plugin_name, exc, exc_info=True,
+                )
+                # Best-effort answer so Telegram stops the button spinner.
+                try:
+                    await query.answer()
+                except Exception:
+                    pass
+                return True
+            if consumed:
+                logger.debug(
+                    "[%s] Plugin '%s' consumed callback prefix %s",
+                    self.name, plugin_name, prefix,
+                )
+                return True
+        return False
 
     # Maps `gt:<verb>` -> (script-name, extra-args, success-label, is_state).
     # Scripts live in ~/.hermes/scripts/gmail-triage/. `arg` from the callback

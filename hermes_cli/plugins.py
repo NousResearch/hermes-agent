@@ -1096,6 +1096,76 @@ class PluginContext:
             action_id,
         )
 
+    # -- telegram callback handler registration ------------------------------
+
+    def register_telegram_callback_handler(
+        self,
+        prefix: str,
+        callback: Callable,
+    ) -> None:
+        """Register a Telegram callback-query handler from a plugin.
+
+        Hermes' Telegram adapter consults registered handlers when an
+        inline-keyboard button is tapped (a ``callback_query`` update)
+        whose ``data`` matched no built-in Hermes callback namespace.
+        The callback is invoked when the update's ``data`` string starts
+        with ``prefix``, so a plugin can own its own callback namespace
+        without forking the adapter — the Telegram counterpart of
+        :meth:`register_slack_action_handler`.
+
+        Callback signature::
+
+            async def handler(query, data) -> bool:
+                await query.answer()
+                ...
+                return True  # truthy = consumed
+
+        ``query`` is the python-telegram-bot ``CallbackQuery`` (use it to
+        ``answer()`` and ``edit_message_text()``); ``data`` is
+        ``query.data``. Returning a truthy value consumes the update;
+        returning falsy passes it to the next matching handler. Handlers
+        run for any user who can tap the button — a handler guarding a
+        sensitive action must authorize ``query.from_user`` itself.
+
+        Args:
+            prefix: Literal ``callback_data`` prefix to claim (e.g.
+                ``"myplugin:"``). Matching is ``data.startswith(prefix)``.
+                Unlike Slack's matcher this is a plain string only —
+                Telegram callback data is a flat string, not Block Kit.
+            callback: Async callable receiving ``(query, data)``.
+
+        Raises:
+            ValueError: if ``callback`` is not callable, or ``prefix`` is
+                empty or not a string.
+
+        Example::
+
+            async def _on_approve(query, data):
+                await query.answer(text="Approved")
+                # apply some workflow keyed on data
+                return True
+
+            ctx.register_telegram_callback_handler("inbox_sweep:", _on_approve)
+        """
+        if not callable(callback):
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a Telegram "
+                f"callback handler with a non-callable callback."
+            )
+        if not isinstance(prefix, str) or not prefix.strip():
+            raise ValueError(
+                f"Plugin '{self.manifest.name}' tried to register a Telegram "
+                f"callback handler with an empty prefix."
+            )
+        self._manager._telegram_callback_handlers.append(
+            (prefix, callback, self.manifest.name)
+        )
+        logger.debug(
+            "Plugin %s registered Telegram callback handler: %s",
+            self.manifest.name,
+            prefix,
+        )
+
     # -- hook registration --------------------------------------------------
 
     # -- auxiliary task registration ---------------------------------------
@@ -1333,6 +1403,13 @@ class PluginManager:
         # ``re.Pattern``, or a constraint dict); ``callback`` is an async
         # function with the slack_bolt signature ``(ack, body, action)``.
         self._slack_action_handlers: List[tuple] = []
+        # Telegram callback-query handlers registered by plugins. Each entry
+        # is (prefix, callback, plugin_name); the Telegram adapter consults
+        # them from _handle_callback_query for updates no built-in callback
+        # namespace claimed. ``prefix`` is a literal callback_data prefix
+        # string; ``callback`` is an async function ``(query, data)`` whose
+        # truthy return consumes the update.
+        self._telegram_callback_handlers: List[tuple] = []
 
     # -----------------------------------------------------------------------
     # Public
@@ -1363,6 +1440,7 @@ class PluginManager:
             self._portable_mcp_servers.clear()
             self._aux_tasks.clear()
             self._slack_action_handlers.clear()
+            self._telegram_callback_handlers.clear()
             self._context_engine = None
         # Set the flag up front as a re-entrancy guard (a plugin's register()
         # can transitively trigger discovery again), but reset it if the sweep
@@ -2183,6 +2261,22 @@ class PluginManager:
         :meth:`PluginContext.register_slack_action_handler`.
         """
         return list(self._slack_action_handlers)
+
+    # -----------------------------------------------------------------------
+    # Telegram callback handler accessor
+    # -----------------------------------------------------------------------
+
+    def get_telegram_callback_handlers(self) -> List[tuple]:
+        """Return the list of plugin-registered Telegram callback handlers.
+
+        Each entry is a ``(prefix, callback, plugin_name)`` tuple.
+        Consumed by the Telegram adapter when dispatching callback_query
+        updates that no built-in callback namespace claimed.
+
+        Plugins register handlers via
+        :meth:`PluginContext.register_telegram_callback_handler`.
+        """
+        return list(self._telegram_callback_handlers)
 
     # -----------------------------------------------------------------------
     # Introspection

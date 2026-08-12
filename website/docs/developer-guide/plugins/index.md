@@ -976,6 +976,36 @@ def register(ctx):
 
 This is the public way for plugins to participate in Slack interactivity. Older plugins may patch `SlackAdapter.connect`; prefer this API instead.
 
+### Handle Telegram inline button taps
+
+The Telegram counterpart of the Slack action handlers above. Plugins that send messages with an `InlineKeyboardMarkup` can claim the resulting `callback_query` updates by `callback_data` prefix — no forking of the Telegram adapter required.
+
+```python
+def register(ctx):
+    async def _on_approve(query, data):
+        # query is python-telegram-bot's CallbackQuery.
+        await query.answer(text="Approved")
+        sweep_id = data.split(":", 2)[-1]
+        # ...do the deterministic work, then edit the message.
+        return True  # truthy = consumed
+
+    ctx.register_telegram_callback_handler("inbox_sweep:", _on_approve)
+```
+
+**Signature:** `ctx.register_telegram_callback_handler(prefix, callback) -> None`
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `prefix` | `str` | Literal `callback_data` prefix to claim (matching is `data.startswith(prefix)`). Telegram callback data is a flat string, so unlike Slack there are no regex or constraint-dict matchers |
+| `callback` | async callable | Receives `(query, data)` — the `CallbackQuery` and its `data` string. Return truthy to consume the update; falsy passes it to the next matching handler |
+
+**Runtime behavior:**
+
+- The handler is queued at plugin-load time and consulted by the adapter's callback dispatch while the Telegram platform is connected.
+- Built-in Hermes callback namespaces (approval, confirm, clarify, model picker, …) always run first — a plugin prefix can never shadow them. Pick a distinct prefix for your plugin (e.g. `"myplugin:"`).
+- Each callback is guarded defensively: if your handler raises, the gateway logs the error, best-effort-answers the tap so the button stops spinning, and treats the update as consumed.
+- Handlers fire for any user who can tap the button. A handler guarding a sensitive action must authorize `query.from_user` itself.
+
 :::tip
 This guide covers **general plugins** (tools, hooks, slash commands, CLI commands). The sections below sketch the authoring pattern for each specialized plugin type; each links to its full guide for field reference and examples.
 :::

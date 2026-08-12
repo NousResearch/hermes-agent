@@ -164,7 +164,7 @@ from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
-from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, normalize_proxy_env_vars
+from utils import base_url_host_matches, base_url_hostname, env_float, is_truthy_value, model_forces_max_completion_tokens, normalize_proxy_env_vars
 
 logger = logging.getLogger(__name__)
 
@@ -948,11 +948,19 @@ _API_KEY_PROVIDER_AUX_MODELS_FALLBACK: Dict[str, str] = {
 # can still use this dict directly. Kept in sync with _FALLBACK above.
 _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = _API_KEY_PROVIDER_AUX_MODELS_FALLBACK
 
-# Auxiliary tasks that prefer the provider's fast/cheap model over the user's
-# main chat model when running in "auto" mode. Restricted to tasks where
-# latency is user-visible and the output is short enough that a small model
-# matches a frontier one. Every other task keeps "auto = my chat model".
+# Auxiliary tasks that may opt into the provider's fast/cheap model instead of
+# the user's main chat model. The opt-in lives in
+# ``auxiliary.<task>.prefer_fast_model`` so the default ``auto = main model``
+# contract remains true on every settings surface.
 _FAST_MODEL_TASKS: frozenset = frozenset({"title_generation"})
+
+
+def _task_prefers_fast_model(task: Optional[str]) -> bool:
+    """Return whether an eligible task explicitly opts into fast-model routing."""
+    if task not in _FAST_MODEL_TASKS:
+        return False
+    task_config = _get_auxiliary_task_config(task)
+    return is_truthy_value(task_config.get("prefer_fast_model"), default=False)
 
 
 # Vision-specific model overrides for direct providers.
@@ -5677,17 +5685,13 @@ def _resolve_auto_route(
     main_provider = str(runtime_provider or _read_main_provider() or "")
     main_model = str(runtime_model or _read_main_model() or "")
 
-    # Latency-critical tasks prefer the provider's registered fast model over
-    # the main chat model. Titling is the only such task: it names a visible
-    # sidebar row, produces ~8 tokens, and running it on a frontier reasoning
-    # model costs seconds per new session. Every comparable tool routes titling
-    # to a small tier (Claude Code → Haiku, OpenCode → small_model, Zed →
-    # default_fast_model, OpenClaw → utilityModel). An explicit
-    # auxiliary.<task>.model in config.yaml still wins — this only redirects
-    # the "auto" default, and only when the provider registered a cheap model.
-    # Every other aux task keeps the "auto means my chat model" contract
-    # documented above: this does NOT change compression, vision, or search.
-    if task in _FAST_MODEL_TASKS and main_provider and main_provider not in {"auto", ""}:
+    # Latency-critical tasks can explicitly prefer the provider's registered
+    # fast model over the main chat model. Titling is the only eligible task:
+    # it names a visible sidebar row, produces ~8 tokens, and running it on a
+    # frontier reasoning model costs seconds per new session. This remains an
+    # opt-in because every settings surface defines "auto" as using the main
+    # model; silently overriding that choice makes the selected model cosmetic.
+    if _task_prefers_fast_model(task) and main_provider and main_provider not in {"auto", ""}:
         fast_model = _get_aux_model_for_provider(main_provider, prefer_fast=True)
         if fast_model and fast_model != main_model:
             logger.debug(
@@ -7284,7 +7288,11 @@ def _client_cache_key(
     # `auto` can now resolve through task-specific or main fallback policy,
     # so the task participates in the cache key. Non-auto providers keep the
     # old cache shape because the explicit provider/model tuple is sufficient.
-    task_key = (task or "") if provider == "auto" else ""
+    task_key = (
+        (task or "", _task_prefers_fast_model(task))
+        if provider == "auto"
+        else ""
+    )
     pool_hint = _pool_cache_hint(provider, main_runtime=main_runtime)
     # The model MUST participate in the key. Two concurrent auxiliary calls to
     # the SAME provider/base_url/key but DIFFERENT models (e.g. a MoA reference

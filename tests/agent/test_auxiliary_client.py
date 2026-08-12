@@ -4491,7 +4491,22 @@ class TestAutoRoutedProviderProfileHooks:
 
 
 class TestFastModelTier:
-    """The titling fast tier: rot-proof resolution, scoped to titling only."""
+    """The opt-in titling fast tier: rot-proof and scoped to titling only."""
+
+    def test_auto_client_cache_key_tracks_fast_model_preference(self):
+        """Changing the routing preference must not reuse the old auto client."""
+        from agent import auxiliary_client as ac
+
+        with patch.object(ac, "_task_prefers_fast_model", return_value=False):
+            main_key = ac._client_cache_key(
+                "auto", async_mode=False, task="title_generation"
+            )
+        with patch.object(ac, "_task_prefers_fast_model", return_value=True):
+            fast_key = ac._client_cache_key(
+                "auto", async_mode=False, task="title_generation"
+            )
+
+        assert main_key != fast_key
 
     def test_catalog_match_prefers_rolling_alias_over_pinned_id(self):
         """A "-latest" alias wins: it is the only id that cannot go stale."""

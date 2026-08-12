@@ -15,13 +15,16 @@ import { createContext, type ReactNode, useCallback, useContext, useEffect, useM
 import { $registryVersion } from '@/contrib/registry'
 import { matchesQuery, useMediaQuery } from '@/hooks/use-media-query'
 import { persistString, persistStringRecord, storedString, storedStringRecord } from '@/lib/storage'
+import type { WallpaperPalette } from '@/lib/wallpaper-palette'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import { $wallpaperThemePalette, $wallpaperThemePaletteMode } from '@/store/wallpaper'
 
 import { $backendThemes, $pendingSkinApply } from './backend-sync'
 import { hexToRgb, mix, readableOn } from './color'
 import { BUILTIN_THEME_LIST, DEFAULT_SKIN_NAME, DEFAULT_TYPOGRAPHY, nousTheme } from './presets'
 import type { DesktopTheme, DesktopThemeColors } from './types'
 import { $userThemes, listAllThemes, resolveTheme } from './user-themes'
+import { adaptThemeColorsToWallpaper } from './wallpaper'
 
 // Legacy global skin (pre per-profile themes). Still the inheritance fallback
 // for any profile without its own assignment, so single-profile users and old
@@ -176,7 +179,7 @@ const mixesFor = (isDark: boolean): Record<string, string> => ({
   '--theme-mix-bubble': isDark ? '46%' : '0%'
 })
 
-function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
+function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark', transient = false) {
   if (typeof document === 'undefined') {
     return
   }
@@ -233,6 +236,10 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     root.style.setProperty(k, v)
   }
 
+  if (transient) {
+    return
+  }
+
   const chromeBg = chromeBackground(c.background, isDark)
 
   window.hermesDesktop?.setTitleBarTheme?.({
@@ -258,6 +265,40 @@ function applyTheme(theme: DesktopTheme, mode: 'light' | 'dark') {
     link.dataset.hermesThemeFont = 'true'
     document.head.appendChild(link)
     INJECTED_FONT_URLS.add(typo.fontUrl)
+  }
+}
+
+interface WallpaperThemePreviewRuntime {
+  activeTheme: DesktopTheme
+  baseTheme: DesktopTheme
+  resolvedMode: 'dark' | 'light'
+}
+
+let wallpaperThemePreviewRuntime: WallpaperThemePreviewRuntime | null = null
+
+/** Imperative, non-persistent preview used while the native color plane moves. */
+export function previewWallpaperThemePalette(palette: WallpaperPalette): void {
+  const runtime = wallpaperThemePreviewRuntime
+
+  if (!runtime) {
+    return
+  }
+
+  applyTheme(
+    {
+      ...runtime.baseTheme,
+      colors: adaptThemeColorsToWallpaper(runtime.baseTheme.colors, palette, { exactAccent: true })
+    },
+    runtime.resolvedMode,
+    true
+  )
+}
+
+export function restoreWallpaperThemePreview(): void {
+  const runtime = wallpaperThemePreviewRuntime
+
+  if (runtime) {
+    applyTheme(runtime.activeTheme, runtime.resolvedMode, true)
   }
 }
 
@@ -377,8 +418,10 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   const systemDark = useMediaQuery('(prefers-color-scheme: dark)')
   const resolvedMode = resolveMode(mode, systemDark)
+  const wallpaperPalette = useStore($wallpaperThemePalette)
+  const wallpaperPaletteMode = useStore($wallpaperThemePaletteMode)
 
-  const activeTheme = useMemo(
+  const baseTheme = useMemo(
     () => deriveTheme(themeName, resolvedMode),
     // deriveTheme resolves its seed through the merged registry, so the theme
     // stores are its reactivity too — an in-place palette edit of the ACTIVE
@@ -387,8 +430,33 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     [themeName, resolvedMode, userThemes, backendThemes, registryVersion]
   )
 
+  const activeTheme = useMemo(
+    () =>
+      wallpaperPalette
+        ? {
+            ...baseTheme,
+            colors: adaptThemeColorsToWallpaper(baseTheme.colors, wallpaperPalette, {
+              exactAccent: wallpaperPaletteMode === 'manual'
+            })
+          }
+        : baseTheme,
+    [baseTheme, wallpaperPalette, wallpaperPaletteMode]
+  )
+
   // What actually gets painted (matches the `.dark` class applyTheme toggles).
   const renderedMode = useMemo(() => renderedModeFor(activeTheme.colors, resolvedMode), [activeTheme, resolvedMode])
+
+  useEffect(() => {
+    const runtime = { activeTheme, baseTheme, resolvedMode }
+
+    wallpaperThemePreviewRuntime = runtime
+
+    return () => {
+      if (wallpaperThemePreviewRuntime === runtime) {
+        wallpaperThemePreviewRuntime = null
+      }
+    }
+  }, [activeTheme, baseTheme, resolvedMode])
 
   useEffect(() => applyTheme(activeTheme, resolvedMode), [activeTheme, resolvedMode])
 

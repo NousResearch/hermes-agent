@@ -370,6 +370,45 @@ export interface Translations {
       translucencyDesc: string
       backdropTitle: string
       backdropDesc: string
+      wallpaper: {
+        title: string
+        description: string
+        choose: string
+        replace: string
+        remove: string
+        reset: string
+        error: string
+        unsupported: string
+        profileNote: (profile: string) => string
+        preview: string
+        previewEffect: string
+        previewFull: string
+        visibility: string
+        displayMode: string
+        adaptiveTheme: string
+        adaptiveThemeDesc: string
+        adaptiveThemeAnalyzing: string
+        adaptiveThemeError: string
+        paletteMode: string
+        paletteModes: Record<'auto' | 'manual', string>
+        paletteManualDesc: string
+        paletteDominant: string
+        paletteAccent: string
+        modes: Record<'center' | 'fill' | 'fit' | 'tile', string>
+        opacity: string
+        blur: string
+        overlay: string
+        overlayShape: string
+        overlayShapes: Record<'ellipse' | 'strip', string>
+        overlayColor: string
+        overlayColorTheme: string
+        overlayWidth: string
+        overlayHeight: string
+        overlayPosition: string
+        left: string
+        center: string
+        right: string
+      }
       reactionsTitle: string
       reactionsDesc: string
       embedsTitle: string

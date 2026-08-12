@@ -1911,6 +1911,23 @@ button[data-slot='aui_msg-reactions'] svg {
   --thread-last-message-clearance: calc(var(--composer-measured-height) + 2rem);
 }
 
+/* The custom wallpaper and readability mask are painted once at the layout
+   root. Let the chat and sidebar zones reveal that shared layer so the mask
+   remains continuous across their divider. */
+[data-workspace-wallpaper-active] [data-tree-group],
+[data-workspace-wallpaper-active] [data-narrow-pane-overlay],
+[data-workspace-wallpaper-active] [data-slot='sidebar'] {
+  background: transparent;
+}
+
+/* The sticky user turn normally paints an opaque full-width runway so it can
+   cover scrolled transcript text. Over a custom wallpaper that runway reads as
+   a rectangular frame around the rounded bubble, so let the wallpaper remain
+   visible and keep opacity on the bubble itself. */
+[data-chat-surface][data-wallpaper-active] [data-slot='aui_user-message-root'].sticky {
+  background: transparent;
+}
+
 /* A live tool run, shown as one line. `ToolRunTicker` stacks the run's rows
    into a reel and offsets it by the newest row's index, so each new action
    slides the one before it up and out of a single-line window — the run reads

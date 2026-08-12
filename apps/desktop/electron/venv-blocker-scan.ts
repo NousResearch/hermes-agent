@@ -34,6 +34,20 @@ export type ScanOutcome =
   | { kind: 'blocked'; result: VenvBlockerScanResult }
   | { kind: 'probe-failure'; error: string }
 
+/**
+ * Options for the venv-blocker scan subprocess.
+ */
+export interface ScanOptions {
+  /**
+   * When set, all descendants of this PID are excluded from the scan.
+   * Used by the Desktop app to skip its own respawned backends (#77277):
+   * after `releaseBackendLockForUpdate` kills the backend, the Desktop
+   * app respawns it within seconds — the scanner must not count those
+   * as external blockers.
+   */
+  excludeChildrenOf?: number
+}
+
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
@@ -111,13 +125,19 @@ export function parseVenvBlockerScanOutput(raw: string): ScanOutcome {
 /**
  * Run the venv-blocker scan subprocess.  Async so the Electron main-process
  * event loop is never blocked by the psutil process scan (up to 15s on a
- * loaded Windows box).  Accepts optional overrides for testing (dependency
+ * loaded Windows box.  Accepts optional overrides for testing (dependency
  * injection).
+ *
+ * @param updateRoot - The hermes-agent install root.
+ * @param execOverride - Optional exec override for testing.
+ * @param resolveOverride - Optional resolve override for testing.
+ * @param options - Scan options (e.g. excludeChildrenOf for Desktop self-skip).
  */
 export async function scanVenvBlockers(
   updateRoot: string,
   execOverride?: typeof execFileAsync,
-  resolveOverride?: typeof resolveVenvPython
+  resolveOverride?: typeof resolveVenvPython,
+  options?: ScanOptions
 ): Promise<ScanOutcome> {
   const execFn = execOverride || execFileAsync
   const resolveFn = resolveOverride || resolveVenvPython
@@ -127,10 +147,19 @@ export async function scanVenvBlockers(
     return { kind: 'probe-failure', error: 'venv python not found' }
   }
 
+  // Build the argument list.  When the Desktop app passes its own PID,
+  // the scanner excludes all of that PID's descendants — preventing
+  // respawned backends from being reported as blockers (#77277).
+  const scanArgs = ['-m', SCAN_MODULE]
+
+  if (options?.excludeChildrenOf != null && Number.isInteger(options.excludeChildrenOf)) {
+    scanArgs.push('--exclude-children-of', String(options.excludeChildrenOf))
+  }
+
   let stdout: string
 
   try {
-    const proc = await execFn(venvPython, ['-m', SCAN_MODULE], {
+    const proc = await execFn(venvPython, scanArgs, {
       cwd: updateRoot,
       encoding: 'utf-8',
       timeout: SCAN_TIMEOUT_MS,

@@ -6,11 +6,12 @@ Invoked by the Desktop Electron app::
 
 Exits 0 for valid clear or blocked results.  Non-zero exit signals probe
 failure (the detector itself crashed, psutil unavailable, etc.).  Exactly
-one JSON document on stdout; diagnostics on stderr only.
+one JSON document on stdout; diagnostics to stderr only.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import sys
 from typing import NoReturn
@@ -126,17 +127,71 @@ def _is_pausable_gateway(cmdline: str) -> bool:
     return looks_like_gateway_command_line(cmdline)
 
 
+def _collect_descendant_pids(root_pid: int) -> set[int]:
+    """Return all descendant PIDs of *root_pid* (children, grandchildren, ...).
+
+    Uses psutil to walk the process tree.  Returns an empty set when psutil
+    is unavailable or *root_pid* does not exist.  Never raises.
+    """
+    try:
+        import psutil  # noqa: PLC0415
+    except Exception:
+        return set()
+
+    descendants: set[int] = set()
+    try:
+        root = psutil.Process(root_pid)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
+        return descendants
+
+    # BFS over the process tree.
+    queue = list(root.children(recursive=False))
+    while queue:
+        child = queue.pop(0)
+        try:
+            descendants.add(int(child.pid))
+            queue.extend(child.children(recursive=False))
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            # Process exited between listing and inspecting — skip.
+            continue
+
+    return descendants
+
+
 def main() -> None:
     """Entry point.  Prints one JSON doc to stdout.  Exits 0 for valid scan."""
+    parser = argparse.ArgumentParser(
+        description="Scan for venv-resident processes that block updates."
+    )
+    parser.add_argument(
+        "--exclude-children-of",
+        type=int,
+        default=None,
+        metavar="PID",
+        help=(
+            "Exclude all descendants of this PID from the scan.  "
+            "Used by the Desktop app to skip its own respawned backends."
+        ),
+    )
+    args, _ = parser.parse_known_args()
+
     try:
         import psutil  # noqa: PLC0415, F401
     except Exception as exc:
         _emit_probe_fail(f"psutil is not available: {exc}")
 
+    # Build the exclude set: explicit PIDs + descendants of the parent PID.
+    exclude_pids: set[int] = set()
+    if args.exclude_children_of is not None:
+        exclude_pids |= _collect_descendant_pids(args.exclude_children_of)
+        # Also exclude the parent PID itself — it's the Electron main process
+        # and should never be counted as a venv blocker.
+        exclude_pids.add(args.exclude_children_of)
+
     try:
         from hermes_cli.main import _detect_venv_python_processes  # noqa: PLC0415
 
-        matches = _detect_venv_python_processes()
+        matches = _detect_venv_python_processes(exclude_pids=exclude_pids or None)
     except Exception as exc:
         _emit_probe_fail(f"scan aborted: {exc}")
 
@@ -160,6 +215,8 @@ def main() -> None:
         # Diagnostic only: gateway processes present but not counted as
         # blockers because the downstream updater pauses them itself.
         "pausable_gateways": exempted,
+        # Diagnostic: how many processes were excluded by --exclude-children-of.
+        "excluded_by_parent": len(exclude_pids) if exclude_pids else 0,
     }
     print(json.dumps(data))
     sys.exit(0)

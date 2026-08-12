@@ -208,7 +208,7 @@ import {
   stagedUpdaterSupportsPrewrittenMarker,
   wrapHandoffForDetachedConsole
 } from './updater-process'
-import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers } from './venv-blocker-scan'
+import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers, type ScanOptions } from './venv-blocker-scan'
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { readWindowBelow } from './window-below'
@@ -2998,7 +2998,12 @@ async function applyUpdates(opts = {}) {
     // malformed output, missing psutil) abort the handoff — never proceed
     // to the detached updater when the venv state is unknown.
     if (IS_WINDOWS) {
-      const scanOutcome = await scanVenvBlockers(updateRoot)
+      // Pass our own PID so the scanner excludes all descendants — the
+      // Desktop app respawns its backend within seconds of it being killed
+      // by releaseBackendLockForUpdate, and those respawned processes must
+      // not be counted as external blockers (#77277).
+      const scanOpts: ScanOptions = { excludeChildrenOf: process.pid }
+      const scanOutcome = await scanVenvBlockers(updateRoot, undefined, undefined, scanOpts)
 
       if (scanOutcome.kind === 'blocked') {
         const message = formatBlockerMessage(scanOutcome.result)

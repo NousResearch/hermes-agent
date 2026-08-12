@@ -1135,6 +1135,51 @@ class TestSafeCopyDb:
         assert not dst.exists()
 
 
+    def test_locked_source_fails_fast_not_hang(self, tmp_path):
+        import subprocess
+        import sys
+        import time
+
+        from hermes_cli.backup import _safe_copy_db
+        src = tmp_path / "locked.db"
+        dst = tmp_path / "copy.db"
+
+        conn = sqlite3.connect(str(src))
+        conn.execute("CREATE TABLE t (x INTEGER)")
+        conn.commit()
+        conn.close()
+
+        # Hold an EXCLUSIVE transaction in a separate process. POSIX file
+        # locks only conflict across processes, so an in-process connection
+        # cannot reproduce the "database is locked" condition.
+        holder = (
+            "import sqlite3, time\n"
+            f"c = sqlite3.connect({str(src)!r})\n"
+            "c.execute('BEGIN EXCLUSIVE')\n"
+            "print('LOCKED', flush=True)\n"
+            "time.sleep(60)\n"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-c", holder],
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert proc.stdout is not None
+            assert proc.stdout.readline().strip() == "LOCKED"
+            started = time.monotonic()
+            result = _safe_copy_db(src, dst)
+            elapsed = time.monotonic() - started
+            assert result is False
+            # The busy timeout is 5s, so a fast failure lands around there.
+            # The regression this guards against is backup() retrying
+            # SQLITE_BUSY forever, which would never return at all.
+            assert elapsed < 30
+        finally:
+            proc.kill()
+            proc.wait()
+
+
     def test_is_zeroed_sqlite_file_detects_nul_header(self, tmp_path):
         from hermes_cli.backup import is_zeroed_sqlite_file
         p = tmp_path / "state.db"

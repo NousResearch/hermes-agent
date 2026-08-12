@@ -1643,11 +1643,10 @@ function Set-GitBashEnvVar {
     Write-Info "If needed, set HERMES_GIT_BASH_PATH manually to your bash.exe path."
 }
 
-# The dependency tree's real Node floor is >=22.22.0, set by react-router 8.3.0
-# (`engines.node`). Keep this in sync with the root package.json: looser lets an
-# install reach a `npm ci` that dies with EBADENGINE, stricter replaces a working
-# user toolchain for nothing. Returns $true when a `node --version` string
-# clears that floor.
+# The dependency tree supports Node 22.22+, 24, and 26+. nanoid 6 deliberately
+# excludes odd-numbered Node releases, so accepting Node 23/25 here only defers
+# the failure to `npm ci` under engine-strict. Keep this in sync with the root
+# package.json.
 function Test-NodeVersionOk {
     param([string]$Version)
     try {
@@ -1656,7 +1655,7 @@ function Test-NodeVersionOk {
         return $false
     }
     if ($v.Major -eq 22) { return ($v.Minor -ge 22) }
-    return ($v.Major -gt 22)
+    return (($v.Major -eq 24) -or ($v.Major -ge 26))
 }
 
 # Accept a system Node only when its companion npm also satisfies the same

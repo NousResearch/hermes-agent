@@ -19,7 +19,6 @@ declare and the toolchain that has to satisfy it.
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 
 import pytest
@@ -117,15 +116,11 @@ class TestEnginesAreSatisfiable:
         else:  # pragma: no cover - install.sh always defines it
             pytest.fail("install.sh does not define NODE_VERSION")
 
-        # install.sh fetches latest-v{major}.x, not {major}.0.0, so compare on
-        # the major: the newest release of that line must be able to clear the
-        # floor. A floor in a HIGHER major than we provision can never be met.
-        floor_majors = [
-            int(m.group(1))
-            for m in re.finditer(r">=\s*v?(\d+)", node_range)
-        ]
-        assert floor_majors, f"cannot read a floor out of {node_range!r}"
-        assert managed_major >= min(floor_majors), (
+        # install.sh fetches latest-v{major}.x, not {major}.0.0. Use a high
+        # representative release from that major so ranges that enumerate LTS
+        # lines (rather than one continuous floor) are checked correctly.
+        managed_release = f"{managed_major}.999.999"
+        assert _satisfies_range(managed_release, node_range), (
             f"engines.node is {node_range!r} but install.sh provisions Node "
             f"{managed_major}.x. The runtime we ship must satisfy the floor we "
             "declare, or the install we just performed cannot install deps."
@@ -173,6 +168,21 @@ class TestEnginesAreSatisfiable:
             "22.12 — stricter than Vite requires. A desktop floor above the "
             "build toolchain's own floor replaces working user toolchains for "
             "nothing."
+        )
+
+    @pytest.mark.parametrize("supported_node", ["22.22.0", "22.23.1", "24.0.0", "26.0.0"])
+    def test_root_range_accepts_supported_dependency_lines(self, supported_node):
+        node_range = _root_manifest()["engines"]["node"]
+        assert _satisfies_range(supported_node, node_range)
+
+    @pytest.mark.parametrize("unsupported_node", ["22.21.1", "23.0.0", "25.2.1"])
+    def test_root_range_rejects_nodes_excluded_by_dependencies(self, unsupported_node):
+        """The root preflight must reject a runtime nanoid 6 cannot run on."""
+        node_range = _root_manifest()["engines"]["node"]
+        assert not _satisfies_range(unsupported_node, node_range), (
+            f"engines.node {node_range!r} accepts Node {unsupported_node}, so "
+            "engine-strict defers the failure to nanoid instead of naming Hermes's "
+            "supported runtime range and provisioning a managed Node."
         )
 
 

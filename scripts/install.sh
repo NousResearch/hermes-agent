@@ -882,20 +882,19 @@ check_cxx_compiler() {
     return 1
 }
 
-# The dependency tree's real Node floor is >=22.22.0, set by react-router 8.3.0
-# (`engines.node`), with Vite ^8 next at `^20.19 || >=22.12`. Keep this in sync
-# with the root package.json — a gate looser than the manifest lets an install
-# proceed to a `npm ci` that then dies with EBADENGINE, and a gate stricter than
-# the manifest replaces a working user toolchain for nothing. Returns 0 when the
-# given `node --version` string clears the floor; anything below it is replaced
-# with the Hermes-managed Node $NODE_VERSION.
+# The dependency tree supports Node 22.22+, 24, and 26+. nanoid 6 deliberately
+# excludes odd-numbered Node releases, so accepting Node 23/25 here only defers
+# the failure to `npm ci` under engine-strict. Keep this in sync with the root
+# package.json. Anything outside the supported lines is replaced with the
+# Hermes-managed Node $NODE_VERSION.
 node_satisfies_build() {
     local ver="${1#v}"
     local major="${ver%%.*}"
     local minor="${ver#*.}"; minor="${minor%%.*}"
     case "$major" in ''|*[!0-9]*) return 1 ;; esac
     case "$minor" in ''|*[!0-9]*) minor=0 ;; esac
-    if [ "$major" -ge 22 ] && { [ "$major" -gt 22 ] || [ "$minor" -ge 22 ]; }; then return 0; fi
+    if [ "$major" -eq 22 ] && [ "$minor" -ge 22 ]; then return 0; fi
+    if [ "$major" -eq 24 ] || [ "$major" -ge 26 ]; then return 0; fi
     return 1
 }
 

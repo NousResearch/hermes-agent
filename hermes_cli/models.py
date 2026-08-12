@@ -96,12 +96,26 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
     # OpenRouter routers
     ("openrouter/pareto-code",                 "auto-routes to cheapest coder meeting openrouter.min_coding_score"),
     # Free tier
-    ("openrouter/elephant-alpha",              "free"),
-    ("poolside/laguna-m.1:free",               "free"),
-    ("tencent/hy3:free",                       "free"),
-    ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
-    ("nvidia/nemotron-3-ultra-550b-a55b:free", "free"),
-    ("inclusionai/ring-2.6-1t:free",           "free"),
+    ("openrouter/elephant-alpha",                      "free"),
+    ("poolside/laguna-m.1:free",                       "free"),
+    ("tencent/hy3:free",                               "free"),
+    ("nvidia/nemotron-3-super-120b-a12b:free",         "free"),
+    ("nvidia/nemotron-3-ultra-550b-a55b:free",         "free"),
+    ("inclusionai/ring-2.6-1t:free",                   "free"),
+    # Additional free models (added for completeness — covers all OpenRouter :free models)
+    ("nvidia/nemotron-3.5-content-safety:free",        "free (no tools)"),
+    ("nvidia/nemotron-3-nano-30b-a3b:free",            "free"),
+    ("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free", "free"),
+    ("nvidia/nemotron-nano-9b-v2:free",                "free"),
+    ("nvidia/nemotron-nano-12b-v2-vl:free",            "free"),
+    ("poolside/laguna-s-2.1:free",                     "free"),
+    ("poolside/laguna-xs-2.1:free",                    "free"),
+    ("inclusionai/ling-3.0-flash:free",                "free"),
+    ("cohere/north-mini-code:free",                    "free"),
+    ("google/gemma-4-26b-a4b-it:free",                 "free"),
+    ("google/gemma-4-31b-it:free",                     "free"),
+    ("openai/gpt-oss-20b:free",                        "free"),
+    ("openrouter/free",                                "free (router)"),
 ]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
@@ -1522,7 +1536,16 @@ def fetch_openrouter_models(
     except Exception:
         remote = None
     fallback = list(remote) if remote else list(OPENROUTER_MODELS)
+    # Merge remote catalog with local OPENROUTER_MODELS so that locally-added
+    # models (e.g. additional free models) are also matched against the live API.
     preferred_ids = [mid for mid, _ in fallback]
+    if remote:
+        # Add any local models not already in the remote catalog
+        local_ids = {mid for mid, _ in OPENROUTER_MODELS}
+        remote_ids = set(preferred_ids)
+        for mid in local_ids:
+            if mid not in remote_ids:
+                preferred_ids.append(mid)
 
     try:
         req = urllib.request.Request(
@@ -1553,17 +1576,18 @@ def fetch_openrouter_models(
         live_item = live_by_id.get(preferred_id)
         if live_item is None:
             continue
-        # Hide models that don't advertise tool-calling support — hermes-agent
-        # requires it and surfacing them leads to immediate runtime failures
-        # when the user selects them. Ported from Kilo-Org/kilocode#9068.
-        if not _openrouter_model_supports_tools(live_item):
-            continue
+        # Check tool support — hermes-agent requires it for full functionality.
+        # Models without tools are still shown but marked "(no tools)" so users
+        # know they'll fail at first tool call. Ported from Kilo-Org/kilocode#9068.
+        supports_tools = _openrouter_model_supports_tools(live_item)
         if preferred_id == silent_default:
             # Keep the silent-default badge through the live refresh so the
             # picker shows which model Hermes lands on when none is selected.
             desc = "default"
         else:
             desc = "free" if _openrouter_model_is_free(live_item.get("pricing")) else ""
+        if not supports_tools:
+            desc = (desc + " " if desc else "") + "(no tools)"
         curated.append((preferred_id, desc))
 
     if not curated:

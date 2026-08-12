@@ -29,7 +29,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Dict, Any, Optional, List, Tuple, Set, cast
 
 from hermes_cli.route_identity import normalize_route_base_url
 from hermes_cli.secret_prompt import masked_secret_prompt
@@ -2460,6 +2460,38 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+_LEGACY_FLAT_MOA_SLOT_KEYS = frozenset({"reference_models", "aggregator"})
+
+
+def _merge_config_layer(base: dict, override: dict) -> dict:
+    """Merge one config layer without shadowing an explicit flat MoA preset.
+
+    ``DEFAULT_CONFIG`` contains ``moa.presets.default``.  A legacy flat MoA
+    layer deliberately has no ``presets`` key, so an ordinary deep merge would
+    retain that inherited preset and make ``normalize_moa_config`` ignore the
+    layer's explicit slot settings.  Remove only the inherited preset selectors
+    before merging such a layer; named-preset layers keep normal deep-merge
+    behavior.
+    """
+    moa_override = override.get("moa")
+    if (
+        isinstance(moa_override, dict)
+        and "presets" not in moa_override
+        and not {"default_preset", "active_preset"}.intersection(moa_override)
+        and _LEGACY_FLAT_MOA_SLOT_KEYS.intersection(moa_override)
+    ):
+        base = base.copy()
+        inherited_moa = base.get("moa")
+        base_moa = (
+            dict(inherited_moa) if isinstance(inherited_moa, dict) else {}
+        )
+        base_moa.pop("presets", None)
+        base_moa.pop("default_preset", None)
+        base_moa.pop("active_preset", None)
+        base["moa"] = base_moa
+    return _deep_merge(base, override)
+
+
 def _strip_dotted_keys(cfg: dict, dotted_keys: set) -> Tuple[dict, set]:
     """Remove the given dotted leaf keys from a nested config dict.
 
@@ -3403,7 +3435,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                     user_config["agent"] = agent_user_config
                     user_config.pop("max_turns", None)
 
-                config = _deep_merge(config, user_config)
+                config = _merge_config_layer(config, user_config)
             except Exception as e:
                 # Last-known-good fallback (port of openai/codex#31188's
                 # invariant: a parse failure in a policy/config file must not
@@ -3455,7 +3487,10 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         managed_config = managed_scope.load_managed_config()
         if managed_config:
             managed_expanded = _expand_env_vars(managed_config)
-            expanded = _deep_merge(expanded, managed_expanded)
+            expanded = _merge_config_layer(
+                cast(Dict[str, Any], expanded),
+                cast(Dict[str, Any], managed_expanded),
+            )
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_sig is not None:
             # Cache stores a separate deepcopy so subsequent ``load_config()``

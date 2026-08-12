@@ -2019,8 +2019,9 @@ installed, so we exclude them from the comparison in :func:`_tui_need_npm_instal
 to avoid false-positive reinstalls on every launch.
 
 ``dev``, ``optional``, ``extraneous``, and ``hasInstallScript`` are boolean
-annotations that npm populates differently in the hidden lock (e.g. ``dev: true``
-from the root lock may be absent or ``false`` in the hidden actualized tree).
+annotations that npm populates differently in the hidden lock (npm >= 10/11
+writes ``extraneous`` into the hidden lock only, and ``dev: true`` from the
+root lock may be absent or ``false`` in the hidden actualized tree).
 They never indicate a changed dependency — the authoritative check is the
 ``resolved``/``integrity`` pair, which the intersection comparison always
 catches.
@@ -2246,7 +2247,18 @@ def _tui_need_npm_install(root: Path) -> bool:
         return lock.stat().st_mtime > marker.stat().st_mtime
 
     def comparable(pkg: dict) -> dict:
-        return {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
+        # npm >= 10/11 writes a reduced hidden lockfile that omits declarative
+        # fields (`version`, `dependencies`, `dev`, `engines`, `bin`, ...) or
+        # stores them as null.  Comparing every key field-by-field then flags
+        # nearly every installed package as "changed".  Compare only the keys
+        # both sides actually record with a non-null value (`resolved`,
+        # `integrity`, ...): a genuinely stale install (root lockfile bumped
+        # while node_modules is behind) still differs on those keys, while the
+        # reduced-lockfile field omissions no longer false-positive.
+        a = {k: v for k, v in pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
+        b = {k: v for k, v in installed_pkg.items() if k not in _NPM_LOCK_RUNTIME_KEYS}
+        common = a.keys() & b.keys()
+        return {k: a[k] for k in common if a[k] is not None and b[k] is not None}
 
     # In a shared workspace checkout the launch install is scoped to the ui-tui
     # workspace (plus its child packages/* workspaces on Termux), so only that
@@ -2272,7 +2284,14 @@ def _tui_need_npm_install(root: Path) -> bool:
             continue
 
         if name not in installed:
-            if pkg.get("optional") or pkg.get("peer"):
+            # Workspace link entries (`"link": true`, paths outside
+            # node_modules/ like `apps/desktop`, `node_modules/web`) are never
+            # materialized by a partial `npm install --workspace ui-tui` —
+            # they're deliberately skipped (see #38772) and would otherwise
+            # force a reinstall on every launch.
+            if pkg.get("optional") or pkg.get("peer") or pkg.get("link"):
+                continue
+            if not name.startswith("node_modules/"):
                 continue
             return True
 

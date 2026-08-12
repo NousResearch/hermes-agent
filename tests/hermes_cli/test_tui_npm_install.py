@@ -1,5 +1,6 @@
 """_tui_need_npm_install: auto npm when node_modules is behind the lockfile."""
 
+import json
 import os
 import types
 from pathlib import Path
@@ -563,6 +564,135 @@ def test_make_tui_argv_exits_with_recovery_hint_when_workspace_unrecoverable(
     # hidden lockfile to compare against, and ink is missing → True.
     # But the key invariant is: ws_root for the need-check == ws_root
     # for the install cwd — both use _workspace_root(sub).
+
+
+def test_need_npm_install_false_with_reduced_npm11_hidden_lockfile(
+    tmp_path: Path, main_mod
+) -> None:
+    """npm >= 10/11 writes a reduced hidden `.package-lock.json` that omits
+    declarative fields (version/dependencies/dev) and adds `extraneous`,
+    and it never materializes workspace `"link": true` entries. A fresh
+    install therefore used to look perpetually stale and re-ran `npm install`
+    on every TUI launch (#84617). After the fix it must be stable."""
+    ws = tmp_path / "ui-tui"
+    ws.mkdir()
+    (ws / "package.json").write_text("{}")
+    _touch_ink(tmp_path)
+    (tmp_path / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "packages": {
+                    "node_modules/ink": {
+                        "version": "5.0.0",
+                        "resolved": "https://reg/ink.tgz",
+                        "integrity": "sha512-aaaa",
+                        "dependencies": {"yocto": "^1.0.0"},
+                    },
+                    "apps/desktop": {"link": True, "resolved": "apps/desktop"},
+                }
+            }
+        )
+    )
+    # Hidden lockfile as npm 11 writes it: reduced, plus extraneous.
+    (tmp_path / "node_modules").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(
+        json.dumps(
+            {
+                "packages": {
+                    "node_modules/ink": {
+                        "resolved": "https://reg/ink.tgz",
+                        "integrity": "sha512-aaaa",
+                        "extraneous": True,
+                    },
+                    "apps/desktop": {"link": True, "resolved": "apps/desktop"},
+                }
+            }
+        )
+    )
+
+    # Must be False: real skew keys (resolved/integrity) match, declarative
+    # omissions and extraneous are ignored, and the workspace link is skipped.
+    assert main_mod._tui_need_npm_install(ws) is False
+
+
+def test_need_npm_install_true_when_resolved_drifts(tmp_path: Path, main_mod) -> None:
+    """A genuinely stale install (lockfile bumped the resolved URL/integrity
+    while node_modules is behind) must still be detected — the reduced-lockfile
+    fix must not paper over real skew (#84617)."""
+    ws = tmp_path / "ui-tui"
+    ws.mkdir()
+    (ws / "package.json").write_text("{}")
+    _touch_ink(tmp_path)
+    (tmp_path / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "packages": {
+                    "node_modules/ink": {
+                        "version": "5.0.0",
+                        "resolved": "https://reg/ink-NEW.tgz",
+                        "integrity": "sha512-bbbb",
+                    },
+                }
+            }
+        )
+    )
+    (tmp_path / "node_modules").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(
+        json.dumps(
+            {
+                "packages": {
+                    "node_modules/ink": {
+                        "resolved": "https://reg/ink-OLD.tgz",
+                        "integrity": "sha512-aaaa",
+                    },
+                }
+            }
+        )
+    )
+
+    # resolved/integrity differ on both sides → must reinstall.
+    assert main_mod._tui_need_npm_install(ws) is True
+
+
+def test_need_npm_install_true_when_regular_pkg_missing(tmp_path: Path, main_mod) -> None:
+    """A real non-link node_modules/ package missing from the install must
+    still trigger a reinstall — only workspace links and optional/peer skips
+    are exempt (#84617)."""
+    ws = tmp_path / "ui-tui"
+    ws.mkdir()
+    (ws / "package.json").write_text("{}")
+    _touch_ink(tmp_path)
+    (tmp_path / "package-lock.json").write_text(
+        json.dumps(
+            {
+                "packages": {
+                    "node_modules/ink": {
+                        "resolved": "https://reg/ink.tgz",
+                        "integrity": "sha512-aaaa",
+                    },
+                    "node_modules/missing-pkg": {
+                        "resolved": "https://reg/missing.tgz",
+                        "integrity": "sha512-cccc",
+                    },
+                }
+            }
+        )
+    )
+    (tmp_path / "node_modules").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "node_modules" / ".package-lock.json").write_text(
+        json.dumps(
+            {
+                "packages": {
+                    "node_modules/ink": {
+                        "resolved": "https://reg/ink.tgz",
+                        "integrity": "sha512-aaaa",
+                    },
+                }
+            }
+        )
+    )
+
+    assert main_mod._tui_need_npm_install(ws) is True
 
 
 def test_no_stray_lockfiles_in_workspace_subdirs(main_mod) -> None:

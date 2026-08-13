@@ -337,7 +337,7 @@ hermes plugins install <name>                # install by index name (resolved t
 hermes plugins install user/repo             # install from Git, then prompt Enable? [y/N]
 hermes plugins install user/repo --enable    # install AND enable (no prompt)
 hermes plugins install user/repo --no-enable # install but leave disabled (no prompt)
-hermes plugins update my-plugin              # pull latest
+hermes plugins update my-plugin              # pull latest (local edits are autostashed and re-applied)
 hermes plugins remove my-plugin              # uninstall
 hermes plugins enable my-plugin              # add to allow-list
 hermes plugins disable my-plugin             # remove from allow-list + add to disabled

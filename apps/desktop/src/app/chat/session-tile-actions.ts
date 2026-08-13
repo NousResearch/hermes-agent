@@ -200,7 +200,20 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
           })
 
           if (options.updateComposerAttachments ?? true) {
-            scope.attachments.update(next)
+            if (attachment.occurrenceId) {
+              // Merge staging into the latest state for this exact tile-chip
+              // occurrence. A preview may complete while upload is pending,
+              // and remove + same-path reattach must not receive stale staging.
+              scope.attachments.updateIfCurrent(attachment, {
+                attachedSessionId: next.attachedSessionId,
+                label: next.label,
+                path: next.path,
+                refText: next.refText,
+                uploadState: next.uploadState
+              })
+            } else {
+              scope.attachments.update(next)
+            }
           }
 
           synced.push(next)

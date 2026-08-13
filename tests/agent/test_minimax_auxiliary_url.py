@@ -24,5 +24,18 @@ class TestToOpenaiBaseUrl:
         url = "https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic"
         assert _to_openai_base_url(url) == url
 
+    def test_marker_in_path_does_not_false_positive(self):
+        """Host-anchored matching: a marker in the path must not trigger rewrite."""
+        url = "https://gateway.example.com/api.minimax.io/anthropic"
+        assert _to_openai_base_url(url) == url
+
+    def test_minimax_cn_api_prefix_host_rewritten(self):
+        assert _to_openai_base_url("https://api.minimaxi.com/anthropic") == "https://api.minimaxi.com/v1"
+
+    def test_lookalike_host_suffix_not_matched(self):
+        """evil-minimax.io.example.com must not match the minimax.io suffix."""
+        url = "https://minimax.io.evil.example.com/anthropic"
+        assert _to_openai_base_url(url) == url
+
     def test_none(self):
         assert _to_openai_base_url(None) == ""

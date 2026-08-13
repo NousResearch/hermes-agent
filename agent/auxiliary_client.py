@@ -1234,12 +1234,30 @@ def _codex_cloudflare_headers(access_token: str) -> Dict[str, str]:
 # OpenAI-compatible ``…/v1`` (or vendor-specific OpenAI path). Unconditional
 # ``/anthropic`` → ``/v1`` rewrites break Anthropic-only gateways such as
 # Alibaba Bailian Token Plan (#83642).
-_DUAL_SURFACE_ANTHROPIC_HOST_MARKERS = (
+#
+# Matching is anchored to the URL *host* (exact domain or subdomain suffix /
+# ``api.minimax.*`` prefix) — never a substring of the whole URL, so a path
+# that merely contains ``api.minimax`` cannot false-positive.
+_DUAL_SURFACE_ANTHROPIC_HOST_SUFFIXES = (
     "minimax.io",
     "minimax.chat",
     "minimaxi.com",
-    "api.minimax",
 )
+_DUAL_SURFACE_ANTHROPIC_HOST_PREFIXES = ("api.minimax.",)
+
+
+def _is_dual_surface_anthropic_host(url: str) -> bool:
+    """True when the URL's host is a known dual-surface (MiniMax-family) host."""
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except ValueError:
+        return False
+    if not host:
+        return False
+    for suffix in _DUAL_SURFACE_ANTHROPIC_HOST_SUFFIXES:
+        if host == suffix or host.endswith("." + suffix):
+            return True
+    return any(host.startswith(prefix) for prefix in _DUAL_SURFACE_ANTHROPIC_HOST_PREFIXES)
 
 
 def _to_openai_base_url(base_url: str) -> str:
@@ -1262,7 +1280,7 @@ def _to_openai_base_url(base_url: str) -> str:
             rewritten = url[: -len("/anthropic")] + "/paas/v4"
             logger.debug("Auxiliary client: rewrote ZAI base URL %s → %s", url, rewritten)
             return rewritten
-        if any(marker in url for marker in _DUAL_SURFACE_ANTHROPIC_HOST_MARKERS):
+        if _is_dual_surface_anthropic_host(url):
             rewritten = url[: -len("/anthropic")] + "/v1"
             logger.debug("Auxiliary client: rewrote dual-surface base URL %s → %s", url, rewritten)
             return rewritten

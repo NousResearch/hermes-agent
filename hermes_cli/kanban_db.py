@@ -85,7 +85,7 @@ import threading
 import logging
 import time
 from contextvars import ContextVar, Token
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
@@ -8813,6 +8813,9 @@ def _default_spawn(
 
     profile_arg = normalize_profile_name(task.assignee)
 
+    # Resolve the execution provider/model immediately before spawning.
+    task = _remediate_provider_meter(task)
+
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
     # The dispatcher is detached from every conversation. Its worker must never
@@ -8986,6 +8989,44 @@ def _default_spawn(
     # reference goes out of scope and is GC'd, but the OS-level FD stays
     # open in the child until the child exits.
     return proc.pid
+
+
+def _remediate_provider_meter(task: Task) -> Task:
+    """Select a live non-Nous execution override immediately before spawn."""
+    try:
+        from hermes_cli.config import load_config
+        settings = (load_config() or {}).get("kanban", {}).get("provider_meter_remediation", {})
+        if not isinstance(settings, Mapping) or settings.get("enabled") is not True:
+            return task
+        from hermes_cli.kanban_provider_meter import ProviderMeterCandidate, remediate_candidate
+        candidates = []
+        if task.model_override and task.provider_override:
+            candidates.append(ProviderMeterCandidate(task.provider_override, task.model_override))
+        candidates.extend([
+            ProviderMeterCandidate("anthropic", str(settings.get("claude_model") or "claude-sonnet-4-6")),
+            ProviderMeterCandidate("openai-codex", str(settings.get("codex_model") or "gpt-5.6-luna")),
+        ])
+        selected = remediate_candidate(
+            candidates,
+            minimum_remaining_percent=int(settings.get("minimum_remaining_percent", 10)),
+        )
+        if selected is None:
+            raise RuntimeError(
+                f"provider-meter remediation found no available non-Nous provider for task {task.id}"
+            )
+        if selected.provider == task.provider_override and selected.model == task.model_override:
+            return task
+        _log.info(
+            "kanban provider-meter remediation selected %s/%s for task %s",
+            selected.provider, selected.model, task.id,
+        )
+        return replace(task, model_override=selected.model, provider_override=selected.provider)
+    except Exception:
+        _log.warning(
+            "kanban provider-meter remediation failed closed for task %s",
+            task.id, exc_info=True,
+        )
+        raise
 
 
 # ---------------------------------------------------------------------------

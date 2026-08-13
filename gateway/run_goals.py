@@ -116,13 +116,20 @@ class GatewayGoalsMixin:
         (getattr(self, "_heartbeat_watch", None) or {}).pop(quick_key, None)
 
     async def _heartbeat_poll_once(self, watch: dict) -> None:
-        """One heartbeat poll pass: enqueue every due prompt of a non-busy watched session."""
+        """Wake each idle watched session once; leave busy sessions' ticks unclaimed."""
         # Off-loop warm-up covers the degraded path where /heartbeat's own warm-up failed.
         await self._warm_goals_session_db("heartbeat poll")
         for quick_key, (source, session_id) in list(watch.items()):
             try:
-                if quick_key in self._running_agents:
-                    continue  # busy sessions coalesce their tick to the next idle poll
+                adapter = self._adapter_for_source(source)
+                if adapter is None or not adapter._message_handler:
+                    continue
+                if (
+                    self._is_session_running(quick_key)
+                    or quick_key in adapter._active_sessions
+                    or self._queue_depth(quick_key, adapter=adapter) > 0
+                ):
+                    continue  # keep missed intervals due until user work has drained
                 from hermes_cli.heartbeat import HeartbeatManager
 
                 mgr = HeartbeatManager(session_id=session_id)
@@ -130,9 +137,17 @@ class GatewayGoalsMixin:
                     watch.pop(quick_key, None)
                     continue
                 prompt = mgr.due_prompt()
-                adapter = self._adapter_for_source(source) if prompt else None
-                if adapter is not None:
-                    self._enqueue_fifo(quick_key, self._synthetic_prompt_event(source, prompt), adapter)
+                if not prompt:
+                    continue
+                event = self._synthetic_prompt_event(source, prompt)
+                event.metadata["gateway_session_key"] = quick_key
+                # A pinned route skips topic recovery: no await between the idle
+                # check and adapter claim. FIFO alone never wakes an idle session.
+                try:
+                    await adapter.handle_message(event)
+                finally:
+                    if quick_key not in adapter._active_sessions:
+                        mgr.abandon_fire()
             except Exception as exc:
                 logger.debug("heartbeat poll for %s failed: %s", quick_key, exc)
 

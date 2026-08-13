@@ -467,6 +467,11 @@ class GatewayKanbanWatchersMixin:
                     mode = sub.get("delivery_mode") or "notify"
                     wake_agent = mode in ("notify+wake", "wake")
                     send_passive = mode != "wake"
+                    # Worker handoff carried into the synthetic wake turn below
+                    # (#70752): without it the woken creator only sees
+                    # "Task X completed" and re-decomposes work that already
+                    # exists on the board.
+                    wake_handoff = ""
                     for ev in d["events"]:
                         kind = ev.kind
                         # Identity prefix: attribute terminal pings to the
@@ -488,10 +493,12 @@ class GatewayKanbanWatchersMixin:
                                 lines = payload_summary.strip().splitlines()
                                 h = lines[0][:200] if lines else payload_summary[:200]
                                 handoff = f"\n{h}"
+                                wake_handoff = h
                             elif task and task.result:
                                 lines = task.result.strip().splitlines()
                                 r = lines[0][:160] if lines else task.result[:160]
                                 handoff = f"\n{r}"
+                                wake_handoff = r
                             msg = (
                                 f"✔ {board_tag}{tag}Kanban {sub['task_id']} done"
                                 f" — {title}{handoff}"
@@ -745,6 +752,19 @@ class GatewayKanbanWatchersMixin:
                                 title=_title,
                                 assignee=_assignee,
                                 board=board_slug,
+                            )
+                            # Graph-safe wake turn (#70752): carry the worker's
+                            # completion handoff into the synthetic turn and
+                            # label it as an automatic notification so the woken
+                            # creator inspects the board instead of
+                            # re-decomposing work that already exists.
+                            if wake_handoff:
+                                _synth += "\n" + t(
+                                    "gateway.kanban.wake.handoff",
+                                    summary=wake_handoff,
+                                )
+                            _synth += "\n\n" + t(
+                                "gateway.kanban.wake.guidance"
                             )
 
                         if not _is_push_adapter and _wake_kinds and _session_key:

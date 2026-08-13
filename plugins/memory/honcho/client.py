@@ -491,6 +491,7 @@ class HonchoClientConfig:
         api_key = get_secret("HONCHO_API_KEY")
         base_url = os.environ.get("HONCHO_BASE_URL", "").strip() or None
         timeout = _resolve_optional_float(os.environ.get("HONCHO_TIMEOUT"))
+        _resolved_path = resolve_config_path()
         return cls(
             host=resolved_host,
             workspace_id=workspace_id,
@@ -500,6 +501,7 @@ class HonchoClientConfig:
             timeout=timeout,
             ai_peer=resolved_host,
             enabled=bool(api_key or base_url),
+            config_path=_resolved_path,
             hermes_home=get_hermes_home(),
         )
 

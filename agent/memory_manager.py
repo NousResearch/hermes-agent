@@ -562,10 +562,10 @@ class MemoryManager:
         # Propagate the caller's contextvars (profile HERMES_HOME override)
         # to the prefetch thread — see _submit_background.
         import contextvars
+        from functools import partial
 
-        _ctx = contextvars.copy_context()
         thread = threading.Thread(
-            target=lambda: _ctx.run(_run),
+            target=partial(contextvars.copy_context().run, _run),
             daemon=True,
             name=f"memory-prefetch-{provider.name}",
         )
@@ -743,9 +743,10 @@ class MemoryManager:
         from the worker would silently land on the default profile.
         """
         import contextvars
+        from functools import partial
 
         ctx = contextvars.copy_context()
-        fn = (lambda inner: (lambda: ctx.run(inner)))(fn)
+        fn = partial(ctx.run, fn)
         executor = self._get_sync_executor()
         if executor is None:
             if self._shutting_down:

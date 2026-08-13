@@ -9521,7 +9521,10 @@ class TelegramAdapter(BasePlatformAdapter):
             from hermes_constants import get_hermes_home
             _path = get_hermes_home() / "telegram_guest_update_id.json"
             import json as _json
-            _path.write_text(_json.dumps({"last_update_id": update_id, "seen_ids": sorted(self._seen_guest_update_ids)[-200:]}))
+            _path.write_text(
+                _json.dumps({"last_update_id": update_id, "seen_ids": sorted(self._seen_guest_update_ids)[-200:]}),
+                encoding="utf-8",
+            )
         except Exception:
             pass
 
@@ -9532,7 +9535,7 @@ class TelegramAdapter(BasePlatformAdapter):
             import json as _json
             _path = get_hermes_home() / "telegram_guest_update_id.json"
             if _path.exists():
-                _data = _json.loads(_path.read_text())
+                _data = _json.loads(_path.read_text(encoding="utf-8"))
                 _ids = _data.get("seen_ids") or []
                 self._seen_guest_update_ids = set(_ids)
                 self._last_guest_update_id = _data.get("last_update_id", 0)

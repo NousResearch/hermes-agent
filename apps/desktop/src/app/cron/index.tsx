@@ -368,9 +368,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     const list = blueprintsQuery.data ?? []
     const needle = query.trim().toLowerCase()
 
-    return needle
-      ? list.filter(item => `${item.title} ${item.description}`.toLowerCase().includes(needle))
-      : list
+    return needle ? list.filter(item => `${item.title} ${item.description}`.toLowerCase().includes(needle)) : list
   }, [blueprintsQuery.data, query])
 
   // Detail always reflects a concrete job: the explicitly selected one, else the

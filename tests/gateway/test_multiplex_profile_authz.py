@@ -189,6 +189,28 @@ def test_adapter_auth_check_defaults_to_active_profile(monkeypatch):
     assert captured["profile"] is None
 
 
+def test_adapter_auth_check_passes_scope_id_metadata(monkeypatch):
+    """Slack thread-context checks need team scope for team-scoped channel allowlists."""
+    from gateway.run import GatewayRunner
+
+    _clear_auth_env(monkeypatch)
+
+    runner = object.__new__(GatewayRunner)
+    runner.config = GatewayConfig(multiplex_profiles=True)
+
+    captured: dict = {}
+
+    def fake_is_user_authorized(source):
+        captured["scope_id"] = source.scope_id
+        return True
+
+    runner._is_user_authorized = fake_is_user_authorized
+
+    check = runner._make_adapter_auth_check(Platform.SLACK)
+    assert check("some-user", "thread", "C123", scope_id="T123") is True
+    assert captured["scope_id"] == "T123"
+
+
 def test_secondary_open_policy_fails_startup_guard(monkeypatch):
     """Secondary profiles must pass the same open-policy startup guard."""
     from gateway.run import _own_policy_open_startup_violation

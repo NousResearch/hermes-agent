@@ -83,6 +83,8 @@ class _ThreadContextCache:
     fetched_at: float = field(default_factory=time.monotonic)
     message_count: int = 0
     parent_text: str = ""  # Raw text of the thread parent (for reply_to_text injection)
+    parent_author_id: str = ""
+    parent_author_name: str = ""
 
 
 def check_slack_requirements() -> bool:
@@ -3738,6 +3740,8 @@ class SlackAdapter(BasePlatformAdapter):
         # already in the session history. Uses the thread-context cache when
         # available to avoid redundant conversations.replies calls.
         reply_to_text = None
+        reply_to_author_id = None
+        reply_to_author_name = None
         if thread_ts and thread_ts != ts:
             try:
                 reply_to_text = (
@@ -3750,6 +3754,17 @@ class SlackAdapter(BasePlatformAdapter):
                 )
             except Exception:  # pragma: no cover - defensive
                 reply_to_text = None
+            try:
+                reply_to_author_id, reply_to_author_name = await self._fetch_thread_parent_author(
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                    team_id=team_id,
+                )
+                reply_to_author_id = reply_to_author_id or None
+                reply_to_author_name = reply_to_author_name or None
+            except Exception:  # pragma: no cover - defensive
+                reply_to_author_id = None
+                reply_to_author_name = None
 
         msg_event = MessageEvent(
             text=text,
@@ -3762,6 +3777,8 @@ class SlackAdapter(BasePlatformAdapter):
             reply_to_message_id=thread_ts if thread_ts != ts else None,
             channel_prompt=_channel_prompt,
             reply_to_text=reply_to_text,
+            reply_to_author_id=reply_to_author_id,
+            reply_to_author_name=reply_to_author_name,
             auto_skill=_auto_skill,
             metadata={
                 "slack_team_id": team_id,
@@ -3991,7 +4008,7 @@ class SlackAdapter(BasePlatformAdapter):
                 source = SessionSource(
                     platform=Platform.SLACK,
                     chat_id=str(channel_id or normalized_user_id),
-                    chat_type="dm" if str(channel_id or "").startswith("D") else "group",
+                    chat_type="dm" if str(channel_id or "").startswith("D") else "interactive",
                     user_id=normalized_user_id,
                     user_name=str(user_name).strip() if user_name else None,
                     scope_id=str(team_id) if team_id else None,
@@ -4367,6 +4384,8 @@ class SlackAdapter(BasePlatformAdapter):
             bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
             context_parts = []
             parent_text = ""
+            parent_author_id = ""
+            parent_author_name = ""
             for msg in messages:
                 msg_ts = msg.get("ts", "")
                 # Exclude the current triggering message — it will be delivered
@@ -4421,7 +4440,10 @@ class SlackAdapter(BasePlatformAdapter):
                 trust_tag = ""
                 if not is_bot and msg_user:
                     is_authorized = self._is_sender_authorized(
-                        msg_user, chat_type="thread", chat_id=channel_id,
+                        msg_user,
+                        chat_type="thread",
+                        chat_id=channel_id,
+                        scope_id=team_id,
                     )
                     if is_authorized is False:
                         trust_tag = "[unverified] "
@@ -4429,6 +4451,8 @@ class SlackAdapter(BasePlatformAdapter):
                 context_parts.append(f"{prefix}{trust_tag}{name}: {msg_text}")
                 if is_parent:
                     parent_text = msg_text
+                    parent_author_id = msg_user
+                    parent_author_name = name
 
             content = ""
             if context_parts:
@@ -4459,6 +4483,8 @@ class SlackAdapter(BasePlatformAdapter):
                 fetched_at=now,
                 message_count=len(context_parts),
                 parent_text=parent_text,
+                parent_author_id=parent_author_id,
+                parent_author_name=parent_author_name,
             )
             return content
 
@@ -4509,6 +4535,46 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as exc:  # pragma: no cover - defensive
             logger.debug("[Slack] Failed to fetch thread parent text: %s", exc)
             return ""
+
+    async def _fetch_thread_parent_author(
+        self,
+        channel_id: str,
+        thread_ts: str,
+        team_id: str = "",
+    ) -> tuple[str, str]:
+        """Return ``(author_id, author_name)`` for the thread parent message."""
+        cache_key = f"{channel_id}:{thread_ts}:{team_id}"
+        now = time.monotonic()
+        cached = self._thread_context_cache.get(cache_key)
+        if cached and (now - cached.fetched_at) < self._THREAD_CACHE_TTL:
+            return cached.parent_author_id, cached.parent_author_name
+
+        try:
+            client = self._get_client(channel_id, team_id=team_id)
+            result = await client.conversations_replies(
+                channel=channel_id,
+                ts=thread_ts,
+                limit=1,
+                inclusive=True,
+            )
+            messages = result.get("messages", []) if result else []
+            if not messages:
+                return "", ""
+            parent = messages[0]
+            if parent.get("ts", "") != thread_ts:
+                return "", ""
+            author_id = parent.get("user", "") or ""
+            if not author_id and parent.get("bot_id"):
+                author_id = parent.get("username") or parent.get("bot_id") or "bot"
+            author_name = ""
+            if author_id:
+                author_name = await self._resolve_user_name(
+                    author_id, chat_id=channel_id, team_id=team_id
+                )
+            return author_id, author_name
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("[Slack] Failed to fetch thread parent author: %s", exc)
+            return "", ""
 
     async def _handle_slash_command(self, command: dict) -> None:
         """Handle Slack slash commands.

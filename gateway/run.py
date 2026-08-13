@@ -9933,7 +9933,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self,
         platform: Platform,
         profile_name: Optional[str] = None,
-    ) -> Callable[[str, Optional[str], Optional[str]], bool]:
+    ) -> Callable[..., bool]:
         """Build a platform-bound auth callback for adapter use.
 
         Adapters that fetch external context (e.g. Slack
@@ -9954,6 +9954,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             user_id: str,
             chat_type: Optional[str] = None,
             chat_id: Optional[str] = None,
+            **metadata: Any,
         ) -> bool:
             if not user_id:
                 return False
@@ -9962,6 +9963,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 chat_id=chat_id or "",
                 chat_type=chat_type or "group",
                 user_id=user_id,
+                scope_id=str(metadata.get("scope_id") or metadata.get("team_id") or "") or None,
                 profile=profile_name,
             )
             return self._is_user_authorized(source)
@@ -11845,7 +11847,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"{message_text}"
                 )
             else:
-                message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+                reply_author = neutralize_untrusted_inline_text(
+                    getattr(event, "reply_to_author_name", None)
+                    or getattr(event, "reply_to_author_id", None)
+                    or ""
+                )
+                if reply_author:
+                    message_text = (
+                        f'[Replying to {reply_author}: "{reply_snippet}"]\n\n'
+                        f"{message_text}"
+                    )
+                else:
+                    message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
         if "@" in message_text:
             try:

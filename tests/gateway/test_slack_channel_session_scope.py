@@ -85,6 +85,12 @@ class TestChannelSessionScopeDefault:
         with patch.object(
             adapter, "_resolve_user_name",
             new=AsyncMock(return_value="testuser"),
+        ), patch.object(
+            adapter, "_fetch_thread_context", new=AsyncMock(return_value="")
+        ), patch.object(
+            adapter, "_fetch_thread_parent_text", new=AsyncMock(return_value="")
+        ), patch.object(
+            adapter, "_fetch_thread_parent_author", new=AsyncMock(return_value=("", ""))
         ):
             await adapter._handle_slack_message(event)
 
@@ -116,6 +122,12 @@ class TestChannelSessionScopeDefault:
         with patch.object(
             adapter, "_resolve_user_name",
             new=AsyncMock(return_value="testuser"),
+        ), patch.object(
+            adapter, "_fetch_thread_context", new=AsyncMock(return_value="")
+        ), patch.object(
+            adapter, "_fetch_thread_parent_text", new=AsyncMock(return_value="")
+        ), patch.object(
+            adapter, "_fetch_thread_parent_author", new=AsyncMock(return_value=("", ""))
         ):
             await adapter._handle_slack_message(event)
 
@@ -144,6 +156,12 @@ class TestChannelSessionScopeShared:
         with patch.object(
             adapter, "_resolve_user_name",
             new=AsyncMock(return_value="testuser"),
+        ), patch.object(
+            adapter, "_fetch_thread_context", new=AsyncMock(return_value="")
+        ), patch.object(
+            adapter, "_fetch_thread_parent_text", new=AsyncMock(return_value="")
+        ), patch.object(
+            adapter, "_fetch_thread_parent_author", new=AsyncMock(return_value=("", ""))
         ):
             await adapter._handle_slack_message(event)
 
@@ -184,6 +202,12 @@ class TestChannelSessionScopeShared:
         with patch.object(
             adapter, "_resolve_user_name",
             new=AsyncMock(return_value="testuser"),
+        ), patch.object(
+            adapter, "_fetch_thread_context", new=AsyncMock(return_value="")
+        ), patch.object(
+            adapter, "_fetch_thread_parent_text", new=AsyncMock(return_value="")
+        ), patch.object(
+            adapter, "_fetch_thread_parent_author", new=AsyncMock(return_value=("", ""))
         ):
             await adapter._handle_slack_message(event)
 
@@ -213,6 +237,12 @@ class TestChannelSessionScopeShared:
         with patch.object(
             adapter, "_resolve_user_name",
             new=AsyncMock(return_value="testuser"),
+        ), patch.object(
+            adapter, "_fetch_thread_context", new=AsyncMock(return_value="")
+        ), patch.object(
+            adapter, "_fetch_thread_parent_text", new=AsyncMock(return_value="")
+        ), patch.object(
+            adapter, "_fetch_thread_parent_author", new=AsyncMock(return_value=("", ""))
         ):
             await adapter._handle_slack_message(event)
 
@@ -250,6 +280,12 @@ class TestThreadReplyAlwaysScopesByThread:
         with patch.object(
             adapter, "_resolve_user_name",
             new=AsyncMock(return_value="testuser"),
+        ), patch.object(
+            adapter, "_fetch_thread_context", new=AsyncMock(return_value="")
+        ), patch.object(
+            adapter, "_fetch_thread_parent_text", new=AsyncMock(return_value="")
+        ), patch.object(
+            adapter, "_fetch_thread_parent_author", new=AsyncMock(return_value=("", ""))
         ):
             await adapter._handle_slack_message(event)
 

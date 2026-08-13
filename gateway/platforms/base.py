@@ -2986,11 +2986,11 @@ class BasePlatformAdapter(ABC):
 
     def set_authorization_check(
         self,
-        callback: Optional[Callable[[str, Optional[str], Optional[str]], bool]],
+        callback: Optional[Callable[..., bool]],
     ) -> None:
         """Register a platform-bound authorization check.
 
-        The callback signature is ``(user_id, chat_type, chat_id) -> bool``.
+        The callback signature is ``(user_id, chat_type, chat_id, **metadata) -> bool``.
         It is used by adapters that pull external context (e.g. Slack thread
         replies via ``conversations.replies``) to flag messages from senders
         that are not on the configured allowlist, so the LLM can treat them
@@ -3003,6 +3003,7 @@ class BasePlatformAdapter(ABC):
         user_id: Optional[str],
         chat_type: Optional[str] = None,
         chat_id: Optional[str] = None,
+        **metadata: Any,
     ) -> Optional[bool]:
         """Return whether ``user_id`` is on the allowlist, if a check is configured.
 
@@ -3014,7 +3015,12 @@ class BasePlatformAdapter(ABC):
         if not user_id or self._authorization_check is None:
             return None
         try:
-            return bool(self._authorization_check(user_id, chat_type, chat_id))
+            try:
+                return bool(self._authorization_check(user_id, chat_type, chat_id, **metadata))
+            except TypeError:
+                # Backward compatibility for tests/plugins that still register
+                # the historical three-argument callback shape.
+                return bool(self._authorization_check(user_id, chat_type, chat_id))
         except Exception:
             logger.warning(
                 "[%s] Authorization check raised for user %s; treating as unknown",

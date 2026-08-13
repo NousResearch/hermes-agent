@@ -451,6 +451,43 @@ class GatewayAuthorizationMixin:
         if getattr(source, "role_authorized", False) is True:
             return True
 
+        # Channel-scoped allowlist for chat surfaces. Slack uses config-level
+        # ``group_allow_from`` for channel IDs (bridged into PlatformConfig.extra),
+        # so teammates can invoke Hermes in an explicitly allowed channel without
+        # opening all Slack DMs or every workspace channel via SLACK_ALLOW_ALL_USERS.
+        # Thread context checks reuse the parent channel_id with chat_type='thread',
+        # so include it here to keep allowed-channel history trusted.
+        # Entries may be bare channel IDs for single-workspace installs, or
+        # team-scoped IDs (``T123:C123``) when multiplexing workspaces.
+        if source.chat_type in {"group", "forum", "channel", "thread"} and source.chat_id:
+            config = getattr(self, "config", None)
+            platform_cfg = (
+                config.platforms.get(source.platform)
+                if config is not None and hasattr(config, "platforms") and source.platform
+                else None
+            )
+            extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+            if isinstance(extra, dict):
+                raw_group_allow = extra.get("group_allow_from") or extra.get("groupAllowFrom")
+                if isinstance(raw_group_allow, str):
+                    group_allowed_ids = {
+                        cid.strip() for cid in raw_group_allow.split(",") if cid.strip()
+                    }
+                elif isinstance(raw_group_allow, (list, tuple, set)):
+                    group_allowed_ids = {
+                        str(cid).strip() for cid in raw_group_allow if str(cid).strip()
+                    }
+                else:
+                    group_allowed_ids = set()
+                scope_id = str(getattr(source, "scope_id", None) or "").strip()
+                team_scoped_chat_id = f"{scope_id}:{source.chat_id}" if scope_id else ""
+                if (
+                    "*" in group_allowed_ids
+                    or source.chat_id in group_allowed_ids
+                    or (team_scoped_chat_id and team_scoped_chat_id in group_allowed_ids)
+                ):
+                    return True
+
         # Check pairing store. A pairing entry is a first-class authorization
         # grant, created only by a trusted operator approving a pairing code
         # (hermes gateway pairing approve / the authenticated dashboard) — an

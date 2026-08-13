@@ -4481,6 +4481,40 @@ class TestSlackReplyToText:
         assert "メール要約" in msg_event.reply_to_text
 
     @pytest.mark.asyncio
+    async def test_slack_reply_to_author_set_on_thread_reply(self, adapter):
+        """Thread replies should carry the parent author so shared threads can
+        address the requester instead of guessing from thread context."""
+        adapter._channel_team = {}
+        adapter._team_bot_user_ids = {}
+        adapter._app.client.conversations_replies = AsyncMock(
+            return_value={
+                "messages": [
+                    {"ts": "1000.0", "user": "U_PARENT", "text": "依頼です"},
+                    {"ts": "1000.5", "user": "U_USER", "text": "確認しました"},
+                ]
+            }
+        )
+
+        async def resolve_name(user_id, chat_id="", team_id=""):
+            return {"U_PARENT": "仙波大作", "U_USER": "Alice"}.get(user_id, user_id)
+
+        event = {
+            "text": "確認しました",
+            "user": "U_USER",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "1000.5",
+            "thread_ts": "1000.0",
+        }
+
+        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(side_effect=resolve_name)):
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.reply_to_author_id == "U_PARENT"
+        assert msg_event.reply_to_author_name == "仙波大作"
+
+    @pytest.mark.asyncio
     async def test_slack_reply_to_text_none_for_top_level_message(self, adapter):
         """Top-level messages (no thread_ts) must not set reply_to_text."""
         event = {

@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from gateway.config import GatewayConfig, PlatformConfig
 from gateway.session import Platform, SessionSource
 
 
@@ -62,6 +63,13 @@ def _make_slack_human_source(user_id="U_human"):
     )
 
 
+def _make_slack_thread_source(user_id="U_human"):
+    source = _make_slack_human_source(user_id)
+    source.chat_type = "thread"
+    source.thread_id = "1000.0"
+    return source
+
+
 def test_slack_bot_authorized_when_allow_bots_all(monkeypatch):
     runner = _make_bare_runner()
     monkeypatch.setenv("SLACK_ALLOW_BOTS", "all")
@@ -90,3 +98,88 @@ def test_slack_human_unaffected_by_bot_bypass(monkeypatch):
     runner = _make_bare_runner()
     monkeypatch.setenv("SLACK_ALLOW_ALL_USERS", "true")
     assert runner._is_user_authorized(_make_slack_human_source()) is True
+
+
+def test_slack_group_allow_from_authorizes_configured_channel_only():
+    runner = _make_bare_runner()
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.SLACK: PlatformConfig(
+                enabled=True,
+                extra={"group_allow_from": ["C0123"]},
+            )
+        }
+    )
+
+    assert runner._is_user_authorized(_make_slack_human_source("U_teammate")) is True
+
+    other_channel = _make_slack_human_source("U_teammate")
+    other_channel.chat_id = "C9999"
+    assert runner._is_user_authorized(other_channel) is False
+
+
+def test_slack_group_allow_from_does_not_open_dms():
+    runner = _make_bare_runner()
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.SLACK: PlatformConfig(
+                enabled=True,
+                extra={"group_allow_from": ["C0123"]},
+            )
+        }
+    )
+
+    dm = _make_slack_human_source("U_teammate")
+    dm.chat_id = "D0123"
+    dm.chat_type = "dm"
+    assert runner._is_user_authorized(dm) is False
+
+
+def test_slack_group_allow_from_authorizes_thread_context_in_configured_channel():
+    runner = _make_bare_runner()
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.SLACK: PlatformConfig(
+                enabled=True,
+                extra={"group_allow_from": ["C0123"]},
+            )
+        }
+    )
+
+    assert runner._is_user_authorized(_make_slack_thread_source("U_teammate")) is True
+
+
+def test_slack_group_allow_from_supports_team_scoped_channel_entries():
+    runner = _make_bare_runner()
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.SLACK: PlatformConfig(
+                enabled=True,
+                extra={"group_allow_from": ["T_ALLOWED:C0123"]},
+            )
+        }
+    )
+
+    allowed = _make_slack_human_source("U_teammate")
+    allowed.scope_id = "T_ALLOWED"
+    assert runner._is_user_authorized(allowed) is True
+
+    other_workspace = _make_slack_human_source("U_teammate")
+    other_workspace.scope_id = "T_OTHER"
+    assert runner._is_user_authorized(other_workspace) is False
+
+
+def test_slack_group_allow_from_does_not_authorize_interactive_approvals():
+    runner = _make_bare_runner()
+    runner.config = GatewayConfig(
+        platforms={
+            Platform.SLACK: PlatformConfig(
+                enabled=True,
+                extra={"group_allow_from": ["C0123"]},
+            )
+        }
+    )
+
+    interactive = _make_slack_human_source("U_teammate")
+    interactive.chat_type = "interactive"
+    assert runner._is_user_authorized(interactive) is False

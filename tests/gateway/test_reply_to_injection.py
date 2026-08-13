@@ -123,6 +123,33 @@ async def test_own_message_reply_prefix_marks_assistant_message():
 
 
 @pytest.mark.asyncio
+async def test_reply_prefix_includes_replied_to_author_when_known():
+    """Shared Slack-style threads need the quoted author's identity so the
+    agent replies to the requester, not the owner or another participant."""
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="確認しました",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text="FunBaseで人材がゼロになっています。",
+        reply_to_author_name="仙波大作",
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event,
+        source=source,
+        history=[],
+    )
+
+    assert result is not None
+    assert result.startswith(
+        '[Replying to 仙波大作: "FunBaseで人材がゼロになっています。"]'
+    )
+    assert result.endswith("確認しました")
+
+
+@pytest.mark.asyncio
 async def test_no_prefix_without_reply_context():
     runner = _make_runner()
     source = _source()

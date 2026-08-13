@@ -1923,8 +1923,11 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             if agent._should_emit_quiet_tool_messages():
                 agent._vprint(f"  {_get_cute_tool_message_impl('setup_mcp', function_args, tool_duration, result=function_result)}")
         elif function_name == "delegate_task":
+            _action_arg = str(function_args.get("action") or "").strip().lower()
             tasks_arg = function_args.get("tasks")
-            if tasks_arg and isinstance(tasks_arg, list):
+            if _action_arg in ("list", "steer", "stop"):
+                spinner_label = f"🔀 subagent {_action_arg}"
+            elif tasks_arg and isinstance(tasks_arg, list):
                 spinner_label = f"🔀 delegating {len(tasks_arg)} tasks · (/agents to monitor)"
             else:
                 goal_preview = (function_args.get("goal") or "")[:30]

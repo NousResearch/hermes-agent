@@ -16,6 +16,7 @@ import weakref
 from typing import Any, Callable, Optional
 
 from agent.i18n import t
+from gateway.kanban_notifications import bound_actionable_text
 
 from gateway.kanban_watchers_common import _list_boards, _to_thread_process_service, logger
 from gateway.wake import session_owned_by_profile
@@ -370,6 +371,11 @@ def _clip(ev: Any, key: str, fmt: str, limit: int) -> str:
 _NL = "\n{}"
 
 
+def _blocked_reason(ev: Any) -> str:
+    value = _payload(ev, "reason")
+    return f": {bound_actionable_text(value)}" if value else ""
+
+
 def _first_line(text: str, limit: int) -> str:
     lines = text.strip().splitlines()
     return lines[0][:limit] if lines else text[:limit]
@@ -428,7 +434,7 @@ def _fmt_block_loop_detected(ev, n) -> tuple:
     msg = (
         f"🛑 {n.head} routed to TRIAGE — "
         f"{'needs a human decision' if decision else 'for orchestration attention'}"
-        f"{_clip(ev, 'recurrences', ' (blocked {}x for the same cause)', 200)}{_clip(ev, 'reason', ': {}', 160)}"
+        f"{_clip(ev, 'recurrences', ' (blocked {}x for the same cause)', 200)}{_blocked_reason(ev)}"
     )
     return msg, None, None
 
@@ -458,7 +464,7 @@ def _fmt_timed_out(ev, n) -> tuple:
 # never wake the creator.
 _EVENT_FORMATTERS: dict[str, Callable[[Any, "_KanbanNotification"], tuple]] = {
     "completed": _fmt_completed,
-    "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_clip(ev, 'reason', ': {}', 160)}", None, None),
+    "blocked": lambda ev, n: (f"⏸ {n.head} blocked{_blocked_reason(ev)}", None, None),
     "gave_up": _fmt_gave_up,
     "crashed": lambda ev, n: (
         f"✖ {n.head} — its worker stopped unexpectedly; it will be retried automatically.", None, None,

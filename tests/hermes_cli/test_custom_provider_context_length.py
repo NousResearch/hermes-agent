@@ -98,6 +98,27 @@ class TestGetCustomProviderModelCapability:
             custom,
         ) is None
 
+    def test_capability_is_route_isolated(self):
+        """A declaration for one route must not apply to another route.
+
+        Guards normalize_route_base_url matching: if the URL comparison ever
+        regresses to a model-only (or hostname-only) shortcut, this pins the
+        failure.
+        """
+        custom = [
+            {
+                "base_url": "https://other.example.invalid/anthropic",
+                "models": {"fable": {"prompt_caching": True}},
+            }
+        ]
+
+        assert get_custom_provider_model_capability(
+            "fable",
+            "https://example.invalid/anthropic",
+            "prompt_caching",
+            custom,
+        ) is None
+
 
 
 class TestGetModelContextLengthHonorsOverride:

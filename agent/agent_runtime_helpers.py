@@ -2248,8 +2248,11 @@ def anthropic_prompt_cache_policy(
                 capability="prompt_caching",
                 custom_providers=getattr(agent, "_custom_providers", None),
             )
-        except Exception:
-            pass
+        except Exception as _cap_exc:
+            logger.debug(
+                "custom-provider prompt_caching capability lookup failed: %s",
+                _cap_exc,
+            )
     if custom_prompt_caching is not None:
         return custom_prompt_caching, custom_prompt_caching
 

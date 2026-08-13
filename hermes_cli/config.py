@@ -1799,6 +1799,12 @@ def get_custom_provider_model_capability(
         return None
     if custom_providers is None:
         try:
+            if config is None:
+                # Read-only path: this helper never mutates the entries it
+                # scans, and get_compatible_custom_providers shallow-copies
+                # each entry before normalizing, so the no-deepcopy cache is
+                # safe here (~135us saved per call on the blank-stub paths).
+                config = load_config_readonly()
             custom_providers = get_compatible_custom_providers(config)
         except Exception:
             return None

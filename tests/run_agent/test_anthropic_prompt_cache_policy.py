@@ -212,6 +212,25 @@ class TestThirdPartyAnthropicGateway:
 
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
+    def test_capability_on_other_route_does_not_apply(self):
+        """prompt_caching declared for a DIFFERENT base_url must not enable
+        caching for this agent's route — route isolation at the policy level."""
+        agent = _make_agent(
+            provider="custom:anthropic-proxy",
+            base_url="https://gateway.example.com/anthropic",
+            api_mode="anthropic_messages",
+            model="fable",
+        )
+        agent._custom_providers = [
+            {
+                "name": "other-proxy",
+                "base_url": "https://other.example.com/anthropic",
+                "models": {"fable": {"prompt_caching": True}},
+            }
+        ]
+
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
 
 class TestMiniMaxAnthropicWire:
     """MiniMax's own model family on its Anthropic-compatible endpoint.

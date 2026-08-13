@@ -34,6 +34,7 @@ class FailoverReason(enum.Enum):
     # Upstream model rate-limited (aggregator 429) — fallback to a different
     # model, NOT credential rotation. The user's key is healthy.
     upstream_rate_limit = "upstream_rate_limit"
+    upstream_provider_error = "upstream_provider_error"  # Aggregator (OpenRouter, Groq, etc.) wrapped upstream provider 403 — fallback to different model, DON'T rotate credential
 
     # Server-side
     overloaded = "overloaded"            # 503/529 — provider overloaded, backoff
@@ -1062,6 +1063,14 @@ def _classify_by_status(
     if status_code == 403:
         # OpenRouter 403 "key limit exceeded" is actually billing. Other
         # providers also use 403 for account-plan or credit exhaustion.
+        # Some providers also reuse 403 for server-wide overload (same
+        # disambiguation as the 429 path) — the credential is valid and the
+        # correct recovery is "back off and retry the same key".
+        if any(p in error_msg for p in _OVERLOADED_PATTERNS):
+            return result_fn(
+                FailoverReason.overloaded,
+                retryable=True,
+            )
         if (
             (
                 provider == "xai-oauth"
@@ -1076,6 +1085,22 @@ def _classify_by_status(
                 retryable=False,
                 should_rotate_credential=True,
                 should_fallback=True,
+            )
+        # Distinguish an aggregator-wrapped upstream 403 (an upstream model like
+        # Sakana or Poolside rejected the request — the aggregator's outer
+        # message is "Provider returned error" and the real error is nested in
+        # metadata.raw) from an account-level 403 (the user's key is actually
+        # exhausted). The user's aggregator key is healthy, so rotating the
+        # credential is wrong — fall back to a different model instead.
+        if _is_openrouter_upstream_error(body, provider):
+            upstream_provider = _extract_upstream_provider_name(body)
+            ctx = {"upstream_provider": upstream_provider} if upstream_provider else {}
+            return result_fn(
+                FailoverReason.upstream_provider_error,
+                retryable=False,
+                should_rotate_credential=False,
+                should_fallback=True,
+                error_context=ctx,
             )
         return result_fn(
             FailoverReason.auth,

@@ -250,5 +250,214 @@ def _(rid, params: dict) -> dict:
     )
 
 
+@method("profiles.describe")
+def _(rid, params: dict) -> dict:
+    """Full configuration snapshot of one profile, for an editor UI.
+
+    Params: ``name`` (required). Result:
+    ``{name, description, soul, model: {provider, default}, skills:
+    [{name, enabled}], toolsets: [{name, description, tool_count, enabled}]}``
+
+    Skill enablement mirrors the disabled-list model (installed = enabled
+    unless in ``skills.disabled``). Toolset enablement reports the profile's
+    ``tools.enabled_toolsets`` pin, or every toolset enabled when unpinned.
+    All reads are scoped to the profile via the HERMES_HOME override.
+    """
+    name = str(params.get("name") or "").strip()
+    if not name:
+        return _err(rid, 4063, "name required")
+    try:
+        from pathlib import Path
+
+        from hermes_cli.profiles import get_profile_dir
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile_dir = Path(get_profile_dir(name))
+        if not profile_dir.is_dir():
+            return _err(rid, 4064, f"profile '{name}' not found")
+
+        token = set_hermes_home_override(str(profile_dir))
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.skills_config import get_disabled_skills
+
+            cfg = load_config() or {}
+            disabled = {s.lower() for s in get_disabled_skills(cfg)}
+
+            installed = []
+            skills_root = profile_dir / "skills"
+            if skills_root.is_dir():
+                for md in sorted(skills_root.rglob("SKILL.md")):
+                    skill_name = md.parent.name
+                    installed.append(
+                        {"name": skill_name, "enabled": skill_name.lower() not in disabled}
+                    )
+
+            from toolsets import get_all_toolsets, get_toolset_info
+
+            tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
+            pinned = tools_cfg.get("enabled_toolsets")
+            pinned_set = (
+                {str(t).strip() for t in pinned if str(t).strip()}
+                if isinstance(pinned, list)
+                else None
+            )
+            toolsets_out = []
+            for ts_name in sorted(get_all_toolsets().keys()):
+                info = get_toolset_info(ts_name) or {}
+                toolsets_out.append(
+                    {
+                        "name": ts_name,
+                        "description": info.get("description") or "",
+                        "tool_count": len(info.get("tools") or []),
+                        "enabled": True if pinned_set is None else ts_name in pinned_set,
+                    }
+                )
+
+            soul_path = profile_dir / "SOUL.md"
+            soul = ""
+            try:
+                if soul_path.is_file():
+                    soul = soul_path.read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                pass
+
+            model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+
+            description = ""
+            try:
+                from hermes_cli.profiles import read_profile_meta
+
+                description = str(read_profile_meta(profile_dir).get("description") or "")
+            except Exception:
+                pass
+
+            return _ok(
+                rid,
+                {
+                    "name": name,
+                    "description": description,
+                    "soul": soul,
+                    "model": {
+                        "provider": str(model_cfg.get("provider") or ""),
+                        "default": str(model_cfg.get("default") or ""),
+                    },
+                    "skills": installed,
+                    "toolsets": toolsets_out,
+                    "toolsets_pinned": pinned_set is not None,
+                },
+            )
+        finally:
+            reset_hermes_home_override(token)
+    except Exception as e:
+        return _err(rid, 5063, str(e))
+
+
+@method("profiles.configure")
+def _(rid, params: dict) -> dict:
+    """Apply configuration changes to a profile (editor Save).
+
+    Params: ``name`` (required) plus any of:
+    ``description`` (str), ``soul`` (str, full SOUL.md replacement),
+    ``model`` + ``provider`` (both required together),
+    ``disabled_skills`` (list[str], replace semantics),
+    ``enabled_toolsets`` (list[str], replace semantics; empty list clears
+    the pin so every toolset is enabled again).
+
+    Each section is applied independently and best-effort; the result
+    reports per-section success so a UI can surface partial failures.
+    """
+    name = str(params.get("name") or "").strip()
+    if not name:
+        return _err(rid, 4063, "name required")
+    try:
+        from pathlib import Path
+
+        from hermes_cli.profiles import get_profile_dir
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        profile_dir = Path(get_profile_dir(name))
+        if not profile_dir.is_dir():
+            return _err(rid, 4064, f"profile '{name}' not found")
+
+        applied = {}
+
+        if isinstance(params.get("soul"), str):
+            try:
+                (profile_dir / "SOUL.md").write_text(params["soul"], encoding="utf-8")
+                applied["soul"] = True
+            except Exception:
+                applied["soul"] = False
+
+        if isinstance(params.get("description"), str):
+            try:
+                from hermes_cli.profiles import write_profile_meta
+
+                write_profile_meta(
+                    profile_dir,
+                    description=params["description"].strip(),
+                    description_auto=False,
+                )
+                applied["description"] = True
+            except Exception:
+                applied["description"] = False
+
+        model = str(params.get("model") or "").strip()
+        provider = str(params.get("provider") or "").strip()
+        if model and provider:
+            try:
+                from hermes_cli.web_routers.profiles import _write_profile_model
+
+                _write_profile_model(profile_dir, provider, model)
+                applied["model"] = True
+            except Exception:
+                applied["model"] = False
+
+        needs_cfg = isinstance(params.get("disabled_skills"), list) or isinstance(
+            params.get("enabled_toolsets"), list
+        )
+        if needs_cfg:
+            token = set_hermes_home_override(str(profile_dir))
+            try:
+                from hermes_cli.config import load_config, save_config
+
+                cfg = load_config() or {}
+
+                if isinstance(params.get("disabled_skills"), list):
+                    try:
+                        from hermes_cli.skills_config import save_disabled_skills
+
+                        wanted = {
+                            str(s).strip()
+                            for s in params["disabled_skills"]
+                            if str(s).strip()
+                        }
+                        save_disabled_skills(cfg, wanted)
+                        applied["skills"] = True
+                        cfg = load_config() or {}
+                    except Exception:
+                        applied["skills"] = False
+
+                if isinstance(params.get("enabled_toolsets"), list):
+                    try:
+                        wanted = [str(t).strip() for t in params["enabled_toolsets"] if str(t).strip()]
+                        tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
+                        if wanted:
+                            tools_cfg["enabled_toolsets"] = sorted(set(wanted))
+                        else:
+                            tools_cfg.pop("enabled_toolsets", None)
+                        cfg["tools"] = tools_cfg
+                        save_config(cfg)
+                        applied["toolsets"] = True
+                    except Exception:
+                        applied["toolsets"] = False
+            finally:
+                reset_hermes_home_override(token)
+
+        return _ok(rid, {"ok": all(applied.values()) if applied else True, "applied": applied})
+    except Exception as e:
+        return _err(rid, 5064, str(e))
+
+
 def register(server) -> None:
     _registry.install(server)

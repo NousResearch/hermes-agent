@@ -253,7 +253,9 @@ _LONG_HANDLERS = frozenset(
         # profile) and opens each profile's state.db for the last-session
         # preview; profiles.create copies skill bundles. Both are seconds-
         # scale on cold disks — keep them off the WS reader thread.
+        "profiles.configure",
         "profiles.create",
+        "profiles.describe",
         "profiles.list",
         # image.generate is a multi-second remote API round-trip.
         "image.generate",

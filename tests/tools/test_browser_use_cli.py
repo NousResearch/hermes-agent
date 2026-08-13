@@ -836,6 +836,154 @@ class TestBrowserExec:
         assert "timed out" in result["error"]
 
 
+class TestBrowserExecUrlRecheck:
+    """browser_exec's post-navigation URL recheck.
+
+    The pre-execution check (_blocked_url_in_code) can only see http(s)
+    literals in the source it is handed. These pin the second layer: where
+    the browser actually ended up once the code ran, which is what catches a
+    URL assembled at runtime or a redirect out of a public page. Mirrors the
+    pre/post pairing browser_tool already uses (_current_page_private_url).
+    """
+
+    # A fake CLI that echoes page content and then reports where it "landed",
+    # standing in for the real trailer's js('window.location.href') probe.
+    @staticmethod
+    def _cli_landing_on(tmp_path, url, page_output="SECRET_PAGE_BODY"):
+        return _fake_cli(
+            tmp_path,
+            'cat > /dev/null\n'
+            f'echo "{page_output}"\n'
+            f'echo "{bu_cli._LANDED_URL_MARKER}{url}"\n',
+        )
+
+    def test_runtime_built_metadata_url_blocked(self, tmp_path, monkeypatch):
+        """The regression: a URL the pre-check cannot see is still caught.
+
+        The code contains no http(s) literal, so _blocked_url_in_code passes
+        it; only the landed-URL probe can catch it.
+        """
+        cli = self._cli_landing_on(tmp_path, "http://169.254.169.254/latest/meta-data/")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        code = "host = '169.254.169.254'\nnew_tab('http' + '://' + host + '/latest/meta-data/')\nprint(page_info())"
+        assert bu_cli._blocked_url_in_code(code) is None, "pre-check should not see this URL"
+
+        result = json.loads(bu_cli.browser_exec(code))
+
+        assert "error" in result, "runtime-built internal URL must be blocked"
+        assert "metadata" in result["error"].lower()
+        assert "SECRET_PAGE_BODY" not in json.dumps(result), (
+            "page content must be withheld — stdout is the exfiltration channel"
+        )
+
+    def test_redirect_to_private_address_blocked(self, tmp_path, monkeypatch):
+        """A public URL that redirects somewhere internal is caught on landing."""
+        cli = self._cli_landing_on(tmp_path, "http://127.0.0.1:8080/admin")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+
+        result = json.loads(bu_cli.browser_exec('new_tab("https://example.com/redirector")'))
+
+        assert "error" in result
+        assert "SECRET_PAGE_BODY" not in json.dumps(result)
+
+    def test_public_landing_returns_output_without_marker(self, tmp_path, monkeypatch):
+        """The safe path is unchanged, and the probe stays invisible."""
+        cli = self._cli_landing_on(tmp_path, "https://example.com/", page_output="PAGE_TEXT")
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+
+        result = json.loads(bu_cli.browser_exec('new_tab("https://example.com")'))
+
+        assert result["success"] is True
+        assert "PAGE_TEXT" in result["output"]
+        assert bu_cli._LANDED_URL_MARKER not in result["output"]
+        assert "169.254" not in result["output"]
+
+    def test_absent_marker_fails_open(self, tmp_path, monkeypatch):
+        """No probe result means no claim: fail open, as the sibling guards do.
+
+        _current_page_private_url documents the same choice ("fail-open on
+        probe failure, matching the snapshot/vision guards"), so a session
+        with no page open does not turn every exec into an error.
+        """
+        cli = _fake_cli(tmp_path, 'cat > /dev/null\necho "no marker here"\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+
+        result = json.loads(bu_cli.browser_exec('print("hi")'))
+
+        assert result["success"] is True
+        assert "no marker here" in result["output"]
+
+    def test_trailer_appended_to_parseable_code(self, tmp_path, monkeypatch):
+        """The probe is actually piped to the CLI, after the caller's code."""
+        cli = _fake_cli(tmp_path, 'code=$(cat)\necho "$code"\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+
+        result = json.loads(bu_cli.browser_exec('print("hi")'))
+
+        assert 'print("hi")' in result["output"]
+        assert "window.location.href" in result["output"]
+
+    def test_trailer_not_appended_to_unparseable_code(self, tmp_path, monkeypatch):
+        """Never mangle code that cannot parse; the CLI reports its own error."""
+        cli = _fake_cli(tmp_path, 'code=$(cat)\necho "$code"\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+
+        result = json.loads(bu_cli.browser_exec('def broken(:'))
+
+        assert "window.location.href" not in result["output"]
+
+    def test_page_cannot_forge_a_safe_landing(self, tmp_path, monkeypatch):
+        """A page echoing the marker cannot override the real probe.
+
+        The trailer always prints last, and the LAST marker wins — so an
+        injected page that echoes the marker to claim a safe landing does
+        not mask the real one.
+
+        Both markers are emitted on ONE line so this genuinely exercises
+        the implementation's `rfind` (last occurrence on the line), not
+        just the line-by-line loop overwrite (which would make last-wins
+        true regardless of find vs rfind). The safe decoy precedes the
+        real internal URL.
+        """
+        marker = bu_cli._LANDED_URL_MARKER
+        cli = _fake_cli(
+            tmp_path,
+            'cat > /dev/null\n'
+            # page text forges a safe landing, then the real probe reports
+            # the internal URL — same line, so first-vs-last is decided by
+            # the marker scanner, not by line ordering.
+            f'echo "attacker text {marker}https://example.com/ '
+            f'{marker}http://169.254.169.254/latest/meta-data/"\n',
+        )
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+
+        from tools.browser_tool import _is_safe_url, _is_always_blocked_url
+
+        assert _is_always_blocked_url("https://example.com/") is False, (
+            "premise: the decoy landing must itself be safe, otherwise this "
+            "test would pass even if the first marker won"
+        )
+        assert _is_safe_url("https://example.com/") is True, (
+            "premise: the decoy landing must itself be safe, otherwise this "
+            "test would pass even if the first marker won"
+        )
+
+        result = json.loads(bu_cli.browser_exec('new_tab("https://example.com")'))
+
+        assert "error" in result, "the real (last) landing must decide"
+
+    def test_literal_url_still_blocked_before_spawn(self, tmp_path, monkeypatch):
+        """The cheap pre-check is retained as a fast path (no subprocess)."""
+        marker = tmp_path / "cli-ran"
+        cli = _fake_cli(tmp_path, f'cat > /dev/null\ntouch "{marker}"\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+
+        result = json.loads(bu_cli.browser_exec('new_tab("http://169.254.169.254/")'))
+
+        assert "error" in result
+        assert not marker.exists(), "blocked code must never reach the CLI"
+
+
 class TestFindCliManagedBin:
     """MANAGED-FIRST: _find_cli probes $HERMES_HOME/bin before PATH and
     ~/.local/bin, so the Hermes-installed copy always wins."""

@@ -104,6 +104,75 @@ def _blocked_url_in_code(code: str) -> Optional[str]:
     return None
 
 
+# Marker the recheck trailer prints the landed URL behind. Long and unlikely
+# to occur in page text, so a page that echoes it cannot forge a "safe" URL:
+# the last occurrence wins (see _landed_url), and the trailer always runs
+# after any page output.
+_LANDED_URL_MARKER = "__HERMES_BROWSER_EXEC_LANDED_URL__:"
+
+# Appended to exec code so the *executed* navigation target can be checked,
+# not just the literals the pre-check could see in the source. Mirrors
+# browser_tool's _current_page_private_url, which reads window.location.href
+# after an eval for exactly this reason. Wrapped in try/except so a session
+# with no page open (or a helper that raises) degrades to "no marker" rather
+# than turning a working exec into an error.
+# The marker literal is split across a concatenation so the trailer's own
+# source text never contains it: the code is echoed back by some CLI modes,
+# and a source echo must not read as a landing report.
+_URL_RECHECK_TRAILER = (
+    "\ntry:\n"
+    "    print({head!r} + {tail!r} + str(js('window.location.href')))\n"
+    "except Exception:\n"
+    "    pass\n"
+).format(head=_LANDED_URL_MARKER[:16], tail=_LANDED_URL_MARKER[16:])
+
+
+def _with_url_recheck(code: str) -> str:
+    """Append the landed-URL probe when doing so cannot break the caller's code.
+
+    ``ast.parse`` succeeding means the code is a syntactically complete
+    module, so appending another top-level statement is guaranteed to keep it
+    parseable. Code that does not parse is returned unchanged: it cannot
+    navigate anywhere, and mangling it would replace the CLI's own syntax
+    error with a confusing one.
+    """
+    import ast
+
+    try:
+        ast.parse(code)
+    except SyntaxError:
+        return code
+    return code + _URL_RECHECK_TRAILER
+
+
+def _landed_url(stdout: str) -> Optional[str]:
+    """Return the URL the browser actually ended on, or None if unknown.
+
+    Only an absolute http(s) URL counts. Anything else — a helper that
+    returned None, a truncated line, page text that happens to carry the
+    marker — is treated as "probe produced nothing", which fails open rather
+    than blocking on a value that was never a navigation target.
+    """
+    landed = None
+    for line in (stdout or "").splitlines():
+        idx = line.rfind(_LANDED_URL_MARKER)
+        if idx == -1:
+            continue
+        candidate = line[idx + len(_LANDED_URL_MARKER):].strip()
+        if candidate.lower().startswith(("http://", "https://")):
+            landed = candidate
+    return landed
+
+
+def _strip_landed_url_marker(stdout: str) -> str:
+    """Drop marker lines so the probe stays invisible to the model."""
+    if _LANDED_URL_MARKER not in (stdout or ""):
+        return stdout
+    kept = [ln for ln in stdout.splitlines() if _LANDED_URL_MARKER not in ln]
+    stripped = "\n".join(kept)
+    return stripped + "\n" if stdout.endswith("\n") and stripped else stripped
+
+
 def _base_subprocess_env() -> dict:
     from tools.browser_tool import _build_browser_env
 
@@ -631,7 +700,7 @@ def browser_exec(
     try:
         proc = subprocess.run(
             cmd,
-            input=code,
+            input=_with_url_recheck(code),
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -649,10 +718,56 @@ def browser_exec(
     except OSError as e:
         return tool_error(f"Failed to launch browser-use CLI: {e}")
 
+    # Post-navigation recheck. The pre-check can only see URL literals in the
+    # source; this sees where the browser actually ended up — a URL built at
+    # runtime, or a redirect from a public page to an internal one. Output is
+    # withheld rather than annotated: stdout is where the page's content
+    # comes back, so returning it would hand over exactly what the guard
+    # exists to stop. No marker means the probe could not run, which fails
+    # open, matching _current_page_private_url's documented behavior.
+    landed = _landed_url(proc.stdout)
+    if landed:
+        # Force SSRF protection for browser_exec regardless of backend
+        # posture. evaluate_url_safety() gates the private-address block on
+        # `not _is_local_backend()` — correct for browser_navigate, which is
+        # a single navigation under the operator's own browser, but NOT for
+        # browser_exec, which pipes arbitrary model-authored Python into the
+        # CLI. The model's code (not the operator) decides the navigation
+        # target, so a private-IP or IMDS landing must be blocked even when
+        # the browser itself is local. This is the same ungated check
+        # _current_page_private_url() uses.
+        from tools.browser_tool import _is_always_blocked_url, _is_safe_url
+        if _is_always_blocked_url(landed):
+            logger.warning(
+                "browser_exec output withheld: page ended on a URL the "
+                "navigation policy rejects (%s)", landed,
+            )
+            return tool_error(
+                f"Blocked: URL targets a cloud metadata endpoint — the "
+                "browser ended on this address after the code ran, so the "
+                "page output was withheld. The pre-execution check only sees "
+                "URL literals in the code; this was reached at runtime (a "
+                "constructed URL, or a redirect from the page that was "
+                "opened)."
+            )
+        if not _is_safe_url(landed):
+            logger.warning(
+                "browser_exec output withheld: page ended on a URL the "
+                "navigation policy rejects (%s)", landed,
+            )
+            return tool_error(
+                f"Blocked: URL targets a private or internal address — the "
+                "browser ended on this address after the code ran, so the "
+                "page output was withheld. The pre-execution check only sees "
+                "URL literals in the code; this was reached at runtime (a "
+                "constructed URL, or a redirect from the page that was "
+                "opened)."
+            )
+
     result = {
         "success": proc.returncode == 0,
         "exit_code": proc.returncode,
-        "output": proc.stdout,
+        "output": _strip_landed_url_marker(proc.stdout),
     }
     if workspace:
         result["workspace"] = workspace

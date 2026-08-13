@@ -2,7 +2,7 @@
 inactivity-timeout abort as a provider/fallback-chain failure, and must not
 claim a fallback chain was "exhausted" when none is configured.
 
-Regression for t_29b8da55 (2026-08-08, Daily Repo Sweep): a stuck `terminal`
+Field-reported regression: a stuck `terminal`
 tool call tripped the 600s cron inactivity watchdog. The TimeoutError raised
 by the watchdog contains the substring "limit 600s" and its message reads
 "idle for 1239s (limit 600s)" -- no provider or fallback chain was ever
@@ -11,12 +11,11 @@ substring check before any inactivity-specific check existed, so the operator
 saw "provider timeout. Fallback chain was exhausted or unavailable." for a
 failure that had nothing to do with either.
 
-Second bug bundled into the same task: even on a *genuine* provider failure,
+Second bug bundled into the same fix: even on a *genuine* provider failure,
 "Fallback chain was exhausted or unavailable." fired unconditionally --
-regardless of whether fallback_providers was ever configured. Both the root
-and cto profile config.yaml have fallback_providers: [] (confirmed
-2026-08-08), so the message always implied an attempted-and-failed fallback
-that never existed. _fallback_chain_phrase() now checks the effective chain
+regardless of whether fallback_providers was ever configured. Most installs
+have fallback_providers: [], so the message always implied an
+attempted-and-failed fallback that never existed. _fallback_chain_phrase() now checks the effective chain
 via get_fallback_chain() and reports "No fallback chain configured." when
 it's empty.
 """
@@ -95,3 +94,22 @@ def test_rate_limit_classification_still_takes_priority_over_inactivity_text(mon
     msg = _summarize_cron_failure_for_delivery(job, error)
     assert "weekly usage limit" in msg
     assert "No fallback chain configured" in msg
+
+
+def test_terminal_cwd_lock_timeout_is_not_reported_as_provider_timeout():
+    """Sibling scheduler-internal timeout (#79768): the TERMINAL_CWD lock-wait
+    abort says "Timed out ..." and must not fall through to the generic
+    provider-timeout branch."""
+    job = {"name": "Workdir Job", "id": "abc123def456"}
+    error = (
+        "TimeoutError: Timed out waiting for the TERMINAL_CWD write lock "
+        "after 600s — another cron job (a workdir writer, or long-running "
+        "readers) has held it for longer than the cron inactivity limit. "
+        "If a workdir job is the holder, stagger its schedule or remove its "
+        "workdir to unblock this job (#79768)."
+    )
+    msg = _summarize_cron_failure_for_delivery(job, error)
+    assert "provider timeout" not in msg
+    assert "fallback chain" not in msg.lower()
+    assert "working-directory lock" in msg
+    assert "Workdir Job" in msg

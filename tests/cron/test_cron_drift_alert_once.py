@@ -1,6 +1,6 @@
 """Drift-guard skips must alert once per job, not once per tick (#44585 + #73506).
 
-Coatue field report (2026-08-11): a profile redeploy changed the global
+Field report: a fleet-wide config change moved the global
 default provider and every unpinned cron started alerting on every tick —
 40 jobs x N ticks of identical "Skipped to prevent unintended spend" spam.
 The #44585 drift guard correctly fails closed; this wires the existing

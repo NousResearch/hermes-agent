@@ -1,6 +1,6 @@
 """The empty-chain failure alert must tell the operator how to fix it.
 
-Coatue field report (2026-08-11): a user whose cron died with "No fallback
+Field report: a user whose cron died with "No fallback
 chain configured." still cannot self-serve — the alert names the problem but
 not the remedy. The empty-chain branch of _fallback_chain_phrase() must name
 the exact commands: `hermes fallback add` for the chain, and the

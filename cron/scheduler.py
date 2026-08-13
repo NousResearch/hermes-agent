@@ -106,9 +106,8 @@ def _fallback_chain_phrase() -> str:
     "Fallback chain was exhausted or unavailable." used to fire
     unconditionally on every provider failure, which implies a fallback was
     attempted and failed. Most installs have fallback_providers: [] (no
-    chain configured at all -- confirmed on both the root and cto profile
-    config.yaml as of 2026-08-08), so that wording was actively misleading:
-    it sent the operator looking for why a fallback "failed" when none was
+    chain configured at all), so that wording was actively misleading: it
+    sent the operator looking for why a fallback "failed" when none was
     ever attempted. Distinguish the two cases explicitly.
 
     Fails open to the original ambiguous-but-safe wording if config can't be
@@ -182,9 +181,9 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
     # OWN tool call/turn going quiet, no provider or fallback chain ever
     # involved — gets rewritten into a misleading "provider timeout /
     # fallback chain exhausted" message, sending the operator to debug the
-    # wrong system entirely (confirmed 2026-08-08, Daily Repo Sweep: a stuck
-    # `terminal` tool call tripped the 600s inactivity limit and was reported
-    # as a provider/fallback failure). Mirrors the same reordering fix
+    # wrong system entirely (field-reported: a stuck `terminal` tool call
+    # tripped the 600s inactivity limit and was reported as a
+    # provider/fallback failure). Mirrors the same reordering fix
     # upstream issue #59549 applied for script timeouts vs provider timeouts
     # — check the more specific, deterministic signature first.
     if re.search(r"idle for \d+s\s*\(limit \d+s\)", lower):
@@ -193,6 +192,20 @@ def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:
             "activity for the configured inactivity window. Not a provider or "
             "fallback-chain issue; check what the job was doing when it went "
             "quiet. Full details saved in cron output."
+        )
+
+    # Sibling scheduler-side timeout (#79768): the TERMINAL_CWD lock-wait
+    # abort also phrases itself with "Timed out ..." and would fall through
+    # to the generic provider-timeout branch below. Like the inactivity
+    # watchdog above, it is entirely scheduler-internal — no provider or
+    # fallback chain involved — so classify it before the generic match.
+    if "terminal_cwd" in lower and ("lock" in lower or "timed out" in lower):
+        return (
+            f"⚠️ Cron '{job_name}' failed: could not acquire the scheduler's "
+            "working-directory lock — another cron job (a workdir writer or "
+            "long-running readers) held it too long. Not a provider or "
+            "fallback-chain issue; stagger the holder's schedule or remove "
+            "its workdir. Full details saved in cron output."
         )
 
     if "readtimeout" in lower or "timed out" in lower or "timeout" in lower:

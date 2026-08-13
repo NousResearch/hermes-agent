@@ -995,6 +995,11 @@ DANGEROUS_PATTERNS = [
     # The trailing `[^\s"\']*` consumes the rest of the destination filename
     # (e.g. `authorized_keys` after the `~/.ssh/` fragment).
     (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
+    # touch/mkdir/ln create or plant into the same destinations without
+    # going through write_file (which now approval-gates shell rc) or
+    # cp/sed. `touch ~/.ssh/authorized_keys` / `mkdir ~/.ssh` /
+    # `ln -s evil ~/.bashrc` were unpaired theater (#85321).
+    (rf'\b(?:touch|mkdir|ln)\b.*["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_WRITE_TARGET_BOUNDARY}', "create or link a file in a sensitive credential/SSH/shell-rc path"),
     # In-place edits mutate the target file directly, bypassing redirection,
     # tee, and copy/move/install coverage. Gate the same user-controlled
     # startup/credential files so `sed -i ... ~/.bashrc` and `perl -i ...

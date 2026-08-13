@@ -471,6 +471,28 @@ class TestSensitiveCopyMovePattern:
             assert dangerous is False, cmd
 
 
+class TestSensitiveCreateLinkPattern:
+    """touch/mkdir/ln into credential, SSH, or shell-rc paths (#85321)."""
+
+    def test_create_or_link_into_sensitive_path(self):
+        for command in (
+            "touch ~/.bashrc",
+            "touch ~/.ssh/authorized_keys",
+            "mkdir ~/.ssh",
+            "mkdir -p ~/.ssh/foo",
+            "ln -s /tmp/evil ~/.bashrc",
+            "ln /tmp/e ~/.ssh/authorized_keys",
+        ):
+            dangerous, key, desc = detect_dangerous_command(command)
+            assert dangerous is True, command
+            assert key is not None, command
+
+    def test_unrelated_touch_mkdir_ln_safe(self):
+        for cmd in ("touch notes.txt", "mkdir src", "ln -s a.txt b.txt"):
+            dangerous, key, desc = detect_dangerous_command(cmd)
+            assert dangerous is False, cmd
+
+
 class TestSensitiveInPlaceEditPattern:
     """Detect in-place edits to user startup and credential files."""
 

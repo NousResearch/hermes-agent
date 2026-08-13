@@ -125,6 +125,14 @@ def build_write_approval_paths(home: str) -> set[str]:
         os.path.realpath(p)
         for p in [
             os.path.join(home, ".ssh", "config"),
+            # Pair write_file/patch with the terminal shell-rc gate (#85321).
+            # These files are routinely edited, but they run at login — same
+            # approval contract as ~/.ssh/config, not a hard credential deny.
+            os.path.join(home, ".bashrc"),
+            os.path.join(home, ".zshrc"),
+            os.path.join(home, ".profile"),
+            os.path.join(home, ".bash_profile"),
+            os.path.join(home, ".zprofile"),
         ]
     }
 
@@ -219,11 +227,12 @@ def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
 def is_write_approval_required(path: str) -> bool:
     """Return True if ``path`` is an approval-gated write target.
 
-    These paths (currently ``~/.ssh/config``) are not credentials and are
-    not hard-denied, but a write to them must be confirmed by a human
-    because they can influence process execution (e.g. an SSH
-    ``ProxyCommand``). Callers with an interactive/gateway channel should
-    prompt; callers without one should treat this as a block (fail closed).
+    These paths (``~/.ssh/config`` and login shell rc files) are not
+    credentials and are not hard-denied, but a write to them must be
+    confirmed by a human because they can influence process execution
+    (SSH ``ProxyCommand``, or commands in ``~/.bashrc``). Callers with
+    an interactive/gateway channel should prompt; callers without one
+    should treat this as a block (fail closed).
     """
     home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { matchSuggestions } from './mcp-suggestions'
+import { matchSuggestions } from './mcp'
 
 const INDEX = [
   { keywords: ['linear', 'issue tracker', 'ticket'], server: 'linear' },

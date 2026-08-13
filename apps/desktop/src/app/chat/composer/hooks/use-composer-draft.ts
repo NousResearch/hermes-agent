@@ -1,3 +1,7 @@
+// Register the built-in draft providers with the suggestion bus (side-effect
+// import — the bus itself is provider-agnostic).
+import '@/store/suggestion-providers/mcp'
+
 import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
@@ -12,7 +16,7 @@ import {
   takeSessionDraft
 } from '@/store/composer'
 import { isBrowsingHistory } from '@/store/composer-input-history'
-import { clearMcpSuggestions, sampleComposerDraftForMcpSuggestions } from '@/store/mcp-suggestions'
+import { clearDraftSuggestions, sampleComposerDraft } from '@/store/composer-suggestions'
 
 import {
   cloneAttachments,
@@ -282,9 +286,9 @@ export function useComposerDraft({
     const sync = () => {
       const text = composerRuntime.getState().text
       draftRef.current = text
-      // Keyword-triggered MCP suggestion pills for THIS session's draft
-      // (debounced + change-gated in the store — this is just a timer reset).
-      sampleComposerDraftForMcpSuggestions(sessionIdRef.current ?? null, text)
+      // Composer suggestion pills for THIS session's draft (debounced +
+      // change-gated in the bus — this is just a timer reset).
+      sampleComposerDraft(sessionIdRef.current ?? null, text)
 
       const editor = editorRef.current
 
@@ -400,11 +404,11 @@ export function useComposerDraft({
         stashAt(activeQueueSessionKey, latestText)
       }
 
-      // Withdraw the outgoing session's suggestion pills (and any pending
+      // Withdraw the outgoing session's draft suggestions (and any pending
       // sample timer). The incoming session re-earns its own from the draft
       // restore above — without this a leaving session's "Add GitHub" pill
       // lingers in the map and re-appears stale on the way back.
-      clearMcpSuggestions(sessionIdRef.current)
+      clearDraftSuggestions(sessionIdRef.current)
     }
   }, [activeQueueSessionKey]) // eslint-disable-line react-hooks/exhaustive-deps
 

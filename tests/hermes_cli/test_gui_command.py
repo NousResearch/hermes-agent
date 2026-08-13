@@ -648,11 +648,12 @@ def test_detect_linux_password_store_none_when_no_keychain(monkeypatch):
         assert cli_main._detect_linux_password_store() is None
 
 
+@pytest.mark.linux_only
 def test_gui_linux_packaged_launch_bridges_detected_password_store(tmp_path, monkeypatch):
     _clear_keychain_env(monkeypatch)
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    _make_packaged_executable(root, monkeypatch, platform="linux")
+    _make_packaged_executable(root, monkeypatch)
 
     ok = subprocess.CompletedProcess([], 0)
 
@@ -663,6 +664,7 @@ def test_gui_linux_packaged_launch_bridges_detected_password_store(tmp_path, mon
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
          patch("hermes_cli.main._detect_linux_password_store", return_value="gnome-libsecret"), \
          patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
          pytest.raises(SystemExit):
@@ -672,11 +674,11 @@ def test_gui_linux_packaged_launch_bridges_detected_password_store(tmp_path, mon
     assert launch_env["HERMES_DESKTOP_PASSWORD_STORE"] == "gnome-libsecret"
 
 
+@pytest.mark.linux_only
 def test_gui_linux_source_launch_bridges_detected_password_store(tmp_path, monkeypatch):
     _clear_keychain_env(monkeypatch)
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    monkeypatch.setattr(cli_main.sys, "platform", "linux")
 
     ok = subprocess.CompletedProcess([], 0)
 
@@ -685,6 +687,7 @@ def test_gui_linux_source_launch_bridges_detected_password_store(tmp_path, monke
          patch("hermes_cli.main._desktop_build_needed", return_value=True), \
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
          patch("hermes_cli.main._detect_linux_password_store", return_value="kwallet6"), \
          patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
          pytest.raises(SystemExit):
@@ -695,11 +698,12 @@ def test_gui_linux_source_launch_bridges_detected_password_store(tmp_path, monke
     assert launch_env["HERMES_DESKTOP_PASSWORD_STORE"] == "kwallet6"
 
 
+@pytest.mark.linux_only
 def test_gui_config_password_store_skips_detection(tmp_path, monkeypatch):
     _clear_keychain_env(monkeypatch)
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    _make_packaged_executable(root, monkeypatch, platform="linux")
+    _make_packaged_executable(root, monkeypatch)
 
     ok = subprocess.CompletedProcess([], 0)
     cfg = {"desktop": {"password_store": "kwallet6"}}
@@ -711,6 +715,7 @@ def test_gui_config_password_store_skips_detection(tmp_path, monkeypatch):
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
          patch("hermes_cli.main._detect_linux_password_store") as mock_detect, \
          patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
          pytest.raises(SystemExit):
@@ -721,12 +726,13 @@ def test_gui_config_password_store_skips_detection(tmp_path, monkeypatch):
     assert launch_env["HERMES_DESKTOP_PASSWORD_STORE"] == "kwallet6"
 
 
+@pytest.mark.linux_only
 def test_gui_explicit_password_store_env_wins_over_config_and_detection(tmp_path, monkeypatch):
     _clear_keychain_env(monkeypatch)
     monkeypatch.setenv("HERMES_DESKTOP_PASSWORD_STORE", "basic")
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    _make_packaged_executable(root, monkeypatch, platform="linux")
+    _make_packaged_executable(root, monkeypatch)
 
     ok = subprocess.CompletedProcess([], 0)
     cfg = {"desktop": {"password_store": "kwallet6"}}
@@ -738,6 +744,7 @@ def test_gui_explicit_password_store_env_wins_over_config_and_detection(tmp_path
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
          patch("hermes_cli.config.load_config", return_value=cfg), \
+         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
          patch("hermes_cli.main._detect_linux_password_store") as mock_detect, \
          patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
          pytest.raises(SystemExit):
@@ -748,11 +755,12 @@ def test_gui_explicit_password_store_env_wins_over_config_and_detection(tmp_path
     assert launch_env["HERMES_DESKTOP_PASSWORD_STORE"] == "basic"
 
 
+@pytest.mark.macos_only
 def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
     _clear_keychain_env(monkeypatch)
     root = _make_desktop_tree(tmp_path)
     monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
-    _make_packaged_executable(root, monkeypatch, platform="darwin")
+    _make_packaged_executable(root, monkeypatch)
 
     ok = subprocess.CompletedProcess([], 0)
 
@@ -762,6 +770,7 @@ def test_gui_password_store_bridge_is_linux_only(tmp_path, monkeypatch):
          patch("hermes_cli.main._write_desktop_build_stamp"), \
          patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
          patch("hermes_cli.config.load_config", return_value={}), \
+         patch("hermes_cli.linux_desktop_entry.install_desktop_entry", return_value=None), \
          patch("hermes_cli.main._detect_linux_password_store") as mock_detect, \
          patch("hermes_cli.main.subprocess.run", side_effect=[ok, ok]) as mock_run, \
          pytest.raises(SystemExit):

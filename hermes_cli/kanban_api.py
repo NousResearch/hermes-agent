@@ -113,13 +113,16 @@ class BlockRequest(_RequestModel):
 
 @contextmanager
 def _connection(board: Optional[str]) -> Iterator[sqlite3.Connection]:
+    # ``connect`` creates the parent dir and auto-runs the schema/migration
+    # pass on a path's first open, caching it afterwards. Calling ``init_db``
+    # here instead would evict that cache entry and force the full integrity
+    # probe + migration executescript under the cross-process init lock on
+    # *every* request — the same redundancy already dropped in
+    # ``_board_counts``. This is a network-facing polling surface, so it stays
+    # on the cached path.
     slug = _resolve_board_slug(board)
-    kanban_db.init_db(board=slug)
-    conn = kanban_db.connect(board=slug)
-    try:
+    with kanban_db.connect_closing(board=slug) as conn:
         yield conn
-    finally:
-        conn.close()
 
 
 def _resolve_board_slug(board: Optional[str]) -> str:

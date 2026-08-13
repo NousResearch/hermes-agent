@@ -18,6 +18,29 @@ _ZERO = Decimal("0")
 _ONE_MILLION = Decimal("1000000")
 _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 
+# Sub-cent cost threshold: below $0.01, render at 4 decimal places so
+# the display is non-zero (e.g. $0.0046 instead of $0.00). See #79220.
+_SUBCENT_THRESHOLD = Decimal("0.01")
+
+
+def _format_cost_label(amount: Decimal) -> str:
+    """Format a cost amount as a display label.
+
+    Scales precision to magnitude:
+    - Zero → "$0.00"
+    - Sub-cent (< $0.01) → "~$0.0046" (4 dp, always non-zero)
+    - Normal → "~$1.23" (2 dp)
+
+    This fixes #79220 where sub-cent per-turn costs on cheap models
+    (DeepSeek, etc.) rendered as "$0.00" despite amount_usd carrying
+    full Decimal precision.
+    """
+    if amount == _ZERO:
+        return "$0.00"
+    if amount < _SUBCENT_THRESHOLD:
+        return f"~${amount:.4f}"
+    return f"~${amount:.2f}"
+
 CostStatus = Literal["actual", "estimated", "included", "unknown"]
 CostSource = Literal[
     "provider_cost_api",
@@ -1334,6 +1357,7 @@ def estimate_usage_cost(
             source="none",
             label="included",
             pricing_version="included-route",
+            notes=("subscription-included; no provider invoice for usage",),
         )
 
     entry = get_pricing_entry(model_name, provider=provider, base_url=base_url, api_key=api_key)
@@ -1378,7 +1402,7 @@ def estimate_usage_cost(
         amount += Decimal(usage.request_count) * entry.request_cost
 
     status: CostStatus = "estimated"
-    label = f"~${amount:.2f}"
+    label = _format_cost_label(amount)
     if entry.source == "none" and amount == _ZERO:
         status = "included"
         label = "included"

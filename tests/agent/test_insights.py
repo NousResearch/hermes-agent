@@ -557,7 +557,9 @@ class TestTerminalFormatting:
 
         assert "N/A" not in text
         assert "custom/self-hosted" not in text
-        assert "Cost" not in text
+        # Cost section now surfaces unknown-cost sessions (#77223) instead
+        # of hiding them — a custom model with no pricing data should show
+        # "Unknown: 1 session(s)" rather than silently reporting $0.
 
 
 class TestGatewayFormatting:
@@ -571,12 +573,16 @@ class TestGatewayFormatting:
 
 
     def test_gateway_format_hides_cost(self, populated_db):
-        """Gateway format omits dollar figures and internal cache details."""
+        """Gateway format omits internal cache details.
+
+        Dollar figures now appear when there are estimated/included/unknown
+        cost buckets (#77223) — the old assertion that '$' is absent is no
+        longer correct because surfacing cost buckets is the fix.
+        """
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)
         text = engine.format_gateway(report)
 
-        assert "$" not in text
         assert "cache" not in text.lower()
 
 
@@ -668,5 +674,76 @@ class TestEdgeCases:
         text = engine.format_terminal(report)
         # (it still shows platforms section if there's only cli and nothing else)
         # Actually the condition is > 1 platforms OR non-cli, so single cli won't show
+
+
+    def test_cost_buckets_displayed_in_terminal_format(self, db):
+        """#77223: included/estimated/unknown cost buckets surface in terminal."""
+        # Estimated cost session
+        db.create_session(session_id="est", source="cli", model="model-a")
+        db.update_token_counts(
+            "est", input_tokens=100, model="model-a",
+            billing_provider="custom",
+            estimated_cost_usd=1.50, actual_cost_usd=1.0,
+            cost_status="estimated", cost_source="provider", api_call_count=1,
+        )
+        # Included cost session (subscription)
+        db.create_session(session_id="inc", source="cli", model="gpt-5.4-mini")
+        db.update_token_counts(
+            "inc", input_tokens=200, model="gpt-5.4-mini",
+            billing_provider="openai-codex",
+            estimated_cost_usd=0.0, actual_cost_usd=0.0,
+            cost_status="included", cost_source="none", api_call_count=1,
+        )
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        text = engine.format_terminal(report)
+
+        # The cost section should appear with all three buckets
+        assert "💰 Cost" in text
+        assert "~$1.50" in text  # estimated
+        assert "included" in text.lower()
+        assert "subscription" in text.lower()
+
+    def test_cost_buckets_displayed_in_gateway_format(self, db):
+        """#77223: included/estimated/unknown cost buckets surface in gateway."""
+        db.create_session(session_id="est", source="cli", model="model-a")
+        db.update_token_counts(
+            "est", input_tokens=100, model="model-a",
+            billing_provider="custom",
+            estimated_cost_usd=2.25, actual_cost_usd=0.0,
+            cost_status="estimated", cost_source="provider", api_call_count=1,
+        )
+        db.create_session(session_id="inc", source="cli", model="gpt-5.4-mini")
+        db.update_token_counts(
+            "inc", input_tokens=200, model="gpt-5.4-mini",
+            billing_provider="openai-codex",
+            estimated_cost_usd=0.0, actual_cost_usd=0.0,
+            cost_status="included", cost_source="none", api_call_count=1,
+        )
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        text = engine.format_gateway(report)
+
+        assert "**Cost:**" in text
+        assert "~$2.25" in text
+        assert "included" in text.lower()
+
+    def test_no_cost_section_when_all_zero(self, db):
+        """A session with no model still shows unknown cost bucket (#77223).
+
+        The unknown bucket is surfaced so users can see they have sessions
+        with no pricing data, rather than silently reporting $0.
+        """
+        db.create_session(session_id="s1", source="cli", model="test")
+        db._conn.commit()
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        text = engine.format_terminal(report)
+        # The session has no cost data, so it falls in the "unknown" bucket.
+        assert "💰 Cost" in text
+        assert "Unknown" in text
 
 

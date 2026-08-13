@@ -1000,6 +1000,29 @@ class InsightsEngine:
         lines.append(f"  Avg msgs/session:  {o['avg_messages_per_session']:.1f}")
         lines.append("")
 
+        # Cost breakdown — surface the three buckets so subscription-included
+        # and unknown-cost sessions are visible instead of silently collapsing
+        # to $0. See #77223.
+        est_cost = o.get("estimated_cost", 0.0)
+        included_sessions = o.get("included_cost_sessions", 0)
+        unknown_sessions = o.get("unknown_cost_sessions", 0)
+        if est_cost > 0 or included_sessions > 0 or unknown_sessions > 0:
+            lines.append("  💰 Cost")
+            lines.append("  " + "─" * 56)
+            if est_cost > 0:
+                lines.append(f"  Estimated:         ~${est_cost:.2f}")
+            if included_sessions > 0:
+                lines.append(
+                    f"  Included:           {included_sessions} session(s) "
+                    f"(subscription — no provider invoice)"
+                )
+            if unknown_sessions > 0:
+                lines.append(
+                    f"  Unknown:            {unknown_sessions} session(s) "
+                    f"(no pricing data)"
+                )
+            lines.append("")
+
         # Model breakdown
         if report["models"]:
             lines.append("  🤖 Models Used")
@@ -1113,6 +1136,21 @@ class InsightsEngine:
         if o["total_hours"] > 0:
             lines.append(f"**Active time:** ~{format_duration_compact(o['total_hours'] * 3600)} | **Avg session:** ~{format_duration_compact(o['avg_session_duration'])}")
         lines.append("")
+
+        # Cost breakdown — surface buckets so included/unknown are visible
+        est_cost = o.get("estimated_cost", 0.0)
+        included = o.get("included_cost_sessions", 0)
+        unknown = o.get("unknown_cost_sessions", 0)
+        cost_parts: list[str] = []
+        if est_cost > 0:
+            cost_parts.append(f"~${est_cost:.2f} estimated")
+        if included > 0:
+            cost_parts.append(f"{included} included (subscription)")
+        if unknown > 0:
+            cost_parts.append(f"{unknown} unknown")
+        if cost_parts:
+            lines.append(f"**Cost:** {' | '.join(cost_parts)}")
+            lines.append("")
 
         # Models (top 5)
         if report["models"]:

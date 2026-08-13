@@ -1,6 +1,8 @@
 """Tests for skill fuzzy patching via tools.fuzzy_match."""
 
 import json
+import os
+import stat
 
 import pytest
 
@@ -98,3 +100,67 @@ word word word
         result = json.loads(raw)
         # Should succeed via line-trimmed or indentation-flexible matching
         assert result["success"] is True
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_created_skill_is_group_readable(self):
+        """New instructional skills use the public-document mode 0644."""
+        _create_skill("mode-skill", SKILL_CONTENT)
+        mode = stat.S_IMODE((self.skills_dir / "mode-skill" / "SKILL.md").stat().st_mode)
+        assert mode == 0o644
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_edit_preserves_group_readable_mode(self):
+        """Full skill edits must preserve the existing document mode."""
+        _create_skill("mode-skill", SKILL_CONTENT)
+        skill_md = self.skills_dir / "mode-skill" / "SKILL.md"
+        skill_md.chmod(0o644)
+        replacement = SKILL_CONTENT.replace("Step 1: Do the thing.", "Step 1: Done!")
+
+        from tools.skill_manager_tool import _edit_skill
+
+        result = _edit_skill("mode-skill", replacement)
+
+        assert result["success"] is True
+        assert stat.S_IMODE(skill_md.stat().st_mode) == 0o644
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    @pytest.mark.parametrize("mode", [0o600, 0o660])
+    def test_patched_skill_preserves_existing_mode(self, mode):
+        """Atomic patching must preserve both private and shared modes."""
+        _create_skill("mode-skill", SKILL_CONTENT)
+        skill_md = self.skills_dir / "mode-skill" / "SKILL.md"
+        skill_md.chmod(mode)
+
+        result = _patch_skill("mode-skill", "Step 1: Do the thing.", "Step 1: Done!")
+
+        assert result["success"] is True
+        assert stat.S_IMODE(skill_md.stat().st_mode) == mode
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_supporting_file_write_uses_group_readable_mode(self):
+        """New reference files should follow the same document mode."""
+        _create_skill("mode-skill", SKILL_CONTENT)
+
+        result = _write_file(
+            "mode-skill",
+            "references/example.md",
+            "# Reference\n",
+        )
+
+        assert result["success"] is True
+        reference = self.skills_dir / "mode-skill" / "references/example.md"
+        assert stat.S_IMODE(reference.stat().st_mode) == 0o644
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_supporting_file_write_preserves_existing_mode(self):
+        """Overwriting a reference must preserve its existing shared mode."""
+        _create_skill("mode-skill", SKILL_CONTENT)
+        reference = self.skills_dir / "mode-skill" / "references/example.md"
+        reference.parent.mkdir()
+        reference.write_text("old\n", encoding="utf-8")
+        reference.chmod(0o660)
+
+        result = _write_file("mode-skill", "references/example.md", "new\n")
+
+        assert result["success"] is True
+        assert stat.S_IMODE(reference.stat().st_mode) == 0o660

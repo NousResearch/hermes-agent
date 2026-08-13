@@ -155,9 +155,9 @@ _install_plugin_debug_handler()
 VALID_HOOKS: Set[str] = {
     "pre_tool_call",
     "post_tool_call",
-    # Generic memory write governance hooks. Observers may reject/skip/transform
-    # a write before it is persisted, or request one deterministic retry on
-    # over-limit writes. Keep hook semantics generic; plugins decide policy.
+    # Generic built-in memory governance hooks. Keep policy in standalone
+    # plugins; core only exposes the frozen prompt and durable-write boundaries.
+    "transform_memory_context",
     "pre_memory_write",
     "post_memory_write",
     "transform_terminal_output",
@@ -392,6 +392,8 @@ VALID_HOOKS: Set[str] = {
 # have its output silently ignored — registration is refused loudly instead.
 # Support for a shell response shape can lift an event out of this set.
 SHELL_UNSUPPORTED_HOOKS: Set[str] = {
+    "transform_memory_context",
+    "pre_memory_write",
     "transform_api_error_classification",
 }
 

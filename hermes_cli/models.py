@@ -154,8 +154,8 @@ def _codex_curated_models() -> list[str]:
 # (grok-4, grok-4-0709, grok-4-fast{,-reasoning,-non-reasoning},
 #  grok-4-1-fast{,-reasoning,-non-reasoning}, grok-code-fast-1 → grok-4.3).
 _XAI_STATIC_FALLBACK: list[str] = [
-    "grok-build-0.1",
     "grok-4.6",
+    "grok-build-0.1",
     "grok-4.5",
     "grok-4.3",
     "grok-4.20-0309-reasoning",
@@ -171,7 +171,7 @@ _XAI_CURATED_EXTRAS: list[str] = [
 ]
 
 
-_XAI_TOP_MODEL = "grok-build-0.1"
+_XAI_TOP_MODEL = "grok-4.6"
 
 
 def _xai_promote_top(ids: list[str]) -> list[str]:
@@ -193,16 +193,15 @@ def _xai_merge_curated_extras(ids: list[str]) -> list[str]:
     return out
 
 
+def _xai_finalize_catalog(ids: list[str]) -> list[str]:
+    return _xai_promote_top(_xai_merge_curated_extras(ids))
+
+
 def _xai_curated_models() -> list[str]:
-    """Derive the xAI-direct curated list from models.dev disk cache.
+    """Offline curated floor for xAI / xAI OAuth pickers.
 
-    Reads $HERMES_HOME/models_dev_cache.json directly (no network) so this
-    runs at import time without blocking. Falls back to ``_XAI_STATIC_FALLBACK``
-    when the cache is empty or unreadable. Hermes refreshes the cache from
-    https://models.dev/api.json on normal use, so this list self-heals as
-    xAI renames models.
-
-    Mirrors ``_codex_curated_models()``'s role for openai-codex.
+    Reads $HERMES_HOME/models_dev_cache.json directly (no network). Falls
+    back to ``_XAI_STATIC_FALLBACK`` when the cache is empty or unreadable.
     """
     try:
         from agent.models_dev import _load_disk_cache
@@ -212,12 +211,12 @@ def _xai_curated_models() -> list[str]:
         if isinstance(models, dict) and models:
             ids = [mid for mid in models.keys() if isinstance(mid, str)]
             if ids:
-                return _xai_merge_curated_extras(_xai_promote_top(sorted(ids)))
+                return _xai_finalize_catalog(sorted(ids))
     except Exception:
         # Any failure (missing file, malformed JSON, import error)
         # falls through to the static list.
         pass
-    return _xai_merge_curated_extras(list(_XAI_STATIC_FALLBACK))
+    return _xai_finalize_catalog(list(_XAI_STATIC_FALLBACK))
 
 
 _PROVIDER_MODELS: dict[str, list[str]] = {
@@ -3005,6 +3004,8 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "zai",
     "gemini",
     "google",
+    "xai",
+    "xai-oauth",
 })
 
 
@@ -3116,8 +3117,6 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
         except Exception:
             access_token = None
         return get_codex_model_ids(access_token=access_token)
-    if normalized == "xai-oauth":
-        return list(_PROVIDER_MODELS.get("xai-oauth", _PROVIDER_MODELS.get("xai", [])))
     if normalized in {"copilot", "copilot-acp"}:
         try:
             live = _fetch_github_models(_resolve_copilot_catalog_api_key())
@@ -3335,7 +3334,10 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
 
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
     if normalized in _MODELS_DEV_PREFERRED:
-        return _merge_with_models_dev(normalized, curated_static)
+        merged = _merge_with_models_dev(normalized, curated_static)
+        if normalized in {"xai", "xai-oauth"}:
+            return _xai_finalize_catalog(merged)
+        return merged
     return curated_static
 
 

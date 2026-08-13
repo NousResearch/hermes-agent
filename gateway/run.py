@@ -28427,6 +28427,29 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                     len(profile_homes),
                     [p[0] if isinstance(p, tuple) else p for p in profile_homes],
                 )
+                # Build per-profile live-adapter map (#83182). Cron delivery
+                # uses this to pick the owning profile's adapter (Telegram
+                # bot token, Matrix client, etc.) instead of the shared
+                # default dict. Keyed by resolved home path so run_one_job
+                # can look up the right map via _get_hermes_home().
+                from hermes_cli.profiles import get_active_profile_name
+
+                _profile_adapters_by_home: Dict[str, Dict[Any, Any]] = {}
+                for _pname, _phome in profile_homes:
+                    _resolved_home = str(Path(_phome).resolve())
+                    _amap = getattr(runner, "_profile_adapters", {}).get(_pname)
+                    if _amap is not None:
+                        _profile_adapters_by_home[_resolved_home] = dict(_amap)
+                    elif _pname == (get_active_profile_name() or "default"):
+                        # Default profile's adapters live on runner.adapters.
+                        if runner.adapters:
+                            _profile_adapters_by_home[_resolved_home] = dict(runner.adapters)
+                if _profile_adapters_by_home:
+                    cron_start_kwargs["profile_adapters_by_home"] = _profile_adapters_by_home
+                    logger.info(
+                        "Cron delivery will use per-profile adapters for %d profile(s)",
+                        len(_profile_adapters_by_home),
+                    )
         except Exception as exc:
             logger.warning(
                 "Could not resolve profile homes for multiplex cron: %s",

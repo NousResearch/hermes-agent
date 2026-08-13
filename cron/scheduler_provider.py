@@ -192,6 +192,7 @@ class InProcessCronScheduler(CronScheduler):
         interval=60,
         can_dispatch=None,
         profile_homes=None,
+        profile_adapters_by_home=None,
     ):
         import logging
         from cron.scheduler import tick as cron_tick
@@ -219,6 +220,7 @@ class InProcessCronScheduler(CronScheduler):
                 loop=loop,
                 interval=interval,
                 can_dispatch=can_dispatch,
+                profile_adapters_by_home=profile_adapters_by_home,
             )
             return
 
@@ -279,6 +281,7 @@ class InProcessCronScheduler(CronScheduler):
         loop=None,
         interval=60,
         can_dispatch=None,
+        profile_adapters_by_home=None,
     ):
         """Tick every served profile's cron store when multiplex_profiles is on.
 
@@ -287,6 +290,11 @@ class InProcessCronScheduler(CronScheduler):
         agent execution to that profile's home — mirroring how
         ``_profile_runtime_scope`` scopes the multiplexed inbound path and
         ``web_server.py`` scopes per-profile cron API calls.
+
+        ``profile_adapters_by_home`` is a mapping of resolved profile home
+        paths to that profile's live adapter dict (multiplex-only). Passed
+        through to ``run_one_job`` so cron delivery uses the owning profile's
+        adapter instead of the shared default dict (#83182).
         """
         import logging
         from cron.scheduler import tick as cron_tick
@@ -339,6 +347,7 @@ class InProcessCronScheduler(CronScheduler):
                                     loop=loop,
                                     sync=False,
                                     can_dispatch=can_dispatch,
+                                    profile_adapters_by_home=profile_adapters_by_home,
                                 )
                         finally:
                             reset_hermes_home_override(home_token)

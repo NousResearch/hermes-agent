@@ -34,7 +34,7 @@ except ImportError:
     except ImportError:
         msvcrt = None
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 # Add parent directory to path for imports BEFORE repo-level imports.
 # Without this, standalone invocations (e.g. after `hermes update` reloads
@@ -1649,7 +1649,10 @@ def _is_channel_dm_topic(
     return is_channel
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+def _deliver_result(
+    job: dict, content: str, adapters=None, loop=None,
+    profile_adapters: Optional[Dict] = None,
+) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
@@ -1657,6 +1660,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     use the live adapter first — this supports E2EE rooms (e.g. Matrix) where
     the standalone HTTP path cannot encrypt.  Falls back to standalone send if
     the adapter path fails or is unavailable.
+
+    ``profile_adapters`` is the owning profile's live adapter map (multiplex
+    mode). When set, it is preferred over the shared ``adapters`` dict so that
+    secondary-profile cron delivers via that profile's bot token, not the
+    default profile's (#83182).
 
     Returns None on success, or an error string on failure.
     """
@@ -1734,6 +1742,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         logger.error("Job '%s': %s", job["id"], msg)
         return msg
 
+    # Multiplex-aware adapter selection (#83182). When the cron scheduler was
+    # started with per-profile adapter maps (``profile_adapters_by_home``),
+    # prefer the owning profile's live adapters over the shared default dict.
+    # The secret scope (still active through delivery thanks to the Part-1
+    # restructure) ensures load_gateway_config() above already returned the
+    # correct profile's gateway.yaml — using the matching adapter map keeps
+    # bot-token selection in lockstep with the config.
+    delivery_adapters = profile_adapters if profile_adapters is not None else adapters
+
     delivery_errors = []
 
     for target in targets:
@@ -1778,7 +1795,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
         from gateway.delivery import resolve_delivery_transport
 
-        transport = resolve_delivery_transport(platform, config, adapters)
+        transport = resolve_delivery_transport(platform, config, delivery_adapters)
         if transport is not None:
             pconfig = transport.config
             runtime_adapter = transport.adapter
@@ -1999,7 +2016,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
 
-                    router = DeliveryRouter(config, adapters)
+                    router = DeliveryRouter(config, delivery_adapters)
                     route_target = DeliveryTarget(
                         platform=platform,
                         chat_id=str(chat_id),
@@ -4584,6 +4601,7 @@ def _teardown_cron_agent(agent, job_id: str) -> None:
 def run_one_job(
     job: dict, *, adapters=None, loop=None, verbose: bool = False,
     extra_prompt: Optional[str] = None,
+    profile_adapters_by_home: Optional[Dict] = None,
 ) -> bool:
     """Run ONE due job end-to-end: execute → save output → deliver → mark.
 
@@ -4650,115 +4668,145 @@ def run_one_job(
         # below once delivery is done. Defense-in-depth alongside the
         # interpreter-shutdown guard in _deliver_result.
         _deferred_agents: list = []
+        # The secret scope MUST stay installed through _deliver_result.
+        # Resetting it between run_job and delivery breaks multiplex cron:
+        # delivery calls load_gateway_config() → _getenv() which falls back
+        # to os.environ (empty in the multiplex unit) instead of the owning
+        # profile's .env — TELEGRAM_BOT_TOKEN resolves to the wrong bot
+        # (or nothing), and delivery routes to the wrong chat (#83182).
+        # The scope is torn down in the outer finally so BOTH execution and
+        # delivery see the owning profile's secrets.
         try:
-            success, output, final_response, error = run_job(
-                job, defer_agent_teardown=_deferred_agents,
-                extra_prompt=extra_prompt,
-            )
-        except BaseException:
-            # run_job's finally still hands back the agent when it raises; tear
-            # it down here so a failed run never leaks its async resources
-            # (#10200), then re-raise into the outer handler. BaseException
-            # (not just Exception) so a KeyboardInterrupt/SystemExit mid-run
-            # still triggers teardown before propagating.
-            for _deferred_agent in _deferred_agents:
-                _teardown_cron_agent(_deferred_agent, job["id"])
-            raise
+            try:
+                success, output, final_response, error = run_job(
+                    job, defer_agent_teardown=_deferred_agents,
+                    extra_prompt=extra_prompt,
+                )
+            except BaseException:
+                # run_job's finally still hands back the agent when it raises;
+                # tear it down here so a failed run never leaks its async
+                # resources (#10200), then re-raise into the outer handler.
+                # BaseException (not just Exception) so a
+                # KeyboardInterrupt/SystemExit mid-run still triggers teardown
+                # before propagating.
+                for _deferred_agent in _deferred_agents:
+                    _teardown_cron_agent(_deferred_agent, job["id"])
+                raise
+
+            # Everything from here through delivery runs with the agent still
+            # live (deferred teardown) AND the secret scope still installed.
+            # Wrap it ALL in a try/finally so that if any step between
+            # run_job returning and delivery — save_job_output, the [SILENT]
+            # / empty-response computation, or _deliver_result itself —
+            # raises, the deferred agent is still torn down. Otherwise the
+            # outer `except` would swallow the error and leak the agent's
+            # subprocesses/clients (#10200).
+            delivery_error = None
+            blocked_config = False
+            try:
+                output_file = save_job_output(job["id"], output)
+                if verbose:
+                    logger.info("Output saved to: %s", output_file)
+    
+                # If the gateway shutdown killed this job's tool subprocess
+                # mid-flight (#60432), the agent may still have produced a
+                # plausible-looking final_response from the truncated output --
+                # force the failure path so the delivered message is an honest
+                # "this run was interrupted" summary instead of that response.
+                # Peek-only: the flag stays set for the authoritative check
+                # right before mark_job_run below.
+                if success and _is_interrupted(job["id"]):
+                    success = False
+                    error = (
+                        "Interrupted by gateway shutdown before the run finished "
+                        "(tool subprocess was killed mid-flight)."
+                    )
+    
+                # Deliver the final response to the origin/target chat.
+                # If the agent responded with [SILENT], skip delivery (but
+                # output is already saved above).  Failed jobs always deliver.
+                #
+                # Exception: a run blocked by pre-dispatch config validation
+                # (T1-26) alerts exactly ONCE — the silent marker means the
+                # operator was already told on a previous tick, so re-delivering
+                # the same alert every tick would be spam (#73506 alert-once
+                # shape).
+                blocked_config_silent = (
+                    bool(error) and BLOCKED_CONFIG_SILENT_MARKER in str(error)
+                )
+                blocked_config = blocked_config_silent or (
+                    bool(error) and BLOCKED_CONFIG_MARKER in str(error)
+                )
+                if blocked_config and not success:
+                    # Blocked-config alert: bypass the generic failure summarizer
+                    # (whose auth/timeout heuristics would mislabel this as a
+                    # provider runtime failure) — say plainly that config
+                    # validation blocked the run and nothing was spent.
+                    _pf_text = re.sub(
+                        r"\[blocked_config[^\]]*\]\s*", "", str(error)
+                    ).strip()
+                    deliver_content = (
+                        f"⛔ Cron '{job.get('name') or job['id']}' blocked by "
+                        f"configuration validation (no LLM call was made): "
+                        f"{_pf_text} "
+                        "This alert is sent once; the job stays blocked until "
+                        "the configuration is fixed."
+                    )
+                else:
+                    deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+                # Treat whitespace-only final responses the same as empty
+                # responses: do not deliver a blank message, and let the
+                # empty-response guard below mark the run as a soft failure.
+                should_deliver = bool(deliver_content.strip())
+                if blocked_config_silent:
+                    should_deliver = False
+                unresolved_origin = False
+                # Cron silence suppression — see _is_cron_silence_response.  Replaces the
+                # old `SILENT_MARKER in ...upper()` substring check, which both leaked
+                # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
+                # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
+                # #46917).  Keeps the intentional bracketed-prefix / trailing-line
+                # tolerance the cron contract relies on.
+                if should_deliver and success and _is_cron_silence_response(deliver_content):
+                    logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                    should_deliver = False
+    
+                if should_deliver:
+                    unresolved_origin = (
+                        _normalize_deliver_value(job.get("deliver", "local")) == "origin"
+                        and not _resolve_delivery_targets(job)
+                    )
+                    # Resolve the owning profile's live adapter map for
+                    # multiplex delivery (#83182). The cron ticker's
+                    # ``_start_multiplex`` sets the hermes-home override
+                    # per profile before ticking, so _get_hermes_home()
+                    # returns the job-owning profile's resolved path —
+                    # use it to look up the matching adapter map.
+                    _profile_adapters = None
+                    if profile_adapters_by_home:
+                        _home_key = str(_get_hermes_home().resolve())
+                        _profile_adapters = profile_adapters_by_home.get(_home_key)
+                    try:
+                        delivery_error = _deliver_result(
+                            job, deliver_content,
+                            adapters=adapters, loop=loop,
+                            profile_adapters=_profile_adapters,
+                        )
+                    except Exception as de:
+                        delivery_error = str(de)
+                        logger.error("Delivery failed for job %s: %s", job["id"], de)
+            finally:
+                # Tear down the deferred agent(s) now that save + delivery have
+                # run (or raised). Must happen on every path so cron agents
+                # never leak their subprocesses/clients (#10200).
+                for _deferred_agent in _deferred_agents:
+                    _teardown_cron_agent(_deferred_agent, job["id"])
         finally:
+            # Tear down the secret scope last — AFTER both run_job AND
+            # _deliver_result complete. This is the fix for #83182: delivery
+            # must see the owning profile's secrets (TELEGRAM_BOT_TOKEN etc.)
+            # so multiplex cron delivers via the correct bot.
             reset_secret_scope(_scope_token)
-
-        # Everything from here through delivery runs with the agent still live
-        # (deferred teardown). Wrap it ALL in a try/finally so that if any step
-        # between run_job returning and delivery — save_job_output, the [SILENT]
-        # / empty-response computation, or _deliver_result itself — raises, the
-        # deferred agent is still torn down. Otherwise the outer `except` would
-        # swallow the error and leak the agent's subprocesses/clients (#10200).
-        delivery_error = None
-        blocked_config = False
-        try:
-            output_file = save_job_output(job["id"], output)
-            if verbose:
-                logger.info("Output saved to: %s", output_file)
-
-            # If the gateway shutdown killed this job's tool subprocess
-            # mid-flight (#60432), the agent may still have produced a
-            # plausible-looking final_response from the truncated output --
-            # force the failure path so the delivered message is an honest
-            # "this run was interrupted" summary instead of that response.
-            # Peek-only: the flag stays set for the authoritative check
-            # right before mark_job_run below.
-            if success and _is_interrupted(job["id"]):
-                success = False
-                error = (
-                    "Interrupted by gateway shutdown before the run finished "
-                    "(tool subprocess was killed mid-flight)."
-                )
-
-            # Deliver the final response to the origin/target chat.
-            # If the agent responded with [SILENT], skip delivery (but
-            # output is already saved above).  Failed jobs always deliver.
-            #
-            # Exception: a run blocked by pre-dispatch config validation
-            # (T1-26) alerts exactly ONCE — the silent marker means the
-            # operator was already told on a previous tick, so re-delivering
-            # the same alert every tick would be spam (#73506 alert-once
-            # shape).
-            blocked_config_silent = (
-                bool(error) and BLOCKED_CONFIG_SILENT_MARKER in str(error)
-            )
-            blocked_config = blocked_config_silent or (
-                bool(error) and BLOCKED_CONFIG_MARKER in str(error)
-            )
-            if blocked_config and not success:
-                # Blocked-config alert: bypass the generic failure summarizer
-                # (whose auth/timeout heuristics would mislabel this as a
-                # provider runtime failure) — say plainly that config
-                # validation blocked the run and nothing was spent.
-                _pf_text = re.sub(
-                    r"\[blocked_config[^\]]*\]\s*", "", str(error)
-                ).strip()
-                deliver_content = (
-                    f"⛔ Cron '{job.get('name') or job['id']}' blocked by "
-                    f"configuration validation (no LLM call was made): "
-                    f"{_pf_text} "
-                    "This alert is sent once; the job stays blocked until "
-                    "the configuration is fixed."
-                )
-            else:
-                deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
-            # Treat whitespace-only final responses the same as empty
-            # responses: do not deliver a blank message, and let the
-            # empty-response guard below mark the run as a soft failure.
-            should_deliver = bool(deliver_content.strip())
-            if blocked_config_silent:
-                should_deliver = False
-            unresolved_origin = False
-            # Cron silence suppression — see _is_cron_silence_response.  Replaces the
-            # old `SILENT_MARKER in ...upper()` substring check, which both leaked
-            # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
-            # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
-            # #46917).  Keeps the intentional bracketed-prefix / trailing-line
-            # tolerance the cron contract relies on.
-            if should_deliver and success and _is_cron_silence_response(deliver_content):
-                logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-                should_deliver = False
-
-            if should_deliver:
-                unresolved_origin = (
-                    _normalize_deliver_value(job.get("deliver", "local")) == "origin"
-                    and not _resolve_delivery_targets(job)
-                )
-                try:
-                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
-                except Exception as de:
-                    delivery_error = str(de)
-                    logger.error("Delivery failed for job %s: %s", job["id"], de)
-        finally:
-            # Tear down the deferred agent(s) now that save + delivery have run
-            # (or raised). Must happen on every path so cron agents never leak
-            # their subprocesses/clients (#10200).
-            for _deferred_agent in _deferred_agents:
-                _teardown_cron_agent(_deferred_agent, job["id"])
 
         # Treat empty final_response as a soft failure so last_status
         # is not "ok" — the agent ran but produced nothing useful.
@@ -4895,19 +4943,24 @@ def tick(
     sync: bool = True,
     *,
     can_dispatch=None,
+    profile_adapters_by_home=None,
 ):
     """
     Check and run all due jobs.
-    
+
     Uses a file lock so only one tick runs at a time, even if the gateway's
     in-process ticker and a standalone daemon or manual tick overlap.
-    
+
     Args:
         verbose: Whether to print status messages
         adapters: Optional dict mapping Platform → live adapter (from gateway)
         loop: Optional asyncio event loop (from gateway) for live adapter sends
         can_dispatch: Optional synchronous gate; false leaves due jobs untouched
             for the next allowed tick
+        profile_adapters_by_home: Optional mapping of resolved profile home
+            paths to that profile's live adapter dict (multiplex mode). Used
+            by ``run_one_job`` to select the owning profile's adapter map
+            instead of the shared default (#83182).
 
     Returns:
         Number of jobs executed (0 if another tick is already running)
@@ -5006,7 +5059,10 @@ def tick(
             module-level ``run_one_job`` so ``tick`` and external providers
             (Chronos ``fire_due``) use the identical execute→save→deliver→mark
             body."""
-            return run_one_job(job, adapters=adapters, loop=loop, verbose=verbose)
+            return run_one_job(
+                job, adapters=adapters, loop=loop, verbose=verbose,
+                profile_adapters_by_home=profile_adapters_by_home,
+            )
 
         # Partition due jobs: those with a per-job workdir mutate
         # os.environ["TERMINAL_CWD"] inside run_job, which is process-global, so

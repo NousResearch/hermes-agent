@@ -196,7 +196,7 @@ class TestMetadataProbeThreadsProviderCA:
 
         captured = {}
 
-        def fake_get(url, headers=None, timeout=None, verify=None):
+        def fake_get(url, headers=None, timeout=None, verify=None, **kwargs):
             captured["verify"] = verify
             resp = MagicMock()
             resp.raise_for_status.return_value = None
@@ -218,7 +218,7 @@ class TestMetadataProbeThreadsProviderCA:
 
         captured = {}
 
-        def fake_get(url, headers=None, timeout=None, verify=None):
+        def fake_get(url, headers=None, timeout=None, verify=None, **kwargs):
             captured["verify"] = verify
             resp = MagicMock()
             resp.raise_for_status.return_value = None

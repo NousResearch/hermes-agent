@@ -1799,6 +1799,21 @@ export interface Translations {
       addedTip: string
       connectFailed: (server: string) => string
     }
+    skillSuggestions: {
+      label: (skill: string) => string
+      tip: (skill: string) => string
+      done: (skill: string) => string
+      doneTip: string
+    }
+    repairSuggestions: {
+      label: (server: string) => string
+      tip: (server: string) => string
+      working: (server: string) => string
+      workingTip: string
+      done: (server: string) => string
+      doneTip: string
+      failed: (server: string) => string
+    }
   }
 
   statusStack: {

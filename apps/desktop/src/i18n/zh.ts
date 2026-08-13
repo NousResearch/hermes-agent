@@ -2332,6 +2332,21 @@ export const zh: Translations = {
       addedTip: '已连接 — 其工具已在此对话中可用',
       connectFailed: server => `无法连接 ${server}`
     },
+    skillSuggestions: {
+      label: skill => `使用技能: ${skill}`,
+      tip: skill => `你提到了“${skill}” — 点击以该技能开头`,
+      done: skill => `已添加 /${skill}`,
+      doneTip: '发送时将加载该技能'
+    },
+    repairSuggestions: {
+      label: server => `重新连接 ${server}`,
+      tip: server => `${server} 调用刚因连接错误失败`,
+      working: server => `正在重新连接 ${server}…`,
+      workingTip: '点击取消',
+      done: server => `已重新连接 ${server}`,
+      doneTip: '新凭据已在此对话中生效',
+      failed: server => `无法重新连接 ${server}`
+    },
     snippets: {
       codeReview: {
         label: '代码审查',

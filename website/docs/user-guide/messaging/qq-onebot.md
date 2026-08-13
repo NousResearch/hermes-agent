@@ -56,7 +56,7 @@ Like other platforms, inbound users must be authorized before they can talk to t
 | `ONEBOT_ALLOW_ALL_USERS` | `true` allows anyone (dev only) |
 | `GATEWAY_ALLOW_ALL_USERS` | Global allow-all for every platform |
 
-Unauthorized users in DMs receive a pairing code; in groups they are silently ignored.
+Non-admin users are silently rejected in DMs (no pairing flow); in groups, unauthorized senders are ignored.
 
 ## Group mentions
 

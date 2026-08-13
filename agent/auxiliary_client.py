@@ -2943,7 +2943,6 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
             "auxiliary.free_only.",
             or_model,
         )
-        _mark_provider_unhealthy("openrouter", ttl=60)
         return None, None
     if not _is_free_model(or_model):
         _warn_paid_lane_once(or_model)
@@ -2969,8 +2968,15 @@ def _try_openrouter(explicit_api_key: str = None, model: str = None) -> Tuple[Op
                    default_headers=build_or_headers()), or_model
 
 
-def _describe_openrouter_unavailable() -> str:
-    """Return a more precise OpenRouter auth failure reason for logs."""
+def _describe_openrouter_unavailable(model: str = None) -> str:
+    """Return the policy or credential reason OpenRouter was unavailable."""
+    free_only, cfg_model = _aux_openrouter_settings()
+    or_model = model or cfg_model
+    if free_only and not _is_free_model(or_model):
+        return (
+            f"auxiliary.free_only rejected non-free model {or_model!r}; "
+            "the request was skipped before provider availability checks"
+        )
     pool_present, entry = _select_pool_entry("openrouter")
     if pool_present:
         if entry is None:
@@ -6489,11 +6495,14 @@ def resolve_provider_client(
 
     # ── OpenRouter ───────────────────────────────────────────
     if provider == "openrouter":
-        client, default = _try_openrouter(explicit_api_key=explicit_api_key)
+        client, default = _try_openrouter(
+            explicit_api_key=explicit_api_key,
+            model=model,
+        )
         if client is None:
             logger.warning(
                 "resolve_provider_client: openrouter requested but %s",
-                _describe_openrouter_unavailable(),
+                _describe_openrouter_unavailable(model=model),
             )
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)

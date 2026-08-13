@@ -6483,6 +6483,17 @@ def resolve_provider_client(
             custom_key_env = (custom_entry.get("key_env") or custom_entry.get("api_key_env") or "").strip()
             if not custom_key and custom_key_env:
                 custom_key = _scoped_key_env(custom_key_env)
+            # Auxiliary tasks resolve named custom providers here rather than
+            # through _resolve_named_custom_runtime, so key_cmd has to be
+            # honoured on both paths at matching precedence: otherwise the main
+            # agent turn works while every auxiliary call (title generation,
+            # compression, vision, embedding) 401s on the placeholder below.
+            custom_key_cmd = str(custom_entry.get("key_cmd", "") or "").strip()
+            if custom_key_cmd:
+                from agent.command_token_source import build_command_token_provider
+                custom_key = build_command_token_provider(
+                    custom_key_cmd, custom_entry.get("name") or provider
+                ) or custom_key
             custom_key = custom_key or "no-key-required"
             if custom_key == "no-key-required":
                 logger.warning(

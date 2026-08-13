@@ -3742,6 +3742,37 @@ def run_conversation(
                         )
                         compression_attempts = 0
 
+                    # ``compression_attempts`` bounds one *continuous pressure
+                    # episode*, not the lifetime of a tool-heavy user turn. A
+                    # successful provider call whose real prompt usage is back
+                    # below the compression threshold proves the previous
+                    # episode converged. Re-arm the budget and clear its
+                    # insufficient-progress blocker so later tool output in the
+                    # same turn can trigger a new episode.
+                    _compression_threshold = int(
+                        getattr(agent.context_compressor, "threshold_tokens", 0)
+                        or 0
+                    )
+                    if (
+                        (
+                            compression_attempts > 0
+                            or _preflight_compression_blocked
+                            or _last_preflight_pressure is not None
+                        )
+                        and prompt_tokens > 0
+                        and _compression_threshold > 0
+                        and prompt_tokens < _compression_threshold
+                    ):
+                        logger.info(
+                            "Compression pressure cleared at %s < %s tokens; "
+                            "re-arming same-turn compression budget",
+                            f"{prompt_tokens:,}",
+                            f"{_compression_threshold:,}",
+                        )
+                        compression_attempts = 0
+                        _preflight_compression_blocked = False
+                        _last_preflight_pressure = None
+
                     # Stash this response's canonical usage so the post-turn
                     # on_turn_complete() observation hook can forward it (the
                     # same dict shape passed to update_from_response). A turn

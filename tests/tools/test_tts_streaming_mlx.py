@@ -51,21 +51,27 @@ class TestQwen3TTSMLXStreamer:
     def test_stream_yields_frames_in_order(self):
         frames = [b"\x00\x01" * 100, b"\x02\x03" * 200]
         proc = FakePopen(frames)
-        with patch("subprocess.Popen", return_value=proc):
+        with patch("subprocess.Popen", return_value=proc), patch.object(
+            Qwen3TTSMLXStreamer, "available", return_value=True
+        ):
             s = Qwen3TTSMLXStreamer({"provider": "qwen3tts-mlx"}, {})
             out = list(s.stream("第一句。\n第二句。"))
         assert out == frames
 
     def test_stream_raises_on_worker_failure(self):
         proc = FakePopen([], rc=1)
-        with patch("subprocess.Popen", return_value=proc):
+        with patch("subprocess.Popen", return_value=proc), patch.object(
+            Qwen3TTSMLXStreamer, "available", return_value=True
+        ):
             s = Qwen3TTSMLXStreamer({"provider": "qwen3tts-mlx"}, {})
             with pytest.raises(RuntimeError, match="worker exited 1"):
                 list(s.stream("hi"))
 
     def test_stream_uses_section_model_and_ref(self):
         proc = FakePopen([b"\x00\x01" * 10])
-        with patch("subprocess.Popen", return_value=proc) as mock_popen:
+        with patch("subprocess.Popen", return_value=proc) as mock_popen, patch.object(
+            Qwen3TTSMLXStreamer, "available", return_value=True
+        ):
             s = Qwen3TTSMLXStreamer(
                 {"provider": "qwen3tts-mlx"},
                 {"model_dir": "/models/m", "ref_audio": "/ref.wav"},

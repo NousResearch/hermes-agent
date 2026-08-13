@@ -7690,6 +7690,40 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         else:
             self._console_print(f"[dim]{_escape(msg)}[/dim]")
 
+    def _persist_model_switch_to_session(self, result) -> None:
+        """Persist a session-scoped /model switch to the session DB row.
+
+        Writes the model column plus the runtime route so ``--resume``
+        (CLI, reads ``gateway_runtime``) and ``session.resume`` (TUI/desktop,
+        reads top-level ``model_config`` keys via
+        ``_stored_session_runtime_overrides``) both restore the switched
+        provider instead of recombining the model with the ambient default
+        (#79536). Mirrors the gateway's ``update_session_model()`` call.
+        getattr: tests drive the switch paths with ``object.__new__`` stubs.
+        """
+        db = getattr(self, "_session_db", None)
+        sid = getattr(self, "session_id", None)
+        if not db or not sid:
+            return
+        route = {
+            k: v
+            for k, v in {
+                "provider": result.target_provider,
+                "base_url": result.base_url,
+                "api_mode": result.api_mode,
+            }.items()
+            if v
+        }
+        try:
+            db.update_session_model(sid, result.new_model)
+            # Both shapes: nested for the CLI reader, top-level for the
+            # TUI gateway's resume path.
+            db.patch_session_model_config(sid, {"gateway_runtime": route, **route})
+        except Exception:
+            logger.debug(
+                "Failed to persist model switch to session DB", exc_info=True
+            )
+
     def _restore_session_model(self, session_meta: dict, *, quiet: bool = False) -> None:
         """Restore model/provider from the session DB row on resume.
 
@@ -7720,20 +7754,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # An explicit -m / --model on the command line overrides resume.
         if getattr(self, "_explicit_model_override", False):
             return
-        # Stored provider/endpoint from model_config.gateway_runtime
-        # (written by gateway turns and CLI /model switches alike).
-        stored_provider = stored_base_url = stored_api_mode = None
-        try:
-            import json as _json
-            raw_config = (session_meta or {}).get("model_config")
-            config = _json.loads(raw_config) if isinstance(raw_config, str) and raw_config else (raw_config if isinstance(raw_config, dict) else {})
-            runtime = config.get("gateway_runtime") or {} if isinstance(config, dict) else {}
-            if isinstance(runtime, dict):
-                stored_provider = runtime.get("provider") or None
-                stored_base_url = runtime.get("base_url") or None
-                stored_api_mode = runtime.get("api_mode") or None
-        except Exception:
-            pass
+        # Stored provider/endpoint via the canonical row-level reader
+        # (prefers model_config.gateway_runtime, falls back to the TUI
+        # gateway's top-level keys).
+        from hermes_state import SessionDB as _SessionDB
+        _stored_runtime = _SessionDB.session_gateway_runtime(session_meta)
+        stored_provider = _stored_runtime.get("provider") or None
+        stored_base_url = _stored_runtime.get("base_url") or None
+        stored_api_mode = _stored_runtime.get("api_mode") or None
         model_changed = stored_model != self.model
         provider_changed = bool(stored_provider) and stored_provider != self.provider
         if not model_changed and not provider_changed:
@@ -7747,6 +7775,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             if stored_api_mode:
                 self.api_mode = stored_api_mode
         if provider_changed:
+            # Stale launch-time explicit overrides belong to the AMBIENT
+            # provider; carrying them into the restored provider's
+            # resolution poisons _ensure_runtime_credentials on startup
+            # resume (same leak _apply_model_switch_result guards against
+            # by overwriting _explicit_* on every switch).
+            self._explicit_api_key = None
+            self._explicit_base_url = stored_base_url
             # Re-resolve credentials for the restored provider. api_key is
             # never persisted to the session DB (by design) — the normal
             # runtime provider resolution owns credentials.
@@ -9663,35 +9698,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         else:
             _cprint("    (session only — add --global to persist)")
 
-        # Persist the model change to the session DB row so --resume
-        # restores the correct model instead of falling back to the
-        # config default. Skipped for --global (config.yaml is the source
-        # of truth). Mirrors the gateway's update_session_model() call
-        # after a /model switch. The provider/endpoint go into
-        # model_config.gateway_runtime — same key the gateway writes and
-        # _restore_session_model reads; persisting only the model name
-        # recombines it with the ambient provider on resume (#79536).
-        # getattr: tests build bare stubs via object.__new__ without
-        # __init__ attributes.
-        _picker_session_db = getattr(self, "_session_db", None)
-        _picker_session_id = getattr(self, "session_id", None)
-        if not persist_global and _picker_session_db and _picker_session_id:
-            try:
-                _picker_session_db.update_session_model(
-                    _picker_session_id, result.new_model
-                )
-                _picker_session_db.patch_session_model_config(
-                    _picker_session_id,
-                    {"gateway_runtime": {k: v for k, v in {
-                        "provider": result.target_provider,
-                        "base_url": result.base_url,
-                        "api_mode": result.api_mode,
-                    }.items() if v}},
-                )
-            except Exception:
-                logger.debug(
-                    "Failed to persist model switch to session DB", exc_info=True
-                )
+        # Persist session-scoped switches so --resume / session.resume
+        # restore them; --global switches live in config.yaml instead.
+        if not persist_global:
+            HermesCLI._persist_model_switch_to_session(self, result)
 
     def _handle_model_picker_selection(self, persist_global: bool = False) -> None:
         state = self._model_picker_state
@@ -10044,36 +10054,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         else:
             _cprint("    (session only — add --global to persist)")
 
-        # Persist the model change to the session DB row so --resume
-        # restores the correct model instead of falling back to the
-        # config default. Skipped for --global (config.yaml is the source
-        # of truth) and --once (ephemeral, restored after one turn).
-        # Mirrors the gateway's update_session_model() call after a
-        # /model switch. The provider/endpoint go into
-        # model_config.gateway_runtime — same key the gateway writes and
-        # _restore_session_model reads; persisting only the model name
-        # recombines it with the ambient provider on resume (#79536).
-        # getattr: tests build bare stubs via object.__new__ without
-        # __init__ attributes.
-        _switch_session_db = getattr(self, "_session_db", None)
-        _switch_session_id = getattr(self, "session_id", None)
-        if not persist_global and not one_turn and _switch_session_db and _switch_session_id:
-            try:
-                _switch_session_db.update_session_model(
-                    _switch_session_id, result.new_model
-                )
-                _switch_session_db.patch_session_model_config(
-                    _switch_session_id,
-                    {"gateway_runtime": {k: v for k, v in {
-                        "provider": result.target_provider,
-                        "base_url": result.base_url,
-                        "api_mode": result.api_mode,
-                    }.items() if v}},
-                )
-            except Exception:
-                logger.debug(
-                    "Failed to persist model switch to session DB", exc_info=True
-                )
+        # Persist session-scoped switches so --resume / session.resume
+        # restore them; --global lives in config.yaml, --once is ephemeral
+        # (restored after one turn).
+        if not persist_global and not one_turn:
+            HermesCLI._persist_model_switch_to_session(self, result)
 
     def _handle_codex_runtime(self, cmd_original: str) -> None:
         """Handle /codex-runtime — toggle the codex app-server runtime opt-in.

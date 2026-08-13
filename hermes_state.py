@@ -6109,6 +6109,39 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return False
         return bool(raw.get("yolo_mode"))
 
+    @staticmethod
+    def session_gateway_runtime(session_meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Read the persisted runtime route off a session row dict.
+
+        Accepts the dict returned by ``get_session`` (``model_config`` is a
+        JSON string) or an already-parsed dict. Prefers the nested
+        ``gateway_runtime`` key (written by the gateway's
+        ``_sync_session_model_from_agent`` and the CLI ``/model`` persist),
+        falling back to the top-level ``provider``/``base_url``/``api_mode``
+        keys the TUI gateway's ``_runtime_model_config`` writes. Returns an
+        empty dict on any parse failure — resume falls back to ambient
+        config resolution.
+        """
+        raw = (session_meta or {}).get("model_config")
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except Exception:
+                return {}
+        if not isinstance(raw, dict):
+            return {}
+        runtime = raw.get("gateway_runtime")
+        if isinstance(runtime, dict) and runtime.get("provider"):
+            return dict(runtime)
+        top_level = {
+            key: raw.get(key)
+            for key in ("provider", "base_url", "api_mode")
+            if raw.get(key)
+        }
+        if top_level:
+            return top_level
+        return dict(runtime) if isinstance(runtime, dict) else {}
+
     def update_session_billing_route(
         self,
         session_id: str,

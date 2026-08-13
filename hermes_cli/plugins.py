@@ -260,10 +260,13 @@ VALID_HOOKS: Set[str] = {
     #
     #   gateway_platform_event: inbound platform event as a normalized envelope.
     #       Kwargs: platform, event_type, payload (event_type-specific dict).
-    #       Telegram reactions fire today. Other event types and their hook
-    #       names land here only together with real fire-sites and payload
-    #       contracts; no inert VALID_HOOKS surface is registered ahead of
-    #       implementation.
+    #       Fired today: Telegram "reaction" + "message_edited"; Discord
+    #       "message_edited", "message_deleted", "thread_created",
+    #       "thread_renamed". Each event type carries its own event-local
+    #       additive payload contract (see hooks.md). Other event types and
+    #       hook names land here only together with real fire-sites and
+    #       payload contracts; no inert VALID_HOOKS surface is registered
+    #       ahead of implementation.
     "gateway_platform_event",
     # Slash-command dispatch observer (#64204, observer-first per #64182
     # ground rule 3). Fired when a recognized slash command is about to be
@@ -1085,6 +1088,8 @@ class PluginContext:
         self._llm: Any = None
         self._subagent_lifecycle: Any = None
         self._state: PluginState | None = None
+        # Lazy-built capability-gated platform action facade (#64176).
+        self._platform_actions: Any = None
 
     @property
     def plugin_id(self) -> str:
@@ -1197,6 +1202,23 @@ class PluginContext:
         if self._state is None:
             self._state = PluginState(self.plugin_id, self.manifest.skill_namespace)
         return self._state
+
+    @property
+    def platform_actions(self):
+        """Capability-gated platform action facade (#64176, v1).
+
+        Minimal verb set (``add_reaction``, ``set_thread_title``) routed
+        through the live gateway adapter registry. Every call re-checks the
+        ``gateway.platform_actions`` capability (legacy gate:
+        ``plugins.entries.<id>.allow_platform_actions``, default OFF) and
+        returns a structured ``{"ok": bool, ...}`` dict — verbs never raise
+        into hook dispatch. No adapter handles or raw SDK objects are exposed.
+        """
+        if self._platform_actions is None:
+            from hermes_cli.platform_actions import PlatformActions
+
+            self._platform_actions = PlatformActions(self.plugin_id)
+        return self._platform_actions
 
     def _track(
         self,

@@ -3765,23 +3765,63 @@ class TelegramAdapter(BasePlatformAdapter):
         # profile-scoped authorization chain runs before plugin dispatch. No
         # callback means no trusted auth boundary, so fail closed.
         try:
-            source = self._source_from_reaction_for_auth(update)
+            source = self._source_for_platform_event_auth(update)
             await handler(event, source)
         except Exception:
             logger.debug("[%s] gateway_platform_event dispatch error", self.name, exc_info=True)
             return
 
+    def _source_for_platform_event_auth(self, update):
+        """Route a supported update to its event-specific auth-source extractor.
+
+        Every ``gateway_platform_event`` type needs its own identity
+        extraction (a reaction carries the reactor; an edit carries the
+        editor). Raises ``ValueError`` for updates without a wired extractor
+        so the post-auth boundary fails closed rather than authorizing an
+        incomplete source.
+        """
+        if getattr(update, "message_reaction", None) is not None:
+            return self._source_from_reaction_for_auth(update)
+        edited = getattr(update, "edited_message", None)
+        if edited is not None:
+            source = self._source_from_message_for_auth(edited)
+            # _source_from_message_for_auth tolerates missing identities for
+            # its pairing-flow callers; the platform-event boundary must not.
+            if not source.user_id or not source.chat_id:
+                raise ValueError(
+                    "gateway_platform_event message_edited requires editor "
+                    "and chat identities"
+                )
+            return source
+        raise ValueError(
+            "gateway_platform_event source extraction has no extractor for "
+            "this update type"
+        )
+
     def _normalize_platform_event(self, update) -> Optional[Dict[str, Any]]:
         """Map an inbound PTB update to a normalized ``gateway_platform_event``
         envelope ``{platform, event_type, payload}``, or ``None`` if unsupported.
+
+        Each supported event type has its own event-local, additive payload
+        contract (documented in hooks.md). Raw SDK objects never leave this
+        boundary. Update types without a wired contract (forward, chat-member)
+        return ``None`` unless and until they gain a concrete contract and
+        current fire-site consumer.
+        """
+        if getattr(update, "message_reaction", None) is not None:
+            return self._normalize_reaction_event(update)
+        if getattr(update, "edited_message", None) is not None:
+            return self._normalize_message_edited_event(update)
+        return None
+
+    def _normalize_reaction_event(self, update) -> Optional[Dict[str, Any]]:
+        """Normalize a ``message_reaction`` update (event_type ``reaction``).
 
         Reaction (the motivating use case: a plugin that re-renders or reacts to
         a message when the user reacts to it) is normalized to the fields a
         plugin consumes: ``emojis`` (standard unicode), ``custom_emoji_ids``
         (custom reaction emojis — PTB exposes ``custom_emoji_id`` with no
-        ``.emoji``), ``chat_id``, ``message_id``, ``thread_id``. Other update
-        types (forward, edit, chat-member) return ``None`` unless and until
-        they gain a concrete contract and current fire-site consumer.
+        ``.emoji``), ``chat_id``, ``message_id``, ``thread_id``.
         """
         mr = getattr(update, "message_reaction", None)
         if mr is None:
@@ -3822,6 +3862,58 @@ class TelegramAdapter(BasePlatformAdapter):
                 # Reactions don't carry thread_id; do not guess it or expose an
                 # adapter object as a routing escape hatch.
                 "thread_id": None,
+            },
+        }
+
+    def _normalize_message_edited_event(self, update) -> Optional[Dict[str, Any]]:
+        """Normalize an ``edited_message`` update (event_type ``message_edited``).
+
+        Payload contract (v1, additive): ``chat_id``, ``message_id``,
+        ``thread_id`` (forum topic when present), ``text`` (edited text or
+        caption, bounded), ``edited_at`` (ISO 8601 UTC or None). No raw PTB
+        ``Message`` object leaves this boundary. Malformed identities return
+        ``None`` so the fire-site drops the event.
+        """
+        message = getattr(update, "edited_message", None)
+        if message is None:
+            return None
+        chat = getattr(message, "chat", None)
+        chat_id = getattr(chat, "id", None) if chat is not None else None
+        message_id = getattr(message, "message_id", None)
+        if (
+            isinstance(chat_id, bool)
+            or not isinstance(chat_id, (str, int))
+            or isinstance(message_id, bool)
+            or not isinstance(message_id, (str, int))
+        ):
+            return None
+        text = getattr(message, "text", None) or getattr(message, "caption", None)
+        if not isinstance(text, str):
+            text = None
+        thread_id = None
+        thread_id_raw = getattr(message, "message_thread_id", None)
+        if (
+            not isinstance(thread_id_raw, bool)
+            and isinstance(thread_id_raw, (str, int))
+            and bool(getattr(message, "is_topic_message", False))
+        ):
+            thread_id = str(thread_id_raw)[:128]
+        edited_at = None
+        edit_date = getattr(message, "edit_date", None)
+        try:
+            if edit_date is not None and hasattr(edit_date, "isoformat"):
+                edited_at = str(edit_date.isoformat())[:64]
+        except Exception:
+            edited_at = None
+        return {
+            "platform": "telegram",
+            "event_type": "message_edited",
+            "payload": {
+                "chat_id": str(chat_id)[:128],
+                "message_id": str(message_id)[:128],
+                "thread_id": thread_id,
+                "text": text[:8192] if text is not None else None,
+                "edited_at": edited_at,
             },
         }
 

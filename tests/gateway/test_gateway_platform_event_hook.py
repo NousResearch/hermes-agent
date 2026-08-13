@@ -296,9 +296,138 @@ class TestNormalizePlatformEvent:
         """Unsupported update types return None until a concrete contract exists."""
         a = _adapter()
         update = MagicMock()
-        update.message_reaction = None  # e.g. an edited_message or chat_member update
+        update.message_reaction = None  # e.g. a chat_member update
+        update.edited_message = None
 
         assert a._normalize_platform_event(update) is None
+
+
+# ---------------------------------------------------------------------------
+# TelegramAdapter message_edited normalization (#64176 remaining scope)
+# ---------------------------------------------------------------------------
+
+def _edited_update(
+    *,
+    chat_id: object = 123,
+    message_id: object = 456,
+    text: object = "fixed typo",
+    user_id: object = 777,
+    chat_type: str = "private",
+):
+    """A PTB Update stand-in carrying an edited_message."""
+    update = MagicMock()
+    update.message_reaction = None
+    m = MagicMock()
+    m.chat.id = chat_id
+    m.chat.type = chat_type
+    m.chat.is_forum = False
+    m.message_id = message_id
+    m.text = text
+    m.caption = None
+    m.message_thread_id = None
+    m.is_topic_message = False
+    m.edit_date = None
+    m.from_user.id = user_id
+    m.from_user.username = "editor"
+    m.from_user.full_name = "Editor"
+    update.edited_message = m
+    return update
+
+
+class TestNormalizeMessageEdited:
+    def test_edited_message_normalized(self):
+        a = _adapter()
+        update = _edited_update(chat_id=123, message_id=456, text="fixed typo")
+
+        assert a._normalize_platform_event(update) == {
+            "platform": "telegram",
+            "event_type": "message_edited",
+            "payload": {
+                "chat_id": "123",
+                "message_id": "456",
+                "thread_id": None,
+                "text": "fixed typo",
+                "edited_at": None,
+            },
+        }
+
+    def test_caption_falls_back_when_no_text(self):
+        a = _adapter()
+        update = _edited_update(text=None)
+        update.edited_message.caption = "new caption"
+
+        event = a._normalize_platform_event(update)
+        assert event["payload"]["text"] == "new caption"
+
+    def test_forum_topic_thread_id_included(self):
+        a = _adapter()
+        update = _edited_update(chat_type="supergroup")
+        update.edited_message.message_thread_id = 42
+        update.edited_message.is_topic_message = True
+        update.edited_message.chat.is_forum = True
+
+        event = a._normalize_platform_event(update)
+        assert event["payload"]["thread_id"] == "42"
+
+    def test_edit_date_serialized_iso(self):
+        import datetime as _dt
+
+        a = _adapter()
+        update = _edited_update()
+        update.edited_message.edit_date = _dt.datetime(
+            2026, 8, 12, 10, 30, tzinfo=_dt.timezone.utc,
+        )
+
+        event = a._normalize_platform_event(update)
+        assert event["payload"]["edited_at"] == "2026-08-12T10:30:00+00:00"
+
+    def test_malformed_identities_return_none(self):
+        a = _adapter()
+        update = _edited_update(chat_id=object())
+        assert a._normalize_platform_event(update) is None
+        update = _edited_update(message_id=None)
+        assert a._normalize_platform_event(update) is None
+
+    def test_text_is_bounded_and_json_safe(self):
+        a = _adapter()
+        update = _edited_update(text="x" * 20000)
+
+        event = a._normalize_platform_event(update)
+        assert len(event["payload"]["text"]) == 8192
+        json.dumps(event)
+
+    def test_edited_event_fires_through_boundary_with_editor_source(self):
+        a = _adapter()
+        seen: list = []
+
+        async def observe(event, source):
+            seen.append((event, source))
+
+        a.set_platform_event_handler(observe)
+        asyncio.run(a._on_platform_update(_edited_update(), context=MagicMock()))
+
+        assert len(seen) == 1
+        event, source = seen[0]
+        assert event["event_type"] == "message_edited"
+        assert source.user_id == "777"
+        assert source.chat_id == "123"
+
+    def test_edited_event_missing_editor_fails_closed(self):
+        """No from_user (and no sender_chat) means no identity to authorize —
+        the boundary must drop the event rather than fire it."""
+        a = _adapter()
+        seen: list = []
+
+        async def observe(event, source):
+            seen.append((event, source))
+
+        a.set_platform_event_handler(observe)
+        update = _edited_update()
+        update.edited_message.from_user = None
+        update.edited_message.sender_chat = None
+
+        asyncio.run(a._on_platform_update(update, context=MagicMock()))
+        assert seen == []
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +527,7 @@ class TestOnPlatformUpdateAuthBoundary:
 
         update = MagicMock()
         update.message_reaction = None  # a future, not-yet-wired event type
+        update.edited_message = None
         # Simulate that future normalization produced an event for it.
         a._normalize_platform_event = lambda u: {  # type: ignore[assignment]
             "platform": "telegram", "event_type": "future", "payload": {},

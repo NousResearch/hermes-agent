@@ -20149,7 +20149,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("goal manager unavailable: %s", exc)
             return None, None
         try:
-            session_entry = await self.async_session_store.get_or_create_session(event.source)
+            # Session lookups on behalf of an internal event must not advance
+            # the user-activity clock that drives idle/daily reset policy
+            # (same class as the wake fix in _handle_message_with_agent).
+            session_entry = await self.async_session_store.get_or_create_session(
+                event.source,
+                touch_activity=not bool(getattr(event, "internal", False)),
+            )
         except Exception as exc:
             logger.debug("goal manager: session lookup failed: %s", exc)
             return None, None
@@ -20170,7 +20176,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("heartbeat manager unavailable: %s", exc)
             return None, None
         try:
-            session_entry = await self.async_session_store.get_or_create_session(event.source)
+            # Same reset-policy contract as _get_goal_manager_for_event:
+            # internal events look up the session without touching activity.
+            session_entry = await self.async_session_store.get_or_create_session(
+                event.source,
+                touch_activity=not bool(getattr(event, "internal", False)),
+            )
         except Exception as exc:
             logger.debug("heartbeat manager: session lookup failed: %s", exc)
             return None, None

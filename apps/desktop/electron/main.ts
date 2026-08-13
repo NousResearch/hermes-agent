@@ -186,7 +186,11 @@ import { createKeepAwake } from './power-save'
 import { FirstRunSetupResetError, runPrimaryBackendStartup } from './primary-backend-startup'
 import { rehomePrimaryConnection } from './primary-connection-rehome'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
-import { fetchPrimaryProfileSessions } from './profile-session-routing'
+import {
+  fetchPrimaryProfileSessions,
+  fetchRemoteProfileSessions,
+  mergeProfileSessionWindow
+} from './profile-session-routing'
 import { createQuickEntryShortcut, quickEntryWindowBounds, sanitizeQuickEntrySettings } from './quick-entry'
 import { type ActiveWork, mergeActiveWork, normalizeActiveWork, quitPromptFor } from './quit-guard'
 import * as remoteLifecycle from './remote-lifecycle'
@@ -11212,9 +11216,7 @@ const rowsOf = data => (Array.isArray(data?.sessions) ? data.sessions : [])
 // A remote profile's session list, read from its remote host and tagged with the
 // desktop-facing profile name (the remote's /api/sessions doesn't know it).
 async function remoteSessionList(profile, searchParams) {
-  const qs = new URLSearchParams(searchParams)
-  qs.delete('profile') // remote serves its own db; no cross-profile read there
-  const data = await fetchJsonForProfile(profile, `/api/sessions?${qs}`)
+  const data = await fetchRemoteProfileSessions(profile, searchParams, fetchJsonForProfile)
 
   for (const s of rowsOf(data)) {
     s.profile = profile
@@ -11286,7 +11288,12 @@ async function mergeRemoteProfileSessions(searchParams, remoteProfiles) {
   const recency = s => s?.[order] ?? s?.started_at ?? 0
   merged.sort((a, b) => recency(b) - recency(a))
 
-  return { ...(base as any), sessions: merged.slice(offset, offset + limit), total, profile_totals: profileTotals }
+  return {
+    ...(base as any),
+    sessions: mergeProfileSessionWindow(merged, offset, limit),
+    total,
+    profile_totals: profileTotals
+  }
 }
 
 ipcMain.handle('hermes:api', async (_event, request) => {

@@ -2927,6 +2927,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # hermes_state.get_last_init_error() for slash-command error strings.
             logger.warning("SQLite session store not available: %s", e)
 
+        # Optional local Becky loop bridge.  The listener is started only after
+        # the gateway is running and is always stopped before adapter teardown.
+        # Keeping the handle on the runner makes restart/stop idempotent.
+        self._becky_loops_bridge = None
+
         # Opportunistic state.db maintenance: prune ended sessions older
         # than sessions.retention_days + optional VACUUM. Tracks last-run
         # in state_meta so it only actually executes once per
@@ -2993,6 +2998,39 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Set after a wake (re-arm cooldown, 0.F) so we don't immediately re-go
         # dormant before the drained backlog has a chance to update the clock.
         self._scale_to_zero_cooldown_until: float = 0.0
+
+    async def _start_becky_loops_bridge(self) -> None:
+        """Start the opt-in loopback bridge over the gateway's read-only DB."""
+        try:
+            from gateway.becky_loops import (
+                load_becky_loops_config,
+                start_becky_loops_bridge,
+            )
+
+            config = load_becky_loops_config()
+            db = getattr(self._session_db, "_db", None)
+            if config is None or db is None:
+                return
+            self._becky_loops_bridge = await start_becky_loops_bridge(
+                config=config,
+                db=db,
+            )
+        except Exception:
+            # The bridge is optional; never prevent Telegram or other adapters
+            # from starting when its local listener is unavailable.
+            logger.error("Becky loop bridge startup failed", exc_info=True)
+
+    async def _stop_becky_loops_bridge(self) -> None:
+        """Stop the optional bridge before closing Hermes session state."""
+        bridge, self._becky_loops_bridge = self._becky_loops_bridge, None
+        if bridge is None:
+            return
+        try:
+            from gateway.becky_loops import stop_becky_loops_bridge
+
+            await stop_becky_loops_bridge(bridge)
+        except Exception:
+            logger.debug("Becky loop bridge shutdown failed", exc_info=True)
 
 
     def _wire_teams_pipeline_runtime(self) -> None:
@@ -6972,6 +7010,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         self._running = True
         self._update_runtime_status("running")
+        await self._start_becky_loops_bridge()
         
         # Emit gateway:startup hook
         hook_count = len(self.hooks.loaded_hooks)
@@ -7819,6 +7858,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             self._running = False
             self._draining = True
+            await self._stop_becky_loops_bridge()
 
             # Notify all chats with active agents BEFORE draining.
             # Adapters are still connected here, so messages can be sent.

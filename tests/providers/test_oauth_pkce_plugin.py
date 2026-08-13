@@ -181,7 +181,9 @@ def test_auth_add_uses_plugin_pkce_flow_and_persists_pool(tmp_path, monkeypatch)
             no_browser=True,
             timeout=None,
         ))
-        payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+        payload = json.loads(
+            (tmp_path / "hermes" / "auth.json").read_text(encoding="utf-8")
+        )
         entry = payload["credential_pool"][profile.name][0]
         assert entry["source"] == "manual:oauth_pkce"
         assert entry["access_token"] == "access-token"

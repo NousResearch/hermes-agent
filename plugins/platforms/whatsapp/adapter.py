@@ -1643,6 +1643,14 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 if not body.startswith(_OWNER_REPLY_PREFIX):
                     body = f"{_OWNER_REPLY_PREFIX}{body}"
 
+            channel_prompt = None
+            if (
+                should_process
+                and is_group
+                and self._whatsapp_observe_unmentioned_group_messages()
+            ):
+                channel_prompt = self._whatsapp_group_observe_channel_prompt()
+
             return MessageEvent(
                 text=body,
                 message_type=msg_type,
@@ -1656,6 +1664,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 reply_to_text=reply_to_text,
                 reply_to_author_id=reply_to_author_id,
                 reply_to_is_own_message=reply_to_is_own_message,
+                channel_prompt=channel_prompt,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

@@ -121,6 +121,22 @@ def test_observe_mode_dispatches_only_trusted_native_mentions():
     ) is True
 
 
+def test_observe_mode_matches_device_qualified_bot_id():
+    adapter = _make_adapter(
+        group_policy="open",
+        observe_unmentioned_group_messages=True,
+    )
+
+    message = _group_message(
+        "hello",
+        botIds=["15551230000:10@s.whatsapp.net"],
+        mentionedIds=["15551230000@s.whatsapp.net"],
+    )
+
+    assert adapter._message_has_native_bot_mention(message) is True
+    assert adapter._should_process_message(message) is True
+
+
 def test_observe_mode_rejects_unauthorized_senders_before_persistence():
     adapter = _make_adapter(
         group_policy="open",
@@ -162,6 +178,37 @@ async def test_authorized_unmentioned_message_is_observed_without_dispatch():
     entry = adapter._session_store.append_to_transcript.call_args.args[1]
     assert entry["content"] == "[Alice] background context"
     assert entry["observed"] is True
+
+
+@pytest.mark.asyncio
+async def test_addressed_turn_keeps_observed_rows_context_only():
+    from gateway.run import _build_gateway_agent_history
+
+    adapter = _make_adapter(
+        group_policy="open",
+        observe_unmentioned_group_messages=True,
+    )
+    event = await adapter._build_message_event(
+        _group_message(
+            "what did Alice say?",
+            mentionedIds=["15551230000@s.whatsapp.net"],
+        )
+    )
+
+    assert event is not None
+    assert "observed WhatsApp group context" in (event.channel_prompt or "")
+    history, observed_context = _build_gateway_agent_history(
+        [
+            {
+                "role": "user",
+                "content": "[Alice] background context",
+                "observed": True,
+            }
+        ],
+        channel_prompt=event.channel_prompt,
+    )
+    assert history == []
+    assert observed_context == "[Alice] background context"
 
 
 def test_regex_mention_patterns_allow_custom_wake_words():

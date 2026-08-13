@@ -356,6 +356,23 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
     [jobs, query]
   )
 
+  // Blueprint recipes render in the same list rail, below the jobs — clicking
+  // one opens the create dialog pre-seeded to that recipe. Same query key as
+  // the dialog's "Start from" dropdown, so the catalog is fetched once.
+  const blueprintsQuery = useQuery({
+    queryKey: ['cron-blueprints'],
+    queryFn: async () => (await getAutomationBlueprints()).blueprints
+  })
+
+  const visibleBlueprints = useMemo(() => {
+    const list = blueprintsQuery.data ?? []
+    const needle = query.trim().toLowerCase()
+
+    return needle
+      ? list.filter(item => `${item.title} ${item.description}`.toLowerCase().includes(needle))
+      : list
+  }, [blueprintsQuery.data, query])
+
   // Detail always reflects a concrete job: the explicitly selected one, else the
   // first visible row, so the right pane is never empty while jobs exist.
   const selectedJob = useMemo(
@@ -480,7 +497,7 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
 
       {loading && jobs.length === 0 ? (
         <PageLoader label={c.loading} />
-      ) : totalCount === 0 ? (
+      ) : totalCount === 0 && visibleBlueprints.length === 0 ? (
         <PanelEmpty
           action={
             <Button onClick={() => setEditor({ mode: 'create' })} size="sm">
@@ -521,6 +538,21 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
               <p className="px-2 py-4 text-center text-xs text-muted-foreground">{c.emptyTitleSearch}</p>
             )}
             <PanelAddButton label={c.newCron} onClick={() => setEditor({ mode: 'create' })} />
+            {visibleBlueprints.length > 0 && (
+              <>
+                <PanelSectionLabel className="mt-3 px-2">{c.blueprints.tab}</PanelSectionLabel>
+                {visibleBlueprints.map(item => (
+                  <PanelListRow
+                    active={false}
+                    icon="rocket"
+                    key={item.key}
+                    onSelect={() => setEditor({ blueprintKey: item.key, mode: 'create' })}
+                    rowKey={`blueprint-${item.key}`}
+                    title={item.title}
+                  />
+                ))}
+              </>
+            )}
           </PanelList>
 
           {selectedJob ? (
@@ -919,10 +951,10 @@ function CronEditorDialog({
     setDeliver(initial ? jobDeliver(initial) : DEFAULT_DELIVER)
     setModelChoice(initial && jobModel(initial) ? `${jobProvider(initial)}:${jobModel(initial)}` : MODEL_DEFAULT_VALUE)
     setSlotValues({})
-    setTemplateChoice(CUSTOM_TEMPLATE)
+    setTemplateChoice(editor.mode === 'create' ? (editor.blueprintKey ?? CUSTOM_TEMPLATE) : CUSTOM_TEMPLATE)
     setError(null)
     setSaving(false)
-  }, [initial, open])
+  }, [editor, initial, open])
 
   // Seed the typed slots with the blueprint's defaults whenever a blueprint is
   // picked from "Start from" (and reset them when switching back to Custom).
@@ -1232,7 +1264,12 @@ function CronEditorDialog({
   )
 }
 
-type EditorState = { job: CronJob; mode: 'edit' } | { mode: 'closed' } | { mode: 'create' }
+type EditorState =
+  | { job: CronJob; mode: 'edit' }
+  | { mode: 'closed' }
+  // `blueprintKey` pre-selects a blueprint in the create dialog's "Start from"
+  // dropdown (set when a recipe row in the list rail is clicked).
+  | { blueprintKey?: string; mode: 'create' }
 
 interface EditorValues {
   deliver: string

@@ -108,10 +108,22 @@ DEFAULT_CONFIG = {
         "artifact_dir": "feature-artifacts",
         # Stage ownership: which profile is responsible for each stage.
         # Used for dispatch routing and notifications.
+        # ROUTING MODEL (Sahil directive, 2026-08-13, Option A): work goes to
+        # the LEAD profile first — the lead executes the stage itself and
+        # re-delegates specialist sub-work via delegate_task / kanban_create.
+        # Leads are spawnable workers (removed from nonspawnable where
+        # needed); only kensei (root, operator-run) stays nonspawnable and
+        # is handled in-session. Leads do NOT carry feature-pipeline in
+        # always_skills, so the dispatcher injects the pipeline-stage
+        # protocol into the worker prompt (see _default_spawn).
         "stage_owners": {
             "research": "remii",
             "prd": "kensei",
             "spec": "octacon",
+            "tech_review": "octacon",
+            "pr+qa": "quan",
+            "audit": "quan",
+            "document": "light",
             "council": "",  # Phase B: council service
         },
     },
@@ -1144,14 +1156,38 @@ DEFAULT_CONFIG = {
         # Goal judge — evaluates whether a /goal run's latest response
         # satisfies the goal/contract, and drafts goal contracts. Short
         # structured-JSON calls; a fast cheap model is fine.
+        # FIX 2026-08-13 (Spectator Mode incident t_9df6f54b): the previous
+        # default ``provider: auto`` inherits the WORKER profile's main model
+        # at judge time — for sirvir that is the local turbohaul endpoint
+        # (grm-2.6 @ 127.0.0.1:11401), which timed out repeatedly
+        # (APITimeoutError x2 + one non-JSON reply), stranding a completed
+        # spike worker in the goal loop. The judge must run on a fast API
+        # provider with a fallback chain, independent of the worker's main
+        # route. Same pattern as the approval/vision tasks.
         "goal_judge": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
+            "provider": "nvidia",
+            "model": "stepfun-ai/step-3.7-flash",
+            "base_url": "https://integrate.api.nvidia.com/v1",
             "timeout": 60,
             "extra_body": {},
             "reasoning_effort": "",  # per-task thinking level: none|minimal|low|medium|high|xhigh|max|ultra (empty = provider default)
+            "fallback_chain": [
+                {
+                    "provider": "nvidia",
+                    "model": "stepfun-ai/step-3.7-flash",
+                    "base_url": "https://integrate.api.nvidia.com/v1",
+                },
+                {
+                    "provider": "ollama-cloud",
+                    "model": "minimax-m3",
+                    "base_url": "https://ollama.com/v1",
+                },
+                {
+                    "provider": "openrouter",
+                    "model": "nvidia/nemotron-3-super-120b-a12b:free",
+                    "base_url": "https://openrouter.ai/api/v1",
+                },
+            ],
         },
         # Curator — skill-usage review fork. Timeout is generous because the
         # review pass can take several minutes on reasoning models (umbrella

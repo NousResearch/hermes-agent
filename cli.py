@@ -7484,12 +7484,56 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                     ", ".join(loaded_skills),
                 )
             else:
+                # Every requested skill was unknown/blocked — hard-fail. Before
+                # raising, record a `forced_skill_rejected` event on the kanban
+                # task (when this is a kanban worker) so the skill-reroute cron
+                # can catch it and reassign/clear the task instead of letting it
+                # silently crash-loop. The dispatcher's pre-spawn gate normally
+                # blocks these tasks before they reach a worker, but this is the
+                # last line of defense for any path that bypasses the gate.
+                self._record_forced_skill_rejected(missing_skills)
                 raise ValueError(f"Unknown skill(s): {missing_display}")
         if skills_prompt:
             self.system_prompt = "\n\n".join(
                 part for part in (self.system_prompt, skills_prompt) if part
             ).strip()
             self.preloaded_skills = loaded_skills
+
+    def _record_forced_skill_rejected(self, missing_skills: list[str]) -> None:
+        """Record a ``forced_skill_rejected`` kanban event before hard-failing.
+
+        Best-effort and never raises: this runs on the worker's hard-fail path
+        (every requested forced skill was unknown/blocked), so a failure to
+        record must not mask the original ``ValueError``. Only acts when this
+        process is a kanban worker (``HERMES_KANBAN_TASK`` set) and the task
+        actually exists on a board. The event lets the skill-reroute cron
+        catch the rejection and reassign/clear the task instead of letting it
+        silently crash-loop.
+        """
+        task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        if not task_id or not missing_skills:
+            return
+        try:
+            from hermes_cli import kanban_db as _kb
+            with _kb.connect_for_task(task_id) as (conn, task):
+                if task is None:
+                    return
+                with _kb.write_txn(conn):
+                    _kb._append_event(
+                        conn,
+                        task_id,
+                        "forced_skill_rejected",
+                        {
+                            "reason": "child_cli_hard_fail",
+                            "assignee": task.assignee,
+                            "missing_skills": list(missing_skills),
+                            "forced_skills": list(task.skills or []),
+                        },
+                        run_id=task.current_run_id,
+                    )
+        except Exception:
+            # Never mask the original hard-fail with a telemetry error.
+            pass
 
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""

@@ -23,7 +23,6 @@ from rich.table import Table
 # Lazy imports to avoid circular dependencies and slow startup.
 # tools.skills_hub and tools.skills_guard are imported inside functions.
 from hermes_constants import display_hermes_home
-from agent.skill_utils import is_excluded_skill_path
 
 _console = Console()
 
@@ -184,29 +183,18 @@ def _existing_categories() -> List[str]:
     Used to suggest reusable categories when interactively installing from a
     URL. Hidden dirs (``.hub``, ``.trash``) are skipped.
     """
-    from tools.skills_hub import SKILLS_DIR
-    out: List[str] = []
+    from tools.skills_hub import SKILLS_DIR, _category_skill_dirs
     try:
-        for entry in SKILLS_DIR.iterdir():
-            if not entry.is_dir() or entry.name.startswith("."):
-                continue
-            # Only count as a category if it contains skills, not if it IS a skill.
-            # Heuristic: if ``<entry>/SKILL.md`` exists, it's a skill at the
-            # top level (no category); otherwise treat as a category bucket.
-            if (entry / "SKILL.md").exists():
-                continue
-            # Has at least one nested SKILL.md (excluding dependency/cache dirs)?
-            try:
-                if any(
-                    not is_excluded_skill_path(p)
-                    for p in entry.rglob("SKILL.md")
-                ):
-                    out.append(entry.name)
-            except OSError:
-                continue
+        # _category_skill_dirs returns children containing any active
+        # SKILL.md — including top-level skills themselves. Only children
+        # WITHOUT their own SKILL.md are category buckets.
+        return sorted(
+            name
+            for name in set(_category_skill_dirs(SKILLS_DIR))
+            if not (SKILLS_DIR / name / "SKILL.md").exists()
+        )
     except (FileNotFoundError, OSError):
         return []
-    return sorted(set(out))
 
 
 def _prompt_for_skill_name(c: Console, url: str, default: str = "") -> Optional[str]:
@@ -361,7 +349,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     _PER_SOURCE_LIMIT = {
         "hermes-index": 1000000,
         "official": 200, "skills-sh": 200, "well-known": 50,
-        "github": 200, "clawhub": 500, "claude-marketplace": 100,
+        "github": 200, "clawhub": 500,
         "lobehub": 500, "browse-sh": 500,
     }
 
@@ -502,7 +490,8 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True,
-               name_override: str = "") -> None:
+               name_override: str = "",
+               source_id: Optional[str] = None) -> None:
     """Fetch, quarantine, scan, confirm, and install a skill.
 
     ``name_override`` lets non-interactive callers (slash commands, gateway,
@@ -511,12 +500,20 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     triggers a prompt instead; ``skip_confirm=True`` means "non-interactive"
     (so pair it with ``name_override`` when installing from a URL that has
     no frontmatter).
+
+    ``source_id`` pins resolution to a single source adapter (e.g. ``clawhub``).
+    Callers that already know a skill's provenance -- notably ``do_update``,
+    which reads it from the lockfile -- should pass it so a bare, slash-less
+    identifier cannot be fuzzy-resolved to a same-named skill in a different
+    registry. Skill names are not namespaced across registries, so an
+    unconstrained resolve can silently change a skill's provenance.
     """
     from tools.skills_hub import (
         GitHubAuth, create_source_router, ensure_hub_dirs,
         quarantine_bundle, install_from_quarantine, HubLockFile,
+        _source_matches,
     )
-    from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
+    from tools.skills_guard import scan_skill_cached, should_allow_install, format_scan_report
 
     c = console or _console
     ensure_hub_dirs()
@@ -524,6 +521,18 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     # Resolve which source adapter handles this identifier
     auth = GitHubAuth()
     sources = create_source_router(auth)
+
+    if source_id:
+        pinned = [src for src in sources if _source_matches(src, source_id)]
+        if pinned:
+            sources = pinned
+        else:
+            c.print(
+                f"[bold red]Error:[/] no source adapter for '{source_id}'. "
+                f"Refusing to resolve '{identifier}' against other registries "
+                f"(that would change the skill's provenance).\n"
+            )
+            return
 
     # If identifier looks like a short name (no slashes), resolve it via search
     if "/" not in identifier:
@@ -648,8 +657,24 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             or getattr(meta, "identifier", "")
             or identifier
         )
-    result = scan_skill(q_path, source=scan_source)
+    from tools.skills_hub import HUB_DIR, source_url_for_bundle
+    result, scan_provenance = scan_skill_cached(
+        q_path,
+        source=scan_source,
+        source_url=source_url_for_bundle(bundle),
+        cache_dir=HUB_DIR / "scan-cache",
+    )
     c.print(format_scan_report(result))
+    freshness = "fresh" if scan_provenance["fresh"] else "cached"
+    c.print(
+        f"[dim]Scan provenance: {freshness}; scanner "
+        f"{scan_provenance['scanner_version']}; hash {scan_provenance['bundle_hash']}[/]"
+    )
+    rules = ", ".join(scan_provenance["rules"]) or "none"
+    c.print(
+        f"[dim]Source: {scan_provenance['source_url']}; scanned "
+        f"{scan_provenance['scanned_at']}; rules: {rules}[/]"
+    )
 
     # Check install policy
     allowed, reason = should_allow_install(result, force=force)
@@ -834,7 +859,7 @@ def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> di
     # low cap here silently truncates the whole hub (see do_browse note).
     _PER_SOURCE_LIMIT = {"hermes-index": 5000, "official": 100, "skills-sh": 100,
                          "well-known": 25, "github": 100, "clawhub": 50,
-                         "claude-marketplace": 50, "lobehub": 50, "browse-sh": 500}
+                         "lobehub": 50, "browse-sh": 500}
     auth = GitHubAuth()
     sources = create_source_router(auth)
     # Delegate to the shared parallel walker so this inherits the index-aware
@@ -1042,7 +1067,20 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
         installed = lock.get_installed(entry["name"])
         category = _derive_category_from_install_path(installed.get("install_path", "")) if installed else ""
         c.print(f"[bold]Updating:[/] {entry['name']}")
-        do_install(entry["identifier"], category=category, force=True, console=c)
+        # Pin the update to the source registry recorded in the lockfile.
+        # Without this, a bare (slash-less) identifier such as "reddit" falls
+        # through to _resolve_short_name()'s fuzzy catalog search inside
+        # do_install, which can match a same-named skill in a DIFFERENT
+        # registry and install that instead -- overwriting the user's files
+        # and rewriting the lock's `source`. An update must never change a
+        # skill's provenance.
+        do_install(
+            entry["identifier"],
+            category=category,
+            force=True,
+            console=c,
+            source_id=entry.get("source", "") or None,
+        )
 
     c.print(f"[bold green]Updated {len(updates)} skill(s).[/]\n")
 
@@ -1445,6 +1483,7 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
     # Validate the skill
     import yaml
     skill_md = (path / "SKILL.md").read_text(encoding="utf-8")
+    skill_md = skill_md.lstrip("\ufeff")  # tolerate UTF-8 BOM (Windows editors)
     fm = {}
     if skill_md.startswith("---"):
         import re

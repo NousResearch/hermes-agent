@@ -25,9 +25,9 @@ _INLINE_SHELL_MAX_OUTPUT = 4000
 def load_skills_config() -> dict:
     """Load the ``skills`` section of config.yaml (best-effort)."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config_readonly
 
-        cfg = load_config() or {}
+        cfg = load_config_readonly() or {}
         skills_cfg = cfg.get("skills")
         if isinstance(skills_cfg, dict):
             return skills_cfg
@@ -74,7 +74,7 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
             ["bash", "-c", command],
             cwd=str(cwd) if cwd else None,
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=max(1, int(timeout)),
             check=False,
             stdin=subprocess.DEVNULL,

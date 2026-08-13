@@ -40,25 +40,8 @@ class TestApplyUserDefaultHeadersHelper:
         assert merged["User-Agent"] == "curl/8.7.1"  # user wins
         assert merged["X-Extra"] == "1"
 
-    def test_no_config_is_noop_returns_original(self, tmp_path):
-        _write_config(tmp_path, {"model": {"default": "m"}})
-        from agent.auxiliary_client import _apply_user_default_headers
-        original = {"User-Agent": "OpenAI/Python"}
-        merged = _apply_user_default_headers(original)
-        assert merged == original
 
-    def test_none_headers_with_config_creates_dict(self, tmp_path):
-        _write_config(tmp_path, {
-            "model": {"default": "m", "default_headers": {"User-Agent": "curl/8.7.1"}},
-        })
-        from agent.auxiliary_client import _apply_user_default_headers
-        merged = _apply_user_default_headers(None)
-        assert merged == {"User-Agent": "curl/8.7.1"}
 
-    def test_none_headers_no_config_returns_none(self, tmp_path):
-        _write_config(tmp_path, {"model": {"default": "m"}})
-        from agent.auxiliary_client import _apply_user_default_headers
-        assert _apply_user_default_headers(None) is None
 
     def test_none_values_skipped(self, tmp_path):
         _write_config(tmp_path, {

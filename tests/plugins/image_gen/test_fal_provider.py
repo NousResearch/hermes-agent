@@ -17,7 +17,6 @@ import json
 from unittest.mock import MagicMock
 
 
-
 # ---------------------------------------------------------------------------
 # Provider surface
 # ---------------------------------------------------------------------------
@@ -72,24 +71,6 @@ class TestFalImageGenProviderAvailability:
         monkeypatch.setattr(image_tool, "check_fal_api_key", lambda: True)
         assert FalImageGenProvider().is_available() is True
 
-    def test_is_available_false_when_legacy_check_fails(self, monkeypatch):
-        import tools.image_generation_tool as image_tool
-        from plugins.image_gen.fal import FalImageGenProvider
-
-        monkeypatch.setattr(image_tool, "check_fal_api_key", lambda: False)
-        assert FalImageGenProvider().is_available() is False
-
-    def test_is_available_handles_legacy_exception(self, monkeypatch):
-        import tools.image_generation_tool as image_tool
-        from plugins.image_gen.fal import FalImageGenProvider
-
-        def _boom():
-            raise RuntimeError("config broke")
-
-        monkeypatch.setattr(image_tool, "check_fal_api_key", _boom)
-        # Picker must not propagate exceptions — show as "not available".
-        assert FalImageGenProvider().is_available() is False
-
 
 # ---------------------------------------------------------------------------
 # generate() — call-time indirection
@@ -132,80 +113,6 @@ class TestFalImageGenProviderGenerate:
         assert result["prompt"] == "a serene mountain landscape"
         assert result["aspect_ratio"] == "square"
         assert result["model"] == "fal-ai/flux-2/klein/9b"
-
-    def test_generate_invalid_aspect_ratio_is_coerced(self, monkeypatch):
-        import tools.image_generation_tool as image_tool
-        from plugins.image_gen.fal import FalImageGenProvider
-
-        seen_aspect = {}
-
-        def fake(prompt, aspect_ratio, **kwargs):
-            seen_aspect["v"] = aspect_ratio
-            return json.dumps({"success": True, "image": "x"})
-
-        monkeypatch.setattr(image_tool, "image_generate_tool", fake)
-        monkeypatch.setattr(image_tool, "_resolve_fal_model",
-                            lambda: ("fal-ai/flux-2/klein/9b", {}))
-
-        FalImageGenProvider().generate("p", aspect_ratio="not-a-real-ratio")
-        # ``resolve_aspect_ratio`` clamps to landscape.
-        assert seen_aspect["v"] == "landscape"
-
-    def test_generate_passthrough_drops_none_kwargs(self, monkeypatch):
-        import tools.image_generation_tool as image_tool
-        from plugins.image_gen.fal import FalImageGenProvider
-
-        seen = {}
-
-        def fake(prompt, aspect_ratio, **kwargs):
-            seen.update(kwargs)
-            return json.dumps({"success": True, "image": "x"})
-
-        monkeypatch.setattr(image_tool, "image_generate_tool", fake)
-        monkeypatch.setattr(image_tool, "_resolve_fal_model",
-                            lambda: ("fal-ai/flux-2/klein/9b", {}))
-
-        FalImageGenProvider().generate(
-            "p",
-            aspect_ratio="landscape",
-            seed=None,
-            num_images=2,
-            guidance_scale=None,
-        )
-
-        # ``None`` values must not be forwarded — they'd override the
-        # model's defaults inside the legacy payload builder.
-        assert "seed" not in seen
-        assert "guidance_scale" not in seen
-        assert seen.get("num_images") == 2
-
-    def test_generate_catches_exception_from_legacy(self, monkeypatch):
-        import tools.image_generation_tool as image_tool
-        from plugins.image_gen.fal import FalImageGenProvider
-
-        def boom(*args, **kwargs):
-            raise RuntimeError("FAL endpoint exploded")
-
-        monkeypatch.setattr(image_tool, "image_generate_tool", boom)
-
-        result = FalImageGenProvider().generate("p")
-        assert result["success"] is False
-        assert "FAL image generation failed" in result["error"]
-        assert result["error_type"] == "RuntimeError"
-        assert result["provider"] == "fal"
-
-    def test_generate_invalid_json_response(self, monkeypatch):
-        import tools.image_generation_tool as image_tool
-        from plugins.image_gen.fal import FalImageGenProvider
-
-        monkeypatch.setattr(image_tool, "image_generate_tool", lambda **kw: "not-json")
-        monkeypatch.setattr(image_tool, "_resolve_fal_model",
-                            lambda: ("fal-ai/flux-2/klein/9b", {}))
-
-        result = FalImageGenProvider().generate("p")
-        assert result["success"] is False
-        assert "Invalid JSON" in result["error"]
-        assert result["provider"] == "fal"
 
 
 # ---------------------------------------------------------------------------

@@ -6,12 +6,11 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
-import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
+import { isDesktopFsRemoteMode } from '@/lib/desktop-fs'
+import { normalizeOrLocalPreviewTarget, openPreviewTargetInBrowser } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
-import { PREVIEW_PANE_ID } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
-import { $paneOpen } from '@/store/panes'
-import { $previewTarget, dismissPreviewTarget, setCurrentSessionPreviewTarget } from '@/store/preview'
+import { $previewTabSources, closePreviewForSource, openPreview } from '@/store/preview'
 import { type PreviewArtifact } from '@/store/preview-status'
 
 interface PreviewStatusRowProps {
@@ -22,10 +21,10 @@ interface PreviewStatusRowProps {
 /** One detected artifact, single line, always visible: filename + open + close. */
 export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss }: PreviewStatusRowProps) {
   const { t } = useI18n()
-  const activePreview = useStore($previewTarget)
-  const previewPaneOpen = useStore($paneOpen(PREVIEW_PANE_ID))
+  const openSources = useStore($previewTabSources)
   const [opening, setOpening] = useState(false)
-  const isOpen = activePreview?.source === item.target && previewPaneOpen
+  // A tab open IS a pane in the tree now, so its presence is the whole answer.
+  const isOpen = openSources.includes(item.target)
 
   const resolveTarget = async () => {
     const target = await normalizeOrLocalPreviewTarget(item.target, item.cwd || undefined)
@@ -43,7 +42,7 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
     }
 
     if (isOpen) {
-      dismissPreviewTarget()
+      closePreviewForSource(item.target)
 
       return
     }
@@ -51,7 +50,7 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
     setOpening(true)
 
     try {
-      setCurrentSessionPreviewTarget(await resolveTarget(), 'tool-result', item.target)
+      openPreview(await resolveTarget(), 'tool-result')
     } catch (error) {
       notifyError(error, t.preview.unavailable)
     } finally {
@@ -59,15 +58,23 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
     }
   }
 
-  const openInBrowser = async () => {
+  const openDefaultTarget = async () => {
     try {
-      const bridge = window.hermesDesktop?.openPreviewInBrowser
+      const target = await resolveTarget()
 
-      if (!bridge) {
-        throw new Error('Desktop preview browser bridge is unavailable')
+      // A file:// URL resolved in remote mode names a file on the backend
+      // host, not on the machine running Electron. Keep local files and
+      // ordinary URLs on the browser path, but route remote files through the
+      // in-app preview pane so its filesystem adapter reads via the gateway.
+      // (Remote HTML stays on openPreviewTargetInBrowser, which stages a
+      // sanitized local copy before opening it.)
+      if (target.kind === 'file' && target.previewKind !== 'html' && isDesktopFsRemoteMode()) {
+        openPreview(target, 'tool-result')
+
+        return
       }
 
-      await bridge((await resolveTarget()).url)
+      await openPreviewTargetInBrowser(target)
     } catch (error) {
       notifyError(error, t.preview.unavailable)
     }
@@ -83,13 +90,14 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
           size="0.8rem"
         />
       }
-      // Plain click opens the link in the browser; ⌘/Ctrl-click opens it in the
-      // in-app preview pane instead. (isOpen still toggles the pane closed.)
+      // Plain click opens the link in the browser, except remote files which
+      // only the in-app gateway-backed preview can read. ⌘/Ctrl-click always
+      // uses the in-app preview pane. (isOpen still toggles the pane closed.)
       onActivate={event => {
         if (event.metaKey || event.ctrlKey) {
           void togglePreview()
         } else {
-          void openInBrowser()
+          void openDefaultTarget()
         }
       }}
       trailing={
@@ -113,13 +121,15 @@ export const PreviewStatusRow = memo(function PreviewStatusRow({ item, onDismiss
     >
       <Tip
         label={
-          <span className="flex flex-col gap-0.5">
+          // inline-flex (not flex): a block child collapses Tip's decoration
+          // wrapper geometry and mis-positions the tooltip (#62022).
+          <span className="inline-flex flex-col gap-0.5">
             <span>{item.target}</span>
             <span className="opacity-70">{t.preview.linkHint}</span>
           </span>
         }
       >
-        <span className="min-w-0 max-w-[18rem] truncate text-[0.73rem] leading-4 text-foreground/92">{item.label}</span>
+        <span className="min-w-0 truncate text-[0.73rem] leading-4 text-foreground/92">{item.label}</span>
       </Tip>
     </StatusRow>
   )

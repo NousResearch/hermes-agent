@@ -46,6 +46,8 @@ Examples:
     hermes -c                     Resume the most recent session
     hermes -c "my project"        Resume a session by name (latest in lineage)
     hermes --resume <session_id>  Resume a specific session by ID
+    hermes --resume latest        Resume the most recent session (same as -c)
+    hermes --tui --resume latest --in ./dir   Resume ./dir's latest session in the TUI
     hermes setup                  Run setup wizard
     hermes logout                 Clear stored authentication
     hermes auth add <provider>    Add a pooled credential
@@ -147,6 +149,18 @@ def build_top_level_parser():
             "under model.provider — use `hermes setup` or edit the file to change it."
         ),
     )
+    _inherited_flag(
+        parser,
+        "--reasoning",
+        default=None,
+        metavar="LEVEL",
+        help=(
+            "Reasoning effort for this invocation: none, minimal, low, medium, "
+            "high, xhigh, max, or ultra. Overrides agent.reasoning_effort in "
+            "config.yaml for this run only; the persistent level lives there "
+            "(or per-model under agent.reasoning_overrides)."
+        ),
+    )
     parser.add_argument(
         "-t",
         "--toolsets",
@@ -158,7 +172,28 @@ def build_top_level_parser():
         "-r",
         metavar="SESSION",
         default=None,
-        help="Resume a previous session by ID or title",
+        help=(
+            "Resume a previous session by ID or title, or pass 'latest' for "
+            "the most recent session (workspace-scoped, like -c with no name)"
+        ),
+    )
+    parser.add_argument(
+        "--no-restore-cwd",
+        action="store_true",
+        default=False,
+        help="Don't cd into a resumed session's recorded working directory.",
+    )
+    parser.add_argument(
+        "--in",
+        dest="in_dir",
+        metavar="DIR",
+        default=None,
+        help=(
+            "Change into DIR before starting or resuming. Combined with "
+            "'--resume latest' or -c, the most recent session for DIR's "
+            "workspace is picked, and the session stays in DIR (skips the "
+            "recorded-cwd restore)."
+        ),
     )
     parser.add_argument(
         "--continue",
@@ -271,12 +306,38 @@ def build_top_level_parser():
     chat_parser.add_argument(
         "--image", help="Optional local image path to attach to a single query"
     )
+    # `default=argparse.SUPPRESS` on flags that are ALSO declared on the
+    # top-level parser: when the user writes `hermes -m foo chat`, argparse
+    # first sets `args.model = "foo"` from the top-level parser, then
+    # dispatches to the chat subparser. Without SUPPRESS the chat subparser's
+    # own default (`None`) would silently clobber the top-level value because
+    # the subparser shares the same namespace and `dest`. SUPPRESS keeps the
+    # subparser action a no-op unless the user actually passes the flag after
+    # the subcommand. Matches the pattern already used for `-s/--skills` and
+    # the relaunch-inherited flags `-r/--resume`, `-c/--continue`,
+    # `-w/--worktree`, `--yolo`, etc. (see tests/hermes_cli/
+    # test_argparse_flag_propagation.py).
     _inherited_flag(
         chat_parser,
-        "-m", "--model", help="Model to use (e.g., anthropic/claude-sonnet-4)",
+        "-m", "--model",
+        default=argparse.SUPPRESS,
+        help="Model to use (e.g., anthropic/claude-sonnet-4)",
     )
     chat_parser.add_argument(
-        "-t", "--toolsets", help="Comma-separated toolsets to enable"
+        "-t", "--toolsets",
+        default=argparse.SUPPRESS,
+        help="Comma-separated toolsets to enable",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--reasoning",
+        default=argparse.SUPPRESS,
+        metavar="LEVEL",
+        help=(
+            "Reasoning effort for this session: none, minimal, low, medium, "
+            "high, xhigh, max, or ultra. Overrides agent.reasoning_effort for "
+            "this run only (same levels as the /reasoning slash command)."
+        ),
     )
     _inherited_flag(
         chat_parser,
@@ -293,7 +354,7 @@ def build_top_level_parser():
         # are also valid values, and runtime resolution (resolve_runtime_provider)
         # handles validation/error reporting consistently with the top-level
         # `--provider` flag.
-        default=None,
+        default=argparse.SUPPRESS,
         help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.yaml.",
     )
     chat_parser.add_argument(
@@ -314,7 +375,26 @@ def build_top_level_parser():
         "-r",
         metavar="SESSION_ID",
         default=argparse.SUPPRESS,
-        help="Resume a previous session by ID (shown on exit)",
+        help=(
+            "Resume a previous session by ID (shown on exit), or 'latest' "
+            "for the most recent session"
+        ),
+    )
+    chat_parser.add_argument(
+        "--no-restore-cwd",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Don't cd into a resumed session's recorded working directory.",
+    )
+    chat_parser.add_argument(
+        "--in",
+        dest="in_dir",
+        metavar="DIR",
+        default=argparse.SUPPRESS,
+        help=(
+            "Change into DIR before starting or resuming (scopes "
+            "'--resume latest' / -c lookups to DIR's workspace)."
+        ),
     )
     chat_parser.add_argument(
         "--continue",
@@ -355,7 +435,7 @@ def build_top_level_parser():
         type=int,
         default=None,
         metavar="N",
-        help="Maximum tool-calling iterations per conversation turn (default: 90, or agent.max_turns in config)",
+        help="Maximum tool-calling iterations per conversation turn (default: 500, or agent.max_turns in config)",
     )
     _inherited_flag(
         chat_parser,
@@ -401,14 +481,14 @@ def build_top_level_parser():
         chat_parser,
         "--tui",
         action="store_true",
-        default=False,
+        default=argparse.SUPPRESS,
         help="Launch the modern TUI instead of the classic REPL",
     )
     _inherited_flag(
         chat_parser,
         "--cli",
         action="store_true",
-        default=False,
+        default=argparse.SUPPRESS,
         help="Force the classic prompt_toolkit REPL (overrides display.interface=tui)",
     )
     _inherited_flag(
@@ -416,7 +496,7 @@ def build_top_level_parser():
         "--dev",
         dest="tui_dev",
         action="store_true",
-        default=False,
+        default=argparse.SUPPRESS,
         help="With --tui: run TypeScript sources via tsx (skip dist build)",
     )
 

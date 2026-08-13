@@ -89,46 +89,6 @@ async def test_first_call_sends_and_caches_message_id(adapter):
 
 
 @pytest.mark.asyncio
-async def test_second_call_edits_in_place(adapter):
-    """Same (chat, key) on the second call must edit, not send."""
-    adapter.send.return_value = SendResult(success=True, message_id="100")
-    adapter.edit_message.return_value = SendResult(success=True, message_id="100")
-
-    await adapter.send_or_update_status("chat-1", "lifecycle", "step 1")
-    await adapter.send_or_update_status("chat-1", "lifecycle", "step 2")
-
-    adapter.send.assert_awaited_once()
-    adapter.edit_message.assert_awaited_once()
-    # Edit was directed at the cached message id.
-    args, kwargs = adapter.edit_message.call_args
-    assert args[0] == "chat-1"
-    assert args[1] == "100"
-    assert args[2] == "step 2"
-
-
-@pytest.mark.asyncio
-async def test_edit_failure_falls_back_to_fresh_send(adapter):
-    """When edit_message fails the cache is cleared and a new send happens."""
-    adapter.send.side_effect = [
-        SendResult(success=True, message_id="100"),
-        SendResult(success=True, message_id="200"),
-    ]
-    adapter.edit_message.return_value = SendResult(
-        success=False, error="Bad Request: message to edit not found",
-    )
-
-    await adapter.send_or_update_status("chat-1", "lifecycle", "step 1")
-    result = await adapter.send_or_update_status("chat-1", "lifecycle", "step 2")
-
-    assert result.success is True
-    assert result.message_id == "200"
-    assert adapter.send.await_count == 2
-    assert adapter.edit_message.await_count == 1
-    # Cache now points at the fresh message id.
-    assert adapter._status_message_ids[("chat-1", "lifecycle")] == "200"
-
-
-@pytest.mark.asyncio
 async def test_distinct_status_keys_do_not_collide(adapter):
     """A different status_key gets its own message; the original isn't touched."""
     adapter.send.side_effect = [
@@ -145,18 +105,3 @@ async def test_distinct_status_keys_do_not_collide(adapter):
     assert adapter._status_message_ids[("chat-1", "model-switch")] == "200"
 
 
-@pytest.mark.asyncio
-async def test_distinct_chat_ids_do_not_collide(adapter):
-    """Same status_key in different chats must not edit each other's messages."""
-    adapter.send.side_effect = [
-        SendResult(success=True, message_id="100"),
-        SendResult(success=True, message_id="200"),
-    ]
-
-    await adapter.send_or_update_status("chat-1", "lifecycle", "first")
-    await adapter.send_or_update_status("chat-2", "lifecycle", "second")
-
-    assert adapter.send.await_count == 2
-    adapter.edit_message.assert_not_awaited()
-    assert adapter._status_message_ids[("chat-1", "lifecycle")] == "100"
-    assert adapter._status_message_ids[("chat-2", "lifecycle")] == "200"

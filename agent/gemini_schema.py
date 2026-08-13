@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Dict
 
 # Gemini's ``FunctionDeclaration.parameters`` field accepts the ``Schema``
@@ -76,16 +77,56 @@ def sanitize_gemini_schema(schema: Any) -> Dict[str, Any]:
 
     # Gemini's Schema validator requires every ``enum`` entry to be a string,
     # even when the parent ``type`` is ``integer`` / ``number`` / ``boolean``.
-    # OpenAI / OpenRouter / Anthropic accept typed enums (e.g. Discord's
-    # ``auto_archive_duration: {type: integer, enum: [60, 1440, 4320, 10080]}``),
-    # so we only drop the ``enum`` when it would collide with Gemini's rule.
-    # Keeping ``type: integer`` plus the human-readable description gives the
-    # model enough guidance; the tool handler still validates the value.
+    # Preserve those constraints by stringifying scalar values while keeping
+    # the declared type intact; Gemini uses the strings as schema metadata and
+    # still emits typed tool arguments at runtime.
     enum_val = cleaned.get("enum")
     type_val = cleaned.get("type")
     if isinstance(enum_val, list) and type_val in {"integer", "number", "boolean"}:
-        if any(not isinstance(item, str) for item in enum_val):
+        stringified = []
+        for item in enum_val:
+            if isinstance(item, str):
+                value = item
+            elif isinstance(item, bool):
+                value = "true" if item else "false"
+            elif (
+                isinstance(item, (int, float))
+                and not isinstance(item, bool)
+                and math.isfinite(item)
+            ):
+                value = str(item)
+            else:
+                continue
+            if value not in stringified:
+                stringified.append(value)
+        if stringified:
+            cleaned["enum"] = stringified
+        else:
             cleaned.pop("enum", None)
+
+    # Gemini validates ``required`` strictly against the same node's
+    # ``properties`` — GenerateContentRequest fails with HTTP 400
+    # "...items.required[0]: property is not defined" when a required name
+    # has no matching property in that node.  MCP servers routinely emit
+    # this shape (e.g. the GitHub remote MCP's array item schemas carry
+    # ``required`` without ``properties``), and one bad tool schema fails
+    # the ENTIRE request before any model output.  Filter ``required`` to
+    # names that exist in this node's ``properties`` and drop it when
+    # nothing valid remains.  The tool handler still validates required
+    # fields at execution time, so this only removes what Gemini couldn't
+    # accept anyway.  (Port of Kilo-Org/kilocode#11955.)
+    required_val = cleaned.get("required")
+    if isinstance(required_val, list):
+        props_val = cleaned.get("properties")
+        prop_names = set(props_val.keys()) if isinstance(props_val, dict) else set()
+        valid_required = [
+            name for name in required_val
+            if isinstance(name, str) and name in prop_names
+        ]
+        if not valid_required:
+            cleaned.pop("required", None)
+        elif len(valid_required) != len(required_val):
+            cleaned["required"] = valid_required
 
     return cleaned
 

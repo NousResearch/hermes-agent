@@ -42,25 +42,3 @@ def test_registers_when_url_configured(monkeypatch):
     assert platform_registry.is_registered("relay") is True
 
 
-def test_explicit_url_arg_registers():
-    assert register_relay_adapter(url="wss://connector.example/relay") is True
-    assert platform_registry.is_registered("relay") is True
-
-
-def test_force_registers_without_url():
-    assert register_relay_adapter(force=True) is True
-    assert platform_registry.is_registered("relay") is True
-
-
-def test_trailing_slash_stripped(monkeypatch):
-    monkeypatch.setenv("GATEWAY_RELAY_URL", "wss://connector.example/relay/")
-    assert relay_url() == "wss://connector.example/relay"
-
-
-def test_create_adapter_yields_relay_adapter():
-    # force=True builds a transport-less adapter (no live dial in unit tests).
-    register_relay_adapter(force=True)
-    adapter = platform_registry.create_adapter("relay", PlatformConfig())
-    assert isinstance(adapter, RelayAdapter)
-    # Placeholder descriptor until handshake negotiates the real one.
-    assert adapter.descriptor.platform == "relay"

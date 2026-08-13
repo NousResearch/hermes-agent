@@ -30,7 +30,13 @@ from gateway.platforms.base import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HOST = "0.0.0.0"
+# ``None`` → aiohttp/asyncio ``create_server`` binds one listening socket per
+# address family (IPv4 + IPv6). The old "0.0.0.0" default bound IPv4 ONLY and
+# was unreachable over IPv6-only private networks (e.g. Fly.io 6PN) — same
+# bug as the LINE adapter (NS-603) and gateway/platforms/webhook.py
+# (d542894ad). Pin a host via extra.host. The all-interfaces default still
+# requires extra.allowed_source_cidrs (see _source_allowlist_required_but_missing).
+DEFAULT_HOST = None
 DEFAULT_PORT = 8646
 DEFAULT_WEBHOOK_PATH = "/msgraph/webhook"
 DEFAULT_MAX_SEEN_RECEIPTS = 5000
@@ -49,7 +55,9 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.MSGRAPH_WEBHOOK)
         extra = config.extra or {}
-        self._host: str = str(extra.get("host", DEFAULT_HOST))
+        # Falsy host (None/"") collapses to the dual-stack default.
+        _raw_host = extra.get("host", DEFAULT_HOST) or DEFAULT_HOST
+        self._host: Optional[str] = str(_raw_host) if _raw_host else None
         self._port: int = int(extra.get("port", DEFAULT_PORT))
         self._webhook_path: str = self._normalize_path(
             extra.get("webhook_path", DEFAULT_WEBHOOK_PATH)
@@ -138,7 +146,9 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         self._notification_scheduler = scheduler
 
     def _source_allowlist_required_but_missing(self) -> bool:
-        return is_network_accessible(self._host) and not self._allowed_source_networks
+        # host=None binds all interfaces (both families) — network-accessible.
+        host_is_public = self._host is None or is_network_accessible(self._host)
+        return host_is_public and not self._allowed_source_networks
 
     async def connect(self, *, is_reconnect: bool = False) -> bool:
         if self._client_state is None:
@@ -358,7 +368,9 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         provided = self._string_or_none(notification.get("clientState"))
         if provided is None:
             return False
-        return hmac.compare_digest(provided, expected)
+        # Compare as bytes: ``compare_digest`` raises TypeError on a str with
+        # non-ASCII characters, and clientState comes from the request body.
+        return hmac.compare_digest(provided.encode(), expected.encode())
 
     def _has_seen_receipt(self, receipt_key: str) -> bool:
         return receipt_key in self._seen_receipts

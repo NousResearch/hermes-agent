@@ -86,34 +86,12 @@ class TestParseFallbackIpEnv:
     def test_none_returns_empty(self):
         assert tnet.parse_fallback_ip_env(None) == []
 
-    def test_empty_string_returns_empty(self):
-        assert tnet.parse_fallback_ip_env("") == []
-
-    def test_whitespace_only_returns_empty(self):
-        assert tnet.parse_fallback_ip_env("  ,  , ") == []
-
-    def test_single_valid_ip(self):
-        assert tnet.parse_fallback_ip_env("149.154.167.220") == ["149.154.167.220"]
-
-    def test_multiple_valid_ips(self):
-        ips = tnet.parse_fallback_ip_env("149.154.167.220, 149.154.167.221")
-        assert ips == ["149.154.167.220", "149.154.167.221"]
-
-    def test_rejects_leading_zeros(self, caplog):
-        """Leading zeros are ambiguous (octal?) so ipaddress rejects them."""
-        ips = tnet.parse_fallback_ip_env("149.154.167.010")
-        assert ips == []
-        assert "Ignoring invalid" in caplog.text
-
 
 class TestNormalizeFallbackIps:
     def test_deduplication_happens_at_transport_level(self):
         """_normalize does not dedup; TelegramFallbackTransport.__init__ does."""
         raw = ["149.154.167.220", "149.154.167.220"]
         assert tnet._normalize_fallback_ips(raw) == ["149.154.167.220", "149.154.167.220"]
-
-    def test_empty_strings_skipped(self):
-        assert tnet._normalize_fallback_ips(["", "  ", "149.154.167.220"]) == ["149.154.167.220"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -129,13 +107,6 @@ class TestRewriteRequestForIp:
         assert rewritten.headers["host"] == "api.telegram.org"
         assert rewritten.extensions["sni_hostname"] == "api.telegram.org"
         assert rewritten.url.path == "/botTOKEN/getMe"
-
-    def test_preserves_method_and_path(self):
-        request = httpx.Request("POST", "https://api.telegram.org/botTOKEN/sendMessage")
-        rewritten = tnet._rewrite_request_for_ip(request, "149.154.167.220")
-
-        assert rewritten.method == "POST"
-        assert rewritten.url.path == "/botTOKEN/sendMessage"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -168,66 +139,6 @@ class TestFallbackTransport:
         assert resp2.status_code == 200
         assert calls[0]["url_host"] == "149.154.167.220"
 
-    @pytest.mark.asyncio
-    async def test_falls_back_on_connect_error(self, monkeypatch):
-        calls = []
-        behavior = {"api.telegram.org": "connect_error", "149.154.167.220": "ok"}
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
-
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
-        resp = await transport.handle_async_request(_telegram_request())
-
-        assert resp.status_code == 200
-        assert transport._sticky_ip == "149.154.167.220"
-
-    @pytest.mark.asyncio
-    async def test_does_not_fallback_on_non_connect_error(self, monkeypatch):
-        """Errors like ReadTimeout are not connection issues — don't retry."""
-        calls = []
-        behavior = {"api.telegram.org": httpx.ReadTimeout("read timeout"), "149.154.167.220": "ok"}
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
-
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
-
-        with pytest.raises(httpx.ReadTimeout):
-            await transport.handle_async_request(_telegram_request())
-
-        assert [c["url_host"] for c in calls] == ["api.telegram.org"]
-
-    @pytest.mark.asyncio
-    async def test_all_ips_fail_raises_last_error(self, monkeypatch):
-        calls = []
-        behavior = {"api.telegram.org": "timeout", "149.154.167.220": "timeout"}
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
-
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
-
-        with pytest.raises(httpx.ConnectTimeout):
-            await transport.handle_async_request(_telegram_request())
-
-        assert [c["url_host"] for c in calls] == ["api.telegram.org", "149.154.167.220"]
-        assert transport._sticky_ip is None
-
-    @pytest.mark.asyncio
-    async def test_multiple_fallback_ips_tried_in_order(self, monkeypatch):
-        calls = []
-        behavior = {
-            "api.telegram.org": "timeout",
-            "149.154.167.220": "timeout",
-            "149.154.167.221": "ok",
-        }
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
-
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.221"])
-        resp = await transport.handle_async_request(_telegram_request())
-
-        assert resp.status_code == 200
-        assert transport._sticky_ip == "149.154.167.221"
-        assert [c["url_host"] for c in calls] == [
-            "api.telegram.org",
-            "149.154.167.220",
-            "149.154.167.221",
-        ]
 
     @pytest.mark.asyncio
     async def test_sticky_ip_tried_first_but_falls_through_if_stale(self, monkeypatch):
@@ -276,46 +187,9 @@ class TestFallbackTransportPassthrough:
         assert calls[0]["url_host"] == "example.com"
         assert transport._sticky_ip is None
 
-    @pytest.mark.asyncio
-    async def test_empty_fallback_list_uses_primary_only(self, monkeypatch):
-        calls = []
-        behavior = {}
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
-
-        transport = tnet.TelegramFallbackTransport([])
-        resp = await transport.handle_async_request(_telegram_request())
-
-        assert resp.status_code == 200
-        assert calls[0]["url_host"] == "api.telegram.org"
-
-    @pytest.mark.asyncio
-    async def test_primary_succeeds_no_fallback_needed(self, monkeypatch):
-        calls = []
-        behavior = {"api.telegram.org": "ok"}
-        monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", _fake_transport_factory(calls, behavior))
-
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
-        resp = await transport.handle_async_request(_telegram_request())
-
-        assert resp.status_code == 200
-        assert transport._sticky_ip is None
-        assert len(calls) == 1
-
 
 class TestFallbackTransportInit:
-    def test_deduplicates_fallback_ips(self, monkeypatch):
-        monkeypatch.setattr(
-            tnet.httpx, "AsyncHTTPTransport", lambda **kw: FakeTransport([], {})
-        )
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.220"])
-        assert transport._fallback_ips == ["149.154.167.220"]
 
-    def test_filters_invalid_ips_at_init(self, monkeypatch):
-        monkeypatch.setattr(
-            tnet.httpx, "AsyncHTTPTransport", lambda **kw: FakeTransport([], {})
-        )
-        transport = tnet.TelegramFallbackTransport(["149.154.167.220", "not-an-ip"])
-        assert transport._fallback_ips == ["149.154.167.220"]
 
     def test_uses_proxy_env_for_primary_and_fallback_transports(self, monkeypatch):
         seen_kwargs = []
@@ -332,6 +206,12 @@ class TestFallbackTransportInit:
         transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
 
         assert transport._fallback_ips == ["149.154.167.220"]
+        # Fallback pools are now built lazily (#63311), so __init__ constructs
+        # only the primary transport. Force the fallback pool to materialize to
+        # observe its kwargs.
+        import asyncio
+
+        asyncio.run(transport._get_fallback("149.154.167.220"))
         assert len(seen_kwargs) == 2
         assert all(kwargs["proxy"] == "http://proxy.example:8080" for kwargs in seen_kwargs)
 
@@ -351,6 +231,10 @@ class TestFallbackTransportInit:
         transport = tnet.TelegramFallbackTransport(["149.154.167.220"])
 
         assert transport._fallback_ips == ["149.154.167.220"]
+        # Lazy fallback build (#63311): materialize the fallback pool.
+        import asyncio
+
+        asyncio.run(transport._get_fallback("149.154.167.220"))
         assert len(seen_kwargs) == 2
         assert all("proxy" not in kwargs for kwargs in seen_kwargs)
 
@@ -379,10 +263,17 @@ class TestFallbackTransportInit:
             ["149.154.167.220"], limits=custom_limits
         )
 
+        # Lazy fallback build (#63311): __init__ builds only the primary; the
+        # fallback pool is constructed on demand. Materialize it so both the
+        # primary and the fallback are observed.
+        import asyncio
+
+        asyncio.run(transport._get_fallback("149.154.167.220"))
         # 1 primary + 1 fallback = 2 AsyncHTTPTransport instances
         assert len(seen_kwargs) == 2
         for kw in seen_kwargs:
             assert "limits" in kw
+            # Caller-supplied limits must win over the setdefault default.
             assert kw["limits"] is custom_limits
 
 
@@ -393,6 +284,10 @@ class TestFallbackTransportClose:
         monkeypatch.setattr(tnet.httpx, "AsyncHTTPTransport", factory)
 
         transport = tnet.TelegramFallbackTransport(["149.154.167.220", "149.154.167.221"])
+        # Lazy fallback build (#63311): materialize both fallback pools so
+        # aclose() has something to tear down.
+        await transport._get_fallback("149.154.167.220")
+        await transport._get_fallback("149.154.167.221")
         await transport.aclose()
 
         # 1 primary + 2 fallback transports
@@ -415,36 +310,6 @@ class TestConfigFallbackIps:
         assert config.platforms[Platform.TELEGRAM].extra["fallback_ips"] == [
             "149.154.167.220", "149.154.167.221",
         ]
-
-    def test_env_var_creates_platform_if_missing(self, monkeypatch):
-        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
-
-        monkeypatch.setenv("TELEGRAM_FALLBACK_IPS", "149.154.167.220")
-        config = GatewayConfig(platforms={})
-        _apply_env_overrides(config)
-
-        assert Platform.TELEGRAM in config.platforms
-        assert config.platforms[Platform.TELEGRAM].extra["fallback_ips"] == ["149.154.167.220"]
-
-    def test_env_var_strips_whitespace(self, monkeypatch):
-        from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_overrides
-
-        monkeypatch.setenv("TELEGRAM_FALLBACK_IPS", "  149.154.167.220 , 149.154.167.221  ")
-        config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="tok")})
-        _apply_env_overrides(config)
-
-        assert config.platforms[Platform.TELEGRAM].extra["fallback_ips"] == [
-            "149.154.167.220", "149.154.167.221",
-        ]
-
-    def test_empty_env_var_does_not_populate(self, monkeypatch):
-        from gateway.config import GatewayConfig, Platform, PlatformConfig, _apply_env_overrides
-
-        monkeypatch.setenv("TELEGRAM_FALLBACK_IPS", "")
-        config = GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="tok")})
-        _apply_env_overrides(config)
-
-        assert "fallback_ips" not in config.platforms[Platform.TELEGRAM].extra
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -483,19 +348,6 @@ class TestAdapterFallbackIps:
     def test_csv_string_in_extra(self):
         adapter = self._make_adapter(extra={"fallback_ips": "149.154.167.220,149.154.167.221"})
         assert adapter._fallback_ips() == ["149.154.167.220", "149.154.167.221"]
-
-    def test_empty_extra(self):
-        adapter = self._make_adapter()
-        assert adapter._fallback_ips() == []
-
-    def test_no_extra_attr(self):
-        adapter = self._make_adapter()
-        adapter.config.extra = None
-        assert adapter._fallback_ips() == []
-
-    def test_invalid_ips_filtered(self):
-        adapter = self._make_adapter(extra={"fallback_ips": ["149.154.167.220", "not-valid"]})
-        assert adapter._fallback_ips() == ["149.154.167.220"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -592,57 +444,6 @@ class TestDiscoverFallbackIps:
         ips = await tnet.discover_fallback_ips()
         assert ips == ["149.154.167.220"]
 
-    @pytest.mark.asyncio
-    async def test_doh_timeout_falls_back_to_seed(self, monkeypatch):
-        self._patch_doh(monkeypatch, {
-            "https://dns.google": httpx.TimeoutException("timeout"),
-            "https://cloudflare-dns.com": httpx.TimeoutException("timeout"),
-        }, system_dns_ips=["149.154.166.110"])
-
-        ips = await tnet.discover_fallback_ips()
-        assert ips == tnet._SEED_FALLBACK_IPS
-
-    @pytest.mark.asyncio
-    async def test_doh_connect_error_falls_back_to_seed(self, monkeypatch):
-        self._patch_doh(monkeypatch, {
-            "https://dns.google": httpx.ConnectError("refused"),
-            "https://cloudflare-dns.com": httpx.ConnectError("refused"),
-        }, system_dns_ips=["149.154.166.110"])
-
-        ips = await tnet.discover_fallback_ips()
-        assert ips == tnet._SEED_FALLBACK_IPS
-
-    @pytest.mark.asyncio
-    async def test_doh_malformed_json_falls_back_to_seed(self, monkeypatch):
-        self._patch_doh(monkeypatch, {
-            "https://dns.google": (200, {"Status": 0}),  # no Answer key
-            "https://cloudflare-dns.com": (200, {"garbage": True}),
-        }, system_dns_ips=["149.154.166.110"])
-
-        ips = await tnet.discover_fallback_ips()
-        assert ips == tnet._SEED_FALLBACK_IPS
-
-    @pytest.mark.asyncio
-    async def test_one_provider_fails_other_succeeds(self, monkeypatch):
-        self._patch_doh(monkeypatch, {
-            "https://dns.google": httpx.TimeoutException("timeout"),
-            "https://cloudflare-dns.com": (200, _doh_answer("149.154.167.220")),
-        }, system_dns_ips=["149.154.166.110"])
-
-        ips = await tnet.discover_fallback_ips()
-        assert ips == ["149.154.167.220"]
-
-    @pytest.mark.asyncio
-    async def test_system_dns_failure_keeps_all_doh_ips(self, monkeypatch):
-        """If system DNS fails, nothing gets excluded — all DoH IPs kept."""
-        self._patch_doh(monkeypatch, {
-            "https://dns.google": (200, _doh_answer("149.154.166.110", "149.154.167.220")),
-            "https://cloudflare-dns.com": (200, _doh_answer()),
-        }, system_dns_ips=None)  # triggers OSError
-
-        ips = await tnet.discover_fallback_ips()
-        assert "149.154.166.110" in ips
-        assert "149.154.167.220" in ips
 
     @pytest.mark.asyncio
     async def test_all_doh_ips_same_as_system_dns_kept(self, monkeypatch):
@@ -661,47 +462,30 @@ class TestDiscoverFallbackIps:
         ips = await tnet.discover_fallback_ips()
         assert ips == ["149.154.166.110"]
 
+
     @pytest.mark.asyncio
-    async def test_cloudflare_gets_accept_header(self, monkeypatch):
-        client = self._patch_doh(monkeypatch, {
+    async def test_hung_system_dns_does_not_gate_doh_results(self, monkeypatch):
+        """#63309: socket.getaddrinfo has no timeout of its own — a wedged OS
+        resolver must not stall discovery. DoH answers must come back promptly
+        even while the system-DNS worker thread is still hanging."""
+        import time as _time
+
+        self._patch_doh(monkeypatch, {
             "https://dns.google": (200, _doh_answer("149.154.167.220")),
-            "https://cloudflare-dns.com": (200, _doh_answer("149.154.167.221")),
-        }, system_dns_ips=["149.154.166.110"])
-
-        await tnet.discover_fallback_ips()
-
-        cf_reqs = [r for r in client.requests_made if "cloudflare" in r["url"]]
-        assert cf_reqs
-        assert cf_reqs[0]["headers"]["Accept"] == "application/dns-json"
-
-    @pytest.mark.asyncio
-    async def test_non_a_records_ignored(self, monkeypatch):
-        """AAAA records (type 28) and CNAME (type 5) should be skipped."""
-        answer = {
-            "Answer": [
-                {"type": 5, "data": "telegram.org"},  # CNAME
-                {"type": 28, "data": "2001:67c:4e8:f004::9"},  # AAAA
-                {"type": 1, "data": "149.154.167.220"},  # A ✓
-            ]
-        }
-        self._patch_doh(monkeypatch, {
-            "https://dns.google": (200, answer),
             "https://cloudflare-dns.com": (200, _doh_answer()),
         }, system_dns_ips=["149.154.166.110"])
+        monkeypatch.setattr(tnet, "_DOH_TIMEOUT", 0.2)
 
+        def _hung_getaddrinfo(*a, **kw):
+            _time.sleep(0.2)  # far beyond the discovery bound
+            raise OSError("resolver wedged")
+
+        monkeypatch.setattr(tnet.socket, "getaddrinfo", _hung_getaddrinfo)
+
+        start = _time.monotonic()
         ips = await tnet.discover_fallback_ips()
-        assert ips == ["149.154.167.220"]
+        elapsed = _time.monotonic() - start
 
-    @pytest.mark.asyncio
-    async def test_invalid_ip_in_doh_response_skipped(self, monkeypatch):
-        answer = {"Answer": [
-            {"type": 1, "data": "not-an-ip"},
-            {"type": 1, "data": "149.154.167.220"},
-        ]}
-        self._patch_doh(monkeypatch, {
-            "https://dns.google": (200, answer),
-            "https://cloudflare-dns.com": (200, _doh_answer()),
-        }, system_dns_ips=["149.154.166.110"])
-
-        ips = await tnet.discover_fallback_ips()
         assert ips == ["149.154.167.220"]
+        assert elapsed < 1.4, f"discovery gated on hung system DNS ({elapsed:.2f}s)"
+

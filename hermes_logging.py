@@ -765,11 +765,22 @@ def _read_logging_config():
     Returns ``(level, max_size_mb, backup_count)`` — any may be ``None``.
     """
     try:
-        from utils import fast_safe_load
-        config_path = get_config_path()
-        if config_path.exists():
+        # Prefer the shared (mtime, size)-keyed raw-config cache so this read
+        # reuses the parse hermes_cli.main's early bridge already did (one
+        # config.yaml parse per process instead of 3-4). Fall back to a
+        # direct parse when hermes_cli.config isn't importable (bare
+        # hermes_logging consumers).
+        try:
+            from hermes_cli.config import read_raw_config as _rrc
+            cfg = _rrc() or {}
+        except Exception:
+            from utils import fast_safe_load
+            config_path = get_config_path()
+            if not config_path.exists():
+                return (None, None, None)
             with open(config_path, "r", encoding="utf-8") as f:
                 cfg = fast_safe_load(f) or {}
+        if cfg:
             # Managed scope: an administrator can pin logging.* too. Overlay via
             # the shared helper (fail-open) since this reads config.yaml directly.
             try:

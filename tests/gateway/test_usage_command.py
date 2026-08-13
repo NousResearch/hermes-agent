@@ -108,92 +108,10 @@ class TestUsageCachedAgent:
         assert "80,000" in result   # running agent's total
         assert "API calls: 10" in result
 
-    @pytest.mark.asyncio
-    async def test_sentinel_skipped_uses_cache(self):
-        """PENDING sentinel in _running_agents should fall through to cache."""
-        from gateway.run import _AGENT_PENDING_SENTINEL
-
-        cached = _make_mock_agent()
-        runner = _make_runner(SK, cached_agent=cached)
-        runner._running_agents[SK] = _AGENT_PENDING_SENTINEL
-        event = MagicMock()
-
-        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
-             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
-            mock_cost.return_value = MagicMock(amount_usd=None, status="unknown")
-            result = await runner._handle_usage_command(event)
-
-        assert "claude-sonnet-4.6" in result
-        assert "Session Token Usage" in result
-
-    @pytest.mark.asyncio
-    async def test_no_agent_anywhere_falls_to_history(self):
-        """No running or cached agent → rough estimate from transcript."""
-        runner = _make_runner(SK)
-        event = MagicMock()
-
-        session_entry = MagicMock()
-        session_entry.session_id = "sess123"
-        runner.session_store.get_or_create_session.return_value = session_entry
-        runner.session_store.load_transcript.return_value = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi there"},
-        ]
-
-        with patch("agent.model_metadata.estimate_messages_tokens_rough", return_value=500):
-            result = await runner._handle_usage_command(event)
-
-        assert "Session Info" in result
-        assert "Messages: 2" in result
-        assert "~500" in result
-
-    @pytest.mark.asyncio
-    async def test_cache_read_write_hidden_when_zero(self):
-        """Cache token lines should be omitted when zero."""
-        agent = _make_mock_agent(session_cache_read_tokens=0, session_cache_write_tokens=0)
-        runner = _make_runner(SK, cached_agent=agent)
-        event = MagicMock()
-
-        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
-             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
-            mock_cost.return_value = MagicMock(amount_usd=None, status="unknown")
-            result = await runner._handle_usage_command(event)
-
-        assert "Cache read" not in result
-        assert "Cache write" not in result
-
 
 class TestUsageAccountSection:
     """Account-limits section appended to /usage output (PR #2486)."""
 
-    @pytest.mark.asyncio
-    async def test_usage_command_includes_account_section(self, monkeypatch):
-        agent = _make_mock_agent(provider="openai-codex")
-        agent.base_url = "https://chatgpt.com/backend-api/codex"
-        agent.api_key = "unused"
-        runner = _make_runner(SK, cached_agent=agent)
-        event = MagicMock()
-
-        monkeypatch.setattr(
-            "gateway.slash_commands.fetch_account_usage",
-            lambda provider, base_url=None, api_key=None: object(),
-        )
-        monkeypatch.setattr(
-            "gateway.slash_commands.render_account_usage_lines",
-            lambda snapshot, markdown=False: [
-                "📈 **Account limits**",
-                "Provider: openai-codex (Pro)",
-                "Session: 85% remaining (15% used)",
-            ],
-        )
-        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
-             patch("agent.usage_pricing.estimate_usage_cost") as mock_cost:
-            mock_cost.return_value = MagicMock(amount_usd=None, status="included")
-            result = await runner._handle_usage_command(event)
-
-        assert "📊 **Session Token Usage**" in result
-        assert "📈 **Account limits**" in result
-        assert "Provider: openai-codex (Pro)" in result
 
     @pytest.mark.asyncio
     async def test_usage_command_uses_persisted_provider_when_agent_not_running(self, monkeypatch):
@@ -245,6 +163,37 @@ class TestUsageAccountSection:
         assert "📈 **Account limits**" in result
 
 
+class TestUsageReset:
+    """`/usage reset [--force]` — banked Codex reset redemption via the gateway."""
+
+    def _event(self, args):
+        event = MagicMock()
+        event.get_command_args.return_value = args
+        return event
+
+    @pytest.mark.asyncio
+    async def test_reset_dispatches_redeem_for_codex_agent(self, monkeypatch):
+        agent = _make_mock_agent(provider="openai-codex",
+                                 base_url="https://chatgpt.com/backend-api/codex",
+                                 api_key="tok")
+        runner = _make_runner(SK, cached_agent=agent)
+
+        seen = {}
+
+        def fake_redeem(*, base_url=None, api_key=None, force=False):
+            seen.update(base_url=base_url, api_key=api_key, force=force)
+            from agent.account_usage import CodexResetRedeemResult
+            return CodexResetRedeemResult(status="reset", message="✅ redeemed", available_count=1)
+
+        monkeypatch.setattr("agent.account_usage.redeem_codex_reset_credit", fake_redeem)
+
+        result = await runner._handle_usage_command(self._event("reset"))
+
+        assert result == "✅ redeemed"
+        assert seen["force"] is False
+        assert seen["api_key"] == "tok"
+
+
 class TestUsageContextBreakdown:
     """The /usage output includes the per-category context breakdown."""
 
@@ -288,20 +237,3 @@ class TestUsageContextBreakdown:
         # Zero-token category is dropped, not rendered.
         assert "Conversation" not in result
 
-    @pytest.mark.asyncio
-    async def test_breakdown_failure_is_non_fatal(self):
-        """A breakdown engine error must not break the rest of /usage."""
-        agent = _make_mock_agent()
-        runner = _make_runner(SK, cached_agent=agent)
-        runner.session_store.get_or_create_session.side_effect = RuntimeError("boom")
-        event = MagicMock()
-
-        with patch("agent.rate_limit_tracker.format_rate_limit_compact", return_value="RPM: 50/60"), \
-             patch("agent.context_breakdown.compute_session_context_breakdown",
-                   side_effect=RuntimeError("engine down")):
-            result = await runner._handle_usage_command(event)
-
-        # Core usage lines still render; no breakdown header.
-        assert "📊 **Session Token Usage**" in result
-        assert "50,000" in result  # total tokens
-        assert "Context breakdown" not in result

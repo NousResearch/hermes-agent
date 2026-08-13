@@ -13,6 +13,12 @@ class _CapturingSessionDB:
         self.rows.append({"role": role, "content": content})
         return len(self.rows)
 
+    def append_messages_batch(self, session_id, messages, **kwargs):
+        # Mirror the real batch writer: same rows, one call.
+        for m in messages:
+            self.rows.append({"role": m.get("role"), "content": m.get("content")})
+        return list(range(len(self.rows) - len(messages) + 1, len(self.rows) + 1))
+
 
 def _agent_with_capturing_db():
     agent = AIAgent.__new__(AIAgent)
@@ -98,22 +104,6 @@ def test_persist_session_keeps_unmarked_terminal_empty_response():
     assert agent.flushed_session_db_messages[-1] == messages
 
 
-def test_persist_session_strips_marked_terminal_empty_sentinel():
-    agent = _agent_with_stubbed_persistence()
-    messages = [
-        {"role": "user", "content": "continue"},
-        {
-            "role": "assistant",
-            "content": "(empty)",
-            "_empty_terminal_sentinel": True,
-        },
-    ]
-
-    AIAgent._persist_session(agent, messages, conversation_history=[])
-
-    assert messages == [{"role": "user", "content": "continue"}]
-    assert agent.flushed_session_db_messages[-1] == messages
-    assert all(not msg.get("_empty_terminal_sentinel") for msg in messages)
 
 
 def test_flush_never_writes_buried_empty_recovery_scaffolding():

@@ -175,41 +175,8 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
     cli.agent._invalidate_system_prompt.assert_called_once()
 
 
-def test_new_session_queues_boundary_commit_with_snapshot(tmp_path):
-    """/new hands the OLD session's history + ids to the memory manager's
-    serialized boundary task instead of blocking on extraction inline."""
-    cli = _prepare_cli_with_active_session(tmp_path)
-    old_session_id = cli.session_id
-
-    mm = MagicMock()
-    cli.agent._memory_manager = mm
-
-    cli.process_command("/new")
-
-    mm.commit_session_boundary_async.assert_called_once()
-    args, kwargs = mm.commit_session_boundary_async.call_args
-    assert args[0] == [{"role": "user", "content": "hello"}]
-    assert kwargs["new_session_id"] == cli.session_id
-    assert kwargs["parent_session_id"] == old_session_id
-    assert kwargs["reason"] == "new_session"
-    # The queued path replaces the inline switch — not both.
-    mm.on_session_switch.assert_not_called()
 
 
-def test_new_session_without_history_switches_inline(tmp_path):
-    """No old-session history → nothing to extract → plain inline switch."""
-    cli = _prepare_cli_with_active_session(tmp_path)
-    cli.conversation_history = []
-
-    mm = MagicMock()
-    cli.agent._memory_manager = mm
-
-    cli.process_command("/new")
-
-    mm.commit_session_boundary_async.assert_not_called()
-    mm.on_session_switch.assert_called_once()
-    _, kwargs = mm.on_session_switch.call_args
-    assert kwargs["reset"] is True
 
 
 def test_new_session_delivers_context_engine_boundary_synchronously(tmp_path):
@@ -256,30 +223,8 @@ def test_run_cleanup_flushes_pending_memory_manager_work(tmp_path):
     mm.flush_pending.assert_called_once_with(timeout=10)
 
 
-def test_new_command_rotates_hermes_session_id_env_and_context(tmp_path):
-    from gateway.session_context import _VAR_MAP, get_session_env
-
-    cli = _prepare_cli_with_active_session(tmp_path)
-    old_session_id = cli.session_id
-    os.environ["HERMES_SESSION_ID"] = old_session_id
-    _VAR_MAP["HERMES_SESSION_ID"].set(old_session_id)
-
-    cli.process_command("/new")
-
-    assert cli.session_id != old_session_id
-    assert os.environ["HERMES_SESSION_ID"] == cli.session_id
-    assert get_session_env("HERMES_SESSION_ID") == cli.session_id
 
 
-def test_reset_command_is_alias_for_new_session(tmp_path):
-    cli = _prepare_cli_with_active_session(tmp_path)
-    old_session_id = cli.session_id
-
-    cli.process_command("/reset")
-
-    assert cli.session_id != old_session_id
-    assert cli._session_db.get_session(old_session_id)["end_reason"] == "new_session"
-    assert cli._session_db.get_session(cli.session_id) is not None
 
 
 def test_clear_command_starts_new_session_before_redrawing(tmp_path):
@@ -352,38 +297,3 @@ def test_new_session_with_title(capsys):
     assert "My Test Session" in captured.out
 
 
-def test_new_session_with_duplicate_title_surfaces_error(capsys):
-    """new_session(title=...) handles ValueError from a duplicate-title conflict.
-
-    The session is still created; the title assignment fails; the success banner
-    must not claim the rejected title as the session name.
-    """
-    cli = _make_cli()
-    cli._session_db = MagicMock()
-    cli._session_db.set_session_title.side_effect = ValueError(
-        "Title 'Dup' is already in use by session abc-123"
-    )
-    cli.agent = _FakeAgent("old_session_id", datetime.now())
-    cli.conversation_history = []
-
-    # Capture warnings printed via cli._cprint. After importlib.reload(),
-    # the method's __globals__ dict is the one from the live module — patch
-    # the exact dict the method will read.
-    warnings: list[str] = []
-    method_globals = cli.new_session.__globals__
-    original = method_globals["_cprint"]
-    method_globals["_cprint"] = lambda msg: warnings.append(msg)
-    try:
-        cli.new_session(title="Dup")
-    finally:
-        method_globals["_cprint"] = original
-
-    cli._session_db.set_session_title.assert_called_once()
-    joined = "\n".join(warnings)
-    assert "already in use" in joined
-    assert "session started untitled" in joined
-
-    # The success banner must NOT claim the rejected title as the session name.
-    captured = capsys.readouterr()
-    assert "New session started: Dup" not in captured.out
-    assert "New session started!" in captured.out

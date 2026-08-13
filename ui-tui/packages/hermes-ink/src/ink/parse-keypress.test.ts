@@ -131,3 +131,68 @@ describe('flush-boundary SGR mouse reassembly', () => {
     expect(key).toMatchObject({ name: 'wheelup' })
   })
 })
+
+describe('cursor position report parsing', () => {
+  it('parses DECXCPR cursor position report (CSI ? row;col R)', () => {
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[?22;1R')
+
+    expect(key).toMatchObject({
+      kind: 'response',
+      response: { type: 'cursorPosition', row: 22, col: 1 }
+    })
+  })
+
+  it('parses standard DSR cursor position report (CSI row;col R) when row > 1', () => {
+    // Terminals that don't support DECXCPR may respond to CSI ? 6 n with
+    // the plain DSR form (no ?). These must be recognized as responses,
+    // not inserted as literal text.
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[22;1R')
+
+    expect(key).toMatchObject({
+      kind: 'response',
+      response: { type: 'cursorPosition', row: 22, col: 1 }
+    })
+  })
+
+  it('parses standard DSR report with multi-digit row and col', () => {
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[10;80R')
+
+    expect(key).toMatchObject({
+      kind: 'response',
+      response: { type: 'cursorPosition', row: 10, col: 80 }
+    })
+  })
+
+  it('does NOT treat CSI 1;2 R as a cursor position report (Shift+F3 ambiguity)', () => {
+    // CSI 1;2 R is Shift+F3 in xterm. Without the ? marker, row 1 is
+    // ambiguous with F3 modifiers — must fall through to parseKeypress,
+    // not be silently dropped as a terminal response.
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[1;2R')
+
+    expect(key.kind).not.toBe('response')
+  })
+
+  it('does NOT treat CSI 1;5 R as a cursor position report (Ctrl+F3 ambiguity)', () => {
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[1;5R')
+
+    expect(key.kind).not.toBe('response')
+  })
+
+  it('does NOT treat CSI 0;col R as a cursor position report (invalid row-zero DSR)', () => {
+    // Terminal coordinates are 1-indexed, so a plain DSR report with row 0 is
+    // invalid. Without the ? marker it must remain unclassified rather than be
+    // reported as a cursor position (guard is row <= 1, not row === 1).
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[0;5R')
+
+    expect(key.kind).not.toBe('response')
+  })
+
+  it('treats DECXCPR at row 1 as a cursor position report (? disambiguates from F3)', () => {
+    const [[key]] = parseMultipleKeypresses(INITIAL_STATE, '\x1b[?1;2R')
+
+    expect(key).toMatchObject({
+      kind: 'response',
+      response: { type: 'cursorPosition', row: 1, col: 2 }
+    })
+  })
+})

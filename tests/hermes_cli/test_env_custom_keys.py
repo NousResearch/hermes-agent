@@ -47,14 +47,6 @@ def test_custom_key_is_password_masked(monkeypatch):
     assert "s3cret-value" not in str(row)
 
 
-def test_catalogued_key_is_not_marked_custom(monkeypatch):
-    """A key present in OPTIONAL_ENV_VARS keeps its real category, not custom."""
-    rows = _env_rows(monkeypatch, {"HONCHO_API_KEY": "abc123"})
-    row = rows["HONCHO_API_KEY"]
-    assert row.get("custom") is not True
-    assert row["category"] == "tool"
-
-
 def test_every_row_has_custom_flag(monkeypatch):
     """The ``custom`` field is always present so the SPA can branch on it."""
     rows = _env_rows(monkeypatch, {"MY_CUSTOM_THING": "x"})

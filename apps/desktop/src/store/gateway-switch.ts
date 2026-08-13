@@ -1,10 +1,14 @@
 import { atom } from 'nanostores'
 
-import { queryClient } from '@/lib/query-client'
+import { resetLiveRuntimeTracking } from '@/app/contrib/hooks/use-background-sync'
+import { resetSidebarBatchCapability } from '@/hermes'
+import { invalidateProfileScopedQueries } from '@/lib/query-client'
+import { clearArtifactRegistry } from '@/store/artifacts'
 import { resetSessionsLimit } from '@/store/layout'
+import { resetLiveSync } from '@/store/live-sync'
 import {
+  $unreadFinishedSessionIds,
   setActiveSessionId,
-  setAttentionSessionIds,
   setCronSessions,
   setFreshDraftReady,
   setMessages,
@@ -12,19 +16,18 @@ import {
   setMessagingSessions,
   setMessagingTruncated,
   setSelectedStoredSessionId,
-  setSessionProfileTotals,
+  setSessionProfilesTruncated,
+  setSessionProfilesUsage,
   setSessions,
-  setSessionsLoading,
-  setSessionsTotal,
-  setWorkingSessionIds
+  setSessionsLoading
 } from '@/store/session'
+import { resetSessionPinMirror } from '@/store/session-pin-sync'
+import { clearAllSessionStates } from '@/store/session-states'
 
 // True while a soft gateway-mode apply is mid-flight (wipe → re-dial). Lets the
 // boot hook suppress the backend-exit toast and keeps the cold-boot CONNECTING
 // overlay from resurrecting when startHermes re-emits boot progress.
 export const $gatewaySwitching = atom(false)
-
-const PREVIEW_HOLD_MS = 1400
 
 /**
  * Clear gateway-bound session UI so sidebar skeletons retrigger.
@@ -39,15 +42,27 @@ const PREVIEW_HOLD_MS = 1400
  * alone so the user stays where they were (e.g. mid-Gateway settings).
  */
 export function wipeSessionListsForGatewaySwitch(): void {
+  // The next backend is a different runtime — don't carry the old one's
+  // "batched sidebar endpoint missing" capability verdict across the switch.
+  resetSidebarBatchCapability()
+  // Pins are mirrored per-backend. The next gateway has its own state.db and
+  // has never seen them, so drop the "already pushed" bookkeeping and let the
+  // next reconcile re-assert the whole set against the new backend.
+  resetSessionPinMirror()
   setSessions([])
-  setSessionsTotal(0)
-  setSessionProfileTotals({})
+  setSessionProfilesTruncated({})
+  setSessionProfilesUsage({})
   setCronSessions([])
   setMessagingSessions([])
   setMessagingPlatformTotals({})
   setMessagingTruncated(false)
-  setWorkingSessionIds([])
-  setAttentionSessionIds([])
+  // Clearing $sessionStates automatically clears $workingSessionIds and
+  // $attentionSessionIds (computed) and $stalledSessionIds (owned beside it).
+  // $unreadFinishedSessionIds is separate, so wipe it explicitly.
+  clearAllSessionStates()
+  resetLiveRuntimeTracking()
+  resetLiveSync()
+  $unreadFinishedSessionIds.set([])
   setSessionsLoading(true)
   resetSessionsLimit()
 
@@ -56,28 +71,11 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setMessages([])
   setFreshDraftReady(true)
 
-  void queryClient.invalidateQueries()
-}
+  // Artifacts are keyed by sessions on the previous backend, so both the
+  // registry and any rail tab pointing into it go with them.
+  clearArtifactRegistry()
 
-/**
- * Dev review beat: wipe → skeletons for PREVIEW_HOLD_MS → clear loading.
- * Does not tear down a real backend. Fired from the Settings button (Electron
- * has no easy `?query=` entry).
- */
-export async function previewGatewaySwitch(holdMs = PREVIEW_HOLD_MS): Promise<void> {
-  if ($gatewaySwitching.get()) {
-    return
-  }
-
-  $gatewaySwitching.set(true)
-  wipeSessionListsForGatewaySwitch()
-
-  try {
-    await new Promise<void>(resolve => {
-      window.setTimeout(resolve, holdMs)
-    })
-  } finally {
-    setSessionsLoading(false)
-    $gatewaySwitching.set(false)
-  }
+  // Narrowed: account/marketplace/onboarding caches are global, not gateway-
+  // scoped, so a mode swap must not refetch them.
+  invalidateProfileScopedQueries()
 }

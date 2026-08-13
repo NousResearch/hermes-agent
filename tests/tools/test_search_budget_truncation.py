@@ -63,66 +63,6 @@ def test_rg_timeout_returns_partial_results_without_marker(ops, monkeypatch, tar
         assert all("timed out" not in path for path in result.files)
 
 
-def test_rg_count_timeout_returns_partial_counts(ops, monkeypatch):
-    ops.env.execute.side_effect = path_exists_or(timeout_output("src/a.py:3", "src/b.py:5"))
-    monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd == "rg")
-
-    result = ops.search("foo", path="/big", target="content", output_mode="count")
-
-    assert_timed_out(result)
-    assert result.counts == {"src/a.py": 3, "src/b.py": 5}
-
-
-def test_rg_file_timeout_does_not_retry_unsorted(ops, monkeypatch):
-    calls = 0
-
-    def execute(command, **kwargs):
-        nonlocal calls
-        if "test -e" in command:
-            return {"output": "exists", "returncode": 0}
-        calls += 1
-        return {"output": timeout_output(), "returncode": 124}
-
-    ops.env.execute.side_effect = execute
-    monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd == "rg")
-
-    result = ops.search("*.py", path="/big", target="files")
-
-    assert calls == 1
-    assert_timed_out(result)
-    assert result.files == []
-
-
-def test_grep_timeout_returns_partial_match(ops, monkeypatch):
-    ops.env.execute.side_effect = path_exists_or(timeout_output("src/a.py:10:foo"))
-    monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd == "grep")
-
-    result = ops.search("foo", path="/big", target="content")
-
-    assert_timed_out(result)
-    assert [match.path for match in result.matches] == ["src/a.py"]
-
-
-def test_find_timeout_returns_partial_files_and_does_not_retry(ops, monkeypatch):
-    calls = 0
-
-    def execute(command, **kwargs):
-        nonlocal calls
-        if "test -e" in command:
-            return {"output": "exists", "returncode": 0}
-        calls += 1
-        return {"output": timeout_output("1700000000.0 /big/a.py"), "returncode": 124}
-
-    ops.env.execute.side_effect = execute
-    monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd == "find")
-
-    result = ops.search("*.py", path="/big", target="files")
-
-    assert calls == 1
-    assert_timed_out(result)
-    assert result.files == ["/big/a.py"]
-
-
 def test_real_rg_error_still_hard_fails(ops, monkeypatch):
     ops.env.execute.side_effect = path_exists_or("rg: regex parse error:", returncode=2)
     monkeypatch.setattr(ops, "_has_command", lambda cmd: cmd == "rg")

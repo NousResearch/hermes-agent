@@ -16,6 +16,7 @@ import { DiffCount } from '@/components/ui/diff-count'
 import { Tip } from '@/components/ui/tooltip'
 import { useDelayedTrue } from '@/hooks/use-delayed-true'
 import { useI18n } from '@/i18n'
+import { displayPath } from '@/lib/display-path'
 import { cn } from '@/lib/utils'
 import { $panesFlipped } from '@/store/layout'
 import { notifyError } from '@/store/notifications'
@@ -84,7 +85,9 @@ export function ReviewPane() {
       {(loading || isRepo) && (
         <RightSidebarSectionHeader data-suppress-pane-reveal-side="">
           <div className="flex min-w-0 flex-1">
-            <SidebarPanelLabel>{c.review}</SidebarPanelLabel>
+            {/* Pure self-naming label — redundant under a zone tab that already
+                says "review", so the zone header hides it (styles.css). */}
+            <SidebarPanelLabel data-pane-self-label="">{c.review}</SidebarPanelLabel>
           </div>
           <Tip label={treeMode === 'tree' ? c.viewAsList : c.viewAsTree}>
             <Button
@@ -133,11 +136,9 @@ export function ReviewPane() {
               <Codicon name="refresh" size="0.8125rem" spinning={loading} />
             </Button>
           </Tip>
-          <Tip label={c.close}>
-            <Button aria-label={c.close} className={ACTION_BTN} onClick={closeReview} size="icon-xs" variant="ghost">
-              <Codicon name="close" size="0.8125rem" />
-            </Button>
-          </Tip>
+          <Button aria-label={c.close} className={ACTION_BTN} onClick={closeReview} size="icon-xs" variant="ghost">
+            <Codicon name="close" size="0.8125rem" />
+          </Button>
         </RightSidebarSectionHeader>
       )}
 
@@ -162,9 +163,9 @@ export function ReviewPane() {
           <div className="flex items-center gap-1 px-2.5 py-1.5" data-suppress-pane-reveal-side="">
             <span
               className="min-w-0 flex-1 truncate font-mono text-[0.66rem] text-(--ui-text-secondary)"
-              title={selectedFile.path}
+              title={displayPath(selectedFile.path)}
             >
-              {selectedFile.path}
+              {displayPath(selectedFile.path)}
             </span>
             <DiffCount added={selectedFile.added} className="text-[0.64rem] leading-4" removed={selectedFile.removed} />
             <Tip label={selectedFile.staged ? c.unstage : c.stage}>
@@ -182,17 +183,15 @@ export function ReviewPane() {
                 <Codicon name={selectedFile.staged ? 'remove' : 'add'} size="0.8rem" />
               </Button>
             </Tip>
-            <Tip label={c.close}>
-              <Button
-                aria-label={c.close}
-                className={ACTION_BTN}
-                onClick={clearReviewSelection}
-                size="icon-xs"
-                variant="ghost"
-              >
-                <Codicon name="close" size="0.8rem" />
-              </Button>
-            </Tip>
+            <Button
+              aria-label={c.close}
+              className={ACTION_BTN}
+              onClick={clearReviewSelection}
+              size="icon-xs"
+              variant="ghost"
+            >
+              <Codicon name="close" size="0.8rem" />
+            </Button>
           </div>
           <div className="min-h-0 flex-1 overflow-auto px-1 pb-1">
             {diffLoading ? (
@@ -200,7 +199,7 @@ export function ReviewPane() {
                 <DiffSkeleton />
               ) : null
             ) : diff ? (
-              <FileDiffPanel diff={diff} path={selectedFile.path} />
+              <FileDiffPanel className="mx-0 mb-0 h-full max-h-none" diff={diff} path={selectedFile.path} virtualized />
             ) : (
               <div className="py-6 text-center text-[0.66rem] text-muted-foreground/60">{c.noDiff}</div>
             )}
@@ -219,9 +218,9 @@ export function ReviewPane() {
               {!revertingAll && revertTarget?.path && (
                 <span
                   className="mt-2 block truncate font-mono text-[0.7rem] text-(--ui-text-secondary)"
-                  title={revertTarget.path}
+                  title={displayPath(revertTarget.path)}
                 >
-                  {revertTarget.path}
+                  {displayPath(revertTarget.path)}
                 </span>
               )}
             </DialogDescription>

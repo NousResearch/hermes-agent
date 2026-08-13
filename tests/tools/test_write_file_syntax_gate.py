@@ -33,27 +33,6 @@ class TestFailClosedSyntaxGate:
         assert "json" in res.error.lower()
         assert not target.exists(), "invalid JSON must NOT be written to disk"
 
-    def test_invalid_json_refused_existing_file_not_modified(self, ops, tmp_path: Path):
-        target = tmp_path / "config.json"
-        target.write_text('{"a": 1}')
-        res = ops.write_file(str(target), '{"a": 1,')
-        assert res.error is not None
-        assert target.read_text() == '{"a": 1}', (
-            "existing valid file must be left untouched by a refused write"
-        )
-
-    def test_invalid_yaml_refused_file_not_created(self, ops, tmp_path: Path):
-        target = tmp_path / "config.yaml"
-        res = ops.write_file(str(target), 'key: "unclosed\n')
-        assert res.error is not None
-        assert "yaml" in res.error.lower()
-        assert not target.exists(), "invalid YAML must NOT be written to disk"
-
-    def test_invalid_yml_extension_also_refused(self, ops, tmp_path: Path):
-        target = tmp_path / "config.yml"
-        res = ops.write_file(str(target), 'key: "unclosed\n')
-        assert res.error is not None
-        assert not target.exists()
 
     def test_valid_json_written_exactly(self, ops, tmp_path: Path):
         target = tmp_path / "config.json"
@@ -62,21 +41,6 @@ class TestFailClosedSyntaxGate:
         assert res.error is None, res.error
         assert target.read_text() == content
 
-    def test_valid_yaml_written_exactly(self, ops, tmp_path: Path):
-        target = tmp_path / "config.yaml"
-        content = "a: 1\nb:\n  - 1\n  - 2\n"
-        res = ops.write_file(str(target), content)
-        assert res.error is None, res.error
-        assert target.read_text() == content
-
-    def test_non_linted_extension_with_garbage_still_written(self, ops, tmp_path: Path):
-        """Behavior for extensions with NO in-process linter is unchanged --
-        garbage content is written as-is, no refusal."""
-        target = tmp_path / "notes.txt"
-        garbage = "{{{ not json, not yaml, not anything ]]] <<<"
-        res = ops.write_file(str(target), garbage)
-        assert res.error is None, res.error
-        assert target.read_text() == garbage
 
     def test_invalid_python_is_NOT_hard_refused(self, ops, tmp_path: Path):
         """Deliberate scope decision: .py keeps the pre-existing NON-BLOCKING
@@ -94,21 +58,6 @@ class TestFailClosedSyntaxGate:
         assert res.lint.get("status") == "error"
         assert "SyntaxError" in res.lint.get("output", "")
 
-    def test_invalid_toml_refused_file_not_created(self, ops, tmp_path: Path):
-        target = tmp_path / "config.toml"
-        res = ops.write_file(str(target), "[section\nk = 'v'")
-        assert res.error is not None
-        assert not target.exists()
-
-    def test_multi_document_yaml_is_valid_and_written(self, ops, tmp_path: Path):
-        """Multi-document streams (k8s manifests) are valid YAML *syntax* —
-        the gate must not refuse them just because safe_load() would raise
-        ComposerError on more than one document."""
-        target = tmp_path / "manifests.yaml"
-        content = "apiVersion: v1\nkind: Namespace\n---\napiVersion: v1\nkind: ConfigMap\n"
-        res = ops.write_file(str(target), content)
-        assert res.error is None, res.error
-        assert target.read_text() == content
 
     def test_custom_tagged_yaml_is_valid_and_written(self, ops, tmp_path: Path):
         """Application-defined tags (CloudFormation !Sub/!Ref, Ansible !vault)

@@ -1,14 +1,14 @@
 ---
-title: "Bioinformatics — Gateway to 400+ bioinformatics skills from bioSkills and ClawBio"
+title: "Bioinformatics — Gateway to 400+ genomics and computational biology skills"
 sidebar_label: "Bioinformatics"
-description: "Gateway to 400+ bioinformatics skills from bioSkills and ClawBio"
+description: "Gateway to 400+ genomics and computational biology skills"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Bioinformatics
 
-Gateway to 400+ bioinformatics skills from bioSkills and ClawBio. Covers genomics, transcriptomics, single-cell, variant calling, pharmacogenomics, metagenomics, structural biology, and more. Fetches domain-specific reference material on demand.
+Gateway to 400+ genomics and computational biology skills.
 
 ## Skill metadata
 
@@ -17,6 +17,8 @@ Gateway to 400+ bioinformatics skills from bioSkills and ClawBio. Covers genomic
 | Source | Optional — install with `hermes skills install official/research/bioinformatics` |
 | Path | `optional-skills/research/bioinformatics` |
 | Version | `1.0.0` |
+| Author | Teknium (teknium1), Hermes Agent |
+| License | MIT |
 | Platforms | linux, macos |
 | Tags | `bioinformatics`, `genomics`, `sequencing`, `biology`, `research`, `science` |
 

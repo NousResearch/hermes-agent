@@ -1,14 +1,14 @@
 ---
-title: "Searxng Search — Free meta-search via SearXNG — aggregates results from 70+ search engines"
+title: "Searxng Search — Free keyless meta-search aggregating 70+ engines"
 sidebar_label: "Searxng Search"
-description: "Free meta-search via SearXNG — aggregates results from 70+ search engines"
+description: "Free keyless meta-search aggregating 70+ engines"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Searxng Search
 
-Free meta-search via SearXNG — aggregates results from 70+ search engines. Self-hosted or use a public instance. No API key needed. Falls back automatically when the web search toolset is unavailable.
+Free keyless meta-search aggregating 70+ engines.
 
 ## Skill metadata
 
@@ -16,7 +16,7 @@ Free meta-search via SearXNG — aggregates results from 70+ search engines. Sel
 |---|---|
 | Source | Optional — install with `hermes skills install official/research/searxng-search` |
 | Path | `optional-skills/research/searxng-search` |
-| Version | `1.0.0` |
+| Version | `1.0.1` |
 | Author | hermes-agent |
 | License | MIT |
 | Platforms | linux, macos |
@@ -140,23 +140,6 @@ for r in data.get("results", []):
     print(r.get("content", "")[:200])
     print()
 ```
-
-## Method 3: searxng-data Python Package
-
-For more structured access, install the `searxng-data` package:
-
-```bash
-pip install searxng-data
-```
-
-```python
-from searxng_data import engines
-
-# List available engines
-print(engines.list_engines())
-```
-
-Note: This package only provides engine metadata, not the search API itself.
 
 ## Self-Hosting SearXNG
 

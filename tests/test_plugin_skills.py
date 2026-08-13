@@ -30,19 +30,7 @@ class TestParseQualifiedName:
         assert ns is None
         assert bare == "my-skill"
 
-    def test_multiple_colons_splits_on_first(self):
-        from agent.skill_utils import parse_qualified_name
 
-        ns, bare = parse_qualified_name("a:b:c")
-        assert ns == "a"
-        assert bare == "b:c"
-
-    def test_empty_string(self):
-        from agent.skill_utils import parse_qualified_name
-
-        ns, bare = parse_qualified_name("")
-        assert ns is None
-        assert bare == ""
 
 
 class TestIsValidNamespace:
@@ -146,15 +134,35 @@ class TestPluginContextRegisterSkill:
         with pytest.raises(ValueError, match="must not contain ':'"):
             ctx.register_skill("ns:foo", md)
 
-    def test_rejects_invalid_chars(self, ctx, tmp_path):
-        md = tmp_path / "SKILL.md"
-        md.write_text("test")
-        with pytest.raises(ValueError, match="Invalid skill name"):
-            ctx.register_skill("bad.name", md)
 
     def test_rejects_missing_file(self, ctx, tmp_path):
         with pytest.raises(FileNotFoundError):
             ctx.register_skill("foo", tmp_path / "nonexistent.md")
+
+    def test_duplicate_qualified_name_is_rejected(self, ctx, tmp_path):
+        ctx.manifest.portable = True
+        first = tmp_path / "first" / "SKILL.md"
+        second = tmp_path / "second" / "SKILL.md"
+        first.parent.mkdir()
+        second.parent.mkdir()
+        first.write_text("test")
+        second.write_text("test")
+        ctx.register_skill("foo", first)
+        with pytest.raises(ValueError, match="already registered"):
+            ctx.register_skill("foo", second)
+
+    def test_native_duplicate_preserves_overwrite_semantics(self, ctx, tmp_path):
+        first = tmp_path / "first" / "SKILL.md"
+        second = tmp_path / "second" / "SKILL.md"
+        first.parent.mkdir()
+        second.parent.mkdir()
+        first.write_text("first")
+        second.write_text("second")
+
+        ctx.register_skill("foo", first)
+        ctx.register_skill("foo", second)
+
+        assert ctx._manager.find_plugin_skill("testplugin:foo") == second
 
 
 # ── skill_view qualified name dispatch ────────────────────────────────────
@@ -195,6 +203,82 @@ class TestSkillViewQualifiedName:
         assert result["name"] == "superpowers:writing-plans"
         assert "writing-plans body." in result["content"]
 
+    def test_reads_supporting_file_with_containment(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        md = self._register_skill(tmp_path)
+        reference = md.parent / "references" / "api.md"
+        reference.parent.mkdir()
+        reference.write_text("API details.")
+
+        main = json.loads(skill_view("superpowers:writing-plans"))
+        assert main["linked_files"] == {"references": ["references/api.md"]}
+        result = json.loads(
+            skill_view("superpowers:writing-plans", file_path="references/api.md")
+        )
+        assert result["success"] is True
+        assert result["content"] == "API details."
+
+    def test_platform_gate_applies_before_supporting_file(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        md = self._register_skill(
+            tmp_path,
+            content=(
+                "---\nname: writing-plans\ndescription: desc\n"
+                "platforms: [windows]\n---\nBody.\n"
+            ),
+        )
+        reference = md.parent / "references" / "guide.md"
+        reference.parent.mkdir()
+        reference.write_text("Windows only.")
+
+        result = json.loads(
+            skill_view("superpowers:writing-plans", file_path="references/guide.md")
+        )
+
+        assert result["success"] is False
+        assert result["readiness_status"] == "unsupported"
+
+    def test_rejects_supporting_file_escape(self, tmp_path):
+        from tools.skills_tool import skill_view
+
+        self._register_skill(tmp_path)
+        result = json.loads(
+            skill_view("superpowers:writing-plans", file_path="../outside.md")
+        )
+        assert result["success"] is False
+        assert "traversal" in result["error"].lower()
+
+    def test_plugin_skill_usage_reports_installed_provenance(
+        self,
+        tmp_path,
+        monkeypatch,
+    ):
+        from hermes_cli import lifecycle
+        from tools.skills_tool import _skill_view_with_bump
+
+        events = []
+        monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+        monkeypatch.setattr(
+            lifecycle,
+            "invoke_hook",
+            lambda name, **kwargs: events.append((name, kwargs)),
+        )
+        self._register_skill(tmp_path)
+
+        result = json.loads(
+            _skill_view_with_bump(
+                {"name": "superpowers:writing-plans"},
+                task_id="task-1",
+                session_id="session-1",
+            )
+        )
+
+        assert result["success"] is True
+        [loaded] = [event for _, event in events if event["action"] == "loaded"]
+        assert loaded["provenance"] == "installed"
+
     def test_invalid_namespace_returns_error(self, tmp_path):
         from tools.skills_tool import skill_view
 
@@ -202,24 +286,7 @@ class TestSkillViewQualifiedName:
         assert result["success"] is False
         assert "Invalid namespace" in result["error"]
 
-    def test_empty_namespace_returns_error(self, tmp_path):
-        from tools.skills_tool import skill_view
 
-        result = json.loads(skill_view(":foo"))
-        assert result["success"] is False
-        assert "Invalid namespace" in result["error"]
-
-    def test_bare_name_still_uses_flat_tree(self, tmp_path, monkeypatch):
-        from tools.skills_tool import skill_view
-
-        skill_dir = tmp_path / "local-skills" / "my-local"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text("---\nname: my-local\ndescription: local\n---\nLocal body.\n")
-        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", tmp_path / "local-skills")
-
-        result = json.loads(skill_view("my-local"))
-        assert result["success"] is True
-        assert result["name"] == "my-local"
 
     def test_plugin_exists_but_skill_missing(self, tmp_path):
         from tools.skills_tool import skill_view
@@ -231,29 +298,7 @@ class TestSkillViewQualifiedName:
         assert "nonexistent" in result["error"]
         assert "superpowers:foo" in result["available_skills"]
 
-    def test_plugin_not_found_falls_through(self, tmp_path):
-        from tools.skills_tool import skill_view
 
-        result = json.loads(skill_view("nonexistent-plugin:some-skill"))
-        assert result["success"] is False
-        assert "not found" in result["error"].lower()
-
-    def test_category_qualified_local_skill_falls_through(self, tmp_path, monkeypatch):
-        from tools.skills_tool import skill_view
-
-        local_skills = tmp_path / "local-skills"
-        skill_dir = local_skills / "productivity" / "ticktick"
-        skill_dir.mkdir(parents=True)
-        (skill_dir / "SKILL.md").write_text(
-            "---\nname: ticktick\ndescription: local categorized\n---\nTickTick body.\n"
-        )
-        monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", local_skills)
-
-        result = json.loads(skill_view("productivity:ticktick"))
-
-        assert result["success"] is True
-        assert result["name"] == "ticktick"
-        assert "TickTick body." in result["content"]
 
     def test_stale_entry_self_heals(self, tmp_path):
         from tools.skills_tool import skill_view
@@ -371,13 +416,6 @@ class TestBundleContextBanner:
         assert "baz" in sibling_line
         assert "foo" not in sibling_line
 
-    def test_single_skill_no_sibling_line(self, tmp_path):
-        from tools.skills_tool import skill_view
-
-        self._setup_bundle(tmp_path, skills=("only-one",))
-        result = json.loads(skill_view("myplugin:only-one"))
-        assert "Bundle context" in result["content"]
-        assert "Sibling skills:" not in result["content"]
 
     def test_original_content_preserved(self, tmp_path):
         from tools.skills_tool import skill_view

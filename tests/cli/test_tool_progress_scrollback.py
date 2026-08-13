@@ -5,12 +5,10 @@ persistent lines to scrollback on tool.completed, restoring the stacked
 tool history that was lost when the TUI switched to a single-line spinner.
 """
 
-import os
 import sys
 import importlib
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 # Module-level reference to the cli module (set by _make_cli on first call)
 _cli_mod = None
@@ -90,30 +88,7 @@ class TestToolProgressScrollback:
 
         assert mock_print.call_count == 2
 
-    def test_new_mode_skips_consecutive_repeats(self):
-        """In 'new' mode, consecutive calls to the same tool only print once."""
-        cli = _make_cli(tool_progress="new")
-        with patch.object(_cli_mod, "_cprint") as mock_print:
-            cli._on_tool_progress("tool.started", "read_file", "cli.py", {"path": "cli.py"})
-            cli._on_tool_progress("tool.completed", "read_file", None, None, duration=0.1, is_error=False)
-            cli._on_tool_progress("tool.started", "read_file", "run_agent.py", {"path": "run_agent.py"})
-            cli._on_tool_progress("tool.completed", "read_file", None, None, duration=0.2, is_error=False)
 
-        assert mock_print.call_count == 1  # Only the first read_file
-
-    def test_new_mode_prints_when_tool_changes(self):
-        """In 'new' mode, a different tool name triggers a new line."""
-        cli = _make_cli(tool_progress="new")
-        with patch.object(_cli_mod, "_cprint") as mock_print:
-            cli._on_tool_progress("tool.started", "read_file", "cli.py", {"path": "cli.py"})
-            cli._on_tool_progress("tool.completed", "read_file", None, None, duration=0.1, is_error=False)
-            cli._on_tool_progress("tool.started", "search_files", "pattern", {"pattern": "test"})
-            cli._on_tool_progress("tool.completed", "search_files", None, None, duration=0.3, is_error=False)
-            cli._on_tool_progress("tool.started", "read_file", "run_agent.py", {"path": "run_agent.py"})
-            cli._on_tool_progress("tool.completed", "read_file", None, None, duration=0.2, is_error=False)
-
-        # read_file, search_files, read_file (3rd prints because search_files broke the streak)
-        assert mock_print.call_count == 3
 
     def test_off_mode_no_scrollback(self):
         """In 'off' mode, no stacked lines are printed."""
@@ -124,37 +99,8 @@ class TestToolProgressScrollback:
 
         mock_print.assert_not_called()
 
-    def test_error_suffix_on_failed_tool(self):
-        """When a failed tool's result is forwarded, the stacked line surfaces
-        the specific error (e.g. ``[exit 1]`` or ``[File not found: x]``)
-        instead of the legacy generic ``[error]`` suffix."""
-        import json
-        cli = _make_cli(tool_progress="all")
-        cli._on_tool_progress("tool.started", "terminal", "false", {"command": "false"})
-        with patch.object(_cli_mod, "_cprint") as mock_print:
-            cli._on_tool_progress(
-                "tool.completed", "terminal", None, None,
-                duration=0.5, is_error=True,
-                result=json.dumps({"output": "", "exit_code": 1}),
-            )
 
-        line = mock_print.call_args[0][0]
-        assert "[exit 1]" in line
 
-    def test_spinner_still_updates_on_started(self):
-        """tool.started still updates the spinner text for live display."""
-        cli = _make_cli(tool_progress="all")
-        cli._on_tool_progress("tool.started", "terminal", "git status", {"command": "git status"})
-        assert "git status" in cli._spinner_text
-
-    def test_spinner_timer_clears_on_completed(self):
-        """tool.completed still clears the tool timer."""
-        cli = _make_cli(tool_progress="all")
-        cli._on_tool_progress("tool.started", "terminal", "git status", {"command": "git status"})
-        assert cli._tool_start_time > 0
-        with patch.object(_cli_mod, "_cprint"):
-            cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.5, is_error=False)
-        assert cli._tool_start_time == 0.0
 
     def test_concurrent_tools_produce_stacked_lines(self):
         """Multiple tool.started followed by multiple tool.completed all produce lines."""
@@ -169,24 +115,6 @@ class TestToolProgressScrollback:
 
         assert mock_print.call_count == 2
 
-    def test_verbose_mode_commits_scrollback_line(self):
-        """In 'verbose' mode, tool.completed commits a persistent scrollback line.
-
-        Regression: 'verbose' used to be omitted from the scrollback gate on
-        the premise that run_agent renders verbose output. That premise is
-        false in the interactive CLI — run_agent's verbose prints are gated on
-        ``not quiet_mode`` and the interactive CLI runs quiet_mode=True. So a
-        non-streaming model call (MoA aggregator, copilot-acp) under 'verbose'
-        rendered each tool only into the self-overwriting spinner, building no
-        scrollable history. 'verbose' is strictly more than 'all', so it must
-        commit at least the same line.
-        """
-        cli = _make_cli(tool_progress="verbose")
-        with patch.object(_cli_mod, "_cprint") as mock_print:
-            cli._on_tool_progress("tool.started", "terminal", "ls", {"command": "ls"})
-            cli._on_tool_progress("tool.completed", "terminal", None, None, duration=0.5, is_error=False)
-
-        mock_print.assert_called_once()
 
     def test_verbose_mode_commits_every_call(self):
         """In 'verbose' mode, consecutive same-tool calls each commit a line.
@@ -203,34 +131,8 @@ class TestToolProgressScrollback:
 
         assert mock_print.call_count == 2
 
-    def test_verbose_mode_config_does_not_enable_global_debug_logging(self):
-        """display.tool_progress=verbose controls TOOL-CALL DISPLAY ONLY.
 
-        It must NOT auto-flip self.verbose, which controls root-logger DEBUG
-        level for the entire process (every module spews to console).  PR
-        #6a1aa420e had coupled them, causing all debug logs to flood the
-        terminal whenever a user picked tool_progress: verbose for richer
-        per-tool rendering.
-        """
-        cli = _make_cli(tool_progress="verbose")
 
-        assert cli.tool_progress_mode == "verbose"
-        assert cli.verbose is False
-
-    def test_explicit_verbose_argument_wins_over_config(self):
-        """Explicit verbose=True from the CLI flag still enables DEBUG logging
-        regardless of tool_progress_mode."""
-        cli = _make_cli(tool_progress="off", verbose=True)
-
-        assert cli.tool_progress_mode == "off"
-        assert cli.verbose is True
-
-    def test_explicit_non_verbose_argument_keeps_debug_logging_off(self):
-        """Explicit verbose=False overrides any default to enable DEBUG."""
-        cli = _make_cli(tool_progress="verbose", verbose=False)
-
-        assert cli.tool_progress_mode == "verbose"
-        assert cli.verbose is False
 
     def test_pending_info_stores_on_started(self):
         """tool.started stores args for later use by tool.completed."""

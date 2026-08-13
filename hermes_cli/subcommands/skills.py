@@ -312,4 +312,5 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         "config",
         help="Interactive skill configuration — enable/disable individual skills",
     )
+
     skills_parser.set_defaults(func=cmd_skills)

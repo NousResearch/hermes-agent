@@ -72,6 +72,12 @@ class ProviderProfile:
     # (e.g. Xiaomi MiMo, which returns 400 "text is not set").
     supports_vision_tool_messages: bool = True
 
+    # True only when this provider's Chat Completions endpoint explicitly
+    # documents ``prompt_cache_key`` as an accepted request body field.  This
+    # is deliberately opt-in: many OpenAI-compatible endpoints reject unknown
+    # top-level fields rather than ignoring them.
+    supports_prompt_cache_key: bool = False
+
     # ── Model catalog ─────────────────────────────────────────
     # fallback_models: curated list shown in /model picker when live fetch fails.
     # Only agentic models that support tool calling should appear here.
@@ -94,6 +100,22 @@ class ProviderProfile:
     # empty = use main model
 
     # ── Hooks (override in subclass for complex providers) ───
+
+    def resolve_aux_model(self, *, vision: bool = False) -> str:
+        """Return a LIVE cheap-model id for auxiliary tasks, or "".
+
+        ``default_aux_model`` is a hardcoded id in source, so it rots: when the
+        provider retires that model every auxiliary call spends a round-trip
+        404ing before the retry net catches it. Providers that publish a
+        machine-readable recommendation should override this and query it, so
+        the cheap tier tracks the upstream catalog instead of a constant a human
+        has to remember to bump.
+
+        Contract: cheap to call (implementations must cache — this runs on
+        client-resolution paths), never raises, and returns "" when it has no
+        answer so the caller falls through to ``default_aux_model``.
+        """
+        return ""
 
     def get_hostname(self) -> str:
         """Return the provider's base hostname for URL-based detection.
@@ -144,6 +166,19 @@ class ProviderProfile:
         Default: ({}, {}).
         """
         return {}, {}
+
+    def default_vision_model(self) -> str | None:
+        """Return a default vision model id for this provider, or None.
+
+        Overrideable hook for providers that discover their vision default at
+        runtime (e.g. from a live catalog) rather than pinning one in code.
+        Keeps provider-specific vision discovery inside the provider's plugin
+        instead of a name-check branch in shared vision resolution.
+
+        Default: None (no provider-specific vision model — the caller falls
+        back to the user's chat model or the aggregator chain).
+        """
+        return None
 
     def get_max_tokens(self, model: str | None) -> int | None:
         """Return the default max_tokens cap for *model*.
@@ -196,6 +231,8 @@ class ProviderProfile:
         import json
         import urllib.request
 
+        from hermes_cli.urllib_security import open_credentialed_url
+
         req = urllib.request.Request(url)
         if api_key:
             req.add_header("Authorization", f"Bearer {api_key}")
@@ -208,7 +245,7 @@ class ProviderProfile:
             req.add_header(k, v)
 
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with open_credentialed_url(req, timeout=timeout) as resp:
                 data = json.loads(resp.read().decode())
             items = data if isinstance(data, list) else data.get("data", [])
             return [m["id"] for m in items if isinstance(m, dict) and "id" in m]

@@ -285,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     try:
-        with wf_path.open() as f:
+        with wf_path.open(encoding="utf-8-sig") as f:
             payload = json.load(f)
         workflow = unwrap_workflow(payload)
     except ValueError as e:
@@ -303,7 +303,7 @@ def main(argv: list[str] | None = None) -> int:
         out = json.dumps(schema, indent=2, default=str)
 
     if args.output:
-        Path(args.output).write_text(out)
+        Path(args.output).write_text(out, encoding="utf-8")
         print(f"Schema written to {args.output}", file=sys.stderr)
     else:
         print(out)

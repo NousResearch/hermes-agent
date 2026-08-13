@@ -66,6 +66,10 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# Signal-0 liveness probe for the update-lock marker owner (update.rs).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [profile.release]
 # A 5-10MB signed installer is the goal. LTO + size-opt + single codegen unit.
 panic = "abort"

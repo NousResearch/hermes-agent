@@ -95,7 +95,7 @@ Chat 标签页是每次 `hermes dashboard` 启动的一部分——内嵌的浏�
 - **agent** — 最大迭代次数、gateway 超时、服务层级
 - **delegation** — 子 agent 限制、推理力度
 - **memory** — 提供商选择、上下文注入设置
-- **approvals** — 危险命令审批模式（ask/yolo/deny）
+- **approvals** — 危险命令审批模式（smart/manual/off）
 - 更多——config.yaml 的每个部分都有对应的表单字段
 
 具有已知有效值的字段（terminal 后端、皮肤、审批模式等）渲染为下拉菜单。布尔值渲染为开关。其余均为文本输入框。
@@ -238,7 +238,7 @@ Web Dashboard 暴露了一个供前端使用的 REST API。你也可以直接调
 
 ### GET /api/sessions/\{session_id\}/messages
 
-返回会话的完整消息历史，包含工具调用和时间戳。
+返回有上限的会话消息页，包含工具调用和时间戳。默认按时间升序返回最近 500 条；可用 `limit`（最大 500）、`offset` 和 `order=oldest|latest` 显式分页。
 
 ### GET /api/sessions/search
 

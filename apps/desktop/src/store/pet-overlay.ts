@@ -46,6 +46,8 @@ export interface PetOverlayStatePayload {
   awaiting: boolean
   /** Drives the overlay's mail icon: a finish landed while you were away. */
   unread: boolean
+  /** Latest reaction — bumping its id forwards a burst to the overlay. */
+  reaction: PetReaction | null
 }
 
 export type PetOverlayControl =
@@ -66,6 +68,21 @@ export const $petOverlayActive = atom(storedBoolean(OVERLAY_ACTIVE_KEY, false))
 
 // Persist the in/out choice so a popped-out pet comes back popped out.
 $petOverlayActive.subscribe(active => persistBoolean(OVERLAY_ACTIVE_KEY, active))
+
+/**
+ * Reaction signal forwarded to the popped-out overlay window via the state
+ * mirror below. `id` is a monotonic nonce so the overlay fires once per bump;
+ * `kind` selects the renderer (today only `vibe` → hearts). Generic on purpose
+ * so future reactions (emoji, etc.) ride the same channel.
+ */
+export interface PetReaction {
+  id: number
+  kind: string
+}
+
+export const $petReaction = atom<PetReaction | null>(null)
+
+export const forwardPetReaction = (kind: string) => $petReaction.set({ id: ($petReaction.get()?.id ?? 0) + 1, kind })
 
 function loadSavedBounds(): null | PetOverlayBounds {
   try {
@@ -129,7 +146,8 @@ function currentPayload(): PetOverlayStatePayload {
     activity: $petActivity.get(),
     busy: $busy.get(),
     awaiting: $awaitingResponse.get(),
-    unread: $petUnread.get()
+    unread: $petUnread.get(),
+    reaction: $petReaction.get()
   }
 }
 
@@ -165,7 +183,8 @@ function openOverlay(request: PetOverlayOpenRequest): void {
     $petActivity.subscribe(pushNow),
     $busy.subscribe(pushNow),
     $awaitingResponse.subscribe(pushNow),
-    $petUnread.subscribe(pushNow)
+    $petUnread.subscribe(pushNow),
+    $petReaction.subscribe(pushNow)
   ]
 }
 

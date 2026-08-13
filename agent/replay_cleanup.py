@@ -20,6 +20,10 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
+from agent.tool_dispatch_helpers import make_tool_result_message
+from agent.tool_result_classification import tool_may_have_side_effect
+from agent.turn_context import drop_stale_api_content
+
 logger = logging.getLogger(__name__)
 
 
@@ -64,8 +68,40 @@ def strip_interrupted_tool_tails(
                 is_interrupted_tool_result(m.get("content", ""))
                 for m in tool_results
             ):
+                calls = msg.get("tool_calls") or []
+                if any(
+                    tool_may_have_side_effect(
+                        str((call.get("function") or {}).get("name") or "")
+                    )
+                    for call in calls
+                ):
+                    call_names = {
+                        str(call.get("id") or call.get("call_id") or ""): str(
+                            (call.get("function") or {}).get("name") or ""
+                        )
+                        for call in calls
+                    }
+                    cleaned.append(msg)
+                    for tool_result in tool_results:
+                        if not is_interrupted_tool_result(tool_result.get("content", "")):
+                            cleaned.append(tool_result)
+                            continue
+                        recovered = dict(tool_result)
+                        name = call_names.get(str(tool_result.get("tool_call_id") or ""), "")
+                        recovered["effect_disposition"] = (
+                            "unknown" if tool_may_have_side_effect(name) else "none"
+                        )
+                        recovered["content"] = (
+                            "[Orphan recovery: interrupted side-effecting tool may have "
+                            "executed; its effect is UNKNOWN. Inspect state before retrying.]"
+                            if recovered["effect_disposition"] == "unknown"
+                            else "[Orphan recovery: interrupted read-only tool did not complete.]"
+                        )
+                        cleaned.append(recovered)
+                    i = j
+                    continue
                 logger.debug(
-                    "Stripping interrupted assistant→tool replay block "
+                    "Stripping interrupted read-only assistant→tool replay block "
                     "(indices %d–%d, tool_results=%d)",
                     i, j - 1, len(tool_results),
                 )
@@ -116,11 +152,36 @@ def strip_dangling_tool_call_tail(
     ):
         return agent_history
 
+    tool_calls = last.get("tool_calls") or []
+    if any(
+        tool_may_have_side_effect(
+            str((call.get("function") or {}).get("name") or "")
+        )
+        for call in tool_calls
+    ):
+        recovered = list(agent_history)
+        for call in tool_calls:
+            function = call.get("function") or {}
+            name = str(function.get("name") or "unknown")
+            call_id = str(call.get("id") or call.get("call_id") or "")
+            disposition = "unknown" if tool_may_have_side_effect(name) else "none"
+            content = (
+                "[Orphan recovery: this tool may have executed before Hermes stopped; "
+                "its effect is UNKNOWN. Inspect current state before retrying.]"
+                if disposition == "unknown"
+                else "[Orphan recovery: this read-only tool did not complete and had no effect.]"
+            )
+            recovered.append(make_tool_result_message(
+                name, content, call_id, effect_disposition=disposition,
+            ))
+        logger.warning(
+            "Recovered dangling side-effecting tool call(s) as UNKNOWN instead of erasing them"
+        )
+        return recovered
+
     logger.debug(
-        "Stripping dangling unanswered assistant(tool_calls) tail "
-        "(%d call(s)) — process likely killed mid-tool-call by a "
-        "restart/shutdown command (#49201)",
-        len(last.get("tool_calls") or []),
+        "Stripping dangling unanswered read-only assistant(tool_calls) tail (%d call(s))",
+        len(tool_calls),
     )
     return agent_history[:-1]
 
@@ -251,6 +312,11 @@ def strip_stale_dangerous_confirmations(
                 )
                 redacted = dict(msg)
                 redacted["content"] = _EXPIRED_CONFIRMATION_SENTINEL
+                # Drop the api_content sidecar: it carries the exact bytes
+                # previously sent — i.e. the dangerous confirmation this
+                # redaction exists to expire. Replaying it verbatim would
+                # undo the redaction on the wire.
+                drop_stale_api_content(redacted)
                 cleaned.append(redacted)
                 continue
         cleaned.append(msg)

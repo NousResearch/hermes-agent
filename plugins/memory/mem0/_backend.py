@@ -160,6 +160,23 @@ class OSSBackend(Mem0Backend):
         import os
         from mem0 import Memory
 
+        def _provider_block(name: str) -> dict:
+            block = dict(oss_config[name])
+            provider = str(block.get("provider") or "").strip().lower()
+            provider_config = dict(block.get("config", {}))
+            legacy_base = provider_config.pop("api_base", None)
+            if legacy_base:
+                from ._oss_providers import EMBEDDER_PROVIDERS, LLM_PROVIDERS
+
+                provider_def = (
+                    LLM_PROVIDERS if name == "llm" else EMBEDDER_PROVIDERS
+                ).get(provider, {})
+                canonical_key = provider_def.get("base_url_key")
+                if canonical_key:
+                    provider_config.setdefault(canonical_key, legacy_base)
+            block["config"] = provider_config
+            return block
+
         vector_store = dict(oss_config["vector_store"])
         vs_config = dict(vector_store.get("config", {}))
 
@@ -182,8 +199,8 @@ class OSSBackend(Mem0Backend):
 
         config = {
             "vector_store": vector_store,
-            "llm": oss_config["llm"],
-            "embedder": oss_config["embedder"],
+            "llm": _provider_block("llm"),
+            "embedder": _provider_block("embedder"),
             "version": "v1.1",
         }
         self._memory = Memory.from_config(config)

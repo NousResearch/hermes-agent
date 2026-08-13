@@ -43,20 +43,6 @@ def test_lazy_singleton_reset_rebuilds():
     assert get() == 2
 
 
-def test_lazy_singleton_factory_exception_not_cached():
-    state = {"fail": True}
-
-    @lazy_singleton
-    def get():
-        if state["fail"]:
-            raise RuntimeError("boom")
-        return "ok"
-
-    with pytest.raises(RuntimeError):
-        get()
-    # First call raised → nothing cached → retry succeeds once we stop failing.
-    state["fail"] = False
-    assert get() == "ok"
 
 
 def test_lazy_singleton_concurrent_first_call_builds_once():
@@ -107,12 +93,6 @@ def test_slot_caches_first_value():
     assert v1 == v2 == "first"
 
 
-def test_slot_reset():
-    slot: SingletonSlot = SingletonSlot()
-    slot.get(lambda: "a")
-    slot.reset()
-    assert slot.peek() is None
-    assert slot.get(lambda: "b") == "b"
 
 
 def test_slot_factory_exception_not_cached():

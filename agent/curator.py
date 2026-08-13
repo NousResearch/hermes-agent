@@ -45,12 +45,26 @@ def _strip_aux_credential(value: Any) -> Optional[str]:
 
 
 class _ReviewRuntimeBinding(NamedTuple):
-    """Provider/model for the curator review fork plus optional per-slot overrides."""
+    """Provider/model for the curator review fork plus per-slot overrides."""
 
     provider: str
     model: str
     explicit_api_key: Optional[str]
     explicit_base_url: Optional[str]
+    request_overrides: Dict[str, Any]
+
+
+def _merge_request_overrides(
+    runtime_overrides: Any,
+    slot_extra_body: Any,
+) -> Dict[str, Any]:
+    """Merge resolver metadata with task-local request body fields."""
+    merged = dict(runtime_overrides or {})
+    if isinstance(slot_extra_body, dict) and slot_extra_body:
+        extra_body = dict(merged.get("extra_body") or {})
+        extra_body.update(slot_extra_body)
+        merged["extra_body"] = extra_body
+    return merged
 
 
 DEFAULT_INTERVAL_HOURS = 24 * 7  # 7 days
@@ -124,8 +138,8 @@ def is_paused() -> bool:
 def _load_config() -> Dict[str, Any]:
     """Read curator.* config from ~/.hermes/config.yaml. Tolerates missing file."""
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
+        from hermes_cli.config import load_config_readonly
+        cfg = load_config_readonly()
     except Exception as e:
         logger.debug("Failed to load config for curator: %s", e)
         return {}
@@ -311,7 +325,7 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
 
     counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0, "seeded": 0}
 
-    for row in _u.agent_created_report():
+    for row in _u.curated_report():
         counts["checked"] += 1
         name = row["name"]
         if row.get("pinned"):
@@ -408,7 +422,9 @@ CURATOR_REVIEW_PROMPT = (
     "INSTRUCTIONS AND EXPERIENTIAL KNOWLEDGE. A collection of hundreds of "
     "narrow skills where each one captures one session's specific bug is "
     "a FAILURE of the library — not a feature. An agent searching skills "
-    "matches on descriptions, not on exact names; one broad umbrella "
+    "matches on descriptions, not on exact names (note: long descriptions "
+    "are truncated to 57 chars in the system prompt skill index — keep the "
+    "trigger class in that window). One broad umbrella "
     "skill with labeled subsections beats five narrow siblings for "
     "discoverability, not the other way around.\n\n"
     "The right target shape is CLASS-LEVEL skills with rich SKILL.md "
@@ -886,7 +902,6 @@ def _reconcile_classification(
     Every removed skill is placed in exactly one bucket.
     """
     heur_cons = {e["name"]: e for e in heuristic.get("consolidated", [])}
-    heur_pruned = {e["name"] for e in heuristic.get("pruned", [])}
 
     model_cons = {e["from"]: e for e in model_block.get("consolidations", [])}
     model_pruned = {e["name"]: e for e in model_block.get("prunings", [])}
@@ -1456,15 +1471,16 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
 # ---------------------------------------------------------------------------
 
 def _render_candidate_list() -> str:
-    """Human/agent-readable list of agent-created skills with usage stats."""
-    rows = skill_usage.agent_created_report()
+    """Human/agent-readable list of curator-managed skills with usage stats."""
+    rows = skill_usage.curated_report()
     if not rows:
-        return "No agent-created skills to review."
+        return "No curator-managed skills to review."
     cron_referenced = _cron_referenced_skills()
-    lines = [f"Agent-created skills ({len(rows)}):\n"]
+    lines = [f"Curator-managed skills ({len(rows)}):\n"]
     for r in rows:
         lines.append(
             f"- {r['name']}  "
+            f"provenance={r.get('provenance', 'agent')}  "
             f"state={r['state']}  "
             f"pinned={'yes' if r.get('pinned') else 'no'}  "
             f"cron={'yes' if r['name'] in cron_referenced else 'no'}  "
@@ -1517,7 +1533,7 @@ def run_curator_review(
     if dry_run:
         # Count candidates without mutating state.
         try:
-            report = skill_usage.agent_created_report()
+            report = skill_usage.curated_report()
             counts = {
                 "checked": len(report),
                 "marked_stale": 0,
@@ -1570,7 +1586,7 @@ def run_curator_review(
         nonlocal auto_summary
         # Snapshot skill state BEFORE the LLM pass so the report can diff.
         try:
-            before_report = skill_usage.agent_created_report()
+            before_report = skill_usage.curated_report()
         except Exception:
             before_report = []
         before_names = {r.get("name") for r in before_report if isinstance(r, dict)}
@@ -1596,7 +1612,7 @@ def run_curator_review(
             state2["last_run_duration_seconds"] = elapsed
             state2["last_run_summary"] = final_summary
             try:
-                after_report = skill_usage.agent_created_report()
+                after_report = skill_usage.curated_report()
             except Exception:
                 after_report = []
             try:
@@ -1683,7 +1699,7 @@ def run_curator_review(
         try:
             rename_lines = _build_rename_summary(
                 before_names=before_names,
-                after_report=skill_usage.agent_created_report(),
+                after_report=skill_usage.curated_report(),
                 tool_calls=llm_meta.get("tool_calls", []) or [],
                 model_final=llm_meta.get("final", "") or "",
             )
@@ -1701,7 +1717,7 @@ def run_curator_review(
         # reporting bug never breaks the curator itself. Report path is
         # recorded in state so `hermes curator status` can point at it.
         try:
-            after_report = skill_usage.agent_created_report()
+            after_report = skill_usage.curated_report()
         except Exception:
             after_report = []
         try:
@@ -1764,6 +1780,7 @@ def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
             _task_model,
             _strip_aux_credential(_cur_task.get("api_key")),
             _strip_aux_credential(_cur_task.get("base_url")),
+            _merge_request_overrides({}, _cur_task.get("extra_body")),
         )
 
     # 2. Legacy curator.auxiliary.{provider,model} (deprecated, pre-unification)
@@ -1781,10 +1798,11 @@ def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
             str(_legacy_model),
             _strip_aux_credential(_legacy.get("api_key")),
             _strip_aux_credential(_legacy.get("base_url")),
+            _merge_request_overrides({}, _legacy.get("extra_body")),
         )
 
     # 3. Fall through to the main chat model
-    return _ReviewRuntimeBinding(_main_provider, _main_model, None, None)
+    return _ReviewRuntimeBinding(_main_provider, _main_model, None, None, {})
 
 
 def _resolve_review_model(cfg: Dict[str, Any]) -> tuple[str, str]:
@@ -1850,11 +1868,16 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     _base_url = None
     _api_mode = None
     _resolved_provider = None
+    _credential_pool = None
+    _request_overrides: Dict[str, Any] = {}
+    _max_tokens = None
+    _acp_command = None
+    _acp_args = None
     _model_name = ""
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import load_config_readonly
         from hermes_cli.runtime_provider import resolve_runtime_provider
-        _cfg = load_config()
+        _cfg = load_config_readonly()
         _binding = _resolve_review_runtime(_cfg)
         _provider, _model_name = _binding.provider, _binding.model
         _rp = resolve_runtime_provider(
@@ -1867,6 +1890,16 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         _base_url = _rp.get("base_url")
         _api_mode = _rp.get("api_mode")
         _resolved_provider = _rp.get("provider") or _provider
+        _credential_pool = _rp.get("credential_pool")
+        _request_overrides = _merge_request_overrides(
+            _rp.get("request_overrides"),
+            _binding.request_overrides.get("extra_body"),
+        )
+        _max_tokens = _rp.get("max_output_tokens")
+        _acp_command = _rp.get("command")
+        _acp_args = list(_rp.get("args") or [])
+        if isinstance(_rp.get("model"), str) and _rp["model"].strip():
+            _model_name = _rp["model"].strip()
     except Exception as e:
         logger.debug("Curator provider resolution failed: %s", e, exc_info=True)
 
@@ -1875,12 +1908,22 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 
     review_agent = None
     try:
+        _agent_kwargs: Dict[str, Any] = {}
+        if isinstance(_max_tokens, int):
+            _agent_kwargs["max_tokens"] = _max_tokens
+        if isinstance(_acp_command, str) and _acp_command:
+            _agent_kwargs["acp_command"] = _acp_command
+            _agent_kwargs["acp_args"] = _acp_args or []
         review_agent = AIAgent(
             model=_model_name,
             provider=_resolved_provider,
             api_key=_api_key,
             base_url=_base_url,
             api_mode=_api_mode,
+            credential_pool=_credential_pool,
+            request_overrides=_request_overrides,
+            **_agent_kwargs,
+            enabled_toolsets=["skills", "terminal"],
             # Umbrella-building over a large skill collection is worth a
             # high iteration ceiling — the pass typically takes 50-100
             # API calls against hundreds of candidate skills. The

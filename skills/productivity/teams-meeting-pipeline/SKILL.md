@@ -1,9 +1,10 @@
 ---
 name: teams-meeting-pipeline
-description: "Operate the Teams meeting summary pipeline via Hermes CLI — summarize meetings, inspect pipeline status, replay jobs, manage Microsoft Graph subscriptions."
+description: Teams meeting summaries, job replay, Graph subscriptions.
 version: 1.1.0
 author: Hermes Agent + Teknium
 license: MIT
+platforms: [linux, macos, windows]
 prerequisites:
   env_vars: [MSGRAPH_TENANT_ID, MSGRAPH_CLIENT_ID, MSGRAPH_CLIENT_SECRET]
   commands: [hermes]

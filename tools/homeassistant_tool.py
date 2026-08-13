@@ -13,9 +13,10 @@ The HA instance URL is read from ``HASS_URL`` (default: http://homeassistant.loc
 import asyncio
 import json
 import logging
-import os
 import re
 from typing import Any, Dict, Optional
+
+from agent.secret_scope import get_secret
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +30,10 @@ _HASS_TOKEN: str = ""
 
 
 def _get_config():
-    """Return (hass_url, hass_token) from env vars at call time."""
+    """Return the active profile's Home Assistant URL and token."""
     return (
-        (_HASS_URL or os.getenv("HASS_URL", "http://homeassistant.local:8123")).rstrip("/"),
-        _HASS_TOKEN or os.getenv("HASS_TOKEN", ""),
+        (_HASS_URL or get_secret("HASS_URL", "http://homeassistant.local:8123") or "").rstrip("/"),
+        _HASS_TOKEN or get_secret("HASS_TOKEN", "") or "",
     )
 
 # Regex for valid HA entity_id format (e.g. "light.living_room", "sensor.temperature_1")
@@ -264,10 +265,10 @@ def _handle_call_service(args: dict, **kw) -> str:
         return tool_error(f"Invalid service format: {service!r}")
 
     if domain in _BLOCKED_DOMAINS:
-        return json.dumps({
-            "error": f"Service domain '{domain}' is blocked for security. "
+        return tool_error(
+            f"Service domain '{domain}' is blocked for security. "
             f"Blocked domains: {', '.join(sorted(_BLOCKED_DOMAINS))}"
-        })
+        )
 
     entity_id = args.get("entity_id")
     if entity_id and not _ENTITY_ID_RE.match(entity_id):
@@ -343,7 +344,7 @@ def _handle_list_services(args: dict, **kw) -> str:
 
 def _check_ha_available() -> bool:
     """Tool is only available when HASS_TOKEN is set."""
-    return bool(os.getenv("HASS_TOKEN"))
+    return bool(get_secret("HASS_TOKEN"))
 
 
 # ---------------------------------------------------------------------------

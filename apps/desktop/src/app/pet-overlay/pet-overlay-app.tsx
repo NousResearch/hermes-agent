@@ -1,6 +1,7 @@
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { PetHeartField, playVibeHearts } from '@/components/chat/vibe-hearts'
 import { PetBubble } from '@/components/pet/pet-bubble'
 import { PetSprite } from '@/components/pet/pet-sprite'
 import { type PetZoomAnchor, usePetZoomGesture } from '@/components/pet/use-pet-zoom-gesture'
@@ -72,6 +73,8 @@ export function PetOverlayApp() {
   const zoomAnchorRef = useRef<PetZoomAnchor | null>(null)
   const petRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLInputElement | null>(null)
+  // Last mirrored reaction id — a bump means the main window fired a reaction.
+  const lastReactionRef = useRef<number | null>(null)
   const ignoreRef = useRef(true)
   const composerOpenRef = useRef(false)
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -84,6 +87,7 @@ export function PetOverlayApp() {
   }
 
   // Mirror pushed state into the shared atoms so PetSprite/PetBubble just work.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const off = window.hermesDesktop?.petOverlay?.onState(payload => {
       setPetInfo(payload.info)
@@ -91,6 +95,19 @@ export function PetOverlayApp() {
       setBusy(Boolean(payload.busy))
       setAwaitingResponse(Boolean(payload.awaiting))
       setUnread(Boolean(payload.unread))
+
+      // Play a reaction on a new id (ignore the first sync, which just primes it).
+      const reaction = payload.reaction ?? null
+
+      if (lastReactionRef.current === null) {
+        lastReactionRef.current = reaction?.id ?? 0
+      } else if (reaction && reaction.id > lastReactionRef.current) {
+        lastReactionRef.current = reaction.id
+
+        if (reaction.kind === 'vibe') {
+          playVibeHearts()
+        }
+      }
     })
 
     // Tell the main renderer we're mounted so it pushes the current frame (the
@@ -169,6 +186,7 @@ export function PetOverlayApp() {
   // input keeps focus); focus it on open. The overlay is a non-activating panel
   // (so it never steals the app's cmd/alt-tab anchor) — flip it focusable while
   // the composer needs the keyboard, then back to non-activating when it closes.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     composerOpenRef.current = composerOpen
 
@@ -301,6 +319,7 @@ export function PetOverlayApp() {
   // wheel anchor we zoom toward the cursor (keep the pixel under it fixed);
   // otherwise we anchor the bottom-center (the pet's feet stay planted). New
   // bounds are persisted so the pet reopens at the right size.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (!info.enabled || !info.spritesheetBase64) {
       return
@@ -414,7 +433,13 @@ export function PetOverlayApp() {
           <PetBubble />
         </div>
         <div style={{ lineHeight: 0, position: 'relative' }}>
-          <PetSprite info={info} />
+          <PetSprite info={info} pauseWhenUnfocused={false} />
+
+          {/* Hearts on the popped-out pet — identical to in-window. */}
+          <PetHeartField
+            petH={(info.frameH ?? DEFAULT_FRAME_H) * (info.scale ?? DEFAULT_SCALE)}
+            petW={(info.frameW ?? DEFAULT_FRAME_W) * (info.scale ?? DEFAULT_SCALE)}
+          />
 
           {/* Mail icon: only when a finish landed while you were away. Jumps to
               the app's most recent thread. Anchored to the sprite (kept inside

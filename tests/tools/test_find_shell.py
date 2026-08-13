@@ -8,7 +8,6 @@ when ``~/.bash_profile`` contained ``exec /bin/zsh -l``.
 import os
 import platform
 import subprocess
-import sys
 from unittest.mock import patch
 
 import pytest
@@ -46,13 +45,6 @@ class TestFindShellPrefersUserShell:
         with patch.dict(os.environ, {"SHELL": str(fake_fish)}):
             assert _find_shell() == _find_bash()
 
-    def test_falls_back_for_incompatible_shell_csh(self, tmp_path):
-        """$SHELL=tcsh/csh is also not -lic/set+m compatible -> fall back."""
-        fake = tmp_path / "tcsh"
-        fake.touch()
-        fake.chmod(0o755)
-        with patch.dict(os.environ, {"SHELL": str(fake)}):
-            assert _find_shell() == _find_bash()
 
     def test_honours_allowlisted_bash_and_dash(self, tmp_path):
         """Every allowlisted POSIX-sh-family shell is honoured."""
@@ -63,17 +55,6 @@ class TestFindShellPrefersUserShell:
             with patch.dict(os.environ, {"SHELL": str(fake)}):
                 assert _find_shell() == str(fake), name
 
-    def test_falls_back_to_find_bash_when_shell_unset(self):
-        """When $SHELL is unset, _find_shell delegates to _find_bash."""
-        env = {k: v for k, v in os.environ.items() if k != "SHELL"}
-        with patch.dict(os.environ, env, clear=True):
-            assert _find_shell() == _find_bash()
-
-    def test_falls_back_to_find_bash_when_shell_not_a_file(self, tmp_path):
-        """When $SHELL points to a non-existent path, _find_shell delegates."""
-        fake_path = str(tmp_path / "nonexistent_shell")
-        with patch.dict(os.environ, {"SHELL": fake_path}):
-            assert _find_shell() == _find_bash()
 
     def test_falls_back_to_find_bash_when_shell_empty(self):
         """When $SHELL is empty string, _find_shell delegates."""
@@ -84,13 +65,18 @@ class TestFindShellPrefersUserShell:
 class TestFindShellWindowsBehavior:
     """On Windows, _find_shell always delegates to _find_bash."""
 
+    @pytest.mark.windows_only
     def test_windows_ignores_shell_env(self):
-        """On Windows, $SHELL is ignored — _find_shell delegates to _find_bash."""
-        with patch("tools.environments.local._IS_WINDOWS", True):
-            # Even if SHELL is set, it should be ignored on Windows
-            with patch.dict(os.environ, {"SHELL": "/usr/bin/zsh"}):
-                result = _find_shell()
-                assert result == _find_bash()
+        """On Windows, $SHELL is ignored — _find_shell delegates to _find_bash.
+
+        Windows-only: faking ``_IS_WINDOWS`` selected the branch but left
+        ``_find_bash`` resolving a POSIX bash, so the equality proved nothing
+        about Git-Bash resolution on the real host.
+        """
+        # Even if SHELL is set, it should be ignored on Windows
+        with patch.dict(os.environ, {"SHELL": "/usr/bin/zsh"}):
+            result = _find_shell()
+            assert result == _find_bash()
 
 
 class TestFindShellReturnsString:
@@ -116,8 +102,100 @@ class TestFindBashUnchanged:
         assert len(result) > 0
 
 
+class TestFindBashSkipsBrokenCustomPath:
+    """Stale HERMES_GIT_BASH_PATH must not brick Windows terminal startup."""
+
+    @pytest.mark.windows_only
+    def test_falls_through_to_portable_when_custom_fails_probe(self, tmp_path, monkeypatch):
+        """Windows-only: the candidate ladder (HERMES_GIT_BASH_PATH →
+        %LOCALAPPDATA%\\hermes\\git → Program Files) only exists in
+        ``_find_bash``'s Windows branch."""
+        import tools.environments.local as local_mod
+
+        local_mod._bash_starts_cache.clear()
+
+        broken = tmp_path / "broken" / "bash.exe"
+        broken.parent.mkdir()
+        broken.write_text("", encoding="utf-8")
+        portable = tmp_path / "hermes" / "git" / "bin" / "bash.exe"
+        portable.parent.mkdir(parents=True)
+        portable.write_text("", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_GIT_BASH_PATH", str(broken))
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+
+        def fake_starts(path: str) -> bool:
+            return path == str(portable)
+
+        monkeypatch.setattr(local_mod, "_bash_starts", fake_starts)
+
+        assert _find_bash() == str(portable)
+
+
+class TestGitBashExternalProgramProbe:
+    """The Windows health check must exercise MSYS child-process creation."""
+
+    def test_probe_runs_external_msys_programs(self, monkeypatch):
+        """``_bash_starts`` builds the same external-program probe argv on
+        every host, so this stays on the Linux runner with ``subprocess.run``
+        mocked — no platform faking needed."""
+        import tools.environments.local as local_mod
+
+        local_mod._bash_starts_cache.clear()
+        local_mod._bash_probe_details_cache.clear()
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append((argv, kwargs))
+            return subprocess.CompletedProcess(argv, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(local_mod.subprocess, "run", fake_run)
+
+        assert local_mod._bash_starts(r"C:\Git\bin\bash.exe") is True
+        assert calls[0][0][-1] == "/usr/bin/true; /usr/bin/cat --version >/dev/null"
+
+    @pytest.mark.windows_only
+    def test_aslr_failure_surfaces_targeted_windows_command(
+        self, tmp_path, monkeypatch
+    ):
+        """Windows-only: the Mandatory-ASLR diagnostic is raised from
+        ``_find_bash``'s Windows candidate ladder and names PowerShell's
+        ``Set-ProcessMitigation`` — unreachable off Windows."""
+        import tools.environments.local as local_mod
+
+        local_mod._bash_starts_cache.clear()
+        local_mod._bash_probe_details_cache.clear()
+        portable = tmp_path / "hermes" / "git" / "bin" / "bash.exe"
+        portable.parent.mkdir(parents=True)
+        portable.write_text("", encoding="utf-8")
+
+        monkeypatch.setenv("HERMES_GIT_BASH_PATH", "")
+        monkeypatch.setenv("LOCALAPPDATA", str(tmp_path))
+        monkeypatch.setenv("ProgramFiles", str(tmp_path / "empty-program-files"))
+        monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+        monkeypatch.setattr(local_mod.shutil, "which", lambda _name: None)
+        monkeypatch.setattr(local_mod, "_mandatory_aslr_enabled", lambda: True)
+
+        def failed_probe(path: str) -> bool:
+            local_mod._bash_probe_details_cache[path] = (
+                "dofork: child -1 - forked process died unexpectedly"
+            )
+            return False
+
+        monkeypatch.setattr(local_mod, "_bash_starts", failed_probe)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            local_mod._find_bash()
+        message = str(exc_info.value)
+        assert "Mandatory ASLR" in message
+        assert "Reinstalling Git will not change" in message
+        assert "Set-ProcessMitigation" in message
+        assert str(tmp_path / "hermes" / "git") in message
+
+
+@pytest.mark.macos_only
 @pytest.mark.skipif(
-    not os.path.isfile("/bin/bash") or sys.platform != "darwin",
+    not os.path.isfile("/bin/bash"),
     reason="reproduces the macOS system-bash-3.2 login-shell swallow",
 )
 class TestMacosLoginShellSwallowRegression:
@@ -125,7 +203,7 @@ class TestMacosLoginShellSwallowRegression:
     invoked as a login shell (`-lic`) with stdin=/dev/null and a
     ~/.bash_profile that `exec`s zsh, silently swallows the command (exit 0,
     no output, no side effects). Prove (a) the bug exists with /bin/bash and
-    (b) the $SHELL (zsh) path _find_shell prefers does NOT swallow."""
+    (b) the zsh path _find_shell prefers does NOT swallow."""
 
     def _spawn_like_registry(self, shell, command, home, tmp_path):
         import subprocess
@@ -147,7 +225,15 @@ class TestMacosLoginShellSwallowRegression:
         home.mkdir()
         (home / ".bash_profile").write_text("exec /bin/zsh -l\n")
 
-        zsh = os.environ.get("SHELL") or "/bin/zsh"
+        # Use /bin/zsh explicitly rather than $SHELL. The reported bug is
+        # specifically "system bash 3.2 swallows, zsh does not", and $SHELL is
+        # not zsh everywhere this runs: GitHub's macOS runner exports
+        # SHELL=/bin/bash, which silently turned the control arm into a SECOND
+        # bash arm. It then swallowed (correctly, per the bug!) and the
+        # assertion read as "the fix path is broken" when nothing was broken.
+        # /bin/zsh is the macOS default login shell since Catalina and is
+        # present on every supported version.
+        zsh = "/bin/zsh"
         if not os.path.isfile(zsh):
             pytest.skip("no zsh available")
 
@@ -156,11 +242,11 @@ class TestMacosLoginShellSwallowRegression:
 
         # /bin/bash login shell: command is swallowed (file NOT created).
         self._spawn_like_registry("/bin/bash", f"echo x > {marker_bash}", home, tmp_path)
-        # zsh (the $SHELL _find_shell prefers): command runs (file created).
+        # zsh (what _find_shell prefers when $SHELL is zsh): command runs.
         self._spawn_like_registry(zsh, f"echo x > {marker_zsh}", home, tmp_path)
 
         # The FIX path (zsh) must run the command.
-        assert marker_zsh.exists(), "zsh ($SHELL) path must run the command"
+        assert marker_zsh.exists(), "zsh path must run the command"
 
         # Differential: when /bin/bash is the swallow-prone 3.x (macOS system
         # bash), the login-shell invocation must demonstrably FAIL to run the

@@ -51,7 +51,7 @@ def run_cmd(cmd: list[str], *, dry_run: bool = False) -> tuple[int, str]:
     if dry_run:
         return 0, "[dry-run]"
     log(f"$ {' '.join(cmd)}")
-    proc = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    proc = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', check=False)
     out = (proc.stdout or "") + (proc.stderr or "")
     return proc.returncode, out
 
@@ -102,7 +102,7 @@ def main(argv: list[str] | None = None) -> int:
         emit_json({"error": f"Workflow not found: {args.workflow}"})
         return 1
     try:
-        with wf_path.open() as f:
+        with wf_path.open(encoding="utf-8-sig") as f:
             workflow = unwrap_workflow(json.load(f))
     except (ValueError, json.JSONDecodeError) as e:
         emit_json({"error": str(e)})
@@ -158,7 +158,7 @@ def main(argv: list[str] | None = None) -> int:
     sources: dict[str, str] = {}
     if args.models_from_file:
         try:
-            sources = json.loads(Path(args.models_from_file).read_text())
+            sources = json.loads(Path(args.models_from_file).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as e:
             log(f"Could not read --models-from-file: {e}")
 

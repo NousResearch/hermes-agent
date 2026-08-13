@@ -25,10 +25,14 @@ Usage:
 import re
 import fnmatch
 import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import List, Tuple
+
+
+SCANNER_VERSION = "skills-guard-v1"
 
 
 
@@ -87,6 +91,7 @@ class ScanResult:
     findings: List[Finding] = field(default_factory=list)
     scanned_at: str = ""
     summary: str = ""
+    scan_provenance: dict = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -482,6 +487,9 @@ THREAT_PATTERNS = [
     (r'AKIA[0-9A-Z]{16}',
      "aws_access_key_leaked", "critical", "credential_exposure",
      "AWS access key ID in skill content"),
+    (r'glpat-[A-Za-z0-9_\-]{20,}',
+     "gitlab_token_leaked", "critical", "credential_exposure",
+     "GitLab personal access token in skill content"),
 
     # ── Additional prompt injection: jailbreak patterns ──
     (r'\bDAN\s+mode\b|Do\s+Anything\s+Now',
@@ -513,6 +521,11 @@ THREAT_PATTERNS = [
     (r'(send|post|upload|transmit)\s+.*\s+(to|at)\s+https?://',
      "send_to_url", "high", "exfiltration",
      "instructs agent to send data to a URL"),
+]
+
+_COMPILED_THREAT_PATTERNS = [
+    (re.compile(pattern, re.IGNORECASE), pid, severity, category, description)
+    for pattern, pid, severity, category, description in THREAT_PATTERNS
 ]
 
 # Structural limits for skill directories
@@ -586,11 +599,11 @@ def scan_file(file_path: Path, rel_path: str = "") -> List[Finding]:
     seen = set()  # (pattern_id, line_number) for deduplication
 
     # Regex pattern matching
-    for pattern, pid, severity, category, description in THREAT_PATTERNS:
+    for pattern, pid, severity, category, description in _COMPILED_THREAT_PATTERNS:
         for i, line in enumerate(lines, start=1):
             if (pid, i) in seen:
                 continue
-            if re.search(pattern, line, re.IGNORECASE):
+            if pattern.search(line):
                 seen.add((pid, i))
                 matched_text = line.strip()
                 if len(matched_text) > 120:
@@ -681,6 +694,94 @@ def scan_skill(skill_path: Path, source: str = "community") -> ScanResult:
         scanned_at=datetime.now(timezone.utc).isoformat(),
         summary=summary,
     )
+
+
+def _content_digest(skill_path: Path) -> str:
+    """Canonical SHA-256 over relative paths and exact file bytes.
+
+    Files are keyed and ORDERED by their POSIX relative path string,
+    case-sensitively. Ordering by ``sorted(rglob(...))`` diverged from the
+    bundle side on Windows: Path comparison is case-insensitive there
+    (normcase), while ``bundle_content_hash`` sorts plain strings — the
+    same skill hashed to different digests and every installed skill
+    reported ``update_available`` forever (#62310). Sorting the rel-posix
+    strings makes the digest OS-independent and byte-symmetric with
+    ``tools.skills_hub.bundle_content_hash``.
+    """
+    h = hashlib.sha256()
+    if skill_path.is_dir():
+        entries = sorted(
+            (file_path.relative_to(skill_path).as_posix(), file_path)
+            for file_path in skill_path.rglob("*")
+            if file_path.is_file()
+        )
+        for rel, file_path in entries:
+            h.update(rel.encode("utf-8") + b"\x00")
+            h.update(file_path.read_bytes())
+    else:
+        h.update(skill_path.read_bytes())
+    return h.hexdigest()
+
+
+def full_content_hash(skill_path: Path) -> str:
+    """Full canonical digest used to bind scanner attestations."""
+    return f"sha256:{_content_digest(skill_path)}"
+
+
+def _finding_dict(finding: Finding) -> dict:
+    return {key: getattr(finding, key) for key in (
+        "pattern_id", "severity", "category", "file", "line", "match", "description"
+    )}
+
+
+def scan_skill_cached(
+    skill_path: Path,
+    source: str = "community",
+    *,
+    source_url: str = "",
+    cache_dir: Path | None = None,
+) -> Tuple[ScanResult, dict]:
+    """Return a scan plus attestation, caching only exact current content."""
+    bundle_hash = full_content_hash(skill_path)
+    cache_root = cache_dir or skill_path.parent / ".scan-cache"
+    source_identity = hashlib.sha256(f"{source}\0{source_url}".encode("utf-8")).hexdigest()[:16]
+    cache_file = cache_root / f"{bundle_hash.split(':', 1)[1]}-{source_identity}.json"
+    try:
+        cached = json.loads(cache_file.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        cached = None
+    if (isinstance(cached, dict)
+            and cached.get("bundle_hash") == bundle_hash
+            and cached.get("scanner_version") == SCANNER_VERSION
+            and cached.get("source") == source
+            and cached.get("source_url") == source_url):
+        result = ScanResult(
+            skill_name=skill_path.name, source=source,
+            trust_level=cached["trust_level"], verdict=cached["verdict"],
+            findings=[Finding(**item) for item in cached.get("findings", [])],
+            scanned_at=cached["scanned_at"], summary=cached.get("summary", ""),
+        )
+        provenance = dict(cached)
+        provenance["fresh"] = False
+        result.scan_provenance = provenance
+        return result, provenance
+
+    result = scan_skill(skill_path, source=source)
+    findings = [_finding_dict(item) for item in result.findings]
+    provenance = {
+        "source": source, "source_url": source_url, "bundle_hash": bundle_hash,
+        "scanner_version": SCANNER_VERSION, "verdict": result.verdict,
+        "trust_level": result.trust_level, "findings": findings,
+        "rules": sorted({item["pattern_id"] for item in findings}),
+        "scanned_at": result.scanned_at, "summary": result.summary, "fresh": True,
+    }
+    try:
+        cache_root.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(json.dumps(provenance, indent=2) + "\n", encoding="utf-8")
+    except OSError:
+        pass
+    result.scan_provenance = provenance
+    return result, provenance
 
 
 def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool, str]:
@@ -774,20 +875,7 @@ def content_hash(skill_path: Path) -> str:
     one on an in-memory bundle), so any change to the hash shape MUST
     land in both places at once.
     """
-    h = hashlib.sha256()
-    if skill_path.is_dir():
-        for f in sorted(skill_path.rglob("*")):
-            if f.is_file():
-                try:
-                    rel = f.relative_to(skill_path).as_posix()
-                    h.update(rel.encode("utf-8"))
-                    h.update(b"\x00")
-                    h.update(f.read_bytes())
-                except OSError:
-                    continue
-    elif skill_path.is_file():
-        h.update(skill_path.read_bytes())
-    return f"sha256:{h.hexdigest()[:16]}"
+    return f"sha256:{_content_digest(skill_path)[:16]}"
 
 
 # ---------------------------------------------------------------------------

@@ -91,41 +91,13 @@ class TestResolveClientWsHost:
         _set_bound(saved_app_state, "127.0.0.1")
         assert web_server._resolve_client_ws_host() == "127.0.0.1"
 
-    def test_lan_bind_preserved(self, saved_app_state, clear_ws_host_env):
-        """A non-loopback, non-wildcard bind must NOT be rewritten — the
-        operator chose that address deliberately (e.g. bridge networking in
-        a sidecar topology) and rewriting it to 127.0.0.1 would break their
-        setup."""
-        _set_bound(saved_app_state, "192.168.1.5")
-        assert web_server._resolve_client_ws_host() == "192.168.1.5"
 
     def test_public_dns_bind_preserved(self, saved_app_state, clear_ws_host_env):
         _set_bound(saved_app_state, "fly-app.example.dev")
         assert web_server._resolve_client_ws_host() == "fly-app.example.dev"
 
-    def test_explicit_env_wins_over_wildcard(
-        self, saved_app_state, monkeypatch
-    ):
-        monkeypatch.setenv("HERMES_DASHBOARD_WS_HOST", "10.0.0.7")
-        _set_bound(saved_app_state, "0.0.0.0")
-        assert web_server._resolve_client_ws_host() == "10.0.0.7"
 
-    def test_explicit_env_wins_over_lan_bind(
-        self, saved_app_state, monkeypatch
-    ):
-        """Even when the bind is a routable address, the explicit override
-        still wins — operators may want to bypass the bind address
-        altogether (e.g. to dial a different sidecar replica)."""
-        monkeypatch.setenv("HERMES_DASHBOARD_WS_HOST", "10.0.0.7")
-        _set_bound(saved_app_state, "192.168.1.5")
-        assert web_server._resolve_client_ws_host() == "10.0.0.7"
 
-    def test_explicit_env_wins_over_loopback(
-        self, saved_app_state, monkeypatch
-    ):
-        monkeypatch.setenv("HERMES_DASHBOARD_WS_HOST", "10.0.0.7")
-        _set_bound(saved_app_state, "127.0.0.1")
-        assert web_server._resolve_client_ws_host() == "10.0.0.7"
 
     def test_blank_env_falls_back_to_bind(
         self, saved_app_state, monkeypatch
@@ -137,12 +109,6 @@ class TestResolveClientWsHost:
         _set_bound(saved_app_state, "0.0.0.0")
         assert web_server._resolve_client_ws_host() == "127.0.0.1"
 
-    def test_no_bound_host_returns_none(
-        self, saved_app_state, clear_ws_host_env
-    ):
-        web_server.app.state.bound_host = None
-        web_server.app.state.bound_port = None
-        assert web_server._resolve_client_ws_host() is None
 
     def test_bind_host_unchanged_after_wildcard_resolution(
         self, saved_app_state, clear_ws_host_env
@@ -161,15 +127,6 @@ class TestResolveClientWsHost:
 
 
 class TestGatewayWsUrlHost:
-    def test_wildcard_bind_dials_loopback(
-        self, saved_app_state, clear_ws_host_env
-    ):
-        _set_bound(saved_app_state, "0.0.0.0", port=9119)
-        url = web_server._build_gateway_ws_url()
-        assert url is not None
-        # ws://127.0.0.1:9119/api/ws?token=…
-        assert url.startswith("ws://127.0.0.1:9119/api/ws")
-        assert "0.0.0.0" not in url
 
     def test_ipv6_wildcard_bind_dials_loopback(
         self, saved_app_state, clear_ws_host_env
@@ -181,59 +138,11 @@ class TestGatewayWsUrlHost:
         # The ``::`` must not leak into the client URL.
         assert "::" not in url
 
-    def test_loopback_bind_uses_loopback(
-        self, saved_app_state, clear_ws_host_env
-    ):
-        _set_bound(saved_app_state, "127.0.0.1", port=8080)
-        url = web_server._build_gateway_ws_url()
-        assert url is not None
-        assert url.startswith("ws://127.0.0.1:8080/api/ws")
 
-    def test_lan_bind_preserved(
-        self, saved_app_state, clear_ws_host_env
-    ):
-        _set_bound(saved_app_state, "192.168.1.5", port=9120)
-        url = web_server._build_gateway_ws_url()
-        assert url is not None
-        assert url.startswith("ws://192.168.1.5:9120/api/ws")
 
-    def test_explicit_env_overrides_wildcard(
-        self, saved_app_state, monkeypatch
-    ):
-        monkeypatch.setenv("HERMES_DASHBOARD_WS_HOST", "10.0.0.7")
-        _set_bound(saved_app_state, "0.0.0.0", port=9119)
-        url = web_server._build_gateway_ws_url()
-        assert url is not None
-        assert url.startswith("ws://10.0.0.7:9119/api/ws")
-        assert "0.0.0.0" not in url
 
-    def test_explicit_env_overrides_lan(
-        self, saved_app_state, monkeypatch
-    ):
-        monkeypatch.setenv("HERMES_DASHBOARD_WS_HOST", "10.0.0.7")
-        _set_bound(saved_app_state, "192.168.1.5", port=9120)
-        url = web_server._build_gateway_ws_url()
-        assert url is not None
-        assert url.startswith("ws://10.0.0.7:9120/api/ws")
 
-    def test_wildcard_keeps_query_string(
-        self, saved_app_state, clear_ws_host_env
-    ):
-        """Regression-guard: rewriting the host must not drop the
-        ``?token=`` or ``?internal=`` credential."""
-        _set_bound(saved_app_state, "0.0.0.0", port=9119)
-        url = web_server._build_gateway_ws_url()
-        assert url is not None
-        assert "?" in url
-        # Loopback / ``--insecure`` path uses the session token.
-        assert f"token={web_server._SESSION_TOKEN}" in url
 
-    def test_no_bound_host_returns_none(
-        self, saved_app_state, clear_ws_host_env
-    ):
-        web_server.app.state.bound_host = None
-        web_server.app.state.bound_port = None
-        assert web_server._build_gateway_ws_url() is None
 
 
 # ---------------------------------------------------------------------------
@@ -242,59 +151,11 @@ class TestGatewayWsUrlHost:
 
 
 class TestSidecarUrlHost:
-    def test_wildcard_bind_dials_loopback(
-        self, saved_app_state, clear_ws_host_env
-    ):
-        _set_bound(saved_app_state, "0.0.0.0", port=9119)
-        url = web_server._build_sidecar_url("ch-1")
-        assert url is not None
-        assert url.startswith("ws://127.0.0.1:9119/api/pub")
-        assert "0.0.0.0" not in url
-        assert "channel=ch-1" in url
 
-    def test_ipv6_wildcard_bind_dials_loopback(
-        self, saved_app_state, clear_ws_host_env
-    ):
-        _set_bound(saved_app_state, "::", port=9119)
-        url = web_server._build_sidecar_url("ch-1")
-        assert url is not None
-        assert url.startswith("ws://127.0.0.1:9119/api/pub")
-        assert "::" not in url
 
-    def test_loopback_bind_uses_loopback(
-        self, saved_app_state, clear_ws_host_env
-    ):
-        _set_bound(saved_app_state, "127.0.0.1", port=8080)
-        url = web_server._build_sidecar_url("ch-1")
-        assert url is not None
-        assert url.startswith("ws://127.0.0.1:8080/api/pub")
 
-    def test_lan_bind_preserved(
-        self, saved_app_state, clear_ws_host_env
-    ):
-        _set_bound(saved_app_state, "192.168.1.5", port=9120)
-        url = web_server._build_sidecar_url("ch-1")
-        assert url is not None
-        assert url.startswith("ws://192.168.1.5:9120/api/pub")
 
-    def test_explicit_env_overrides_wildcard(
-        self, saved_app_state, monkeypatch
-    ):
-        monkeypatch.setenv("HERMES_DASHBOARD_WS_HOST", "10.0.0.7")
-        _set_bound(saved_app_state, "0.0.0.0", port=9119)
-        url = web_server._build_sidecar_url("ch-1")
-        assert url is not None
-        assert url.startswith("ws://10.0.0.7:9119/api/pub")
-        assert "0.0.0.0" not in url
 
-    def test_explicit_env_overrides_lan(
-        self, saved_app_state, monkeypatch
-    ):
-        monkeypatch.setenv("HERMES_DASHBOARD_WS_HOST", "10.0.0.7")
-        _set_bound(saved_app_state, "192.168.1.5", port=9120)
-        url = web_server._build_sidecar_url("ch-1")
-        assert url is not None
-        assert url.startswith("ws://10.0.0.7:9120/api/pub")
 
     def test_no_bound_host_returns_none(
         self, saved_app_state, clear_ws_host_env

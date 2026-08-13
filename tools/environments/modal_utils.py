@@ -80,11 +80,17 @@ class BaseModalExecutionEnvironment(BaseEnvironment):
         timeout: int | None = None,
         stdin_data: str | None = None,
         rewrite_compound_background: bool = True,
+        bounded_capture: bool = False,
     ) -> dict:
         # Managed/remote modal transports execute commands via explicit transport
         # and do not rely on shell background rewriters. Keep parameter for
         # compatibility with BaseEnvironment callers.
         _ = rewrite_compound_background
+        # bounded_capture: accepted for BaseEnvironment.execute() signature
+        # parity (the terminal tool passes it). Modal transports return the
+        # remote function's result in one payload, so streaming-time bounding
+        # does not apply; the terminal tool's final truncation still caps it.
+        _ = bounded_capture
         self._before_execute()
         prepared = self._prepare_modal_exec(
             command,

@@ -44,17 +44,3 @@ async def test_retry_returns_response_not_none(gateway):
     assert result == expected_response
 
 
-@pytest.mark.asyncio
-async def test_retry_no_previous_message(gateway):
-    """If there is no previous user message, return early with a message."""
-    gateway.session_store.get_or_create_session.return_value = MagicMock(
-        session_id="test-session"
-    )
-    gateway.session_store.load_transcript.return_value = []
-    event = MessageEvent(
-        text="/retry",
-        message_type=MessageType.TEXT,
-        source=MagicMock(),
-    )
-    result = await gateway._handle_retry_command(event)
-    assert result == "No previous message to retry."

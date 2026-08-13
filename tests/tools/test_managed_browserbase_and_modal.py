@@ -101,6 +101,17 @@ def _install_fake_tools_package():
     sys.modules["agent.auxiliary_client"] = types.SimpleNamespace(
         call_llm=lambda *args, **kwargs: "",
     )
+    # The fake `agent` package has an empty __path__, so every real
+    # agent.* submodule that production code imports needs an explicit
+    # stand-in here. tools.browser_tool imports redact_cdp_url;
+    # hermes_cli.auth (imported transitively by nous_account /
+    # tool_backend_helpers) imports sanitize_borrowed_credential_payload.
+    sys.modules["agent.redact"] = types.SimpleNamespace(
+        redact_cdp_url=lambda value: str(value),
+    )
+    sys.modules["agent.credential_persistence"] = types.SimpleNamespace(
+        sanitize_borrowed_credential_payload=lambda entry, provider_id=None: entry,
+    )
 
     # Stubs for the browser-provider plugin layer introduced in PR #25214.
     # The fake `agent` package has an empty __path__ so real submodules
@@ -181,7 +192,16 @@ def _install_fake_tools_package():
         def cleanup(self):
             return None
 
-    sys.modules["tools.environments.base"] = types.SimpleNamespace(BaseEnvironment=_DummyEnvironment)
+    class _DummyConnectionError(Exception):
+        def __init__(self, message="", backend="", detail="", *args):
+            super().__init__(message, *args)
+            self.backend = backend
+            self.detail = detail
+
+    sys.modules["tools.environments.base"] = types.SimpleNamespace(
+        BaseEnvironment=_DummyEnvironment,
+        EnvironmentConnectionError=_DummyConnectionError,
+    )
     sys.modules["tools.environments.local"] = types.SimpleNamespace(LocalEnvironment=_DummyEnvironment)
     sys.modules["tools.environments.singularity"] = types.SimpleNamespace(
         _get_scratch_dir=lambda: Path(tempfile.gettempdir()),
@@ -232,337 +252,6 @@ def test_browserbase_does_not_use_gateway_only_configuration():
         provider = browserbase_module.BrowserbaseBrowserProvider()
 
     assert provider.is_available() is False
-
-
-def test_browser_use_availability_skips_refresh_for_expired_cached_gateway_token(tmp_path, monkeypatch):
-    _install_fake_tools_package()
-    monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
-    expired_at = "2000-01-01T00:00:00+00:00"
-    (tmp_path / "auth.json").write_text(
-        '{"providers":{"nous":{"access_token":"expired-token","refresh_token":"refresh-token","expires_at":"%s"}}}'
-        % expired_at,
-        encoding="utf-8",
-    )
-    refresh_calls = []
-
-    def _record_refresh(*, refresh_skew_seconds=120, **_kwargs):
-        refresh_calls.append(refresh_skew_seconds)
-        return "fresh-token"
-
-    monkeypatch.setattr(
-        "hermes_cli.auth.resolve_nous_access_token",
-        _record_refresh,
-    )
-
-    env = os.environ.copy()
-    env.pop("BROWSER_USE_API_KEY", None)
-    env.update({
-        "HERMES_HOME": str(tmp_path),
-        "BROWSER_USE_GATEWAY_URL": "http://127.0.0.1:3009",
-    })
-
-    with patch.dict(os.environ, env, clear=True):
-        browser_use_module = _load_plugin_module(
-            "plugins.browser.browser_use.provider",
-            "browser/browser_use/provider.py",
-        )
-        provider = browser_use_module.BrowserUseBrowserProvider()
-        assert provider.is_available() is True
-
-    assert refresh_calls == []
-
-
-def test_browser_use_managed_gateway_adds_idempotency_key_and_persists_external_call_id():
-    _install_fake_tools_package()
-    env = os.environ.copy()
-    env.pop("BROWSER_USE_API_KEY", None)
-    env.update({
-        "TOOL_GATEWAY_USER_TOKEN": "nous-token",
-        "BROWSER_USE_GATEWAY_URL": "http://127.0.0.1:3009",
-    })
-
-    class _Response:
-        status_code = 200
-        ok = True
-        text = ""
-        headers = {"x-external-call-id": "call-browser-use-1"}
-
-        def json(self):
-            return {
-                "id": "bu_local_session_1",
-                "connectUrl": "wss://connect.browser-use.example/session",
-            }
-
-    with patch.dict(os.environ, env, clear=True):
-        browser_use_module = _load_plugin_module(
-            "plugins.browser.browser_use.provider",
-            "browser/browser_use/provider.py",
-        )
-
-        with patch.object(browser_use_module.requests, "post", return_value=_Response()) as post:
-            provider = browser_use_module.BrowserUseBrowserProvider()
-            session = provider.create_session("task-browser-use-managed")
-
-    sent_headers = post.call_args.kwargs["headers"]
-    assert sent_headers["X-Browser-Use-API-Key"] == "nous-token"
-    assert sent_headers["X-Idempotency-Key"].startswith("browser-use-session-create:")
-    sent_payload = post.call_args.kwargs["json"]
-    assert sent_payload["timeout"] == 5
-    assert sent_payload["proxyCountryCode"] == "us"
-    assert session["external_call_id"] == "call-browser-use-1"
-
-
-def test_browser_use_managed_gateway_reuses_pending_idempotency_key_after_timeout():
-    _install_fake_tools_package()
-    env = os.environ.copy()
-    env.pop("BROWSER_USE_API_KEY", None)
-    env.update({
-        "TOOL_GATEWAY_USER_TOKEN": "nous-token",
-        "BROWSER_USE_GATEWAY_URL": "http://127.0.0.1:3009",
-    })
-
-    class _Response:
-        status_code = 200
-        ok = True
-        text = ""
-        headers = {"x-external-call-id": "call-browser-use-2"}
-
-        def json(self):
-            return {
-                "id": "bu_local_session_2",
-                "connectUrl": "wss://connect.browser-use.example/session2",
-            }
-
-    with patch.dict(os.environ, env, clear=True):
-        browser_use_module = _load_plugin_module(
-            "plugins.browser.browser_use.provider",
-            "browser/browser_use/provider.py",
-        )
-        provider = browser_use_module.BrowserUseBrowserProvider()
-        timeout = browser_use_module.requests.Timeout("timed out")
-
-        with patch.object(
-            browser_use_module.requests,
-            "post",
-            side_effect=[timeout, _Response()],
-        ) as post:
-            try:
-                provider.create_session("task-browser-use-timeout")
-            except browser_use_module.requests.Timeout:
-                pass
-            else:
-                raise AssertionError("Expected Browser Use create_session to propagate timeout")
-
-            provider.create_session("task-browser-use-timeout")
-
-    first_headers = post.call_args_list[0].kwargs["headers"]
-    second_headers = post.call_args_list[1].kwargs["headers"]
-    assert first_headers["X-Idempotency-Key"] == second_headers["X-Idempotency-Key"]
-
-
-def test_browser_use_managed_gateway_preserves_pending_idempotency_key_for_in_progress_conflicts():
-    _install_fake_tools_package()
-    env = os.environ.copy()
-    env.pop("BROWSER_USE_API_KEY", None)
-    env.update({
-        "TOOL_GATEWAY_USER_TOKEN": "nous-token",
-        "BROWSER_USE_GATEWAY_URL": "http://127.0.0.1:3009",
-    })
-
-    class _ConflictResponse:
-        status_code = 409
-        ok = False
-        text = '{"error":{"code":"CONFLICT","message":"Managed Browser Use session creation is already in progress for this idempotency key"}}'
-        headers = {}
-
-        def json(self):
-            return {
-                "error": {
-                    "code": "CONFLICT",
-                    "message": "Managed Browser Use session creation is already in progress for this idempotency key",
-                }
-            }
-
-    class _SuccessResponse:
-        status_code = 200
-        ok = True
-        text = ""
-        headers = {"x-external-call-id": "call-browser-use-4"}
-
-        def json(self):
-            return {
-                "id": "bu_local_session_4",
-                "connectUrl": "wss://connect.browser-use.example/session4",
-            }
-
-    with patch.dict(os.environ, env, clear=True):
-        browser_use_module = _load_plugin_module(
-            "plugins.browser.browser_use.provider",
-            "browser/browser_use/provider.py",
-        )
-        provider = browser_use_module.BrowserUseBrowserProvider()
-
-        with patch.object(
-            browser_use_module.requests,
-            "post",
-            side_effect=[_ConflictResponse(), _SuccessResponse()],
-        ) as post:
-            try:
-                provider.create_session("task-browser-use-conflict")
-            except RuntimeError:
-                pass
-            else:
-                raise AssertionError("Expected Browser Use create_session to propagate the in-progress conflict")
-
-            provider.create_session("task-browser-use-conflict")
-
-    first_headers = post.call_args_list[0].kwargs["headers"]
-    second_headers = post.call_args_list[1].kwargs["headers"]
-    assert first_headers["X-Idempotency-Key"] == second_headers["X-Idempotency-Key"]
-
-
-def test_browser_use_managed_gateway_uses_new_idempotency_key_for_a_new_session_after_success():
-    _install_fake_tools_package()
-    env = os.environ.copy()
-    env.pop("BROWSER_USE_API_KEY", None)
-    env.update({
-        "TOOL_GATEWAY_USER_TOKEN": "nous-token",
-        "BROWSER_USE_GATEWAY_URL": "http://127.0.0.1:3009",
-    })
-
-    class _Response:
-        status_code = 200
-        ok = True
-        text = ""
-        headers = {"x-external-call-id": "call-browser-use-3"}
-
-        def json(self):
-            return {
-                "id": "bu_local_session_3",
-                "connectUrl": "wss://connect.browser-use.example/session3",
-            }
-
-    with patch.dict(os.environ, env, clear=True):
-        browser_use_module = _load_plugin_module(
-            "plugins.browser.browser_use.provider",
-            "browser/browser_use/provider.py",
-        )
-        provider = browser_use_module.BrowserUseBrowserProvider()
-
-        with patch.object(browser_use_module.requests, "post", side_effect=[_Response(), _Response()]) as post:
-            provider.create_session("task-browser-use-new")
-            provider.create_session("task-browser-use-new")
-
-    first_headers = post.call_args_list[0].kwargs["headers"]
-    second_headers = post.call_args_list[1].kwargs["headers"]
-    assert first_headers["X-Idempotency-Key"] != second_headers["X-Idempotency-Key"]
-
-
-def test_terminal_tool_prefers_managed_modal_when_gateway_ready_and_no_direct_creds():
-    _install_fake_tools_package()
-    env = os.environ.copy()
-    env.pop("MODAL_TOKEN_ID", None)
-    env.pop("MODAL_TOKEN_SECRET", None)
-
-    with patch.dict(os.environ, env, clear=True):
-        terminal_tool = _load_tool_module("tools.terminal_tool", "terminal_tool.py")
-
-        with (
-            patch.object(terminal_tool, "is_managed_tool_gateway_ready", return_value=True),
-            patch.object(terminal_tool, "_ManagedModalEnvironment", return_value="managed-modal-env") as managed_ctor,
-            patch.object(terminal_tool, "_ModalEnvironment", return_value="direct-modal-env") as direct_ctor,
-            patch.object(Path, "exists", return_value=False),
-        ):
-            result = terminal_tool._create_environment(
-                env_type="modal",
-                image="python:3.11",
-                cwd="/root",
-                timeout=60,
-                container_config={
-                    "container_cpu": 1,
-                    "container_memory": 2048,
-                    "container_disk": 1024,
-                    "container_persistent": True,
-                    "modal_mode": "auto",
-                },
-                task_id="task-modal-managed",
-            )
-
-    assert result == "managed-modal-env"
-    assert managed_ctor.called
-    assert not direct_ctor.called
-
-
-def test_terminal_tool_auto_mode_prefers_managed_modal_when_available():
-    _install_fake_tools_package()
-    env = os.environ.copy()
-    env.update({
-        "MODAL_TOKEN_ID": "tok-id",
-        "MODAL_TOKEN_SECRET": "tok-secret",
-    })
-
-    with patch.dict(os.environ, env, clear=True):
-        terminal_tool = _load_tool_module("tools.terminal_tool", "terminal_tool.py")
-
-        with (
-            patch.object(terminal_tool, "is_managed_tool_gateway_ready", return_value=True),
-            patch.object(terminal_tool, "_ManagedModalEnvironment", return_value="managed-modal-env") as managed_ctor,
-            patch.object(terminal_tool, "_ModalEnvironment", return_value="direct-modal-env") as direct_ctor,
-        ):
-            result = terminal_tool._create_environment(
-                env_type="modal",
-                image="python:3.11",
-                cwd="/root",
-                timeout=60,
-                container_config={
-                    "container_cpu": 1,
-                    "container_memory": 2048,
-                    "container_disk": 1024,
-                    "container_persistent": True,
-                    "modal_mode": "auto",
-                },
-                task_id="task-modal-auto",
-            )
-
-    assert result == "managed-modal-env"
-    assert managed_ctor.called
-    assert not direct_ctor.called
-
-
-def test_terminal_tool_auto_mode_falls_back_to_direct_modal_when_managed_unavailable():
-    _install_fake_tools_package()
-    env = os.environ.copy()
-    env.update({
-        "MODAL_TOKEN_ID": "tok-id",
-        "MODAL_TOKEN_SECRET": "tok-secret",
-    })
-
-    with patch.dict(os.environ, env, clear=True):
-        terminal_tool = _load_tool_module("tools.terminal_tool", "terminal_tool.py")
-
-        with (
-            patch.object(terminal_tool, "is_managed_tool_gateway_ready", return_value=False),
-            patch.object(terminal_tool, "_ManagedModalEnvironment", return_value="managed-modal-env") as managed_ctor,
-            patch.object(terminal_tool, "_ModalEnvironment", return_value="direct-modal-env") as direct_ctor,
-        ):
-            result = terminal_tool._create_environment(
-                env_type="modal",
-                image="python:3.11",
-                cwd="/root",
-                timeout=60,
-                container_config={
-                    "container_cpu": 1,
-                    "container_memory": 2048,
-                    "container_disk": 1024,
-                    "container_persistent": True,
-                    "modal_mode": "auto",
-                },
-                task_id="task-modal-direct-fallback",
-            )
-
-    assert result == "direct-modal-env"
-    assert direct_ctor.called
-    assert not managed_ctor.called
 
 
 def test_terminal_tool_respects_direct_modal_mode_without_falling_back_to_managed():

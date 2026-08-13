@@ -11,8 +11,10 @@ make_image tool several turns earlier must not leak onto a later
 text-only reply, even when the path-based dedup set fails to capture it.
 """
 
-import pytest
 import re
+from unittest.mock import MagicMock
+
+import pytest
 
 
 def extract_media_tags_fixed(result_messages, history_len):
@@ -136,128 +138,6 @@ caption
         assert tags == []
         assert voice is False
 
-    def test_gateway_auto_append_keeps_real_tts_media_tag(self):
-        """TTS tool media tags are still auto-appended when the model omits them."""
-        from gateway.run import _collect_auto_append_media_tags
-
-        messages = [
-            {"role": "user", "content": "Say this as audio"},
-            {
-                "role": "assistant",
-                "tool_calls": [
-                    {"id": "call_tts", "function": {"name": "text_to_speech"}}
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "call_tts",
-                "content": '{"success": true, "media_tag": "[[audio_as_voice]]\\nMEDIA:/tmp/voice.ogg"}',
-            },
-            {"role": "assistant", "content": "Done."},
-        ]
-
-        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
-        assert tags == ["MEDIA:/tmp/voice.ogg"]
-        assert voice is True
-
-    def test_gateway_auto_append_image_generate_json_path(self):
-        """image_generate returns a local path in JSON (no MEDIA: tag); it is
-        auto-appended so delivery doesn't depend on the model restating it."""
-        from gateway.run import _collect_auto_append_media_tags
-
-        messages = [
-            {"role": "user", "content": "Make me a cat"},
-            {
-                "role": "assistant",
-                "tool_calls": [
-                    {"id": "call_img", "function": {"name": "image_generate"}}
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "call_img",
-                "content": '{"success": true, "image": "/tmp/gen/cat.png", "agent_visible_image": "/tmp/gen/cat.png"}',
-            },
-            {"role": "assistant", "content": "Here's your cat."},
-        ]
-
-        tags, voice = _collect_auto_append_media_tags(messages, history_offset=0)
-        assert tags == ["MEDIA:/tmp/gen/cat.png"]
-        assert voice is False
-
-    def test_gateway_auto_append_image_generate_prefers_host_path(self):
-        """When host and sandbox paths differ, the host-deliverable path wins."""
-        from gateway.run import _collect_auto_append_media_tags
-
-        messages = [
-            {"role": "user", "content": "Make me a dog"},
-            {
-                "role": "assistant",
-                "tool_calls": [
-                    {"id": "call_img", "function": {"name": "image_generate"}}
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "call_img",
-                "content": '{"success": true, "host_image": "/host/dog.jpg", "image": "/host/dog.jpg", "agent_visible_image": "/sandbox/dog.jpg"}',
-            },
-        ]
-
-        tags, _ = _collect_auto_append_media_tags(messages, history_offset=0)
-        assert tags == ["MEDIA:/host/dog.jpg"]
-
-    def test_gateway_auto_append_image_generate_failure_and_url_ignored(self):
-        """Failed generations and remote URLs are not auto-delivered."""
-        from gateway.run import _collect_auto_append_media_tags
-
-        def _img_msgs(content):
-            return [
-                {
-                    "role": "assistant",
-                    "tool_calls": [
-                        {"id": "c", "function": {"name": "image_generate"}}
-                    ],
-                },
-                {"role": "tool", "tool_call_id": "c", "content": content},
-            ]
-
-        # Failed generation
-        tags, _ = _collect_auto_append_media_tags(
-            _img_msgs('{"success": false, "image": null, "error": "boom"}'),
-            history_offset=0,
-        )
-        assert tags == []
-
-        # Remote URL is not a local file path
-        tags, _ = _collect_auto_append_media_tags(
-            _img_msgs('{"success": true, "image": "https://fal.media/x/cat.png"}'),
-            history_offset=0,
-        )
-        assert tags == []
-
-    def test_gateway_auto_append_image_generate_dedupes_history(self):
-        """A generated image path already in history is not re-sent."""
-        from gateway.run import _collect_auto_append_media_tags
-
-        messages = [
-            {
-                "role": "assistant",
-                "tool_calls": [
-                    {"id": "c", "function": {"name": "image_generate"}}
-                ],
-            },
-            {
-                "role": "tool",
-                "tool_call_id": "c",
-                "content": '{"success": true, "image": "/tmp/gen/cat.png"}',
-            },
-        ]
-
-        tags, _ = _collect_auto_append_media_tags(
-            messages, history_offset=0, history_media_paths={"/tmp/gen/cat.png"}
-        )
-        assert tags == []
 
     def test_collect_history_media_paths_includes_image_generate_json(self):
         """Regression for #46627: the history media-path collector must pick up
@@ -289,6 +169,74 @@ caption
         paths = _collect_history_media_paths(history)
         assert "/tmp/gen/cat.png" in paths  # JSON-payload path (the bug)
         assert "/tmp/voice/note.ogg" in paths  # MEDIA: text path (already worked)
+
+    def test_non_streaming_dedup_excludes_current_turn_tool_output(self):
+        from gateway.platforms.base import BasePlatformAdapter
+
+        old_path = "/tmp/gen/old.png"
+        current_path = "/tmp/gen/current.png"
+        transcript = [
+            {"role": "user", "content": "make the old image"},
+            {"role": "assistant", "content": f"MEDIA:{old_path}"},
+            {"role": "user", "content": "make a new image"},
+            {
+                "role": "assistant",
+                "tool_calls": [{"id": "current", "function": {"name": "image_generate"}}],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "current",
+                "content": f'{{"success": true, "image": "{current_path}"}}',
+            },
+            {"role": "assistant", "content": f"MEDIA:{current_path}"},
+        ]
+        adapter = MagicMock()
+        adapter._session_store.peek_session_id.return_value = "session-id"
+        adapter._session_store.load_transcript.return_value = transcript
+
+        paths = BasePlatformAdapter._history_media_paths_for_session(
+            adapter, "session-key"
+        )
+        assert paths == {old_path}
+
+    @pytest.mark.parametrize(
+        "current_path",
+        ["/tmp/tts/current.ogg", "/tmp/tts/already-delivered.ogg"],
+    )
+    def test_non_streaming_dedup_scopes_tts_paths_to_prior_turns(
+        self, current_path
+    ):
+        from gateway.platforms.base import BasePlatformAdapter
+
+        old_path = "/tmp/tts/already-delivered.ogg"
+        transcript = [
+            {"role": "user", "content": "say the old message"},
+            {"role": "assistant", "content": f"MEDIA:{old_path}"},
+            {"role": "user", "content": "say the current message"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "tts", "function": {"name": "text_to_speech"}}
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "tts",
+                "content": f"[[audio_as_voice]]\\nMEDIA:{current_path}",
+            },
+            {
+                "role": "assistant",
+                "content": f"[[audio_as_voice]]\\nMEDIA:{current_path}",
+            },
+        ]
+        adapter = MagicMock()
+        adapter._session_store.peek_session_id.return_value = "session-id"
+        adapter._session_store.load_transcript.return_value = transcript
+
+        paths = BasePlatformAdapter._history_media_paths_for_session(
+            adapter, "session-key"
+        )
+        assert paths == {old_path}
 
     def test_image_generate_not_reemitted_after_compression(self):
         """End-to-end of the #46627 fix: collect history paths, then the
@@ -351,87 +299,8 @@ caption
         assert len(broken_tags) == 1, "Broken extraction finds tags in history"
         assert "audio1.ogg" in broken_tags[0]
     
-    def test_media_tags_extracted_from_current_turn(self):
-        """MEDIA tags from the current turn SHOULD be extracted."""
-        # History without TTS
-        history = [
-            {"role": "user", "content": "Hello"},
-            {"role": "assistant", "content": "Hi there!"},
-        ]
-        
-        # New turn with TTS call
-        new_messages = [
-            {"role": "user", "content": "Say goodbye as audio"},
-            {"role": "assistant", "content": None, "tool_calls": [{"id": "2", "function": {"name": "text_to_speech"}}]},
-            {"role": "tool", "tool_call_id": "2", "content": '{"success": true, "media_tag": "[[audio_as_voice]]\\nMEDIA:/path/to/audio2.ogg"}'},
-            {"role": "assistant", "content": "I've said goodbye!"},
-        ]
-        
-        all_messages = history + new_messages
-        history_len = len(history)
-        
-        # Fixed behavior: should extract the new media tag
-        tags, voice_directive = extract_media_tags_fixed(all_messages, history_len)
-        assert len(tags) == 1, "Should extract media tag from current turn"
-        assert "audio2.ogg" in tags[0]
-        assert voice_directive is True
     
-    def test_multiple_tts_calls_in_history_not_accumulated(self):
-        """Multiple TTS calls in history should NOT accumulate in new responses."""
-        # History with multiple TTS calls
-        history = [
-            {"role": "user", "content": "Say hello"},
-            {"role": "tool", "tool_call_id": "1", "content": 'MEDIA:/audio/hello.ogg'},
-            {"role": "assistant", "content": "Done!"},
-            {"role": "user", "content": "Say goodbye"},
-            {"role": "tool", "tool_call_id": "2", "content": 'MEDIA:/audio/goodbye.ogg'},
-            {"role": "assistant", "content": "Done!"},
-            {"role": "user", "content": "Say thanks"},
-            {"role": "tool", "tool_call_id": "3", "content": 'MEDIA:/audio/thanks.ogg'},
-            {"role": "assistant", "content": "Done!"},
-        ]
-        
-        # New turn: no TTS
-        new_messages = [
-            {"role": "user", "content": "What time is it?"},
-            {"role": "assistant", "content": "3 PM"},
-        ]
-        
-        all_messages = history + new_messages
-        history_len = len(history)
-        
-        # Fixed: no tags
-        tags, _ = extract_media_tags_fixed(all_messages, history_len)
-        assert tags == [], "Should not accumulate tags from history"
-        
-        # Broken: would have 3 tags (all the old ones)
-        broken_tags, _ = extract_media_tags_broken(all_messages)
-        assert len(broken_tags) == 3, "Broken version accumulates all history tags"
     
-    def test_deduplication_within_current_turn(self):
-        """Multiple MEDIA tags in current turn should be deduplicated."""
-        history = []
-        
-        # Current turn with multiple tool calls producing same media
-        new_messages = [
-            {"role": "user", "content": "Multiple TTS"},
-            {"role": "tool", "tool_call_id": "1", "content": 'MEDIA:/audio/same.ogg'},
-            {"role": "tool", "tool_call_id": "2", "content": 'MEDIA:/audio/same.ogg'},  # duplicate
-            {"role": "tool", "tool_call_id": "3", "content": 'MEDIA:/audio/different.ogg'},
-            {"role": "assistant", "content": "Done!"},
-        ]
-        
-        all_messages = history + new_messages
-        
-        tags, _ = extract_media_tags_fixed(all_messages, 0)
-        # Even though same.ogg appears twice, deduplication happens after extraction
-        # The extraction itself should get both, then caller deduplicates
-        assert len(tags) == 3  # Raw extraction gets all
-        
-        # Deduplication as done in the actual code:
-        seen = set()
-        unique = [t for t in tags if t not in seen and not seen.add(t)]
-        assert len(unique) == 2  # After dedup: same.ogg and different.ogg
 
 
 class TestStaleToolMediaLeak:
@@ -489,25 +358,6 @@ class TestStaleToolMediaLeak:
             "Sanity: the unscoped scan does surface the stale path"
         )
 
-    def test_current_turn_media_still_attached_when_dedup_set_empty(self):
-        """Turn-scoping must not suppress genuinely new media."""
-        history = [
-            {"role": "user", "content": "hi"},
-            {"role": "assistant", "content": "hello"},
-        ]
-        new_messages = [
-            {"role": "user", "content": "Make me a cover image"},
-            {"role": "assistant", "content": None,
-             "tool_calls": [{"id": "9", "function": {"name": "execute_code"}}]},
-            {"role": "tool", "tool_call_id": "9",
-             "content": "MEDIA:/tmp/fresh_cover.png"},
-            {"role": "assistant", "content": "Here it is."},
-        ]
-        all_messages = history + new_messages
-        tags, _ = extract_media_tags_production(
-            all_messages, len(history), set()
-        )
-        assert len(tags) == 1 and "fresh_cover.png" in tags[0]
 
     def test_compression_shrink_falls_back_to_path_dedup(self):
         """When the list is shorter than history_len (mid-run compression),

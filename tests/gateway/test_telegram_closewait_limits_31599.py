@@ -16,13 +16,13 @@ The fix wires the shared ``gateway.platforms._http_client_limits``
 builds — the fallback-transport branch, the proxy branch, and the plain
 branch — so idle keepalive sockets drain aggressively.
 
-Contract asserted here (mutation-survivable)
----------------------------------------------
-Every ``HTTPXRequest`` constructed by ``TelegramAdapter.connect()`` must
-receive ``httpx_kwargs["limits"]`` that is an ``httpx.Limits`` with a
-``keepalive_expiry`` strictly below httpx's 5.0 default and a positive,
-bounded ``max_keepalive_connections``.  Reverting the limits wiring (so
-HTTPXRequest falls back to PTB's default 5.0s keepalive) fails this test.
+Contracts asserted here (mutation-survivable)
+----------------------------------------------
+Proxy and direct-DNS ``HTTPXRequest`` instances must receive
+``httpx_kwargs["limits"]`` with a ``keepalive_expiry`` strictly below
+httpx's 5.0 default.  The fallback-IP instances must pass equivalent
+limits into both inner ``AsyncHTTPTransport`` pools because httpx ignores
+client-level limits when a custom transport is supplied.
 """
 
 import asyncio
@@ -74,7 +74,7 @@ def _make_adapter() -> TelegramAdapter:
     return TelegramAdapter(PlatformConfig(enabled=True, token="test-token"))
 
 
-def _drive_connect(monkeypatch, *, proxy_url):
+def _drive_connect(monkeypatch, *, proxy_url, fallback_ips=None):
     """Run connect() far enough to build the HTTPXRequests, then abort.
 
     Returns the list of recorded _RecordingHTTPXRequest instances.
@@ -83,7 +83,7 @@ def _drive_connect(monkeypatch, *, proxy_url):
 
     # No DoH auto-discovery → exercise the proxy / plain branches, not fallback.
     async def _no_fallback():
-        return []
+        return list(fallback_ips or [])
 
     monkeypatch.setattr(tg_adapter, "discover_fallback_ips", _no_fallback)
     monkeypatch.setattr(
@@ -97,6 +97,9 @@ def _drive_connect(monkeypatch, *, proxy_url):
     monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *a, **k: True)
     # Ensure the adapter reports no statically-configured fallback IPs.
     monkeypatch.setattr(adapter, "_fallback_ips", lambda: [])
+
+    if fallback_ips is not None:
+        monkeypatch.setattr(adapter, "_fallback_ips", lambda: list(fallback_ips))
 
     # builder.request(...).get_updates_request(...).build() must be harmless;
     # make build() raise our sentinel so connect() stops right after the
@@ -160,18 +163,25 @@ def test_proxy_branch_general_pool_has_tight_keepalive(monkeypatch):
     assert any(inst.kwargs.get("proxy") == "http://127.0.0.1:9/" for inst in instances)
 
 
-def test_plain_branch_general_pool_has_tight_keepalive(monkeypatch):
-    """No proxy / no fallback IPs → plain branch must also wire tuned limits."""
-    instances = _drive_connect(monkeypatch, proxy_url=None)
+def test_fallback_branch_forwards_tuned_limits_to_inner_transports(monkeypatch):
+    monkeypatch.delenv("HERMES_TELEGRAM_HTTP_POOL_SIZE", raising=False)
+    monkeypatch.delenv("HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", raising=False)
+
+    instances = _drive_connect(
+        monkeypatch,
+        proxy_url=None,
+        fallback_ips=["149.154.167.220"],
+    )
+
     assert len(instances) >= 2
-    _assert_keepalive_tight(instances)
+    for instance in instances:
+        transport = instance.kwargs["httpx_kwargs"]["transport"]
+        assert isinstance(transport, tg_adapter.TelegramFallbackTransport)
+        limits = transport._transport_kwargs["limits"]
+        assert isinstance(limits, httpx.Limits)
+        assert limits.keepalive_expiry is not None
+        assert limits.keepalive_expiry < 5.0
+        assert limits.max_connections == 512
 
-
-def test_limits_keepalive_below_ptb_default_is_the_contract():
-    """Document the invariant independent of adapter wiring: the shared
-    helper itself must tighten keepalive below httpx's 5.0 default."""
-    from gateway.platforms._http_client_limits import platform_httpx_limits
-
-    limits = platform_httpx_limits()
-    assert isinstance(limits, httpx.Limits)
-    assert limits.keepalive_expiry is not None and limits.keepalive_expiry < 5.0
+    for instance in instances:
+        asyncio.run(instance.kwargs["httpx_kwargs"]["transport"].aclose())

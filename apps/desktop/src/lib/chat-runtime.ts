@@ -9,22 +9,7 @@ import type { ComposerAttachment } from '@/store/composer'
 import type { ModelOptionsResponse, SessionInfo } from '@/types/hermes'
 
 export const SLASH_COMMAND_RE = /^\/[^\s/]*(?:\s|$)/
-export const BUILTIN_PERSONALITIES = [
-  'helpful',
-  'concise',
-  'technical',
-  'creative',
-  'teacher',
-  'kawaii',
-  'catgirl',
-  'pirate',
-  'shakespeare',
-  'surfer',
-  'noir',
-  'uwu',
-  'philosopher',
-  'hype'
-]
+export { BUILTIN_PERSONALITIES } from '@/lib/personalities'
 
 const THINKING_STATUS_PREFIX_RE =
   /^\s*(?:(?:[^\s.]{1,16})\s+)?(?:processing|thinking|reasoning|analyzing|pondering|contemplating|musing|cogitating|ruminating|deliberating|mulling|reflecting|computing|synthesizing|formulating|brainstorming)\.\.\.\s*/i
@@ -52,16 +37,23 @@ export function createClientSessionState(
     awaitingResponse: false,
     streamId: null,
     sawAssistantPayload: false,
+    adoptedRunningTurn: false,
     pendingBranchGroup: null,
     interrupted: false,
+    interimBoundaryPending: false,
     needsInput: false,
-    turnStartedAt: null
+    turnStartedAt: null,
+    usage: null
   }
 }
 
 export function sessionTitle(session: SessionInfo): string {
   return session.title?.trim() || session.preview?.trim() || 'Untitled session'
 }
+
+/** What a session is called before it has been sent — and before its composer
+ *  has been typed into, which is the only thing that can name it earlier. */
+export const NEW_SESSION_TITLE = 'New session'
 
 export function coerceGatewayText(value: unknown): string {
   if (typeof value === 'string') {
@@ -147,8 +139,62 @@ export function contextPath(path: string, cwd: string): string {
   return path.startsWith(normalizedCwd) ? path.slice(normalizedCwd.length) : path
 }
 
+// IDs are content-derived (`kind:value`), not uuids, so upsertAttachment's
+// exact-match dedupe only catches a re-attach when the raw value matches
+// byte-for-byte. Normalize the value first so a trailing slash, a `\` path
+// separator, etc. don't slip past dedupe as a "different" attachment.
+function normalizeAttachmentValue(kind: ComposerAttachment['kind'], value: string): string {
+  const trimmed = value.trim()
+
+  if (kind === 'url') {
+    try {
+      // The WHATWG URL parser only collapses an EMPTY path to '/' (bare
+      // origin) — it does not treat '/a' and '/a/' as equivalent, so strip a
+      // trailing slash ourselves once the URL is otherwise canonicalized
+      // (scheme/host case, default ports, etc.).
+      return new URL(trimmed).toString().replace(/\/+$/, '')
+    } catch {
+      return trimmed
+    }
+  }
+
+  if (kind === 'file' || kind === 'folder' || kind === 'image') {
+    const posix = trimmed.replace(/\\/g, '/')
+
+    // Don't collapse a bare root ('/' or 'C:/') down to an empty string.
+    return posix.length > 1 ? posix.replace(/\/+$/, '') : posix
+  }
+
+  return trimmed
+}
+
 export function attachmentId(kind: ComposerAttachment['kind'], value: string): string {
-  return `${kind}:${value}`
+  return `${kind}:${normalizeAttachmentValue(kind, value)}`
+}
+
+/** A GitHub PR review-thread (`#discussion_r<id>`) or conversation
+ *  (`#issuecomment-<id>`) deep link — the one paste shape that can resolve to
+ *  a structured review attachment instead of a plain `@url:` chip. */
+export const PR_COMMENT_URL_RE =
+  /^https:\/\/github\.com\/[^/\s]+\/[^/\s]+\/pull\/\d+(?:\/[^#\s]*)?#(?:discussion_r|issuecomment-)\d+$/
+
+/** The send-time expansion of a `review` attachment. `detail` holds the
+ *  resolved comment as JSON (HermesPrComment shape); a malformed payload falls
+ *  back to the attachment's URL ref so the send never throws. */
+export function reviewCommentBlock(detail: string): null | string {
+  try {
+    const c = JSON.parse(detail)
+
+    const anchor = c.path
+      ? `${c.path}${c.line ? `:${c.startLine && c.startLine !== c.line ? `${c.startLine}-` : ''}${c.line}` : ''}`
+      : `PR #${c.prNumber}`
+
+    const hunk = c.diffHunk ? `\n--- diff hunk ---\n${String(c.diffHunk).trim()}` : ''
+
+    return `\`\`\`review-comment ${anchor}\n@${c.author} on ${c.url}\n\n${String(c.body).trim()}${hunk}\n\`\`\``
+  } catch {
+    return null
+  }
 }
 
 export function pathLabel(path: string): string {
@@ -165,6 +211,18 @@ export function attachmentDisplayText(attachment: ComposerAttachment): string | 
 
   if (attachment.kind === 'terminal' && attachment.detail) {
     return `\`\`\`terminal\n${attachment.detail.trim()}\n\`\`\``
+  }
+
+  // A resolved PR review comment: expand to a fenced block carrying the
+  // anchor (file:line), author, body, and — when present — the diff hunk the
+  // comment sits on, so "address this" needs no re-explaining what "this" is.
+  // A malformed payload falls through to the refText (the pasted URL).
+  if (attachment.kind === 'review' && attachment.detail) {
+    const block = reviewCommentBlock(attachment.detail)
+
+    if (block) {
+      return block
+    }
   }
 
   if (attachment.refText) {
@@ -252,10 +310,14 @@ export function parseCommandDispatch(raw: unknown): CommandDispatchResponse | nu
       return typeof row.target === 'string' ? { type: 'alias', target: row.target } : null
 
     case 'skill':
-      return typeof row.name === 'string' ? { type: 'skill', name: row.name, message: str(row.message) } : null
+      return typeof row.name === 'string'
+        ? { type: 'skill', name: row.name, message: str(row.message), display: str(row.display) }
+        : null
 
     case 'send':
-      return typeof row.message === 'string' ? { type: 'send', message: row.message, notice: str(row.notice) } : null
+      return typeof row.message === 'string'
+        ? { type: 'send', message: row.message, notice: str(row.notice), display: str(row.display) }
+        : null
 
     case 'prefill':
       return typeof row.message === 'string' ? { type: 'prefill', message: row.message, notice: str(row.notice) } : null
@@ -333,13 +395,31 @@ export function quickModelOptions(
   return options.slice(0, 8)
 }
 
+// A message's display time. `timestamp` (Unix seconds) is authoritative when
+// present. Without it we fall back to *now* rather than digging digits out of
+// the id: message ids come in incompatible shapes — `assistant-<ms>`,
+// `<seconds>-<i>-<role>`, session-style `20260728_184420_…` — and feeding any
+// of them to `new Date()` (which reads ms) lands on the 1970 epoch, rendering
+// as an absurd "20663d ago". A timestamp-less message is a freshly created
+// optimistic/streaming one, so *now* is the right age anyway.
+export function messageCreatedAt(message: Pick<ChatMessage, 'timestamp'>, nowMs = Date.now()): Date {
+  return typeof message.timestamp === 'number' && Number.isFinite(message.timestamp) && message.timestamp > 0
+    ? new Date(message.timestamp * 1000)
+    : new Date(nowMs)
+}
+
 export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
   const role =
     message.role === 'user' || message.role === 'assistant' || message.role === 'system' ? message.role : 'assistant'
 
-  const createdAt = message.timestamp
-    ? new Date(message.timestamp * 1000)
-    : new Date(Number(message.id.match(/\d+/)?.[0]) || Date.now())
+  const createdAt = messageCreatedAt(message)
+
+  // Reactions and the durable row id ride metadata.custom for every role — the
+  // established channel for per-message extras (attachmentRefs below).
+  const reactionMeta = {
+    ...(message.rowId !== undefined ? { rowId: message.rowId } : {}),
+    ...(message.reactions?.length ? { reactions: message.reactions } : {})
+  }
 
   if (role === 'user') {
     return {
@@ -348,7 +428,7 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       content: message.parts.filter((part): part is Extract<ChatMessagePart, { type: 'text' }> => part.type === 'text'),
       attachments: [],
       createdAt,
-      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [] } }
+      metadata: { custom: { attachmentRefs: message.attachmentRefs ?? [], ...reactionMeta } }
     } as ThreadMessage
   }
 
@@ -379,7 +459,8 @@ export function toRuntimeMessage(message: ChatMessage): ThreadMessage {
       unstable_annotations: [],
       unstable_data: [],
       steps: [],
-      custom: {}
+      // Carries ChatMessage.interim to AssistantMessage's footer gate.
+      custom: { ...(message.interim ? { interim: true } : {}), ...reactionMeta }
     }
   } as ThreadMessage
 }

@@ -1,18 +1,6 @@
-import {
-  SiFigma,
-  SiGithub,
-  SiGitlab,
-  SiLinear,
-  SiNotion,
-  SiPostgresql,
-  SiSentry,
-  SiStripe,
-  SiSupabase,
-  SiVercel
-} from '@icons-pack/react-simple-icons'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { type ComponentType, type SVGProps, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { type CodeEditorApi } from '@/components/chat/code-editor'
 import { JsonDocumentEditor } from '@/components/chat/json-document-editor'
@@ -24,11 +12,13 @@ import { ErrorBanner } from '@/components/ui/error-state'
 import { Input } from '@/components/ui/input'
 import { Switch } from '@/components/ui/switch'
 import { TextTab } from '@/components/ui/text-tab'
+import { Tip } from '@/components/ui/tooltip'
 import {
   authMcpServer,
   getActionStatus,
   getLogs,
   getMcpCatalog,
+  getMcpOAuthFlow,
   type HermesGateway,
   installMcpCatalogEntry,
   type McpCatalogEntry,
@@ -37,6 +27,8 @@ import {
   testMcpServer
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
+import { brandFor, brandGlyphStyle } from '@/lib/mcp-brands'
+import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import { countEnabledTools, isToolEnabled, toggleToolInServer } from '@/lib/mcp-tool-filter'
 import { cn } from '@/lib/utils'
 import { notify, notifyError } from '@/store/notifications'
@@ -460,12 +452,38 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   // in-progress edit — the draft is the user's until they save or reset.
   const draftSeeded = useRef(false)
 
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
-    if (config && !draftSeeded.current) {
+    // profilePending: config still holds the PREVIOUS profile's record right
+    // after a switch — seeding from it would latch the wrong profile's doc.
+    if (!config || profilePending) {
+      return
+    }
+
+    if (!draftSeeded.current) {
       draftSeeded.current = true
       resetDraft(getServers(config))
+
+      return
     }
-  }, [config])
+
+    if (dirty || names.length === 0) {
+      return
+    }
+
+    // Heal the early-boot race: the first config snapshot can land before the
+    // backend has mcp_servers assembled, seeding (and latching) an empty doc
+    // while later refetches fill the list — saving would then wipe the real
+    // servers. A PRISTINE empty draft reseeds when servers arrive; any user
+    // edit (dirty) still always wins.
+    try {
+      if (Object.keys(parseServersDoc(draft)).length === 0) {
+        resetDraft(servers)
+      }
+    } catch {
+      // Mid-edit / invalid JSON — the user's text wins.
+    }
+  }, [config, dirty, draft, names, profilePending, servers])
 
   // Bumped on every profile switch. Async probe/auth completions capture the
   // epoch at call time and bail if it changed, so a slow profile-A request can't
@@ -497,6 +515,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
   // on a fresh success, errorUpdatedAt on a fresh failure. Releasing on error too
   // means a failed refetch surfaces the retry UI instead of leaving mutations
   // silently no-op forever.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     if (
       profilePending &&
@@ -552,7 +571,14 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
     setProbes(current => ({ ...current, [serverName]: 'probing' }))
 
     try {
-      const result = await authMcpServer(serverName)
+      const flow = await completeMcpDesktopOAuth({
+        serverName,
+        start: authMcpServer,
+        status: getMcpOAuthFlow,
+        openExternal: url => window.hermesDesktop.openExternal(url)
+      })
+
+      const result: McpTestResult = { ok: true, tools: flow.tools ?? [] }
 
       // Bail if the user switched profiles mid-flow — this result is profile A's.
       if (profileEpoch.current !== epoch) {
@@ -693,20 +719,22 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
     return next
   }
 
-  const toggleServer = async (serverName: string, enabled: boolean) => {
+  const setServerEnabled = async (serverName: string, enabled: boolean) => {
     if (profilePending) {
       return
     }
 
+    const next = withEnabled(servers[serverName], enabled)
+
     try {
-      if (!(await persist({ ...servers, [serverName]: withEnabled(servers[serverName], enabled) }))) {
+      if (!(await persist({ ...servers, [serverName]: next }))) {
         return
       }
 
       if (dirty) {
         patchDraft(doc => (doc[serverName] ? { ...doc, [serverName]: withEnabled(doc[serverName], enabled) } : doc))
       } else {
-        resetDraft({ ...servers, [serverName]: withEnabled(servers[serverName], enabled) })
+        resetDraft({ ...servers, [serverName]: next })
       }
 
       if (enabled) {
@@ -939,7 +967,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
             onBack={() => setCursor(0)}
             onProbe={() => void runProbe(selected)}
             onRemove={() => void removeServer(selected)}
-            onToggle={checked => void toggleServer(selected, checked)}
+            onToggle={checked => void setServerEnabled(selected, checked)}
             onToggleTool={toolName => void toggleTool(selected, toolName)}
             probe={probes[selected]}
             saved={savedEntry !== undefined}
@@ -980,7 +1008,7 @@ export function McpTab({ gateway }: { gateway: HermesGateway | null }) {
                         onProbe={() => void runProbe(serverName)}
                         onRemove={() => void removeServer(serverName)}
                         onSelect={() => focusServer(serverName)}
-                        onToggle={checked => void toggleServer(serverName, checked)}
+                        onToggle={checked => void setServerEnabled(serverName, checked)}
                         status={status}
                         statusText={statusLine(m, status, probes[serverName], server)}
                       />
@@ -1113,16 +1141,17 @@ function ServerConfig({
           row's h-11 centering exactly (h-5 controls → mt-3, size-6 avatar →
           mt-2.5, h-4 switch → mt-3.5) no matter how tall the text column gets. */}
       <div className="flex items-start gap-2 pr-1.5">
-        <Button
-          aria-label={m.allServers}
-          className={cn('mt-3', ICON_BUTTON)}
-          onClick={onBack}
-          size="icon"
-          title={m.allServers}
-          variant="ghost"
-        >
-          <Codicon name="chevron-left" size="0.8125rem" />
-        </Button>
+        <Tip label={m.allServers}>
+          <Button
+            aria-label={m.allServers}
+            className={cn('mt-3', ICON_BUTTON)}
+            onClick={onBack}
+            size="icon"
+            variant="ghost"
+          >
+            <Codicon name="chevron-left" size="0.8125rem" />
+          </Button>
+        </Tip>
         <McpAvatar className="mt-2.5" name={name} status={status} />
         <div className="min-w-0 flex-1 pt-1">
           <h3 className="min-w-0 truncate text-[0.9375rem] font-semibold tracking-tight">{prettyName(name)}</h3>
@@ -1256,28 +1285,30 @@ function ServerIconActions({
 
   return (
     <span className={cn('flex items-center gap-0.5', className)}>
-      <Button
-        aria-label={m.reload}
-        className={ICON_BUTTON}
-        disabled={probing}
-        onClick={onProbe}
-        size="icon"
-        title={m.reload}
-        variant="ghost"
-      >
-        <Codicon name="refresh" size="0.8125rem" spinning={probing} />
-      </Button>
-      <Button
-        aria-label={m.remove}
-        className={cn(ICON_BUTTON, 'hover:text-destructive')}
-        disabled={saving}
-        onClick={onRemove}
-        size="icon"
-        title={m.remove}
-        variant="ghost"
-      >
-        <Codicon name="trash" size="0.8125rem" />
-      </Button>
+      <Tip label={m.reload}>
+        <Button
+          aria-label={m.reload}
+          className={ICON_BUTTON}
+          disabled={probing}
+          onClick={onProbe}
+          size="icon"
+          variant="ghost"
+        >
+          <Codicon name="refresh" size="0.8125rem" spinning={probing} />
+        </Button>
+      </Tip>
+      <Tip label={m.remove}>
+        <Button
+          aria-label={m.remove}
+          className={cn(ICON_BUTTON, 'hover:text-destructive')}
+          disabled={saving}
+          onClick={onRemove}
+          size="icon"
+          variant="ghost"
+        >
+          <Codicon name="trash" size="0.8125rem" />
+        </Button>
+      </Tip>
     </span>
   )
 }
@@ -1530,27 +1561,9 @@ function McpLogs({
 // ---------------------------------------------------------------------------
 
 // Brand glyphs for well-known MCP providers, exactly the Messaging avatar
-// treatment (simpleicons on a 16% brand tint). Unknown servers fall back to
-// the same letter monogram Messaging uses.
-const MCP_BRAND_ICONS: Record<string, { Icon: ComponentType<SVGProps<SVGSVGElement>>; color: string }> = {
-  figma: { Icon: SiFigma, color: '#F24E1E' },
-  github: { Icon: SiGithub, color: '#181717' },
-  gitlab: { Icon: SiGitlab, color: '#FC6D26' },
-  linear: { Icon: SiLinear, color: '#5E6AD2' },
-  notion: { Icon: SiNotion, color: '#000000' },
-  postgres: { Icon: SiPostgresql, color: '#4169E1' },
-  postgresql: { Icon: SiPostgresql, color: '#4169E1' },
-  sentry: { Icon: SiSentry, color: '#362D59' },
-  stripe: { Icon: SiStripe, color: '#635BFF' },
-  supabase: { Icon: SiSupabase, color: '#3FCF8E' },
-  vercel: { Icon: SiVercel, color: '#000000' }
-}
-
-const brandFor = (name: string) => {
-  const lower = name.toLowerCase()
-
-  return MCP_BRAND_ICONS[lower] ?? Object.entries(MCP_BRAND_ICONS).find(([key]) => lower.includes(key))?.[1] ?? null
-}
+// treatment (simpleicons on a 16% brand tint) — shared with the composer
+// suggestion pills and inline setup card via lib/mcp-brands. Unknown servers
+// fall back to the same letter monogram Messaging uses.
 
 // PlatformAvatar (messaging), copied 1:1 — same size, radius, type scale, and
 // brand-tint treatment — plus a status dot overlay. Identity ladder: curated
@@ -1570,7 +1583,7 @@ function McpAvatar({ className, name, status }: { className?: string; name: stri
       style={brand ? { backgroundColor: `color-mix(in srgb, ${brand.color} 16%, transparent)` } : undefined}
     >
       {brand ? (
-        <brand.Icon aria-hidden className="size-3.5" style={{ color: brand.color }} />
+        <brand.Icon aria-hidden className="size-3.5" style={brandGlyphStyle(brand)} />
       ) : (
         name.charAt(0).toUpperCase()
       )}

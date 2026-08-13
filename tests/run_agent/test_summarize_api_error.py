@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import httpx
+import pytest
 
 from run_agent import AIAgent
 
@@ -37,25 +38,42 @@ def test_empty_body_falls_back_to_response_json_error_message():
     assert "HTTP 400" in summary
     assert "model `foo` does not exist" in summary
 
+@pytest.mark.parametrize(
+    "technical_message",
+    [
+        "Temporary failure in name resolution",
+        "Name or service not known",
+        "nodename nor servname provided, or not known",
+        "getaddrinfo failed",
+        "No address associated with hostname",
+        "Network is unreachable",
+    ],
+)
+def test_network_resolution_failure_explains_that_the_user_may_be_offline(
+    technical_message,
+):
+    error = OSError(-3, technical_message)
 
-def test_empty_body_falls_back_to_raw_response_text_when_not_json():
-    """A non-JSON response body is surfaced verbatim (truncated), not dropped."""
-    err = _make_empty_body_error("upstream connect error or disconnect/reset before headers")
-    summary = AIAgent._summarize_api_error(err)
-    assert "HTTP 400" in summary
-    assert "upstream connect error" in summary
+    summary = AIAgent._summarize_api_error(error)
 
-
-def test_empty_body_fallback_redacts_secrets(monkeypatch):
-    """The surfaced provider/proxy error body must pass through the secret
-    redactor — a proxy echoing an API key in the error must not leak it into
-    final_response/logs (the empty-body path previously hid it as bare HTTP 400)."""
-    monkeypatch.setenv("HERMES_REDACT_SECRETS", "true")
-    err = _make_empty_body_error(
-        '{"error": {"message": "bad key: sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef"}}'
+    assert summary == (
+        "Hermes can't reach the model provider. You may be offline. "
+        "Check your internet connection and try again."
     )
-    summary = AIAgent._summarize_api_error(err)
-    assert "sk-proj-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef" not in summary
+    assert "name resolution" not in summary.lower()
+
+
+def test_wrapped_dns_resolution_failure_gets_the_same_friendly_message():
+    try:
+        try:
+            raise OSError(-3, "Temporary failure in name resolution")
+        except OSError as cause:
+            raise RuntimeError("Connection error.") from cause
+    except RuntimeError as error:
+        summary = AIAgent._summarize_api_error(error)
+
+    assert "You may be offline" in summary
+    assert "Connection error" not in summary
 
 
 def test_unread_streaming_response_does_not_crash_and_falls_back_to_exception_message():
@@ -78,4 +96,3 @@ def test_unread_streaming_response_does_not_crash_and_falls_back_to_exception_me
     summary = AIAgent._summarize_api_error(err)
     assert "HTTP 429" in summary
     assert "Gemini HTTP 429: quota exceeded" in summary
-

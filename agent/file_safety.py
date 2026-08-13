@@ -35,7 +35,17 @@ def build_write_denied_paths(home: str) -> set[str]:
             os.path.join(home, ".ssh", "authorized_keys"),
             os.path.join(home, ".ssh", "id_rsa"),
             os.path.join(home, ".ssh", "id_ed25519"),
-            os.path.join(home, ".ssh", "config"),
+            # NOTE: ``~/.ssh/config`` is deliberately NOT hard-denied here.
+            # It carries no private-key bytes and editing it (host aliases,
+            # ProxyJump, VS Code Remote-SSH targets) is a routine, expected
+            # task. Free-writing it is still wrong -- it can carry
+            # ProxyCommand / Match exec directives -- so it is routed through
+            # an approval gate in tools/file_tools.py instead (the same
+            # approve-once/session/always flow the terminal tool already uses
+            # for ~/.ssh writes). See build_write_approval_paths() below and
+            # _check_ssh_config_write() in tools/file_tools.py. Hard-denying
+            # it while the terminal only *asked* was an inconsistency that
+            # made writes look like they flip-flopped between denied and OK.
             # Active profile .env (or top-level .env when not in profile mode).
             str(hermes_home / ".env"),
             # Top-level .env, even when running under a profile — overwriting it
@@ -46,6 +56,9 @@ def build_write_denied_paths(home: str) -> set[str]:
             # Top-level Anthropic PKCE credential store remains sensitive even
             # when a profile is active; default/non-profile sessions still read it.
             str(hermes_root / ".anthropic_oauth.json"),
+            # Bitwarden Secrets Manager encrypted disk cache.
+            str(hermes_home / "cache" / "bws_cache.enc.json"),
+            str(hermes_root / "cache" / "bws_cache.enc.json"),
             os.path.join(home, ".netrc"),
             os.path.join(home, ".pgpass"),
             os.path.join(home, ".npmrc"),
@@ -95,16 +108,45 @@ def get_safe_write_roots() -> set[str]:
     return roots
 
 
-def is_write_denied(path: str) -> bool:
-    """Return True if path is blocked by the write denylist or safe root."""
+def build_write_approval_paths(home: str) -> set[str]:
+    """Return paths that require human APPROVAL to write, but are not
+    hard-denied credentials.
+
+    ``~/.ssh/config`` lives here: it is routine to edit (host aliases,
+    ProxyJump, VS Code Remote-SSH targets) and holds no private-key bytes,
+    but it CAN carry ``ProxyCommand`` / ``Match exec`` directives, so a
+    free write is inappropriate. The interactive file tools gate these
+    through an approve-once/session/always prompt (mirroring the terminal
+    tool's existing ``~/.ssh`` write approval); non-interactive callers
+    that cannot prompt (ACP shims, background jobs) treat an
+    approval-required path as denied and fail closed.
+    """
+    return {
+        os.path.realpath(p)
+        for p in [
+            os.path.join(home, ".ssh", "config"),
+        ]
+    }
+
+
+def _classify_write_denial(path: str) -> Optional[str]:
+    """Return ``'credential'``, ``'safe_root'``, or ``None`` if writes are allowed."""
     home = os.path.realpath(os.path.expanduser("~"))
     resolved = os.path.realpath(os.path.expanduser(str(path)))
 
+    # Approval-gated paths (e.g. ~/.ssh/config) are NOT hard-denied here:
+    # they are allowed at this layer so the interactive file tools can run
+    # their approval prompt, and only blocked for non-interactive callers
+    # via get_write_approval_error(). Checked before the credential deny so
+    # the ``.ssh/`` directory prefix below doesn't swallow the config file.
+    if resolved in build_write_approval_paths(home):
+        return None
+
     if resolved in build_write_denied_paths(home):
-        return True
+        return "credential"
     for prefix in build_write_denied_prefixes(home):
         if resolved.startswith(prefix):
-            return True
+            return "credential"
 
     mcp_tokens_dir_name = "mcp-tokens"
 
@@ -118,16 +160,27 @@ def is_write_denied(path: str) -> bool:
             continue
 
     for base_real in hermes_dirs:
+        # Session transcripts are application-owned state.  Letting the agent's
+        # generic file tools rewrite state.db or legacy JSON snapshots can
+        # falsify conversation history and invalidate resume/compression state.
+        try:
+            if resolved == os.path.realpath(os.path.join(base_real, "state.db")):
+                return True
+            sessions_real = os.path.realpath(os.path.join(base_real, "sessions"))
+            if resolved == sessions_real or resolved.startswith(sessions_real + os.sep):
+                return True
+        except Exception:
+            pass
         try:
             mcp_real = os.path.realpath(os.path.join(base_real, mcp_tokens_dir_name))
             if resolved == mcp_real or resolved.startswith(mcp_real + os.sep):
-                return True
+                return "credential"
         except Exception:
             pass
         try:
             pairing_real = os.path.realpath(os.path.join(base_real, "pairing"))
             if resolved == pairing_real or resolved.startswith(pairing_real + os.sep):
-                return True
+                return "credential"
         except Exception:
             pass
 
@@ -139,9 +192,42 @@ def is_write_denied(path: str) -> bool:
                 allowed = True
                 break
         if not allowed:
-            return True
+            return "safe_root"
 
-    return False
+    return None
+
+
+def is_write_denied(path: str) -> bool:
+    """Return True if path is blocked by the write denylist or safe root."""
+    return _classify_write_denial(path) is not None
+
+
+def get_write_denied_error(path: str, *, verb: str = "Write") -> Optional[str]:
+    """Return a user/model-facing error when writes to ``path`` are blocked."""
+    denial = _classify_write_denial(path)
+    if denial is None:
+        return None
+    if denial == "safe_root":
+        roots_display = os.pathsep.join(sorted(get_safe_write_roots()))
+        return (
+            f"{verb} denied: '{path}' is outside HERMES_WRITE_SAFE_ROOT "
+            f"({roots_display}). Unset the variable or add this path's directory prefix."
+        )
+    return f"{verb} denied: '{path}' is a protected system/credential file."
+
+
+def is_write_approval_required(path: str) -> bool:
+    """Return True if ``path`` is an approval-gated write target.
+
+    These paths (currently ``~/.ssh/config``) are not credentials and are
+    not hard-denied, but a write to them must be confirmed by a human
+    because they can influence process execution (e.g. an SSH
+    ``ProxyCommand``). Callers with an interactive/gateway channel should
+    prompt; callers without one should treat this as a block (fail closed).
+    """
+    home = os.path.realpath(os.path.expanduser("~"))
+    resolved = os.path.realpath(os.path.expanduser(str(path)))
+    return resolved in build_write_approval_paths(home)
 
 
 # Common secret-bearing project-local environment file basenames.

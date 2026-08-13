@@ -303,9 +303,14 @@ def handle_blueprint_command(
         )
 
     try:
-        from cron.jobs import create_job
+        from cron.scheduler import (
+            CronSchedulerRegistrationError,
+            create_job_with_scheduler_registration,
+        )
 
-        job = create_job(**spec)
+        job = create_job_with_scheduler_registration(**spec)
+    except CronSchedulerRegistrationError as e:
+        return BlueprintCommandResult(e.user_message())
     except Exception as e:
         logger.debug("blueprint create_job failed: %s", e)
         return BlueprintCommandResult(f"Failed to create the job: {e}")

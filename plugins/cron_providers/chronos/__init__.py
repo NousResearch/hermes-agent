@@ -106,6 +106,10 @@ class ChronosCronScheduler(CronScheduler):
         Does NOT block and does NOT spawn a 60s wake (DQ-1) — that is the whole
         point of scale-to-zero. The machine wakes only on a NAS→agent fire.
         """
+        # A new provider lifecycle cannot prove what an interrupted prior
+        # process did. Classify those attempts unknown for audit only; do not
+        # requeue them here.
+        self.recover_interrupted()
         try:
             self.reconcile()
         except Exception as e:
@@ -122,6 +126,15 @@ class ChronosCronScheduler(CronScheduler):
             self.reconcile()
         except Exception as e:
             logger.debug("Chronos on_jobs_changed reconcile failed: %s", e)
+
+    def register_job(self, job: Dict[str, Any]) -> None:
+        """Arm the first one-shot for a newly persisted job.
+
+        Unlike full reconciliation, this operation is allowed to raise so the
+        creation surface can report that the local job exists but its external
+        trigger was not registered.
+        """
+        self._arm_one_shot(job)
 
     # -- arming -----------------------------------------------------------
 

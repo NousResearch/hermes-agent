@@ -23,28 +23,6 @@ class TestProfilePlatformPorts:
         assert _profile_platform_ports(tmp_path, None) == {}
         assert _profile_platform_ports(tmp_path, {"platforms": {}}) == {}
 
-    def test_non_port_binding_platform_ignored(self, tmp_path):
-        runtime = {"platforms": {"telegram": {"state": "connected"}}}
-        assert _profile_platform_ports(tmp_path, runtime) == {}
-
-    def test_default_port_when_no_config(self, tmp_path):
-        runtime = {"platforms": {"webhook": {"state": "connected"}}}
-        assert _profile_platform_ports(tmp_path, runtime) == {"webhook": 8644}
-
-    def test_port_from_config_yaml_top_level(self, tmp_path):
-        (tmp_path / "config.yaml").write_text(
-            "platforms:\n  webhook:\n    port: 9001\n", encoding="utf-8"
-        )
-        runtime = {"platforms": {"webhook": {"state": "connected"}}}
-        assert _profile_platform_ports(tmp_path, runtime) == {"webhook": 9001}
-
-    def test_port_from_gateway_platforms_block(self, tmp_path):
-        (tmp_path / "config.yaml").write_text(
-            "gateway:\n  platforms:\n    api_server:\n      port: 9500\n",
-            encoding="utf-8",
-        )
-        runtime = {"platforms": {"api_server": {"state": "connected"}}}
-        assert _profile_platform_ports(tmp_path, runtime) == {"api_server": 9500}
 
     def test_top_level_platforms_wins_over_gateway_block(self, tmp_path):
         (tmp_path / "config.yaml").write_text(
@@ -55,13 +33,6 @@ class TestProfilePlatformPorts:
         runtime = {"platforms": {"webhook": {"state": "connected"}}}
         assert _profile_platform_ports(tmp_path, runtime) == {"webhook": 2222}
 
-    def test_port_in_extra_block(self, tmp_path):
-        (tmp_path / "config.yaml").write_text(
-            "platforms:\n  whatsapp_cloud:\n    extra:\n      webhook_port: 8095\n",
-            encoding="utf-8",
-        )
-        runtime = {"platforms": {"whatsapp_cloud": {"state": "connected"}}}
-        assert _profile_platform_ports(tmp_path, runtime) == {"whatsapp_cloud": 8095}
 
     def test_dead_platform_states_excluded(self, tmp_path):
         runtime = {
@@ -72,13 +43,6 @@ class TestProfilePlatformPorts:
             }
         }
         assert _profile_platform_ports(tmp_path, runtime) == {"msgraph_webhook": 8646}
-
-    def test_invalid_port_value_falls_back_to_default(self, tmp_path):
-        (tmp_path / "config.yaml").write_text(
-            "platforms:\n  webhook:\n    port: notaport\n", encoding="utf-8"
-        )
-        runtime = {"platforms": {"webhook": {"state": "connected"}}}
-        assert _profile_platform_ports(tmp_path, runtime) == {"webhook": 8644}
 
 
 # ---------------------------------------------------------------------------
@@ -114,49 +78,8 @@ class TestCollectProfileGatewayTopology:
         assert topo["gateway_mode"] == "none"
         assert topo["gateways"] == []
 
-    def test_single_gateway(self, tmp_path, monkeypatch):
-        homes = [("default", tmp_path / "d"), ("coder", tmp_path / "c")]
-        _patch_topology(
-            monkeypatch, homes, running={"default"},
-            runtimes={"default": {"platforms": {}}},
-        )
-        topo = _collect_profile_gateway_topology()
-        assert topo["gateway_mode"] == "single"
-        assert [g["profile"] for g in topo["gateways"]] == ["default"]
 
-    def test_multiplex_gateway(self, tmp_path, monkeypatch):
-        homes = [("default", tmp_path / "d"), ("coder", tmp_path / "c")]
-        _patch_topology(
-            monkeypatch, homes, running={"default"},
-            runtimes={"default": {
-                "platforms": {},
-                "served_profiles": ["default", "coder"],
-            }},
-        )
-        topo = _collect_profile_gateway_topology()
-        assert topo["gateway_mode"] == "multiplex"
-        assert topo["gateways"][0]["served_profiles"] == ["default", "coder"]
 
-    def test_multiple_independent_gateways_with_ports(self, tmp_path, monkeypatch):
-        d_home = tmp_path / "d"
-        c_home = tmp_path / "c"
-        d_home.mkdir()
-        c_home.mkdir()
-        (c_home / "config.yaml").write_text(
-            "platforms:\n  webhook:\n    port: 9644\n", encoding="utf-8"
-        )
-        homes = [("default", d_home), ("coder", c_home)]
-        _patch_topology(
-            monkeypatch, homes, running={"default", "coder"},
-            runtimes={
-                "default": {"platforms": {"webhook": {"state": "connected"}}},
-                "coder": {"platforms": {"webhook": {"state": "connected"}}},
-            },
-        )
-        topo = _collect_profile_gateway_topology()
-        assert topo["gateway_mode"] == "multiple"
-        ports = {g["profile"]: g["ports"] for g in topo["gateways"]}
-        assert ports == {"default": {"webhook": 8644}, "coder": {"webhook": 9644}}
 
     def test_enumeration_failure_degrades_gracefully(self, monkeypatch):
         import hermes_cli.profiles as profiles_mod

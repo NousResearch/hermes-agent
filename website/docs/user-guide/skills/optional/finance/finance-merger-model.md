@@ -1,14 +1,14 @@
 ---
-title: "Merger Model — Build accretion/dilution (merger) models in Excel — pro-forma P&L, synergies, financing mix, EPS impact"
+title: "Merger Model — Build M&A accretion/dilution workbooks in Excel"
 sidebar_label: "Merger Model"
-description: "Build accretion/dilution (merger) models in Excel — pro-forma P&L, synergies, financing mix, EPS impact"
+description: "Build M&A accretion/dilution workbooks in Excel"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Merger Model
 
-Build accretion/dilution (merger) models in Excel — pro-forma P&L, synergies, financing mix, EPS impact. Pairs with excel-author. Use for M&A pitches, board materials, or deal evaluation.
+Build M&A accretion/dilution workbooks in Excel.
 
 ## Skill metadata
 

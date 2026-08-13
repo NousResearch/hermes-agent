@@ -80,6 +80,7 @@ function probeGatewayWebSocket<T>(
       if (settled) {
         return
       }
+
       settled = true
       clearTimers()
 
@@ -107,6 +108,7 @@ function probeGatewayWebSocket<T>(
       if (settled) {
         return
       }
+
       opened = true
       // Upgrade accepted. Give the server a brief window to reject the
       // credential post-handshake (early close) before declaring success.
@@ -189,6 +191,7 @@ function extractErrorReason(event) {
   if (event instanceof Error) {
     return event.message
   }
+
   const err = event.error || event.message
 
   if (err instanceof Error) {

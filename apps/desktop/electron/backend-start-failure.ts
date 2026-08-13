@@ -1,0 +1,72 @@
+/**
+ * backend-start-failure.ts
+ *
+ * Decides whether a failed primary-backend boot should *latch* into
+ * `backendStartFailure`. A latched failure makes every subsequent
+ * startHermes() re-throw the cached error without re-attempting the connect —
+ * the right behavior for a LOCAL backend so the renderer's retry loop can't
+ * restart a broken install over and over.
+ *
+ * It is the WRONG behavior for a REMOTE backend. A remote connect can fail for
+ * transient reasons — a lapsed OAuth access-token cookie (the gateway rotates a
+ * fresh one from the live refresh-token cookie on the next request), a
+ * ws-ticket mint that timed out mid sleep/wake, or a host that was briefly
+ * unreachable across a laptop sleep. There is no child process whose 'exit'
+ * handler would clear the cache, so a latched remote failure sticks until the
+ * whole app is quit and relaunched: reconnect, "Sign out & sign in" (which only
+ * reloads the renderer), and the wake-recovery revalidate path all keep hitting
+ * the same stale error. Not latching lets the very next connect re-mint a
+ * ticket against the (now refreshed) session and self-heal.
+ *
+ * Extracted as a dependency-free pure predicate so the invariant is testable
+ * without booting Electron or reading main.ts source text.
+ */
+
+export interface BackendStartFailureContext {
+  /**
+   * True when the boot that just failed was resolving/dialing a REMOTE (or
+   * cloud) primary backend rather than spawning a local child.
+   */
+  attemptedRemote: boolean
+}
+
+/**
+ * Whether a startHermes() failure should latch into `backendStartFailure`.
+ * Latch local failures (prevent install-restart loops); never latch remote
+ * failures (they are transient and must stay retryable so recovery paths work
+ * without an app restart).
+ */
+export function shouldLatchBackendStartFailure(context: BackendStartFailureContext): boolean {
+  return !context.attemptedRemote
+}
+
+export interface RemoteReauthFailureContext {
+  /** True when the boot that just failed was dialing a REMOTE (or cloud) backend. */
+  attemptedRemote: boolean
+  /**
+   * True when the failure was a CONFIRMED auth rejection (a credentialed
+   * probe got 401/403), not a transient connectivity fault.
+   */
+  isReauth: boolean
+}
+
+/**
+ * Whether a failed remote boot should latch as a reauth failure.
+ *
+ * This is the deliberate counterpart to `shouldLatchBackendStartFailure`,
+ * which never latches a remote failure because remote faults are usually
+ * transient and must stay retryable. A *confirmed* reauth rejection is the
+ * exception: it cannot self-heal, because nothing will change until the user
+ * signs in again.
+ *
+ * Without a latch, the non-latching remote path actively prevents recovery.
+ * Every subsequent `getConnection`/`api` call re-runs `startHermes`, re-emits
+ * `running: true`, and the boot-failure overlay (`visible = Boolean(boot.error)
+ * && !boot.running`) hides itself — so the "Sign in" button flickers out from
+ * under the user before they can click it. Latching holds the overlay still
+ * and clickable. Cleared on every recovery path (reset, repair, apply-config,
+ * and a confirmed sign-in) so a fresh session boots normally.
+ */
+export function shouldLatchRemoteReauthFailure(context: RemoteReauthFailureContext): boolean {
+  return context.attemptedRemote && context.isReauth
+}

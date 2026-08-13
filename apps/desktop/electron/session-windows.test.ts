@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
 
-import { buildSessionWindowUrl, chatWindowWebPreferences, createSessionWindowRegistry } from './session-windows'
+import { test } from 'vitest'
+
+import {
+  buildSessionWindowUrl,
+  chatWindowWebPreferences,
+  createSessionWindowRegistry,
+  instanceWindowBounds
+} from './session-windows'
 
 // A minimal fake BrowserWindow: tracks listeners + destroyed state and lets a
 // test fire the 'closed' event, mirroring the slice of the Electron API the
@@ -82,10 +88,16 @@ test('buildSessionWindowUrl adds the watch flag for spectator windows, before th
   assert.equal(url, 'http://localhost:5173/?win=secondary&watch=1#/abc')
 })
 
-test('buildSessionWindowUrl routes new-session windows to the draft (#/)', () => {
-  const url = buildSessionWindowUrl(null, { devServer: 'http://localhost:5173', newSession: true })
+test('instanceWindowBounds cascades a new window off its source bounds', () => {
+  const bounds = instanceWindowBounds({ x: 100, y: 120, width: 1400, height: 900 }, { width: 1, height: 1 })
 
-  assert.equal(url, 'http://localhost:5173/?win=secondary&new=1#/')
+  assert.deepEqual(bounds, { width: 1400, height: 900, x: 132, y: 152 })
+})
+
+test('instanceWindowBounds falls back to the persisted geometry with no source window', () => {
+  const fallback = { width: 1280, height: 800 }
+
+  assert.equal(instanceWindowBounds(null, fallback), fallback)
 })
 
 test('registry opens one window per session and focuses on re-open', () => {
@@ -179,13 +191,16 @@ test('registry trims the session id before keying', () => {
   assert.equal(registry.has('s1'), true)
 })
 
-test('chatWindowWebPreferences disables background throttling so streaming paints while blurred', () => {
-  // Regression: secondary session windows used to omit this flag, so a streamed
-  // answer stalled until the window regained focus (Chromium pauses the
-  // requestAnimationFrame-gated transcript flush for backgrounded windows).
+test('chatWindowWebPreferences leaves background throttling to the runtime stream dial', () => {
+  // Regression (both directions): a static `backgroundThrottling: false` here
+  // pinned document.visibilityState to 'visible' forever, turning every
+  // visibility-gated poll into an always-on timer (~20% CPU at idle,
+  // minimized). Streaming's "paint while blurred" need is served by
+  // stream-throttle.ts flipping setBackgroundThrottling at turn boundaries —
+  // so the static flag must stay absent.
   const prefs = chatWindowWebPreferences('/tmp/preload.cjs')
 
-  assert.equal(prefs.backgroundThrottling, false)
+  assert.equal('backgroundThrottling' in prefs, false)
 })
 
 test('chatWindowWebPreferences passes the preload path through and keeps the hardened defaults', () => {
@@ -195,4 +210,14 @@ test('chatWindowWebPreferences passes the preload path through and keeps the har
   assert.equal(prefs.contextIsolation, true)
   assert.equal(prefs.sandbox, true)
   assert.equal(prefs.nodeIntegration, false)
+})
+
+test('chatWindowWebPreferences allows autoplay so wake-started voice speaks its first reply', () => {
+  // Regression: Chromium's default autoplay policy suspends audio until a user
+  // gesture. A wake-word-started voice conversation has no preceding click, so
+  // the first reply's playback was rejected and only turn 2+ spoke. A native
+  // app the user launched should not gate audio on a gesture.
+  const prefs = chatWindowWebPreferences('/tmp/preload.cjs')
+
+  assert.equal(prefs.autoplayPolicy, 'no-user-gesture-required')
 })

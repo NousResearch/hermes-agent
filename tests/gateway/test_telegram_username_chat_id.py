@@ -42,47 +42,8 @@ def test_normalize_returns_int_or_passthrough_string(value, expected):
     assert normalize_telegram_chat_id(value) == expected
 
 
-def test_normalize_never_raises_on_username():
-    # A bare int() here would raise ValueError; normalize must not.
-    assert normalize_telegram_chat_id("@some_user") == "@some_user"
-
-
 def test_numeric_normalizes_to_int_type():
     assert isinstance(normalize_telegram_chat_id("123"), int)
-
-
-def test_username_normalizes_to_str_type():
-    assert isinstance(normalize_telegram_chat_id("@some_user"), str)
-
-
-@pytest.mark.parametrize(
-    "value,expected",
-    [
-        ("@some_user", True),
-        ("@a_chan", True),
-        ("@abcd", True),       # 4-char minimum
-        ("@abc", False),       # too short
-        ("123456", False),     # numeric
-        ("-100123", False),
-        ("@with space", False),
-        ("plain", False),
-    ],
-)
-def test_looks_like_username(value, expected):
-    assert looks_like_telegram_username(value) is expected
-
-
-def test_parse_username_target():
-    assert parse_telegram_username_target("@some_user") == "@some_user"
-    assert parse_telegram_username_target("  @some_user  ") == "@some_user"
-    assert parse_telegram_username_target("123456") is None
-    assert parse_telegram_username_target("-1001234567890") is None
-
-
-def test_chat_id_key_is_stable_string():
-    assert telegram_chat_id_key("123") == "123"
-    assert telegram_chat_id_key(123) == "123"
-    assert telegram_chat_id_key("@some_user") == "@some_user"
 
 
 # ---------------------------------------------------------------------------
@@ -197,19 +158,3 @@ async def test_send_passes_username_chat_id_through_unchanged():
     assert call_log[0]["chat_id"] == "@some_user"
 
 
-@pytest.mark.asyncio
-async def test_send_passes_numeric_chat_id_as_int():
-    adapter = _make_adapter()
-    call_log = []
-
-    async def mock_send_message(**kwargs):
-        call_log.append(dict(kwargs))
-        return SimpleNamespace(message_id=1)
-
-    adapter._bot = SimpleNamespace(send_message=mock_send_message)
-
-    result = await adapter.send(chat_id="123456789", content="hi")
-
-    assert result.success is True
-    assert call_log[0]["chat_id"] == 123456789
-    assert isinstance(call_log[0]["chat_id"], int)

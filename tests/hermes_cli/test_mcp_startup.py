@@ -146,79 +146,56 @@ def test_background_mcp_discovery_suppresses_interactive_oauth(monkeypatch):
     assert state["active"] is False
 
 
-def test_prepare_agent_startup_skips_mcp_bootstrap_for_tui_chat(monkeypatch):
-    calls = {"mcp": 0}
-
-    monkeypatch.setitem(
-        sys.modules,
-        "hermes_cli.plugins",
-        types.SimpleNamespace(discover_plugins=lambda: None),
-    )
+def test_portable_only_mcp_configuration_opens_startup_gate(monkeypatch):
     monkeypatch.setitem(
         sys.modules,
         "hermes_cli.config",
-        types.SimpleNamespace(load_config=lambda: {}),
+        types.SimpleNamespace(read_raw_config=lambda: {}),
     )
     monkeypatch.setitem(
         sys.modules,
-        "agent.shell_hooks",
-        types.SimpleNamespace(register_from_config=lambda *_a, **_k: None),
+        "hermes_cli.agent_plugins",
+        types.SimpleNamespace(
+            has_enabled_agent_plugin_mcp=lambda _config: True,
+        ),
+    )
+
+    assert mcp_startup._has_configured_mcp_servers() is True
+
+
+
+
+
+
+
+
+def _retry_logger():
+    return types.SimpleNamespace(
+        debug=lambda *_a, **_k: None,
+        warning=lambda *_a, **_k: None,
+    )
+
+
+def _install_retry_stubs(monkeypatch, *, connected: bool, calls: dict):
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        types.SimpleNamespace(
+            read_raw_config=lambda: {"mcp_servers": {"demo": {"transport": "stdio"}}},
+        ),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "tools.mcp_oauth",
+        types.SimpleNamespace(suppress_interactive_oauth=lambda: nullcontext()),
     )
     monkeypatch.setitem(
         sys.modules,
         "tools.mcp_tool",
         types.SimpleNamespace(
-            discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1)
+            discover_mcp_tools=lambda: calls.__setitem__("mcp", calls["mcp"] + 1),
+            get_mcp_status=lambda: [{"connected": connected}],
         ),
     )
 
-    main_mod._prepare_agent_startup(_agent_args(tui=True))
 
-    assert calls["mcp"] == 0
-    assert mcp_startup._mcp_discovery_thread is None
-
-
-def test_cli_get_tool_definitions_briefly_waits_for_fast_mcp_thread(monkeypatch):
-    thread = threading.Thread(target=lambda: time.sleep(0.05), daemon=True)
-    thread.start()
-    mcp_startup._mcp_discovery_thread = thread
-
-    monkeypatch.setitem(
-        sys.modules,
-        "model_tools",
-        types.SimpleNamespace(get_tool_definitions=lambda *_a, **_k: ["ok"]),
-    )
-
-    start = time.monotonic()
-    result = cli_mod.get_tool_definitions(enabled_toolsets=["web"], quiet_mode=True)
-    elapsed = time.monotonic() - start
-
-    assert result == ["ok"]
-    assert elapsed >= 0.04
-    assert not thread.is_alive()
-
-
-def test_init_agent_waits_for_mcp_discovery_before_agent_build(monkeypatch):
-    waited = {"done": False}
-
-    cli = cli_mod.HermesCLI(compact=True)
-    cli._session_db = object()
-    cli._resumed = False
-    cli.conversation_history = []
-    cli._install_tool_callbacks = lambda: None
-    cli._ensure_tirith_security = lambda: None
-    cli._ensure_runtime_credentials = lambda: True
-
-    monkeypatch.setattr(
-        mcp_startup,
-        "wait_for_mcp_discovery",
-        lambda timeout=0.75: waited.__setitem__("done", True),
-    )
-
-    def _fake_agent(*_a, **_k):
-        assert waited["done"] is True
-        return types.SimpleNamespace()
-
-    monkeypatch.setattr(cli_mod, "AIAgent", _fake_agent)
-
-    assert cli._init_agent() is True

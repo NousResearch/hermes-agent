@@ -5574,9 +5574,13 @@ def compress_context(
             else:
                 agent.context_compressor._verify_compaction_cleared_threshold = True
 
-        # Clear the file-read dedup cache.  After compression the original
-        # read content is summarised away — if the model re-reads the same
-        # file it needs the full content, not a "file unchanged" stub.
+        # Reset the file-read dedup stub-hit counters.  The dedup mtime map
+        # is preserved on purpose: a file that hasn't changed since the task
+        # last read it still returns the lightweight "unchanged" stub after
+        # compression, instead of re-sending the full content — which would
+        # re-bloat the context we just reclaimed and defeat dedup exactly
+        # when long sessions need it most (issue #84857).  Only the stub-hit
+        # counters reset so the 2-stub hard block restarts fresh.
         try:
             from tools.file_tools import reset_file_dedup
             reset_file_dedup(task_id)

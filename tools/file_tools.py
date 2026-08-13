@@ -1132,9 +1132,11 @@ _file_ops_cache: dict = {}
 #   "consecutive":  how many times that exact call has been repeated in a row
 #   "read_history": set of (path, offset, limit) tuples for get_read_files_summary
 #   "dedup":        dict mapping (resolved_path, offset, limit) → mtime float
-#                   Used to skip re-reads of unchanged files.  Reset on
-#                   context compression (the original content is summarised
-#                   away so the model needs the full content again).
+#                   Used to skip re-reads of unchanged files.  Survives
+#                   context compression: only the per-key stub-hit
+#                   counters are cleared on compression, so unchanged
+#                   files keep returning the lightweight stub instead of
+#                   re-sending full content (issue #84857).
 #   "read_timestamps": dict mapping resolved_path → modification-time float
 #                      recorded when the file was last read (or written) by
 #                      this task.  Used by write_file and patch to detect
@@ -2015,28 +2017,28 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
 
 
 def reset_file_dedup(task_id: str = None):
-    """Clear the deduplication cache for file reads.
+    """Reset the read-dedup stub-hit counters after context compression.
 
-    Called after context compression — the original read content has been
-    summarised away, so the model needs the full content if it reads the
-    same file again.  Without this, reads after compression would return
-    a "file unchanged" stub pointing at content that no longer exists in
-    context.
+    Called after context compression.  The per-key ``dedup`` mtime map is
+    PRESERVED: a file that has not changed on disk since the task last read
+    it still returns the lightweight "unchanged" stub instead of re-sending
+    the full content — this is what stops long-session token usage from
+    re-bloating the context we just reclaimed after every compaction
+    (issue #84857).  Only the per-key stub-hit counters (``dedup_hits``)
+    are cleared, so the 2-stub hard block restarts fresh: a model that hits
+    the stub right after compression is never blocked by hits accumulated
+    before it.
 
-    Call with a task_id to clear just that task, or without to clear all.
+    Call with a task_id to reset just that task, or without to reset all.
     """
     with _read_tracker_lock:
         if task_id:
             task_data = _read_tracker.get(task_id)
             if task_data:
-                if "dedup" in task_data:
-                    task_data["dedup"].clear()
                 if "dedup_hits" in task_data:
                     task_data["dedup_hits"].clear()
         else:
             for task_data in _read_tracker.values():
-                if "dedup" in task_data:
-                    task_data["dedup"].clear()
                 if "dedup_hits" in task_data:
                     task_data["dedup_hits"].clear()
 

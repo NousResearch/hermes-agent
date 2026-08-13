@@ -283,6 +283,7 @@ const sidebars: SidebarsConfig = {
                   collapsed: true,
                   items: [
                     'user-guide/skills/bundled/research/research-arxiv',
+                    'user-guide/skills/bundled/research/research-blocked-page-recovery',
                     'user-guide/skills/bundled/research/research-blogwatcher',
                     'user-guide/skills/bundled/research/research-competitor-news-monitor',
                     'user-guide/skills/bundled/research/research-grounded-citations',

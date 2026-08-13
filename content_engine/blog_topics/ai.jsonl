@@ -89,3 +89,14 @@
 {"topic_id": "research-raven-memory", "title_hint": "Memory-First Agent Architecture — What Raven Gets Right About Multi-Agent Coordination", "tags": ["research-paper", "agent-architecture", "memory-systems", "multi-agent", "mnemosyne"], "priority": 5, "curated": true, "source": "gitradar", "source_url": "https://github.com/EverMind-AI/Raven"}
 {"topic_id": "manual-7495", "title_hint": "New Concept", "tags": [], "priority": 10}
 {"topic_id": "manual-3333", "title_hint": "New Concept", "tags": [], "priority": 10}
+{"topic_id": "manual-6722", "title_hint": "New Concept", "tags": [], "priority": 10}
+{"topic_id": "research-2608.10108", "title_hint": "Why Your Agent Memory Needs Multiple Personalities", "tags": ["research-paper", "paper-synthesis", "agent-memory", "mnemosyne", "multi-structure-retrieval", "mesa", "context-optimization", "kenseiagent"], "priority": 7, "curated": true, "source": "paper-synthesis", "source_url": "https://arxiv.org/abs/2608.10108"}
+{"topic_id": "manual-1707", "title_hint": "New Concept", "tags": [], "priority": 10}
+{"topic_id": "manual-9184", "title_hint": "New Concept", "tags": [], "priority": 10}
+{"topic_id": "manual-1506", "title_hint": "New Concept", "tags": [], "priority": 10}
+{"topic_id": "manual-6452", "title_hint": "New Concept", "tags": [], "priority": 10}
+{"topic_id": "manual-2378", "title_hint": "New Concept", "tags": [], "priority": 10}
+{"topic_id": "manual-2378", "title_hint": "New Concept", "tags": [], "priority": 10}
+{"topic_id": "manual-2378", "title_hint": "New Concept", "tags": [], "priority": 10}
+{"topic_id": "research-2608.11654", "title_hint": "What If We Could Mathematically Prove Your Agent Memory Is Optimal?", "tags": ["research-paper", "paper-synthesis", "agent-memory", "mnemosyne", "formal-methods", "coverage-metric", "memory-evaluation", "knowledge-representation"], "priority": 6, "curated": true, "source": "paper-synthesis", "source_url": "https://arxiv.org/abs/2608.11654"}
+{"topic_id": "research-2608.12218", "title_hint": "The Counterintuitive Truth: More Context Makes Your LLM Dumber", "tags": ["research-paper", "paper-synthesis", "context-window", "prompt-engineering", "information-abundance", "toolaria", "llm-evaluation", "ab-testing"], "priority": 7, "curated": true, "source": "paper-synthesis", "source_url": "https://arxiv.org/abs/2608.12218"}

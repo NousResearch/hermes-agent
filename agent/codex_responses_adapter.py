@@ -690,7 +690,18 @@ def _chat_messages_to_responses_input(
                 "output": output_value,
             })
 
-    return items
+    # Native server-side compaction: when a replayed checkpoint is present,
+    # restructure the wire around it. The server renders nothing placed
+    # before a compaction item (live-verified Aug 2026), so pre-checkpoint
+    # history is dead upload weight and — worse — the user's plaintext asks
+    # from before the boundary silently vanish from the model's view. Keep
+    # the newest checkpoint first, retain pre-checkpoint USER messages
+    # verbatim within a token budget (Codex CLI parity), and leave the
+    # post-checkpoint tail untouched. Self-gating: histories without a
+    # checkpoint (every non-native session) return unchanged.
+    from agent.native_compaction import prune_pre_checkpoint_items
+
+    return prune_pre_checkpoint_items(items)
 
 
 # ---------------------------------------------------------------------------

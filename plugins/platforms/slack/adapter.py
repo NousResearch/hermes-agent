@@ -79,6 +79,21 @@ _HERMES_SLACK_USER_AGENT_PREFIX = f"HermesAgent/{_HERMES_VERSION}"
 _SLACK_ERROR_BODY_LIMIT_BYTES = 8 * 1024
 
 
+def _slack_unfurl_kwargs(extra: Optional[Dict[str, Any]]) -> Dict[str, bool]:
+    """Return explicitly configured Slack link-preview controls.
+
+    Omitting a key preserves Slack's existing default.  Passing ``False``
+    suppresses only the automatic preview while leaving the link text and URL
+    in the message untouched.
+    """
+    settings = extra or {}
+    return {
+        key: settings[key]
+        for key in ("unfurl_links", "unfurl_media")
+        if isinstance(settings.get(key), bool)
+    }
+
+
 async def _read_error_text_limited(
     response: Any,
     *,
@@ -2554,6 +2569,7 @@ class SlackAdapter(BasePlatformAdapter):
                     "channel": chat_id,
                     "text": chunk,
                     "mrkdwn": True,
+                    **_slack_unfurl_kwargs(self.config.extra),
                 }
                 if blocks and i == 0:
                     kwargs["blocks"] = blocks
@@ -8724,6 +8740,7 @@ async def _standalone_send(
                 "channel": chat_id,
                 "text": text_to_send,
                 "mrkdwn": True,
+                **_slack_unfurl_kwargs(pconfig.extra),
             }
             if thread_id:
                 post_kwargs["thread_ts"] = thread_id
@@ -8837,7 +8854,12 @@ async def _standalone_send(
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=30), **_sess_kw
         ) as session:
-            payload = {"channel": chat_id, "text": formatted, "mrkdwn": True}
+            payload = {
+                "channel": chat_id,
+                "text": formatted,
+                "mrkdwn": True,
+                **_slack_unfurl_kwargs(pconfig.extra),
+            }
             if thread_id:
                 payload["thread_ts"] = thread_id
             for tok in tokens:

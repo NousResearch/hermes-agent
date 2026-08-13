@@ -223,8 +223,16 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
         session = session_or_response
 
         if upstream_resp.status in {401, 429}:
+            # Third and last blocking method on the adapter contract, and the
+            # most expensive: the Nous adapter routes this straight into
+            # ``_get_credential(force_refresh=True)``, so the refresh POST that
+            # ``get_credential`` only performs near expiry is unconditional
+            # here — under the same 15s cross-process ``_auth_store_lock()``.
+            # The xAI adapter loads its key pool off disk and rotates it under
+            # ``self._lock``. Offload it for the same reason as the two above.
             try:
-                retry_cred = adapter.get_retry_credential(
+                retry_cred = await asyncio.to_thread(
+                    adapter.get_retry_credential,
                     failed_credential=cred,
                     status_code=upstream_resp.status,
                 )

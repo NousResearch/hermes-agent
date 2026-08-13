@@ -193,7 +193,20 @@ def _resolve_orchestrator_profile(cfg: dict) -> str:
 
 
 def _resolve_default_assignee(cfg: dict) -> str:
-    """Resolve which profile catches child tasks the orchestrator can't route."""
+    """Resolve which profile catches child tasks the orchestrator can't route.
+
+    FIX 2026-08-13 (Option A routing directive): work routes to LEAD profiles
+    first; leads execute and re-delegate to specialists. The previous
+    fallback used ``get_active_profile_name()`` — which returned the
+    dispatcher gateway's own profile (e.g. ``sirvir`` when the sirvir
+    gateway holds the dispatcher lock), silently assigning unrelated
+    implementation work to the model-fleet manager.
+
+    New resolution:
+      1. explicit ``kanban.default_assignee`` config (unchanged)
+      2. the ROOT kensei profile (operator; routes work correctly itself)
+      3. literal ``default`` as last resort
+    """
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     explicit = (kanban_cfg.get("default_assignee") or "").strip()
     if explicit:
@@ -202,10 +215,13 @@ def _resolve_default_assignee(cfg: dict) -> str:
                 return explicit
         except Exception:
             pass
+    # Root operator profile — never a gateway-incidental profile.
     try:
-        return profiles_mod.get_active_profile_name() or "default"
+        if profiles_mod.profile_exists("kensei"):
+            return "kensei"
     except Exception:
-        return "default"
+        pass
+    return "default"
 
 
 def _structured_output_enabled(cfg: dict) -> bool:
@@ -292,6 +308,26 @@ def _emit_redacted_telemetry(*, profile: str, model: str, task_class: str, misma
         pass
 
 
+# ROUTING MODEL (Sahil directive, 2026-08-13, Option A):
+#  - Work goes to the LEAD profile first; the lead executes and
+#    re-delegates specialist sub-work via delegate_task / kanban_create.
+#    Lead profiles (remii, octacon, quan, wesker, ceecee, gojo, light) stay
+#    IN the decomposer roster — they are the preferred recipients.
+#  - sirvir (model-fleet manager) receives ONLY tasks about running models
+#    locally, reviewing/benchmarking LLM models, or model infrastructure.
+#    The decomposer LLM must never be offered sirvir for general work —
+#    he stays out of the roster entirely (positive routing to sirvir is a
+#    manual/lead decision, not an auto-decompose one).
+_DECOMPOSER_DOMAIN_EXCLUDED = frozenset({
+    "sirvir",          # model fleet / inference ops — manual routing only
+    "market-scanner",  # breadth-first signal scanning only
+    "moss",            # upstream vanilla Hermes work only
+    "misa-misa",       # voice intake only
+    "denji",           # governance only
+    "orchestrator",    # virtual name, not a worker
+})
+
+
 def _build_roster() -> tuple[list[dict], set[str]]:
     """Return (roster_for_prompt, valid_assignee_names).
 
@@ -325,6 +361,11 @@ def _build_roster() -> tuple[list[dict], set[str]]:
                 p.name,
             )
             continue
+        # FIX 2026-08-13: infra-only profiles are not decomposer-routable
+        # (see _DECOMPOSER_DOMAIN_EXCLUDED below). Excluding them here keeps
+        # the LLM from ever being offered a mismatched choice.
+        if p.name in _DECOMPOSER_DOMAIN_EXCLUDED:
+            continue
         desc = (p.description or "").strip()
         roster.append({
             "name": p.name,
@@ -355,7 +396,12 @@ def _normalize_assignee_choice(
 
     Fan-out children and the single-task fallback should share the same
     routing guarantee: promoted work must not be left unassigned.
+
+    FIX 2026-08-13: domain-excluded profiles are removed from the valid set
+    — a decomposer LLM choice of an infra-only profile (e.g. sirvir) is
+    rewritten to the default assignee instead of being honoured.
     """
+    valid_names = valid_names - _DECOMPOSER_DOMAIN_EXCLUDED
     if not isinstance(assignee, str) or not assignee.strip():
         return default_assignee
     chosen = assignee.strip()
@@ -384,6 +430,19 @@ def decompose_task(
     if task.status != "triage":
         return DecomposeOutcome(
             task_id, False, f"task is not in triage (status={task.status!r})"
+        )
+    # FIX 2026-08-13 (Spectator Mode incident t_9df6f54b): feature-pipeline
+    # tasks (pipeline_mode set) are owned by the gated pipeline
+    # (research→prd→spec→council...). The auto-decomposer must never fan them
+    # out into a workgraph — that hijacks them off the pipeline track.
+    # Defense-in-depth alongside the kanban_watchers gate: this also covers
+    # direct callers of decompose_task (e.g. the dashboard decompose endpoint).
+    pipeline_mode = getattr(task, "pipeline_mode", None)
+    if pipeline_mode:
+        return DecomposeOutcome(
+            task_id, False,
+            f"task is pipeline-owned (pipeline_mode={pipeline_mode!r}); "
+            "decompose is a pipeline stage, not an auto-decompose target",
         )
 
     cfg = _load_config()

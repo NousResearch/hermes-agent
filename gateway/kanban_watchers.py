@@ -1620,6 +1620,25 @@ class GatewayKanbanWatchersMixin:
                                             slug, tid,
                                         )
                                     continue
+                                # FIX 2026-08-13 (Spectator Mode incident
+                                # t_9df6f54b): tasks created via
+                                # ``hermes feature create`` carry a
+                                # ``pipeline_mode`` ('full'/'express'). They
+                                # are owned by the feature pipeline
+                                # (research→prd→spec→council...), NOT the
+                                # auto-decomposer. Fanning them out hijacks
+                                # them off the pipeline track: research and
+                                # the LLM council never run. Skip them here;
+                                # the triage processor promotes them into
+                                # the pipeline proper.
+                                _pmode = getattr(gtask, 'pipeline_mode', None)
+                                if _pmode:
+                                    logger.info(
+                                        "kanban auto-decompose [%s]: %s skipped "
+                                        "(pipeline task, mode=%s)",
+                                        slug, tid, _pmode,
+                                    )
+                                    continue
                         except Exception:
                             logger.debug(
                                 "kanban auto-decompose [%s]: side-effect check failed on %s",

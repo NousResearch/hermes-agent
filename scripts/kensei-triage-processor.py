@@ -211,8 +211,20 @@ def _promote_to_pipeline(task_id, board, stage):
     except Exception:
         return False
 
-def classify_task(title, body):
-    """Classify triage task: AUTO-PROMOTE vs NEEDS HUMAN, and tier (fast/full)."""
+def classify_task(title, body, *, pipeline_mode=None):
+    """Classify triage task: AUTO-PROMOTE vs NEEDS HUMAN, and tier (fast/full).
+
+    FIX 2026-08-13 (Spectator Mode incident t_9df6f54b): tasks created via
+    ``hermes feature create`` carry ``pipeline_mode`` ('full'/'express'). They
+    are pipeline-owned work with intake-gated bodies — keyword classification
+    must NEVER re-route them (NEEDS-HUMAN blocked them out of the pipeline,
+    the gateway auto-decomposer then hijacked them, research+council never
+    ran). Pipeline-mode tasks always AUTO-PROMOTE; the main() caller handles
+    the pipeline_stage promotion path.
+    """
+    # Pipeline-owned tasks bypass the keyword classifier entirely.
+    if pipeline_mode:
+        return 'AUTO-PROMOTE', 'full'
     title_lower = title.lower() if title else ''
     body_lower = (body or '').lower()
 
@@ -259,6 +271,30 @@ def classify_task(title, body):
 
     return 'NEEDS HUMAN', tier
 
+def _read_task_pipeline_mode(board, task_id):
+    """Read pipeline_mode (and tier) straight from the board DB.
+
+    ``hermes kanban list --json`` does not surface pipeline_mode, so the
+    classifier cannot see it via the CLI path. Feature-created tasks are
+    identifiable ONLY by their pipeline_mode column — read it here.
+    Returns the mode string ('full'/'express'/None).
+    """
+    db_path = _get_board_db(board)
+    if not db_path or not os.path.exists(db_path):
+        return None
+    try:
+        conn = sqlite3.connect(db_path)
+        row = conn.execute(
+            "SELECT pipeline_mode FROM tasks WHERE id = ?", (task_id,)
+        ).fetchone()
+        conn.close()
+        if row:
+            return row[0]
+    except Exception:
+        pass
+    return None
+
+
 def main():
     global _DRY_RUN
     if '--dry-run' in sys.argv:
@@ -293,11 +329,21 @@ def main():
     errors = []
 
     for task_id, board, title, body, assignee in all_triage:
-        classification, tier = classify_task(title, body)
+        # FIX 2026-08-13: pipeline-owned tasks (feature create) must be
+        # identified by pipeline_mode in the DB — the CLI list JSON does
+        # not expose it. These ALWAYS auto-promote into the feature
+        # pipeline; keyword classification must not touch them.
+        pipeline_mode = _read_task_pipeline_mode(board, task_id)
+        classification, tier = classify_task(title, body, pipeline_mode=pipeline_mode)
         # WS-2 board routing: auto-assign unassigned tasks based on keywords
+        # EXCEPT pipeline-owned tasks: their assignee follows the pipeline's
+        # own stage-owner routing. Keyword-routing a feature task to octacon/
+        # wesker/etc. would set the wrong initial assignee before the
+        # dispatcher's stage-owner reassignment kicks in.
         routed_board, routed_assignee = None, None
         if not assignee or not assignee.strip():
-            routed_board, routed_assignee = _route_task(title, body)
+            if not pipeline_mode:
+                routed_board, routed_assignee = _route_task(title, body)
 
         if classification == 'AUTO-PROMOTE':
             if tier == 'full':
@@ -441,6 +487,20 @@ def main():
         for b in bypass_found:
             lines.append(f"• `{b['id']}` ({b['board']}): {b['title']}")
         print('\n'.join(lines))
+
+    # FIX 2026-08-13 (Spectator Mode incident t_9df6f54b): errors used to be
+    # silently folded into pending-investigation.json's error_count — nobody
+    # ever saw them. A triage block/promote failure (write-lock collision,
+    # WAL race) meant a task silently stayed in triage where the gateway
+    # auto-decomposer could hijack it. Errors must be VISIBLE: emit a
+    # compact alert line so the cron's stdout delivery surfaces it.
+    if errors:
+        lines = [f'⚠️ triage processor: {len(errors)} action(s) failed:']
+        for e in errors:
+            lines.append(
+                f"• `{e.get('id')}` ({e.get('board')}): {e.get('error')}"
+            )
+        print('\n'.join(lines), file=sys.stderr)
 
 if __name__ == '__main__':
     main()

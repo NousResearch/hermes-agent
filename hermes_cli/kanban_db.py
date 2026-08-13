@@ -11030,7 +11030,15 @@ def add_notify_sub(
     AFTER they subscribe; the gateway/tool auto-subscribe paths run at
     task creation, where the snapshot is 0 anyway.
     """
-    insert_mode = delivery_mode if delivery_mode in _NOTIFY_DELIVERY_MODES else "notify"
+    insert_mode = delivery_mode if delivery_mode in _NOTIFY_DELIVERY_MODES else (
+        # api_server is stateless: the adapter has no send() — the wake
+        # self-post IS the delivery on that path (see gateway/wake.py and
+        # test_kanban_notifier_apiserver_wake). A plain-'notify' default
+        # would leave those subscriptions with no delivery mechanism at
+        # all, regressing the pre-delivery_mode behavior where a task
+        # carrying a session_id always woke. Explicit modes still win.
+        "notify+wake" if platform == "api_server" else "notify"
+    )
     insert_chat_type = chat_type or "dm"
     now = int(time.time())
     metadata_json = _encode_notify_delivery_metadata(delivery_metadata)

@@ -8,7 +8,8 @@ source or to another configured platform.
 Configuration lives in config.yaml under platforms.webhook.extra.routes.
 Each route defines:
   - events: which event types to accept (header-based filtering)
-  - secret: HMAC secret for signature validation (REQUIRED)
+  - secret_ref: profile secret reference for signature validation (REQUIRED)
+  - secret: legacy HMAC secret, accepted only for incremental migration
   - prompt: template string formatted with the webhook payload
   - skills: optional list of skills to load for the agent
   - deliver: where to send the response (github_comment, telegram, etc.)
@@ -191,6 +192,7 @@ class WebhookAdapter(WebhookProfileAdmissionMixin, BasePlatformAdapter):
         self._host: Optional[str] = _cfg_host or None
         self._port: int = int(config.extra.get("port", DEFAULT_PORT))
         self._global_secret: str = config.extra.get("secret", "")
+        self._global_secret_ref: str = str(config.extra.get("secret_ref", "") or "")
         self._static_routes: Dict[str, dict] = config.extra.get("routes", {})
         self._dynamic_routes: Dict[str, dict] = {}
         self._dynamic_routes_mtime: float = 0.0
@@ -240,6 +242,40 @@ class WebhookAdapter(WebhookProfileAdmissionMixin, BasePlatformAdapter):
             script_timeout_seconds=self._script_timeout_seconds
         )
 
+    @staticmethod
+    def _resolve_secret_ref(secret_ref: object) -> str:
+        """Resolve a route reference from the active profile secret scope."""
+        if not isinstance(secret_ref, str) or not secret_ref.strip():
+            return ""
+        try:
+            from agent.secret_scope import get_secret
+            resolved = get_secret(secret_ref.strip(), "")
+            if resolved:
+                return str(resolved)
+            # Preserve legacy WEBHOOK_SECRET values during incremental
+            # migration; new route references never take this branch.
+            if secret_ref.strip() == "WEBHOOK_SECRET":
+                from gateway.webhook_config import resolve_effective_webhook_secret
+                return resolve_effective_webhook_secret()
+            return ""
+        except Exception:
+            return ""
+
+    def _route_secret(self, route: object) -> str:
+        """Resolve references first, retaining plaintext only for legacy routes."""
+        if isinstance(route, dict):
+            ref = route.get("secret_ref")
+            if ref:
+                return self._resolve_secret_ref(ref)
+            legacy = route.get("secret")
+            if isinstance(legacy, str):
+                return legacy
+        if self._global_secret_ref:
+            resolved = self._resolve_secret_ref(self._global_secret_ref)
+            if resolved:
+                return resolved
+        return self._global_secret
+
     # ------------------------------------------------------------------
     # Lifecycle
     # ------------------------------------------------------------------
@@ -250,7 +286,7 @@ class WebhookAdapter(WebhookProfileAdmissionMixin, BasePlatformAdapter):
 
         # Validate routes at startup — secret is required per route
         for name, route in self._routes.items():
-            secret = route.get("secret", self._global_secret)
+            secret = self._route_secret(route)
             if not secret:
                 raise ValueError(
                     f"[webhook] Route '{name}' has no HMAC secret. "
@@ -526,7 +562,7 @@ class WebhookAdapter(WebhookProfileAdmissionMixin, BasePlatformAdapter):
             for k, v in data.items():
                 if k in self._static_routes:
                     continue
-                effective_secret = v.get("secret", self._global_secret)
+                effective_secret = self._route_secret(v)
                 if not effective_secret:
                     logger.warning(
                         "[webhook] Dynamic route '%s' skipped: 'secret' is "
@@ -632,7 +668,7 @@ class WebhookAdapter(WebhookProfileAdmissionMixin, BasePlatformAdapter):
         # INSECURE_NO_AUTH mode). Missing/empty secrets must fail closed here,
         # not only during connect(), so direct handler reuse cannot turn a
         # network webhook route into an unauthenticated agent-dispatch surface.
-        secret = route_config.get("secret", self._global_secret)
+        secret = self._route_secret(route_config)
         if not secret:
             logger.error(
                 "[webhook] Route %s has no HMAC secret; refusing request",

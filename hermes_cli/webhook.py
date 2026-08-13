@@ -87,6 +87,29 @@ def _save_subscriptions(subs: Dict[str, dict]) -> None:
         raise
 
 
+def _store_route_secret(name: str, value: str) -> str:
+    """Store a route secret in the profile resolver and return its reference."""
+    ref = "WEBHOOK_ROUTE_" + re.sub(r"[^A-Za-z0-9_]", "_", name.upper())
+    from hermes_cli.config import save_env_value
+    save_env_value(ref, value)
+    return ref
+
+
+def _resolve_route_secret(route: dict) -> str:
+    ref = route.get("secret_ref")
+    if not ref:
+        return str(route.get("secret", "") or "")
+    from agent.secret_scope import get_secret
+    value = get_secret(str(ref), "")
+    if value:
+        return str(value)
+    try:
+        from hermes_cli.config import get_env_value_prefer_dotenv
+        return str(get_env_value_prefer_dotenv(str(ref)) or "")
+    except Exception:
+        return ""
+
+
 def _get_webhook_config() -> dict:
     """Return the legacy dict shape backed by effective webhook config."""
     try:
@@ -183,18 +206,33 @@ def _cmd_subscribe(args):
     subs = _load_subscriptions()
     is_update = name in subs
 
-    secret = args.secret or secrets.token_urlsafe(32)
+    existing_route = subs.get(name) if is_update else None
+    supplied_secret = bool(args.secret)
+    secret = args.secret or ("" if is_update else secrets.token_urlsafe(32))
     events = [e.strip() for e in args.events.split(",")] if args.events else []
 
+    if is_update and not supplied_secret and isinstance(existing_route, dict):
+        secret_ref = existing_route.get("secret_ref")
+        if not secret_ref:
+            secret = str(existing_route.get("secret", "") or "")
+            if secret:
+                # Incrementally migrate a legacy route at the next write while
+                # keeping the old route usable if secure persistence fails.
+                secret_ref = _store_route_secret(name, secret)
+    else:
+        secret_ref = _store_route_secret(name, secret)
     route = {
         "description": args.description or f"Agent-created subscription: {name}",
         "events": events,
-        "secret": secret,
         "prompt": args.prompt or "",
         "skills": [s.strip() for s in args.skills.split(",")] if args.skills else [],
         "deliver": args.deliver or "log",
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    if secret_ref:
+        route["secret_ref"] = secret_ref
+    elif secret:
+        route["secret"] = secret
 
     if getattr(args, "deliver_only", False):
         if route["deliver"] == "log":
@@ -220,7 +258,10 @@ def _cmd_subscribe(args):
 
     print(f"\n  {status} webhook subscription: {name}")
     print(f"  URL:    {base_url}/webhooks/{name}")
-    print(f"  Secret: {secret}")
+    if not is_update or supplied_secret:
+        print(f"  Secret: {secret}")
+    else:
+        print("  Secret: (unchanged; not displayed)")
     if events:
         print(f"  Events: {', '.join(events)}")
     else:
@@ -289,7 +330,7 @@ def _cmd_test(args):
         return
 
     route = subs[name]
-    secret = route.get("secret", "")
+    secret = _resolve_route_secret(route)
     base_url = _get_webhook_base_url()
     url = f"{base_url}/webhooks/{name}"
 

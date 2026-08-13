@@ -1171,7 +1171,20 @@ def _is_env_config_key(key: str) -> bool:
         key_upper in api_keys
         or key_upper.endswith(('_API_KEY', '_TOKEN', '_SECRET'))
         or key_upper.startswith('TERMINAL_SSH')
+        or key_upper == 'WEBHOOK_SECRET'
+        or key_upper.startswith('WEBHOOK_ROUTE_')
     )
+
+
+WEBHOOK_SECRET_REMEDIATION = (
+    "Webhook secrets cannot be stored in config.yaml. "
+    "Use 'hermes webhook subscribe <name>' or the profile secret backend."
+)
+
+
+def _is_webhook_secret_config_key(key: str) -> bool:
+    parts = {part.lower() for part in key.split('.') if part}
+    return 'webhook' in parts and bool(parts & {'secret', 'secret_ref', 'secret_value'})
 
 
 def _format_config_get_value(value, *, as_json: bool) -> str:
@@ -5135,6 +5148,8 @@ def set_config_value(key: str, value: str, force: bool = False):
             file=sys.stderr,
         )
         sys.exit(1)
+    if _is_webhook_secret_config_key(key):
+        raise ValueError(WEBHOOK_SECRET_REMEDIATION)
     # Check if it's an API key (goes to .env)
     if _is_env_config_key(key):
         # Unified lifecycle: also rotates any config.yaml mirror of the old
@@ -5338,6 +5353,8 @@ def get_config_value(key: str, *, as_json: bool = False):
         print(f"Config key not set: {key}", file=sys.stderr)
         sys.exit(1)
 
+    if _is_webhook_secret_config_key(key) or key.upper() in {"WEBHOOK_SECRET"} or key.upper().startswith("WEBHOOK_ROUTE_"):
+        value = redact_config_value(value)
     print(_format_config_get_value(value, as_json=as_json))
 
 

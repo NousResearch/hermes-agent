@@ -39,8 +39,9 @@ def _webhook_route_summary(name: str, route: Dict[str, Any], base_url: str) -> D
         "skills": list(route.get("skills") or []),
         "created_at": route.get("created_at"),
         "url": f"{base_url}/webhooks/{name}",
-        # Secret is masked on read; full value only returned on create.
-        "secret_set": bool(route.get("secret")),
+        # Never return the secret or a secret-shaped value on reads.
+        "secret_set": bool(route.get("secret_ref") or route.get("secret")),
+        "secret_ref": route.get("secret_ref"),
         # Default-enabled; only an explicit enabled:false turns a route off.
         "enabled": route.get("enabled", True) is not False,
     }
@@ -119,10 +120,13 @@ async def create_webhook(body: WebhookCreate):
         )
 
     secret = body.secret or _secrets.token_urlsafe(32)
+    # Persist only an opaque reference. The generated value is returned by the
+    # caller exactly once, but is never included in the route record.
+    secret_ref = wh._store_route_secret(name, secret)
     route: Dict[str, Any] = {
         "description": body.description or f"Dashboard-created subscription: {name}",
         "events": [e.strip() for e in body.events if e.strip()],
-        "secret": secret,
+        "secret_ref": secret_ref,
         "prompt": body.prompt or "",
         "skills": [s.strip() for s in body.skills if s.strip()],
         "deliver": body.deliver or "log",

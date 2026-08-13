@@ -2257,9 +2257,11 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         config.platforms[Platform.WEBHOOK].extra["port"] = effective_webhook.port
         config.platforms[Platform.WEBHOOK].extra["host"] = effective_webhook.host
         if effective_webhook.global_secret_ref:
-            webhook_secret = resolve_effective_webhook_secret()
-            if webhook_secret:
-                config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+            # Keep only the resolver key in the runtime config object.  The
+            # adapter resolves this reference inside the active profile scope.
+            config.platforms[Platform.WEBHOOK].extra["secret_ref"] = (
+                effective_webhook.global_secret_ref
+            )
 
     # Microsoft Graph webhook platform
     msgraph_webhook_enabled = is_truthy_value(getenv("MSGRAPH_WEBHOOK_ENABLED", ""))

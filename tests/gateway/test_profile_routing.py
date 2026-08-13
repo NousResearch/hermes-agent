@@ -1,11 +1,32 @@
 """Tests for gateway/profile_routing.py — profile-based routing."""
 
+import json
+
 import pytest
 from gateway.profile_routing import (
     ProfileRoute,
     parse_profile_routes,
     match_profile_route,
 )
+from hermes_constants import get_hermes_dir
+
+PHONE = "15551234567"
+LID = "999999999999999"
+JID = f"{PHONE}@s.whatsapp.net"
+LID_JID = f"{LID}@lid"
+GROUP = "120363012345678901@g.us"
+
+
+def _write_lid_mapping(phone=PHONE, lid=LID):
+    """Mirror the JS bridge: phone→lid and lid→phone (reverse)."""
+    session_dir = get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
+    session_dir.mkdir(parents=True, exist_ok=True)
+    (session_dir / f"lid-mapping-{phone}.json").write_text(
+        json.dumps(f"{lid}@lid"), encoding="utf-8"
+    )
+    (session_dir / f"lid-mapping-{lid}_reverse.json").write_text(
+        json.dumps(f"{phone}@s.whatsapp.net"), encoding="utf-8"
+    )
 
 
 class TestProfileRoute:
@@ -106,3 +127,91 @@ class TestForumPostMatching:
                                  parent_chat_id="forum_channel_123")
         assert m is not None
         assert m.profile == "forum_profile"
+
+
+class TestWhatsAppChatIdIdentityMatching:
+    """profile_routes chat_id should match WhatsApp JID/LID/number forms.
+
+    Adapter allowlists and session keys already canonicalize via
+    gateway.whatsapp_identity; routes used exact string compare and missed.
+    """
+
+    def test_number_route_matches_jid_inbound(self):
+        r = ProfileRoute(name="owner", platform="whatsapp", profile="owner", chat_id=PHONE)
+        assert r.matches("whatsapp", chat_id=JID)
+        matched = match_profile_route([r], "whatsapp", chat_id=JID)
+        assert matched is not None
+        assert matched.profile == "owner"
+
+    def test_number_route_matches_lid_inbound_with_mapping(self):
+        _write_lid_mapping()
+        r = ProfileRoute(name="owner", platform="whatsapp", profile="owner", chat_id=PHONE)
+        assert r.matches("whatsapp", chat_id=LID_JID)
+        matched = match_profile_route([r], "whatsapp", chat_id=LID_JID)
+        assert matched is not None
+        assert matched.profile == "owner"
+
+    def test_lid_route_matches_jid_inbound_with_mapping(self):
+        _write_lid_mapping()
+        r = ProfileRoute(name="owner", platform="whatsapp", profile="owner", chat_id=LID_JID)
+        assert r.matches("whatsapp", chat_id=JID)
+
+    def test_jid_route_matches_lid_inbound_with_mapping(self):
+        _write_lid_mapping()
+        r = ProfileRoute(name="owner", platform="whatsapp", profile="owner", chat_id=JID)
+        assert r.matches("whatsapp", chat_id=LID_JID)
+
+    def test_no_mapping_number_still_matches_jid_and_device_suffix(self):
+        r = ProfileRoute(name="owner", platform="whatsapp", profile="owner", chat_id=PHONE)
+        assert r.matches("whatsapp", chat_id=JID)
+        assert r.matches("whatsapp", chat_id=f"{PHONE}:47@s.whatsapp.net")
+        assert r.matches("whatsapp", chat_id=f"+{PHONE}")
+
+    def test_plus_prefixed_route_matches_jid(self):
+        r = ProfileRoute(
+            name="owner", platform="whatsapp", profile="owner", chat_id=f"+{PHONE}"
+        )
+        assert r.matches("whatsapp", chat_id=JID)
+
+    def test_no_mapping_number_does_not_match_unrelated_lid(self):
+        r = ProfileRoute(name="owner", platform="whatsapp", profile="owner", chat_id=PHONE)
+        assert not r.matches("whatsapp", chat_id=LID_JID)
+        assert match_profile_route([r], "whatsapp", chat_id=LID_JID) is None
+
+    def test_exact_jid_still_matches(self):
+        r = ProfileRoute(name="owner", platform="whatsapp", profile="owner", chat_id=JID)
+        assert r.matches("whatsapp", chat_id=JID)
+
+    def test_unrelated_phone_does_not_match(self):
+        r = ProfileRoute(name="owner", platform="whatsapp", profile="owner", chat_id=PHONE)
+        assert not r.matches("whatsapp", chat_id="15550001111@s.whatsapp.net")
+
+    def test_telegram_numeric_ids_remain_exact(self):
+        r = ProfileRoute(
+            name="tg", platform="telegram", profile="owner", chat_id="640466638"
+        )
+        assert r.matches("telegram", chat_id="640466638")
+        assert not r.matches("telegram", chat_id="640466639")
+        # Must not apply WhatsApp JID stripping to Telegram routes.
+        assert not r.matches("telegram", chat_id="640466638@s.whatsapp.net")
+
+    def test_group_jid_does_not_match_phone_route(self):
+        r = ProfileRoute(name="owner", platform="whatsapp", profile="owner", chat_id=PHONE)
+        assert not r.matches("whatsapp", chat_id=GROUP)
+
+    def test_group_route_stays_exact_and_is_not_a_sender(self):
+        r = ProfileRoute(name="group", platform="whatsapp", profile="group", chat_id=GROUP)
+        assert r.matches("whatsapp", chat_id=GROUP)
+        assert not r.matches("whatsapp", chat_id=JID)
+        # Stripping @g.us must not turn a group into a phone-identity match.
+        stripped = GROUP.split("@", 1)[0]
+        numeric = ProfileRoute(
+            name="oops", platform="whatsapp", profile="owner", chat_id=stripped
+        )
+        assert not numeric.matches("whatsapp", chat_id=GROUP)
+
+    def test_whatsapp_cloud_number_matches_jid(self):
+        r = ProfileRoute(
+            name="owner", platform="whatsapp_cloud", profile="owner", chat_id=PHONE
+        )
+        assert r.matches("whatsapp_cloud", chat_id=JID)

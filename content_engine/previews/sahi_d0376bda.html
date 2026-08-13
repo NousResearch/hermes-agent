@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Article Preview: How I tuned routing</title>
+<title>Preview: sahi_d0376bda</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -387,58 +387,49 @@ body {
 <body>
 
 <div class="preview-banner">
-  📰 ARTICLE PREVIEW — not live · sahil
-  <span>test_post_article_payload_shap0</span>
+  📝 CEE CEE PREVIEW — not live · sahil_linkedin
+  <span>sahi_d0376bda</span>
 </div>
 
-<div class="article-container">
 
-  <div class="article-header">
-    <h1 class="article-title">How I tuned routing</h1>
-    <p class="article-lede">Lede paragraph that is more than two sentences long so the preview has some real text to work with. We need enough material for the lede preview truncation to make sense.</p>
-    <div class="article-meta">
-      <span class="pillar-tag">harness_tuning</span>
-      <span>article</span>
-      <span>13 Aug 2026</span>
+<div class="post-card linkedin-card">
+  <div class="header-row">
+    <div class="avatar">S</div>
+    <div class="name-details">
+      <span class="display-name">Sahil Saghir</span>
+      <span class="headline">Building Kensei · AI Infrastructure · Indie Dev</span>
     </div>
   </div>
+  <div class="post-body"><strong>Agentic Systems in Practice</strong>
 
-  
-<div class="hero-image">
-  <img src="data:image/png;base64,iVBORw0KGgoAAAAAAAAAAA==" alt="Hero: How I tuned routing"
-       onerror="this.outerHTML='<div style=\'padding:40px;text-align:center;color:#8899a6;border:1px dashed #1a1a3e;border-radius:8px;\'>[HERO IMAGE — How I tuned routing]</div>'">
-  <div class="hero-label">▼ HERO · embedded 01-hero-hero.png (0 KB)</div>
-</div>
+I spent 6 months building an agentic system for my own PM toolkit.
 
-  
-<div style="background:#0f3460;border-radius:8px;padding:16px 20px;margin-bottom:24px;">
-  <div style="font-size:12px;color:#8899a6;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px;">Sections</div>
-  <ol style="margin:0;padding-left:20px;color:#d0d0e0;font-size:14px;line-height:1.8;">
-    <li>First</li>
-    <li>Second</li>
-    <li>Third</li>
-    <li>What I'd try next</li>
-  </ol>
-</div>
+The agent worked in 2 days. The context took 5 months and 3 weeks.
 
-  <div class="article-body">
-    <h2>First</h2>
-<p>Body one.</p>
-<h2>Second</h2>
-<p>Body two.</p>
-<h2>Third</h2>
-<p>Body three.</p>
+Here’s what happened. I wanted an AI agent that could triage my backlog, suggest priorities, and draft user stories based on recent team conversations. The model could reason about tasks fine. But it kept hallucinating the state of my Jira tickets. It would mark things as done that weren’t, or suggest priorities based on stale data.
 
+The fix wasn’t a better model. It was a context layer that fed the agent the exact ticket status, dependency graph, and conversation history every time it ran. That meant building a pipeline that pulled from Jira, Slack, and my notes, structured it into a system prompt, and refreshed it before each agent call.
+
+The agent itself took a weekend. The context infrastructure took months of iteration.
+
+Most teams I see are still treating agentic systems as a model problem. “Which agent framework should we use?” “Should we use MCP?” The framework is the easy part. The hard part is the data plumbing that makes the agent trustworthy.
+
+Agentic systems are 10% agent, 90% context infrastructure. The model is the engine. The context is the entire vehicle.
+
+I don’t know if this applies everywhere. But it’s what I saw.
+
+#ProductManagement #AgenticSystems #ContextEngineering #AIAdoption</div>
+  <div class="post-meta">
+    03 Aug 2026 · 05:16 UTC · Agentic Systems in Practice · flowchart
   </div>
-
 </div>
 
 <div class="approval-bar">
-  <span class="draft-id">test_post_article_payload_shap0</span>
+  <span class="draft-id">sahi_d0376bda</span>
   <div class="approval-commands">
-    <span class="cmd approve">!approve test_post_article_payload_shap0</span>
-    <span class="cmd reject">!reject test_post_article_payload_shap0 [reason]</span>
-    <span class="cmd amend">!amend test_post_article_payload_shap0 [notes]</span>
+    <span class="cmd approve">!approve sahi_d0376bda</span>
+    <span class="cmd reject">!reject sahi_d0376bda [reason]</span>
+    <span class="cmd amend">!amend sahi_d0376bda [notes]</span>
   </div>
 </div>
 

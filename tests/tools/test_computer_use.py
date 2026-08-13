@@ -2129,3 +2129,142 @@ class TestStartupTimeoutPhaseDetail:
                 msg = str(e)
                 assert "stuck in phase: mcp-initialize" in msg
                 assert "computer-use doctor" in msg
+
+
+class TestCapturePayloadBudget:
+    """Element labels and the aux-vision branch must respect response budgets.
+
+    Regression tests for the Discord/Electron capture blowup: UIA exposes
+    entire message bodies as element labels, so a single capture response
+    exceeded 170KB and the model never saw the elements it needed.
+    """
+
+    def test_element_label_is_capped_in_json(self):
+        from tools.computer_use.backend import UIElement
+        from tools.computer_use.tool import _MAX_ELEMENT_LABEL_CHARS, _element_to_dict
+
+        e = UIElement(index=3, role="Document", label="m" * 5000,
+                      bounds=(0, 0, 100, 100), app="chrome.exe")
+        d = _element_to_dict(e)
+        assert len(d["label"]) == _MAX_ELEMENT_LABEL_CHARS
+        assert d["label_truncated"] is True
+
+    def test_short_label_not_flagged(self):
+        from tools.computer_use.backend import UIElement
+        from tools.computer_use.tool import _element_to_dict
+
+        d = _element_to_dict(UIElement(index=0, role="Button", label="OK",
+                                       bounds=(0, 0, 10, 10), app=""))
+        assert d["label"] == "OK"
+        assert "label_truncated" not in d
+
+    def test_aux_vision_branch_respects_element_cap(self):
+        """The aux-vision payload must carry the same capped element list as
+        every other capture branch, not the full untruncated tree."""
+        from tools.computer_use.backend import CaptureResult, UIElement
+        from tools.computer_use import tool as cu_tool
+
+        elements = [
+            UIElement(index=i, role="Button", label=f"btn{i}",
+                      bounds=(0, 0, 10, 10), app="")
+            for i in range(50)
+        ]
+        cap = CaptureResult(mode="som", width=1024, height=768,
+                            png_b64="iVBORw0KGgo=", elements=elements,
+                            app="X", window_title="t", png_bytes_len=10)
+        with patch("model_tools._run_async",
+                   return_value=json.dumps({"analysis": "a screen"})):
+            out = cu_tool._route_capture_through_aux_vision(
+                cap, "summary",
+                visible_elements=elements[:5], truncated_elements=45,
+            )
+        assert out is not None
+        payload = json.loads(out)
+        assert len(payload["elements"]) == 5
+        assert payload["total_elements"] == 50
+        assert payload["truncated_elements"] == 45
+
+
+class TestBoundsSpaceNote:
+    def test_note_present_when_bounds_exceed_image(self):
+        from tools.computer_use.backend import UIElement
+        from tools.computer_use.tool import _bounds_space_note
+
+        # Live repro: 1455x791 screenshot, element bounds out to x=3840
+        # (native 4K desktop space).
+        elems = [UIElement(index=0, role="Button", label="Close",
+                           bounds=(3771, 0, 69, 60), app="")]
+        note = _bounds_space_note(elems, 1455, 791)
+        assert note is not None
+        assert "native desktop coordinates" in note
+
+    def test_no_note_when_spaces_match(self):
+        from tools.computer_use.backend import UIElement
+        from tools.computer_use.tool import _bounds_space_note
+
+        elems = [UIElement(index=0, role="Button", label="OK",
+                           bounds=(10, 10, 50, 20), app="")]
+        assert _bounds_space_note(elems, 1455, 791) is None
+
+    def test_no_note_for_empty_or_degenerate(self):
+        from tools.computer_use.backend import UIElement
+        from tools.computer_use.tool import _bounds_space_note
+
+        assert _bounds_space_note([], 1455, 791) is None
+        zero = [UIElement(index=0, role="B", label="x",
+                          bounds=(0, 0, 0, 0), app="")]
+        assert _bounds_space_note(zero, 1455, 791) is None
+        assert _bounds_space_note(zero, 0, 0) is None
+
+
+class TestEscalationEnrichment:
+    """Browser-class background_unavailable refusals gain a typed-page hint."""
+
+    def _refusal(self, **overrides):
+        from tools.computer_use.backend import ActionResult
+
+        kw = dict(
+            ok=False, action="type_text", message="refused",
+            code="background_unavailable",
+            escalation={"recommended": "foreground", "reason": "dropped"},
+            meta={"event_kind": "text_input",
+                  "target_class": "Chrome_WidgetWin_1"},
+        )
+        kw.update(overrides)
+        return ActionResult(**kw)
+
+    def test_browser_text_refusal_gains_page_alternative(self):
+        from tools.computer_use.tool import _enrich_escalation
+
+        enriched = _enrich_escalation(self._refusal())
+        # Driver's recommendation is never overridden — only augmented.
+        assert enriched["recommended"] == "foreground"
+        assert enriched["alternative"] == "page"
+        assert "cua_browser_type" in enriched["alternative_hint"]
+
+    def test_non_browser_target_untouched(self):
+        from tools.computer_use.tool import _enrich_escalation
+
+        res = self._refusal(meta={"event_kind": "text_input",
+                                  "target_class": "Notepad"})
+        assert "alternative" not in _enrich_escalation(res)
+
+    def test_non_foreground_recommendation_untouched(self):
+        from tools.computer_use.tool import _enrich_escalation
+
+        res = self._refusal(escalation={"recommended": "px"})
+        assert "alternative" not in _enrich_escalation(res)
+
+    def test_missing_escalation_passthrough(self):
+        from tools.computer_use.backend import ActionResult
+        from tools.computer_use.tool import _enrich_escalation
+
+        assert _enrich_escalation(
+            ActionResult(ok=True, action="click", message="ok")) is None
+
+    def test_enrichment_survives_action_payload(self):
+        from tools.computer_use.tool import _action_payload
+
+        payload = _action_payload(self._refusal())
+        assert payload["escalation"]["alternative"] == "page"
+        assert payload["verdict"]["decision"] == "escalate"

@@ -521,10 +521,7 @@ def _sanitize_subprocess_env(base_env: dict | None, extra_env: dict | None = Non
     # can run the gateway under a base interpreter while VIRTUAL_ENV identifies
     # the separate Hermes runtime venv.  The filter validates that relationship
     # against the repo layout before trusting it.
-    _strip_hermes_owned_pythonpath(sanitized)
-
-    for _marker in _ACTIVE_VENV_MARKER_VARS:
-        sanitized.pop(_marker, None)
+    _strip_hermes_owned_pythonpath_and_runtime_markers(sanitized)
 
     _apply_windows_msys_bash_env_defaults(sanitized)
 
@@ -651,11 +648,7 @@ def hermes_subprocess_env(*, inherit_credentials: bool = False) -> dict[str, str
     from hermes_constants import apply_subprocess_home_env
     apply_subprocess_home_env(env)
 
-    _strip_hermes_owned_pythonpath(env)
-
-    # Active-venv markers must not clobber another project's environment.
-    for _marker in _ACTIVE_VENV_MARKER_VARS:
-        env.pop(_marker, None)
+    _strip_hermes_owned_pythonpath_and_runtime_markers(env)
 
     _apply_windows_msys_bash_env_defaults(env)
 
@@ -1340,10 +1333,7 @@ def _make_run_env(env: dict) -> dict:
     # engaged so a sibling session's os.environ mirror can't leak in).
     _inject_session_context_env(run_env)
 
-    _strip_hermes_owned_pythonpath(run_env)
-
-    for _marker in _ACTIVE_VENV_MARKER_VARS:
-        run_env.pop(_marker, None)
+    _strip_hermes_owned_pythonpath_and_runtime_markers(run_env)
 
     _apply_windows_msys_bash_env_defaults(run_env)
 
@@ -1534,6 +1524,18 @@ def _get_hermes_site_packages(env: dict) -> list[Path]:
             result.append(runtime_site_packages)
 
     return result
+
+
+def _strip_hermes_owned_pythonpath_and_runtime_markers(env: dict) -> None:
+    """Strip Hermes-owned PYTHONPATH entries, then the runtime marker vars.
+
+    Ordering is load-bearing: PYTHONPATH filtering must run BEFORE the
+    markers are removed so a validated Windows base-interpreter launch
+    (VIRTUAL_ENV -> <repo>/venv) can still prove ownership.
+    """
+    _strip_hermes_owned_pythonpath(env)
+    for _marker in _ACTIVE_VENV_MARKER_VARS:
+        env.pop(_marker, None)
 
 
 def _strip_hermes_owned_pythonpath(env: dict) -> None:

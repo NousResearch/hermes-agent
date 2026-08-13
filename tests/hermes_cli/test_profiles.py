@@ -954,37 +954,26 @@ class TestResolveProfileEnvSpelling:
     profile-path handling and existence/validation semantics.
     """
 
-    @staticmethod
-    def _resolve(monkeypatch, env_home, profile):
-        monkeypatch.setenv("HERMES_HOME", str(env_home))
-        return Path(resolve_profile_env(profile))
-
-    def test_root_env_named_profile(self, monkeypatch, tmp_path):
-        # HERMES_HOME=<root> + --profile coder -> <root>/profiles/coder
+    def test_resolution_matrix_preserves_configured_spelling(self, monkeypatch, tmp_path):
+        """Resolution matrix over the four pre-existing invariants: root env
+        -> <root>/profiles/<name>; profile-shaped env -> <root>/profiles/<name>
+        with no nesting; profile-shaped env + default -> <root>; custom roots
+        never fall back to the platform default.
+        """
         root = tmp_path / "configured-root"
+        (root / "profiles" / "beta").mkdir(parents=True)
         (root / "profiles" / "coder").mkdir(parents=True)
-        assert self._resolve(monkeypatch, root, "coder") == root / "profiles" / "coder"
-
-    def test_profile_shaped_env_named_profile_no_nesting(self, monkeypatch, tmp_path):
-        # HERMES_HOME=<root>/profiles/alpha + --profile beta
-        # -> <root>/profiles/beta (never <root>/profiles/alpha/profiles/beta)
-        root = tmp_path / "configured-root"
-        (root / "profiles" / "beta").mkdir(parents=True)
-        env_home = root / "profiles" / "alpha"
-        assert self._resolve(monkeypatch, env_home, "beta") == root / "profiles" / "beta"
-
-    def test_profile_shaped_env_default_returns_root(self, monkeypatch, tmp_path):
-        # HERMES_HOME=<root>/profiles/alpha + --profile default -> <root>
-        root = tmp_path / "configured-root"
-        (root / "profiles" / "alpha").mkdir(parents=True)
-        assert self._resolve(monkeypatch, root / "profiles" / "alpha", "default") == root
-
-    def test_custom_root_does_not_fall_back_to_platform_default(self, monkeypatch, tmp_path):
-        # HERMES_HOME=X:\custom-hermes + --profile beta stays under the
-        # custom root; it must never silently fall back to the platform default.
-        root = tmp_path / "custom-hermes"
-        (root / "profiles" / "beta").mkdir(parents=True)
-        assert self._resolve(monkeypatch, root, "beta") == root / "profiles" / "beta"
+        custom = tmp_path / "custom-hermes"
+        (custom / "profiles" / "beta").mkdir(parents=True)
+        cases = [
+            (root, "coder", root / "profiles" / "coder"),
+            (root / "profiles" / "alpha", "beta", root / "profiles" / "beta"),
+            (root / "profiles" / "alpha", "default", root),
+            (custom, "beta", custom / "profiles" / "beta"),
+        ]
+        for env_home, profile, expected in cases:
+            monkeypatch.setenv("HERMES_HOME", str(env_home))
+            assert Path(resolve_profile_env(profile)) == expected
 
     def test_missing_named_profile_still_raises(self, monkeypatch, tmp_path):
         root = tmp_path / "configured-root"

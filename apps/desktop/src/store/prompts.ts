@@ -147,6 +147,28 @@ export const $activeSessionAwaitingInput = computed(
   (clarify, approval, sudo, secret) => Boolean(clarify || approval || sudo || secret)
 )
 
+/** True when `sessionId` is parked on a blocking prompt that typing cannot
+ *  answer (approval / sudo / secret). Clarify is deliberately excluded: typing
+ *  a real message IS an answer to a clarify ("none of these" — the composer
+ *  skips it and routes the words), but no message text can approve a command
+ *  or supply a password. Imperative read — the composer checks this on Enter,
+ *  not on every render. */
+export const hasBlockingPromptRequest = (sessionId: string | null | undefined): boolean => {
+  const key = keyFor(sessionId)
+
+  return Boolean(approval.$all.get()[key] || sudo.$all.get()[key] || secret.$all.get()[key])
+}
+
+/** Reactive twin of `hasBlockingPromptRequest`, for the composer's busy-action
+ *  affordance (the primary button must advertise queue, not steer, while the
+ *  turn is parked on a prompt Enter can't answer). */
+export const sessionBlockingPrompt = (sessionId: string | null) =>
+  computed([approval.$all, sudo.$all, secret.$all], (approvals, sudos, secrets) => {
+    const key = keyFor(sessionId)
+
+    return Boolean(approvals[key] || sudos[key] || secrets[key])
+  })
+
 /** Per-session `awaitingInput` — the tile composer's counterpart of
  *  `$activeSessionAwaitingInput` (same sources, fixed session instead of the
  *  active one). */

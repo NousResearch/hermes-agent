@@ -131,6 +131,36 @@ def test_unknown_api_mode_preserves_provider_name():
     )
 
 
+@pytest.mark.parametrize(
+    ("api_mode", "operation", "codec_class"),
+    [
+        ("chat_completions", "openai.chat_completions", "OpenAIChatCodec"),
+        ("codex_responses", "openai.responses", "OpenAIResponsesCodec"),
+        ("anthropic_messages", "anthropic.messages", "AnthropicMessagesCodec"),
+    ],
+)
+def test_relay_protocol_drives_operation_and_codec(
+    api_mode, operation, codec_class
+):
+    codec_type = type(codec_class, (), {})
+    codecs = SimpleNamespace(**{codec_class: codec_type})
+    relay = SimpleNamespace(codecs=codecs)
+    metadata = {"api_mode": api_mode}
+
+    assert relay_llm._relay_operation_name("custom-provider", metadata) == operation
+    assert isinstance(relay_llm._codec(relay, metadata), codec_type)
+
+
+def test_relay_metadata_preserves_provider_name():
+    metadata = {"api_mode": "chat_completions", "hermes.provider": "explicit"}
+
+    assert relay_llm._relay_metadata("openrouter", metadata) == metadata
+    assert relay_llm._relay_metadata("openrouter", {"api_mode": "chat_completions"}) == {
+        "api_mode": "chat_completions",
+        "hermes.provider": "openrouter",
+    }
+
+
 def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
     relay, turn = relay_turn
     captured_requests = []

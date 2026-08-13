@@ -1486,10 +1486,10 @@ def execute_code(
         #
         # Before re-injecting PYTHONPATH, strip Hermes-owned entries that
         # leaked through _scrub_child_env (PYTHONPATH is in _SAFE_ENV_PREFIXES
-        # so it passes the scrub).  The sandbox runs the SAME Python as
-        # Hermes, so the Hermes venv entries are redundant — and if they
-        # came from a different Hermes venv they would poison the sandbox's
-        # sys.path with ABI-incompatible C extensions (#74817).
+        # so it passes the scrub).  They are redundant for same-Hermes-
+        # environment children and may be incompatible with external
+        # interpreters (project mode can select a different venv), so they
+        # must not shadow or poison the child's sys.path (#74817).
         from tools.environments.local import _strip_hermes_owned_pythonpath
         _strip_hermes_owned_pythonpath(child_env)
         _hermes_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))

@@ -9,6 +9,7 @@ See: https://github.com/NousResearch/hermes-agent/issues/1264
 """
 
 import os
+import subprocess
 import sys
 import threading
 from pathlib import Path
@@ -323,6 +324,33 @@ class TestActiveVenvMarkerStripping:
         assert "CONDA_PREFIX" in _ACTIVE_VENV_MARKER_VARS
 
 
+def _make_directory_link(link: Path, target: Path) -> None:
+    """Create a directory link without requiring symlink privileges.
+
+    POSIX: Path.symlink_to.  Windows: try symlink_to first (works with
+    Developer Mode enabled), then fall back to an unprivileged directory
+    junction via `cmd /c mklink /J` -- junctions do not require the
+    SeCreateSymbolicLinkPrivilege.  Raises the original error when no
+    mechanism is available so callers can skip with a clear reason.
+    """
+    try:
+        link.symlink_to(target, target_is_directory=True)
+        return
+    except OSError:
+        if sys.platform != "win32":
+            raise
+    # Binary capture: on a localized Windows the junction message is in the
+    # console code page (e.g. GBK), which would raise UnicodeDecodeError in
+    # the reader thread under UTF-8 mode.  Only the exit code matters.
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+        capture_output=True,
+    )
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace").strip()
+        raise OSError(detail or f"mklink /J failed: {result.returncode}")
+
+
 class TestPythonpathSelectiveStrip:
     """PYTHONPATH Hermes-owned entry stripping (#74817).
 
@@ -418,7 +446,10 @@ class TestPythonpathSelectiveStrip:
         """
         from tools.environments.local import _strip_hermes_owned_pythonpath
         env = {
-            "PYTHONPATH": "/old/lib/python2.7/site-packages:/home/user/lib",
+            "PYTHONPATH": os.pathsep.join([
+                "/old/lib/python2.7/site-packages",
+                "/home/user/lib",
+            ]),
         }
         _strip_hermes_owned_pythonpath(env)
         assert "PYTHONPATH" in env
@@ -865,7 +896,10 @@ class TestPythonpathSelectiveStrip:
         physical_root = physical_home / "hermes-agent"
         physical_root.mkdir(parents=True)
         configured_home = tmp_path / "configured-home"
-        configured_home.symlink_to(physical_home, target_is_directory=True)
+        try:
+            _make_directory_link(configured_home, physical_home)
+        except OSError as exc:
+            pytest.skip(f"directory link unavailable on this host: {exc}")
         monkeypatch.setenv("HERMES_HOME", str(configured_home))
 
         launcher_entry = Path(_preserve_hermes_home_path(physical_root))
@@ -1217,25 +1251,42 @@ class TestSanePathIncludesHomebrew:
         assert "/opt/homebrew/bin" in _SANE_PATH
 
 
-    def test_make_run_env_appends_homebrew_on_minimal_path(self):
-        """When PATH is minimal, _make_run_env appends missing sane entries."""
+    def test_make_run_env_appends_homebrew_on_minimal_path(self, monkeypatch):
+        """When PATH is minimal, _make_run_env appends missing sane entries.
+
+        POSIX: the sane-path merge appends the Homebrew dirs.  Windows:
+        _append_missing_sane_path_entries is a documented passthrough (the
+        native PATH must not be touched), so the assertion is the unchanged
+        input.  Git Bash dir prepending is neutralised so the merged PATH
+        layout is deterministic on every host.
+        """
+        from tools.environments import local as local_mod
         from tools.environments.local import _SANE_PATH, _make_run_env
+        monkeypatch.setattr(local_mod, "_git_bash_bin_dirs", lambda: [])
         minimal_env = {"PATH": "/some/custom/bin"}
         with patch.dict(os.environ, minimal_env, clear=True):
             result = _make_run_env({})
-        path_entries = result["PATH"].split(":")
+        path_entries = result["PATH"].split(os.pathsep)
         assert path_entries[0] == "/some/custom/bin"
-        for entry in _SANE_PATH.split(":"):
-            assert entry in path_entries
+        if sys.platform == "win32":
+            assert result["PATH"] == "/some/custom/bin"
+        else:
+            for entry in _SANE_PATH.split(os.pathsep):
+                assert entry in path_entries
 
 
+    @pytest.mark.macos_only
     def test_make_run_env_real_launchd_path_gains_homebrew(self):
-        """The literal macOS launchd PATH is the production trigger for #35613."""
+        """The literal macOS launchd PATH is the production trigger for #35613.
+
+        macOS-only: the regression is the launchd environment on macOS, and
+        the sane-path merge is a documented passthrough on Windows.
+        """
         from tools.environments.local import _make_run_env
-        launchd_env = {"PATH": "/usr/bin:/bin:/usr/sbin:/sbin"}
+        launchd_env = {"PATH": os.pathsep.join(["/usr/bin", "/bin", "/usr/sbin", "/sbin"])}
         with patch.dict(os.environ, launchd_env, clear=True):
             result = _make_run_env({})
-        path_entries = result["PATH"].split(":")
+        path_entries = result["PATH"].split(os.pathsep)
         assert "/opt/homebrew/bin" in path_entries
         assert "/opt/homebrew/sbin" in path_entries
         # Original entries keep their leading precedence.
@@ -1298,7 +1349,11 @@ class TestHermesBinDirOnPath:
         from tools.environments.local import _make_run_env
         self._reset_cache()
         local_mod._HERMES_BIN_DIR = "/opt/hermes/bin"
-        with patch.dict(os.environ, {"PATH": "/usr/bin:/bin"}, clear=True):
+        with patch.dict(
+            os.environ,
+            {"PATH": os.pathsep.join(["/usr/bin", "/bin"])},
+            clear=True,
+        ):
             result = _make_run_env({})
         entries = result["PATH"].split(os.pathsep)
         assert entries[0] == "/opt/hermes/bin"

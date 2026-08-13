@@ -814,21 +814,33 @@ class TestPythonpathSelectiveStrip:
         assert "PYTHONPATH" in captured["env"], \
             "execute_code never reached Popen"
         parts = captured["env"]["PYTHONPATH"].split(os.pathsep)
-        assert parts[0] == captured["staging"], \
+        # Windows path comparison is case-insensitive: the inherited entries
+        # and the re-added repo root can carry a different case than the
+        # resolve()/abspath()-derived spellings used in this test (e.g. a
+        # launcher-written lowercase PYTHONPATH).  Normalize with
+        # os.path.normcase so a case-only difference never fails the
+        # composition contract (identity on POSIX).
+        norm_parts = [os.path.normcase(p) for p in parts]
+        norm_staging = os.path.normcase(captured["staging"])
+        norm_root = os.path.normcase(hermes_root)
+        norm_venv = os.path.normcase(venv_sp)
+        norm_user_a = os.path.normcase(user_a)
+        norm_user_b = os.path.normcase(user_b)
+        assert norm_parts[0] == norm_staging, \
             "staging tmpdir must be the first PYTHONPATH entry"
-        assert venv_sp not in parts, \
+        assert norm_venv not in norm_parts, \
             "inherited Hermes venv site-packages must be stripped"
-        assert user_a in parts and user_b in parts, \
+        assert norm_user_a in norm_parts and norm_user_b in norm_parts, \
             "user PYTHONPATH entries must survive"
-        assert parts.index(user_a) > parts.index(captured["staging"]), \
+        assert norm_parts.index(norm_user_a) > norm_parts.index(norm_staging), \
             "user entries must come after the staging tmpdir"
         if same_env:
-            assert parts.count(hermes_root) == 1, \
+            assert norm_parts.count(norm_root) == 1, \
                 "repo root must be re-added exactly once for a same-env child"
-            assert parts.index(user_a) > parts.index(hermes_root), \
+            assert norm_parts.index(norm_user_a) > norm_parts.index(norm_root), \
                 "user entries must come after the re-added repo root"
         else:
-            assert hermes_root not in parts, \
+            assert norm_root not in norm_parts, \
                 "repo root must stay absent for an external-env child"
 
     def test_repo_root_stripped(self):
@@ -972,6 +984,166 @@ class TestPythonpathSelectiveStrip:
         env = {"PYTHONPATH": os.pathsep.join([str(lexical_root), "/home/user/my-lib"])}
         local._strip_hermes_owned_pythonpath(env)
         assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
+
+
+    def test_repo_level_junction_recovers_lexical_alias(self, tmp_path, monkeypatch):
+        """The repo itself may be a junction under the configured root
+        (e.g. D:\\hermes\\hermes-agent -> C:\\...\\hermes-agent) while the
+        editable import spelling resolves to the physical location.  The
+        alias builder must recover the lexical spelling via exact-identity
+        proof (strict resolve), not a name-based guess.
+        """
+        import tools.environments.local as local
+
+        physical_home = tmp_path / "physical-home"
+        physical_root = physical_home / "hermes-agent"
+        physical_root.mkdir(parents=True)
+        configured_home = tmp_path / "configured-home"
+        configured_home.mkdir()
+        # repo-level link: <configured-home>/hermes-agent -> physical repo
+        try:
+            _make_directory_link(configured_home / "hermes-agent", physical_root)
+        except OSError as exc:
+            pytest.skip(f"directory link unavailable on this host: {exc}")
+
+        lexical_root = configured_home / "hermes-agent"
+        aliases = local._build_hermes_repo_root_aliases(
+            physical_root.resolve(),
+            physical_root,
+            configured_home,
+        )
+        assert any(local._same_path(a, lexical_root) for a in aliases)
+
+        monkeypatch.setattr(local, "_hermes_repo_root_aliases", aliases)
+        env = {"PYTHONPATH": os.pathsep.join([str(lexical_root), "/home/user/my-lib"])}
+        local._strip_hermes_owned_pythonpath(env)
+        assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
+
+    def test_repo_level_junction_negative_control(self, tmp_path, monkeypatch):
+        """A same-named REAL directory under the configured root (not a link
+        to the known physical repo) must never become an alias or be
+        stripped -- exact filesystem identity decides, not the name.
+        """
+        import tools.environments.local as local
+
+        physical_home = tmp_path / "physical-home"
+        physical_root = physical_home / "hermes-agent"
+        physical_root.mkdir(parents=True)
+        configured_home = tmp_path / "configured-home"
+        (configured_home / "hermes-agent").mkdir(parents=True)
+
+        aliases = local._build_hermes_repo_root_aliases(
+            physical_root.resolve(),
+            physical_root,
+            configured_home,
+        )
+        lookalike = configured_home / "hermes-agent"
+        assert not any(local._same_path(a, lookalike) for a in aliases)
+
+        monkeypatch.setattr(local, "_hermes_repo_root_aliases", aliases)
+        env = {"PYTHONPATH": os.pathsep.join([str(lookalike), "/home/user/my-lib"])}
+        local._strip_hermes_owned_pythonpath(env)
+        assert env["PYTHONPATH"].split(os.pathsep) == [str(lookalike), "/home/user/my-lib"]
+
+    def test_profile_home_with_repo_level_junction(self, tmp_path, monkeypatch):
+        """Profile re-home + repo-level junction together: the configured home
+        is <root>/profiles/<name> while the repo is a link at <root>/hermes-agent.
+        The root spelling must be derived (profiles -> grandparent) and then
+        the lexical repo alias recovered from it.
+        """
+        import tools.environments.local as local
+
+        physical_home = tmp_path / "physical-home"
+        physical_root = physical_home / "hermes-agent"
+        physical_root.mkdir(parents=True)
+        configured_root = tmp_path / "configured-root"
+        (configured_root / "profiles" / "coder").mkdir(parents=True)
+        try:
+            _make_directory_link(configured_root / "hermes-agent", physical_root)
+        except OSError as exc:
+            pytest.skip(f"directory link unavailable on this host: {exc}")
+
+        configured_home = configured_root / "profiles" / "coder"
+        lexical_root = configured_root / "hermes-agent"
+        aliases = local._build_hermes_repo_root_aliases(
+            physical_root.resolve(),
+            physical_root,
+            configured_home,
+        )
+        assert any(local._same_path(a, lexical_root) for a in aliases)
+        assert not any(local._same_path(a, configured_home / "hermes-agent") for a in aliases)
+
+        monkeypatch.setattr(local, "_hermes_repo_root_aliases", aliases)
+        env = {"PYTHONPATH": os.pathsep.join([str(lexical_root), "/home/user/my-lib"])}
+        local._strip_hermes_owned_pythonpath(env)
+        assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
+
+    def test_validated_runtime_venv_lexical_after_repo_recovery(self, tmp_path, monkeypatch):
+        """uv-base gateway: once the lexical repo alias is recovered, a lexical
+        VIRTUAL_ENV (<lexical repo>/venv) validates and its site-packages is
+        stripped together with the repo root, while user entries survive.
+        """
+        import tools.environments.local as local
+
+        physical_home = tmp_path / "physical-home"
+        physical_root = physical_home / "hermes-agent"
+        venv_dir = physical_root / "venv"
+        venv_dir.mkdir(parents=True)
+        (venv_dir / "pyvenv.cfg").write_text("home = x\n", encoding="utf-8")
+        configured_home = tmp_path / "configured-home"
+        configured_home.mkdir()
+        try:
+            _make_directory_link(configured_home / "hermes-agent", physical_root)
+        except OSError as exc:
+            pytest.skip(f"directory link unavailable on this host: {exc}")
+
+        lexical_root = configured_home / "hermes-agent"
+        aliases = local._build_hermes_repo_root_aliases(
+            physical_root.resolve(),
+            physical_root,
+            configured_home,
+        )
+        assert any(local._same_path(a, lexical_root) for a in aliases)
+        monkeypatch.setattr(local, "_hermes_repo_root_aliases", aliases)
+
+        lexical_venv = lexical_root / "venv"
+        validated = local._validated_runtime_venv({"VIRTUAL_ENV": str(lexical_venv)})
+        assert validated is not None
+        assert local._same_path(validated, lexical_venv)
+
+        local._hermes_site_packages = None
+        env = {"PYTHONPATH": os.pathsep.join([
+            str(lexical_root),
+            str(lexical_venv / "Lib" / "site-packages"),
+            "/home/user/my-lib",
+        ]), "VIRTUAL_ENV": str(lexical_venv)}
+        local._strip_hermes_owned_pythonpath(env)
+        assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
+
+    def test_lookalike_user_path_without_provenance_preserved(self, tmp_path, monkeypatch):
+        """A user PYTHONPATH entry that merely looks like a Hermes path
+        (repo-named directory, no link to the known physical repo) must be
+        preserved -- no ownership provenance, no strip.
+        """
+        import tools.environments.local as local
+
+        physical_home = tmp_path / "physical-home"
+        physical_root = physical_home / "hermes-agent"
+        physical_root.mkdir(parents=True)
+        unrelated = tmp_path / "user-tools" / "hermes-agent"
+        unrelated.mkdir(parents=True)
+
+        aliases = local._build_hermes_repo_root_aliases(
+            physical_root.resolve(),
+            physical_root,
+            tmp_path / "configured-home",
+        )
+        assert not any(local._same_path(a, unrelated) for a in aliases)
+
+        monkeypatch.setattr(local, "_hermes_repo_root_aliases", aliases)
+        env = {"PYTHONPATH": os.pathsep.join([str(unrelated), "/home/user/my-lib"])}
+        local._strip_hermes_owned_pythonpath(env)
+        assert env["PYTHONPATH"].split(os.pathsep) == [str(unrelated), "/home/user/my-lib"]
 
 
     def test_deep_path_under_repo_root_preserved(self):

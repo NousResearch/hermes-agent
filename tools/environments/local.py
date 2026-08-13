@@ -1370,6 +1370,10 @@ def _build_hermes_repo_root_aliases(
     the resolved HERMES_HOME back onto the configured HERMES_HOME spelling.
     Mirror that producer contract here so a junction-backed install is matched
     without treating arbitrary descendants of HERMES_HOME as Hermes-owned.
+    Additionally, when the repo itself is a junction under the configured root
+    (repo-level junction, possibly cross-drive), the single deterministic
+    candidate <root>/<repo dirname> is accepted only when strict resolve
+    proves it is the exact physical repo root.
     """
     aliases: list[Path] = []
 
@@ -1401,6 +1405,24 @@ def _build_hermes_repo_root_aliases(
                 relative_root = os.path.relpath(str(resolved_root), str(resolved_home))
                 add(home / relative_root)
         except (OSError, ValueError):
+            pass
+
+    # Repo-level junction recovery: the repository itself may be a
+    # junction/symlink under the configured root (e.g. D:\hermes\hermes-agent
+    # -> C:\...\hermes-agent) while the import spelling (editable install)
+    # resolves to the physical location.  The home-relative mapping above
+    # cannot express a cross-drive link (commonpath raises on different
+    # drives), so prove the EXACT filesystem identity of the single
+    # deterministic candidate -- <lexical root>/<repo dirname> -- with a
+    # strict resolve before accepting it as Hermes-owned.  Fail-closed: a
+    # missing path (strict resolve raises), a real directory that is not the
+    # known physical root, or any unrelated spelling never becomes an alias.
+    for home in home_candidates:
+        repo_candidate = home / resolved_root.name
+        try:
+            if repo_candidate.resolve(strict=True) == resolved_root.resolve(strict=True):
+                add(repo_candidate)
+        except OSError:
             pass
 
     return tuple(aliases)

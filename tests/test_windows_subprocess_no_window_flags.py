@@ -165,12 +165,18 @@ def test_shell_hooks_hide_hook_command_windows(monkeypatch):
 
     captured = []
 
-    def fake_run(cmd, **kwargs):
+    class FakeProc:
+        returncode = 0
+
+        def communicate(self, input=None, timeout=None):
+            return "{}", ""
+
+    def fake_popen(cmd, **kwargs):
         captured.append((cmd, kwargs))
-        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+        return FakeProc()
 
     monkeypatch.setattr(shell_hooks, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(shell_hooks.subprocess, "run", fake_run)
+    monkeypatch.setattr(shell_hooks.subprocess, "Popen", fake_popen)
 
     result = shell_hooks._spawn(
         shell_hooks.ShellHookSpec(event="post_tool_call", command="hook-bin --flag"),
@@ -179,6 +185,8 @@ def test_shell_hooks_hide_hook_command_windows(monkeypatch):
 
     assert result["returncode"] == 0
     assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+    # The POSIX-only process_group kwarg must NOT reach a Windows spawn.
+    assert "process_group" not in captured[0][1]
 
 
 

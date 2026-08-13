@@ -56,7 +56,7 @@ def test_cron_provider_stop_cannot_override_gateway_exit_code(caplog):
     gateway_run._stop_cron_provider(provider)
 
     provider.stop.assert_called_once_with()
-    assert "attempted to exit the gateway with code 75; ignoring" in caplog.text
+    assert f"attempted to exit the gateway with code {GATEWAY_SERVICE_RESTART_EXIT_CODE}; ignoring" in caplog.text
 
 
 @pytest.mark.asyncio

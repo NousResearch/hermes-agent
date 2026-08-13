@@ -132,24 +132,7 @@ Hermes 官方支持 **Linux、macOS、WSL2 以及原生 Windows（通过 PowerSh
 - **使用 `pathlib.Path` / `os.path.join`，不得手动用 `/` 拼接路径。** 这对我们构造后传给子进程的字符串尤为重要，而非 OS 返回给我们的字符串。
 
 关键模式：
-
-### 1. `termios` 和 `fcntl` 仅适用于 Unix
-
-始终同时捕获 `ImportError` 和 `NotImplementedError`：
-
-```python
-try:
-    from simple_term_menu import TerminalMenu
-    menu = TerminalMenu(options)
-    idx = menu.show()
-except (ImportError, NotImplementedError):
-    # 回退：编号菜单
-    for i, opt in enumerate(options):
-        print(f"  {i+1}. {opt}")
-    idx = int(input("Choice: ")) - 1
-```
-
-### 2. 文件编码
+### 1. 文件编码
 
 某些环境可能以非 UTF-8 编码保存 `.env` 文件：
 
@@ -160,7 +143,7 @@ except UnicodeDecodeError:
     load_dotenv(env_path, encoding="latin-1")
 ```
 
-### 3. 进程管理
+### 2. 进程管理
 
 `os.setsid()`、`os.killpg()` 以及信号处理在各平台间存在差异：
 
@@ -170,7 +153,7 @@ if platform.system() != "Windows":
     kwargs["preexec_fn"] = os.setsid
 ```
 
-### 4. 路径分隔符
+### 3. 路径分隔符
 
 使用 `pathlib.Path` 代替用 `/` 进行字符串拼接。
 

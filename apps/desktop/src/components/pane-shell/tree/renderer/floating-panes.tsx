@@ -14,7 +14,7 @@ import { type PointerEvent as ReactPointerEvent, useCallback, useEffect, useRef,
 import { HUD_SURFACE } from '@/app/floating-hud'
 import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { Codicon } from '@/components/ui/codicon'
-import { ContribBoundary } from '@/contrib/react/boundary'
+import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import type { Contribution } from '@/contrib/types'
 import { readJson, writeJson } from '@/lib/storage'
@@ -178,7 +178,7 @@ function FloatingPane({ pane }: { pane: Contribution }) {
 
       {!collapsed && (
         <div className="min-h-0 flex-1 overflow-auto">
-          <ContribBoundary id={pane.id}>{pane.render?.()}</ContribBoundary>
+          <ContribBoundary id={pane.id}>{pane.render && <ContribRender render={pane.render} />}</ContribBoundary>
         </div>
       )}
     </div>

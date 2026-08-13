@@ -74,7 +74,129 @@ def _swarm_context(root_id: str, goal: str) -> str:
     )
 
 
+def _activate_root_inline(
+    conn: sqlite3.Connection,
+    root_id: str,
+    *,
+    summary: str,
+    metadata: dict[str, Any],
+) -> bool:
+    """Inline blocked→done CAS flip + event insert for the swarm root.
+
+    Runs INSIDE create_swarm's outer write_txn, so it must not call
+    ``kb.complete_task`` — that helper opens its own transaction and fires
+    post-commit side effects (workspace cleanup, failure-counter clear,
+    ``recompute_ready``) that would execute while the outer transaction can
+    still roll back. Instead we do the minimal durable writes here and let
+    the caller run ``recompute_ready`` after the outer commit.
+    """
+    import time as _time
+
+    now = int(_time.time())
+    cur = conn.execute(
+        """
+        UPDATE tasks
+           SET status       = 'done',
+               completed_at = ?,
+               claim_lock   = NULL,
+               claim_expires= NULL,
+               worker_pid   = NULL
+         WHERE id = ?
+           AND status = 'blocked'
+        """,
+        (now, root_id),
+    )
+    if cur.rowcount != 1:
+        return False
+    run_id = kb._synthesize_ended_run(
+        conn,
+        root_id,
+        outcome="completed",
+        summary=summary,
+        metadata=metadata,
+    )
+    kb._append_event(
+        conn,
+        root_id,
+        "completed",
+        {"result_len": 0, "summary": summary[:400] or None},
+        run_id=run_id,
+    )
+    return True
+
+
 def create_swarm(
+    conn: sqlite3.Connection,
+    *,
+    goal: str,
+    workers: Iterable[SwarmWorkerSpec],
+    verifier_assignee: str,
+    synthesizer_assignee: str,
+    root_title: Optional[str] = None,
+    verifier_title: str = "Verify swarm outputs",
+    synthesizer_title: str = "Synthesize swarm outputs",
+    tenant: Optional[str] = None,
+    created_by: str = "swarm-orchestrator",
+    workspace_kind: str = "scratch",
+    workspace_path: Optional[str] = None,
+    priority: int = 0,
+    idempotency_key: Optional[str] = None,
+) -> SwarmCreated:
+    """Atomically create a durable, immediately dispatchable Kanban swarm."""
+    activation_summary = (
+        "Swarm topology planned; root remains the shared blackboard."
+    )
+    activated = False
+    with kb.write_txn(conn):
+        created = _create_swarm_uncommitted(
+            conn,
+            goal=goal,
+            workers=workers,
+            verifier_assignee=verifier_assignee,
+            synthesizer_assignee=synthesizer_assignee,
+            root_title=root_title,
+            verifier_title=verifier_title,
+            synthesizer_title=synthesizer_title,
+            tenant=tenant,
+            created_by=created_by,
+            workspace_kind=workspace_kind,
+            workspace_path=workspace_path,
+            priority=priority,
+            idempotency_key=idempotency_key,
+        )
+        root = kb.get_task(conn, created.root_id)
+        if root is not None and root.status == "blocked":
+            if not _activate_root_inline(
+                conn,
+                created.root_id,
+                summary=activation_summary,
+                metadata={
+                    "kind": "kanban_swarm_v1",
+                    "goal": goal.strip(),
+                    "worker_count": len(created.worker_ids),
+                },
+            ):
+                raise RuntimeError("could not activate the completed swarm topology")
+            activated = True
+    if activated:
+        # Outside the outer transaction: promote the root's children now
+        # that its 'done' flip is durable (recompute_ready opens its own
+        # txn and must never run under an open write_txn).
+        kb.recompute_ready(conn)
+        root = kb.get_task(conn, created.root_id)
+        run = kb.latest_run(conn, created.root_id)
+        kb._fire_kanban_lifecycle_hook(
+            "kanban_task_completed",
+            created.root_id,
+            board=kb.get_current_board(),
+            assignee=root.assignee if root else None,
+            run_id=run.id if run else None,
+            summary=activation_summary,
+        )
+    return created
+
+
+def _create_swarm_uncommitted(
     conn: sqlite3.Connection,
     *,
     goal: str,
@@ -122,6 +244,7 @@ def create_swarm(
         tenant=tenant,
         priority=priority,
         idempotency_key=idempotency_key,
+        initial_status="blocked",
         workspace_kind=workspace_kind,
         workspace_path=workspace_path,
     )
@@ -141,17 +264,6 @@ def create_swarm(
                 verifier_id=str(verifier_id),
                 synthesizer_id=str(synthesizer_id),
             )
-
-    kb.complete_task(
-        conn,
-        root,
-        summary="Swarm topology planned; root remains the shared blackboard.",
-        metadata={
-            "kind": "kanban_swarm_v1",
-            "goal": goal,
-            "worker_count": len(worker_specs),
-        },
-    )
 
     context_suffix = _swarm_context(root, goal)
     worker_ids: list[str] = []

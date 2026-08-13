@@ -36,6 +36,7 @@ import {
   $dismissedAutoProjectIds,
   $panesFlipped,
   $pinnedSessionIds,
+  $sidebarCardRows,
   $sidebarCronOpen,
   $sidebarFiltersActive,
   $sidebarGrouping,
@@ -334,6 +335,7 @@ export function ChatSidebar({
   const pullRequests = useStore($pullRequestsByBranch)
   const filtersActive = useStore($sidebarFiltersActive)
   const showArchived = useStore($sidebarShowArchived)
+  const cardRows = useStore($sidebarCardRows)
   const archivedSessions = useStore($archivedSessions)
   const dotStates = useStore($sessionDotStateById)
   // The active sort key as an id order. The flat list applies it within its
@@ -1550,10 +1552,17 @@ export function ChatSidebar({
               <SidebarSessionsSection
                 activeProjectId={activeProjectId}
                 activeSessionId={activeSidebarSessionId}
+                // Inbox style is a render variant, not a grouping: only the
+                // flat recents list opts in, and only outside the project tree
+                // (whose rows already carry workspace context).
+                card={cardRows && !agentsGrouped}
                 collapsible={!inProject}
                 contentClassName={cn(
                   'flex min-h-0 flex-1 flex-col gap-px pb-1.75',
-                  SCROLL_Y,
+                  // The virtualized long list owns its own scroller — giving
+                  // this wrapper one too doubled the scrollbar gutter and
+                  // shaved every row 4px short of the sidebar's right edge.
+                  !recentsVirtualizes && SCROLL_Y,
                   // Flatten into the single scroll when compact — unless this is the
                   // virtualized long list, which must keep its own scroller.
                   !recentsVirtualizes && COMPACT_FLAT

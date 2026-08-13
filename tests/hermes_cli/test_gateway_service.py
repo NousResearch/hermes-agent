@@ -232,6 +232,35 @@ class TestGeneratedSystemdUnits:
         assert str(local_bin) in plist
         assert str(profile_node_bin) not in plist
 
+    def test_launchd_plist_persists_configured_nofile_soft_limit(self, monkeypatch):
+        """The generated plist must carry SoftResourceLimits/NumberOfFiles so a
+        plist rewrite by `hermes gateway start` cannot strip the FD floor and
+        reintroduce EMFILE crashes (launchd default soft limit is 256)."""
+        import hermes_cli.resource_limits as resource_limits
+
+        monkeypatch.setattr(
+            resource_limits, "configured_nofile_soft_limit", lambda config=None: 65536
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "<key>SoftResourceLimits</key>" in plist
+        assert "<key>NumberOfFiles</key>" in plist
+        assert "<integer>65536</integer>" in plist
+
+    def test_launchd_plist_omits_nofile_block_when_disabled(self, monkeypatch):
+        """runtime.nofile_soft_limit: 0/false/null disables the adjustment; the
+        plist must then not contain a SoftResourceLimits block at all."""
+        import hermes_cli.resource_limits as resource_limits
+
+        monkeypatch.setattr(
+            resource_limits, "configured_nofile_soft_limit", lambda config=None: None
+        )
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert "SoftResourceLimits" not in plist
+
 
 
 class TestGatewayStopCleanup:

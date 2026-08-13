@@ -46,7 +46,12 @@ import {
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
-import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment } from './bootstrap-platform'
+import {
+  detectRemoteDisplay,
+  isWindowsBinaryPathInWsl,
+  isWslEnvironment,
+  resolveLinuxPasswordStore
+} from './bootstrap-platform'
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
 import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'
@@ -104,6 +109,7 @@ import {
   reviewCommitContext,
   reviewCreatePr,
   reviewDiff,
+  reviewFetchPrComment,
   reviewList,
   reviewPrList,
   reviewPush,
@@ -129,8 +135,10 @@ import {
   DATA_URL_READ_DEFAULT_MAX_MB,
   dataUrlReadMaxBytesFromMb,
   DEFAULT_FETCH_TIMEOUT_MS,
+  enableBasicPasswordStoreEncryption,
   encryptDesktopSecret as encryptDesktopSecretStrict,
   readFileDataUrlForIpc,
+  resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
@@ -173,6 +181,7 @@ import {
   revalidatePooledRemoteBackends,
   revalidateRemoteConnection
 } from './remote-liveness'
+import { attachRendererConsoleCapture, formatRendererBoundaryReport } from './renderer-log'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -196,20 +205,13 @@ import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeig
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
-import { runRebuildWithRetry } from './update-rebuild'
-import {
-  buildRelaunchScript,
-  collectRelaunchArgs,
-  collectRelaunchEnv,
-  decideRelaunchOutcome,
-  resolveUnpackedRelease,
-  sandboxFallbackFromEnv,
-  sandboxPreflight
-} from './update-relaunch'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
 import {
+  collectRelaunchArgs,
+  resolvePosixScriptHandoff,
   resolveStagedUpdaterBinary,
   resolveUpdateScriptHandoff,
+  sandboxFallbackFromEnv,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker,
   wrapHandoffForDetachedConsole
@@ -218,6 +220,7 @@ import { formatBlockerMessage, formatProbeFailedMessage, scanVenvBlockers } from
 import { fetchMarketplaceThemes, searchMarketplaceThemes } from './vscode-marketplace'
 import { createWakeIndicatorWindowController } from './wake-indicator-window'
 import { readWindowBelow } from './window-below'
+import { installWindowRendererLifecycle } from './window-renderer-lifecycle'
 import { createWindowRevealController } from './window-reveal'
 import {
   bindGeometryPersistence,
@@ -335,6 +338,22 @@ if (IS_WSL && !REMOTE_DISPLAY_REASON && fs.existsSync('/dev/dxg')) {
   app.commandLine.appendSwitch('enable-gpu-rasterization')
   app.commandLine.appendSwitch('enable-zero-copy')
   console.log('[hermes] WSL GPU passthrough (/dev/dxg) detected; enabling GPU acceleration')
+}
+
+// Linux: point Chromium at the session's keychain backend so safeStorage can
+// encrypt remote gateway tokens (hardening.ts refuses to persist them without
+// it). The value arrives via HERMES_DESKTOP_PASSWORD_STORE, bridged by the
+// `hermes desktop` launcher from detection or `desktop.password_store` in
+// config.yaml. Must run before app `ready` — the switch only applies pre-launch.
+const PASSWORD_STORE = resolveLinuxPasswordStore()
+
+if (PASSWORD_STORE.warning) {
+  console.warn(`[hermes] ${PASSWORD_STORE.warning}`)
+}
+
+if (PASSWORD_STORE.store) {
+  app.commandLine.appendSwitch('password-store', PASSWORD_STORE.store)
+  console.log(`[hermes] using password-store backend: ${PASSWORD_STORE.store}`)
 }
 
 // Windows sandbox / GPU breakpoint crash recovery (#38216).
@@ -676,6 +695,7 @@ const BOOT_FAKE_STEP_MS = (() => {
 })()
 
 const APP_NAME = process.env.HERMES_DESKTOP_APP_NAME || 'Hermes'
+const HUD_WINDOW_TITLE = `${APP_NAME} HUD`
 const TITLEBAR_HEIGHT = 34
 const MACOS_TRAFFIC_LIGHTS_HEIGHT = 14
 
@@ -1085,13 +1105,15 @@ const POOL_IDLE_MS = Math.max(60_000, Number(process.env.HERMES_DESKTOP_POOL_IDL
 // killing one to honor the soft cap would abort a running agent.
 const POOL_KEEPALIVE_FRESH_MS = 90_000
 let poolIdleReaper = null
-// Auto-reload budget for renderer crashes. A deterministic startup crash would
-// otherwise loop forever (reload → crash → reload), pinning CPU and spamming
-// logs. Allow a few reloads per rolling window, then stop and leave the dead
-// window so the user can read the error / quit.
+// Auto-reload budget for renderer crashes, shared by EVERY window (primary,
+// secondary session, instance) so a crash loop anywhere is suppressed after
+// the same budget instead of reloading per-window forever. A deterministic
+// startup crash would otherwise loop forever (reload → crash → reload),
+// pinning CPU and spamming logs. Allow a few reloads per rolling window, then
+// stop and leave the dead window so the user can read the error / quit.
 const RENDERER_RELOAD_WINDOW_MS = 60_000
 const RENDERER_RELOAD_MAX = 3
-let rendererReloadTimes = []
+const rendererReloadTimesRef: { current: number[] } = { current: [] }
 // Latched bootstrap failure: when the first-launch install fails, we hold
 // onto the error so subsequent startHermes() calls (e.g. the renderer's
 // ensureGatewayOpen retrying after the WS won't open) return the same error
@@ -1808,7 +1830,7 @@ async function waitForUpdateToFinish() {
     timeoutMs: UPDATE_WAIT_TIMEOUT_MS
   })
 
-  // The detached hand-off script (scripts/desktop-update.ps1) runs hidden;
+  // The detached hand-off script (scripts/desktop-update/windows.ps1) runs hidden;
   // its result file is the ONLY way the user learns a detached update
   // failed. Consume it exactly once, here, right where boot passes the
   // update gate — success gets a log line, failure gets a real dialog
@@ -1817,7 +1839,18 @@ async function waitForUpdateToFinish() {
   try {
     const result = readAndConsumeHandoffResult(HERMES_HOME)
 
-    if (result && result.ok) {
+    if (result && result.ok && result.manual) {
+      // Update landed but the user must act (reopen/reinstall/sandbox). On
+      // machines with no shim browser and no notifier this dialog is the
+      // FIRST time the message is visible — it must not be a log line.
+      rememberLog(`[updates] detached update finished with manual action (branch ${result.branch}): ${result.message}`)
+      dialog.showMessageBox({
+        type: 'warning',
+        title: 'Hermes update',
+        message: 'The update finished, but needs one more step',
+        detail: result.message
+      })
+    } else if (result && result.ok) {
       rememberLog(`[updates] detached update finished OK (branch ${result.branch})`)
     } else if (result) {
       rememberLog(`[updates] detached update FAILED (exit ${result.exitCode}): ${result.message}`)
@@ -2863,14 +2896,16 @@ async function applyUpdates(opts = {}) {
     const updater = resolveUpdaterBinary()
 
     if (!updater && !IS_WINDOWS) {
-      // macOS/Linux: never hand off, staged hermes-setup or not — the resolver
-      // returns null there by policy. Unlike Windows (where a venv-shim file
-      // lock forces the quit→hand-off→rebuild dance), there's no mandatory file
-      // locking here, so the desktop can drive the whole update itself:
-      // `hermes update` (backend) + `hermes desktop --build-only` (OS-aware GUI
-      // rebuild), then swap the running .app bundle with the freshly built one
-      // and relaunch.
-      return await applyUpdatesPosixInApp(opts)
+      // macOS/Linux: hand off to the repo-owned posix script — same shape as
+      // Windows (quit → detached orchestrator → `hermes update` → relaunch),
+      // minus the venv-lock gauntlet POSIX doesn't need. The old in-app
+      // updater (applyUpdatesPosixInApp) is gone with everything it dragged
+      // in: the HERMES_DESKTOP_CHILD_PID reaper-exclusion dance (#37532),
+      // the in-window rebuild retry, and the relaunch-outcome matrix — the
+      // script owns swap/relaunch, and the app is DEAD during the update so
+      // there is nothing to reap around. Checkouts that predate the script
+      // get the manual `hermes update` card once; their next update pulls it.
+      return await applyUpdatesPosixHandoff(opts)
     }
 
     if (!updater) {
@@ -3017,7 +3052,7 @@ async function applyUpdates(opts = {}) {
     // The staged binary is frozen (no self-update path) and historically runs
     // months-stale updater logic — pre-#67369 cache resolver, pre-#74782
     // marker adoption — producing failures that were fixed on main long ago
-    // (2026-08-09 incident). scripts/desktop-update.ps1 ships WITH the
+    // (2026-08-09 incident). scripts/desktop-update/windows.ps1 ships WITH the
     // checkout, so each `hermes update` refreshes the code that drives the
     // next one. Checkouts that predate the script fall back to the binary
     // path unchanged.
@@ -3215,56 +3250,6 @@ async function handOffWindowsBootstrapRecovery(reason) {
   return true
 }
 
-// Resolve the hermes CLI to drive an in-app update: prefer the venv shim in
-// the install we're updating, fall back to `hermes` on PATH.
-function resolveHermesCliBinary(updateRoot) {
-  const venvHermes = path.join(updateRoot, 'venv', 'bin', 'hermes')
-
-  if (fileExists(venvHermes)) {
-    return venvHermes
-  }
-
-  return findOnPath('hermes') || null
-}
-
-// Spawn a command and stream each output line to the update progress channel.
-function runStreamedUpdate(command, args, { cwd, env, stage }: any = {}) {
-  return new Promise(resolve => {
-    let child
-
-    try {
-      child = spawn(
-        command,
-        args,
-        hiddenWindowsChildOptions({
-          cwd,
-          env: { ...process.env, ...(env || {}) },
-          stdio: ['ignore', 'pipe', 'pipe']
-        })
-      )
-    } catch (err) {
-      resolve({ code: 1, error: err.message })
-
-      return
-    }
-
-    const emitLines = chunk => {
-      for (const line of chunk.toString().split('\n')) {
-        const trimmed = line.trim()
-
-        if (trimmed) {
-          emitUpdateProgress({ stage, message: trimmed, percent: null })
-        }
-      }
-    }
-
-    child.stdout.on('data', emitLines)
-    child.stderr.on('data', emitLines)
-    child.once('error', err => resolve({ code: 1, error: err.message }))
-    child.once('exit', code => resolve({ code }))
-  })
-}
-
 // The running app's .app bundle (packaged macOS): execPath is
 // <App>.app/Contents/MacOS/<exe>; climb three levels to the bundle root.
 function runningAppBundle() {
@@ -3367,305 +3352,111 @@ function preflightStateDb(hermesHome, rememberLog) {
   }
 }
 
-function shellQuote(value) {
-  return `'${String(value).replace(/'/g, `'\\''`)}'`
-}
-
-// macOS/Linux in-app update: backend (`hermes update`) + OS-aware GUI rebuild
-// (`hermes desktop --build-only`), then atomically swap the running .app bundle
-// with the freshly built one and relaunch. Degrades to "backend updated,
-// restart to load the new GUI" if the swap can't be performed.
-async function applyUpdatesPosixInApp(opts: any) {
+// macOS/Linux update hand-off: spawn the repo-owned posix orchestrator
+// (scripts/desktop-update/posix.sh) detached and QUIT. The script waits us
+// out, runs `hermes update`, swaps/relaunches the app bundle, and writes
+// .hermes-update-result.json for the relaunched Desktop to surface. It shows
+// its own tiny shim window (or nothing, headless) — this process only needs
+// to leave. Checkouts that predate the script get the manual card once.
+async function applyUpdatesPosixHandoff(opts: any) {
   const updateRoot = resolveUpdateRoot()
-  const hermes = resolveHermesCliBinary(updateRoot)
+  const handoff = resolvePosixScriptHandoff(updateRoot)
 
-  if (!hermes) {
+  if (!handoff) {
     emitUpdateProgress({ stage: 'manual', message: 'hermes update', percent: null })
 
     return { ok: true, manual: true, command: 'hermes update', hermesRoot: updateRoot }
   }
 
+  const handoffConflict = updateHandoffConflict(HERMES_HOME)
+
+  if (handoffConflict) {
+    // Same hazard as the Windows path (#75778): a live foreign updater
+    // already owns the marker — refuse rather than double-mutate the tree.
+    rememberLog(`[updates] refusing posix hand-off: ${handoffConflict.message}`)
+    emitUpdateProgress({ stage: 'error', message: handoffConflict.message, percent: null })
+
+    return { ok: false, error: 'update-already-running', message: handoffConflict.message }
+  }
+
   // ── Pre-flight state.db integrity guard (#68474) ──
   preflightStateDb(HERMES_HOME, rememberLog)
 
-  // Put the Hermes-managed Node and the venv on PATH so `hermes desktop`'s
-  // npm build can find them on a machine with no system Node. Windows portable
-  // Node lives directly under %LOCALAPPDATA%\\hermes\\node, not node\\bin.
-  // PYTHONUNBUFFERED: `hermes update` writes to a pipe here, so CPython
-  // block-buffers stdout and long quiet steps (the pre-update backup can zip
-  // multi-GB archives for minutes) stream nothing to the progress UI — users
-  // read the silence as a hang and cancel a healthy update.
-  const env: Record<string, string> = {
-    HERMES_HOME,
-    PYTHONUNBUFFERED: '1',
-    PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
-  }
-
-  // `hermes update` reaps stale `hermes serve` backends (a code update
-  // leaves the running process serving old Python against the freshly-updated
-  // JS bundle). But OUR backend is one of those processes, and killing it
-  // mid-update produces the boot→kill→crash loop in #37532 — the desktop
-  // already restarts its own backend via the rebuild+relaunch below, so the
-  // reap must spare it. Hand the live backend's PID to the update process;
-  // _kill_stale_dashboard_processes reads HERMES_DESKTOP_CHILD_PID and excludes
-  // it while still reaping any genuinely-orphaned backends. (#37532)
-  // Exclude every desktop-managed backend (primary + all pool profiles) from
-  // the update reaper. _kill_stale_dashboard_processes accepts a comma-separated
-  // list (a single int still parses for back-compat).
-  const desktopChildPids = []
-  const hermesProcess = backendConnectionState.getProcess()
-
-  if (hermesProcess && Number.isInteger(hermesProcess.pid)) {
-    desktopChildPids.push(hermesProcess.pid)
-  }
-
-  for (const entry of backendPool.values()) {
-    if (entry.process && Number.isInteger(entry.process.pid)) {
-      desktopChildPids.push(entry.process.pid)
-    }
-  }
-
-  if (desktopChildPids.length) {
-    env.HERMES_DESKTOP_CHILD_PID = desktopChildPids.join(',')
-  }
-
-  // Branch-pin so a non-main checkout doesn't get switched to main (and self-heal
-  // to main when the pinned branch no longer exists on origin).
-  let branchArgs = []
+  // Branch-pin so a non-main checkout doesn't get switched to main (and
+  // self-heal to main when the pinned branch no longer exists on origin).
+  let branch = 'main'
 
   try {
     const head = await runGit(['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: updateRoot })
     const current = (head.stdout || '').trim()
 
     if (head.code === 0 && current && current !== 'HEAD') {
-      branchArgs = ['--branch', await resolveHealedBranch(updateRoot, current)]
+      branch = await resolveHealedBranch(updateRoot, current)
     }
   } catch {
     // best effort
   }
 
-  emitUpdateProgress({ stage: 'update', message: 'Updating Hermes (git + dependencies)…', percent: 10 })
+  const args = [...handoff.args, '--install-root', updateRoot, '--branch', branch, '--desktop-pid', String(process.pid)]
 
-  const updated = (await runStreamedUpdate(hermes, ['update', '--yes', ...branchArgs], {
-    cwd: updateRoot,
-    env,
-    stage: 'update'
-  })) as any
+  // Relaunch target: the running .app bundle on mac (script swaps the
+  // rebuilt bundle over it), the running binary elsewhere. The script's gate
+  // (an exact port of update-relaunch.ts's decideRelaunchOutcome) relaunches
+  // only a binary the rebuild replaced with a launchable sandbox helper —
+  // replaying the original launch context (filtered args, cwd, sandbox
+  // opt-out) so a deep-link or --no-sandbox launch survives the update.
+  const targetApp = IS_MAC ? runningAppBundle() : process.execPath
 
-  if (updated.code !== 0) {
-    emitUpdateProgress({ stage: 'error', message: 'hermes update failed.', error: updated.error || 'update-failed' })
-
-    return { ok: false, error: 'hermes update failed' }
+  if (targetApp) {
+    args.push('--relaunch-target', targetApp)
   }
 
-  emitUpdateProgress({ stage: 'rebuild', message: 'Rebuilding the desktop app…', percent: 60 })
+  const relaunchArgs = collectRelaunchArgs(process.argv.slice(1))
 
-  // Retry-once: a first rebuild can fail on a still-settling tree or a
-  // self-healed (network-blocked) Electron download; a second run builds clean
-  // off the healed dist so we reach the swap+relaunch below instead of bailing.
-  const rebuilt = await runRebuildWithRetry(attempt => {
-    if (attempt > 0) {
-      emitUpdateProgress({ stage: 'rebuild', message: 'Retrying the desktop rebuild…', percent: 60 })
+  if (!IS_MAC) {
+    args.push('--relaunch-cwd', process.cwd())
+
+    if (sandboxFallbackFromEnv(process.env, relaunchArgs)) {
+      args.push('--sandbox-fallback')
     }
 
-    return runStreamedUpdate(hermes, ['desktop', '--build-only'], { cwd: updateRoot, env, stage: 'rebuild' })
+    if (relaunchArgs.length) {
+      args.push('--', ...relaunchArgs)
+    }
+  }
+
+  const child = spawnUpdaterProcess(handoff.command, args, {
+    cwd: HERMES_HOME,
+    env: {
+      ...process.env,
+      HERMES_HOME,
+      PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
+    },
+    detached: true,
+    stdio: 'ignore'
   })
 
-  if (rebuilt.code !== 0) {
-    emitUpdateProgress({
-      stage: 'error',
-      message: 'Backend updated, but the desktop rebuild failed. Restart Hermes to retry.',
-      error: rebuilt.error || 'rebuild-failed'
-    })
-
-    return { ok: false, backendUpdated: true, error: 'desktop rebuild failed' }
+  // Bridge marker (same contract as the Windows hand-off): cover the gap
+  // until the script claims the marker with its own pid as step 0. If the
+  // script never starts, the dead pid reads as stale and self-deletes.
+  if (Number.isInteger(child.pid)) {
+    writeUpdateMarker(HERMES_HOME, child.pid)
   }
 
-  // Linux in-app update terminal state (#45205). `hermes desktop --build-only`
-  // rebuilds the unpacked app in place under apps/desktop/release/<plat>-unpacked.
-  // We can only HONESTLY relaunch into the new GUI when the *running* binary IS
-  // that rebuilt one — i.e. execPath lives under release/<plat>-unpacked. The
-  // outcome is decided by three signals (see update-relaunch.ts):
-  //
-  //   underUnpacked + sandboxOk  → 'relaunch': detached watcher re-execs us in
-  //       place (mirrors the macOS handoff). Without it the update succeeds but
-  //       the app never restarts and the overlay hangs on "applying" forever.
-  //   !underUnpacked             → 'guiSkew': the running shell is an AppImage/
-  //       .deb/.rpm/dev/unresolved binary we did NOT replace. Claiming "loads
-  //       next launch" is a lie (GUI/backend skew, #37541) — surface an
-  //       explicit closeable terminal state telling the user the GUI package
-  //       was NOT changed and must be updated/reinstalled.
-  //   underUnpacked + !sandboxOk → 'manual': we'd be relaunching the rebuilt
-  //       binary, but a fresh rebuild can leave chrome-sandbox without
-  //       root:root + setuid (mode 4755) and Electron then refuses to launch
-  //       ("quit and never came back"). DO NOT quit into a dead app — keep the
-  //       working window and surface the closeable manual-restart state.
-  if (!IS_MAC) {
-    const unpackedDir = resolveUnpackedRelease(process.execPath, updateRoot, process.platform)
-    const underUnpacked = unpackedDir !== null
-
-    const preflight = underUnpacked
-      ? sandboxPreflight(unpackedDir, p => fs.statSync(p))
-      : { ok: false, reason: 'not-under-unpacked', path: null }
-
-    const sandboxFallback = sandboxFallbackFromEnv(process.env, process.argv.slice(1))
-    const sandboxOk = preflight.ok || sandboxFallback
-
-    if (underUnpacked && !preflight.ok) {
-      rememberLog(
-        `[updates] sandbox preflight: not launchable (${preflight.reason}) at ${preflight.path}; ` +
-          `fallback=${sandboxFallback ? 'env/--no-sandbox' : 'none'}`
-      )
-    }
-
-    const outcome = decideRelaunchOutcome({ underUnpacked, sandboxOk })
-
-    if (outcome === 'relaunch') {
-      emitUpdateProgress({ stage: 'restart', message: 'Restarting Hermes…', percent: 100 })
-      // Preserve launch context across the re-exec: replay the original args
-      // (filtered of Electron internals) and the env/cwd that define which
-      // backend/profile/root this instance talks to. Without this the
-      // relaunched instance comes up with default context instead of the user's.
-      const relaunchArgs = collectRelaunchArgs(process.argv.slice(1))
-      const relaunchEnv = collectRelaunchEnv(process.env)
-
-      const relaunchScript = buildRelaunchScript({
-        pid: process.pid,
-        execPath: process.execPath,
-        args: relaunchArgs,
-        env: relaunchEnv,
-        cwd: process.cwd()
-      })
-
-      const scriptPath = path.join(app.getPath('temp'), `hermes-desktop-update-${Date.now()}.sh`)
-
-      try {
-        fs.writeFileSync(scriptPath, relaunchScript, { mode: 0o755 })
-        const child = spawn('/bin/bash', [scriptPath], { detached: true, stdio: 'ignore' })
-        child.unref()
-        rememberLog(
-          `[updates] launched linux relaunch: ${scriptPath} -> ${process.execPath} ` +
-            `(args=${relaunchArgs.length}, env=${Object.keys(relaunchEnv).length})`
-        )
-        isQuittingForHandoff = true
-        setTimeout(() => app.quit(), UPDATE_HANDOFF_DWELL_MS)
-
-        return { ok: true, handedOff: true }
-      } catch (err) {
-        rememberLog(`[updates] linux relaunch failed: ${err.message}; falling back to manual restart`)
-
-        return {
-          ok: true,
-          backendUpdated: true,
-          guiUpdated: false,
-          manualRestart: true,
-          message: 'Backend updated. Quit and reopen Hermes to load the new version.'
-        }
-      }
-    }
-
-    if (outcome === 'guiSkew') {
-      emitUpdateProgress({
-        stage: 'guiSkew',
-        message:
-          'Backend updated, but the desktop app package was not changed. ' +
-          'Update or reinstall the Hermes desktop app to match.',
-        percent: 100
-      })
-      rememberLog(
-        `[updates] gui/backend skew: execPath ${process.execPath} not under release/*-unpacked; ` +
-          'backend updated, GUI package unchanged (AppImage/.deb/.rpm/dev/unresolved)'
-      )
-
-      return { ok: true, backendUpdated: true, guiUpdated: false, guiSkew: true }
-    }
-
-    // outcome === 'manual': we're the rebuilt binary, but its sandbox helper is
-    // not launchable and no fallback applies. Keep this working window alive.
-    rememberLog(
-      `[updates] sandbox not launchable (${preflight.reason}); skipping auto-relaunch, ` +
-        'returning manual-restart so the user keeps a working window'
-    )
-
-    return {
-      ok: true,
-      backendUpdated: true,
-      guiUpdated: false,
-      manualRestart: true,
-      sandboxBlocked: true,
-      message:
-        'Backend updated. The rebuilt app can’t relaunch automatically ' +
-        '(sandbox helper needs root). Quit and reopen Hermes to finish.'
-    }
-  }
-
-  const rebuiltApp = [
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app'),
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
-  ].find(directoryExists)
-
-  const targetApp = runningAppBundle()
-
-  // No bundle to swap (dev run, Linux AppImage, or unresolved paths): the
-  // backend is updated; the next launch picks up the rebuilt GUI.
-  if (!rebuiltApp || !targetApp) {
-    emitUpdateProgress({
-      stage: 'done',
-      message: 'Backend updated. Restart Hermes to load the new version.',
-      percent: 100
-    })
-
-    return { ok: true, backendUpdated: true, rebuiltApp: rebuiltApp || null }
-  }
-
-  emitUpdateProgress({ stage: 'restart', message: 'Installing the updated app and restarting…', percent: 95 })
-
-  // Detached swapper: wait for THIS process to exit (so the bundle is free),
-  // ditto the rebuilt app over the running one, clear quarantine, relaunch.
-  const swapScript = `#!/bin/bash
-set -u
-APP_PID=${process.pid}
-SRC=${shellQuote(rebuiltApp)}
-DST=${shellQuote(targetApp)}
-for _ in $(seq 1 240); do
-  kill -0 "$APP_PID" 2>/dev/null || break
-  sleep 0.5
-done
-if [ "$SRC" != "$DST" ]; then
-  if /usr/bin/ditto "$SRC" "$DST.hermes-update-new"; then
-    rm -rf "$DST.hermes-update-old" 2>/dev/null || true
-    mv "$DST" "$DST.hermes-update-old" 2>/dev/null || rm -rf "$DST"
-    mv "$DST.hermes-update-new" "$DST"
-    rm -rf "$DST.hermes-update-old" 2>/dev/null || true
-  fi
-fi
-/usr/bin/xattr -dr com.apple.quarantine "$DST" 2>/dev/null || true
-/usr/bin/open "$DST"
-`
-
-  const scriptPath = path.join(app.getPath('temp'), `hermes-desktop-update-${Date.now()}.sh`)
-
-  try {
-    fs.writeFileSync(scriptPath, swapScript, { mode: 0o755 })
-  } catch (err) {
-    emitUpdateProgress({
-      stage: 'done',
-      message: 'Backend + app updated. Restart Hermes to load the new version.',
-      percent: 100
-    })
-    rememberLog(`[updates] could not write swap script: ${err.message}; rebuilt app at ${rebuiltApp}`)
-
-    return { ok: true, backendUpdated: true, rebuiltApp }
-  }
-
-  const child = spawn('/bin/bash', [scriptPath], { detached: true, stdio: 'ignore' })
-  child.unref()
-  rememberLog(`[updates] launched mac swap+relaunch: ${scriptPath} (${rebuiltApp} -> ${targetApp})`)
+  rememberLog(`[updates] launched posix hand-off: ${handoff.scriptPath} (branch ${branch}); quitting to hand off`)
+  emitUpdateProgress({
+    stage: 'restart',
+    message:
+      'Updating Hermes — this window will close. Don’t reopen Hermes yourself; it restarts automatically when the update finishes.',
+    percent: 100
+  })
 
   isQuittingForHandoff = true
-  setTimeout(() => app.quit(), 600)
+  setTimeout(() => {
+    app.quit()
+  }, UPDATE_HANDOFF_DWELL_MS)
 
-  return { ok: true, handedOff: true, rebuiltApp, targetApp }
+  return { ok: true, handedOff: true, updater: handoff.scriptPath }
 }
 
 function readJson(filePath) {
@@ -6205,6 +5996,10 @@ function openOauthLoginWindow(baseUrl, { silent = false } = {}) {
     win.webContents.on('did-navigate', () => void checkCookie())
     win.webContents.on('did-redirect-navigation', () => void checkCookie())
     win.webContents.on('did-frame-navigate', () => void checkCookie())
+    // Log-only lifecycle diagnostics: a crashed sign-in renderer is invisible
+    // to the window's promise path (it never settles), so without this the
+    // failure leaves no trace in desktop.log (#81290 follow-up).
+    installWindowRendererLifecycle(win, { kind: 'oauth', callbacks: { log: rememberLog } })
     pollTimer = setInterval(() => void checkCookie(), 750)
 
     // Silent-mode reveal fallback: if the cascade hasn't settled shortly, the
@@ -6698,6 +6493,11 @@ function openPortalLoginWindow() {
     win.webContents.on('did-navigate', () => void checkCookie())
     win.webContents.on('did-redirect-navigation', () => void checkCookie())
     win.webContents.on('did-frame-navigate', () => void checkCookie())
+    // Log-only lifecycle diagnostics, same rationale as the OAuth window:
+    // a crashed portal sign-in renderer never settles the promise, so the
+    // failure would otherwise leave no trace in desktop.log (#81290
+    // follow-up).
+    installWindowRendererLifecycle(win, { kind: 'portal', callbacks: { log: rememberLog } })
     pollTimer = setInterval(() => void checkCookie(), 750)
 
     win.on('closed', () => {
@@ -6861,8 +6661,8 @@ async function cloudAgentSilentSignIn(dashboardUrl) {
   return { baseUrl, connected: await hasOauthSessionCookie(baseUrl) }
 }
 
-function encryptDesktopSecret(value) {
-  return encryptDesktopSecretStrict(value, safeStorage)
+function encryptDesktopSecret(value, options = {}) {
+  return encryptDesktopSecretStrict(value, safeStorage, options)
 }
 
 function decryptDesktopSecret(secret) {
@@ -7073,6 +6873,23 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
   const remoteUrl = envOverride ? String(process.env.HERMES_DESKTOP_REMOTE_URL || '') : String(block.url || '')
   const mode = envOverride ? 'remote' : savedMode === 'ssh' ? 'ssh' : modeIsRemoteLike(savedMode) ? savedMode : 'local'
 
+  // Whether the OS keyring (safeStorage) can encrypt the saved token. When
+  // false the renderer knows to offer the plain-text opt-in in Settings →
+  // Gateway. safeStorage.isEncryptionAvailable can throw on some platforms, so
+  // treat any failure as "not available".
+  let secureTokenStorage = false
+
+  try {
+    secureTokenStorage = Boolean(safeStorage.isEncryptionAvailable())
+  } catch {
+    secureTokenStorage = false
+  }
+
+  // Whether the currently saved token is stored in plain text (the keyring-less
+  // opt-in path). The env override supplies its token from the environment, not
+  // the saved block, so it never reports as plain text here.
+  const remoteTokenPlainText = !envOverride && block.token?.encoding === 'plain'
+
   let remoteOauthConnected = false
 
   if (authMode === 'oauth' && remoteUrl) {
@@ -7101,6 +6918,11 @@ async function sanitizeDesktopConnectionConfig(config = readDesktopConnectionCon
     cloudOrg: mode === 'cloud' ? String(block.org || '') : '',
     remoteTokenPreview: tokenPreview(remoteToken),
     remoteTokenSet: Boolean(remoteToken),
+    // Whether the OS keyring can encrypt a token; drives the plain-text opt-in
+    // affordance in Settings → Gateway on keyring-less Linux.
+    secureTokenStorage,
+    // Whether the saved token is currently persisted in plain text.
+    remoteTokenPlainText,
     sshHost: (ssh || savedSsh)?.host || '',
     sshUser: (ssh || savedSsh)?.user || '',
     sshPort: (ssh || savedSsh)?.port || null,
@@ -7169,11 +6991,18 @@ function coerceDesktopConnectionConfig(input: any = {}, existing = readDesktopCo
   const cloudOrg = mode === 'cloud' ? String(input.cloudOrg ?? existingBlock.org ?? '').trim() : ''
   const incomingToken = typeof input.remoteToken === 'string' ? input.remoteToken.trim() : ''
 
-  const nextToken = incomingToken
-    ? persistToken
-      ? encryptDesktopSecret(incomingToken)
-      : { encoding: 'plain', value: incomingToken }
-    : existingBlock.token
+  // Persist decision lives in hardening.resolvePersistedRemoteToken so the
+  // IPC-propagation seam (allowPlainTextToken → encryptDesktopSecret opt-in) is
+  // covered by a focused regression test. Pass allowPlainText through RAW — the
+  // helper coerces with `=== true`, so a truthy-non-true value never enables
+  // plain-text storage, and that strictness is asserted in exactly one place.
+  const nextToken = resolvePersistedRemoteToken({
+    incomingToken,
+    persistToken,
+    existingToken: existingBlock.token,
+    allowPlainText: input.allowPlainTextToken,
+    encryptSecret: encryptDesktopSecret
+  })
 
   if (mode === 'ssh') {
     const sshBlock = buildSshBlock(input, savedProfileSsh(existing, key) || rawExistingBlock)
@@ -8070,6 +7899,14 @@ async function waitForBackendExit(child, timeoutMs = 5000) {
       try {
         if (IS_WINDOWS && Number.isInteger(child.pid)) {
           forceKillProcessTree(child.pid)
+        } else if (Number.isInteger(child.pid)) {
+          // POSIX: SIGKILL the whole group (pgid==pid, start_new_session) so
+          // MCP grandchildren die with the backend. Fall back to the child.
+          try {
+            process.kill(-child.pid, 'SIGKILL')
+          } catch {
+            child.kill('SIGKILL')
+          }
         } else {
           child.kill('SIGKILL')
         }
@@ -8297,6 +8134,11 @@ async function spawnPoolBackend(profile, entry) {
         // Marks this dashboard backend as desktop-spawned so it runs the cron
         // scheduler tick loop (the gateway isn't running under the app).
         HERMES_DESKTOP: '1',
+        // Our PID so the backend's parent-death watchdog self-exits if we die
+        // uncleanly (crash / SIGKILL / update handoff) instead of leaking a
+        // serving backend + its MCP child subtree. See web_server.py
+        // _start_parent_death_watchdog.
+        HERMES_PARENT_PID: String(process.pid),
         HERMES_WEB_DIST: webDist,
         ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
       },
@@ -8590,6 +8432,11 @@ async function startHermes() {
           // Marks this dashboard backend as desktop-spawned so it runs the cron
           // scheduler tick loop (the gateway isn't running under the app).
           HERMES_DESKTOP: '1',
+          // Our PID so the backend's parent-death watchdog self-exits if we die
+          // uncleanly (crash / SIGKILL / update handoff) instead of leaking a
+          // serving backend + its MCP child subtree. See web_server.py
+          // _start_parent_death_watchdog.
+          HERMES_PARENT_PID: String(process.pid),
           HERMES_WEB_DIST: webDist,
           ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
         },
@@ -8897,6 +8744,24 @@ function spawnSecondaryWindow({ sessionId, watch }: { sessionId?: string; watch?
 
   streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
+  attachRendererConsoleCapture(win, 'session-window', rememberLog)
+
+  // Renderer lifecycle diagnostics + recovery (#81290): a dead session-window
+  // renderer used to log nothing and stay black; now it logs with its window
+  // kind and reloads under the shared crash-loop budget, exactly like the
+  // primary window, without touching any other window.
+  installWindowRendererLifecycle(win, {
+    kind: 'secondary',
+    callbacks: {
+      log: rememberLog,
+      reload: () => {
+        win.webContents.reload()
+      }
+    },
+    reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
+    reloadMax: RENDERER_RELOAD_MAX,
+    recentReloadTimesRef: rendererReloadTimesRef
+  })
 
   loadWindowUrl(
     win,
@@ -8978,10 +8843,27 @@ function createInstanceWindow() {
   streamThrottle.register(win)
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('chat'))
 
+  // Renderer lifecycle diagnostics + recovery (#81290), same policy as the
+  // primary and session windows: a crashed instance renderer logs with its
+  // window kind and reloads under the shared crash-loop budget.
+  installWindowRendererLifecycle(win, {
+    kind: 'instance',
+    callbacks: {
+      log: rememberLog,
+      reload: () => {
+        win.webContents.reload()
+      }
+    },
+    reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
+    reloadMax: RENDERER_RELOAD_MAX,
+    recentReloadTimesRef: rendererReloadTimesRef
+  })
+
   win.on('closed', () => {
     instanceWindows.delete(win)
   })
 
+  attachRendererConsoleCapture(win, 'instance', rememberLog)
   loadWindowUrl(win, DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(), 'Instance window')
 
   return win
@@ -8993,6 +8875,7 @@ const wakeIndicatorController = createWakeIndicatorWindowController({
   devServer: DEV_SERVER,
   isMac: IS_MAC,
   loadWindowUrl,
+  log: rememberLog,
   preloadPath: PRELOAD_PATH,
   rendererIndex: resolveRendererIndex,
   wireWindow: window => wireCommonWindowHandlers(window, zoomWiringForWindowKind('wakeIndicator'))
@@ -9088,6 +8971,10 @@ function spawnPetOverlayWindow(bounds) {
 
   wireWindowReveal(win, { show: () => win.showInactive() })
 
+  // Log-only renderer lifecycle (#81290): a dead overlay must never resurrect
+  // itself over the app, but its loss belongs in desktop.log.
+  installWindowRendererLifecycle(win, { kind: 'overlay', callbacks: { log: rememberLog } })
+
   win.on('closed', () => {
     if (petOverlayWindow === win) {
       petOverlayWindow = null
@@ -9101,6 +8988,7 @@ function spawnPetOverlayWindow(bounds) {
     }
   })
 
+  attachRendererConsoleCapture(win, 'pet-overlay', rememberLog)
   loadWindowUrl(win, petOverlayUrl(), 'Pet overlay')
 
   return win
@@ -9377,6 +9265,7 @@ function spawnHudWindow(sessionId, profile) {
     ...hudBounds(),
     minWidth: 380,
     minHeight: 160,
+    title: HUD_WINDOW_TITLE,
     frame: false,
     transparent: true,
     // NOT resizable. A transparent frameless window on Windows keeps a
@@ -9463,6 +9352,10 @@ function spawnHudWindow(sessionId, profile) {
     broadcastHudState(false)
   })
 
+  attachRendererConsoleCapture(win, 'hud', rememberLog)
+  // Log-only lifecycle (#81290): the HUD is a compact auxiliary surface the
+  // user can re-toggle; a dead renderer should be diagnosable, not resurrected.
+  installWindowRendererLifecycle(win, { kind: 'hud', callbacks: { log: rememberLog } })
   loadWindowUrl(win, hudUrl(sessionId, profile), 'HUD')
 
   return win
@@ -9645,6 +9538,10 @@ function spawnQuickEntryWindow() {
   // its own OS window and a zoomed composer would overflow it.
   wireCommonWindowHandlers(win, zoomWiringForWindowKind('quickEntry'))
 
+  // Log-only renderer lifecycle (#81290): a dead quick-entry window must never
+  // resurrect itself over the app, but its loss belongs in desktop.log.
+  installWindowRendererLifecycle(win, { kind: 'quick', callbacks: { log: rememberLog } })
+
   // Hide on blur. The window must never hold the user's focus captive — losing
   // focus is the cheapest, least surprising dismiss (matches Spotlight).
   win.on('blur', () => {
@@ -9668,6 +9565,7 @@ function spawnQuickEntryWindow() {
     }
   })
 
+  attachRendererConsoleCapture(win, 'quick-entry', rememberLog)
   loadWindowUrl(win, quickEntryUrl(), 'Quick entry')
 
   return win
@@ -9882,89 +9780,67 @@ function createWindow() {
   streamThrottle.register(mainWindow)
   wireCommonWindowHandlers(mainWindow, zoomWiringForWindowKind('chat'))
 
-  mainWindow.webContents.on('render-process-gone', (_event, details) => {
-    rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)
-
-    if (details?.reason === 'crashed' || details?.reason === 'oom') {
-      const now = Date.now()
-      rendererReloadTimes = rendererReloadTimes.filter(t => now - t < RENDERER_RELOAD_WINDOW_MS)
-
-      if (rendererReloadTimes.length >= RENDERER_RELOAD_MAX) {
-        rememberLog(
-          `[renderer] suppressing reload: ${rendererReloadTimes.length} crashes within ${RENDERER_RELOAD_WINDOW_MS}ms (likely a crash loop)`
-        )
-
+  // Per-window renderer lifecycle diagnostics + recovery (#81290). The reload
+  // policy (crashed/oom → bounded reload via the shared rolling budget, then
+  // the #38216 Windows sandbox relaunch check on suppression) is the same
+  // policy this window used before it moved into the shared helper, so a
+  // crashed peer renderer now logs and recovers exactly like the primary one.
+  installWindowRendererLifecycle(mainWindow, {
+    kind: 'main',
+    callbacks: {
+      log: rememberLog,
+      reload: () => {
+        mainWindow.webContents.reload()
+      },
+      onCrashLoopSuppressed: details => {
         // #38216 renderer flavor (same recovery as #56726, credit @Sahil-SS9):
         // a deterministic Windows renderer crash loop with the sandbox
         // breakpoint signature gets one --no-sandbox relaunch instead of a
         // dead window. Gated on the exit code so unrelated crash loops don't
         // silently drop the sandbox.
         if (
-          shouldRelaunchForRendererSandboxCrashLoop({
+          !shouldRelaunchForRendererSandboxCrashLoop({
             reason: details?.reason,
             exitCode: details?.exitCode,
             alreadyNoSandbox: windowsSandboxFallbackActive || alreadyHasNoSandbox(process.argv, process.env),
             relaunchAttempted: windowsNoSandboxRelaunchAttempted
           })
         ) {
-          windowsNoSandboxRelaunchAttempted = true
-          windowsSandboxFallbackActive = true
-          windowsSandboxFallbackSticky = true
-          windowsSandboxFallbackReason = 'renderer-crash-loop'
-
-          try {
-            writeSandboxMarker(app.getPath('userData'), fallbackMarker('renderer-crash-loop', app.getVersion()))
-          } catch {
-            void 0
-          }
-
-          rememberLog('[renderer] Windows sandbox crash loop detected; relaunching once with --no-sandbox (#38216)')
-
-          try {
-            app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
-            app.exit(0)
-          } catch (err) {
-            rememberLog(`[renderer] --no-sandbox relaunch failed: ${err?.message || err}`)
-          }
-        }
-
-        return
-      }
-
-      rendererReloadTimes.push(now)
-      setImmediate(() => {
-        if (!mainWindow || mainWindow.isDestroyed()) {
           return
         }
 
-        try {
-          mainWindow.webContents.reload()
-        } catch (err) {
-          rememberLog(`[renderer] reload after crash failed: ${err?.message || err}`)
-        }
-      })
-    }
-  })
+        windowsNoSandboxRelaunchAttempted = true
+        windowsSandboxFallbackActive = true
+        windowsSandboxFallbackSticky = true
+        windowsSandboxFallbackReason = 'renderer-crash-loop'
 
-  mainWindow.webContents.on('unresponsive', () => rememberLog('[renderer] webContents became unresponsive'))
+        try {
+          writeSandboxMarker(app.getPath('userData'), fallbackMarker('renderer-crash-loop', app.getVersion()))
+        } catch {
+          void 0
+        }
+
+        rememberLog('[renderer] Windows sandbox crash loop detected; relaunching once with --no-sandbox (#38216)')
+
+        try {
+          app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
+          app.exit(0)
+        } catch (err) {
+          rememberLog(`[renderer] --no-sandbox relaunch failed: ${err?.message || err}`)
+        }
+      }
+    },
+    reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
+    reloadMax: RENDERER_RELOAD_MAX,
+    recentReloadTimesRef: rendererReloadTimesRef
+  })
 
   // Electron always passes the event first. The canonical (Electron 36+) shape
   // is (event, messageDetails); the deprecated positional shape is
-  // (event, level, message, line, sourceId). Handle both. `level` is numeric
-  // (0..3), where 3 === error.
-  mainWindow.webContents.on('console-message', (_event, detailsOrLevel, message, line, sourceId) => {
-    const details = detailsOrLevel && typeof detailsOrLevel === 'object' ? detailsOrLevel : null
-    const level = details ? details.level : detailsOrLevel
-
-    if (level !== 3) {
-      return
-    }
-
-    const text = details ? details.message : message
-    const src = details ? details.sourceUrl : sourceId
-    const lineNo = details ? details.lineNumber : line
-    rememberLog(`[renderer console] ${text} (${src}:${lineNo})`)
-  })
+  // (event, level, message, line, sourceId). Handled in renderer-log.ts, which
+  // every renderer-content window shares (#79428: crashes in secondary/HUD/
+  // quick-entry windows used to vanish without a trace).
+  attachRendererConsoleCapture(mainWindow, 'main', rememberLog)
 
   loadWindowUrl(mainWindow, DEV_SERVER || pathToFileURL(resolveRendererIndex()).toString(), 'Renderer')
 
@@ -11529,6 +11405,17 @@ ipcMain.handle('hermes:logs:reveal', async () => {
 
 ipcMain.handle('hermes:logs:recent', async () => ({ path: DESKTOP_LOG_PATH, lines: hermesLog.slice(-200) }))
 
+// Renderer error-boundary catches (#79428 defect B): the component stack only
+// exists in renderer memory, so the boundary posts it here and we persist it
+// via the desktop.log pipeline. `on`, not `handle` — the sender may be mid-
+// crash and must not await. Flush immediately: a crashing window can be gone
+// before the debounced flush timer fires.
+ipcMain.on('hermes:logs:renderer-error', (_event, report) => {
+  const { label, boundary, message, componentStack } = report && typeof report === 'object' ? report : {}
+  rememberLog(formatRendererBoundaryReport(label, boundary, message, componentStack))
+  flushDesktopLogBufferSync()
+})
+
 function isExecutableFile(filePath) {
   if (!filePath || !path.isAbsolute(filePath)) {
     return false
@@ -11920,6 +11807,9 @@ ipcMain.handle('hermes:git:review:push', async (_event, repoPath) => reviewPush(
 ipcMain.handle('hermes:git:review:shipInfo', async (_event, repoPath) => reviewShipInfo(repoPath, resolveGhBinary()))
 ipcMain.handle('hermes:git:review:prList', async (_event, repoPath, branches, numbers) =>
   reviewPrList(repoPath, resolveGhBinary(), branches, numbers)
+)
+ipcMain.handle('hermes:git:review:fetchPrComment', async (_event, repoPath, url) =>
+  reviewFetchPrComment(repoPath, resolveGhBinary(), url)
 )
 ipcMain.handle('hermes:git:review:createPr', async (_event, repoPath) =>
   reviewCreatePr(repoPath, resolveGitBinary(), resolveGhBinary())
@@ -12484,6 +12374,15 @@ app.whenReady().then(() => {
   } else if (systemCa.error) {
     rememberLog(`[tls] could not load Windows system CA certificates: ${systemCa.error}`)
   }
+
+  // Keyring-less Linux `--password-store=basic` support. This must run before
+  // createWindow() and anything that could touch safeStorage; the narrow
+  // platform/switch/guard semantics live in the extracted helper.
+  enableBasicPasswordStoreEncryption({
+    platform: process.platform,
+    passwordStoreSwitch: app.commandLine.getSwitchValue('password-store'),
+    safeStorageApi: safeStorage
+  })
 
   if (IS_MAC) {
     Menu.setApplicationMenu(buildApplicationMenu())

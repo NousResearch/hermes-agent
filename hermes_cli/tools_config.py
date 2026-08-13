@@ -271,9 +271,12 @@ def _get_effective_configurable_toolsets():
 def _get_plugin_toolset_keys() -> set:
     """Return the set of toolset keys provided by plugins."""
     try:
-        from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
-        discover_plugins()  # idempotent — ensures plugins are loaded
-        return {ts_key for ts_key, _, _ in get_plugin_toolsets()}
+        from hermes_cli.plugins import get_plugin_toolset_keys_nowait
+        # Non-blocking on the CLI startup path: while background plugin
+        # discovery is still importing modules, this serves last launch's
+        # persisted key set (used only to exclude plugin toolsets from
+        # composite expansion) instead of joining the discovery thread.
+        return get_plugin_toolset_keys_nowait()
     except Exception:
         return set()
 
@@ -619,6 +622,7 @@ TOOL_CATEGORIES = {
         #     underlying backend but has a distinct setup UX.
         #   - "Camofox" — anti-detection local Firefox; short-circuits the
         #     cloud-provider dispatch path via _is_camofox_mode().
+        #   - "Browser Use" — the Browser Use CLI 3.0
         "providers": [
             {
                 "name": "Local Browser",
@@ -654,6 +658,14 @@ TOOL_CATEGORIES = {
                 ],
                 "browser_provider": "camofox",
                 "post_setup": "camofox",
+            },
+            {
+                "name": "Browser Use",
+                "badge": "free · local · cloud",
+                "tag": "New SOTA web harness (CLI 3.0)",
+                "env_vars": [],
+                "browser_backend": "browser-use",
+                "post_setup": "browser_use_cli",
             },
         ],
     },
@@ -1757,6 +1769,29 @@ def _run_post_setup(post_setup_key: str):
             _print_warning(f"    Chromium install failed: {exc}")
             _print_info("    Run manually: npx agent-browser install --with-deps")
 
+    elif post_setup_key == "browser_use_cli":
+        if shutil.which("browser-use"):
+            _print_success("    browser-use CLI found on PATH")
+        else:
+            _print_info("    Installing browser-use CLI (uv tool install browser-use)...")
+            try:
+                from tools.browser_use_cli import install_cli
+
+                ok, message = install_cli()
+            except Exception as exc:  # pragma: no cover — defensive
+                ok, message = False, f"install failed: {exc}"
+            if ok:
+                _print_success(f"    {message}")
+            else:
+                for line in str(message).splitlines():
+                    _print_warning(f"    {line[:200]}")
+                if shutil.which("uvx"):
+                    _print_info("    Falling back to zero-install runs via `uvx browser-use`")
+                else:
+                    _print_info("    Install manually: uv tool install browser-use  (https://docs.astral.sh/uv/)")
+        _print_info("    Local Chrome needs remote debugging: chrome://inspect/#remote-debugging")
+        _print_info("    Cloud browsers: browser-use auth login  (or set BROWSER_USE_API_KEY)")
+
     elif post_setup_key == "camofox":
         camofox_dir = PROJECT_ROOT / "node_modules" / "@askjo" / "camofox-browser"
         _npm_bin = find_node_executable("npm")
@@ -2146,10 +2181,12 @@ def enabled_mcp_server_names(config: dict) -> Set[str]:
         and _parse_enabled_flag(server_cfg.get("enabled", True), default=True)
     }
     try:
-        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from hermes_cli.plugins import (
+            get_plugin_manager,
+            get_portable_mcp_server_names_nowait,
+        )
 
-        discover_plugins()
-        portable = set(get_plugin_manager().get_portable_mcp_servers())
+        portable = get_portable_mcp_server_names_nowait()
         # Native config wins on a name collision (mirrors _load_mcp_config).
         names |= portable - set(mcp_servers)
     except Exception:
@@ -2695,8 +2732,8 @@ def _prompt_choice(question: str, choices: list, default: int = 0) -> int:
 
 # ─── Token Estimation ────────────────────────────────────────────────────────
 
-# Module-level cache so discovery + tokenization runs at most once per process.
-_tool_token_cache: Optional[Dict[str, int]] = None
+# Profile-keyed cache so one process can serve distinct plugin tool catalogs.
+_tool_token_cache: Optional[Dict[tuple[str, int], Dict[str, int]]] = None
 
 
 def _estimate_tool_tokens() -> Dict[str, int]:
@@ -2709,25 +2746,33 @@ def _estimate_tool_tokens() -> Dict[str, int]:
     Returns an empty dict when tiktoken or the registry is unavailable.
     """
     global _tool_token_cache
-    if _tool_token_cache is not None:
-        return _tool_token_cache
+    from hermes_constants import hermes_home_key
+
+    scope = hermes_home_key()
+
+    try:
+        # Trigger full tool discovery (imports all tool modules).
+        import model_tools  # noqa: F401
+        from tools.registry import registry
+        cache_key = (scope, registry._generation)
+    except Exception:
+        logger.debug("Tool registry unavailable; skipping token estimation")
+        cache_key = (scope, -1)
+        _tool_token_cache = _tool_token_cache or {}
+        _tool_token_cache[cache_key] = {}
+        return _tool_token_cache[cache_key]
+
+    if _tool_token_cache is not None and cache_key in _tool_token_cache:
+        return _tool_token_cache[cache_key]
 
     try:
         import tiktoken
         enc = tiktoken.get_encoding("cl100k_base")
     except Exception:
         logger.debug("tiktoken unavailable; skipping tool token estimation")
-        _tool_token_cache = {}
-        return _tool_token_cache
-
-    try:
-        # Trigger full tool discovery (imports all tool modules).
-        import model_tools  # noqa: F401
-        from tools.registry import registry
-    except Exception:
-        logger.debug("Tool registry unavailable; skipping token estimation")
-        _tool_token_cache = {}
-        return _tool_token_cache
+        _tool_token_cache = _tool_token_cache or {}
+        _tool_token_cache[cache_key] = {}
+        return _tool_token_cache[cache_key]
 
     counts: Dict[str, int] = {}
     for name in registry.get_all_tool_names():
@@ -2737,8 +2782,9 @@ def _estimate_tool_tokens() -> Dict[str, int]:
             # {"type": "function", "function": <schema>}
             text = _json.dumps({"type": "function", "function": schema})
             counts[name] = len(enc.encode(text))
-    _tool_token_cache = counts
-    return _tool_token_cache
+    _tool_token_cache = _tool_token_cache or {}
+    _tool_token_cache[cache_key] = counts
+    return counts
 
 
 def _prompt_toolset_checklist(
@@ -3618,6 +3664,9 @@ def _is_provider_active(
                 and cfg_get(config, "stt", "provider") == provider["stt_provider"]
             )
         if "browser_provider" in provider:
+            # Browser Use mode is a driver on top of the provider (it attaches
+            # to the provider's CDP endpoint), so the provider row stays
+            # active alongside the Browser Use row.
             current = cfg_get(config, "browser", "cloud_provider")
             return feature.managed_by_nous and provider["browser_provider"] == current
         if provider.get("web_backend"):
@@ -3632,8 +3681,42 @@ def _is_provider_active(
         current = cfg_get(config, "stt", "provider") or "local"
         return current == provider["stt_provider"]
     if "browser_provider" in provider:
+        # Browser Use mode composes with the provider (driver over the
+        # provider's CDP endpoint) — don't deactivate the provider row.
         current = cfg_get(config, "browser", "cloud_provider")
         return provider["browser_provider"] == current
+    if provider.get("browser_backend"):
+        backend = cfg_get(config, "browser", "backend")
+        if backend is False:
+            backend = "off"  # YAML 1.1: unquoted `off` parses as boolean False
+        if backend == provider["browser_backend"]:
+            return True
+        if backend:
+            return False  # explicit other choice ("off", …) wins
+        if provider["browser_backend"] != "browser-use":
+            return False
+        # Backend unset: Browser Use mode is the default — the row is active
+        # whenever the effective mode resolves on (legacy direct-API cloud
+        # config, or CLI runnable and no Camofox).
+        browser_cfg = config.get("browser") if isinstance(config, dict) else None
+        try:
+            from tools.browser_use_cli import (
+                _find_cli,
+                is_legacy_browser_use_cloud_config,
+            )
+
+            if is_legacy_browser_use_cloud_config(browser_cfg or {}):
+                return True
+            try:
+                from tools.browser_camofox import is_camofox_mode
+
+                if is_camofox_mode():
+                    return False
+            except Exception:
+                pass
+            return _find_cli() is not None
+        except Exception:
+            return False
     if provider.get("web_backend"):
         current = cfg_get(config, "web", "backend")
         return current == provider["web_backend"]
@@ -4079,7 +4162,13 @@ def _write_provider_config(provider: dict, config: dict, *, managed_feature) -> 
         browser_cfg = config.setdefault("browser", {})
         if bp:
             browser_cfg["cloud_provider"] = bp
+        # Browser Use mode (browser.backend) composes with the provider —
+        # switching providers keeps the driver choice intact.
         browser_cfg["use_gateway"] = bool(managed_feature)
+
+    if provider.get("browser_backend"):
+        browser_cfg = config.setdefault("browser", {})
+        browser_cfg["backend"] = provider["browser_backend"]
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
@@ -4223,6 +4312,9 @@ def _configure_provider(
             _print_success("  Browser set to local mode")
         elif bp:
             _print_success(f"  Browser cloud provider set to: {bp}")
+
+    if provider.get("browser_backend"):
+        _print_success("  Browser set to Browser Use (browser_exec via CLI 3.0)")
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
@@ -4736,7 +4828,14 @@ def _reconfigure_provider(
         elif bp:
             browser_cfg["cloud_provider"] = bp
             _print_success(f"  Browser cloud provider set to: {bp}")
+        # Browser Use mode (browser.backend) composes with the provider —
+        # switching providers keeps the driver choice intact.
         browser_cfg["use_gateway"] = bool(managed_feature)
+
+    if provider.get("browser_backend"):
+        browser_cfg = config.setdefault("browser", {})
+        browser_cfg["backend"] = provider["browser_backend"]
+        _print_success("  Browser set to Browser Use (browser_exec via CLI 3.0)")
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):

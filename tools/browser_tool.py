@@ -69,6 +69,7 @@ from hermes_constants import (
     agent_browser_runnable,
     get_hermes_home,
     get_hermes_home_override,
+    hermes_home_key,
 )
 from utils import env_int, is_truthy_value
 from hermes_cli.config import DEFAULT_CONFIG, cfg_get
@@ -165,6 +166,16 @@ from agent.browser_provider import BrowserProvider as CloudBrowserProvider  # no
 from agent.browser_registry import (  # noqa: F401  (test-patchable surface)
     get_provider as _registry_get_browser_provider,
 )
+try:
+    from agent.browser_registry import (
+        registry_generation as _browser_registry_generation,
+    )
+except ImportError:
+    # A few isolated compatibility tests intentionally install a minimal
+    # ``agent.browser_registry`` stub exposing only ``get_provider``. Those
+    # harnesses have no mutable registry, so a constant generation is exact.
+    def _browser_registry_generation(*, scope=None):
+        return (0, 0)
 from plugins.browser.browserbase.provider import (  # noqa: F401  (legacy import surface)
     BrowserbaseBrowserProvider as BrowserbaseProvider,
 )
@@ -182,6 +193,11 @@ try:
     from tools.browser_camofox import is_camofox_mode as _is_camofox_mode
 except ImportError:
     _is_camofox_mode = lambda: False  # noqa: E731
+# Browser Use CLI (optional)
+try:
+    from tools.browser_use_cli import is_browser_use_cli_mode as _is_browser_use_cli_mode
+except ImportError:
+    _is_browser_use_cli_mode = lambda: False  # noqa: E731
 
 logger = logging.getLogger(__name__)
 
@@ -678,6 +694,11 @@ _DEFAULT_PROVIDER_REGISTRY: Dict[str, type] = dict(_PROVIDER_REGISTRY)
 
 _cached_cloud_provider: Optional[CloudBrowserProvider] = None
 _cloud_provider_resolved = False
+_cached_cloud_provider_scope: Optional[str] = None
+_cached_cloud_providers: Dict[
+    tuple[str, tuple[int, int]], Optional[CloudBrowserProvider]
+] = {}
+_cloud_provider_cache_lock = threading.RLock()
 _allow_private_urls_resolved = False
 _cached_allow_private_urls: Optional[bool] = None
 _cached_agent_browser: Optional[str] = None
@@ -733,6 +754,46 @@ def _ensure_browser_plugins_loaded() -> None:
 
 
 def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
+    """Return the provider cached for the active Hermes profile."""
+    global _cached_cloud_provider, _cloud_provider_resolved
+    global _cached_cloud_provider_scope
+
+    scope = hermes_home_key()
+    with _cloud_provider_cache_lock:
+        # Tests and legacy reset paths clear the boolean. Treat that as a full
+        # reset even if a previous scoped resolution remains mirrored here.
+        if not _cloud_provider_resolved:
+            _cached_cloud_provider_scope = None
+            _cached_cloud_providers.clear()
+        while True:
+            before_generation = _browser_registry_generation(scope=scope)
+            cache_key = (scope, before_generation)
+            if cache_key in _cached_cloud_providers:
+                _cached_cloud_provider = _cached_cloud_providers[cache_key]
+                _cloud_provider_resolved = True
+                _cached_cloud_provider_scope = scope
+                return _cached_cloud_provider
+
+            _cached_cloud_provider = None
+            _cloud_provider_resolved = False
+            resolved = _resolve_cloud_provider_uncached()
+            after_generation = _browser_registry_generation(scope=scope)
+            if before_generation != after_generation:
+                # A force reload replaced/unloaded this profile's provider
+                # while resolution was in progress. Discard the stale result
+                # and resolve against the new registry generation.
+                continue
+            if _cloud_provider_resolved:
+                _cached_cloud_provider_scope = scope
+                for stale_key in [
+                    key for key in _cached_cloud_providers if key[0] == scope
+                ]:
+                    _cached_cloud_providers.pop(stale_key, None)
+                _cached_cloud_providers[cache_key] = resolved
+            return resolved
+
+
+def _resolve_cloud_provider_uncached() -> Optional[CloudBrowserProvider]:
     """Return the configured cloud browser provider, or None for local mode.
 
     Reads ``config["browser"]["cloud_provider"]`` once and caches the result
@@ -750,8 +811,6 @@ def _get_cloud_provider() -> Optional[CloudBrowserProvider]:
     ``_is_legacy_provider_registry_overridden``.
     """
     global _cached_cloud_provider, _cloud_provider_resolved
-    if _cloud_provider_resolved:
-        return _cached_cloud_provider
 
     resolved: Optional[CloudBrowserProvider] = None
     try:
@@ -2942,6 +3001,37 @@ def _redact_browser_output(value: Any) -> Any:
 # Browser Tool Functions
 # ============================================================================
 
+def evaluate_url_safety(url: str) -> Optional[dict]:
+    """Run URL safety checks; None if safe, else an error dict"""
+    import urllib.parse
+    from agent.redact import _PREFIX_RE
+
+    _secret = {"success": False, "error": "Blocked: URL contains what appears to be an API key or token. Secrets must not be sent in URLs."}
+    if _PREFIX_RE.search(url) or _PREFIX_RE.search(urllib.parse.unquote(url)):
+        return _secret
+    url = _normalize_url_for_request(url)
+    if _PREFIX_RE.search(url) or _PREFIX_RE.search(urllib.parse.unquote(url)):
+        return _secret
+
+    local = _is_local_backend()
+    sensitive_query_key = _sensitive_query_param_name(url)
+    if sensitive_query_key and not local:
+        return {"success": False, "error": (
+            "Blocked: URL contains a credential-like query parameter "
+            f"({sensitive_query_key}). Cloud browser backends are third-party "
+            "readers; use a local browser/CDP session or remove the sensitive "
+            "query parameter before navigating.")}
+    if _is_always_blocked_url(url):
+        return {"success": False, "error": "Blocked: URL targets a cloud metadata endpoint"}
+    if not local and not _allow_private_urls() and not _is_safe_url(url):
+        return {"success": False, "error": "Blocked: URL targets a private or internal address"}
+    blocked = check_website_access(url)
+    if blocked:
+        return {"success": False, "error": blocked["message"],
+                "blocked_by_policy": {"host": blocked["host"], "rule": blocked["rule"], "source": blocked["source"]}}
+    return None
+
+
 def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     """
     Navigate to a URL in the browser.
@@ -4885,6 +4975,12 @@ def check_browser_requirements() -> bool:
     Returns:
         True if all requirements are met, False otherwise
     """
+    # Browser Use CLI backend — browser_exec replaces the whole browser_*
+    # surface (including browser_cdp/browser_dialog, whose check_fns funnel
+    # through here), so hide these tools from the model.
+    if _is_browser_use_cli_mode():
+        return False
+
     # Camofox backend — only needs the server URL, no agent-browser CLI
     if _is_camofox_mode():
         return True

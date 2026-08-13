@@ -579,6 +579,11 @@ export interface Translations {
       existingToken: (value: string) => string
       savedToken: string
       pasteSessionToken: string
+      plainTextConfirmTitle: string
+      plainTextConfirmDesc: string
+      plainTextConfirmAction: string
+      plainTextStoredTitle: string
+      plainTextStoredDesc: string
       testRemote: string
       saveForRestart: string
       saveAndReconnect: string
@@ -1669,6 +1674,8 @@ export interface Translations {
       renameDesc: string
       untitledPlaceholder: string
       untitledChat: (id: string) => string
+      messageCount: (count: number) => string
+      todoProgress: string
       ageNow: string
       ageDay: string
       ageHour: string
@@ -1744,6 +1751,7 @@ export interface Translations {
     queueEdit: string
     queueSendNext: string
     queueSend: string
+    queueSteer: string
     queueDelete: string
     queueResume: string
     queueResumeTip: string

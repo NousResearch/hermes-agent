@@ -82,9 +82,18 @@ dependencies = [
   # urllib3 2.7.0 fixes GHSA-mf9v-mfxr-j63j (decompression-bomb bypass)
   # and GHSA-qccp-gfcp-xxvc (header leak across origins).
   "urllib3>=2.7.0,<3",
-  # cryptography is pulled in transitively by PyJWT[crypto]; pin it explicitly
-  # so the WeCom/Weixin crypto paths can't drift below the CVE-fixed floor.
-  "cryptography==48.0.1",  # CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf; ==48.0.1 (not 49.x): msal and alibabacloud-tea-openapi cap <49, hindsight-api-slim needs >=48.0.1
+  # PyJWT[crypto] pulls cryptography in transitively. Pin it here as well, so
+  # that the WeCom and Weixin crypto paths cannot fall below the patched
+  # version. 50.0.0 is the floor: it fixes CVE-2026-69247, a Bleichenbacher
+  # oracle in PKCS#7 EnvelopedData, and 49.0.0 fixed GHSA-m2h6-j472-rp4c,
+  # where a wildcard DNS name escapes permittedSubtrees, and
+  # GHSA-jwv3-5hgf-82ww, exponential path-building on duplicate self-signed
+  # intermediates.
+  #
+  # A pin here is not sufficient on its own. alibabacloud-tea-openapi caps
+  # cryptography<49, so [tool.uv] also holds an override. Read that comment
+  # before you move this version.
+  "cryptography==50.0.0",  # CVE-2026-69247, GHSA-m2h6-j472-rp4c, GHSA-jwv3-5hgf-82ww, CVE-2026-39892, CVE-2026-34073, GHSA-537c-gmf6-5ccf
   # Windows has no IANA tzdata shipped with the OS, so Python's ``zoneinfo``
   # (PEP 615) raises ``ZoneInfoNotFoundError`` for every non-UTC timezone
   # out of the box.  ``tzdata`` ships the Olson database as a data package
@@ -173,17 +182,16 @@ daytona = ["daytona==0.155.0"]
 vercel = ["vercel==0.7.2"]
 hindsight = ["hindsight-client==0.6.1"]
 dev = ["debugpy==1.8.20", "pytest==9.1.1", "pytest-asyncio==1.3.0", "mcp==1.28.1", "starlette==1.3.1", "ty==0.0.21", "ruff==0.15.10", "setuptools==83.0.0"]  # starlette: CVE-2026-48710; setuptools: 83 (torch >=2.13 requires setuptools 83)
-messaging = ["python-telegram-bot[webhooks]==22.6", "discord.py[voice]==2.7.1", "aiohttp==3.14.3", "brotlicffi==1.2.0.1", "slack-bolt==1.29.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
+messaging = ["python-telegram-bot[webhooks]==22.8", "discord.py[voice]==2.7.1", "aiohttp==3.14.3", "brotlicffi==1.2.0.1", "slack-bolt==1.30.0", "slack-sdk==3.43.0", "qrcode==7.4.2"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7
 cron = []  # croniter is now a core dependency; this extra kept for back-compat
-slack = ["slack-bolt==1.29.0", "slack-sdk==3.43.0", "aiohttp==3.14.3"]
-matrix = ["mautrix[encryption]==0.21.0", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.3"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7 (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
+slack = ["slack-bolt==1.30.0", "slack-sdk==3.43.0", "aiohttp==3.14.3"]
+matrix = ["mautrix[encryption]==0.21.1", "aiosqlite==0.22.1", "asyncpg==0.31.0", "aiohttp-socks==0.11.0", "aiohttp==3.14.3"]  # aiohttp 3.14.3: prior CVEs + GHSA-cq5v-8q36-5273/GHSA-mfx4-hv73-q22v/GHSA-mq44-7p77-q5h7 (mautrix/aiohttp-socks only cap aiohttp<4 / >=3.10, so pin the patched floor directly)
 # WeCom callback-mode adapter — parses untrusted XML POST bodies from
 # WeCom-controlled callback endpoints, so we use defusedxml (drop-in
 # replacement for stdlib xml.etree.ElementTree) to block billion-laughs
 # and XXE. aiohttp/httpx are already in [messaging]; defusedxml lands
 # here to keep the dependency local to wecom_callback's threat model.
 wecom = ["defusedxml==0.7.1"]
-cli = ["simple-term-menu==1.6.6"]
 tts-premium = ["elevenlabs==1.59.0"]
 voice = [
   # Local STT pulls in wheel-only transitive deps (ctranslate2, onnxruntime).
@@ -269,9 +277,8 @@ vertex = ["google-auth==2.55.1"]
 azure-identity = ["azure-identity==1.25.3"]
 termux = [
   # Baseline Android / Termux path for reliable fresh installs.
-  "python-telegram-bot[webhooks]==22.6",
+  "python-telegram-bot[webhooks]==22.8",
   "hermes-agent[cron]",
-  "hermes-agent[cli]",
   "hermes-agent[mcp]",
   "hermes-agent[honcho]",
   "hermes-agent[acp]",
@@ -340,7 +347,6 @@ all = [
   # and failed on `make`. Lazy-install routes that build to first use,
   # where the user is expected to have a toolchain available.
   "hermes-agent[cron]",
-  "hermes-agent[cli]",
   "hermes-agent[pty]",
   "hermes-agent[mcp]",
   "hermes-agent[homeassistant]",
@@ -367,11 +373,20 @@ override-dependencies = [
   # so, we force-override this to pynacl 1.6. here.
   # remove this when we update discord.py
   "pynacl>=1.6,<1.7",
+  # alibabacloud-tea-openapi caps cryptography<49, and its latest release
+  # still does. Without this override, that cap holds cryptography at 48.0.1
+  # and its three advisories (see the cryptography pin in
+  # [project].dependencies). The package uses cryptography only to sign
+  # requests with RSA and AES, and that API did not break in 49 or 50.
+  # Remove this line when alibabacloud-tea-openapi lifts the cap.
+  "cryptography>=50,<51",
 ]
 exclude-newer = "14 days"
 # h2: temporary exclude-newer exception for the CVE-2026-71554 (GHSA-6hr6-w5qg-qmwg,
 # request-smuggling) fix in 4.4.1, published 2026-08-03. Remove after 2026-08-17.
-exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false }
+# aiohttp, cryptography: same shape — the advisory fixes are newer than the
+# 14-day window, so the resolver cannot see them without an exception.
+exclude-newer-package = { vercel = false, nemo-relay = false, huggingface_hub = false, h2 = false, aiohttp = false, cryptography = false }
 
 [tool.setuptools]
 # Top-level single-file modules (not packages). Without this, uv2nix's
@@ -401,7 +416,7 @@ py-modules = [
 include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "hermes_cli.*", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "cron.*", "acp_adapter", "plugins", "plugins.*", "providers", "providers.*"]
 
 [tool.setuptools.package-data]
-hermes_cli = ["observability/schemas/*.json"]
+hermes_cli = ["observability/schemas/*.json", "data/*.json"]
 # gateway/assets/ ships status_phrases.yaml and the Telegram BotFather
 # screenshot. Without this, sealed venvs (uv2nix) silently lose both —
 # status phrases fall back to the tiny hardcoded set and the Telegram

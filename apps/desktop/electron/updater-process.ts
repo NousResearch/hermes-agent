@@ -27,7 +27,7 @@ export interface UpdateScriptHandoff {
  * updater-side fix only reaches users when a new binary is built, signed and
  * published — which historically lags main by months and strands users on
  * long-fixed bugs (cache resolver #67369, marker self-adopt #74782; the
- * 2026-08-09 incident chain). `scripts/desktop-update.ps1` lives in the repo
+ * 2026-08-09 incident chain). `scripts/desktop-update/windows.ps1` lives in the repo
  * checkout instead: every `hermes update` refreshes the code that drives the
  * NEXT update, and only PowerShell itself is frozen.
  *
@@ -47,7 +47,50 @@ export function resolveUpdateScriptHandoff(
     return null
   }
 
-  const scriptPath = path.join(updateRoot, 'scripts', 'desktop-update.ps1')
+  const exists = deps.fileExists ?? stagedFileExists
+
+  // Current layout first, then the pre-reorg flat path — an updated asar can
+  // meet a checkout from either side of the move (the checkout also ships a
+  // forwarder at the legacy path for the inverse skew).
+  for (const candidate of [
+    path.join(updateRoot, 'scripts', 'desktop-update', 'windows.ps1'),
+    path.join(updateRoot, 'scripts', 'desktop-update.ps1')
+  ]) {
+    if (exists(candidate)) {
+      return {
+        command: 'powershell',
+        args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', candidate],
+        scriptPath: candidate
+      }
+    }
+  }
+
+  return null
+}
+
+/**
+ * Repo-owned POSIX update hand-off (the mac/linux twin of the above).
+ *
+ * Replaces the in-app posix updater: the Desktop spawns the script detached
+ * and QUITS, the script waits it out, runs `hermes update`, swaps/relaunches
+ * the app, and writes .hermes-update-result.json. With the app gone before
+ * the update starts, the HERMES_DESKTOP_CHILD_PID reaper-exclusion dance is
+ * unnecessary — there are no live desktop backends to spare.
+ *
+ * Null when the checkout predates the script (caller surfaces the manual
+ * `hermes update` card — old checkouts pull the script on their next update).
+ */
+export function resolvePosixScriptHandoff(
+  updateRoot: string,
+  deps: ResolveUpdateScriptHandoffDeps = {}
+): UpdateScriptHandoff | null {
+  const isWindows = deps.isWindows ?? process.platform === 'win32'
+
+  if (isWindows) {
+    return null
+  }
+
+  const scriptPath = path.join(updateRoot, 'scripts', 'desktop-update', 'posix.sh')
   const exists = deps.fileExists ?? stagedFileExists
 
   if (!exists(scriptPath)) {
@@ -55,8 +98,8 @@ export function resolveUpdateScriptHandoff(
   }
 
   return {
-    command: 'powershell',
-    args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scriptPath],
+    command: '/bin/bash',
+    args: [scriptPath],
     scriptPath
   }
 }
@@ -92,6 +135,57 @@ export function wrapHandoffForDetachedConsole(
     command: 'cmd.exe',
     args: ['/d', '/s', '/c', 'start', '', '/min', handoff.command, ...handoff.args, ...extraArgs]
   }
+}
+
+/**
+ * Electron/Chromium internal switches that must NOT be replayed on re-exec:
+ * runtime artifacts of THIS launch, not user intent (ported from the deleted
+ * update-relaunch.ts; #45205). `--no-sandbox` is deliberately kept — it is
+ * the user's sandbox opt-out and the signal that makes a relaunch safe when
+ * chrome-sandbox isn't setuid.
+ */
+export const INTERNAL_ARG_PREFIXES = [
+  '--type=',
+  '--user-data-dir=',
+  '--enable-features=',
+  '--disable-features=',
+  '--field-trial-handle=',
+  '--enable-logging',
+  '--log-file=',
+  '--disable-gpu-sandbox',
+  '--lang=',
+  '--inspect',
+  '--remote-debugging-port='
+]
+
+/** Filter Electron internals from process.argv.slice(1) so the relaunched
+ * app replays only user/launcher intent (deep links, app flags). */
+export function collectRelaunchArgs(argv: unknown): string[] {
+  if (!Array.isArray(argv)) {
+    return []
+  }
+
+  return argv.filter((arg): arg is string => {
+    if (typeof arg !== 'string' || arg.length === 0) {
+      return false
+    }
+
+    return !INTERNAL_ARG_PREFIXES.some(prefix =>
+      prefix.endsWith('=') ? arg.startsWith(prefix) : arg === prefix || arg.startsWith(prefix + '=')
+    )
+  })
+}
+
+/** True when the user has opted out of the SUID sandbox — the relaunch is
+ * safe even if chrome-sandbox fails preflight (ported from update-relaunch.ts). */
+export function sandboxFallbackFromEnv(env: Record<string, string | undefined>, launchArgs: string[]): boolean {
+  const disable = String(env?.ELECTRON_DISABLE_SANDBOX || '').trim()
+
+  if (disable === '1' || disable.toLowerCase() === 'true') {
+    return true
+  }
+
+  return Array.isArray(launchArgs) && launchArgs.includes('--no-sandbox')
 }
 
 export interface ResolveStagedUpdaterBinaryDeps {

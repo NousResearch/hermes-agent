@@ -2446,6 +2446,94 @@ def install_linux_gateway_from_setup(force: bool = False, enable_on_startup: boo
     return scope, True
 
 
+def ensure_gateway_service(context: str = "setup") -> bool:
+    """Install and start the gateway service without prompting.
+
+    The zero-decision service path used by ``hermes setup`` (end of wizard)
+    and ``hermes import``: if this host supports a service manager and no
+    gateway service exists yet, install a user-scope service and start it.
+    A gateway with zero configured platforms is a supported degraded mode
+    (it runs the cron scheduler and picks up platforms as tokens appear),
+    so this never needs to gate on messaging being configured.
+
+    Never prompts, never raises — always safe to call from any flow,
+    including non-TTY ones. Returns True when a service is installed and
+    running (or already was) by the time we return.
+
+    Scope choice: always the least-surprising, no-privilege option —
+    user-scope systemd unit on Linux, LaunchAgent on macOS, Scheduled Task
+    on Windows. Users who want a boot-time system service still run
+    ``hermes gateway install --system`` explicitly (that path prompts and
+    requires root; we never self-elevate from an installer).
+    """
+    from hermes_constants import is_container
+
+    if is_container():
+        # Containers use restart policies, not service managers.
+        print_info("Start the gateway to bring your bots online:")
+        print_info("   hermes gateway run          # Run as container main process")
+        print_info("")
+        print_info("For automatic restarts, use a Docker restart policy:")
+        print_info("   docker run --restart unless-stopped ...")
+        return False
+
+    supports_systemd = supports_systemd_services()
+    if not (supports_systemd or is_macos() or is_windows()):
+        print_info("  No supported service manager found on this host.")
+        print_info("  Run the gateway in the foreground with: hermes gateway")
+        return False
+
+    try:
+        if _is_service_running():
+            return True
+
+        if not _is_service_installed():
+            if supports_systemd and has_conflicting_systemd_units():
+                # Both user and system units would fight over bot tokens.
+                # Don't pile a fresh install onto a conflicted state.
+                print_systemd_scope_conflict_warning()
+                return False
+            print_info("  Installing the gateway background service ...")
+            if supports_systemd:
+                systemd_install(force=False, non_interactive=True)
+            elif is_macos():
+                launchd_install(force=False)
+            else:
+                from hermes_cli import gateway_windows
+
+                # Registers the Scheduled Task AND starts it.
+                gateway_windows.install(force=False)
+                print_success("  Gateway service installed and started.")
+                return True
+
+        if supports_systemd:
+            systemd_start()
+        elif is_macos():
+            launchd_start()
+        else:
+            from hermes_cli import gateway_windows
+
+            gateway_windows.start()
+        print_success("  Gateway service running (cron jobs + messaging platforms).")
+        return True
+    except UserSystemdUnavailableError as e:
+        print_warning("  Could not reach user systemd to start the gateway service:")
+        for line in str(e).splitlines():
+            print_info(f"  {line}")
+    except SystemScopeRequiresRootError as e:
+        print_warning(f"  Gateway service needs root for this scope: {e}")
+        _print_system_scope_remediation("start")
+    except SystemExit:
+        # Some install/start paths sys.exit() on hard failures (e.g. temp-HOME
+        # guard). A background-service failure must never abort setup/import.
+        print_warning("  Gateway service install did not complete.")
+        print_info("  You can retry manually: hermes gateway install")
+    except Exception as e:
+        print_warning(f"  Gateway service install failed: {e}")
+        print_info("  You can retry manually: hermes gateway install")
+    return False
+
+
 def get_systemd_linger_status() -> tuple[bool | None, str]:
     """Return systemd linger status for the current user.
 
@@ -4129,6 +4217,28 @@ def generate_launchd_plist() -> str:
     )
     prog_args_xml = "\n        ".join(prog_args)
 
+    # Persist the configured RLIMIT_NOFILE floor into the service definition
+    # itself. launchd starts children with a soft limit of 256 by default;
+    # without this block every plist rewrite (e.g. `hermes gateway start`)
+    # would silently strip a manually-added limit and reintroduce EMFILE
+    # crashes under load. The in-process floor (resource_limits.py) still
+    # applies as a second layer for non-launchd launches.
+    nofile_block = ""
+    try:
+        from hermes_cli.resource_limits import configured_nofile_soft_limit
+
+        nofile_target = configured_nofile_soft_limit()
+    except Exception:
+        nofile_target = None
+    if nofile_target:
+        nofile_block = f"""
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>{nofile_target}</integer>
+    </dict>
+"""
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -4175,7 +4285,7 @@ def generate_launchd_plist() -> str:
 
     <key>ExitTimeOut</key>
     <integer>25</integer>
-
+{nofile_block}
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
     
@@ -4851,25 +4961,44 @@ def _guard_named_profile_under_multiplexer(force: bool = False) -> None:
         # to config.yaml.
         from gateway.config import _env_multiplex_profiles_override
 
+        cfg_path = default_root / "config.yaml"
+        cfg = {}
+        if cfg_path.exists():
+            # Raw read of the DEFAULT root's config (not the active profile
+            # home, so load_config() is the wrong owner here); whole probe is
+            # fail-open via the enclosing except.
+            from hermes_cli.config import read_user_config_raw
+
+            cfg = read_user_config_raw(cfg_path)
+
         env_multiplex = _env_multiplex_profiles_override()
         if env_multiplex is False:
             return  # explicitly forced OFF by the operator env override
         if env_multiplex is True:
             multiplex = True
         else:
-            cfg_path = default_root / "config.yaml"
             if not cfg_path.exists():
                 return
-            # Raw read of the DEFAULT root's config (not the active profile
-            # home, so load_config() is the wrong owner here); whole probe is
-            # fail-open via the enclosing except.
-            from hermes_cli.config import read_user_config_raw
-            cfg = read_user_config_raw(cfg_path)
             multiplex = bool(
                 cfg.get("multiplex_profiles")
                 or (cfg.get("gateway", {}) or {}).get("multiplex_profiles")
             )
         if not multiplex:
+            return
+
+        gateway_cfg = cfg.get("gateway", {}) or {}
+        if "multiplex_profile_allowlist" in cfg:
+            raw_allowlist = cfg.get("multiplex_profile_allowlist")
+        else:
+            raw_allowlist = gateway_cfg.get("multiplex_profile_allowlist")
+        from gateway.config import _normalize_multiplex_profile_allowlist
+        from hermes_cli.profiles import normalize_profile_name
+
+        profile_allowlist = _normalize_multiplex_profile_allowlist(raw_allowlist)
+        if (
+            profile_allowlist is not None
+            and normalize_profile_name(suffix) not in profile_allowlist
+        ):
             return
     except Exception:
         logger.debug("Multiplexer-conflict probe failed", exc_info=True)

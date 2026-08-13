@@ -237,24 +237,33 @@ KANBAN_GUIDANCE = (
     "infer (missing credentials, UX choice, paywalled source, peer output you "
     "need first), call `kanban_block(reason=\"...\")` and stop. Don't guess. "
     "The user will unblock with context and the dispatcher will respawn you.\n"
-    "5. **Complete with structured handoff.** Call `kanban_complete(summary=..., "
-    "metadata=...)`. `summary` is 1–3 human-readable sentences naming concrete "
-    "artifacts. `metadata` is machine-readable facts "
-    "(`{changed_files: [...], tests_run: N, decisions: [...]}`). Downstream "
-    "workers read both via their own `kanban_show`. Never put secrets / "
-    "tokens / raw PII in either field — run rows are durable forever. "
-    "Exception: if your output is a code change that needs human review "
-    "before counting as merged/done (most coding tasks), drop the "
-    "structured metadata (changed_files / tests_run / diff_path) into a "
-    "`kanban_comment` first, then end with "
-    "`kanban_block(reason=\"review-required: <one-line summary>\")` so a "
-    "reviewer can approve+unblock or request changes. Reviewing-then-"
-    "completing is more honest than auto-completing work that still needs "
-    "eyes on it.\n"
+    "5. **Finish with the review model encoded by the task graph.** Always "
+    "include the structured handoff (`summary`, `metadata`) on the lifecycle "
+    "transition itself; never put secrets, tokens, or raw PII in these durable "
+    "fields. If `kanban_show()` lists child IDs, inspect those cards with "
+    "`kanban_show(task_id=...)` before choosing the terminal action. When any "
+    "pre-created review, QA, or release child depends on your task, call "
+    "`kanban_complete`: your implementation phase is done, and completion is "
+    "what releases those children. Never sticky-block that parent for "
+    "`review-required` and never request same-card review as well — either "
+    "choice would strand or duplicate the downstream lane. Otherwise, when "
+    "this same task needs review before it is final, call "
+    "`kanban_request_review(summary=..., metadata=..., "
+    "reviewer=<optional-profile>)`. The reviewer approves with "
+    "`kanban_complete`, returns actionable rework with "
+    "`kanban_request_changes`, or uses `kanban_block` only for a genuine "
+    "external escalation. Review is not a block, so repeated review cycles do "
+    "not trip unblock-loop detection.\n"
     "6. **If follow-up work appears, create it; don't do it.** Use "
     "`kanban_create(title=..., assignee=<right-profile>, parents=[your-task-id])` "
     "to spawn a child task for the appropriate specialist profile instead of "
     "scope-creeping into the next thing.\n"
+    "7. **Flag collision hotspots; don't pile on.** If your change keeps "
+    "colliding with sibling branches in one file, or a file your diff touches "
+    "shows up in other cards' recent comments, do not silently add more to it: "
+    "leave a `kanban_comment` starting with `hotspot: <path> — <one-line reason>` "
+    "on your card and repeat the flag in your completion metadata, so the "
+    "orchestrator can decompose that file before more work lands on it.\n"
     "\n"
     "## Orchestrator mode\n"
     "\n"
@@ -264,6 +273,13 @@ KANBAN_GUIDANCE = (
     "express dependencies. Then `kanban_complete` your own task with a summary "
     "of the decomposition. Do NOT execute the work yourself; your job is "
     "routing, not implementation.\n"
+    "\n"
+    "**Decision ownership.** Design decisions belong to you, the orchestrator, "
+    "not to workers — settle naming schemes, schemas, file formats, and API "
+    "shapes before fanning out. Never let two subtree cards decide the same "
+    "question: if two tasks would each pick one, decide it yourself and write "
+    "the decision into BOTH card bodies. Every child card body must carry the "
+    "decisions it depends on, because workers cannot see sibling context.\n"
     "\n"
     "## Reference details that change outcomes\n"
     "\n"
@@ -1088,6 +1104,26 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
 _BACKEND_PROBE_CACHE: dict[tuple[str, str], str] = {}
 
 
+def _windows_marketing_version() -> str:
+    """Return the marketing Windows version ("10", "11", ...) for the prompt.
+
+    ``platform.release()`` reports the kernel version, which is ``10`` for
+    BOTH Windows 10 and Windows 11 — the prompt then claims "Windows (10)"
+    on Windows 11 hosts and misleads the model about the OS (#51755).
+    Windows 11 is distinguished by build number: >= 22000 is 11.
+    Falls back to ``platform.release()`` on any lookup failure.
+    """
+    try:
+        build = sys.getwindowsversion().build  # type: ignore[attr-defined]
+        if build >= 22000:
+            return "11"
+        return "10"
+    except Exception:
+        import platform
+
+        return platform.release()
+
+
 _WINDOWS_BASH_SHELL_HINT = (
     "Shell: on this Windows host your `terminal` tool runs commands through "
     "bash (git-bash / MSYS), NOT PowerShell or cmd.exe. Use POSIX shell "
@@ -1095,7 +1131,20 @@ _WINDOWS_BASH_SHELL_HINT = (
     "calls. MSYS-style paths like `/c/Users/<user>/...` work alongside "
     "native `C:\\Users\\<user>\\...` paths. PowerShell builtins "
     "(`Get-ChildItem`, `$env:FOO`, `Select-String`) will NOT work — use their "
-    "POSIX equivalents (`ls`, `$FOO`, `grep`)."
+    "POSIX equivalents (`ls`, `$FOO`, `grep`). Path arguments for NATIVE "
+    "Windows programs (git, rg, node, python, ...) are NOT translated: MSYS "
+    "path conversion is disabled here, so `git -C /c/Users/x` or "
+    "`node /tmp/a.js` fails with 'cannot change to'/'not found' even though "
+    "`cd /c/Users/x` (a bash builtin) works. Pass `C:/Users/x`-style "
+    "forward-slash native paths to native tools, and prefer "
+    "`$LOCALAPPDATA/Temp` over `/tmp` for scratch files a native tool must "
+    "read. When answering prompts in a "
+    "pty background process, use process(submit) — never process(write) "
+    "with a bare trailing newline: Enter on a Windows PTY is a carriage "
+    "return, and a lone `\\n` is not delivered as a line terminator, so the "
+    "child's prompt silently never returns. When a CLI offers a "
+    "non-interactive path (flags, `--with-token`, config files, an OAuth "
+    "device flow polled with curl), prefer it over driving prompts."
 )
 
 
@@ -1262,7 +1311,7 @@ def build_environment_hints() -> str:
         if is_wsl():
             host_lines.append("Host: WSL (Windows Subsystem for Linux)")
         elif sys.platform == "win32":
-            host_lines.append(f"Host: Windows ({platform.release()})")
+            host_lines.append(f"Host: Windows ({_windows_marketing_version()})")
         elif sys.platform == "darwin":
             mac_ver = platform.mac_ver()[0]
             host_lines.append(f"Host: macOS ({mac_ver or platform.release()})")

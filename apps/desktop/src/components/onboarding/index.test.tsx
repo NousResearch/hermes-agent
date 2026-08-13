@@ -62,18 +62,19 @@ describe('onboarding Picker', () => {
 
     expect(screen.getByText('Nous Portal')).toBeTruthy()
     expect(screen.getByText('Recommended')).toBeTruthy()
-    // Fireworks is the always-visible #2 slot (after Nous), even while OAuth
-    // alternatives stay collapsed behind the disclosure.
-    expect(screen.getByText('Fireworks AI')).toBeTruthy()
+    // Fireworks stays behind the disclosure with the other alternatives; only
+    // Nous Portal is visible before the user expands the list.
+    expect(screen.queryByText('Fireworks AI')).toBeNull()
     expect(screen.queryByText('Anthropic API Key')).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: 'Other providers' }))
 
+    expect(screen.getByText('Fireworks AI')).toBeTruthy()
     expect(screen.getByText('Anthropic API Key')).toBeTruthy()
     expect(screen.getByRole('button', { name: 'Collapse' })).toBeTruthy()
   })
 
-  it('shows Fireworks in slot #2 ahead of other OAuth providers', () => {
+  it('shows Fireworks first in the expanded list, ahead of other OAuth providers', () => {
     setProviders([
       provider('openai-codex', 'OpenAI Codex / ChatGPT'),
       provider('minimax-oauth', 'MiniMax'),

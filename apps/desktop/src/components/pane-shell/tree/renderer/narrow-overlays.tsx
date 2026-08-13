@@ -9,7 +9,7 @@
 import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
-import { ContribBoundary } from '@/contrib/react/boundary'
+import { ContribBoundary, ContribRender } from '@/contrib/react/boundary'
 import { useContributions } from '@/contrib/react/use-contributions'
 import type { Contribution } from '@/contrib/types'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
@@ -138,7 +138,9 @@ export function NarrowOverlays() {
           // width) instead of a fat fixed 20rem — capped for tiny screens.
           style={{ width: `min(${(revealed.data as { width?: string } | undefined)?.width ?? '18rem'}, 85vw)` }}
         >
-          <ContribBoundary id={revealed.id}>{revealed.render?.()}</ContribBoundary>
+          <ContribBoundary id={revealed.id}>
+            {revealed.render && <ContribRender render={revealed.render} />}
+          </ContribBoundary>
         </div>
       )}
     </>

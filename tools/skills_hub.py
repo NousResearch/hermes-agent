@@ -4055,14 +4055,27 @@ def uninstall_skill(skill_name: str) -> Tuple[bool, str]:
 
 
 def bundle_content_hash(bundle: SkillBundle) -> str:
-    """Compute a deterministic hash for an in-memory skill bundle."""
+    """Compute a deterministic hash for an in-memory skill bundle.
+
+    MUST stay symmetric with ``tools.skills_guard.content_hash`` (which
+    hashes the same skill from disk). That function keys files by
+    ``relative_to(...).as_posix()`` — forward slashes on every OS. Bundle
+    keys built on Windows carry backslashes (``str(f.relative_to(dir))``),
+    which changed both the hashed bytes AND the sort order, so every
+    installed skill reported ``update_available`` forever on Windows
+    (#62310). Normalize to POSIX separators before sorting/hashing.
+    """
     h = hashlib.sha256()
-    for rel_path in sorted(bundle.files):
+    normalized = {
+        rel_path.replace("\\", "/"): content
+        for rel_path, content in bundle.files.items()
+    }
+    for rel_path in sorted(normalized):
         # Include the path so swapping file contents between two paths
         # changes the hash (avoids filename-swap evading update detection).
         h.update(rel_path.encode("utf-8"))
         h.update(b"\x00")
-        content = bundle.files[rel_path]
+        content = normalized[rel_path]
         if isinstance(content, bytes):
             h.update(content)
         else:

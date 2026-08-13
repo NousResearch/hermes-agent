@@ -274,7 +274,7 @@ _LEGACY_TOOLSET_MAP = {
 # =============================================================================
 
 # Module-level memoization for get_tool_definitions(). Keyed on
-# (frozenset(enabled_toolsets), frozenset(disabled_toolsets), registry._generation).
+# (profile scope, enabled/disabled toolsets, registry generation).
 # Hot callers (gateway runner, AIAgent.__init__) invoke this on every turn
 # with quiet_mode=True; caching avoids ~7 ms of registry walking + schema
 # filtering + check_fn probing per call. Only active when quiet_mode=True
@@ -285,6 +285,7 @@ _LEGACY_TOOLSET_MAP = {
 # inner check_fn TTL cache in registry.py handles environment drift (Docker
 # daemon start/stop, env var changes, etc.) on a 30 s horizon.
 _tool_defs_cache: Dict[tuple, List[Dict[str, Any]]] = {}
+_tool_defs_cache_lock = threading.Lock()
 
 # Hard cap on memoized get_tool_definitions() results. A long-lived Gateway
 # process sees many distinct toolset/config fingerprints over its lifetime
@@ -299,7 +300,8 @@ def _clear_tool_defs_cache() -> None:
     """Drop memoized get_tool_definitions() results. Called when dynamic
     schema dependencies change (e.g. discord capability cache reset,
     execute_code sandbox reconfigured)."""
-    _tool_defs_cache.clear()
+    with _tool_defs_cache_lock:
+        _tool_defs_cache.clear()
 
 
 def get_tool_definitions(
@@ -346,6 +348,7 @@ def get_tool_definitions(
         profile_scope = check_fn_cache_scope()
         if profile_scope != CHECK_FN_CACHE_BYPASS:
             cache_key = (
+                registry.current_scope_key(),
                 frozenset(enabled_toolsets) if enabled_toolsets is not None else None,
                 frozenset(disabled_toolsets) if disabled_toolsets else None,
                 registry._generation,
@@ -356,7 +359,8 @@ def get_tool_definitions(
                 _is_dispatcher_owned_worker(),
                 profile_scope,
             )
-        cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
+        with _tool_defs_cache_lock:
+            cached = _tool_defs_cache.get(cache_key) if cache_key is not None else None
         if cached is not None:
             # Update _last_resolved_tool_names so downstream callers see
             # consistent state even on a cache hit.
@@ -379,10 +383,16 @@ def get_tool_definitions(
         # Bound the cache with LRU eviction so a long-lived Gateway process
         # doesn't accumulate entries unboundedly across the many distinct
         # toolset/config fingerprints it sees over its lifetime (#19251).
-        if len(_tool_defs_cache) >= _TOOL_DEFS_CACHE_MAX:
-            _tool_defs_cache.pop(next(iter(_tool_defs_cache)))  # evict oldest
-        _tool_defs_cache[cache_key] = result
-        return list(result)
+        with _tool_defs_cache_lock:
+            # Another thread may have populated this exact key while this
+            # thread computed. Reuse it and serialize capacity eviction.
+            cached = _tool_defs_cache.get(cache_key)
+            if cached is None:
+                if len(_tool_defs_cache) >= _TOOL_DEFS_CACHE_MAX:
+                    _tool_defs_cache.pop(next(iter(_tool_defs_cache)))
+                _tool_defs_cache[cache_key] = result
+                cached = result
+        return list(cached)
     if quiet_mode:
         return list(result)
     return result
@@ -551,6 +561,21 @@ def _compute_tool_definitions(
                     }
                     break
 
+    # browser_exec (Browser Use mode) runs arbitrary Python on the host via
+    # the browser-use CLI subprocess.  A session whose toolset selection
+    # excludes the terminal surface (e.g. a messaging platform configured
+    # without terminal access) must not regain host code execution through
+    # the browser toolset — that would silently widen the operator's chosen
+    # security posture.  Session-level gate, NOT a check_fn: check_fn results
+    # are TTL-cached process-wide while one gateway process serves many
+    # sessions with different toolset configs.
+    if "browser_exec" in available_tool_names and "terminal" not in available_tool_names:
+        filtered_tools = [
+            td for td in filtered_tools
+            if td.get("function", {}).get("name") != "browser_exec"
+        ]
+        available_tool_names.discard("browser_exec")
+
     if not quiet_mode:
         if filtered_tools:
             tool_names = [t["function"]["name"] for t in filtered_tools]
@@ -657,6 +682,24 @@ def _resolve_active_context_length() -> int:
                     "context gate (provider=%s): %s — using config values only",
                     provider, rt_exc,
                 )
+        # Fast path: a previously discovered on-disk cache entry is plenty
+        # for SIZING the tool-search gate — unlike compression budgeting, a
+        # slightly stale window can't corrupt anything (should_activate only
+        # picks a disclosure tier). The full resolver below deliberately
+        # bypasses the persistent cache for some providers (Nous portal,
+        # Codex OAuth) so IT can reconcile against the authoritative live
+        # /models endpoint — correct for compression sizing, but it costs a
+        # ~200ms network probe on EVERY CLI startup. When any prior session
+        # already learned the window, use it for the gate and let the full
+        # resolver (called later on the compression path) do reconciliation.
+        if config_ctx is None and base_url:
+            try:
+                from agent.model_metadata import get_cached_context_length
+                cached_ctx = get_cached_context_length(model_id, base_url)
+                if isinstance(cached_ctx, int) and cached_ctx > 0:
+                    return cached_ctx
+            except Exception:
+                pass
         return int(get_model_context_length(
             model_id,
             base_url=base_url,
@@ -1418,6 +1461,7 @@ def handle_function_call(
             _approval_tokens = set_current_observability_context(
                 turn_id=turn_id or "",
                 tool_call_id=tool_call_id or "",
+                session_id=session_id or "",
             )
         except Exception:
             reset_current_observability_context = None

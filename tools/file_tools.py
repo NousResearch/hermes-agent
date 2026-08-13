@@ -955,6 +955,66 @@ def _check_protected_instruction_write(paths: list[str],
     return _request_protected_instruction_approval(reasons, task_id)
 
 
+def _check_approval_required_write(paths: list[str],
+                                   task_id: str = "default") -> str | None:
+    """Gate a write/patch touching an approval-required path (``~/.ssh/config``).
+
+    These paths are NOT credentials and NOT hard-denied, but a write must
+    be confirmed by a human because they can steer process execution
+    (an SSH ``ProxyCommand`` / ``Match exec``). Unlike the protected-
+    instruction gate this is a routine, user-initiated edit, so the prompt
+    offers once/session/always scopes and honors --yolo (the historical
+    dangerous-command semantics) rather than always re-asking.
+
+    Returns ``None`` when no target is approval-gated or the human
+    approved; otherwise a BLOCKED error string. Fail-closed when no
+    interactive/gateway channel exists (a background/ACP caller cannot
+    consent on the user's behalf).
+    """
+    try:
+        from agent.file_safety import is_write_approval_required
+    except Exception:
+        return None
+
+    targets = [p for p in paths if is_write_approval_required(p)]
+    if not targets:
+        return None
+
+    display_targets = ", ".join(dict.fromkeys(targets))
+    description = (
+        f"Write to SSH client config file(s): {display_targets}. "
+        "The SSH config can carry ProxyCommand / Match exec directives that "
+        "run commands, so writes require your approval."
+    )
+    blocked = (
+        f"BLOCKED: write to SSH config file(s) ({display_targets}) "
+        "{why} Do NOT retry it via another path (terminal, execute_code) "
+        "without the user's explicit consent."
+    )
+
+    try:
+        import tools.approval as _approval
+    except Exception:
+        return blocked.format(why="requires approval but the approval "
+                                  "subsystem is unavailable.")
+
+    result = _approval._run_approval_gate(
+        pattern_key="ssh_config_write",
+        description=description,
+        display_target=f"<write to {display_targets}>",
+        cron_deny_message=blocked.format(
+            why="requires approval but this cron session denies it."),
+        autoapprove_log_prefix="ssh_config_write",
+        fail_closed_when_no_human=True,
+        no_human_block_message=blocked.format(
+            why="requires approval but no interactive user or gateway is "
+                "present to approve it."),
+    )
+    if result.get("approved"):
+        return None
+    return result.get("message") or blocked.format(why="was denied.")
+
+
 def _get_container_mirror_prefix_for_task(task_id: str = "default") -> str | None:
     """Return the container-side Hermes mirror prefix for Docker file tools."""
     try:
@@ -1681,7 +1741,10 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 2000, task_id: str =
                 return json.dumps(result_dict, ensure_ascii=False)
 
         # ── Binary file guard ─────────────────────────────────────────
-        # Block binary files by extension (no I/O).
+        # Block binary files by extension (no I/O). Name what we know:
+        # the extension is a claim, so keep this branch's message to the
+        # extension itself — the content-sniffing path below names the
+        # actual magic-byte type for extension-less/lying files.
         if has_binary_extension(str(_resolved)):
             _ext = _resolved.suffix.lower()
             return tool_error(
@@ -2114,6 +2177,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
     protected_err = _check_protected_instruction_write([path], task_id)
     if protected_err:
         return tool_error(protected_err)
+    approval_err = _check_approval_required_write([path], task_id)
+    if approval_err:
+        return tool_error(approval_err)
     if not cross_profile:
         cross_warning = _check_cross_profile_path(path, task_id)
         if cross_warning:
@@ -2251,6 +2317,9 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
     protected_err = _check_protected_instruction_write(_paths_to_check, task_id)
     if protected_err:
         return tool_error(protected_err)
+    approval_err = _check_approval_required_write(_paths_to_check, task_id)
+    if approval_err:
+        return tool_error(approval_err)
     try:
         # Resolve paths for locking.  Ordered + deduplicated so concurrent
         # callers lock in the same order — prevents deadlock on overlapping
@@ -2569,7 +2638,7 @@ PATCH_SCHEMA = {
             },
             "new_string": {
                 "type": "string",
-                "description": "REQUIRED when mode='replace'. Replacement text. Pass empty string '' to delete the matched text.",
+                "description": "REQUIRED when mode='replace'. Changed replacement text; it must differ from old_string. Pass empty string '' to delete the matched text.",
             },
             "replace_all": {
                 "type": "boolean",

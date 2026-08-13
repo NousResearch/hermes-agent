@@ -16,11 +16,13 @@ Key design decisions:
 
 import asyncio
 import atexit
+import contextlib
 import errno
 import hashlib
 import json
 import logging
 import os
+import queue
 import random
 import re
 import sqlite3
@@ -333,6 +335,29 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
+# How long SessionDB stops attempting read-only opens after one fails, before
+# probing again. Long enough that a genuinely unreadable file isn't retried per
+# query; short enough that transient fd pressure doesn't strand the read pool.
+_READ_OPEN_RETRY_SECONDS = 60.0
+
+# Hard ceiling on read-only connections ALIVE at once per SessionDB — pooled
+# idle ones and checked-out ones together.
+#
+# Deliberately one constant for both the pool's maxsize and the permit count,
+# because bounding only the pool bounds the wrong thing. A LifoQueue caps how
+# many connections are *returned*; it says nothing about how many are *open*.
+# With an open-on-miss checkout, N readers arriving on an empty pool all miss,
+# all open, and peak at N — the surplus is closed on release, so nothing
+# accumulates forever, but EMFILE is a peak-instant condition and the burst
+# that empties the pool is exactly the burst that exhausts the fd table.
+#
+# So a connection holds a permit for its whole lifetime: acquired in
+# _get_read_conn() before the open, released in _close_read_conn() after the
+# close. Once permits are gone the read path degrades to the locked writer
+# connection instead of opening more descriptors — slower under load, which is
+# the correct trade against a process-wide wedge the supervisor cannot see.
+_READ_POOL_MAX = 8
+
 # Import-time snapshot used by _default_db_path() to detect a deliberately
 # re-pointed DEFAULT_DB_PATH (tests monkeypatch the constant directly).
 _IMPORT_DEFAULT_DB_PATH = DEFAULT_DB_PATH
@@ -518,6 +543,11 @@ _WAL_INCOMPAT_MARKERS = (
     "disk i/o error",         # ZFS SHM corruption under concurrent connections
 )
 
+# Upper bound for the write-ahead log. SQLite defaults to -1 (unlimited),
+# which lets state.db-wal keep the high-water mark of the largest-ever
+# transaction forever. See _apply_wal_size_limit().
+_WAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024  # 64 MiB
+
 # Last SessionDB() init error, per-process.  Surfaced in /resume and
 # related slash-command error strings so users know WHY the DB is
 # unavailable instead of getting a bare "Session database not available."
@@ -700,20 +730,79 @@ def _on_disk_journal_mode(conn: sqlite3.Connection) -> Optional[str]:
 
     Returns the mode string (e.g. ``"wal"``, ``"delete"``), or ``None``
     if the value cannot be determined (new DB, or PRAGMA read failed).
+
+    A PRAGMA read can fail transiently with ``disk i/o error`` on
+    virtualized block devices (XFS on cloud hosts).  Treating that as
+    "mode unknown" pushes callers onto their fail-closed unknown-mode
+    branch even though the on-disk mode is perfectly readable a few
+    milliseconds later.  Retry the read a few times before giving up:
+    transient EIO clears, deterministic unsupported-filesystem errors do
+    not.  ``None`` is still returned on final failure so the caller's
+    existing "unknown → refuse to downgrade" logic applies.
+    """
+    last_exc: Optional[Exception] = None
+    for _ in range(4):
+        try:
+            row = conn.execute("PRAGMA journal_mode").fetchone()
+        except sqlite3.OperationalError as exc:
+            last_exc = exc
+            if "disk i/o error" not in str(exc).lower():
+                return None
+            time.sleep(0.05)
+            continue
+        if row is None:
+            return None
+        mode = row[0]
+        if isinstance(mode, bytes):  # defensive: sqlite3 occasionally returns bytes
+            try:
+                mode = mode.decode("ascii")
+            except UnicodeDecodeError:
+                return None
+        return str(mode).strip().lower() if mode is not None else None
+    if last_exc is not None:
+        logger.debug(
+            "_on_disk_journal_mode: retries exhausted on disk read (%s)", last_exc
+        )
+    return None
+
+
+def _apply_wal_size_limit(conn: sqlite3.Connection) -> None:
+    """Bound the WAL so it returns space to the OS after big transactions.
+
+    SQLite's default ``journal_size_limit`` is -1 (unlimited): after a
+    checkpoint the WAL file is *reused in place* and never truncated, so
+    ``state.db-wal`` permanently retains the high-water mark of the largest
+    transaction ever run against it.
+
+    A single bulk operation is enough to strand gigabytes. Observed on a
+    3.0 GB ``state.db``: ``hermes sessions optimize`` (FTS merge + VACUUM)
+    rewrites every page through the WAL, leaving a **3.07 GB**
+    ``state.db-wal`` sitting next to the database indefinitely — the host
+    went from 6.9 GB free to 772 MB (100% full) and stayed there, because
+    nothing shrinks the WAL back down. An explicit
+    ``PRAGMA wal_checkpoint(TRUNCATE)`` reclaimed the full 3.07 GB, which
+    confirms the space was pure slack rather than live data.
+
+    That also makes the maintenance command self-defeating on exactly the
+    databases that need it most: the larger the DB, the larger the WAL it
+    strands, so ``optimize`` can consume more disk than it frees.
+
+    ``journal_size_limit`` makes SQLite truncate the WAL back to the limit
+    at each checkpoint. 64 MiB is comfortably above normal transaction
+    sizes (so steady-state commits never pay a truncate) while capping the
+    stranded slack at a bounded, predictable figure.
+
+    ``hermes_cli/kanban_db.py`` already bounds its WAL growth with
+    ``wal_autocheckpoint=100``; the session store — by far the larger
+    database — had no equivalent.
+
+    Best-effort: never raises. A failure here only costs disk slack, and
+    must not prevent the database from opening.
     """
     try:
-        row = conn.execute("PRAGMA journal_mode").fetchone()
-    except sqlite3.OperationalError:
-        return None
-    if row is None:
-        return None
-    mode = row[0]
-    if isinstance(mode, bytes):  # defensive: sqlite3 occasionally returns bytes
-        try:
-            mode = mode.decode("ascii")
-        except UnicodeDecodeError:
-            return None
-    return str(mode).strip().lower() if mode is not None else None
+        conn.execute(f"PRAGMA journal_size_limit={_WAL_SIZE_LIMIT_BYTES}")
+    except sqlite3.OperationalError as exc:  # pragma: no cover - defensive
+        logger.debug("journal_size_limit not applied: %s", exc)
 
 
 def _apply_macos_checkpoint_barrier(conn: sqlite3.Connection) -> None:
@@ -922,6 +1011,7 @@ def apply_wal_with_fallback(
     # Skipping the set-pragma prevents WAL-init from unlinking files other connections hold open.
     current_mode = _on_disk_journal_mode(conn)
     if current_mode == "wal":
+        _apply_wal_size_limit(conn)
         _apply_macos_checkpoint_barrier(conn)
         _enforce_macos_synchronous_full(conn)
         return "wal"
@@ -962,6 +1052,7 @@ def apply_wal_with_fallback(
         row = conn.execute("PRAGMA journal_mode=WAL").fetchone()
         mode = str(row[0]).strip().lower() if row and row[0] is not None else ""
         if mode == "wal":
+            _apply_wal_size_limit(conn)
             _apply_macos_checkpoint_barrier(conn)
             _enforce_macos_synchronous_full(conn)
             return "wal"
@@ -1010,6 +1101,7 @@ def apply_wal_with_fallback(
                     else ""
                 )
                 if mode == "wal":
+                    _apply_wal_size_limit(conn)
                     _apply_macos_checkpoint_barrier(conn)
                     _enforce_macos_synchronous_full(conn)
                     return "wal"
@@ -1089,6 +1181,7 @@ def _apply_delete_for_wal_reset_bug(
         # Do not TRUNCATE / journal_mode=DELETE while other processes may
         # still hold this WAL DB open — same safety rule as the NFS path.
         _log_wal_reset_bug_once(db_label, kept_wal=True)
+        _apply_wal_size_limit(conn)
         _apply_macos_checkpoint_barrier(conn)
         _enforce_macos_synchronous_full(conn)
         return "wal"
@@ -1338,6 +1431,21 @@ def is_malformed_db_error(exc: BaseException) -> bool:
     return any(marker in str(exc).lower() for marker in _MALFORMED_SCHEMA_MARKERS)
 
 
+def _is_not_a_database_error(exc: BaseException) -> bool:
+    """True if *exc* is SQLite's 'file is not a database' error.
+
+    Raised when a connection's backing file is not a SQLite database — the
+    runtime connection-corruption class: a sibling process (forked curator
+    agent, external repair pass) replaced/truncated the file out from under
+    the live connection.  The file on disk may be perfectly healthy; the
+    CONNECTION is broken.  Distinct from the malformed-schema class: the fix
+    is a reconnect, not schema surgery.
+    """
+    if not isinstance(exc, sqlite3.DatabaseError):
+        return False
+    return "file is not a database" in str(exc).lower()
+
+
 # Markers that mean the host filesystem cannot accept another write. Kept as
 # plain substrings so OSError, sqlite3.OperationalError, and wrapped RPC
 # error strings all match the same helper.
@@ -1435,12 +1543,137 @@ def _claim_repair_attempt(db_path: Path) -> bool:
         return True
 
 
-def _backup_db_file(db_path: Path) -> Optional[Path]:
+# Cross-process serialisation for the schema-surgery paths below.  The
+# ``_repair_attempt_lock`` above is a ``threading.Lock`` — it only covers
+# threads inside ONE interpreter, yet a normal Hermes host runs several
+# independent processes against the same ``state.db``: the gateway service,
+# the Desktop app's own ``hermes serve`` backend, interactive CLI sessions,
+# and the TUI slash worker.  Two of those hitting a malformed DB at once each
+# ran the full ``writable_schema`` surgery + ``VACUUM`` on their own private
+# connection, with nothing serialising them.
+#
+# The timeout is sized for the slowest legitimate holder — a ``VACUUM`` over a
+# multi-GB DB in strategy 2.  Waiting that long is not a new stall: before this
+# lock the losing caller spent the same minutes running its own surgery, it
+# just did so on top of the winner's.
+_REPAIR_LOCK_TIMEOUT_SECONDS = 120.0
+_REPAIR_LOCK_POLL_SECONDS = 0.1
+_IS_WINDOWS = sys.platform == "win32"
+
+
+@contextlib.contextmanager
+def _cross_process_repair_lock(db_path: Path):
+    """Serialize state.db schema surgery across processes.
+
+    Yields True when this process holds the repair lock for *db_path*, False
+    when the bounded acquire timed out.  Unlike the kanban init lock — whose
+    critical section is idempotent, so proceeding without the lock is merely
+    redundant work — proceeding here would be exactly the unsafe interleaving
+    we are trying to prevent, so a caller that gets False must NOT do surgery.
+
+    ``flock`` is the right primitive for this: the kernel drops the lock when
+    the holding process dies, so a crashed repairer cannot leave a stale lock
+    that wedges every future repair (a pidfile would).  The acquire is still
+    bounded because a *live* repairer can legitimately sit in ``VACUUM`` for
+    minutes on a large DB, and an unbounded wait would hang the caller's open
+    with no traceback (the failure shape of #36644).
+    """
+    lock_path = db_path.with_name(db_path.name + ".repair.lock")
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+    except OSError as exc:
+        # Read-only dir, exhausted fds, exotic filesystem: fall back to the
+        # in-process behaviour that shipped before this lock existed rather
+        # than refusing to repair a DB we could otherwise heal.
+        logger.warning(
+            "Could not open state.db repair lock %s (%s) — proceeding with "
+            "in-process serialisation only.", lock_path, exc,
+        )
+        yield True
+        return
+
+    acquired = False
+    try:
+        deadline = time.monotonic() + _REPAIR_LOCK_TIMEOUT_SECONDS
+        while True:
+            try:
+                if _IS_WINDOWS:
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquired = True
+                break
+            except (BlockingIOError, OSError):
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(_REPAIR_LOCK_POLL_SECONDS)
+        if not acquired:
+            logger.warning(
+                "state.db repair lock %s held by another process for more "
+                "than %.0fs — skipping schema surgery in this process to "
+                "avoid racing the repairer.",
+                lock_path, _REPAIR_LOCK_TIMEOUT_SECONDS,
+            )
+        yield acquired
+    finally:
+        try:
+            if acquired:
+                if _IS_WINDOWS:
+                    import msvcrt
+
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except OSError:  # pragma: no cover - best effort release
+            pass
+        finally:
+            handle.close()
+
+
+def _bump_schema_cookie(conn: sqlite3.Connection) -> None:
+    """Increment the schema cookie after direct ``sqlite_master`` surgery.
+
+    Ordinary DDL bumps this counter for free, and every other connection
+    compares it before running a prepared statement — that is how they learn
+    to discard a cached schema.  Editing ``sqlite_master`` under
+    ``PRAGMA writable_schema=ON`` does NOT bump it, so live connections in
+    other processes keep compiling statements against the schema we just
+    deleted objects from — e.g. writing ``messages`` rows through triggers
+    into ``messages_fts*`` shadow tables that no longer exist.  SQLite's
+    writable_schema documentation calls out incrementing ``schema_version``
+    as the required companion to such an edit.
+
+    Best-effort and never raises: a failed bump leaves exactly the
+    pre-existing behaviour, and the repair itself is still worth completing.
+    """
+    try:
+        current = conn.execute("PRAGMA schema_version").fetchone()[0]
+        # Wraps within the 32-bit signed range SQLite stores this in; the
+        # comparison other connections make is equality, not ordering.
+        conn.execute(f"PRAGMA schema_version={(int(current) + 1) & 0x7FFFFFFF}")
+    except (sqlite3.DatabaseError, TypeError, IndexError) as exc:
+        logger.warning("Could not bump state.db schema cookie: %s", exc)
+
+
+def _backup_db_file(db_path: Path) -> "Tuple[Optional[Path], Optional[str]]":
     """Copy a (possibly malformed) DB file to a timestamped backup beside it.
 
     Raw file copy on purpose: the DB won't open cleanly, so we preserve the
     bytes exactly for forensics / manual restore. WAL and SHM sidecars are
-    copied too when present. Returns the backup path, or None on failure.
+    copied too when present. Returns ``(backup_path, None)`` on success or
+    ``(None, reason)`` on failure — callers on the repair path treat a
+    refused backup as a HARD STOP (see #69603: proceeding without the
+    pre-repair backup leaves the writable_schema surgery, FTS deletion and
+    VACUUM strategies mutating the only remaining copy of the damaged DB).
 
     Refuses when a connection to this database is still live in the process:
     reading the file would ``close()`` a descriptor for it and cancel that
@@ -1457,13 +1690,13 @@ def _backup_db_file(db_path: Path) -> Optional[Path]:
         has_live_connection = None  # type: ignore[assignment]
 
     if has_live_connection is not None and has_live_connection(db_path):
-        logger.error(
-            "Refusing to raw-copy %s for backup: a connection to it is still "
-            "open in this process and the copy would cancel that connection's "
-            "POSIX locks. Close all SessionDB handles first.",
-            db_path,
+        reason = (
+            f"a connection to {db_path} is still open in this process; "
+            "raw-copying it would cancel that connection's POSIX advisory "
+            "locks. Close all SessionDB handles first."
         )
-        return None
+        logger.error("Refusing to raw-copy %s for backup: %s", db_path, reason)
+        return None, reason
 
     stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
     backup_path = db_path.with_name(f"{db_path.name}.malformed-backup-{stamp}")
@@ -1473,10 +1706,10 @@ def _backup_db_file(db_path: Path) -> Optional[Path]:
             sidecar = db_path.with_name(db_path.name + suffix)
             if sidecar.exists():
                 shutil.copy2(sidecar, backup_path.with_name(backup_path.name + suffix))
-        return backup_path
+        return backup_path, None
     except Exception as exc:  # pragma: no cover - best effort
         logger.warning("Could not back up malformed DB %s: %s", db_path, exc)
-        return None
+        return None, f"backup copy failed: {exc}"
 
 
 def preflight_db_writability(
@@ -1719,6 +1952,12 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
     Canonical ``sessions`` / ``messages`` rows are never modified. A
     timestamped raw backup is taken first unless ``backup=False``.
 
+    The surgery below is serialised across processes (see
+    :func:`_cross_process_repair_lock`): the gateway service, the Desktop
+    app's backend and interactive CLI sessions all open the same file, and
+    two of them running ``writable_schema`` surgery concurrently is itself a
+    corruption source.
+
     Returns a report dict: ``{repaired: bool, strategy: str|None,
     backup_path: str|None, error: str|None}``.
     """
@@ -1734,14 +1973,55 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
         report["error"] = f"{db_path} does not exist"
         return report
 
+    with _cross_process_repair_lock(db_path) as holding_lock:
+        if not holding_lock:
+            # Another process is still inside its critical section. It may
+            # nonetheless have healed the file already (long VACUUM after a
+            # successful strategy), so re-probe before reporting failure.
+            if _db_opens_cleanly(db_path) is None:
+                report["repaired"] = True
+                report["strategy"] = "repaired_by_other_process"
+                return report
+            report["error"] = (
+                "another process holds the state.db repair lock; skipped "
+                "schema surgery to avoid racing it"
+            )
+            return report
+        return _repair_state_db_schema_locked(db_path, backup=backup, report=report)
+
+
+def _repair_state_db_schema_locked(
+    db_path: Path, *, backup: bool, report: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Repair strategies for :func:`repair_state_db_schema`.
+
+    Caller must hold the cross-process repair lock for *db_path*.
+    """
+    # Re-probe under the lock: a process we queued behind may have just
+    # repaired the file, in which case redoing the surgery would undo its
+    # work on a now-healthy DB (the repair/re-corrupt cascade this lock
+    # exists to break).
     if _db_opens_cleanly(db_path) is None:
         report["repaired"] = True
         report["strategy"] = "already_healthy"
         return report
 
     if backup:
-        bpath = _backup_db_file(db_path)
+        bpath, backup_error = _backup_db_file(db_path)
         report["backup_path"] = str(bpath) if bpath else None
+        if bpath is None:
+            # HARD STOP (#69603): every strategy below mutates the damaged
+            # file in place (FTS rebuild, REINDEX, writable_schema surgery,
+            # VACUUM). Without the pre-repair backup, the damaged DB is the
+            # only copy of the user's data — a failed or interrupted repair
+            # would then be unrecoverable. Abort and surface the reason
+            # instead of proceeding fail-open.
+            report["error"] = (
+                "pre-repair backup refused; aborting schema repair to avoid "
+                f"mutating the only copy of the damaged DB: {backup_error}"
+            )
+            logger.error("state.db repair aborted: %s", report["error"])
+            return report
 
     # ── Strategy 0: rebuild FTS indexes in place (FTS write-corruption) ──
     # The FTS5 'rebuild' command rewrites the internal index from the canonical
@@ -1815,6 +2095,8 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
                     "WHERE type IS ? AND name IS ? AND rowid <> ?",
                     (type_, name, keep),
                 )
+            if dupes:
+                _bump_schema_cookie(conn)
             conn.execute("PRAGMA writable_schema=OFF")
             conn.commit()
         finally:
@@ -1836,6 +2118,7 @@ def repair_state_db_schema(db_path: Path, *, backup: bool = True) -> Dict[str, A
         try:
             conn.execute("PRAGMA writable_schema=ON")
             conn.execute("DELETE FROM sqlite_master WHERE name LIKE 'messages_fts%'")
+            _bump_schema_cookie(conn)
             conn.execute("PRAGMA writable_schema=OFF")
             conn.commit()
             conn.execute("VACUUM")
@@ -2517,20 +2800,57 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self.read_only = read_only
 
         self._lock = threading.Lock()
-        # Read-path split (WAL only): recall/browse queries run on per-thread
-        # read-only connections so they never queue behind writer flushes on
-        # self._lock. See _read_ctx().
-        self._read_local = threading.local()
-        # Strong set of all live read connections across all threads.  We
-        # hold a reference so short-lived reader threads' connections are
-        # not GC'd without close() — that would leak tracked fds in
-        # _live_connections.  close() drains this set.
-        self._read_conns: "set[sqlite3.Connection]" = set()
+        # Read-path split (WAL only): recall/browse queries borrow a
+        # read-only connection from a bounded pool so they never queue
+        # behind writer flushes on self._lock. See _read_ctx().
+        #
+        # The pool is BOUNDED because the previous per-thread
+        # (threading.local + strong set) scheme pinned one connection per
+        # (SessionDB x thread) for the life of the process. Starlette
+        # dispatches sync routes on anyio worker threads, so a SessionDB
+        # that is never closed accumulated a connection — and two fds, the
+        # database and its -wal — for every worker thread that ever read,
+        # until the process hit the 256 soft RLIMIT_NOFILE a service manager
+        # hands it and every request failed with EMFILE while the process
+        # stayed alive, so the supervisor's restart-on-exit never fired.
+        # Same bug class as the closing(...) fix in gateway/readiness.py
+        # (#69678 / #69567).
+        self._read_pool: "queue.LifoQueue[sqlite3.Connection]" = queue.LifoQueue(
+            maxsize=_READ_POOL_MAX
+        )
+        # One permit per live read connection, held from before the open in
+        # _get_read_conn() until after the close in _close_read_conn().  This
+        # is what bounds PEAK descriptors; _read_pool alone bounds only the
+        # idle set.  See _READ_POOL_MAX.  Acquired non-blocking on purpose: a
+        # reader that cannot get a permit must degrade to the writer lock, not
+        # queue here — blocking would convert fd exhaustion into a stall, which
+        # is the same outage with a different stack trace.
+        self._read_permits = threading.BoundedSemaphore(_READ_POOL_MAX)
+        # Count of reads that found no permit and fell back to the locked
+        # writer connection. Not load-bearing; it is the only externally
+        # visible signal that the ceiling is actually being reached, so a
+        # too-small _READ_POOL_MAX is diagnosable from a running process
+        # instead of inferred from latency.
+        self._read_permit_exhausted = 0
         self._read_conns_lock = threading.Lock()
-        # Set when close() begins.  _get_read_conn checks this under the
-        # lock so a reader that finishes opening after the drain finds the
-        # shutdown in progress and closes its own connection immediately.
+        # Set when close() begins.  _read_ctx checks this under the lock
+        # before returning a connection to the pool, so a reader still in
+        # flight during the drain closes its own connection instead of
+        # re-populating a pool nobody will drain again.
         self._read_conns_closed = False
+        # "read-only opens are failing against this file" backoff stamp.
+        # Instance-wide rather than per-thread: with a shared pool the open
+        # is no longer a per-thread event, and retrying a known-bad open on
+        # every query is a syscall storm for no benefit. The locked writer
+        # connection still serves reads while the backoff holds.
+        # Deliberately a TIMESTAMP, not a sticky bool: the likeliest trigger
+        # is transient fd pressure (EMFILE) — the very condition this pool
+        # exists to prevent — and a permanent flag would demote every reader
+        # on this instance to the writer lock for the life of the process.
+        # The gateway shares one SessionDB across every agent, so that turns
+        # a momentary blip into a permanent global convoy. Expires after
+        # _READ_OPEN_RETRY_SECONDS so the read path self-heals.
+        self._read_open_failed_at = 0.0
         self._wal_active = False
         self._write_count = 0
         # One-shot guard for the runtime FTS rebuild recovery on the write
@@ -2539,6 +2859,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # in place at most once per SessionDB instance so a genuinely
         # unrecoverable database can't put writers into a rebuild loop.
         self._fts_runtime_rebuild_attempted = False
+        # One-shot guard for the runtime connection-reopen recovery on the
+        # write path. A connection whose backing file was replaced/truncated
+        # by a sibling process surfaces as "file is not a database" on every
+        # write; we close and reopen the connection at most once per
+        # SessionDB instance so a genuinely unrecoverable database can't put
+        # writers into a reconnect loop.
+        self._notadb_reconnect_attempted = False
         # One-shot guard for the usermerge-floor config write on the
         # incremental FTS merge cadence (see _merge_fts_incrementally).
         self._fts_usermerge_floor_applied = False
@@ -2762,7 +3089,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # ── Read-path split ──
 
     def _get_read_conn(self) -> Optional[sqlite3.Connection]:
-        """Per-thread read-only connection, or None when unavailable.
+        """Open a fresh read-only connection, or None when unavailable.
+
+        Callers must return the connection to self._read_pool (see
+        _read_ctx); this opens, it does not track.
 
         Only used under WAL: WAL readers see a consistent snapshot and never
         block on (or get blocked by) the writer, so recall/browse queries can
@@ -2776,16 +3106,45 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         if not self._wal_active or self.read_only:
             return None
-        conn = getattr(self._read_local, "conn", None)
-        if conn is not None:
-            return conn
-        if getattr(self._read_local, "failed", False):
+        with self._read_conns_lock:
+            if self._read_conns_closed:
+                return None
+            if (
+                self._read_open_failed_at
+                and time.monotonic() - self._read_open_failed_at
+                < _READ_OPEN_RETRY_SECONDS
+            ):
+                return None
+        # Take the descriptor permit BEFORE the open, so concurrent openers
+        # race for permits rather than for file descriptors. Non-blocking:
+        # losing the race means "use the writer connection", not "wait".
+        if not self._read_permits.acquire(blocking=False):
+            with self._read_conns_lock:
+                self._read_permit_exhausted += 1
+            logger.debug(
+                "read pool at capacity (%d) for %s; serving this read from the "
+                "locked writer connection",
+                _READ_POOL_MAX,
+                self.db_path,
+            )
             return None
+        # Bound before the try: the except handlers close it if the open
+        # half-succeeded, and an unbound name there would raise NameError over
+        # the top of the real failure.
+        conn = None
         try:
             conn = _connect_tracked_db(
                 f"file:{self.db_path}?mode=ro",
                 tracking_path=self.db_path,
                 uri=True,
+                # Pooled connections are borrowed by whichever thread runs
+                # the next read, and sqlite3 otherwise refuses cross-thread
+                # use ("SQLite objects created in a thread can only be used
+                # in that same thread") — including on close(), which is how
+                # the old per-thread connections became unclosable and leaked
+                # their fds. Exclusive ownership is enforced by the pool
+                # checkout/return, not by sqlite3. Matches the writer opens.
+                check_same_thread=False,
                 timeout=5.0,
                 isolation_level=None,
             )
@@ -2797,36 +3156,134 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # registry, not the database file, so mode=ro is fine.
             if self._fts_cjk_loaded:
                 load_fts5_cjk_extension(conn)
-            with self._read_conns_lock:
-                if self._read_conns_closed:
-                    # close() already drained — don't register; close
-                    # immediately so no tracked fd leaks.
-                    conn.close()
-                    self._read_local.failed = True
-                    return None
-                self._read_conns.add(conn)
         except sqlite3.Error:
-            # Mark this thread failed so we don't retry the open on every
-            # query; the locked writer connection still serves reads.
-            self._read_local.failed = True
+            # A partially-constructed connection — _connect_tracked_db
+            # succeeded, the CJK extension load did not — must be closed here.
+            # Dropping it on the floor still open leaves a live descriptor the
+            # tracking registry still counts: the same leak shape this pool
+            # exists to fix, one level further down.
+            self._discard_partial_read_conn(conn)
+            # Back off from retrying the open on every query; the locked
+            # writer connection still serves reads until the stamp expires.
+            with self._read_conns_lock:
+                self._read_open_failed_at = time.monotonic()
             logger.debug("read-only connection open failed for %s", self.db_path, exc_info=True)
+            self._read_permits.release()
             return None
-        self._read_local.conn = conn
+        except BaseException:
+            # Anything else (a non-sqlite3 extension-load failure, MemoryError,
+            # KeyboardInterrupt landing between open and return) must not
+            # strand the permit: a stranded permit is not a transient error, it
+            # permanently shrinks the read path by one slot for the life of the
+            # process.
+            self._discard_partial_read_conn(conn)
+            self._read_permits.release()
+            raise
         return conn
+
+    def _discard_partial_read_conn(self, conn) -> None:
+        """Close a connection that failed between open and hand-off.
+
+        Separate from _close_read_conn because that one releases a permit and
+        this runs on paths that release their own.
+        """
+        if conn is None:
+            return
+        try:
+            conn.close()
+        except Exception as exc:
+            logger.warning(
+                "partially-opened read conn close failed for %s: %s", self.db_path, exc
+            )
+
+    def _close_read_conn(self, conn) -> None:
+        """Close a pooled read connection and release its descriptor permit.
+
+        This was a bare ``except Exception: pass``, which silently swallowed
+        the sqlite3.ProgrammingError raised when close() ran on a thread
+        other than the one that opened the connection — the exact signature
+        of the fd leak this pool fixes. A close that fails leaks a tracked
+        fd, so it must not be invisible.
+
+        The permit is released even when close() raises: the descriptor is
+        already lost at that point, and withholding the permit too would turn
+        one leaked fd into a permanently narrower read path — failing twice for
+        one fault. The warning is the signal that matters.
+
+        Pairs with _get_read_conn(). Calling this on a connection that did not
+        come from there over-releases the BoundedSemaphore, which raises
+        ValueError rather than silently widening the ceiling.
+        """
+        try:
+            conn.close()
+        except Exception as exc:
+            logger.warning("read-conn close failed for %s: %s", self.db_path, exc)
+        finally:
+            self._read_permits.release()
+
+    def _checkout_read_conn(self) -> Optional[sqlite3.Connection]:
+        """Borrow a read connection from the pool, opening one on a miss.
+
+        The single acquisition seam for the read path: the WAL/read_only gate,
+        the pool checkout and the open-on-miss all live here, so there is
+        exactly one place to exercise (and one place for a caller to bypass by
+        accident). Returns None when the read path is unavailable and the
+        caller must fall back to the locked writer connection.
+
+        A pool hit costs no permit — the connection it hands back is already
+        holding one. Only the miss path can open, and only _get_read_conn() can
+        take a permit, so peak live connections is bounded by _READ_POOL_MAX no
+        matter how many threads miss simultaneously.
+        """
+        if not self._wal_active or self.read_only:
+            return None
+        try:
+            return self._read_pool.get_nowait()
+        except queue.Empty:
+            return self._get_read_conn()
 
     @contextmanager
     def _read_ctx(self):
         """Yield a connection for read-only statements.
 
-        WAL: a per-thread read-only connection with NO lock — recall queries
-        never convoy behind writer flushes (the gateway shares one SessionDB
-        across every agent, so this lock was a global choke point).
-        Non-WAL or read-conn failure: the shared writer connection under
-        self._lock, byte-for-byte the legacy behavior.
+        WAL: a read-only connection borrowed from a bounded pool with NO
+        lock — recall queries never convoy behind writer flushes (the
+        gateway shares one SessionDB across every agent, so this lock was a
+        global choke point). The connection is checked out for the duration
+        of the block, so no two threads ever touch it concurrently.
+        Non-WAL, read-conn failure, or _READ_POOL_MAX already reached: the
+        shared writer connection under self._lock, byte-for-byte the legacy
+        behavior.
+
+        That last case is the deliberate degradation. Past the ceiling readers
+        convoy on the writer lock instead of opening descriptors — measurably
+        slower under a burst, and the alternative is EMFILE, which takes the
+        whole process down in a way a restart-on-exit supervisor cannot see.
         """
-        conn = self._get_read_conn()
+        conn = self._checkout_read_conn()
         if conn is not None:
-            yield conn
+            try:
+                yield conn
+            finally:
+                returned = False
+                with self._read_conns_lock:
+                    if not self._read_conns_closed:
+                        try:
+                            self._read_pool.put_nowait(conn)
+                            returned = True
+                        except queue.Full:
+                            pass
+                if not returned:
+                    # close() has already drained the pool, so this connection
+                    # is surplus. Close it here — dropping it on the floor is
+                    # what leaked the fd.
+                    #
+                    # queue.Full is now unreachable in practice (permits and
+                    # maxsize are both _READ_POOL_MAX, so there can never be a
+                    # ninth connection to return), but the branch stays: it is
+                    # load-bearing if those two ever drift apart, and a leak is
+                    # the failure mode it prevents.
+                    self._close_read_conn(conn)
             return
         with self._lock:
             yield self._conn
@@ -3178,6 +3635,20 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             except sqlite3.DatabaseError as exc:
                 if _is_no_more_rows(exc) and self._sleep_before_write_retry(deadline, patience_s):
                     continue
+                # Runtime connection-corruption self-heal: a connection whose
+                # backing file was replaced/truncated by a sibling process
+                # (e.g. a forked curator agent inheriting and closing the
+                # write fd, or an external repair pass) surfaces as "file is
+                # not a database" on EVERY subsequent write. Without a
+                # reconnect branch the gateway wedges permanently: every
+                # transcript/routing write raises, messages stay in memory,
+                # and swap grows without bound until the process is killed.
+                # Close the broken connection, reopen the DB file, and retry
+                # the write once.
+                if _is_not_a_database_error(exc):
+                    if not self._reconnect_after_notadb():
+                        raise
+                    continue
                 # Corrupt FTS shadow tables make every write raise the
                 # malformed/corrupt error class through the FTS sync triggers
                 # while the canonical messages table is intact. Recover here,
@@ -3226,6 +3697,64 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 self._WRITE_RETRY_MAX_S,
             )
         time.sleep(min(jitter, max(deadline - now, 0.001)))
+        return True
+
+    def _reconnect_after_notadb(self) -> bool:
+        """Close the corrupted write connection and reopen state.db.
+
+        Returns True when the connection was successfully replaced and the
+        failed write should be retried.  Mirrors the constructor's
+        ``_connect_and_init`` so WAL/schema reconciliation runs on the fresh
+        connection.  Never raises — logs and returns False on failure so the
+        original error propagates.
+
+        One-shot per instance: a genuinely unrecoverable database must not
+        put writers into a reconnect loop that pins CPU on every write.
+        """
+        if self._notadb_reconnect_attempted:
+            return False
+        self._notadb_reconnect_attempted = True
+        logger.warning(
+            "state.db connection reported 'file is not a database' — closing "
+            "and reopening the connection to self-heal (one-shot)."
+        )
+        try:
+            with self._lock:
+                if self._conn is not None:
+                    try:
+                        self._conn.close()
+                    except Exception:
+                        pass
+                    self._conn = None
+                new_conn = _connect_tracked_db(
+                    str(self.db_path),
+                    tracking_path=self.db_path,
+                    check_same_thread=False,
+                    timeout=1.0,
+                    isolation_level=None,
+                )
+                new_conn.row_factory = sqlite3.Row
+                # Publish BEFORE schema init: _init_schema/_reconcile_columns
+                # operate on self._conn, not on the local variable.
+                self._conn = new_conn
+                self._wal_active = (
+                    apply_wal_with_fallback(new_conn, db_label="state.db")
+                    == "wal"
+                )
+                apply_database_pragmas(new_conn, db_label="state.db")
+                new_conn.execute("PRAGMA foreign_keys=ON")
+                self._fts_cjk_loaded = load_fts5_cjk_extension(new_conn)
+                self._init_schema()
+        except Exception as exc:
+            logger.error(
+                "state.db reconnect after 'file is not a database' failed (%s); "
+                "the database may need the full offline repair path.",
+                exc,
+            )
+            return False
+        logger.warning(
+            "state.db connection reopened successfully; retrying the failed write."
+        )
         return True
 
     @staticmethod
@@ -3359,9 +3888,10 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         cannot corrupt B-tree pages under I/O pressure.
 
         PASSIVE does not truncate the WAL file — it stays at its
-        high-water mark.  WAL truncation happens in :meth:`close`
-        (TRUNCATE) and pre-VACUUM checkpoints, which run infrequently
-        under controlled conditions.
+        high-water mark. Explicit checkpoints on the shared ``state.db`` no
+        longer truncate the WAL; it is bounded by ``journal_size_limit`` and
+        the writer's natural post-checkpoint reset rather than by a TRUNCATE
+        at every close or maintenance command.
 
         Previous TRUNCATE strategy caused B-tree corruption on large
         databases (65K+ pages) due to the exclusive-lock I/O pressure
@@ -3384,9 +3914,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """Close the database connection.
 
         Drains queued token deltas first (the background writer needs the
-        connection). Writable connections then attempt a TRUNCATE WAL
-        checkpoint so exiting writer processes help shrink the WAL file.
-        Read-only connections never request a checkpoint.
+        connection). Writable connections then attempt a PASSIVE WAL
+        checkpoint (NOT TRUNCATE: transient per-cron-run connections close
+        many times an hour, and a TRUNCATE fires a full WAL reset that
+        races the gateway's live writer and tears B-tree pages — issue
+        #45383). Read-only connections never request a checkpoint.
         """
         self._stop_token_writer()
         # The atexit hook holds a strong reference to this instance (bound
@@ -3395,31 +3927,33 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         # (instance, function), so this removes exactly our registration;
         # no-op when the writer never started.
         atexit.unregister(self._drain_token_queue_at_exit)
-        # Close all read-only connections across all threads.  Per-thread
-        # connections live in threading.local() and would otherwise be GC'd
-        # without calling close(), leaking tracked fds in _live_connections.
-        # The strong set holds references so short-lived reader threads'
-        # connections survive until close() drains them.  Setting the closed
-        # flag under the lock prevents a reader from registering a new
-        # connection after the drain.
+        # Drain the read-only connection pool.  Setting the closed flag
+        # under the lock first means a reader still in flight closes its own
+        # connection on release instead of re-populating a pool that has
+        # already been drained.
         with self._read_conns_lock:
             self._read_conns_closed = True
-            read_conns = list(self._read_conns)
-            self._read_conns.clear()
-        for conn in read_conns:
+        while True:
             try:
-                conn.close()
-            except Exception:
-                pass
-        self._read_local.conn = None
+                conn = self._read_pool.get_nowait()
+            except queue.Empty:
+                break
+            self._close_read_conn(conn)
         with self._lock:
             if self._conn:
                 if not self.read_only:
+                    # PASSIVE, not TRUNCATE. Every cron run_agent opens+closes a
+                    # transient SessionDB, so a TRUNCATE here fires a full WAL
+                    # reset many times/hour, racing the gateway's long-lived
+                    # writer on large WAL databases and tearing hot B-tree
+                    # pages -- the #45383 corruption this class's own periodic
+                    # checkpoint was already made PASSIVE to avoid. TRUNCATE
+                    # belongs only on a sole-opener/quiescent connection.
                     try:
-                        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                        self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
                     except Exception as exc:
                         logger.debug(
-                            "WAL checkpoint (TRUNCATE) at close failed: %s",
+                            "WAL checkpoint (PASSIVE) at close failed: %s",
                             exc,
                         )
                 self._conn.close()
@@ -10707,12 +11241,27 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             logger.warning("FTS optimize before VACUUM failed: %s", exc)
         # VACUUM cannot be executed inside a transaction.
         with self._lock:
-            # Best-effort WAL checkpoint first, then VACUUM.
+            # Best-effort WAL checkpoint first, then VACUUM. PASSIVE, not
+            # TRUNCATE: a manual `hermes sessions vacuum` runs in a transient
+            # CLI process, and a TRUNCATE reset here would race a live gateway
+            # writer and tear B-tree pages (#45383). VACUUM folds the WAL back
+            # itself; journal_size_limit bounds the file.
+            try:
+                self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except Exception as exc:
+                logger.debug("WAL checkpoint (PASSIVE) before VACUUM failed: %s", exc)
+            self._conn.execute("VACUUM")
+            # ...and again afterwards. VACUUM rewrites every page THROUGH the
+            # WAL, so the pre-VACUUM checkpoint above does nothing for the
+            # slack VACUUM itself creates: on a 3.0 GB database it left a
+            # 3.07 GB state.db-wal behind, so `sessions optimize` reported
+            # "reclaimed -11.2 MB" while actually consuming 3 GB of disk and
+            # filling the host to 100%. Truncating here is what makes the
+            # command a net win instead of a net loss on large databases.
             try:
                 self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             except Exception as exc:
-                logger.debug("WAL checkpoint (TRUNCATE) before VACUUM failed: %s", exc)
-            self._conn.execute("VACUUM")
+                logger.debug("WAL checkpoint (TRUNCATE) after VACUUM failed: %s", exc)
         return optimized
 
     def maybe_auto_prune_and_vacuum(

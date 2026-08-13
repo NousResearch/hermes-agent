@@ -153,6 +153,23 @@ delegation:
 
 If omitted, subagents use the same model as the parent.
 
+### Cost strategy: frontier planner, inexpensive workers
+
+Decomposing a problem into well-specified subtasks takes frontier-level judgment; executing a subtask that already comes with a clear goal, full context, and an output contract usually doesn't. Meanwhile the children are where the tokens go — a parallel batch of subagents typically burns the large majority of a run's total tokens, so the worker model is where the cost actually lives. Pinning `delegation.model` to an inexpensive model while your main session stays on a frontier model keeps the planning quality where it matters and cuts spend where the volume is:
+
+```yaml
+# ~/.hermes/config.yaml
+model:
+  default: "your-frontier-model"     # parent (planner) stays on the frontier model
+delegation:
+  model: "your-inexpensive-model"    # all delegate_task children run on this
+  provider: "openrouter"             # optional: route children to a different provider
+```
+
+Resolution order: `delegation.base_url` (direct endpoint) takes precedence, then `delegation.provider` (full credential bundle resolved via the runtime provider system), and when neither is set children inherit the parent's provider and credentials; `delegation.model` applies in all cases, and when it is empty children inherit the parent's model.
+
+Note that the pin is global: `delegate_task` has no per-task model parameter, so every child in a batch runs on the configured delegation model. For quality-sensitive subtasks that need a stronger model, either leave `delegation.model` unset for that session or hand the task to the [kanban board](kanban.md#per-task-model-override), which does support a per-task model override.
+
 ## Inherited Tool Access
 
 `delegate_task` does not accept a model-facing `toolsets` parameter. Each subagent inherits the parent's enabled toolsets so the model cannot grant a child capabilities that the parent does not have. Configure the parent's tools before starting the conversation if delegated work needs additional capabilities.
@@ -350,6 +367,37 @@ For **durable execution** that must survive session closure or process restart, 
 - Only the final summary enters the parent's context, keeping token usage efficient
 - Subagents inherit the parent's **API key, provider configuration, and credential pool** (enabling key rotation on rate limits)
 
+## Worktree Isolation
+
+By default, subagents share the parent's working directory — fine for research
+and read-heavy work, but parallel children editing the same repo can collide.
+Set `delegation.worktree_isolation: true` to give each child its own git
+worktree, branched from the repo's current `HEAD` (inspired by Muse Code's
+`--subagent-worktree-isolation`):
+
+```yaml
+delegation:
+  worktree_isolation: true   # default: false
+```
+
+With isolation on:
+
+- Each child starts its terminal in `<repo>/.worktrees/subagent-<id>` on its
+  own branch `hermes-subagent/subagent-<id>`, and its goal message tells it to
+  work and commit there.
+- The parent's checkout stays untouched; children can't clobber each other's
+  edits.
+- When a child finishes, its result entry gains a `worktree` field reporting
+  `path`, `branch`, `commits` (ahead of the base), and `dirty`. The parent
+  reviews or merges each branch (`git log <branch>`, `git merge <branch>`).
+- A worktree left with **no commits and a clean tree is pruned automatically**
+  (`pruned: true`); anything holding work is kept.
+
+Scope: opt-in, git-only, and local-terminal-backend-only. In a non-git
+directory, on docker/ssh/modal backends, or if worktree creation fails, the
+setting degrades silently to today's shared-workspace behavior — never an
+error.
+
 ## Delegation vs execute_code
 
 | Factor | delegate_task | execute_code |
@@ -371,6 +419,7 @@ For **durable execution** that must survive session closure or process restart, 
 delegation:
   max_iterations: 50                        # Max turns per child (default: 50)
   # max_concurrent_children: 3              # Parallel children per batch (default: 3)
+  # worktree_isolation: false               # Give each child its own git worktree (see Worktree Isolation above)
   # max_spawn_depth: 1                      # Tree depth (floor 1, no ceiling, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3+ for deeper trees.
   # orchestrator_enabled: true              # Disable to force all children to leaf role.
   model: "google/gemini-3-flash-preview"             # Optional provider/model override

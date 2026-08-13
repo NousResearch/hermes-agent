@@ -1178,8 +1178,35 @@ def _resolve_home_env_var(platform_name: str) -> str:
     return _plugin_cron_env_var(name)
 
 
-def _get_home_target_chat_id(platform_name: str) -> str:
-    """Return the configured home target chat/room ID for a delivery platform."""
+def _get_config_home_channel(platform_name: str):
+    """Return the persisted ``HomeChannel`` for a platform from gateway config.
+
+    ``/sethome`` declares ``config.yaml`` canonical (it is the only store that
+    survives for relay-fronted logical platforms, whose adapters are not
+    natively enabled) and mirrors the value into the legacy
+    ``<PLATFORM>_HOME_CHANNEL`` env var only as a best-effort compatibility
+    shim.  Cron historically read ONLY the env mirror, so a home channel that
+    existed solely in config.yaml — e.g. Discord fronted by the relay
+    connector, where no ``DISCORD_HOME_CHANNEL`` was ever exported — was
+    invisible and jobs silently fell back to local-only.  Reading the
+    canonical store here fixes that for every relay-fronted platform at once.
+    """
+    try:
+        from gateway.config import load_gateway_config, Platform
+
+        config = load_gateway_config()
+        platform = Platform(platform_name.lower())
+        return config.get_home_channel(platform)
+    except Exception:
+        logger.debug(
+            "config home_channel lookup failed for platform %r",
+            platform_name, exc_info=True,
+        )
+        return None
+
+
+def _env_home_target_chat_id(platform_name: str) -> str:
+    """Return the home chat id from the legacy env mirror only (no config)."""
     env_var = _resolve_home_env_var(platform_name)
     if not env_var:
         return ""
@@ -1189,6 +1216,22 @@ def _get_home_target_chat_id(platform_name: str) -> str:
         if legacy:
             value = os.getenv(legacy, "")
     return value
+
+
+def _get_home_target_chat_id(platform_name: str) -> str:
+    """Return the configured home target chat/room ID for a delivery platform.
+
+    Resolution order: platform env var (legacy mirror, kept first so an
+    operator override keeps winning) → legacy env var name → the canonical
+    ``home_channel`` block persisted in config.yaml by ``/sethome``.
+    """
+    value = _env_home_target_chat_id(platform_name)
+    if value:
+        return value
+    home = _get_config_home_channel(platform_name)
+    if home is not None and home.chat_id:
+        return str(home.chat_id)
+    return ""
 
 
 def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
@@ -1203,18 +1246,26 @@ def _get_home_target_thread_id(platform_name: str) -> Optional[str]:
     without changing the lobby invariant.
     """
     env_var = _resolve_home_env_var(platform_name)
-    if not env_var:
-        return None
     if platform_name.lower() == "telegram":
         cron_thread = os.getenv("TELEGRAM_CRON_THREAD_ID", "").strip()
         if cron_thread:
             return cron_thread
-    value = os.getenv(f"{env_var}_THREAD_ID", "").strip()
-    if not value:
+    value = os.getenv(f"{env_var}_THREAD_ID", "").strip() if env_var else ""
+    if not value and env_var:
         legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
         if legacy:
             value = os.getenv(f"{legacy}_THREAD_ID", "").strip()
-    return value or None
+    if value:
+        return value
+    # Canonical config.yaml fallback — same rationale as
+    # _get_home_target_chat_id, and thread affinity only applies when the
+    # chat itself resolved from the same config block (an env-provided chat
+    # id keeps its env-provided thread semantics).
+    if not _env_home_target_chat_id(platform_name):
+        home = _get_config_home_channel(platform_name)
+        if home is not None and home.thread_id:
+            return str(home.thread_id)
+    return None
 
 
 def _iter_home_target_platforms():
@@ -1312,28 +1363,22 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         platform_name, rest = deliver_value.split(":", 1)
         platform_key = platform_name.lower()
 
-        from tools.send_message_tool import _parse_target_ref
+        from tools.send_message_tool import (
+            prepare_send_message_platforms,
+            resolve_send_target,
+        )
 
-        parsed_chat_id, parsed_thread_id, is_explicit = _parse_target_ref(platform_key, rest)
-        if is_explicit:
-            chat_id, thread_id = parsed_chat_id, parsed_thread_id
-        else:
-            chat_id, thread_id = rest, None
-
-        # Resolve human-friendly labels like "Alice (dm)" to real IDs.
-        try:
-            from gateway.channel_directory import resolve_channel_name
-            resolved = resolve_channel_name(platform_key, chat_id)
-            if resolved:
-                parsed_chat_id, parsed_thread_id, resolved_is_explicit = _parse_target_ref(platform_key, resolved)
-                if resolved_is_explicit:
-                    chat_id = parsed_chat_id
-                    if parsed_thread_id is not None:
-                        thread_id = parsed_thread_id
-                else:
-                    chat_id = resolved
-        except Exception:
-            pass
+        prepare_send_message_platforms()
+        chat_id, thread_id, resolution_error = resolve_send_target(
+            platform_key, rest
+        )
+        if resolution_error:
+            logger.warning(
+                "Invalid cron delivery target '%s': %s",
+                deliver_value,
+                resolution_error,
+            )
+            return None
 
         if (
             thread_id is None
@@ -1741,7 +1786,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             pconfig = config.platforms.get(platform)
             runtime_adapter = None
 
-        if not pconfig or not pconfig.enabled:
+        if transport is not None and transport.is_relay:
+            # A relay transport carries the RELAY adapter's config, and
+            # resolve_delivery_transport already applied relay's enablement
+            # rule (config block absent OR enabled). The logical platform is
+            # deliberately NOT natively enabled in a relay-fronted deployment
+            # (its credential lives in the connector), so the native
+            # configured/enabled gate below must not apply — it used to
+            # reject exactly the targets the relay was resolved to serve.
+            if pconfig is None:
+                from gateway.config import PlatformConfig
+                pconfig = PlatformConfig(enabled=True)
+        elif not pconfig or not pconfig.enabled:
             msg = f"platform '{platform_name}' not configured/enabled"
             logger.warning("Job '%s': %s", job["id"], msg)
             delivery_errors.append(msg)

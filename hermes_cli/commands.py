@@ -301,9 +301,9 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("reload_mcp",)),
     CommandDef("reload-skills", "Re-scan ~/.hermes/skills/ for newly installed or removed skills",
                "Tools & Skills", aliases=("reload_skills",)),
-    CommandDef("browser", "Connect browser tools to your live Chromium-family browser via CDP", "Tools & Skills",
-               cli_only=True, args_hint="[connect|disconnect|status]",
-               subcommands=("connect", "disconnect", "status")),
+    CommandDef("browser", "Connect browser tools to your live Chromium-family browser via CDP, or switch to Browser Use mode", "Tools & Skills",
+               cli_only=True, args_hint="[connect|disconnect|status|use]",
+               subcommands=("connect", "disconnect", "status", "use")),
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
 
@@ -1781,7 +1781,14 @@ class SlashCommandCompleter(Completer):
                     raw = proc.stdout.strip().split("\n")
                     # Store relative paths
                     for p in raw[:5000]:
-                        rel = os.path.relpath(p, cwd) if os.path.isabs(p) else p
+                        try:
+                            rel = os.path.relpath(p, cwd) if os.path.isabs(p) else p
+                        except ValueError:
+                            # Windows: relpath raises for paths on a different
+                            # mount than cwd — device paths (\\.\nul, \\.\con)
+                            # or another drive letter. One bad entry must not
+                            # crash the @ autocomplete event loop (#42016).
+                            continue
                         files.append(rel)
                     break
             except (subprocess.TimeoutExpired, OSError):

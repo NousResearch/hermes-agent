@@ -312,3 +312,61 @@ def test_vertex_default_model_estimates_cached_usage(monkeypatch):
 
     assert result.status == "estimated"
     assert result.amount_usd is not None and result.amount_usd > 0
+
+
+def test_normalize_usage_minimax_logs_cache_observability(caplog):
+    """MiniMax providers on the Anthropic wire emit a debug-level
+    cache-observability line recording the observable fields
+    (input_tokens, output_tokens, cache_read_tokens, cache_write_tokens),
+    so an operator can see real cache behavior without trusting the
+    misleading cache_read number (constant +128 floor on MiniMax-M3).
+    Standard logging level gating applies — no separate opt-in flag.
+    """
+    usage = SimpleNamespace(
+        input_tokens=1,
+        output_tokens=11,
+        cache_read_input_tokens=8594,
+        cache_creation_input_tokens=0,
+    )
+
+    with caplog.at_level("DEBUG", logger="agent.usage_pricing"):
+        normalize_usage(
+            usage,
+            provider="minimax-cn",
+            api_mode="anthropic_messages",
+        )
+
+    cache_obs_records = [r for r in caplog.records if "cache_observability" in r.message]
+    assert len(cache_obs_records) == 1
+    record = cache_obs_records[0]
+    assert "input_tokens=1" in record.message
+    assert "output_tokens=11" in record.message
+    assert "cache_read_tokens=8594" in record.message
+    assert "cache_write_tokens=0" in record.message
+
+
+def test_normalize_usage_native_anthropic_no_cache_observability(caplog):
+    """The MiniMax cache-observability line must NOT fire for native
+    Anthropic: there cache_read_input_tokens is exact and billable, so
+    the MiniMax-specific "+128 floor / unreliable hit signal" note would
+    be false and misleading in the logs.
+    """
+    usage = SimpleNamespace(
+        input_tokens=100,
+        output_tokens=20,
+        cache_read_input_tokens=50,
+        cache_creation_input_tokens=10,
+    )
+
+    with caplog.at_level("DEBUG", logger="agent.usage_pricing"):
+        result = normalize_usage(
+            usage,
+            provider="anthropic",
+            api_mode="anthropic_messages",
+        )
+
+    assert all("cache_observability" not in rec.message for rec in caplog.records)
+    # Token normalization itself is unaffected.
+    assert result.input_tokens == 100
+    assert result.cache_read_tokens == 50
+    assert result.cache_write_tokens == 10

@@ -37,6 +37,11 @@ const REMOTE_LOCK_DIR = '~/.hermes/desktop-ssh'
 const SUPPORTED_REMOTE_OS = new Set(['Linux', 'Darwin'])
 const DEFAULT_READY_TIMEOUT_MS = 45_000
 const READY_POLL_INTERVAL_MS = 750
+// macOS sshd starts non-interactive shells with a 256-FD soft limit even when
+// the hard limit is unlimited. A Desktop backend can legitimately exceed that
+// while serving several profiles/tools, so raise only the child process limit.
+// Keep startup portable: restricted hosts retain their existing limit.
+const REMOTE_NOFILE_SOFT_LIMIT = 65_536
 
 function mintToken() {
   return crypto.randomBytes(32).toString('hex')
@@ -442,7 +447,10 @@ function buildSpawnCommand(hermesPath, profile, opts: any = {}) {
   const tokenArg = tokenFilePath ? ` --ssh-session-token-file ${expandRemotePath(tokenFilePath)}` : ''
   const ownerArg = opts.spawnNonce ? ` --ssh-owner-nonce ${validateSpawnNonce(opts.spawnNonce)}` : ''
   const subCmd = `serve --isolated --host 127.0.0.1 --port 0${tokenArg}${ownerArg}`
-  const dashCmd = `env HERMES_DESKTOP=1 ${hermes} ${profileArgs}${subCmd}`
+
+  const dashCmd =
+    `ulimit -n ${REMOTE_NOFILE_SOFT_LIMIT} 2>/dev/null || true; ` +
+    `exec env HERMES_DESKTOP=1 ${hermes} ${profileArgs}${subCmd}`
 
   return (
     `mkdir -p "$(dirname ${logPath})" && ` +

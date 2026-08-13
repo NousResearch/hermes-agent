@@ -915,5 +915,26 @@ class TestProfilesToServe:
         assert serve["default"] == _get_default_hermes_home()
         assert serve["coder"] == get_profile_dir("coder")
 
+    def test_empty_allowlist_serves_only_default(self, profile_env):
+        create_profile("worker", no_alias=True)
+
+        serve = dict(profiles_to_serve(multiplex=True, profile_allowlist=[]))
+
+        assert serve == {"default": _get_default_hermes_home()}
+
+    def test_allowlist_normalizes_deduplicates_and_keeps_default(self, profile_env):
+        create_profile("worker", no_alias=True)
+        create_profile("guest", no_alias=True)
+
+        serve = dict(
+            profiles_to_serve(
+                multiplex=True,
+                profile_allowlist=[" Worker ", "worker", "default", "missing"],
+            )
+        )
+
+        assert set(serve) == {"default", "worker"}
+        assert serve["worker"] == get_profile_dir("worker")
+
 
 

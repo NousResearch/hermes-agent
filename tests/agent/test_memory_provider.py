@@ -216,6 +216,26 @@ class TestMemoryManager:
         # p1 failed but p2 still synced
         assert p2.synced_turns == [("user", "assistant")]
 
+    def test_sync_all_keeps_legacy_provider_working_when_messages_are_available(self):
+        """New optional turn context is not sent to an old provider signature."""
+        mgr = MemoryManager()
+        legacy_provider = FakeMemoryProvider("legacy")
+        mgr.add_provider(legacy_provider)
+        completed_messages = [
+            {"role": "user", "content": "user"},
+            {"role": "assistant", "content": "assistant"},
+        ]
+
+        mgr.sync_all(
+            "user",
+            "assistant",
+            session_id="legacy-session",
+            messages=completed_messages,
+        )
+        mgr.flush_pending(timeout=5)
+
+        assert legacy_provider.synced_turns == [("user", "assistant")]
+
     # -- Tool routing -------------------------------------------------------
 
 
@@ -417,13 +437,15 @@ class TestUserInstalledProviderCli:
             "    def get_tool_schemas(self): return []\n"
             "    def handle_tool_call(self, *a, **kw): return '{}'\n"
             "def register(ctx):\n"
-            "    ctx.register_memory_provider(MyProvider())\n"
+            "    ctx.register_memory_provider(MyProvider())\n",
+            encoding="utf-8",
         )
-        (plugin_dir / "config.py").write_text("STATUS = 'ok'\n")
+        (plugin_dir / "config.py").write_text("STATUS = 'ok'\n", encoding="utf-8")
         (plugin_dir / "cli.py").write_text(
             "from . import config\n"
             "def register_cli(subparser):\n"
-            "    subparser.add_argument('--status', action='store_true')\n"
+            "    subparser.add_argument('--status', action='store_true')\n",
+            encoding="utf-8",
         )
         return plugin_dir
 

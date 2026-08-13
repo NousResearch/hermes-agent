@@ -58,9 +58,12 @@ jobs:
       - name: Run live comment poller
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITHUB_REPOSITORY: ${{ github.repository }}
-          # The CI run to report on — not this run.
-          GITHUB_RUN_ID: ${{ github.event.workflow_run.id }}
+          # The CI run to report on — not this run. The name must not be
+          # GITHUB_RUN_ID: the runner sets the GITHUB_* defaults itself and
+          # ignores an env: override, so that name silently resolves to THIS
+          # run. The poller then watches itself, which stays in_progress for
+          # as long as the poller runs, and it waits out its whole timeout.
+          CI_RUN_ID: ${{ github.event.workflow_run.id }}
           # Sibling runs for the same commit that the comment also covers,
           # one workflow name per line (a name can contain a comma).
           # The poller resolves each name to its runs through the API.

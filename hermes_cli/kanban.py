@@ -655,6 +655,50 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     )
     p_unblock.add_argument("task_ids", nargs="+")
 
+    p_request_review = sub.add_parser(
+        "request-review",
+        help="Move a task to 'review' (implementation done, awaiting review) — NOT a block",
+    )
+    p_request_review.add_argument("task_id")
+    p_request_review.add_argument(
+        "--summary", default=None,
+        help="What was implemented and how it was verified — shown to the reviewer.",
+    )
+    p_request_review.add_argument(
+        "--reviewer", default=None,
+        help="Optional reviewer profile; reassigns the task before review dispatch.",
+    )
+    p_request_review.add_argument(
+        "--metadata", default=None,
+        help="JSON object with structured reviewer handoff facts.",
+    )
+    p_request_review.add_argument(
+        "--force", action="store_true",
+        help=(
+            "Override the live-claim guard: move a running, claimed task to "
+            "review even without owning its run (clears the worker's claim)."
+        ),
+    )
+
+    p_request_changes = sub.add_parser(
+        "request-changes",
+        help="Reviewer verdict: return the active review run to its implementer",
+    )
+    p_request_changes.add_argument("task_id")
+    p_request_changes.add_argument(
+        "reason", nargs="+", help="Concrete changes required before re-review",
+    )
+
+    p_reopen_review = sub.add_parser(
+        "reopen-review",
+        help="Send one or more review tasks back for changes (review -> ready/todo)",
+    )
+    p_reopen_review.add_argument("task_ids", nargs="+")
+    p_reopen_review.add_argument(
+        "--reason", default=None,
+        help="Optional reason/note — recorded as a comment before reopening. Quote multi-word reasons.",
+    )
+
     p_promote = sub.add_parser(
         "promote",
         help="Manually move one or more todo/blocked tasks to ready (recovery path)",
@@ -1066,6 +1110,9 @@ def kanban_command(args: argparse.Namespace) -> int:
             "block":    _cmd_block,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
+            "request-review": _cmd_request_review,
+            "request-changes": _cmd_request_changes,
+            "reopen-review":  _cmd_reopen_review,
             "promote":  _cmd_promote,
             "archive":  _cmd_archive,
             "tail":     _cmd_tail,
@@ -1624,6 +1671,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    graph = None
     with kb.connect_closing() as conn:
         task = kb.get_task(conn, args.task_id)
         if not task:
@@ -1638,6 +1686,8 @@ def _cmd_show(args: argparse.Namespace) -> int:
         # ``result=``. Surfacing the latest summary here keeps ``show`` from
         # looking like a no-op when the worker actually did real work.
         latest_summary = kb.latest_summary(conn, args.task_id)
+        if not getattr(args, "json", False):
+            graph = kb.task_graph_context(conn, task.id)
 
     if getattr(args, "json", False):
         payload = {
@@ -1715,7 +1765,7 @@ def _cmd_show(args: argparse.Namespace) -> int:
     # of show output so CLI users see them before scrolling through
     # comments / runs.
     from hermes_cli import kanban_diagnostics as kd
-    diags = kd.compute_task_diagnostics(task, events, runs)
+    diags = kd.compute_task_diagnostics(task, events, runs, graph=graph)
     if diags:
         sev_marker = {"warning": "⚠", "error": "!!", "critical": "!!!"}
         print(f"\n  Diagnostics ({len(diags)}):")
@@ -1883,6 +1933,7 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                     task,
                     kb.list_events(conn, args.task),
                     kb.list_runs(conn, args.task),
+                    graph=kb.task_graph_context(conn, args.task),
                     config=diag_config,
                 )
             }
@@ -1908,6 +1959,7 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                     tuple(ids),
                 ):
                     run_by.setdefault(row["task_id"], []).append(row)
+                graph_by = kb.task_graph_contexts(conn, ids)
                 diags_by_task = {}
                 for r in rows:
                     tid = r["id"]
@@ -1915,6 +1967,7 @@ def _cmd_diagnostics(args: argparse.Namespace) -> int:
                         r,
                         ev_by.get(tid, []),
                         run_by.get(tid, []),
+                        graph=graph_by.get(tid),
                         config=diag_config,
                     )
                     if dl:
@@ -2138,6 +2191,39 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return None
 
 
+def _goal_mode_handoff_rejection(task: Optional[kb.Task], evidence: str) -> Optional[str]:
+    """Apply the goal judge to every terminal worker handoff, including review."""
+    if task is None or not task.goal_mode:
+        return None
+    try:
+        from agent.auxiliary_client import get_text_auxiliary_client
+
+        client, model = get_text_auxiliary_client("goal_judge")
+    except Exception:
+        return None
+    if client is None or not model:
+        return None
+
+    from hermes_cli.goals import judge_goal
+
+    verdict = "done"
+    reason = ""
+    try:
+        verdict, reason, _, _, _ = judge_goal(
+            goal=f"{task.title}\n\n{task.body or ''}".strip(),
+            last_response=evidence.strip(),
+        )
+    except Exception as judge_exc:
+        import logging as _logging
+
+        _logging.getLogger(__name__).warning(
+            "goal judge check failed, allowing lifecycle handoff: %s",
+            judge_exc,
+            exc_info=True,
+        )
+    return reason if verdict != "done" else None
+
+
 def _cmd_complete(args: argparse.Namespace) -> int:
     """Mark one or more tasks done. Supports a single id or a list."""
     ids = list(args.task_ids or [])
@@ -2169,49 +2255,22 @@ def _cmd_complete(args: argparse.Namespace) -> int:
     failed: list[str] = []
     with kb.connect_closing() as conn:
         for tid in ids:
-            # Goal-mode pre-completion judge gate (mirrors the gate in
-            # tools/kanban_tools.py:_handle_complete — Issue #38367).
-            # Without this, a goal_mode worker can call
-            # `hermes kanban complete <id>` from the terminal tool and
-            # bypass the auxiliary judge that the tool-call path enforces.
+            # Goal-mode judge gate (mirrors tools/kanban_tools.py). Apply it
+            # to every terminal handoff so request-review cannot bypass the
+            # acceptance contract that protects complete.
             task = kb.get_task(conn, tid)
-            if task and task.goal_mode:
-                judge_available = False
-                try:
-                    from agent.auxiliary_client import get_text_auxiliary_client
-                    _client, _model = get_text_auxiliary_client("goal_judge")
-                    judge_available = _client is not None and bool(_model)
-                except Exception:
-                    pass
-                if judge_available:
-                    from hermes_cli.goals import judge_goal
-                    verdict = "done"
-                    reason = ""
-                    try:
-                        # judge_goal returns (verdict, reason, parse_failed,
-                        # wait_directive, transport_failed) — see
-                        # hermes_cli/goals.py. Unpacking fewer raises
-                        # ValueError into the fail-open handler below,
-                        # silently disabling the gate.
-                        verdict, reason, _, _, _ = judge_goal(
-                            goal=f"{task.title}\n\n{task.body or ''}".strip(),
-                            last_response=(summary or args.result or "").strip(),
-                        )
-                    except Exception as judge_exc:
-                        import logging as _logging
-                        _logging.getLogger(__name__).warning(
-                            "goal judge check failed, allowing completion: %s",
-                            judge_exc,
-                            exc_info=True,
-                        )
-                    if verdict != "done":
-                        print(
-                            f"kanban: goal completion of {tid} rejected by judge: {reason}. "
-                            f"Provide evidence matching the task's acceptance criteria.",
-                            file=sys.stderr,
-                        )
-                        failed.append(tid)
-                        continue
+            rejection = _goal_mode_handoff_rejection(
+                task,
+                (summary or args.result or "").strip(),
+            )
+            if rejection is not None:
+                print(
+                    f"kanban: goal completion of {tid} rejected by judge: {rejection}. "
+                    f"Provide evidence matching the task's acceptance criteria.",
+                    file=sys.stderr,
+                )
+                failed.append(tid)
+                continue
 
             if not kb.complete_task(
                 conn, tid,
@@ -2333,6 +2392,110 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
                 print(f"cannot unblock {tid} (not blocked/scheduled?)", file=sys.stderr)
             else:
                 print(f"Unblocked {tid}" + (f": {reason}" if reason else ""))
+    return 0 if not failed else 1
+
+
+def _cmd_request_review(args: argparse.Namespace) -> int:
+    tid = args.task_id
+    summary = getattr(args, "summary", None)
+    if summary is not None:
+        summary = summary.strip() or None
+    raw_metadata = getattr(args, "metadata", None)
+    metadata = None
+    if raw_metadata:
+        try:
+            metadata = json.loads(raw_metadata)
+            if not isinstance(metadata, dict):
+                raise ValueError("must be a JSON object")
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"kanban: --metadata: {exc}", file=sys.stderr)
+            return 2
+    reviewer = getattr(args, "reviewer", None)
+    with kb.connect_closing() as conn:
+        rejection = _goal_mode_handoff_rejection(
+            kb.get_task(conn, tid),
+            summary or "",
+        )
+        if rejection is not None:
+            print(
+                f"kanban: goal review handoff of {tid} rejected by judge: "
+                f"{rejection}. Provide acceptance evidence matching the task.",
+                file=sys.stderr,
+            )
+            return 1
+        ok, reason = kb.request_review(
+            conn,
+            tid,
+            summary=summary,
+            metadata=metadata,
+            reviewer=reviewer,
+            expected_run_id=_worker_run_id_for(tid),
+            force=bool(getattr(args, "force", False)),
+            with_reason=True,
+        )
+        if not ok:
+            detail = reason or "not running/ready?"
+            print(
+                f"cannot request review for {tid}: {detail}",
+                file=sys.stderr,
+            )
+            return 1
+        persisted_run = kb.latest_run(conn, tid)
+        display_summary = persisted_run.summary if persisted_run else None
+        print(
+            f"Requested review for {tid}"
+            + (f": {display_summary}" if display_summary else "")
+        )
+    return 0
+
+
+def _cmd_request_changes(args: argparse.Namespace) -> int:
+    tid = args.task_id
+    reason = " ".join(args.reason).strip()
+    with kb.connect_closing() as conn:
+        ok, detail = kb.request_changes(
+            conn,
+            tid,
+            reason=reason,
+            expected_run_id=_worker_run_id_for(tid),
+        )
+        if not ok:
+            print(
+                f"cannot request changes for {tid}: {detail or 'invalid review state'}",
+                file=sys.stderr,
+            )
+            return 1
+        print(
+            f"Requested changes for {tid}"
+            + (f"; routed to {detail}" if detail else "")
+        )
+    return 0
+
+
+def _cmd_reopen_review(args: argparse.Namespace) -> int:
+    ids = list(args.task_ids or [])
+    if not ids:
+        print("at least one task_id is required", file=sys.stderr)
+        return 1
+    reason = getattr(args, "reason", None)
+    if reason is not None:
+        reason = str(kb.redact_review_value(reason.strip())).strip() or None
+    author = _profile_author() if reason else None
+    failed: list[str] = []
+    with kb.connect_closing() as conn:
+        for tid in ids:
+            if not kb.reopen_review_task(conn, tid):
+                failed.append(tid)
+                print(f"cannot reopen {tid} (not in review?)", file=sys.stderr)
+            else:
+                if reason:
+                    kb.add_comment(
+                        conn,
+                        tid,
+                        author or "operator",
+                        f"CHANGES REQUESTED: {reason}",
+                    )
+                print(f"Reopened {tid}" + (f": {reason}" if reason else ""))
     return 0 if not failed else 1
 
 
@@ -3145,6 +3308,7 @@ Common subcommands:
   `comment <id> <msg>`  Append a comment
   `attach <id> <path>`  Attach a local file; `attachments <id>` to list
   `complete <id>…`      Mark task(s) done
+  `request-review <id>` Enter first-class review; `request-changes <id> <reason>` returns an active review to its implementer
   `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
   `assign <id> <profile>`  Reassign
   `boards list`         Show all boards

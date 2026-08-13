@@ -449,6 +449,70 @@ def _parse_search_context_line(line: str) -> tuple[str, int, str] | None:
 # Abstract Interface
 # =============================================================================
 
+_MAGIC_SIGNATURES: tuple = (
+    # (prefix bytes, human name) — ordered, first match wins. Longest
+    # prefixes for a shared first byte come first.
+    (b"\x89PNG\r\n\x1a\n", "PNG image data"),
+    (b"\xff\xd8\xff", "JPEG image data"),
+    (b"GIF87a", "GIF image data"),
+    (b"GIF89a", "GIF image data"),
+    (b"RIFF", "RIFF container (WAV/AVI/WebP family)"),
+    (b"%PDF-", "PDF document"),
+    (b"PK\x03\x04", "ZIP archive (also docx/xlsx/jar/apk)"),
+    (b"PK\x05\x06", "ZIP archive (empty)"),
+    (b"\x1f\x8b", "gzip compressed data"),
+    (b"BZh", "bzip2 compressed data"),
+    (b"\xfd7zXZ\x00", "xz compressed data"),
+    (b"7z\xbc\xaf\x27\x1c", "7-Zip archive"),
+    (b"\x7fELF", "ELF executable"),
+    (b"MZ", "Windows PE executable"),
+    (b"\xcf\xfa\xed\xfe", "Mach-O executable (64-bit)"),
+    (b"\xca\xfe\xba\xbe", "Mach-O universal binary / Java class"),
+    (b"SQLite format 3\x00", "SQLite database"),
+    (b"OggS", "Ogg container"),
+    (b"fLaC", "FLAC audio"),
+    (b"ID3", "MP3 audio (ID3 tag)"),
+    (b"\x00\x00\x00", "ISO media container (MP4/MOV family)"),  # ftyp at +4
+    (b"BM", "BMP image data"),
+    (b"II*\x00", "TIFF image data (little-endian)"),
+    (b"MM\x00*", "TIFF image data (big-endian)"),
+)
+
+
+def identify_binary_bytes(sample: bytes) -> str:
+    """Best-effort human name for binary content from its magic bytes.
+
+    Returns e.g. ``"PNG image data"`` or ``"unknown binary"``. Never raises.
+    The ISO-media entry additionally checks for ``ftyp`` at offset 4, since
+    the leading size field alone (three NULs) is too weak a signature.
+    """
+    if not sample:
+        return "unknown binary"
+    for prefix, name in _MAGIC_SIGNATURES:
+        if sample.startswith(prefix):
+            if name.startswith("ISO media") and sample[4:8] != b"ftyp":
+                continue
+            return name
+    return "unknown binary"
+
+
+def describe_binary_file(sample: Optional[bytes], file_size: int) -> str:
+    """One-line answer for the binary-file refusal.
+
+    Naming the dead end: "Binary file" alone sends the model hunting for
+    'appropriate tools' that may not exist in its toolset. Naming the TYPE
+    ("PNG image data, 4.1 KB") answers what-is-this in a single read.
+    """
+    kind = identify_binary_bytes(sample or b"")
+    if file_size >= 1024 * 1024:
+        size = f"{file_size / (1024 * 1024):.1f} MB"
+    elif file_size >= 1024:
+        size = f"{file_size / 1024:.1f} KB"
+    else:
+        size = f"{file_size} bytes"
+    return f"Binary file ({kind}, {size}) — cannot display as text."
+
+
 class FileOperations(ABC):
     """Abstract interface for file operations across terminal backends."""
     
@@ -1080,6 +1144,34 @@ class ShellFileOperations(FileOperations):
         # Use single quotes and escape any single quotes in the string
         return "'" + arg.replace("'", "'\"'\"'") + "'"
 
+    def _escape_native_tool_arg(self, arg: str) -> str:
+        """Escape a path argument destined for a NATIVE Windows binary.
+
+        ``_escape_shell_arg`` rewrites Windows paths to the Git Bash MSYS
+        form (``/c/Users/x``) so bash builtins resolve them. But native
+        Windows binaries invoked from that bash (ripgrep installed via
+        winget/cargo/choco, native git, etc.) do not understand ``/c/...``
+        paths — and Hermes disables MSYS argument conversion for its bash
+        subprocesses (``MSYS_NO_PATHCONV=1`` / ``MSYS2_ARG_CONV_EXCL=*``,
+        see ``_apply_windows_msys_bash_env_defaults``), so nothing ever
+        translates the MSYS form back. The native tool then fails with
+        ``The system cannot find the path specified. (os error 3)``.
+
+        The forward-slash native form (``C:/Users/x``) is the one spelling
+        every layer accepts: bash passes it through untouched (it is not an
+        absolute POSIX path, so no conversion applies even without the
+        opt-outs), and Windows APIs treat ``/`` and ``\\`` as equivalent
+        separators. MSYS builds of the same tools accept it too, so this is
+        safe regardless of which flavor of the binary is installed.
+
+        On non-Windows hosts this is exactly ``_escape_shell_arg``.
+        """
+        from tools.environments.local import _IS_WINDOWS, _msys_to_windows_path
+
+        if _IS_WINDOWS and arg:
+            arg = _msys_to_windows_path(arg).replace("\\", "/")
+        return "'" + arg.replace("'", "'\"'\"'") + "'"
+
     def _atomic_write(self, path: str, content: str) -> "ExecuteResult":
         """Write ``content`` to ``path`` atomically via temp-file + rename.
 
@@ -1339,7 +1431,7 @@ class ShellFileOperations(FileOperations):
             return ReadResult(
                 is_binary=True,
                 file_size=file_size,
-                error="Binary file - cannot display as text. Use appropriate tools to handle this file type."
+                error=describe_binary_file(sample_bytes, file_size),
             )
         
         # Read with pagination using sed, clamping each line to a byte
@@ -1574,7 +1666,7 @@ class ShellFileOperations(FileOperations):
         if is_binary:
             return ReadResult(
                 is_binary=True, file_size=file_size,
-                error="Binary file — cannot display as text."
+                error=describe_binary_file(sample_bytes, file_size),
             )
         cat_result = self._exec(f"cat {self._escape_shell_arg(path)}")
         if cat_result.exit_code != 0:
@@ -2215,8 +2307,12 @@ class ShellFileOperations(FileOperations):
         if not self._has_command(base_cmd):
             return LintResult(skipped=True, message=f"{base_cmd} not available")
 
-        # Run linter
-        cmd = linter_cmd.replace("{file}", self._escape_shell_arg(path))
+        # Run linter. Linters (python, node, tsc, go, rustfmt) are native
+        # Windows binaries on Windows hosts: they need the C:/... path form.
+        # The MSYS /c/... form makes node resolve the file as C:\c\Users\...
+        # (double-prefixed) — every .js write then reports a phantom ENOENT
+        # lint failure. Native form works for MSYS builds too.
+        cmd = linter_cmd.replace("{file}", self._escape_native_tool_arg(path))
         result = self._exec(cmd, timeout=30)
 
         if result.exit_code != 0 and _looks_like_linter_unusable(base_cmd, result.stdout):
@@ -2634,7 +2730,7 @@ class ShellFileOperations(FileOperations):
         glob_expr = f" --glob {self._escape_shell_arg(file_glob)}" if file_glob else ""
         probe = self._exec(
             f"rg -i --count-matches{glob_expr} "
-            f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+            f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
             f"2>/dev/null | head -50",
             timeout=30,
         )
@@ -2656,7 +2752,7 @@ class ShellFileOperations(FileOperations):
         # missing from results).
         hidden = self._exec(
             f"rg --hidden --no-ignore --count-matches{glob_expr} "
-            f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+            f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
             f"2>/dev/null | head -50",
             timeout=30,
         )
@@ -2676,7 +2772,7 @@ class ShellFileOperations(FileOperations):
         if re.search(r"[.\[\](){}?*+^$\\|]", pattern):
             fixed = self._exec(
                 f"rg -F --count-matches{glob_expr} "
-                f"{self._escape_shell_arg(pattern)} {self._escape_shell_arg(path)} "
+                f"{self._escape_shell_arg(pattern)} {self._escape_native_tool_arg(path)} "
                 f"2>/dev/null | head -50",
                 timeout=30,
             )
@@ -2798,7 +2894,7 @@ class ShellFileOperations(FileOperations):
         # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
         cmd_sorted = (
             f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
-            f"{self._escape_shell_arg(path)} 2>/dev/null "
+            f"{self._escape_native_tool_arg(path)} 2>/dev/null "
             f"| head -n {fetch_limit}"
         )
         result = self._exec(cmd_sorted, timeout=60)
@@ -2809,7 +2905,7 @@ class ShellFileOperations(FileOperations):
             # --sortr may have failed on older rg; retry without it.
             cmd_plain = (
                 f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
-                f"{self._escape_shell_arg(path)} 2>/dev/null "
+                f"{self._escape_native_tool_arg(path)} 2>/dev/null "
                 f"| head -n {fetch_limit}"
             )
             result = self._exec(cmd_plain, timeout=60)
@@ -2893,7 +2989,10 @@ class ShellFileOperations(FileOperations):
         
         # Add pattern and path
         cmd_parts.append(self._escape_shell_arg(pattern))
-        cmd_parts.append(self._escape_shell_arg(path))
+        # rg is a native Windows binary when installed via winget/cargo/choco:
+        # it needs the C:/... path form, not the MSYS /c/... form (which
+        # nothing converts back — Hermes sets MSYS_NO_PATHCONV for its bash).
+        cmd_parts.append(self._escape_native_tool_arg(path))
         
         # Fetch extra rows so we can report the true total before slicing.
         # For context mode, rg emits separator lines ("--") between groups,
@@ -3027,9 +3126,23 @@ class ShellFileOperations(FileOperations):
         elif output_mode == "count":
             cmd_parts.append("-c")
         
-        # Add pattern and path
+        # Add pattern and path. grep applies --exclude-dir to the command-line
+        # search root too, so passing the default relative root ``.`` causes
+        # ``.*`` to exclude the entire search. Anchor relative paths at the
+        # shell's live cwd; quoting $PWD separately keeps user paths escaped
+        # while working across local, container, and remote backends.
         cmd_parts.append(self._escape_shell_arg(pattern))
-        cmd_parts.append(self._escape_shell_arg(path))
+        is_absolute = path.startswith(("/", "\\\\")) or bool(
+            re.match(r"^[A-Za-z]:[\\/]", path)
+        )
+        if is_absolute:
+            search_root = self._escape_shell_arg(path)
+        else:
+            relative_path = path[2:] if path.startswith("./") else path
+            search_root = '"$PWD"'
+            if relative_path not in {"", "."}:
+                search_root += f"/{self._escape_shell_arg(relative_path)}"
+        cmd_parts.append(search_root)
         
         # Fetch generously so we can compute total before slicing
         fetch_limit = limit + offset + (200 if context > 0 else 0)

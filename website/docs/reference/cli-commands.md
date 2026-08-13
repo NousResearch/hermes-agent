@@ -596,7 +596,7 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 |------|---------|
 | `--board <slug>` | Operate on a specific board. Defaults to the current board (set via `hermes kanban boards switch`, the `HERMES_KANBAN_BOARD` env var, or `default`). |
 
-**This is the human / scripting surface.** Agent workers spawned by the dispatcher drive the board through a dedicated `kanban_*` [toolset](/user-guide/features/kanban#how-workers-interact-with-the-board) (`kanban_show`, `kanban_complete`, `kanban_block`, `kanban_create`, `kanban_link`, `kanban_comment`, `kanban_heartbeat`; orchestrator profiles also get `kanban_list` and `kanban_unblock`) instead of shelling to `hermes kanban`. Workers have `HERMES_KANBAN_BOARD` pinned in their env so they physically cannot see other boards.
+**This is the human / scripting surface.** Agent workers spawned by the dispatcher drive the board through a dedicated `kanban_*` [toolset](/user-guide/features/kanban#how-workers-interact-with-the-board) (`kanban_show`, `kanban_complete`, `kanban_request_review`, `kanban_request_changes`, `kanban_block`, `kanban_create`, `kanban_link`, `kanban_comment`, `kanban_heartbeat`; orchestrator profiles also get `kanban_list` and `kanban_unblock`) instead of shelling to `hermes kanban`. Workers have `HERMES_KANBAN_BOARD` pinned in their env so they physically cannot see other boards.
 
 | Action | Purpose |
 |--------|---------|
@@ -617,8 +617,11 @@ Multi-profile, multi-project collaboration board. Each install can host many boa
 | `comment <id> "<text>"` | Append a comment. The next worker that claims the task reads it as part of its `kanban_show()` response. |
 | `complete <id>` | Mark task done. Flags: `--result`, `--summary`, `--metadata`. |
 | `block <id> "<reason>"` | Mark task blocked for human input. Also appends the reason as a comment. |
+| `request-review <id>` | Move a task to `review` with a reviewer handoff — NOT a block. Flags: `--summary`, `--metadata`, `--reviewer` (reassigns before review dispatch). |
+| `request-changes <id> <reason>` | Reviewer verdict for an active review run: close the review attempt and route the task back to its original implementer. |
+| `reopen-review <id>...` | Send review task(s) back for changes (`review` → ready/todo). Flag: `--reason` (appended as a comment). |
 | `schedule <id> "<reason>"` | Park time-delay/follow-up work in `scheduled` so it is not shown as a human blocker. |
-| `unblock <id>` | Return a blocked or scheduled task to ready (or `todo` if dependencies are still open). |
+| `unblock <id>` | Restore a blocked task to its source phase (`review` or `ready`), or `todo` while dependencies remain open. |
 | `archive <id>` | Hide from default list. `gc` will remove scratch workspaces. |
 | `tail <id>` | Follow a task's event stream. |
 | `dispatch` | One dispatcher pass on the active board. Flags: `--dry-run`, `--max N`, `--failure-limit N`, `--json`. |
@@ -1371,18 +1374,26 @@ Unified plugin management — general plugins, memory providers, and context eng
 | Subcommand | Description |
 |------------|-------------|
 | *(none)* | Composite interactive UI — general plugin toggles + provider plugin configuration. |
-| `install <identifier> [--force]` | Install a plugin from a Git URL or `owner/repo`. |
-| `update <name>` | Pull latest changes for an installed plugin. |
+| `install <identifier> [--force] [--ref COMMIT_SHA]` | Install a plugin from a Git URL, `owner/repo`, or a bare index name. Bare names (no slash) are resolved through the community plugin index to `owner/repo` plus the index-pinned commit; ambiguous names list candidates and exit. `--ref` accepts only a full 40-character commit SHA, installs that exact immutable revision, and overrides any index pin. |
+| `search [term] [--json] [--capability CAP] [--refresh]` | Search the community plugin index (fuzzy match on name/description/tags; omit `term` to browse). Fetched from `plugins.index_url` (default: the NousResearch plugin index), cached under `~/.hermes/cache/` for 24h, falling back to the stale cache and then the bundled seed when offline. Indexed ≠ audited — inclusion is a metadata review only. |
+| `update <name>` | Pull latest changes for an unpinned installed plugin. Pinned plugins must be reinstalled with `--force --ref <new-commit>` to move. |
 | `remove <name>` (aliases: `rm`, `uninstall`) | Remove an installed plugin. |
 | `enable <name>` | Enable a disabled plugin. |
 | `disable <name>` | Disable a plugin without removing it. |
 | `list` (alias: `ls`) | List installed plugins with enabled/disabled status. |
+| `doctor [path-or-id] [--ci]` | Validate a native plugin through the real manifest parser, loader, and registration path. `--ci` exits 1 on errors. |
+| `pack install <path-or-url> [--force]` | Install a plugin pack (`hermes-pack.yaml`) — a declarative set of plugins each pinned to an exact 40-character commit SHA. Shows a mandatory review screen (every plugin, source, pinned ref, declared capabilities), asks one confirmation for the pack contents, then runs ordinary pinned installs. Each plugin's declared capabilities still go through the standard per-plugin consent — a pack never bulk-grants. Partial failures are reported per plugin; exits non-zero when any plugin failed. Interactive only (no `--yes`). |
+| `pack export [--enabled-only] [--name NAME]` | Emit a pack YAML on stdout from the current install: repo + exact SHA of each git-installed plugin plus sanitized non-secret `plugins.entries` config. Local-only plugins (no git provenance) are listed as warning comments, never as installable entries. Secrets, capability grants, and `allow_*` gates are always stripped. |
+| `pack show <path-or-url>` | Dry-run: parse, validate, and display a pack without installing anything. |
 
 Provider plugin selections are saved to `config.yaml`:
 - `memory.provider` — active memory provider (empty = built-in only)
 - `context.engine` — active context engine (`"compressor"` = built-in default)
 
 General plugin disabled list is stored in `config.yaml` under `plugins.disabled`.
+Git installs also record only their canonical source, exact installed revision, and
+pin status in the profile-local `plugins/.install-metadata.json` sidecar. It does
+not contain plugin config, environment values, secrets, or capability grants.
 
 See [Plugins](../user-guide/features/plugins.md) and [Build a Hermes Plugin](../developer-guide/plugins/index.md).
 

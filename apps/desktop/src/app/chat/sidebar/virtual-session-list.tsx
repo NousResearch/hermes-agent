@@ -16,6 +16,7 @@ import { SidebarSessionRow } from './session-row'
 
 interface SessionRowCommonProps {
   branchStem?: string
+  card?: boolean
   isPinned: boolean
   isSelected: boolean
   onArchive: () => void
@@ -29,6 +30,8 @@ interface SessionRowCommonProps {
 
 export interface VirtualSessionListProps {
   activeSessionId: null | string
+  /** Render every session row as the three-line inbox card. */
+  card?: boolean
   className?: string
   /** Hover-revealed control for date dividers (the group-level "+"). */
   dividerAction?: React.ReactNode
@@ -44,10 +47,15 @@ export interface VirtualSessionListProps {
 }
 
 const ROW_ESTIMATE_PX = 28
+// Matches the card's typical rendered height (four lines when a preview
+// exists) so long card lists don't jump under the scroll thumb before
+// self-measurement catches up.
+const CARD_ROW_ESTIMATE_PX = 66
 const OVERSCAN_ROWS = 12
 
 export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   activeSessionId,
+  card = false,
   className,
   dividerAction,
   rows: listRows,
@@ -66,7 +74,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
 
   const virtualizer = useVirtualizer({
     count: listRows.length,
-    estimateSize: () => ROW_ESTIMATE_PX,
+    estimateSize: () => (card ? CARD_ROW_ESTIMATE_PX : ROW_ESTIMATE_PX),
     getItemKey: index => {
       const row = listRows[index]
 
@@ -108,6 +116,7 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
 
     const commonProps: SessionRowCommonProps = {
       branchStem,
+      card,
       isPinned: pinned,
       isSelected: session.id === activeSessionId,
       onArchive: () => onArchiveSession(session.id),
@@ -143,8 +152,13 @@ export const VirtualSessionList: FC<VirtualSessionListProps> = ({
   // just consume that context via useSortable.
   return (
     <div
+      // `scrollbar-overlay`, not `scrollbar-fade`: the themed (classic)
+      // scrollbar reserves a 4px gutter, which shaved this list's rows
+      // narrower than the pinned/non-virtual lists above it and left dead
+      // space along the right edge. Overlay keeps native macOS behavior —
+      // zero gutter, thumb draws over content only while scrolling.
       className={cn(
-        'scrollbar-fade relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain',
+        'scrollbar-overlay relative min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain',
         className
       )}
       ref={scrollerRef}

@@ -46,7 +46,8 @@ def test_portable_skill_namespace_is_ascii_safe():
 
 def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
                      manifest_extra: dict | None = None,
-                     auto_enable: bool = True) -> Path:
+                     auto_enable: bool = True,
+                     home: Path | None = None) -> Path:
     """Create a minimal plugin directory with plugin.yaml + __init__.py.
 
     If *auto_enable* is True (default), also write the plugin's name into
@@ -56,7 +57,19 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
     unenabled path.
 
     *base* is expected to be ``<hermes_home>/plugins/``; we derive
-    ``<hermes_home>`` from it by walking one level up.
+    ``<hermes_home>`` from it by walking one level up unless *home* is
+    given explicitly.
+
+    Pass *home* explicitly whenever the target Hermes home for this
+    plugin isn't necessarily the current ``HERMES_HOME`` env var — e.g.
+    when writing fixtures for two profiles up front and only switching
+    ``HERMES_HOME``/``set_hermes_home_override()`` per-profile afterwards
+    (as multi-profile regression tests do). Relying on the *current* env
+    var here is a bug: if the caller hasn't switched homes yet (or is
+    using the context-local override instead of the env var, which this
+    function can't see), the enable list gets written to the wrong
+    profile's config.yaml and the plugin never loads for its intended
+    home.
     """
     plugin_dir = base / name
     plugin_dir.mkdir(parents=True, exist_ok=True)
@@ -74,12 +87,15 @@ def _make_plugin_dir(base: Path, name: str, *, register_body: str = "pass",
         # Write/merge plugins.enabled in <HERMES_HOME>/config.yaml.
         # Config is always read from HERMES_HOME (not from the project
         # dir for project plugins), so that's where we opt in.
-        import os
-        hermes_home_str = os.environ.get("HERMES_HOME")
-        if hermes_home_str:
-            hermes_home = Path(hermes_home_str)
+        if home is not None:
+            hermes_home = Path(home)
         else:
-            hermes_home = base.parent
+            import os
+            hermes_home_str = os.environ.get("HERMES_HOME")
+            if hermes_home_str:
+                hermes_home = Path(hermes_home_str)
+            else:
+                hermes_home = base.parent
         hermes_home.mkdir(parents=True, exist_ok=True)
         cfg_path = hermes_home / "config.yaml"
         cfg: dict = {}
@@ -519,6 +535,173 @@ class TestPluginHooks:
         )
         assert results == [{"seen": 2, "mc": 5, "tc": 3}]
 
+
+
+class TestDeliveryParity:
+    """Hook/middleware delivery parity across surfaces (#64178).
+
+    Salvaged from PR #64188 (@Bartok9): module-level invoke_hook /
+    invoke_middleware / has_hook / has_middleware lazily run discovery so
+    surfaces that never imported model_tools (dashboards, TUI slash workers,
+    query mode, cron) still deliver plugin callbacks.
+    """
+
+    def _fresh_manager(self, monkeypatch, register_body):
+        """Build an undiscovered manager whose sweep registers via plugins."""
+        import hermes_cli.plugins as plugins_mod
+
+        mgr = PluginManager()
+        assert mgr._discovered is False
+        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: mgr)
+
+        def _inner(self_inner):
+            register_body(self_inner)
+
+        monkeypatch.setattr(PluginManager, "_discover_and_load_inner", _inner)
+        return mgr
+
+    def test_module_invoke_hook_lazily_discovers(self, monkeypatch):
+        import hermes_cli.plugins as plugins_mod
+
+        fired = []
+        mgr = self._fresh_manager(
+            monkeypatch,
+            lambda m: m._hooks.setdefault("kanban_task_claimed", []).append(
+                lambda **kw: fired.append(kw) or "ok"
+            ),
+        )
+
+        results = plugins_mod.invoke_hook("kanban_task_claimed", task_id="t1")
+
+        assert mgr._discovered is True
+        # invoke_hook may enrich kwargs (e.g. telemetry_schema_version);
+        # assert on what the caller passed rather than exact equality.
+        assert len(fired) == 1
+        assert fired[0]["task_id"] == "t1"
+        assert results == ["ok"]
+
+    def test_module_invoke_middleware_lazily_discovers(self, monkeypatch):
+        import hermes_cli.plugins as plugins_mod
+
+        mgr = self._fresh_manager(
+            monkeypatch,
+            lambda m: m._middleware.setdefault("llm_request", []).append(
+                lambda **kw: "mw-ok"
+            ),
+        )
+
+        results = plugins_mod.invoke_middleware("llm_request", request={})
+
+        assert mgr._discovered is True
+        assert results == ["mw-ok"]
+
+    def test_module_has_hook_and_has_middleware_lazily_discover(self, monkeypatch):
+        import hermes_cli.plugins as plugins_mod
+
+        def _register(m):
+            m._hooks.setdefault("post_llm_call", []).append(lambda **kw: None)
+            m._middleware.setdefault("tool_request", []).append(lambda **kw: None)
+
+        mgr = self._fresh_manager(monkeypatch, _register)
+
+        # A pre-discovery False from these gates would make callers skip
+        # invoke_* entirely, so they must trigger discovery too.
+        assert plugins_mod.has_hook("post_llm_call") is True
+        assert plugins_mod.has_middleware("tool_request") is True
+        assert mgr._discovered is True
+
+    def test_invoke_hook_tolerates_mock_managers(self, monkeypatch):
+        """Test doubles without _discovered are invoked untouched."""
+        import types
+
+        import hermes_cli.plugins as plugins_mod
+
+        stub = types.SimpleNamespace(invoke_hook=lambda name, **kw: ["stubbed"])
+        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: stub)
+
+        assert plugins_mod.invoke_hook("anything") == ["stubbed"]
+
+
+class TestForceReloadSymmetry:
+    """Force rediscovery restores non-plugin state it wiped (#64178)."""
+
+    def test_force_reload_re_registers_shell_hooks(self, monkeypatch):
+        """config.yaml shell hooks are re-wired after force=True (#60036)."""
+        calls = []
+        import agent.shell_hooks as shell_hooks_mod
+
+        monkeypatch.setattr(
+            shell_hooks_mod,
+            "re_register_config_hooks",
+            lambda: calls.append(True),
+        )
+        monkeypatch.setattr(
+            PluginManager, "_discover_and_load_inner", lambda self_inner: None
+        )
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert calls == [], "initial discovery must not re-register shell hooks"
+
+        mgr.discover_and_load(force=True)
+        assert calls == [True]
+
+    def test_shell_hook_re_register_failure_does_not_abort_reload(self, monkeypatch):
+        import agent.shell_hooks as shell_hooks_mod
+
+        def _boom():
+            raise RuntimeError("config unreadable")
+
+        monkeypatch.setattr(shell_hooks_mod, "re_register_config_hooks", _boom)
+        monkeypatch.setattr(
+            PluginManager, "_discover_and_load_inner", lambda self_inner: None
+        )
+
+        mgr = PluginManager()
+        mgr.discover_and_load(force=True)
+        assert mgr._discovered is True
+
+    def test_unload_all_sweeps_preledger_tool_names(self, monkeypatch):
+        """Tool names without ledger entries are deregistered globally (#60050)."""
+        deregistered = []
+        import tools.registry as tools_registry_mod
+
+        monkeypatch.setattr(
+            tools_registry_mod.registry,
+            "deregister",
+            lambda name: deregistered.append(name),
+        )
+
+        mgr = PluginManager()
+        # Pre-ledger state: name tracked manager-locally, no ledger handle.
+        mgr._plugin_tool_names.add("zombie_tool")
+        mgr._discovered = True
+
+        mgr.unload()
+        assert deregistered == ["zombie_tool"]
+        assert not mgr._plugin_tool_names
+        assert mgr._discovered is False
+
+    def test_re_register_config_hooks_clears_idempotence_set(self, monkeypatch):
+        import agent.shell_hooks as shell_hooks_mod
+
+        recorded = {}
+        monkeypatch.setattr(
+            shell_hooks_mod,
+            "register_from_config",
+            lambda cfg: recorded.setdefault("cfg", cfg) or [],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {"hooks": {}}
+        )
+        with shell_hooks_mod._registered_lock:
+            shell_hooks_mod._registered.add(("post_llm_call", None, "echo hi"))
+
+        shell_hooks_mod.re_register_config_hooks()
+
+        with shell_hooks_mod._registered_lock:
+            assert not shell_hooks_mod._registered
+        assert recorded["cfg"] == {"hooks": {}}
 
 
 class TestPreToolCallBlocking:
@@ -1174,6 +1357,166 @@ class TestPluginCommands:
             engine = plugins_mod.get_plugin_context_engine()
             assert engine is not None
             assert engine.name == "stub-engine"
+
+    def test_plugin_manager_scoped_by_hermes_home_override(self, tmp_path):
+        """set_hermes_home_override() must get its own manager per profile.
+
+        This is the production path used by the gateway multiplexer
+        (``gateway/run.py``'s ``_profile_scope`` context manager) and by
+        subagent/embedded callers: it swaps ``HERMES_HOME`` via a
+        context-local ContextVar, which — per
+        ``hermes_constants.set_hermes_home_override`` — deliberately does
+        NOT touch ``os.environ``. A regression test that only flips the
+        ``HERMES_HOME`` env var never exercises this path.
+        """
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        import hermes_cli.plugins as plugins_mod
+
+        def write_engine_plugin(home: Path) -> None:
+            _make_plugin_dir(
+                home / "plugins",
+                "engine-plugin",
+                home=home,
+                manifest_extra={
+                    "description": "Context engine plugin for profile-scope test",
+                },
+                register_body=(
+                    "import os\n"
+                    "    from agent.context_engine import ContextEngine\n\n"
+                    "    class HomeEngine(ContextEngine):\n"
+                    "        def __init__(self):\n"
+                    "            self.home = os.environ.get('HERMES_HOME')\n\n"
+                    "        @property\n"
+                    "        def name(self):\n"
+                    "            return 'home-engine'\n\n"
+                    "        def update_from_response(self, usage):\n"
+                    "            return None\n\n"
+                    "        def should_compress(self, prompt_tokens=None):\n"
+                    "            return False\n\n"
+                    "        def compress(self, messages, current_tokens=None, focus_topic=None):\n"
+                    "            return messages\n\n"
+                    "    ctx.register_context_engine(HomeEngine())"
+                ),
+            )
+
+        home_a = tmp_path / "profile-a"
+        home_b = tmp_path / "profile-b"
+        write_engine_plugin(home_a)
+        write_engine_plugin(home_b)
+
+        # Note: HomeEngine reads os.environ['HERMES_HOME'] itself (simulating
+        # a real plugin like hermes-lcm capturing its home at registration),
+        # so we set the env var to home_a as a baseline and only use the
+        # context-local override to *switch away* to home_b — proving the
+        # override, not the env var, is what get_plugin_manager() keys on.
+        token_a = set_hermes_home_override(str(home_a))
+        try:
+            manager_a = plugins_mod.get_plugin_manager()
+            manager_a.discover_and_load()
+            engine_a = manager_a._context_engine
+        finally:
+            reset_hermes_home_override(token_a)
+
+        token_b = set_hermes_home_override(str(home_b))
+        try:
+            manager_b = plugins_mod.get_plugin_manager()
+            manager_b.discover_and_load()
+            engine_b = manager_b._context_engine
+        finally:
+            reset_hermes_home_override(token_b)
+
+        assert engine_a is not None
+        assert engine_b is not None
+        assert manager_a is not manager_b
+        assert engine_a is not engine_b
+
+        # Re-entering home_a's override must return the SAME cached manager
+        # (and engine) rather than rebuilding — proves the cache is keyed,
+        # not last-write-wins.
+        token_a2 = set_hermes_home_override(str(home_a))
+        try:
+            manager_a2 = plugins_mod.get_plugin_manager()
+        finally:
+            reset_hermes_home_override(token_a2)
+        assert manager_a2 is manager_a
+
+    def test_relative_import_not_leaked_across_home_switch(self, tmp_path):
+        """A same-slug plugin's relative import must not reuse the prior home's submodule.
+
+        ``_load_directory_module`` imports each plugin as
+        ``hermes_plugins.<slug>``, but a relative import inside the
+        plugin's ``__init__.py`` (``from .state import STATE``) is cached
+        separately in ``sys.modules`` under
+        ``hermes_plugins.<slug>.state``. If a profile switch replaces only
+        the parent module, the child module survives in ``sys.modules``
+        and Python's import system serves it back unchanged — silently
+        leaking the previous profile's module-level state (and code) into
+        the new profile.
+        """
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+        import hermes_cli.plugins as plugins_mod
+
+        def write_stateful_plugin(home: Path, marker: str) -> None:
+            plugin_dir = (home / "plugins" / "stateful-plugin")
+            plugin_dir.mkdir(parents=True, exist_ok=True)
+            (plugin_dir / "plugin.yaml").write_text(
+                yaml.dump({
+                    "name": "stateful-plugin",
+                    "version": "0.1.0",
+                    "description": "Relative-import regression plugin",
+                })
+            )
+            # `state.py` is imported via a *relative* import from
+            # `__init__.py`, so it lands in sys.modules as
+            # `hermes_plugins.stateful_plugin.state`.
+            (plugin_dir / "state.py").write_text(f"MARKER = {marker!r}\n")
+            (plugin_dir / "__init__.py").write_text(
+                "from . import state\n\n"
+                "def register(ctx):\n"
+                "    ctx._manager._plugin_skills['stateful-plugin::marker'] = "
+                "{'marker': state.MARKER}\n"
+            )
+            (home / "config.yaml").write_text(
+                yaml.safe_dump({"plugins": {"enabled": ["stateful-plugin"]}})
+            )
+
+        home_a = tmp_path / "profile-a"
+        home_b = tmp_path / "profile-b"
+        write_stateful_plugin(home_a, "marker-a")
+        write_stateful_plugin(home_b, "marker-b")
+
+        token_a = set_hermes_home_override(str(home_a))
+        try:
+            manager_a = plugins_mod.get_plugin_manager()
+            manager_a.discover_and_load()
+            module_a = manager_a._plugins["stateful-plugin"].module
+        finally:
+            reset_hermes_home_override(token_a)
+
+        assert module_a is not None
+        module_a_state = f"{module_a.__name__}.state"
+        assert module_a_state in sys.modules
+        assert sys.modules[module_a_state].MARKER == "marker-a"
+
+        token_b = set_hermes_home_override(str(home_b))
+        try:
+            manager_b = plugins_mod.get_plugin_manager()
+            manager_b.discover_and_load()
+            module_b = manager_b._plugins["stateful-plugin"].module
+        finally:
+            reset_hermes_home_override(token_b)
+
+        # Each profile keeps a stable namespace, so concurrent/runtime relative
+        # imports cannot resolve another profile's package or submodules.
+        assert module_b is not None
+        module_b_state = f"{module_b.__name__}.state"
+        assert module_a.__name__ != module_b.__name__
+        assert sys.modules[module_a_state].MARKER == "marker-a"
+        assert sys.modules[module_b_state].MARKER == "marker-b"
+        assert (
+            manager_b._plugin_skills["stateful-plugin::marker"]["marker"] == "marker-b"
+        )
+        assert manager_a is not manager_b
 
 
 

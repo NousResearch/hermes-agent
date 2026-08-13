@@ -1651,10 +1651,18 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True) -> Optional[D
     else:
         base_ref, base_label = "HEAD", "HEAD (local — worktree_sync disabled)"
 
-    # Create the worktree
+    # Create the worktree. checkout.workers parallelizes the file
+    # materialization (~6k files on this repo): 0.6s serial → ~0.2s with 8
+    # workers. Harmless on git builds without parallel-checkout support —
+    # unknown -c keys are ignored for checkout, and the fallback retry
+    # below drops the flags entirely.
+    _wt_add_cfg = [
+        "-c", "checkout.workers=8",
+        "-c", "checkout.thresholdForParallelism=100",
+    ]
     try:
         result = subprocess.run(
-            ["git", "worktree", "add", str(wt_path), "-b", branch_name, base_ref],
+            ["git", *_wt_add_cfg, "worktree", "add", str(wt_path), "-b", branch_name, base_ref],
             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30, cwd=repo_root,
         )
         if result.returncode != 0:
@@ -4770,6 +4778,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._prompt_stash = _PromptStash()
         self.preloaded_skills: list[str] = []
         self._startup_skills_line_shown = False
+        # Background --skills preload (started by cmd_chat; joined by
+        # finalize_preloaded_skills before any agent is built).
+        self._preload_skills_thread: Optional[threading.Thread] = None
+        self._preload_skills_result: Optional[tuple] = None
+        self._preload_skills_error: Optional[BaseException] = None
+        self._preload_skills_requested: list = []
+        self._preload_skills_finalized = False
         self._active_session_lease = None
 
         # Voice mode state (also reinitialized inside run() for interactive TUI).
@@ -7343,6 +7358,72 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # logged at DEBUG by the advisory module.
             pass
 
+    def _show_browser_backend_notice(self):
+        """One-time hint when the default Browser Use backend isn't runnable.
+
+        Browser Use mode is the default browser backend, but it silently
+        falls back to the built-in browser tools when neither the
+        browser-use CLI nor uvx can be found. Surface that downgrade once
+        per 24h so users know why browsing behaves differently and how to
+        fix it (rate limiting lives in default_downgrade_notice()).
+        """
+        try:
+            from tools.browser_use_cli import default_downgrade_notice
+
+            notice = default_downgrade_notice()
+            if notice:
+                self._console_print(f"[yellow]⚠ {notice}[/yellow]")
+        except Exception:
+            # Never let a hint block startup.
+            logger.debug("browser backend notice failed", exc_info=True)
+
+    def finalize_preloaded_skills(self) -> None:
+        """Join the background --skills preload and fold it into the prompt.
+
+        Idempotent; no-op when no preload was requested. Called from
+        ``_init_agent`` (before the agent snapshots ``self.system_prompt``)
+        and safe to call from any other consumer of the system prompt.
+        Raises ``ValueError`` when EVERY requested skill was unknown —
+        the same contract the old synchronous path enforced in cmd_chat.
+        """
+        if getattr(self, "_preload_skills_finalized", False):
+            return
+        thread = getattr(self, "_preload_skills_thread", None)
+        if thread is None:
+            self._preload_skills_finalized = True
+            return
+        thread.join(timeout=120)
+        self._preload_skills_finalized = True
+        err = getattr(self, "_preload_skills_error", None)
+        if err is not None:
+            raise err
+        result = getattr(self, "_preload_skills_result", None)
+        if not result:
+            return
+        skills_prompt, loaded_skills, missing_skills = result
+        if missing_skills:
+            missing_display = ", ".join(missing_skills)
+            # If at least one skill loaded, degrade gracefully: skip the
+            # unknown ones and continue. A typo'd skill name should not crash
+            # the worker (which auto-blocks the Kanban task after retries).
+            # Only when EVERY requested skill is missing do we hard-fail, so a
+            # fully-misconfigured worker fails loudly instead of running blind.
+            if loaded_skills:
+                logger.warning(
+                    "Unknown skill(s) requested, skipping: %s. "
+                    "Continuing with: %s. "
+                    "List available skills with `hermes skills list`.",
+                    missing_display,
+                    ", ".join(loaded_skills),
+                )
+            else:
+                raise ValueError(f"Unknown skill(s): {missing_display}")
+        if skills_prompt:
+            self.system_prompt = "\n\n".join(
+                part for part in (self.system_prompt, skills_prompt) if part
+            ).strip()
+            self.preloaded_skills = loaded_skills
+
     def show_banner(self):
         """Display the welcome banner in Claude Code style."""
         self.console.clear()
@@ -7359,28 +7440,115 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._console_print(_build_compact_banner())
             self._show_status()
         else:
-            # Get tools for display
-            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-            
+            # Warm-launch fast path: replay last launch's tool panel when the
+            # snapshot fingerprint (config.yaml + .env + checkout rev +
+            # toolsets) is unchanged, skipping the ~0.5-0.9s cold
+            # get_tool_definitions walk. The agent's REAL tool list is still
+            # computed fresh at first message; a background refresh below
+            # re-verifies the snapshot so any drift self-heals next launch.
+            from hermes_cli.banner import (
+                compute_toolset_availability,
+                load_banner_snapshot,
+                save_banner_snapshot,
+            )
+
+            snapshot = None
+            try:
+                snapshot = load_banner_snapshot(self.enabled_toolsets)
+            except Exception:
+                snapshot = None
+
             # Get terminal working directory (where commands will execute)
             cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-            
-            # Build and display the banner
-            build_welcome_banner(
-                console=self.console,
-                model=self.model,
-                cwd=cwd,
-                tools=tools,
-                enabled_toolsets=self.enabled_toolsets,
-                session_id=self.session_id,
-                context_length=ctx_len,
-                provider=self.provider,
-            )
+
+            if snapshot is not None:
+                self._defer_tool_warnings = True
+                toolset_map = snapshot["toolset_map"]
+                build_welcome_banner(
+                    console=self.console,
+                    model=self.model,
+                    cwd=cwd,
+                    tools=snapshot["tools"],
+                    enabled_toolsets=self.enabled_toolsets,
+                    session_id=self.session_id,
+                    get_toolset_for_tool=lambda name: toolset_map.get(name),
+                    context_length=ctx_len,
+                    provider=self.provider,
+                    availability=snapshot["availability"],
+                    skills_by_category=snapshot.get("skills_by_category"),
+                )
+
+                def _refresh_banner_snapshot() -> None:
+                    try:
+                        from model_tools import get_toolset_for_tool
+                        tools = get_tool_definitions(
+                            enabled_toolsets=self.enabled_toolsets, quiet_mode=True
+                        )
+                        availability = compute_toolset_availability(self.enabled_toolsets)
+                        tmap = {
+                            t["function"]["name"]: get_toolset_for_tool(t["function"]["name"])
+                            for t in tools
+                        }
+                        for item in availability.get("unavailable_toolsets", []):
+                            for name in item.get("tools", []):
+                                tmap.setdefault(
+                                    name, item.get("id", item.get("name", ""))
+                                )
+                        save_banner_snapshot(
+                            tools, self.enabled_toolsets, availability, tmap
+                        )
+                    except Exception:
+                        logger.debug("banner snapshot refresh failed", exc_info=True)
+
+                threading.Thread(
+                    target=_refresh_banner_snapshot,
+                    name="banner-snapshot-refresh",
+                    daemon=True,
+                ).start()
+            else:
+                # Cold path: compute everything live, then persist the snapshot
+                # so the next launch replays it.
+                from model_tools import get_toolset_for_tool
+                tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+                availability = compute_toolset_availability(self.enabled_toolsets)
+
+                build_welcome_banner(
+                    console=self.console,
+                    model=self.model,
+                    cwd=cwd,
+                    tools=tools,
+                    enabled_toolsets=self.enabled_toolsets,
+                    session_id=self.session_id,
+                    context_length=ctx_len,
+                    provider=self.provider,
+                    availability=availability,
+                )
+                try:
+                    tmap = {
+                        t["function"]["name"]: get_toolset_for_tool(t["function"]["name"])
+                        for t in tools
+                    }
+                    for item in availability.get("unavailable_toolsets", []):
+                        for name in item.get("tools", []):
+                            tmap.setdefault(name, item.get("id", item.get("name", "")))
+                    save_banner_snapshot(tools, self.enabled_toolsets, availability, tmap)
+                except Exception:
+                    logger.debug("banner snapshot save failed", exc_info=True)
         
         # Tool discovery is intentionally deferred on the Termux bare prompt
         # path; availability warnings are shown once tools are initialized.
+        # On the snapshot fast path (warm launch), the check walks every
+        # check_fn (~180ms) — run it in the background refresh thread instead
+        # and let its output land above the prompt (patch_stdout-safe).
         if os.environ.get("HERMES_DEFER_AGENT_STARTUP") != "1":
-            self._show_tool_availability_warnings()
+            if getattr(self, "_defer_tool_warnings", False):
+                threading.Thread(
+                    target=self._show_tool_availability_warnings,
+                    name="tool-availability-warnings",
+                    daemon=True,
+                ).start()
+            else:
+                self._show_tool_availability_warnings()
 
         # Warn about low context lengths (common with local servers). Keep
         # this tied to the runtime guard so guidance cannot drift again.
@@ -10005,6 +10173,22 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         _base_word = cmd_lower.split()[0].lstrip("/")
         _cmd_def = _resolve_cmd(_base_word)
         canonical = _cmd_def.name if _cmd_def else _base_word
+
+        # pre_command observer hook (#64204): fires for every recognized
+        # slash command BEFORE its handler runs. Observer-only in v1 —
+        # return values are ignored (fire_pre_command_hook logs directives
+        # at debug). Never raises, so a broken plugin can't break dispatch.
+        if _cmd_def is not None:
+            from hermes_cli.plugins import fire_pre_command_hook
+            _rest_parts = cmd_original.split(None, 1)
+            fire_pre_command_hook(
+                surface="cli",
+                command=canonical,
+                alias_used=_base_word,
+                args_raw=_rest_parts[1].strip() if len(_rest_parts) > 1 else "",
+                session_key=getattr(self, "session_id", None),
+                platform="cli",
+            )
 
         # A bare `/resume` prompt is one-shot: any command other than the
         # resume/sessions handlers (which manage the pending state themselves)
@@ -15146,6 +15330,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Surface any active supply-chain security advisories right after the
         # welcome banner. Quiet/single-query paths call this themselves.
         self._show_security_advisories()
+        # Surface a silent browser-backend downgrade (default Browser Use
+        # mode with no runnable CLI) — one line, rate-limited to 24h.
+        self._show_browser_backend_notice()
 
         # First-run: a completely unconfigured install must route into
         # provider onboarding, not a chat that cannot work. Previously a
@@ -15294,8 +15481,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             maybe_pull_org_skills()
         except Exception:
             pass
-        if self.preloaded_skills and not self._startup_skills_line_shown:
-            skills_label = ", ".join(self.preloaded_skills)
+        _skills_for_line = self.preloaded_skills or list(
+            getattr(self, "_preload_skills_requested", []) or []
+        )
+        if _skills_for_line and not self._startup_skills_line_shown:
+            # When the background --skills preload hasn't been folded in yet
+            # (it joins at agent init), show the REQUESTED names — identical
+            # to the loaded set except for typo'd names, which warn later.
+            skills_label = ", ".join(_skills_for_line)
             self._console_print(
                 f"[bold {_accent_hex()}]Activated skills:[/] {skills_label}"
             )
@@ -18093,6 +18286,13 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     task_id = (_os.environ.get("HERMES_KANBAN_TASK") or "").strip()
     if not task_id:
         return
+    worker_run_id = None
+    raw_run_id = (_os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    if raw_run_id:
+        try:
+            worker_run_id = int(raw_run_id)
+        except ValueError:
+            logger.warning("invalid HERMES_KANBAN_RUN_ID=%r", raw_run_id)
 
     from hermes_cli import kanban_db as _kb
     from hermes_cli.goals import run_kanban_goal_loop as _run_loop, DEFAULT_MAX_TURNS as _DEF_TURNS
@@ -18138,8 +18338,7 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     def _task_status() -> "str | None":
         c = _kb.connect()
         try:
-            t = _kb.get_task(c, task_id)
-            return t.status if t is not None else None
+            return _kb.goal_run_status(c, task_id, worker_run_id)
         finally:
             try:
                 c.close()
@@ -18149,7 +18348,12 @@ def _run_kanban_goal_loop_q(cli: "HermesCLI", first_response: str) -> None:
     def _block(reason: str) -> None:
         c = _kb.connect()
         try:
-            _kb.block_task(c, task_id, reason=reason)
+            _kb.block_task(
+                c,
+                task_id,
+                reason=reason,
+                expected_run_id=worker_run_id,
+            )
         finally:
             try:
                 c.close()
@@ -18259,25 +18463,69 @@ def main(
         use_worktree = worktree or w or CLI_CONFIG.get("worktree", False)
         wt_info = None
         if use_worktree:
-            # Prune stale worktrees from crashed/killed sessions
-            _repo = _git_repo_root()
-            if _repo:
-                _prune_stale_worktrees(_repo)
-            # Branch the worktree from the freshly-fetched remote tip by
-            # default so it starts current with the project. Opt out with
-            # worktree_sync: false to branch from local HEAD instead.
+            # Overlap tool discovery with the network/subprocess-bound
+            # worktree setup (base fetch + parallel `git worktree add`
+            # release the GIL for most of their wall time). show_banner()
+            # then hits the warm cache instead of paying ~0.4s serially.
+            # Only done on the -w path: on plain `hermes` there is no I/O
+            # wait to hide and the extra thread just contends for CPU.
+            def _prewarm_tools() -> None:
+                try:
+                    import model_tools as _mt
+                    _mt.get_tool_definitions(quiet_mode=True)
+                except Exception:
+                    logger.debug("tool prewarm failed", exc_info=True)
+
+            threading.Thread(
+                target=_prewarm_tools, name="tool-prewarm", daemon=True
+            ).start()
+            # Worktree creation itself (~0.2-0.6s of git subprocess wall
+            # time) runs concurrently with the rest of startup; join right
+            # after HermesCLI construction, before anything consumes
+            # TERMINAL_CWD / wt_info. Failure semantics preserved: setup
+            # failure still aborts the session (checked at join).
             _sync_base = CLI_CONFIG.get("worktree_sync", True)
-            wt_info = _setup_worktree(sync_base=_sync_base)
-            if wt_info:
-                _active_worktree = wt_info
-                os.environ["TERMINAL_CWD"] = wt_info["path"]
-                atexit.register(_cleanup_worktree, wt_info)
-            else:
-                # Worktree was explicitly requested but setup failed —
-                # don't silently run without isolation.
-                return
+            _wt_result: dict = {}
+
+            def _create_worktree() -> None:
+                try:
+                    _wt_result["info"] = _setup_worktree(sync_base=_sync_base)
+                except Exception:
+                    logger.debug("worktree setup failed", exc_info=True)
+                    _wt_result["info"] = None
+
+            _wt_thread = threading.Thread(
+                target=_create_worktree, name="worktree-setup", daemon=True
+            )
+            _wt_thread.start()
+
+            def _join_worktree() -> Optional[Dict[str, str]]:
+                _wt_thread.join(timeout=120)
+                info = _wt_result.get("info")
+                if info:
+                    global _active_worktree
+                    _active_worktree = info
+                    os.environ["TERMINAL_CWD"] = info["path"]
+                    atexit.register(_cleanup_worktree, info)
+                    # Prune stale worktrees from crashed/killed sessions in
+                    # the background — pure GC, nothing downstream depends
+                    # on it. Ordered AFTER _setup_worktree so the two never
+                    # race on git's worktrees metadata; the new tree itself
+                    # is immune to reaping (<24h age gate + live pid lock).
+                    _repo = _git_repo_root()
+                    if _repo:
+                        threading.Thread(
+                            target=_prune_stale_worktrees,
+                            args=(_repo,),
+                            name="worktree-prune",
+                            daemon=True,
+                        ).start()
+                return info
+        else:
+            _join_worktree = None
     else:
-        wt_info = None
+        _join_worktree = None
+    wt_info = None
     
     # Handle query shorthand
     query = query or q
@@ -18333,32 +18581,37 @@ def main(
     )
 
     if parsed_skills:
-        skills_prompt, loaded_skills, missing_skills = build_preloaded_skills_prompt(
-            parsed_skills,
-            task_id=cli.session_id,
-        )
-        if missing_skills:
-            missing_display = ", ".join(missing_skills)
-            # If at least one skill loaded, degrade gracefully: skip the
-            # unknown ones and continue. A typo'd skill name should not crash
-            # the worker (which auto-blocks the Kanban task after retries).
-            # Only when EVERY requested skill is missing do we hard-fail, so a
-            # fully-misconfigured worker fails loudly instead of running blind.
-            if loaded_skills:
-                logger.warning(
-                    "Unknown skill(s) requested, skipping: %s. "
-                    "Continuing with: %s. "
-                    "List available skills with `hermes skills list`.",
-                    missing_display,
-                    ", ".join(loaded_skills),
+        # Load the skill payloads in the background: skill_view walks the
+        # full skills tree per skill (~0.5s for a large library) and the
+        # result is only consumed at agent init (first message / first
+        # agent-touching command), not by the banner. cmd_chat joins the
+        # thread via cli.finalize_preloaded_skills() before any consumer
+        # reads cli.system_prompt — HermesCLI._create_agent calls it too,
+        # so no agent can be built with the skills missing.
+        def _load_preloaded_skills() -> None:
+            try:
+                cli._preload_skills_result = build_preloaded_skills_prompt(
+                    parsed_skills,
+                    task_id=cli.session_id,
                 )
-            else:
-                raise ValueError(f"Unknown skill(s): {missing_display}")
-        if skills_prompt:
-            cli.system_prompt = "\n\n".join(
-                part for part in (cli.system_prompt, skills_prompt) if part
-            ).strip()
-            cli.preloaded_skills = loaded_skills
+            except Exception as exc:  # surfaced by finalize below
+                cli._preload_skills_error = exc
+
+        cli._preload_skills_requested = parsed_skills
+        cli._preload_skills_thread = threading.Thread(
+            target=_load_preloaded_skills, name="skills-preload", daemon=True
+        )
+        cli._preload_skills_thread.start()
+
+    # Join the background worktree creation (started above) before anything
+    # consumes TERMINAL_CWD / wt_info — the HermesCLI construction it
+    # overlapped with is done. Setup failure keeps the old abort semantics.
+    if _join_worktree is not None:
+        wt_info = _join_worktree()
+        if not wt_info:
+            # Worktree was explicitly requested but setup failed —
+            # don't silently run without isolation.
+            return
 
     # Inject worktree context into agent's system prompt
     if wt_info:

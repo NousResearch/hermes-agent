@@ -37,6 +37,7 @@ Usage:
 import asyncio
 import base64
 import datetime
+import importlib.util
 import json
 import logging
 import os
@@ -3218,9 +3219,9 @@ def _text_to_speech_single(
             file_path = _configured_command_tts_output_path(
                 file_path, command_provider_config
             )
-        from agent.file_safety import is_write_denied
+        from agent.file_safety import is_write_approval_required, is_write_denied
 
-        if is_write_denied(str(file_path)):
+        if is_write_denied(str(file_path)) or is_write_approval_required(str(file_path)):
             return json.dumps({
                 "success": False,
                 "error": (
@@ -3577,8 +3578,8 @@ def text_to_speech_tool(
             base_path = _configured_command_tts_output_path(
                 base_path, command_provider_config,
             )
-        from agent.file_safety import is_write_denied
-        if is_write_denied(str(base_path)):
+        from agent.file_safety import is_write_approval_required, is_write_denied
+        if is_write_denied(str(base_path)) or is_write_approval_required(str(base_path)):
             return json.dumps({
                 "success": False,
                 "error": (
@@ -3727,15 +3728,11 @@ def check_tts_requirements() -> bool:
             return False
         return bool(_resolve_provider_key("ELEVENLABS_API_KEY", "elevenlabs"))
     if provider == "openai":
-        try:
-            _import_openai_client()
-        except ImportError:
+        if importlib.util.find_spec("openai") is None:
             return False
         return _has_openai_audio_backend()
     if provider == "deepinfra":
-        try:
-            _import_openai_client()
-        except ImportError:
+        if importlib.util.find_spec("openai") is None:
             return False
         return bool(_resolve_provider_key("DEEPINFRA_API_KEY", "deepinfra"))
     if provider == "minimax":

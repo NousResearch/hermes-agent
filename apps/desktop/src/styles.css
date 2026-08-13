@@ -1179,6 +1179,35 @@ body.guest-pointer-lock :is(webview, iframe) {
     background-color: color-mix(in srgb, var(--dt-midground) 40%, transparent);
   }
 
+  /* Hover marquee: a truncated line that scrolls its overflow into view while
+     hovered. Opt-in via .hover-marquee + an inner .hover-marquee-inner; the
+     JS side measures the overflow on pointerenter and sets --marquee-d (and
+     data-marquee) only when the text actually overflows, so short titles
+     keep their plain ellipsis and never wiggle. Alternate direction reads
+     back to the start; the 300ms delay keeps casual pointer passes still. */
+  .hover-marquee[data-marquee='true'] {
+    text-overflow: clip;
+  }
+
+  .hover-marquee[data-marquee='true'] > .hover-marquee-inner {
+    display: inline-block;
+    animation: hover-marquee var(--marquee-t, 3s) linear infinite;
+  }
+
+  /* One direction, Spotify-style: scroll the tail in, hold, snap back, hold.
+     The percentages pin the two holds; the travel occupies the middle. */
+  @keyframes hover-marquee {
+    0%,
+    10% {
+      transform: translateX(0);
+    }
+
+    75%,
+    100% {
+      transform: translateX(calc(-1 * var(--marquee-d, 0px)));
+    }
+  }
+
   /* Variant for portaled overlays (Radix DropdownMenu, Popover, etc.) that
      render under document.body, outside the `.scrollbar-dt` scope on
      #root. Same visual treatment, applied directly to the overlay

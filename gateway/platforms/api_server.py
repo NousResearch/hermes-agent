@@ -1982,7 +1982,15 @@ class APIServerAdapter(BasePlatformAdapter):
         try:
             from hermes_cli.profiles import profiles_to_serve
 
-            served = {name for name, _ in profiles_to_serve(multiplex=True)}
+            served = {
+                name
+                for name, _ in profiles_to_serve(
+                    multiplex=True,
+                    profile_allowlist=getattr(
+                        cfg, "multiplex_profile_allowlist", None
+                    ),
+                )
+            }
         except Exception:
             return _PROFILE_REJECTED
         if profile not in served:
@@ -5841,10 +5849,28 @@ class APIServerAdapter(BasePlatformAdapter):
             provider = resolve_cron_scheduler()
 
             loop = asyncio.get_running_loop()
+            # Live adapters for delivery parity with the built-in ticker
+            # (gateway/run.py passes runner.adapters to the in-process
+            # scheduler). Without them, _deliver_result cannot resolve a live
+            # transport, so E2EE platforms and relay-fronted logical platforms
+            # (whose only send path IS the live relay adapter — no native
+            # credential exists) fail with "platform 'X' not
+            # configured/enabled" on every external-provider fire even though
+            # the same job delivers fine under the built-in ticker.
+            runner = self.gateway_runner or request.app.get("gateway_runner")
+            if runner is None:
+                try:
+                    from gateway.run import _gateway_runner_ref
+
+                    runner = _gateway_runner_ref()
+                except Exception:
+                    runner = None
+            adapters = getattr(runner, "adapters", None) or None
+
             # Fire in the background (202 immediately). fire_due claims via the
             # store CAS, so a retry while this is in flight is de-duped.
             task = asyncio.create_task(
-                asyncio.to_thread(provider.fire_due, job_id, adapters=None, loop=loop)
+                asyncio.to_thread(provider.fire_due, job_id, adapters=adapters, loop=loop)
             )
             reservation["detached"] = True
             task.add_done_callback(

@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Slot as ContribSlot } from '@/contrib/react/slot'
 import { useI18n } from '@/i18n'
 import { chatMessageText } from '@/lib/chat-messages'
+import { PR_COMMENT_URL_RE } from '@/lib/chat-runtime'
 import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
@@ -36,7 +37,7 @@ import { COMPOSER_AREAS, runComposerMiddleware } from './contrib'
 import { ComposerControls } from './controls'
 import { ComposerDirectiveActions } from './directive-actions'
 import { COMPOSER_DROP_ACTIVE_CLASS, COMPOSER_DROP_FADE_CLASS } from './drop-affordance'
-import { markActiveComposer } from './focus'
+import { markActiveComposer, onComposerAttachImagesRequest } from './focus'
 import { HelpHint } from './help-hint'
 import { useAtCompletions } from './hooks/use-at-completions'
 import { useComposerBranch } from './hooks/use-composer-branch'
@@ -93,6 +94,7 @@ export function ChatBar({
   onAddUrl,
   onAttachDroppedItems,
   onAttachImageBlob,
+  onAttachPrCommentUrl,
   onPasteClipboardImage,
   onPickFiles,
   onPickFolders,
@@ -233,6 +235,27 @@ export function ChatBar({
     syncDraftFromEditor
   })
 
+  // Paste-to-focus: clipboard images from an unfocused ⌘V ride the bus (the
+  // window dispatcher has no handle on this composer's attachment scope).
+  // Same ingestion as a focused paste's image branch.
+  useEffect(() => {
+    if (!onAttachImageBlob) {
+      return undefined
+    }
+
+    return onComposerAttachImagesRequest(({ blobs, target }) => {
+      if (target !== scope.target) {
+        return
+      }
+
+      triggerHaptic('selection')
+
+      for (const blob of blobs) {
+        void onAttachImageBlob(blob)
+      }
+    })
+  }, [onAttachImageBlob, scope.target])
+
   // Prior history belongs to the draft that just left — undoing into another
   // conversation's text is worse than having none.
   useEffect(() => {
@@ -258,6 +281,7 @@ export function ChatBar({
     queueParked,
     queuedPrompts,
     sendQueuedNow,
+    steerQueuedNow,
     stepQueuedEdit
   } = useComposerQueue({
     activeQueueSessionKey,
@@ -268,6 +292,7 @@ export function ChatBar({
     focusInput,
     loadIntoComposer,
     onCancel,
+    onSteer,
     onSubmit,
     queueEditRef,
     queueSessionKey,
@@ -486,6 +511,17 @@ export function ChatBar({
     }
 
     if (DATA_IMAGE_URL_RE.test(pastedText)) {
+      event.preventDefault()
+
+      return
+    }
+
+    // A pasted GitHub PR-comment deep link resolves to a structured review
+    // attachment (author, body, file:line anchor, diff hunk) instead of a bare
+    // `@url:` chip. Optimistic card first, resolve via gh in the background —
+    // if gh can't answer (offline, unauthenticated, foreign repo) the card
+    // swaps back to the plain URL ref so nothing is lost.
+    if (PR_COMMENT_URL_RE.test(pastedText) && onAttachPrCommentUrl?.(pastedText)) {
       event.preventDefault()
 
       return
@@ -1111,6 +1147,7 @@ export function ChatBar({
                     }
                   }}
                   onSendNow={id => void sendQueuedNow(id)}
+                  onSteerNow={id => void steerQueuedNow(id)}
                   parked={queueParked}
                 />
               ) : null

@@ -26,6 +26,13 @@ from typing import Any, Dict, List, Optional, Tuple
 from utils import base_url_host_matches, base_url_hostname, normalize_proxy_env_vars
 from agent.secret_scope import get_secret as _get_secret
 
+try:
+    import hermes_cli as _hermes_cli
+
+    _HERMES_VERSION = str(_hermes_cli.__version__)
+except Exception:
+    _HERMES_VERSION = "0.0.0"
+
 
 def _getenv(name: str, default: str = "") -> str:
     """Profile-scoped replacement for os.getenv on credential reads.
@@ -857,12 +864,18 @@ def build_anthropic_client(
     )
 
     if _is_kimi_coding_endpoint(base_url):
-        # Kimi's /coding endpoint requires User-Agent: claude-code/0.1.0
-        # to be recognized as a valid Coding Agent. Without it, returns 403.
-        # Check this BEFORE _requires_bearer_auth since both match api.kimi.com/coding.
+        # Kimi's /coding endpoint requires a non-empty User-Agent to be
+        # recognized as a valid Coding Agent. Originally we sent
+        # ``claude-code/0.1.0`` (the minimum that avoided a 403), but the Kimi
+        # team asked us to identify ourselves properly so they can attribute
+        # traffic correctly. Send the same attribution header set we send to
+        # OpenRouter, Vercel AI Gateway, and Fireworks:
+        # HTTP-Referer + X-Title + HermesAgent User-Agent.
         kwargs["api_key"] = api_key
         kwargs["default_headers"] = {
-            "User-Agent": "claude-code/0.1.0",
+            "HTTP-Referer": "https://hermes-agent.nousresearch.com",
+            "X-Title": "Hermes Agent",
+            "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
             **( {"anthropic-beta": ",".join(common_betas)} if common_betas else {} )
         }
     elif _requires_bearer_auth(normalized_base_url):

@@ -182,6 +182,9 @@ class SessionSource:
     # None => the gateway's active/default profile. Drives both session-key
     # namespacing and the per-turn config/credential scope.
     profile: Optional[str] = None
+    # Transport-local fail-closed signal for an explicit profile route whose
+    # target is not served. Excluded from repr/equality and wire serialization.
+    profile_route_rejected: bool = field(default=False, repr=False, compare=False)
 
     # Discord auto-thread metadata.  Newly auto-created Discord threads start
     # with a fast placeholder title from the raw message, then the gateway can
@@ -3419,6 +3422,14 @@ class SessionStore:
                 if entry.session_id == session_id:
                     return entry
         return None
+
+    def lookup_by_session_key(self, session_key: str) -> Optional[SessionEntry]:
+        """Return the persisted routing entry for an exact session key."""
+        if not session_key:
+            return None
+        with self._lock:
+            self._ensure_loaded_locked()
+            return self._entries.get(session_key)
 
     def peek_session_id(self, session_key: str) -> Optional[str]:
         """Return the persisted session_id currently bound to a session key.

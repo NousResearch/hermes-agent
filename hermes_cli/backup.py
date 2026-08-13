@@ -1066,6 +1066,22 @@ def run_import(args) -> None:
             for pname in gw_profiles:
                 print(f"  hermes -p {pname} gateway install")
 
+        # Bring the restored install to life: the backup may contain bot
+        # tokens and registered cron jobs, but they're inert without a
+        # gateway process. Install/start the service automatically (a
+        # platform-less gateway is a supported mode, so this is safe even
+        # for backups with no messaging config). Best-effort and prompt-free;
+        # failures print a manual fallback and never fail the import.
+        try:
+            from hermes_cli.gateway import ensure_gateway_service, _is_service_running
+
+            if not _is_service_running():
+                print()
+                ensure_gateway_service(context="import")
+        except Exception:
+            print("\nStart the gateway to activate cron jobs and messaging:")
+            print("  hermes gateway install")
+
         print("Done. Your Hermes configuration has been restored.")
 
 

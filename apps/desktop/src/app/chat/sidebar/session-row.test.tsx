@@ -26,6 +26,7 @@ vi.mock('@/i18n', () => ({
           backgroundRunning: 'Running in background',
           finishedUnread: 'Finished',
           handoffOrigin: (platform: string) => `Started on ${platform}`,
+          messageCount: (count: number) => `${count} messages`,
           needsInput: 'Needs input',
           sessionActions: 'Session actions',
           sessionRunning: 'Running',

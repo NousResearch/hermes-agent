@@ -120,6 +120,42 @@ class TestFormatMessageCodeBlocks:
         # \\ in input → \\\\ in output (each \ escaped once)
         assert r"`\\\\server\\share`" in result
 
+    def test_inline_triple_backticks_not_treated_as_fence(self, adapter):
+        r"""Inline ``` spans must not be swallowed by the fenced-block regex.
+
+        Regression for the over-matching fence regex that turned a single-line
+        inline triple-backtick span into a mangled MarkdownV2 <pre> entity
+        (Telegram: "can't find end of pre entity"), forcing a plain-text
+        fallback that dropped all rich formatting.
+        """
+        text = "the syntax is ```like this``` inline"
+        result = adapter.format_message(text)
+        # Content is preserved, and the inline span is NOT emitted as a raw
+        # fenced block: no unescaped triple-backtick run survives to open an
+        # unbalanced <pre> entity (the literal backticks are escaped instead).
+        assert "like this" in result
+        assert "```" not in result
+
+    def test_fence_and_inline_backticks_mixed(self, adapter):
+        r"""A real fenced block still gets protected even when the same message
+        also contains inline triple backticks elsewhere."""
+        text = "```\nx = 1\n```\nand inline ```y``` after"
+        result = adapter.format_message(text)
+        # The standalone fenced block is protected verbatim...
+        assert "```\nx = 1\n```" in result
+        # ...and the trailing inline ```y``` does not spawn a second,
+        # unbalanced fence — only the real block's two fences remain.
+        assert result.count("```") == 2
+        assert "y" in result
+
+    def test_fence_with_trailing_whitespace_on_close(self, adapter):
+        r"""A closing fence with trailing spaces must not double up the ```."""
+        text = "```\ncode\n```   "
+        result = adapter.format_message(text)
+        # Exactly one closing fence, not "``````".
+        assert "``````" not in result
+        assert "code" in result
+
 
 @pytest.mark.asyncio
 async def test_final_send_does_not_retrigger_typing(adapter):

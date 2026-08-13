@@ -5,6 +5,9 @@ half-installed just because Playwright's managed Chromium download hangs on an
 unsupported distribution.
 """
 
+import json
+import os
+import subprocess
 from pathlib import Path
 
 
@@ -16,7 +19,7 @@ INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 
 def test_install_script_honors_explicit_browser_override_only() -> None:
     """find_system_browser consults only an explicit AGENT_BROWSER_EXECUTABLE_PATH."""
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
 
     assert 'override="${AGENT_BROWSER_EXECUTABLE_PATH:-}"' in text
     # An explicit override still skips the bundled download (override, not fallback).
@@ -26,7 +29,7 @@ def test_install_script_honors_explicit_browser_override_only() -> None:
 
 
 def test_playwright_installs_are_timeout_guarded() -> None:
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
 
     # The timeout wrapper still exists and is used internally by the install
     # wrapper, so every Playwright download remains bounded.
@@ -47,7 +50,7 @@ def test_playwright_installs_are_timeout_guarded() -> None:
 
 def test_install_script_supports_skip_browser_flag() -> None:
     """--skip-browser (and --no-playwright alias) skips the Playwright install."""
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
 
     assert "--skip-browser|--no-playwright)" in text
     assert "SKIP_BROWSER=true" in text
@@ -55,6 +58,27 @@ def test_install_script_supports_skip_browser_flag() -> None:
     assert "--skip-browser Skip Playwright/Chromium install" in text
 
 
+def test_manifest_omits_interactive_stages_for_existing_config(tmp_path) -> None:
+    """Desktop/bootstrap staged installs should be incremental when configured."""
+    hermes_home = tmp_path / "home"
+    hermes_home.mkdir()
+    (hermes_home / ".env").write_text("OPENAI_API_KEY=sk-real\n", encoding="utf-8")
+    (hermes_home / "config.yaml").write_text("model:\n  provider: openai\n", encoding="utf-8")
+
+    env = {**os.environ, "HERMES_HOME": str(hermes_home)}
+    result = subprocess.run(
+        ["bash", str(INSTALL_SH), "--manifest", "--include-desktop"],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    manifest = json.loads(result.stdout)
+    stage_names = [stage["name"] for stage in manifest["stages"]]
+
+    assert "desktop" in stage_names
+    assert "setup" not in stage_names
+    assert "gateway" not in stage_names
 
 
 
@@ -68,7 +92,7 @@ def test_browser_install_timeout_stays_interruptible() -> None:
     `-k 10` guarantees a SIGKILL after the deadline. Both are GNU-only, so the
     installer probes support once and falls back to plain `timeout`.
     """
-    text = INSTALL_SH.read_text()
+    text = INSTALL_SH.read_text(encoding="utf-8")
 
     # GNU-flag probe + the guarded invocation must both be present. The timeout
     # binary is parameterized ($timeout_bin) so macOS gtimeout works too (#39219).
@@ -83,9 +107,6 @@ def test_browser_install_timeout_stays_interruptible() -> None:
 # the override retry fires ONLY on a too-new apt release (#35166), and not on a
 # host Playwright already supports.
 # ---------------------------------------------------------------------------
-
-import subprocess
-
 
 def _run_install_fn(distro: str, version: str, *, native_fails: bool,
                     arch: str = "x86_64", operator_override: str = "") -> dict:
@@ -105,7 +126,7 @@ def _run_install_fn(distro: str, version: str, *, native_fails: bool,
         "playwright_fallback_platform",
         "run_playwright_install",
     ]
-    src = INSTALL_SH.read_text()
+    src = INSTALL_SH.read_text(encoding="utf-8")
     import re
 
     extracted = []
@@ -158,7 +179,7 @@ echo "FINAL_RC=$?"
         env = dict(os.environ, RUNLOG=runlog)
         proc = subprocess.run(["bash", "-c", harness], capture_output=True,
                               text=True, env=env)
-        runs = Path(runlog).read_text().strip().splitlines()
+        runs = Path(runlog).read_text(encoding="utf-8").strip().splitlines()
         final_rc = None
         for line in proc.stdout.splitlines():
             if line.startswith("FINAL_RC="):
@@ -242,7 +263,6 @@ def test_ensure_browser_no_longer_references_agent_browser_binary_path() -> None
     body = _extract_function_body(INSTALL_SH.read_text(), "ensure_browser")
 
     assert "$HERMES_HOME/node/bin/agent-browser" not in body
-
 
 
 

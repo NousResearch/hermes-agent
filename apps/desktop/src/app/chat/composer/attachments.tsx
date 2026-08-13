@@ -33,6 +33,7 @@ export function AttachmentList({
 function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachment; onRemove?: (id: string) => void }) {
   const { t } = useI18n()
   const c = t.composer
+
   const Icon = {
     file: FileText,
     folder: FolderOpen,
@@ -41,19 +42,23 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
     terminal: Terminal,
     url: Link
   }[attachment.kind]
+
   // The tile's cwd when this pill lives in a tile composer, not the primary's:
   // a relative attachment path has to resolve against its own session's root.
   const cwd = useStore(useSessionView().$cwd)
   const isUploading = attachment.uploadState === 'uploading'
   const hasUploadError = attachment.uploadState === 'error'
+
   // A review card's detail is its resolved-comment JSON, not a previewable
   // path — clicking it should do nothing rather than toast a bogus failure.
   const canPreview =
     attachment.kind !== 'folder' && attachment.kind !== 'terminal' && attachment.kind !== 'review' && !isUploading
+
   const detail =
     attachment.kind !== 'review' && attachment.detail && attachment.detail !== attachment.label
       ? attachment.detail
       : undefined
+
   // An attached image already holds its full bytes as a data URL, so it belongs
   // in the same lightbox the thread uses. The rail is for files you read or
   // edit — not a picture you just want to look at. Images that never resolved a

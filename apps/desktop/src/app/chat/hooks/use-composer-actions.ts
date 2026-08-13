@@ -355,7 +355,9 @@ export function useComposerActions({
 
       void (async () => {
         const comment = currentCwd
-          ? await (desktopGit()?.review.fetchPrComment(currentCwd, url).catch(() => null) ?? null)
+          ? await (desktopGit()
+              ?.review.fetchPrComment(currentCwd, url)
+              .catch(() => null) ?? null)
           : null
 
         if (comment) {

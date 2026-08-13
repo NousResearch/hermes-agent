@@ -184,9 +184,11 @@ export const PR_COMMENT_URL_RE =
 export function reviewCommentBlock(detail: string): null | string {
   try {
     const c = JSON.parse(detail)
+
     const anchor = c.path
       ? `${c.path}${c.line ? `:${c.startLine && c.startLine !== c.line ? `${c.startLine}-` : ''}${c.line}` : ''}`
       : `PR #${c.prNumber}`
+
     const hunk = c.diffHunk ? `\n--- diff hunk ---\n${String(c.diffHunk).trim()}` : ''
 
     return `\`\`\`review-comment ${anchor}\n@${c.author} on ${c.url}\n\n${String(c.body).trim()}${hunk}\n\`\`\``

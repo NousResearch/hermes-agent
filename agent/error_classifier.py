@@ -910,6 +910,17 @@ def _nous_welcome_tier(c: _Ctx) -> Optional[Verdict]:
     return _v(_R.format_error, retryable=False, should_fallback=True, error_context=ctx)
 
 
+def _is_gemini_prompt_block(error: Exception) -> bool:
+    """The native Gemini adapter's ``promptFeedback.blockReason`` error, matched on its structured code
+    (a 200 with no candidates, so no status or body to classify; the message text is not trusted)."""
+    return _from_cause_chain(error, _gemini_prompt_block_marker, False)
+
+
+def _gemini_prompt_block_marker(exc: Any) -> Optional[bool]:
+    is_block = type(exc).__name__ == "GeminiAPIError" and getattr(exc, "code", None) == "gemini_prompt_blocked"
+    return True if is_block else None
+
+
 def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     """Highest-priority provider-specific shapes that a status code would misroute."""
     msg, status = c.msg, c.status_code
@@ -921,7 +932,7 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
         return welcome
     # Safety refusal before status classification so a 400 block isn't downgraded
     # to format_error and a status-less block isn't left retryable (#18028).
-    if any(p in msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS):
+    if any(p in msg for p in _CONTENT_POLICY_BLOCKED_PATTERNS) or _is_gemini_prompt_block(c.error):
         return _V_CONTENT_BLOCKED
     # Status-agnostic: the stream-relayed ban has no status, and a 403 variant is not a bad key.
     if any(p in msg for p in _ACCOUNT_POLICY_BLOCK_PATTERNS):

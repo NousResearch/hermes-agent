@@ -5893,6 +5893,10 @@ class TurnRunner:
             "partial": ctx.result_holder[0].get("partial", False) if ctx.result_holder[0] else False,
             "error": ctx.result_holder[0].get("error") if ctx.result_holder[0] else None,
             "interrupt_message": ctx.result_holder[0].get("interrupt_message") if ctx.result_holder[0] else None,
+            "compression_exhausted": (
+                ctx.result_holder[0].get("compression_exhausted", False)
+                if ctx.result_holder[0] else False
+            ),
             # Soft lock-contention defer (#69870 consumer): distinct from
             # compression_exhausted so the gateway never auto-resets a
             # session that a concurrent compressor is about to shrink.

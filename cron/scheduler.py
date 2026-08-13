@@ -4879,12 +4879,17 @@ def run_one_job(
             else:
                 deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
                 if drift_skip and not success:
-                    # Drift-skip alert: strip the internal marker from the
-                    # user-facing text (the summarizer passes the message
-                    # through its generic tail).
-                    deliver_content = re.sub(
-                        r"\[drift_skip[^\]]*\]\s*", "", deliver_content
+                    # Drift-skip alert: bypass the generic summarizer's
+                    # 180-char truncation (it would eat the remediation
+                    # command) and strip the internal marker — deliver the
+                    # guard's own actionable message intact.
+                    _drift_text = re.sub(
+                        r"\[drift_skip[^\]]*\]\s*", "", str(error)
                     ).strip()
+                    deliver_content = (
+                        f"⚠️ Cron '{job.get('name') or job['id']}' skipped: "
+                        f"{_drift_text}"
+                    )
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.

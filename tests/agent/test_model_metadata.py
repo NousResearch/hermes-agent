@@ -592,6 +592,30 @@ class TestNousPortalContextResolution:
 
 
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_empty_model_never_fuzzy_matches_endpoint_catalog(self, mock_fetch):
+        """An empty model name must not substring-match arbitrary catalog
+        entries — '' is a substring of every key, so pre-fix it "matched"
+        whatever the endpoint listed first (e.g. a 32K embedding model on
+        the Nous portal) and poisoned the resolved context length."""
+        import agent.model_metadata as mm
+        mock_fetch.return_value = {
+            "voyageai/voyage-code-4": {"context_length": 32_000},
+            "x-ai/grok-4.6": {"context_length": 500_000},
+        }
+        assert mm._resolve_endpoint_context_length(
+            "", "https://inference-api.nousresearch.com/v1"
+        ) is None
+        # Non-empty names still fuzzy-match.
+        assert mm._resolve_endpoint_context_length(
+            "grok-4.6", "https://inference-api.nousresearch.com/v1"
+        ) == 500_000
+        # Single-model endpoints still resolve even with an empty name.
+        mock_fetch.return_value = {"only-model": {"context_length": 131_072}}
+        assert mm._resolve_endpoint_context_length(
+            "", "http://localhost:8080/v1"
+        ) == 131_072
+
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_openrouter_fallback_is_not_persisted(
         self, mock_or, mock_portal, tmp_path, monkeypatch

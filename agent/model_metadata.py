@@ -1399,7 +1399,12 @@ def _resolve_endpoint_context_length(
     if not matched:
         if len(endpoint_metadata) == 1:
             matched = next(iter(endpoint_metadata.values()))
-        else:
+        elif model:
+            # Substring fuzzy match — only meaningful with a non-empty model
+            # name.  An empty string is a substring of EVERY key, which would
+            # "match" whatever model the endpoint happens to list first (e.g.
+            # a 32K embedding model on the Nous portal) and poison the
+            # resolved context length for the whole agent.
             for key, entry in endpoint_metadata.items():
                 if model in key or key in model:
                     matched = entry

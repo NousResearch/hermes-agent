@@ -89,6 +89,23 @@ def _(rid, params: dict) -> dict:
             }
             if include_sessions:
                 row["last_session"] = _latest_profile_session_row(p.path)
+
+            # Client-agnostic UI metadata (avatars, accent colors, pinned
+            # order, …) — stored server-side in profile.yaml so every
+            # machine connecting to this gateway paints the same roster.
+            try:
+                import yaml as _yaml
+                from pathlib import Path as _Path
+
+                meta_path = _Path(str(p.path)) / "profile.yaml"
+                if meta_path.is_file():
+                    with open(meta_path, "r", encoding="utf-8") as f:
+                        raw_meta = _yaml.safe_load(f) or {}
+                    ui_meta = raw_meta.get("ui_meta")
+                    if isinstance(ui_meta, dict) and ui_meta:
+                        row["ui_meta"] = ui_meta
+            except Exception:
+                pass
             out.append(row)
         return _ok(rid, {"profiles": out})
     except Exception as e:
@@ -381,6 +398,50 @@ def _(rid, params: dict) -> dict:
             return _err(rid, 4064, f"profile '{name}' not found")
 
         applied = {}
+
+        if isinstance(params.get("ui_meta"), dict):
+            # Client-agnostic UI metadata (avatar/pet/etc.), merged key-wise
+            # into profile.yaml's ui_meta block. A key set to None deletes it.
+            # Size-capped: this rides profiles.list on every roster paint, so
+            # large blobs (e.g. raw base64 images) are rejected — persist big
+            # assets elsewhere and store a reference.
+            try:
+                import json as _json
+
+                incoming = params["ui_meta"]
+                if len(_json.dumps(incoming)) > 65536:
+                    applied["ui_meta"] = False
+                else:
+                    import yaml as _yaml
+
+                    meta_path = profile_dir / "profile.yaml"
+                    existing = {}
+                    if meta_path.is_file():
+                        try:
+                            with open(meta_path, "r", encoding="utf-8") as f:
+                                loaded = _yaml.safe_load(f) or {}
+                            if isinstance(loaded, dict):
+                                existing = loaded
+                        except Exception:
+                            existing = {}
+                    current = existing.get("ui_meta")
+                    if not isinstance(current, dict):
+                        current = {}
+                    for key, value in incoming.items():
+                        if value is None:
+                            current.pop(key, None)
+                        else:
+                            current[key] = value
+                    if current:
+                        existing["ui_meta"] = current
+                    else:
+                        existing.pop("ui_meta", None)
+                    from utils import atomic_yaml_write
+
+                    atomic_yaml_write(meta_path, existing, sort_keys=False)
+                    applied["ui_meta"] = True
+            except Exception:
+                applied["ui_meta"] = False
 
         if isinstance(params.get("soul"), str):
             try:

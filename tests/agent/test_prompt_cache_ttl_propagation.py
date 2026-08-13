@@ -236,6 +236,21 @@ class TestFailoverRestartsPreflight:
             and node.test.func.attr == "_try_activate_fallback"
         ]
         assert fallback_ifs, "expected _try_activate_fallback sites in run_conversation"
+        # Every reference to _try_activate_fallback must be one of the matched
+        # `if agent._try_activate_fallback(...):` sites — a site written as
+        # `activated = agent._try_activate_fallback()` would silently escape
+        # this guard.
+        all_refs = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Attribute)
+            and node.attr == "_try_activate_fallback"
+        ]
+        assert len(all_refs) == len(fallback_ifs), (
+            "every _try_activate_fallback reference must be a direct "
+            "`if agent._try_activate_fallback(...):` site so this guard "
+            "can bind its restart discipline (#84733)"
+        )
         for node in fallback_ifs:
             if _inside_retry_loop(node):
                 assert any(isinstance(stmt, ast.Break) for stmt in node.body), (
@@ -258,6 +273,51 @@ class TestFailoverRestartsPreflight:
                     "outer-loop fallback activation must not break — that "
                     "exits the conversation loop and ends the turn (#84733)"
                 )
+
+    def test_restart_handler_clears_preflight_block(self):
+        """The single consumer of restart_with_rebuilt_messages must clear
+        _preflight_compression_blocked, so every retry-loop failover gets a
+        fresh preflight against the fallback's context window (#84733)."""
+        from agent import conversation_loop
+
+        tree = ast.parse(inspect.getsource(conversation_loop.run_conversation))
+        handlers = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Attribute)
+            and node.test.attr == "restart_with_rebuilt_messages"
+        ]
+        assert handlers, "expected the restart_with_rebuilt_messages handler"
+        consumer = [
+            node
+            for node in handlers
+            if any(
+                isinstance(stmt, ast.Assign)
+                and any(
+                    isinstance(t, ast.Attribute)
+                    and t.attr == "restart_with_rebuilt_messages"
+                    for t in stmt.targets
+                )
+                for stmt in node.body
+            )
+        ]
+        assert consumer, "expected the flag-consuming handler"
+        for node in consumer:
+            assert any(
+                isinstance(stmt, ast.Assign)
+                and any(
+                    isinstance(t, ast.Name)
+                    and t.id == "_preflight_compression_blocked"
+                    for t in stmt.targets
+                )
+                and isinstance(stmt.value, ast.Constant)
+                and stmt.value.value is False
+                for stmt in node.body
+            ), (
+                "the restart handler must clear _preflight_compression_blocked "
+                "so the re-run preflight isn't skipped (#84733)"
+            )
 
 
 class TestAuxFallbackReplanThreadsTtl:

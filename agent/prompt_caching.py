@@ -132,6 +132,16 @@ ALIBABA_FAMILY_PROVIDERS = frozenset({
 })
 
 
+def is_qwen_model(model: str) -> bool:
+    """True when ``model`` names a Qwen-family model (case-insensitive).
+
+    Shared by the TTL clamp below and
+    ``agent_runtime_helpers.anthropic_prompt_cache_policy`` so the
+    cache-policy opt-in and the clamp can never desync (#84733).
+    """
+    return "qwen" in (model or "").lower()
+
+
 def effective_cache_ttl(
     ttl: str | None,
     *,
@@ -150,7 +160,7 @@ def effective_cache_ttl(
     """
     if ttl != "1h":
         return ttl or "5m"
-    if "qwen" in (model or "").lower():
+    if is_qwen_model(model):
         return "5m"
     if (provider or "").lower() in ALIBABA_FAMILY_PROVIDERS:
         return "5m"

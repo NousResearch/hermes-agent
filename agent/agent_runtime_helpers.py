@@ -1964,6 +1964,20 @@ def cache_ttl_means_disabled(ttl: Any) -> bool:
     return str(ttl).lower() in ("off", "false", "disabled", "no", "none")
 
 
+# The two cache_ttl tiers accepted by config (anything else is either a
+# disable synonym or ignored). Shared by the config readers below and
+# mirrored by agent_init's live-agent snapshot.
+VALID_CACHE_TTLS = ("5m", "1h")
+
+
+def _raw_cache_ttl_from_config() -> Any:
+    """Read the raw ``prompt_caching.cache_ttl`` config value (may raise)."""
+    from hermes_cli.config import load_config_readonly
+
+    pc_cfg = load_config_readonly().get("prompt_caching", {}) or {}
+    return pc_cfg.get("cache_ttl", "5m")
+
+
 def prompt_caching_disabled_from_config() -> bool:
     """Return True when ``prompt_caching.cache_ttl`` is configured as off.
 
@@ -1973,10 +1987,7 @@ def prompt_caching_disabled_from_config() -> bool:
     ``AIAgent`` (#76085 / #33555).
     """
     try:
-        from hermes_cli.config import load_config_readonly
-
-        pc_cfg = load_config_readonly().get("prompt_caching", {}) or {}
-        ttl = pc_cfg.get("cache_ttl", "5m")
+        ttl = _raw_cache_ttl_from_config()
     except Exception:
         return False
     return cache_ttl_means_disabled(ttl)
@@ -1992,13 +2003,10 @@ def configured_cache_ttl() -> Optional[str]:
     ``effective_cache_ttl`` resolves ``None`` to ``5m`` downstream.
     """
     try:
-        from hermes_cli.config import load_config_readonly
-
-        pc_cfg = load_config_readonly().get("prompt_caching", {}) or {}
-        ttl = pc_cfg.get("cache_ttl", "5m")
+        ttl = _raw_cache_ttl_from_config()
     except Exception:
         return None
-    return ttl if ttl in ("5m", "1h") else None
+    return ttl if ttl in VALID_CACHE_TTLS else None
 
 
 def blank_cache_policy_stub(cache_disabled: Optional[bool] = None):
@@ -2292,12 +2300,12 @@ def anthropic_prompt_cache_policy(
     # OpenCode Zen's relay rejects the Anthropic-style content block
     # format that cache markers produce (content becomes a block array
     # instead of a plain string), causing HTTP 400 (#77217).
-    model_is_qwen = "qwen" in model_lower
-    # Single source of truth for the family set — shared with the
-    # effective_cache_ttl clamp so the opt-in and the TTL clamp can
-    # never desync (#84733).
-    from agent.prompt_caching import ALIBABA_FAMILY_PROVIDERS
+    # Single source of truth for the family set and the qwen-model
+    # predicate — shared with the effective_cache_ttl clamp so the
+    # opt-in and the TTL clamp can never desync (#84733).
+    from agent.prompt_caching import ALIBABA_FAMILY_PROVIDERS, is_qwen_model
 
+    model_is_qwen = is_qwen_model(model_lower)
     provider_is_alibaba_family = provider_lower in ALIBABA_FAMILY_PROVIDERS
     if provider_is_alibaba_family and model_is_qwen:
         # Envelope layout (native_anthropic=False): markers on inner

@@ -606,6 +606,196 @@ class TestPollLoop(unittest.TestCase):
         self.assertTrue(adapter.fatal_error_retryable)
         self.assertIn("read operation timed out", adapter.fatal_error_message)
 
+    def test_partial_batch_dispatched_before_escalation(self):
+        """A mid-batch IMAP failure must dispatch the messages already
+        fetched BEFORE escalating — dropping them would lose mail, since
+        their UIDs are marked seen (#80032 review)."""
+        import asyncio
+        adapter = self._make_adapter()
+        dispatched, notified = [], []
+
+        async def mock_dispatch(msg_data):
+            dispatched.append(msg_data)
+
+        async def mock_fatal_handler(a):
+            notified.append(a)
+
+        adapter._dispatch_message = mock_dispatch
+        adapter.set_fatal_error_handler(mock_fatal_handler)
+
+        raw_email = MIMEText("Body", "plain", "utf-8")
+        raw_email["From"] = "sender@test.com"
+        raw_email["Subject"] = "First of batch"
+        raw_email["Message-ID"] = "<batch1@test.com>"
+
+        mock_imap = MagicMock()
+        fetches = []
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1 2"])
+            if command == "fetch":
+                fetches.append(args)
+                if len(fetches) == 1:
+                    return ("OK", [(b"1", raw_email.as_bytes())])
+                raise OSError("connection dropped mid-batch")
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            asyncio.run(adapter._check_inbox())
+
+        # The successfully fetched message was dispatched, not dropped.
+        self.assertEqual(len(dispatched), 1)
+        self.assertEqual(dispatched[0]["subject"], "First of batch")
+        # The failure still escalated through the fatal-error hook.
+        self.assertEqual(len(notified), 1)
+        self.assertEqual(adapter.fatal_error_code, "email_imap_fetch_failed")
+
+    def test_mid_batch_failure_leaves_unfetched_uids_eligible(self):
+        """UIDs are marked seen only after their fetch returns — a
+        connection failure mid-batch must leave the remaining UIDs eligible
+        for the next poll instead of permanently skipping them."""
+        adapter = self._make_adapter()
+
+        raw_email = MIMEText("Body", "plain", "utf-8")
+        raw_email["From"] = "sender@test.com"
+        raw_email["Subject"] = "ok"
+        raw_email["Message-ID"] = "<ok@test.com>"
+
+        mock_imap = MagicMock()
+        fetches = []
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1 2 3"])
+            if command == "fetch":
+                fetches.append(args)
+                if len(fetches) == 1:
+                    return ("OK", [(b"1", raw_email.as_bytes())])
+                raise OSError("connection dropped")
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap):
+            results = adapter._fetch_new_messages()
+
+        self.assertEqual(len(results), 1)
+        self.assertIn(b"1", adapter._seen_uids)     # fetched → seen
+        self.assertNotIn(b"2", adapter._seen_uids)  # fetch raised → retry next poll
+        self.assertNotIn(b"3", adapter._seen_uids)  # never reached → retry next poll
+        self.assertTrue(adapter._last_fetch_failed)
+
+    def test_poison_message_skipped_once_without_escalation(self):
+        """A message whose processing raises is marked seen and skipped —
+        it must not abort the batch, escalate to a reconnect, or be
+        retried forever (#80032 review)."""
+        adapter = self._make_adapter()
+
+        good_email = MIMEText("Body", "plain", "utf-8")
+        good_email["From"] = "sender@test.com"
+        good_email["Subject"] = "good"
+        good_email["Message-ID"] = "<good@test.com>"
+
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [b"1 2"])
+            if command == "fetch":
+                uid = args[0]
+                if uid == b"1":
+                    return ("OK", [(b"1", b"poison")])
+                return ("OK", [(b"2", good_email.as_bytes())])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), patch(
+            "plugins.platforms.email.adapter.EmailAdapter._parse_fetched_message",
+            side_effect=[ValueError("unparseable"), {"subject": "good"}],
+        ):
+            results = adapter._fetch_new_messages()
+
+        # Poison message consumed (seen, skipped); good message survived.
+        self.assertEqual(len(results), 1)
+        self.assertIn(b"1", adapter._seen_uids)
+        self.assertIn(b"2", adapter._seen_uids)
+        self.assertFalse(adapter._last_fetch_failed)
+
+
+class TestReconnectSeenUidsRestore(unittest.TestCase):
+    """connect(is_reconnect=True) must not re-mark the whole mailbox seen."""
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        with patch.dict(os.environ, {
+            "EMAIL_ADDRESS": "hermes@test.com",
+            "EMAIL_PASSWORD": "secret",
+            "EMAIL_IMAP_HOST": "imap.test.com",
+            "EMAIL_SMTP_HOST": "smtp.test.com",
+        }):
+            from plugins.platforms.email.adapter import EmailAdapter
+            adapter = EmailAdapter(PlatformConfig(enabled=True))
+        return adapter
+
+    def setUp(self):
+        from plugins.platforms.email.adapter import EmailAdapter
+        EmailAdapter._seen_uids_snapshot.clear()
+
+    tearDown = setUp
+
+    def _run_connect(self, adapter, mailbox_uids, *, is_reconnect):
+        import asyncio
+
+        mock_imap = MagicMock()
+
+        def uid_handler(command, *args):
+            if command == "search":
+                return ("OK", [mailbox_uids])
+            return ("NO", [])
+
+        mock_imap.uid.side_effect = uid_handler
+        smtp = MagicMock()
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap), patch.object(
+            adapter, "_connect_smtp", return_value=smtp
+        ):
+            return asyncio.run(adapter.connect(is_reconnect=is_reconnect))
+
+    def test_reconnect_restores_snapshot_instead_of_marking_all_seen(self):
+        # First adapter connects with UIDs 1-2 in the mailbox.
+        first = self._make_adapter()
+        self.assertTrue(self._run_connect(first, b"1 2", is_reconnect=False))
+        self.assertEqual(first._seen_uids, {b"1", b"2"})
+        import asyncio
+        asyncio.run(first.disconnect())
+
+        # Outage: UID 3 arrives. The reconnect watcher builds a FRESH adapter
+        # and connects with is_reconnect=True.
+        second = self._make_adapter()
+        self.assertTrue(self._run_connect(second, b"1 2 3", is_reconnect=True))
+        # Baseline restored from the snapshot — UID 3 stays eligible.
+        self.assertEqual(second._seen_uids, {b"1", b"2"})
+        asyncio.run(second.disconnect())
+
+    def test_first_connect_still_marks_all_seen(self):
+        adapter = self._make_adapter()
+        self.assertTrue(self._run_connect(adapter, b"7 8 9", is_reconnect=False))
+        self.assertEqual(adapter._seen_uids, {b"7", b"8", b"9"})
+        import asyncio
+        asyncio.run(adapter.disconnect())
+
+    def test_reconnect_without_snapshot_falls_back_to_mark_all_seen(self):
+        # e.g. gateway restarted: no in-process snapshot exists.
+        adapter = self._make_adapter()
+        self.assertTrue(self._run_connect(adapter, b"4 5", is_reconnect=True))
+        self.assertEqual(adapter._seen_uids, {b"4", b"5"})
+        import asyncio
+        asyncio.run(adapter.disconnect())
+
 
 class TestSendEmailStandalone(unittest.TestCase):
     """Test the standalone _send_email function in send_message_tool."""

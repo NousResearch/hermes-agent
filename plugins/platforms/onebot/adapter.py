@@ -406,9 +406,27 @@ class OneBotAdapter(BasePlatformAdapter):
         finally:
             if self._ws is ws:
                 self._ws = None
+            # 断线快速失败：挂起的 action future 立即报错，避免调用方
+            # 干等 wait_for 超时（10-30s），并防止 future 泄漏
+            if self._pending_actions:
+                for fut in self._pending_actions.values():
+                    if not fut.done():
+                        fut.set_exception(
+                            ConnectionError("OneBot WebSocket closed while awaiting action")
+                        )
+                self._pending_actions.clear()
+            # 关闭本连接持有的 session，防止 aiohttp 连接泄漏
+            sess = self._forward_session
+            if sess is not None:
+                self._forward_session = None
+                try:
+                    await sess.close()
+                except Exception:
+                    pass
             logger.info("[onebot] forward WS closed")
             if not self._stopping:
-                self._reconnect_task = asyncio.create_task(self._forward_reconnect())
+                if self._reconnect_task is None or self._reconnect_task.done():
+                    self._reconnect_task = asyncio.create_task(self._forward_reconnect())
 
     async def _forward_reconnect(self) -> None:
         for delay in RECONNECT_BACKOFF * (MAX_RECONNECT_ATTEMPTS // len(RECONNECT_BACKOFF) + 1):
@@ -548,6 +566,8 @@ class OneBotAdapter(BasePlatformAdapter):
                 media_types=media_types,
             )
             await self.handle_message(event)
+            # 顺带清理过期临时媒体文件（防 /tmp/hermes_onebot 无限堆积）
+            self._cleanup_tmp_files()
         except Exception as e:
             logger.error("[onebot] failed processing message: %s", e, exc_info=True)
 
@@ -758,6 +778,27 @@ class OneBotAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.info("[onebot] get_image failed for file=%s: %s", file, e)
         return None
+
+    def _cleanup_tmp_files(self, max_age: float = 6 * 3600) -> None:
+        """删除 /tmp/hermes_onebot/ 下超过 max_age 秒的临时媒体文件。
+
+        入站图片/视频下载后只写不删，长期运行会堆积磁盘；每次入站
+        媒体处理后顺带清理一次。语音 .wav/.bin 由调用方自行删除，
+        这里同样兜底。
+        """
+        try:
+            tmp = Path(tempfile.gettempdir()) / "hermes_onebot"
+            if not tmp.is_dir():
+                return
+            now = time.time()
+            for p in tmp.iterdir():
+                try:
+                    if p.is_file() and (now - p.stat().st_mtime) > max_age:
+                        p.unlink(missing_ok=True)
+                except (OSError, FileNotFoundError):
+                    pass
+        except Exception:
+            pass
 
     async def _download_image(self, url: str) -> Optional[str]:
         if not url or url.lower().startswith("base64://"):
@@ -1060,6 +1101,15 @@ class OneBotAdapter(BasePlatformAdapter):
             if _buf_sent_ids:
                 self._loop_buffer.setdefault(chat_id, []).extend(_buf_sent_ids)
                 self._loop_buffer_ts[chat_id] = time.time()
+            else:
+                # 没有新 interim 写入时顺带做超时兜底：interim 后 5 分钟内
+                # final 未到（gateway 中断/异常），清掉残留缓冲防滞留
+                ts = self._loop_buffer_ts.get(chat_id)
+                if ts and (time.time() - ts) > 300 and self._loop_buffer.get(chat_id):
+                    logger.info("[onebot] loop buffer expired for %s, dropping %d item(s)",
+                                chat_id, len(self._loop_buffer.get(chat_id, [])))
+                    self._loop_buffer.pop(chat_id, None)
+                    self._loop_buffer_ts.pop(chat_id, None)
 
             return SendResult(success=True, message_id=last_message_id)
         except asyncio.CancelledError:
@@ -1226,10 +1276,14 @@ class OneBotAdapter(BasePlatformAdapter):
     ) -> SendResult:
         kind, target = _split_chat_id(chat_id)
         params: Dict[str, Any] = {}
-        if kind == "group":
-            params["group_id"] = int(target)
-        else:
-            params["user_id"] = int(target)
+        try:
+            if kind == "group":
+                params["group_id"] = int(target)
+            else:
+                params["user_id"] = int(target)
+        except (ValueError, TypeError):
+            logger.warning("[onebot] bad chat_id for media send: %r", chat_id)
+            return SendResult(success=False, error=f"bad chat_id: {chat_id}", retryable=False)
         msg = list(segments)
         if caption:
             msg.insert(0, {"type": "text", "data": {"text": caption}})

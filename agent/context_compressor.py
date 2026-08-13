@@ -6403,6 +6403,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         if not fresh_summary:
             self._micro_compact_rolling_summary = old_summary
             return False
+        fresh_summary = _redact_compaction_text(fresh_summary)
         self._micro_compact_rolling_summary = fresh_summary
         # Rewrite the newest MICRO marker's content in place so the transcript
         # and the in-memory summary stay in step (resume rehydrates from it).

@@ -825,6 +825,28 @@ class TestMicroCompaction:
         assert secret not in prompt
         assert secret not in cc._micro_compact_rolling_summary
         assert secret not in str(result)
+    def test_defragged_summary_is_redacted_before_publish(self):
+        """Defrag-generated summary is redacted before rolling summary and marker (#84723).
+
+        The absorb and rehydration paths already redact; the defrag sibling
+        path must too, or a secret in the re-summarized text reaches the
+        rolling summary, the marker content, and the session DB.
+        """
+        secret = "sk-proj-" + ("a" * 40)
+        # First pass: absorb exchanges to create a micro marker.
+        cc = _compressor(summary="clean initial summary")
+        messages = cc._micro_compact(_conversation(exchanges=8))
+        assert _summary_markers(messages)
+        # Force defrag on the next pass and make the summarizer leak a secret.
+        cc._micro_compact_rolling_summary = "x" * 40_000
+        cc._micro_summarize_one = lambda _text: f"Defrag leaked {secret}"
+        result = cc._micro_compact(list(messages))
+        markers = _summary_markers(result)
+        assert markers
+        blob = str(result)
+        assert secret not in blob
+        assert secret not in cc._micro_compact_rolling_summary
+        assert secret not in markers[0]["content"]
 
 
 class TestDefragFlushCursorInvalidation:

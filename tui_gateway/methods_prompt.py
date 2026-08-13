@@ -155,19 +155,19 @@ def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
     return db_ord, mem_idx
 
 
-def _coerce_truncate_ordinal(rid, value):
-    """Return ``(ordinal, error_response)`` for a client-supplied ordinal.
+def _coerce_truncate_int(rid, value, param_name="truncate_before_user_ordinal"):
+    """Return ``(int_value, error_response)`` for a client-supplied integer param.
 
     bool is an int subclass: a JSON ``true`` would coerce via int() to
-    ordinal 1 and aim a confirmed rewind at the second user turn — refuse it
-    like any other non-integer.
+    1 and aim a confirmed rewind at the wrong turn — refuse it like any
+    other non-integer.
     """
     if isinstance(value, bool):
-        return None, _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
+        return None, _err(rid, 4004, f"{param_name} must be an integer")
     try:
         return int(value), None
     except (TypeError, ValueError):
-        return None, _err(rid, 4004, "truncate_before_user_ordinal must be an integer")
+        return None, _err(rid, 4004, f"{param_name} must be an integer")
 
 
 def _reconcile_client_ordinal(rid, sid, client_ordinal, msg_ordinal, param_name, target_repr):
@@ -180,7 +180,7 @@ def _reconcile_client_ordinal(rid, sid, client_ordinal, msg_ordinal, param_name,
     """
     if client_ordinal is None:
         return msg_ordinal, None
-    ordinal, err = _coerce_truncate_ordinal(rid, client_ordinal)
+    ordinal, err = _coerce_truncate_int(rid, client_ordinal)
     if err is not None:
         return None, err
     if ordinal != msg_ordinal:
@@ -380,26 +380,60 @@ def _(rid, params: dict) -> dict:
             or truncate_row_id is not None
         ):
             history = session.get("history", [])
+
+            # Malformed params refuse first (4004), regardless of consent —
+            # the historical ordinal-path precedence.
+            target_row_id = None
+            if truncate_row_id is not None:
+                target_row_id, err = _coerce_truncate_int(
+                    rid, truncate_row_id, "truncate_before_row_id"
+                )
+                if err is not None:
+                    return err
+            client_ordinal = None
+            if truncate_user_ordinal is not None:
+                client_ordinal, err = _coerce_truncate_int(rid, truncate_user_ordinal)
+                if err is not None:
+                    return err
+
+            # An ordinal/id alone is not consent. A client that carries a leftover
+            # ordinal into an ORDINARY submit sends a request that is
+            # indistinguishable, field by field, from a real rewind — same
+            # method, same shape, an in-range target — and the cut it asks for
+            # is a destructive replace_messages() the user never requested
+            # (#80763: 296 -> 52 messages, 244 durable rows gone). Only the
+            # client knows whether this submit is a rewind/edit/regenerate, so
+            # it has to say so; refuse the cut when it doesn't. Consent is
+            # checked BEFORE target resolution: an unconfirmed (leaked-state)
+            # request must refuse with 4029 without paying the durable
+            # transcript read or heal-stamping live history dicts that
+            # row-id resolution performs.
+            if not is_truthy_value(params.get("confirm_truncate")):
+                logger.warning(
+                    "prompt.submit: REFUSED unconfirmed truncation of session %s "
+                    "(%d messages held; ordinal=%s, row_id=%s, message_id=%s). "
+                    "The client attached truncation parameters without "
+                    "confirm_truncate — likely stale truncation parameters on "
+                    "an ordinary submit.",
+                    sid,
+                    len(history),
+                    client_ordinal,
+                    target_row_id,
+                    truncate_message_id,
+                )
+                return _err(
+                    rid,
+                    4029,
+                    "truncation parameters require confirm_truncate=true; "
+                    "an ordinary prompt.submit must not drop session history "
+                    "(update your Hermes client if a rewind was intended)",
+                )
+
             user_indices = _history_user_indices(history)
 
             ordinal = None
 
-            if truncate_row_id is not None:
-                if isinstance(truncate_row_id, bool):
-                    return _err(
-                        rid,
-                        4004,
-                        "truncate_before_row_id must be an integer",
-                    )
-                try:
-                    target_row_id = int(truncate_row_id)
-                except (TypeError, ValueError):
-                    return _err(
-                        rid,
-                        4004,
-                        "truncate_before_row_id must be an integer",
-                    )
-
+            if target_row_id is not None:
                 # Durable address first — never degrade a missing row_id into a
                 # client ordinal cut (#82959 / #82766 review). Unknown id refuses
                 # without touching data; stale ordinal with a *resolved* row_id
@@ -407,8 +441,6 @@ def _(rid, params: dict) -> dict:
                 found_match = _resolve_truncate_row_id(
                     session, history, target_row_id
                 )
-                # user_indices may have been healed with _row_id stamps
-                user_indices = _history_user_indices(history)
 
                 if found_match is None:
                     logger.warning(
@@ -425,7 +457,7 @@ def _(rid, params: dict) -> dict:
 
                 msg_ordinal, _ = found_match
                 ordinal, err = _reconcile_client_ordinal(
-                    rid, sid, truncate_user_ordinal, msg_ordinal,
+                    rid, sid, client_ordinal, msg_ordinal,
                     "truncate_before_row_id", target_row_id,
                 )
                 if err is not None:
@@ -457,49 +489,14 @@ def _(rid, params: dict) -> dict:
 
                 msg_ordinal, _ = found_match
                 ordinal, err = _reconcile_client_ordinal(
-                    rid, sid, truncate_user_ordinal, msg_ordinal,
+                    rid, sid, client_ordinal, msg_ordinal,
                     "truncate_before_message_id", msg_id_str,
                 )
                 if err is not None:
                     return err
             else:
-                ordinal, err = _coerce_truncate_ordinal(rid, truncate_user_ordinal)
-                if err is not None:
-                    return err
+                ordinal = client_ordinal
 
-                if ordinal < 0 or ordinal >= len(user_indices):
-                    return _err(
-                        rid,
-                        4018,
-                        "target user message is no longer in session history",
-                    )
-
-            # An ordinal/id alone is not consent. A client that carries a leftover
-            # ordinal into an ORDINARY submit sends a request that is
-            # indistinguishable, field by field, from a real rewind — same
-            # method, same shape, an in-range target — and the cut it asks for
-            # is a destructive replace_messages() the user never requested
-            # (#80763: 296 -> 52 messages, 244 durable rows gone). Only the
-            # client knows whether this submit is a rewind/edit/regenerate, so
-            # it has to say so; refuse the cut when it doesn't.
-            if not is_truthy_value(params.get("confirm_truncate")):
-                logger.warning(
-                    "prompt.submit: REFUSED unconfirmed truncation of session %s "
-                    "(%d messages held; ordinal=%d). The client attached "
-                    "truncation parameter without confirm_truncate — "
-                    "likely stale truncation parameters on an ordinary submit.",
-                    sid,
-                    len(history),
-                    ordinal,
-                )
-                return _err(
-                    rid,
-                    4029,
-                    "truncation parameters require confirm_truncate=true; "
-                    "an ordinary prompt.submit must not drop session history "
-                    "(update your Hermes client if a rewind was intended)",
-                )
-            user_indices = _history_user_indices(history)
             # Reject out-of-range ordinals on BOTH ends. A negative value would
             # otherwise sail past the upper-bound check and hit Python's negative
             # indexing below (user_indices[-1] -> the LAST user turn), silently
@@ -1350,7 +1347,7 @@ def register(server) -> None:
         _mem_db_pair_agrees,
         _find_user_turn_by_row_id,
         _resolve_truncate_row_id,
-        _coerce_truncate_ordinal,
+        _coerce_truncate_int,
         _reconcile_client_ordinal,
         _pending_reaction_notes,
     ):

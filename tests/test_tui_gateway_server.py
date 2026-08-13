@@ -17922,3 +17922,80 @@ def test_prompt_submit_consecutive_rewinds_with_returned_survivor_row_ids(
         assert isinstance(survivors2, list) and len(survivors2) == 1
     finally:
         server._sessions.pop(sid, None)
+
+
+def test_prompt_submit_unconfirmed_truncation_refuses_before_target_resolution(
+    monkeypatch,
+):
+    """Consent (4029) is checked BEFORE target resolution: an unconfirmed
+    submit carrying truncation params must not pay the durable-transcript
+    read or heal-stamp live history (simplify review on #83785), and an
+    out-of-range unconfirmed ordinal refuses 4029, not 4018 — the baseline
+    precedence before the row-id feature.
+    """
+    db_reads = []
+
+    class _SpyDB:
+        def get_messages_as_conversation(self, *a, **k):
+            db_reads.append(1)
+            return []
+
+        def replace_messages(self, *a, **k):
+            pytest.fail("must not write")
+
+    hist = [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "r1"},
+        {"role": "user", "content": "second"},
+        {"role": "assistant", "content": "r2"},
+    ]
+    sess = _session(history=list(hist), session_key="consent-precedence-key")
+    sid = "consent-precedence-sid"
+    server._sessions[sid] = sess
+    monkeypatch.setattr(server, "_get_db", lambda: _SpyDB())
+    monkeypatch.setattr(
+        server, "_start_agent_build", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+    monkeypatch.setattr(
+        server, "_start_inflight_turn", lambda *a, **k: pytest.fail("must not start a turn")
+    )
+
+    try:
+        # Unconfirmed row_id: 4029, no DB read, no heal stamps on history.
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": sid, "text": "x", "truncate_before_row_id": 3},
+            }
+        )
+        assert (resp.get("error") or {}).get("code") == 4029, resp
+        assert db_reads == []
+        assert all("_row_id" not in m for m in sess["history"])
+
+        # Malformed param still beats consent: bool row_id is 4004.
+        resp = server.handle_request(
+            {
+                "id": "2",
+                "method": "prompt.submit",
+                "params": {"session_id": sid, "text": "x", "truncate_before_row_id": True},
+            }
+        )
+        assert (resp.get("error") or {}).get("code") == 4004, resp
+
+        # Unconfirmed out-of-range ordinal: 4029 (consent), not 4018 (range).
+        resp = server.handle_request(
+            {
+                "id": "3",
+                "method": "prompt.submit",
+                "params": {
+                    "session_id": sid,
+                    "text": "x",
+                    "truncate_before_user_ordinal": 99,
+                },
+            }
+        )
+        assert (resp.get("error") or {}).get("code") == 4029, resp
+        assert len(sess["history"]) == 4
+    finally:
+        server._sessions.pop(sid, None)

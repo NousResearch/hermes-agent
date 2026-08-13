@@ -18,6 +18,7 @@ import { branchGroupForUser, type ChatMessage, chatMessageText, textPart } from 
 import {
   appendText,
   isSessionBusyError,
+  isVisibleUserMessage,
   visibleUserIndexAtOrdinal,
   visibleUserOrdinal,
   withSessionBusyRetry,
@@ -66,7 +67,7 @@ export function rebindSurvivorRowIds(messages: ChatMessage[], survivorRowIds: Su
   let ordinal = 0
 
   return messages.map(message => {
-    if (message.role !== 'user' || message.hidden) {
+    if (!isVisibleUserMessage(message)) {
       return message
     }
 

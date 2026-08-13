@@ -2231,6 +2231,28 @@ def anthropic_prompt_cache_policy(
         and (eff_provider == "anthropic" or base_url_hostname(eff_base_url) == "api.anthropic.com")
     )
 
+    # A custom Anthropic-compatible route may use a bare model alias that is
+    # canonicalized only after Hermes sends the request. In that case model
+    # spelling cannot prove cache support. Honor an exact route+model
+    # capability declaration instead; explicit false is authoritative too.
+    # This preserves the runtime model id (and therefore request/cache keys)
+    # while avoiding unsafe alias-name guesses.
+    custom_prompt_caching = None
+    if is_anthropic_wire:
+        try:
+            from hermes_cli.config import get_custom_provider_model_capability
+
+            custom_prompt_caching = get_custom_provider_model_capability(
+                model=eff_model,
+                base_url=eff_base_url,
+                capability="prompt_caching",
+                custom_providers=getattr(agent, "_custom_providers", None),
+            )
+        except Exception:
+            pass
+    if custom_prompt_caching is not None:
+        return custom_prompt_caching, custom_prompt_caching
+
     # MiniMax-M3 rides MiniMax's server-side automatic prefix cache on the
     # Anthropic wire (content-keyed, no marker needed); explicit cache_control
     # is documented for M2.7/M2.5/M2.1/M2 only, so markers on M3 are dead

@@ -161,6 +161,58 @@ class TestThirdPartyAnthropicGateway:
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
 
+    def test_bare_alias_with_explicit_prompt_caching_capability_caches(self):
+        agent = _make_agent(
+            provider="custom:anthropic-proxy",
+            base_url="https://gateway.example.com/anthropic",
+            api_mode="anthropic_messages",
+            model="fable",
+        )
+        agent._custom_providers = [
+            {
+                "name": "anthropic-proxy",
+                "base_url": "https://gateway.example.com/anthropic",
+                "models": {"fable": {"prompt_caching": True}},
+            }
+        ]
+
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    def test_explicit_prompt_caching_false_is_authoritative(self):
+        agent = _make_agent(
+            provider="custom:anthropic-proxy",
+            base_url="https://gateway.example.com/anthropic",
+            api_mode="anthropic_messages",
+            model="claude-fable-5",
+        )
+        agent._custom_providers = [
+            {
+                "name": "anthropic-proxy",
+                "base_url": "https://gateway.example.com/anthropic",
+                "models": {"claude-fable-5": {"prompt_caching": False}},
+            }
+        ]
+
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_bare_alias_without_capability_stays_conservative(self):
+        agent = _make_agent(
+            provider="custom:anthropic-proxy",
+            base_url="https://gateway.example.com/anthropic",
+            api_mode="anthropic_messages",
+            model="fable",
+        )
+        agent._custom_providers = [
+            {
+                "name": "anthropic-proxy",
+                "base_url": "https://gateway.example.com/anthropic",
+                "models": {"fable": {"context_length": 1_000_000}},
+            }
+        ]
+
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+
 class TestMiniMaxAnthropicWire:
     """MiniMax's own model family on its Anthropic-compatible endpoint.
 

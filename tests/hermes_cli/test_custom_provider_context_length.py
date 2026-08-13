@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from hermes_cli.config import get_custom_provider_context_length
+from hermes_cli.config import (
+    get_custom_provider_context_length,
+    get_custom_provider_model_capability,
+)
 
 
 class TestGetCustomProviderContextLength:
@@ -47,6 +50,53 @@ class TestGetCustomProviderContextLength:
         assert get_custom_provider_context_length("m", "", [{"base_url": "", "models": {"m": {"context_length": 1}}}]) is None
         assert get_custom_provider_context_length("m", "http://x", None) is None
         assert get_custom_provider_context_length("m", "http://x", []) is None
+
+
+class TestGetCustomProviderModelCapability:
+    def test_matches_exact_model_on_normalized_route(self):
+        custom = [
+            {
+                "base_url": "https://example.invalid/anthropic/",
+                "models": {"fable": {"prompt_caching": True}},
+            }
+        ]
+
+        assert get_custom_provider_model_capability(
+            "fable",
+            "https://example.invalid/anthropic",
+            "prompt_caching",
+            custom,
+        ) is True
+        assert get_custom_provider_model_capability(
+            "opus",
+            "https://example.invalid/anthropic",
+            "prompt_caching",
+            custom,
+        ) is None
+
+    def test_false_is_preserved_and_non_boolean_is_ignored(self):
+        custom = [
+            {
+                "base_url": "https://example.invalid/anthropic",
+                "models": {
+                    "disabled": {"prompt_caching": False},
+                    "invalid": {"prompt_caching": "true"},
+                },
+            }
+        ]
+
+        assert get_custom_provider_model_capability(
+            "disabled",
+            "https://example.invalid/anthropic",
+            "prompt_caching",
+            custom,
+        ) is False
+        assert get_custom_provider_model_capability(
+            "invalid",
+            "https://example.invalid/anthropic",
+            "prompt_caching",
+            custom,
+        ) is None
 
 
 

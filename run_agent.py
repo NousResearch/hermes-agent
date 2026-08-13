@@ -4655,6 +4655,18 @@ class AIAgent:
                 return False
         elif content is not None and content != "":
             return False
+        # A native compaction checkpoint makes a carrier never thinking-only,
+        # regardless of api_mode or which reasoning field is populated. The
+        # checkpoint is the server-side stand-in for already-pruned history
+        # and exists in exactly one place; the codex_responses adapter also
+        # surfaces commentary text via msg["reasoning"], so the string branch
+        # below would otherwise drop a carrier before the sidecar is ever
+        # inspected. Checked here — above every reasoning branch — so no
+        # carrier shape can fall into a drop path (#82108 review finding).
+        from agent.native_compaction import has_compaction_checkpoint
+
+        if has_compaction_checkpoint(msg.get("codex_reasoning_items")):
+            return False
         reasoning = msg.get("reasoning_content") or msg.get("reasoning")
         if isinstance(reasoning, str) and reasoning.strip():
             return True
@@ -4668,16 +4680,6 @@ class AIAgent:
         # empty-turn handling instead of being dropped here.
         codex_items = msg.get("codex_reasoning_items")
         if drop_codex_reasoning_items and isinstance(codex_items, list):
-            # A native compaction checkpoint rides this same sidecar and is
-            # the server-side stand-in for already-pruned history. Dropping
-            # the turn takes the checkpoint with it — the request then carries
-            # neither the compacted history nor the checkpoint that replaces
-            # it. Compaction pruning filters items for this reason rather than
-            # popping the key; a carrier is never thinking-only.
-            from agent.native_compaction import has_compaction_checkpoint
-
-            if has_compaction_checkpoint(codex_items):
-                return False
             return any(
                 isinstance(item, dict) and item.get("type") == "reasoning"
                 for item in codex_items

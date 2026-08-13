@@ -225,3 +225,20 @@ class TestCompactionCheckpointCarrier:
             if item.get("type") == "compaction"
         ]
         assert surviving == [self.CHECKPOINT]
+
+    def test_reasoning_text_carrier_is_not_thinking_only(self):
+        """codex_responses adapter surfaces commentary via msg['reasoning'];
+        the string branch must not drop a checkpoint carrier (#82108 review:
+        the original guard sat below this branch and never fired)."""
+        msg = self._carrier([self.CHECKPOINT])
+        msg["reasoning"] = "some commentary the adapter joined in"
+        assert not AIAgent._is_thinking_only_assistant(msg)
+
+    def test_reasoning_text_carrier_survives_even_when_codex_items_kept(self):
+        """codex_responses mode passes drop_codex_reasoning_items=False; the
+        guard must still protect the carrier through the reasoning branch."""
+        msg = self._carrier([self.REASONING, self.CHECKPOINT])
+        msg["reasoning"] = "commentary"
+        assert not AIAgent._is_thinking_only_assistant(
+            msg, drop_codex_reasoning_items=False
+        )

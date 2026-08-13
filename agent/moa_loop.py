@@ -2316,7 +2316,7 @@ class MoAClient:
         Read-only, unlike the two consume_* methods above: the observability
         hook fires on a different branch than the accounting they own.
         """
-        return getattr(self.chat.completions, "_last_reference_metrics", None)
+        return self.chat.completions.last_reference_metrics()
 
 
 def build_moa_facade(agent, preset_name: Any = None) -> MoAClient:

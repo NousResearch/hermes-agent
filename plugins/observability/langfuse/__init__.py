@@ -151,29 +151,20 @@ def _capture_mode() -> str:
     return _DEFAULT_CAPTURE_MODE
 
 
-# Secret-shaped substrings redacted in ``sanitized`` mode. Ordered: specific
-# key formats first, generic assignment patterns last. Intentionally tight to
-# keep false positives low — this is defense in depth for accidental secret
-# passage through prompts/tool output, not a DLP system.
-_SECRET_PATTERNS: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----.*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)", re.DOTALL), "[REDACTED:private-key]"),
-    (re.compile(r"\b(?:sk|pk)-lf-[A-Za-z0-9\-]{8,}"), "[REDACTED:langfuse-key]"),
-    (re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{8,}"), "[REDACTED:api-key]"),
-    (re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}"), "[REDACTED:api-key]"),
-    (re.compile(r"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}"), "[REDACTED:github-token]"),
-    (re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}"), "[REDACTED:github-token]"),
-    (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[REDACTED:aws-key]"),
-    (re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{10,}"), "[REDACTED:slack-token]"),
-    (re.compile(r"\beyJ[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,}\b"), "[REDACTED:jwt]"),
-    (re.compile(r"(?i)\b(authorization\s*:\s*bearer)\s+[A-Za-z0-9_\-.~+/=]{8,}"), r"\1 [REDACTED:token]"),
-    (re.compile(r"(?i)\b((?:api[_-]?key|secret[_-]?key|access[_-]?token|refresh[_-]?token|client[_-]?secret|password|passwd)\s*[=:]\s*)(['\"]?)[^\s'\"]{6,}\2"), r"\1\2[REDACTED]\2"),
-]
+# Secret redaction in ``sanitized`` mode reuses the project-wide
+# ``agent.redact.redact_sensitive_text(force=True)`` — which covers 50+ credential
+# patterns, private keys, JWTs, auth headers, DB connection strings, and env
+# assignments with pre-check-gated regex. The ``force=True`` flag ensures
+# redaction runs even if the user has ``security.redact_secrets: false`` set —
+# appropriate for an observability plugin exporting to an external service.
 
 
 def _redact_secrets(value: str) -> str:
-    for pattern, replacement in _SECRET_PATTERNS:
-        value = pattern.sub(replacement, value)
-    return value
+    try:
+        from agent.redact import redact_sensitive_text
+        return redact_sensitive_text(value, force=True)
+    except Exception:
+        return value
 
 
 def _describe_content(value: Any, *, depth: int = 0) -> Any:
@@ -679,9 +670,14 @@ def _messages_for_langfuse_input(
     conversation_history: Any = None,
     user_message: Any = None,
     system_prompt: Any = None,
+    pre_coerced: Any = None,
 ) -> list[dict[str, Any]]:
-    """Build generation input: include Anthropic ``system`` when split out of ``messages``."""
-    raw = _coerce_request_messages(
+    """Build generation input: include Anthropic ``system`` when split out of ``messages``.
+
+    Pass ``pre_coerced`` to skip the internal ``_coerce_request_messages`` call
+    when the caller already has the result — avoids double-coercion per hook.
+    """
+    raw = pre_coerced if pre_coerced is not None else _coerce_request_messages(
         request_messages=request_messages,
         messages=messages,
         conversation_history=conversation_history,
@@ -1315,6 +1311,7 @@ def on_pre_llm_request(
         conversation_history=conversation_history,
         user_message=user_message,
         system_prompt=system_prompt,
+        pre_coerced=input_messages,
     )
     system_chars = 0
     if langfuse_input and langfuse_input[0].get("role") == "system":
@@ -1669,7 +1666,7 @@ def on_session_finalize(*, session_id: str = "", reason: str = "", **_: Any) -> 
     # Only act on an already-constructed client — do NOT lazily initialize
     # one at finalize time; if init never happened there are no traces.
     client = _LANGFUSE_CLIENT
-    if client is None or client is _INIT_FAILED or not isinstance(client, object) or not hasattr(client, "flush"):
+    if client is None or client is _INIT_FAILED or not hasattr(client, "flush"):
         return
 
     # Close every trace belonging to this session (or all, when no

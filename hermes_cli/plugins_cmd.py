@@ -866,6 +866,17 @@ def cmd_install(
             f"Run `hermes plugins enable {installed_name}` to activate.[/dim]",
         )
 
+    # Capability consent (#64228): if the manifest declares capabilities,
+    # show the list once and record consent. Non-interactive installs (and
+    # declines) proceed with capabilities ungranted — fail closed.
+    declared_caps = _declared_capabilities_from_manifest(
+        installed_manifest, installed_name
+    )
+    if declared_caps:
+        _run_capability_consent(
+            console, installed_name, declared_caps, context="install"
+        )
+
     console.print("[dim]Restart the gateway for the plugin to take effect:[/dim]")
     console.print("[dim]  hermes gateway restart[/dim]")
     console.print()
@@ -929,6 +940,28 @@ def cmd_update(name: str) -> None:
 
     # Copy any new .example files
     _copy_example_files(target, console)
+
+    # Update-time re-consent (#64228): if the new version declares
+    # capabilities the granted set lacks, surface the diff and require
+    # re-consent for the additions. The stored consent hash detects a
+    # changed declaration; additions stay ungranted until the user says yes
+    # (non-interactive updates leave them ungranted — fail closed).
+    updated_manifest = _read_manifest(target)
+    plugin_id = updated_manifest.get("name") or target.name
+    declared_caps = _declared_capabilities_from_manifest(
+        updated_manifest, plugin_id
+    )
+    if declared_caps:
+        from hermes_cli.plugin_capabilities import (
+            declared_set_changed,
+            pending_capabilities,
+        )
+        if pending_capabilities(plugin_id, declared_caps) or declared_set_changed(
+            plugin_id, declared_caps
+        ):
+            _run_capability_consent(
+                console, plugin_id, declared_caps, context="update"
+            )
 
     out = output.strip()
     if "Already up to date" in out:
@@ -1196,7 +1229,186 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
     if source == "bundled":
         return
 
+    # Capability consent (#64228): when the manifest declares capabilities,
+    # the consent screen is the canonical grant path — it covers
+    # tools.override too, so skip the legacy standalone prompt unless the
+    # operator explicitly passed --allow-tool-override/--no-allow-tool-override.
+    declared_caps = _declared_capabilities_for_key(key)
+    if declared_caps:
+        _run_capability_consent(console, key, declared_caps, context="enable")
+        if allow_tool_override is not None:
+            _resolve_tool_override_grant(console, key, allow_tool_override)
+        return
+
     _resolve_tool_override_grant(console, key, allow_tool_override)
+
+
+# ── Capability consent flow (#64228) ─────────────────────────────────────────
+
+
+def _declared_capabilities_from_manifest(manifest: dict, plugin_name: str = "?") -> list:
+    """Extract + normalize the ``capabilities:`` declaration from a manifest."""
+    from hermes_cli.plugin_capabilities import parse_declared_capabilities
+
+    return parse_declared_capabilities(
+        (manifest or {}).get("capabilities"), plugin_name
+    )
+
+
+def _declared_capabilities_for_key(key: str) -> list:
+    """Read the declared capabilities for an installed/bundled plugin by key."""
+    for entry in _discover_all_plugins():
+        # entry = (name, version, description, source, dir_path, key)
+        if entry[5] == key or entry[0] == key:
+            dir_path = entry[4]
+            if not dir_path:
+                return []
+            manifest = _read_manifest(Path(dir_path))
+            return _declared_capabilities_from_manifest(manifest, entry[0])
+    return []
+
+
+def _print_capability_list(console, capabilities: list) -> None:
+    """Render the consent screen body: one line per capability."""
+    from hermes_cli.plugin_capabilities import CAPABILITY_REGISTRY
+
+    for cap in capabilities:
+        spec = CAPABILITY_REGISTRY.get(cap)
+        desc = spec.description if spec else ""
+        console.print(f"    [bold]{cap}[/bold] — {desc}")
+
+
+def _run_capability_consent(
+    console,
+    plugin_id: str,
+    declared: list,
+    *,
+    context: str = "install",
+) -> bool:
+    """Show the capability consent screen and record the decision.
+
+    Prints the declared capability list with one-line risk descriptions and
+    asks a single Y/n. On consent, the *pending* capabilities are granted
+    (recorded under ``plugins.entries.<plugin_id>.granted_capabilities`` with
+    a consent hash of the declared set). On decline — or in ANY
+    non-interactive context — capabilities stay ungranted (fail closed) and
+    the plugin must degrade gracefully via ``ctx.has_capability()``.
+
+    The consent wording deliberately does not imply a code audit: granting a
+    capability trusts the plugin author. This is consent + audit, NOT a
+    sandbox — an in-process plugin can run arbitrary Python regardless.
+
+    Returns True when consent was granted.
+    """
+    from hermes_cli.plugin_capabilities import (
+        pending_capabilities,
+        record_consent,
+    )
+
+    pending = pending_capabilities(plugin_id, declared)
+    if not pending:
+        # Everything declared is already granted — refresh the consent hash
+        # so a later declaration change is detected against the current set.
+        if declared:
+            record_consent(plugin_id, [], declared)
+        return True
+
+    verb = "requests" if context == "install" else "now requests"
+    console.print(
+        f"\n  [yellow]Plugin [bold]{plugin_id}[/bold] {verb} the following "
+        "capabilities:[/yellow]"
+    )
+    _print_capability_list(console, pending)
+    console.print(
+        "  [dim]Granting trusts the plugin author with these host surfaces. "
+        "This is consent, not a sandbox — plugins run as regular Python "
+        "in-process.[/dim]"
+    )
+
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        console.print(
+            "  [yellow]Non-interactive session: capabilities NOT granted "
+            "(fail closed).[/yellow] Run "
+            f"`hermes plugins capabilities {plugin_id}` to review and "
+            f"`hermes plugins enable {plugin_id}` to grant interactively."
+        )
+        return False
+
+    try:
+        answer = console.input("  Grant these capabilities? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        answer = ""
+    if answer in {"y", "yes"}:
+        record_consent(plugin_id, pending, declared)
+        console.print(
+            f"  [green]✓[/green] Granted: {', '.join(pending)} "
+            f"([dim]plugins.entries.{plugin_id}.granted_capabilities[/dim])"
+        )
+        return True
+
+    console.print(
+        f"  [dim]Declined. {plugin_id} stays enabled with these capabilities "
+        "off; it should degrade gracefully (ctx.has_capability()). Re-run "
+        f"`hermes plugins enable {plugin_id}` to grant later.[/dim]"
+    )
+    return False
+
+
+def cmd_capabilities(name: Optional[str] = None) -> None:
+    """``hermes plugins capabilities [<id>]`` — declared vs granted."""
+    from rich.console import Console
+
+    from hermes_cli.plugin_capabilities import granted_capabilities
+
+    console = Console()
+
+    rows = []
+    for entry in _discover_all_plugins():
+        # entry = (name, version, description, source, dir_path, key)
+        key = entry[5] or entry[0]
+        if name is not None and name not in (key, entry[0]):
+            continue
+        declared = _declared_capabilities_for_key(key)
+        granted = granted_capabilities(key)
+        # Legacy grants surface too: report capabilities live via deprecated
+        # allow_* keys so `capabilities` shows the true effective state.
+        from hermes_cli.plugin_capabilities import (
+            CAPABILITY_REGISTRY,
+            plugin_capability_granted,
+        )
+        effective = {
+            cap for cap in CAPABILITY_REGISTRY
+            if plugin_capability_granted(key, cap)
+        }
+        if not declared and not effective and name is None:
+            continue
+        rows.append((key, entry[3], declared, granted, effective))
+
+    if name is not None and not rows:
+        console.print(f"[red]Plugin '{name}' is not installed or bundled.[/red]")
+        sys.exit(1)
+
+    if not rows:
+        console.print("[dim]No plugins declare or hold capabilities.[/dim]")
+        return
+
+    for key, source, declared, granted, effective in sorted(rows):
+        console.print(f"[bold]{key}[/bold] [dim]({source})[/dim]")
+        if not declared:
+            console.print("  declared: [dim](none)[/dim]")
+        for cap in declared:
+            if cap in effective:
+                mark = "[green]granted[/green]"
+                if cap not in granted:
+                    mark += " [dim](via legacy allow_* key — deprecated)[/dim]"
+            else:
+                mark = "[yellow]not granted[/yellow]"
+            console.print(f"  {cap}: {mark}")
+        for cap in sorted(effective - set(declared)):
+            console.print(
+                f"  {cap}: [green]granted[/green] "
+                "[dim](not declared in manifest)[/dim]"
+            )
 
 
 def _resolve_tool_override_grant(
@@ -2459,6 +2671,8 @@ def plugins_command(args) -> None:
         cmd_enable(args.name, allow_tool_override=allow_override)
     elif action == "disable":
         cmd_disable(args.name)
+    elif action == "capabilities":
+        cmd_capabilities(getattr(args, "name", None))
     elif action in {"list", "ls"}:
         cmd_list(args)
     elif action == "doctor":

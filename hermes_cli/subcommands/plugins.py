@@ -112,6 +112,22 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     )
     plugins_disable.add_argument("name", help="Plugin name to disable")
 
+    plugins_capabilities = plugins_subparsers.add_parser(
+        "capabilities",
+        help="Show declared vs granted capabilities per plugin",
+        description=(
+            "Show each plugin's declared capabilities (from plugin.yaml) "
+            "against what the user has granted. Capabilities are a consent "
+            "and audit layer over host API surfaces — NOT a sandbox."
+        ),
+    )
+    plugins_capabilities.add_argument(
+        "name",
+        nargs="?",
+        default=None,
+        help="Plugin id to inspect (omit to list all plugins with capabilities)",
+    )
+
     plugins_doctor = plugins_subparsers.add_parser(
         "doctor", help="Validate a plugin with the real runtime contracts"
     )

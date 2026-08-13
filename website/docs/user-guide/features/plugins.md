@@ -338,7 +338,67 @@ hermes plugins update my-plugin              # pull latest
 hermes plugins remove my-plugin              # uninstall
 hermes plugins enable my-plugin              # add to allow-list
 hermes plugins disable my-plugin             # remove from allow-list + add to disabled
+hermes plugins capabilities [my-plugin]      # declared vs granted capabilities
 ```
+
+### Plugin capabilities and consent
+
+Plugins can declare the privileged host surfaces they want in their
+`plugin.yaml`:
+
+```yaml
+name: my-plugin
+capabilities:
+  - tools.override        # replace built-in tools
+  - llm.model_override    # pick the model for host-owned LLM calls
+```
+
+When a plugin declares capabilities, `hermes plugins install` (and
+`hermes plugins enable`) shows the list with one-line risk descriptions and
+asks once. Consenting records the grant under
+`plugins.entries.<id>.granted_capabilities` together with a consent hash and
+timestamp. Declining leaves the plugin enabled with those capabilities off —
+a well-behaved plugin probes with `ctx.has_capability()` and degrades
+gracefully.
+
+**Update re-consent:** if a plugin update declares capabilities you haven't
+granted, `hermes plugins update` surfaces the additions and asks again. New
+capabilities stay off until you consent — a plugin update can never silently
+widen its access.
+
+**Non-interactive sessions fail closed:** installing or updating without a
+TTY completes the install, but declared capabilities are *not* granted. Run
+`hermes plugins enable <id>` interactively to grant them later.
+
+Inspect the state at any time:
+
+```bash
+hermes plugins capabilities             # all plugins with declared/granted capabilities
+hermes plugins capabilities my-plugin   # one plugin, declared vs granted
+```
+
+Capability ids map 1:1 to the older per-feature config gates, which keep
+working but are **deprecated** in favor of the consent flow:
+
+| Capability | Legacy key (`plugins.entries.<id>.…`) |
+|---|---|
+| `tools.override` | `allow_tool_override` |
+| `llm.provider_override` | `llm.allow_provider_override` |
+| `llm.model_override` | `llm.allow_model_override` |
+| `llm.agent_id_override` | `llm.allow_agent_id_override` |
+| `llm.profile_override` | `llm.allow_profile_override` |
+| `llm.task_override` | `llm.allow_task_override` |
+
+A gate is open when *either* the capability is granted *or* the legacy key is
+set — existing configs keep working unchanged.
+
+:::warning Not a sandbox
+Capabilities are a **consent and audit layer**, not isolation. Plugins run as
+regular in-process Python: a malicious plugin can ignore every gate here.
+Granting a capability is a statement of trust in the plugin author — it is
+not a code audit, and Hermes has not reviewed the plugin's code. Only install
+plugins from sources you trust.
+:::
 
 ### Interactive UI
 

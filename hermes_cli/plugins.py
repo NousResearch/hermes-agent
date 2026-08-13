@@ -55,6 +55,13 @@ from hermes_constants import get_hermes_home
 from utils import env_var_enabled, fast_safe_load
 from hermes_cli.config import cfg_get
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION, VALID_MIDDLEWARE
+from hermes_cli.plugin_capabilities import (  # noqa: F401 — re-exported
+    CAPABILITY_REGISTRY,
+    plugin_capability_granted,
+)
+from hermes_cli.plugin_capabilities import (
+    parse_declared_capabilities as _parse_declared_capabilities,
+)
 
 
 def get_bundled_plugins_dir() -> Path:
@@ -391,6 +398,13 @@ class PluginManifest:
     key: str = ""
     portable: bool = False
     skill_namespace: str = ""
+    # Declared capability ids from the manifest ``capabilities:`` list
+    # (#64228). Normalized to KNOWN ids only — see
+    # ``hermes_cli.plugin_capabilities.CAPABILITY_REGISTRY``. Declaration is
+    # consent metadata, not a grant: a capability is live only when the user
+    # granted it (``plugins.entries.<id>.granted_capabilities``) or the
+    # deprecated legacy ``allow_*`` key is set.
+    capabilities: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -861,6 +875,24 @@ class PluginContext:
             self.manifest.name, name, " (override)" if override else "",
         )
 
+    # -- capability probing (#64228) -----------------------------------------
+
+    def has_capability(self, capability: str) -> bool:
+        """Return True when *capability* is live for this plugin.
+
+        Plugins should probe with this and degrade gracefully instead of
+        crashing when a gated host surface refuses them. Bundled plugins are
+        trusted for ``tools.override`` (mirrors the registration gate); for
+        everything else the answer comes from the granted-capability set or
+        the deprecated legacy ``allow_*`` config key. Unknown capability ids
+        and unreadable consent state return False (fail closed).
+        """
+        source = getattr(self.manifest, "source", "") or ""
+        if source == "bundled" and capability == "tools.override":
+            return True
+        plugin_id = self.manifest.key or self.manifest.name
+        return plugin_capability_granted(plugin_id, capability)
+
     # -- override trust gate ------------------------------------------------
 
     def _tool_override_allowed(self, tool_name: str) -> bool:
@@ -868,24 +900,20 @@ class PluginContext:
 
         Bundled plugins (shipped with Hermes core) are trusted by default —
         an override there is a deliberate maintainer choice, not a third-party
-        plugin trying to elevate privilege. For every other source, require
-        ``allow_tool_override: true`` under
-        ``plugins.entries.<plugin_id>`` in config.yaml.
+        plugin trying to elevate privilege. For every other source, the
+        canonical check is :func:`plugin_capability_granted` with the
+        ``tools.override`` capability — satisfied by EITHER the consent-flow
+        grant (``plugins.entries.<plugin_id>.granted_capabilities``) OR the
+        deprecated legacy key ``allow_tool_override: true`` (still honored
+        for backward compatibility; #64228 reference migration).
         """
         source = getattr(self.manifest, "source", "") or ""
         if source == "bundled":
             return True
-        try:
-            from hermes_cli.config import load_config
-            cfg = load_config() or {}
-        except Exception:
-            # If we can't load config, fail closed — better to break the
-            # override than silently grant it.
-            return False
         plugin_id = self.manifest.key or self.manifest.name
-        entries = (cfg.get("plugins") or {}).get("entries") or {}
-        entry = entries.get(plugin_id) or {}
-        return bool(entry.get("allow_tool_override", False))
+        # Fail-closed by construction: any failure to read consent state
+        # inside plugin_capability_granted returns False.
+        return plugin_capability_granted(plugin_id, "tools.override")
 
     # -- message injection --------------------------------------------------
 
@@ -2335,6 +2363,9 @@ class PluginManager:
                 path=str(plugin_dir),
                 kind=kind,
                 key=key,
+                capabilities=_parse_declared_capabilities(
+                    data.get("capabilities"), name
+                ),
             )
         except Exception as exc:
             logger.warning(

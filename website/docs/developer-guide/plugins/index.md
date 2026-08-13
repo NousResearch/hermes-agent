@@ -223,7 +223,36 @@ requires_env:          # gate loading on env vars; prompted during install
     description: "Key for the Other service"
     url: "https://other.com/keys"
     secret: true
+capabilities:          # privileged host surfaces you request (consent flow)
+  - tools.override     # replace built-in tools (needs user consent)
+  - llm.model_override # choose the model for host-owned LLM calls
 ```
+
+### Declaring capabilities
+
+If your plugin needs a privileged host surface — overriding a built-in tool,
+picking the model for `ctx.llm` calls, etc. — declare it in `capabilities:`.
+At install/enable time the user sees the list and consents once; if a later
+version adds a capability, the update flow asks again for just the addition.
+Undeclared or unconsented capabilities are simply off (fail closed), so
+**probe before using them and degrade gracefully**:
+
+```python
+def register(ctx):
+    if ctx.has_capability("tools.override"):
+        ctx.register_tool(..., override=True)
+    else:
+        ctx.register_tool(...)   # register under a non-conflicting name
+```
+
+Known capability ids: `tools.override`, `llm.provider_override`,
+`llm.model_override`, `llm.agent_id_override`, `llm.profile_override`,
+`llm.task_override` (see `hermes_cli/plugin_capabilities.py` for the
+canonical registry). Unknown ids are ignored. The older per-capability
+config keys (`plugins.entries.<id>.allow_tool_override`, …) still work but
+are deprecated — declare capabilities instead so users get a single,
+auditable consent screen. Capabilities are consent + audit, **not a
+sandbox**: they gate host API surfaces, nothing more.
 
 ## Step 3: Write the tool schemas
 

@@ -2268,3 +2268,95 @@ class TestEscalationEnrichment:
         payload = _action_payload(self._refusal())
         assert payload["escalation"]["alternative"] == "page"
         assert payload["verdict"]["decision"] == "escalate"
+
+
+class TestElementSpillFile:
+    """Detail dropped from the in-context capture must be recoverable on disk."""
+
+    def _dense_capture(self):
+        from tools.computer_use.backend import CaptureResult, UIElement
+
+        elems = [
+            UIElement(index=i, role="Document", label=f"msg {i}: " + "x" * 2000,
+                      bounds=(100 + i, 200, 3600, 60), app="chrome.exe")
+            for i in range(120)
+        ]
+        return CaptureResult(mode="som", width=1455, height=791, png_b64=None,
+                             elements=elems, app="chrome.exe",
+                             window_title="Discord", png_bytes_len=0)
+
+    def test_spill_file_holds_full_untruncated_tree(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.computer_use.tool import _capture_response
+
+        out = json.loads(_capture_response(self._dense_capture()))
+        assert "elements_file" in out
+        assert str(out["elements_file"]) in out["summary"]
+        spill = json.loads(
+            open(out["elements_file"], encoding="utf-8").read())
+        # Everything the in-context response dropped is in the file:
+        assert spill["total_elements"] == 120
+        assert len(spill["elements"]) == 120           # beyond max_elements cap
+        assert len(spill["elements"][0]["label"]) > 2000  # beyond label cap
+        assert spill["elements"][119]["label"].startswith("msg 119")
+
+    def test_no_spill_when_nothing_dropped(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.computer_use.backend import CaptureResult, UIElement
+        from tools.computer_use.tool import _capture_response
+
+        cap = CaptureResult(mode="som", width=1455, height=791, png_b64=None,
+                            elements=[UIElement(index=0, role="Button",
+                                                label="OK",
+                                                bounds=(10, 10, 50, 20),
+                                                app="")],
+                            app="X", window_title="t", png_bytes_len=0)
+        out = json.loads(_capture_response(cap))
+        assert "elements_file" not in out
+
+    def test_spill_pruning_bounds_cache_growth(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.computer_use import tool as cu_tool
+
+        cap = self._dense_capture()
+        for _ in range(cu_tool._MAX_SPILL_FILES + 5):
+            assert cu_tool._spill_elements_to_file(cap) is not None
+        cache = tmp_path / "cache" / "computer_use"
+        assert len(list(cache.glob("elements_*.json"))) <= cu_tool._MAX_SPILL_FILES
+
+    def test_spill_failure_never_breaks_capture(self, monkeypatch):
+        from tools.computer_use import tool as cu_tool
+
+        monkeypatch.setattr(cu_tool, "_spill_elements_to_file",
+                            lambda cap: None)
+        out = json.loads(cu_tool._capture_response(self._dense_capture()))
+        # Capture still succeeds and stays budget-capped without the file.
+        assert out["truncated_elements"] == 20
+        assert "elements_file" not in out
+
+
+class TestBoundsScaleField:
+    def test_scale_reported_when_spaces_diverge(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        from tools.computer_use.backend import CaptureResult, UIElement
+        from tools.computer_use.tool import _capture_response
+
+        # Live repro geometry: 1455x791 screenshot, native bounds to 3799.
+        elems = [UIElement(index=0, role="Button", label="Close",
+                           bounds=(3730, 0, 69, 60), app="")]
+        cap = CaptureResult(mode="som", width=1455, height=791, png_b64=None,
+                            elements=elems, app="chrome.exe",
+                            window_title="", png_bytes_len=0)
+        out = json.loads(_capture_response(cap))
+        assert out["bounds_scale"] == pytest.approx(3799 / 1455, abs=0.01)
+        assert f"~{out['bounds_scale']}x" in out["summary"]
+
+    def test_no_scale_when_spaces_match(self):
+        from tools.computer_use.backend import UIElement
+        from tools.computer_use.tool import _bounds_scale
+
+        elems = [UIElement(index=0, role="Button", label="OK",
+                           bounds=(10, 10, 50, 20), app="")]
+        assert _bounds_scale(elems, 1455, 791) is None
+        assert _bounds_scale([], 1455, 791) is None
+        assert _bounds_scale(elems, 0, 0) is None

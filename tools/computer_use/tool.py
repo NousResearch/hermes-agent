@@ -988,6 +988,20 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     response_width = image_dimensions[0] if image_dimensions else cap.width
     response_height = image_dimensions[1] if image_dimensions else cap.height
     bounds_note = _bounds_space_note(visible_elements, response_width, response_height)
+    bounds_scale = _bounds_scale(visible_elements, response_width, response_height)
+    if bounds_note and bounds_scale:
+        bounds_note += (
+            f"; estimated scale ~{bounds_scale}x (screenshot position x "
+            f"{bounds_scale} ≈ native coordinate)"
+        )
+    # When the in-context response drops detail (capped labels / capped element
+    # array), spill the complete tree to a cache file so the model can read or
+    # grep the full text on demand instead of losing it entirely.
+    elements_file = (
+        _spill_elements_to_file(cap)
+        if _capture_lost_detail(cap, visible_elements, truncated_elements)
+        else None
+    )
     image_too_small = bool(
         image_dimensions
         and (
@@ -1009,6 +1023,12 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     ]
     if bounds_note:
         summary_lines.append(f"  ({bounds_note})")
+    if elements_file:
+        summary_lines.append(
+            f"  (full element tree with untruncated labels saved to "
+            f"{elements_file} — read_file/search_files it if you need "
+            "dropped label text or elements beyond the cap)"
+        )
     if element_index:
         summary_lines.extend(element_index)
     # Multimodal and AX paths both reference `summary`; build it once up-front
@@ -1036,6 +1056,7 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
                 cap, summary,
                 visible_elements=visible_elements,
                 truncated_elements=truncated_elements,
+                elements_file=elements_file,
             )
             if routed is not None:
                 return routed
@@ -1069,6 +1090,10 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             }
             if truncated_elements:
                 payload["truncated_elements"] = truncated_elements
+            if elements_file:
+                payload["elements_file"] = elements_file
+            if bounds_scale:
+                payload["bounds_scale"] = bounds_scale
             return json.dumps(payload)
 
         # Prefer the explicit MIME type cua-driver attaches to its image
@@ -1092,7 +1117,9 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
             ],
             "text_summary": summary,
             "meta": {"mode": cap.mode, "width": response_width, "height": response_height,
-                     "elements": total_elements, "png_bytes": cap.png_bytes_len},
+                     "elements": total_elements, "png_bytes": cap.png_bytes_len,
+                     **({"elements_file": elements_file} if elements_file else {}),
+                     **({"bounds_scale": bounds_scale} if bounds_scale else {})},
         }
     # AX-only (or image-missing fallback): text path actually carries the
     # `elements` array, so the truncation note applies here.
@@ -1114,6 +1141,10 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
     }
     if truncated_elements:
         payload["truncated_elements"] = truncated_elements
+    if elements_file:
+        payload["elements_file"] = elements_file
+    if bounds_scale:
+        payload["bounds_scale"] = bounds_scale
     return json.dumps(payload)
 
 
@@ -1228,6 +1259,7 @@ def _route_capture_through_aux_vision(
     *,
     visible_elements: Optional[List[UIElement]] = None,
     truncated_elements: int = 0,
+    elements_file: Optional[str] = None,
 ) -> Optional[str]:
     """Pre-analyse the captured PNG via ``vision_analyze`` and return a text result.
 
@@ -1339,6 +1371,8 @@ def _route_capture_through_aux_vision(
     }
     if truncated_elements:
         payload["truncated_elements"] = truncated_elements
+    if elements_file:
+        payload["elements_file"] = elements_file
     return json.dumps(payload)
 
 
@@ -1408,6 +1442,106 @@ def _format_elements(elements: List[UIElement], max_lines: int = 40) -> List[str
 # `elements` array too. Labels are for identifying a control, not for reading
 # page content — captures are not a text-extraction surface.
 _MAX_ELEMENT_LABEL_CHARS = 120
+
+# Keep at most this many spilled element-tree files in the cache dir. Each
+# capture of a dense UI can spill; without pruning the cache grows unbounded.
+_MAX_SPILL_FILES = 20
+
+
+def _spill_elements_to_file(cap: CaptureResult) -> Optional[str]:
+    """Write the FULL element tree (untruncated labels) to a cache file.
+
+    The in-context response caps labels at ``_MAX_ELEMENT_LABEL_CHARS`` and
+    the array at ``max_elements`` to protect the tool-result budget, but the
+    dropped text is sometimes exactly what the task needs (reading a chat
+    transcript or document text exposed through the AX tree). Spilling the
+    complete tree to disk gives the model an escape hatch — read_file /
+    search_files against the returned path — without paying the full tree
+    into context on every capture.
+
+    Returns the absolute path, or None on any failure (spilling is an
+    enhancement; a capture must never fail because the cache dir is
+    unwritable).
+    """
+    try:
+        import uuid as _uuid
+
+        from hermes_constants import get_hermes_dir
+
+        cache_dir = get_hermes_dir("cache/computer_use", "computer_use_cache")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        # Prune oldest spills beyond the cap (best-effort).
+        try:
+            spills = sorted(
+                cache_dir.glob("elements_*.json"),
+                key=lambda p: p.stat().st_mtime,
+            )
+            for stale in spills[: max(0, len(spills) - (_MAX_SPILL_FILES - 1))]:
+                stale.unlink(missing_ok=True)
+        except Exception:
+            pass
+        path = cache_dir / f"elements_{_uuid.uuid4().hex}.json"
+        payload = {
+            "app": cap.app,
+            "window_title": cap.window_title,
+            "total_elements": len(cap.elements),
+            "elements": [
+                {
+                    "index": e.index,
+                    "role": e.role,
+                    "label": e.label,  # full, untruncated
+                    "bounds": list(e.bounds),
+                    "app": e.app,
+                }
+                for e in cap.elements
+            ],
+        }
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=1),
+            encoding="utf-8",
+        )
+        return str(path)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("computer_use: element spill failed: %s", exc)
+        return None
+
+
+def _capture_lost_detail(
+    cap: CaptureResult, visible_elements: List[UIElement], truncated_elements: int,
+) -> bool:
+    """True when the in-context response drops information the full tree has."""
+    if truncated_elements:
+        return True
+    return any(
+        len(e.label) > _MAX_ELEMENT_LABEL_CHARS for e in visible_elements
+    )
+
+
+def _bounds_scale(
+    elements: List[UIElement], image_width: int, image_height: int,
+) -> Optional[float]:
+    """Estimated native-bounds → screenshot-pixel scale factor, or None.
+
+    Only meaningful when the two spaces diverge (same condition as
+    ``_bounds_space_note``). Uses the larger of the two axis ratios so the
+    estimate is driven by the axis with real extent data. Rounded to 2
+    decimals — this is a heuristic for mapping screenshot positions to
+    native coordinates, not display-metrics ground truth.
+    """
+    if not elements or image_width <= 0 or image_height <= 0:
+        return None
+    max_x = 0
+    max_y = 0
+    for e in elements:
+        try:
+            x, y, w, h = e.bounds
+        except (TypeError, ValueError):
+            continue
+        max_x = max(max_x, int(x) + int(w))
+        max_y = max(max_y, int(y) + int(h))
+    if max_x <= image_width * 1.05 and max_y <= image_height * 1.05:
+        return None
+    return round(max(max_x / image_width, max_y / image_height), 2)
 
 
 def _bounds_space_note(

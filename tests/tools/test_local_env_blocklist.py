@@ -728,6 +728,78 @@ class TestPythonpathSelectiveStrip:
         assert other_sp in entries
         assert "/home/user/my-lib" in entries
 
+    @pytest.mark.parametrize("same_env", [True, False])
+    def test_execute_code_composition_strips_inherited_hermes_entries(self, same_env):
+        """Integration: execute_code's real spawn path composes a clean PYTHONPATH.
+
+        Seeds a contaminated inherited PYTHONPATH (Hermes repo root + Hermes
+        venv site-packages + user entries) through os.environ and drives
+        execute_code all the way to Popen.  Proves the #84500 conditional
+        composition and the #82581 selective strip compose correctly:
+
+        * inherited Hermes venv site-packages never survive into the sandbox;
+        * the staging tmpdir stays the first entry;
+        * the repo root is deliberately re-added exactly once for a same-env
+          child (the single occurrence proves the inherited copy was stripped
+          first) and stays absent for an external-environment child;
+        * user entries survive after the controlled entries.
+        """
+        import tools.code_execution_tool as cet
+        from tools.code_execution_tool import execute_code
+
+        def _mock_handle_function_call(function_name, function_args, task_id=None, user_task=None):
+            return '{"output": "mock", "exit_code": 0}'
+
+        hermes_root = str(Path(cet.__file__).resolve().parents[1])
+        venv_sp = str(_running_venv_site_packages())
+        user_a = "/home/user/my-lib"
+        user_b = "/opt/project/lib"
+        captured = {}
+
+        def _fake_popen(cmd, **kwargs):
+            captured["env"] = kwargs.get("env", {})
+            captured["staging"] = os.path.dirname(cmd[1])
+            proc = MagicMock()
+            proc.stdout.read.return_value = b""
+            proc.stderr.read.return_value = b""
+            proc.wait.return_value = 0
+            proc.returncode = 0
+            proc.poll.return_value = 0
+            return proc
+
+        with patch("tools.code_execution_tool._load_config",
+                   return_value={"mode": "strict"}), \
+             patch("model_tools.handle_function_call",
+                   side_effect=_mock_handle_function_call), \
+             patch("tools.code_execution_tool._uses_hermes_python_environment",
+                   return_value=same_env), \
+             patch("subprocess.Popen", side_effect=_fake_popen), \
+             patch.dict(os.environ, {
+                 "PYTHONPATH": os.pathsep.join(
+                     [hermes_root, venv_sp, user_a, user_b]),
+             }):
+            execute_code(code="pass", task_id="test-int", enabled_tools=[])
+
+        assert "PYTHONPATH" in captured["env"], \
+            "execute_code never reached Popen"
+        parts = captured["env"]["PYTHONPATH"].split(os.pathsep)
+        assert parts[0] == captured["staging"], \
+            "staging tmpdir must be the first PYTHONPATH entry"
+        assert venv_sp not in parts, \
+            "inherited Hermes venv site-packages must be stripped"
+        assert user_a in parts and user_b in parts, \
+            "user PYTHONPATH entries must survive"
+        assert parts.index(user_a) > parts.index(captured["staging"]), \
+            "user entries must come after the staging tmpdir"
+        if same_env:
+            assert parts.count(hermes_root) == 1, \
+                "repo root must be re-added exactly once for a same-env child"
+            assert parts.index(user_a) > parts.index(hermes_root), \
+                "user entries must come after the re-added repo root"
+        else:
+            assert hermes_root not in parts, \
+                "repo root must stay absent for an external-env child"
+
     def test_repo_root_stripped(self):
         """The Hermes repo root entry is stripped from PYTHONPATH.
 

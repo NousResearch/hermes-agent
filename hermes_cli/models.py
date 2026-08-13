@@ -1503,6 +1503,218 @@ def _openrouter_model_supports_tools(item: Any) -> bool:
     return "tools" in params
 
 
+def parse_openrouter_reasoning_capabilities(item: Any) -> Optional[dict[str, Any]]:
+    """Normalize one OpenRouter catalog entry's reasoning metadata.
+
+    OpenRouter's ``/v1/models`` catalog advertises reasoning support two ways:
+    ``supported_parameters`` contains ``"reasoning"`` when the route accepts
+    reasoning controls at all, and a top-level ``reasoning`` object may add
+    detail (``mandatory``, ``supported_efforts``). Per OpenRouter semantics
+    the top-level object is only trusted after ``supported_parameters``
+    confirms the route accepts reasoning controls; ``supported_efforts``
+    omitted/None means every effort is accepted.
+
+    Returns:
+        ``{"supports_reasoning": True, "supported_efforts": [...] | None,
+        "mandatory": bool}`` when the entry advertises reasoning controls,
+        ``{"supports_reasoning": False}`` when it explicitly does not
+        (``supported_parameters`` is a list omitting ``reasoning``), or
+        ``None`` when capability can't be determined from the entry
+        (missing/malformed ``supported_parameters``).
+
+    Ported from PrimeIntellect-ai/prime-agent#1258 (derive reasoning levels
+    from provider metadata instead of hardcoded model-family lists).
+    """
+    if not isinstance(item, dict):
+        return None
+    params = item.get("supported_parameters")
+    if not isinstance(params, list):
+        # Field absent / malformed — unknown capability (mirror the
+        # permissive stance of _openrouter_model_supports_tools).
+        return None
+    if "reasoning" not in params:
+        return {"supports_reasoning": False}
+    reasoning = item.get("reasoning")
+    mandatory = isinstance(reasoning, dict) and reasoning.get("mandatory") is True
+    efforts: Optional[list[str]] = None
+    if isinstance(reasoning, dict):
+        raw_efforts = reasoning.get("supported_efforts")
+        if isinstance(raw_efforts, list):
+            efforts = list(dict.fromkeys(
+                str(effort).strip().lower()
+                for effort in raw_efforts
+                if str(effort).strip()
+            ))
+    return {
+        "supports_reasoning": True,
+        "supported_efforts": efforts,
+        "mandatory": mandatory,
+    }
+
+
+# model id → parsed reasoning capabilities (see
+# parse_openrouter_reasoning_capabilities). Populated by one full-catalog
+# fetch and kept for the process lifetime — model capabilities don't change.
+_openrouter_reasoning_caps_cache: dict[str, Optional[dict[str, Any]]] | None = None
+# monotonic timestamp of the last FAILED fetch; suppresses re-fetch storms
+# from per-turn callers while the catalog is unreachable (60s TTL, mirrors
+# the LM Studio/Ollama capability-probe caching in run_agent.py).
+_openrouter_reasoning_caps_failed_at: float | None = None
+
+
+def _fetch_openrouter_reasoning_caps(timeout: float = 6.0) -> Optional[dict[str, Optional[dict[str, Any]]]]:
+    """Fetch + cache per-model reasoning capabilities from the live catalog.
+
+    Returns None (without poisoning the cache) when the catalog is
+    unreachable so callers can retry later and fall back in the meantime.
+    Failed fetches are remembered for 60 seconds so hot per-turn callers
+    don't pay an HTTP round-trip on every call while offline.
+    """
+    global _openrouter_reasoning_caps_cache, _openrouter_reasoning_caps_failed_at
+    if _openrouter_reasoning_caps_cache is not None:
+        return _openrouter_reasoning_caps_cache
+    if (
+        _openrouter_reasoning_caps_failed_at is not None
+        and (time.monotonic() - _openrouter_reasoning_caps_failed_at) < 60
+    ):
+        return None
+    try:
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/models",
+            headers={"Accept": "application/json"},
+        )
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        _openrouter_reasoning_caps_failed_at = time.monotonic()
+        return None
+    items = payload.get("data")
+    if not isinstance(items, list):
+        _openrouter_reasoning_caps_failed_at = time.monotonic()
+        return None
+    caps_by_id: dict[str, Optional[dict[str, Any]]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("id") or "").strip()
+        if not mid:
+            continue
+        caps_by_id[mid] = parse_openrouter_reasoning_capabilities(item)
+    if not caps_by_id:
+        _openrouter_reasoning_caps_failed_at = time.monotonic()
+        return None
+    _openrouter_reasoning_caps_cache = caps_by_id
+    return caps_by_id
+
+
+def openrouter_model_reasoning_capabilities(
+    model_id: Optional[str],
+    *,
+    timeout: float = 6.0,
+    allow_fetch: bool = False,
+) -> Optional[dict[str, Any]]:
+    """Return live-catalog reasoning capabilities for an OpenRouter model.
+
+    Tri-state contract for callers deciding whether to emit reasoning
+    controls:
+      - dict with ``supports_reasoning: True`` (+ ``supported_efforts``,
+        ``mandatory``) — the route advertises reasoning controls;
+      - dict with ``supports_reasoning: False`` — the catalog knows the model
+        and it does NOT accept reasoning controls (definitive negative);
+      - ``None`` — unknown: catalog not loaded yet, model not listed
+        (private/custom route), or entry malformed. Callers should fall back
+        to their static heuristics rather than treating this as a negative.
+
+    By default this is a CACHE-ONLY lookup — safe on per-request hot paths
+    (never blocks on HTTP). The cache is populated for free whenever
+    ``fetch_openrouter_models()`` runs (model picker, setup), by the
+    non-blocking ``warm_openrouter_reasoning_caps_async()`` warmer, or by
+    passing ``allow_fetch=True`` from non-latency-sensitive callers.
+    """
+    model = str(model_id or "").strip()
+    if not model:
+        return None
+    caps_by_id = _openrouter_reasoning_caps_cache
+    if caps_by_id is None and allow_fetch:
+        caps_by_id = _fetch_openrouter_reasoning_caps(timeout=timeout)
+    if caps_by_id is None:
+        return None
+    return caps_by_id.get(model)
+
+
+_openrouter_caps_warm_started = False
+
+
+def warm_openrouter_reasoning_caps_async() -> None:
+    """Warm the reasoning-capability cache in a background thread.
+
+    Fire-and-forget: called from hot paths that found the cache cold so the
+    NEXT call benefits, without ever blocking a turn on HTTP. One warm
+    attempt per process (the fetch has its own 60s failure TTL). Skipped
+    under pytest — a mid-suite background fetch would make cache state, and
+    therefore test behavior, timing-dependent.
+    """
+    global _openrouter_caps_warm_started
+    if _openrouter_caps_warm_started or _openrouter_reasoning_caps_cache is not None:
+        return
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        return
+    _openrouter_caps_warm_started = True
+    threading.Thread(
+        target=_fetch_openrouter_reasoning_caps,
+        name="openrouter-reasoning-caps-warm",
+        daemon=True,
+    ).start()
+
+
+# Canonical low→high ordering used for nearest-level clamping. Superset of
+# hermes_constants.VALID_REASONING_EFFORTS ("none" included so an explicit
+# disable can be clamped too when a provider publishes it as a level).
+_REASONING_EFFORT_ORDER = (
+    "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra",
+)
+
+
+def clamp_reasoning_effort_to_supported(
+    effort: Optional[str],
+    supported_efforts: Optional[list[str]],
+) -> Optional[str]:
+    """Clamp a requested reasoning effort to a provider's supported levels.
+
+    Returns the requested effort unchanged when it is supported, when the
+    supported list is unknown (None/empty), or when the effort isn't a
+    recognized level (custom providers may use bespoke names — pass through
+    rather than guess). Otherwise returns the nearest supported level,
+    preferring the closest LOWER level so a clamp never silently escalates
+    cost (requesting ``xhigh`` against ``[low, medium, high]`` yields
+    ``high``; requesting ``minimal`` against ``[low, medium]`` yields
+    ``low`` because no lower level exists).
+
+    Ported from PrimeIntellect-ai/prime-agent#1258's thinking-level-map
+    normalization.
+    """
+    requested = str(effort or "").strip().lower()
+    if not requested or not supported_efforts:
+        return effort
+    supported = [
+        str(level).strip().lower()
+        for level in supported_efforts
+        if str(level).strip().lower() in _REASONING_EFFORT_ORDER
+    ]
+    if not supported or requested in supported:
+        return effort
+    if requested not in _REASONING_EFFORT_ORDER:
+        return effort
+    requested_idx = _REASONING_EFFORT_ORDER.index(requested)
+    below = [
+        level for level in supported
+        if _REASONING_EFFORT_ORDER.index(level) < requested_idx
+    ]
+    if below:
+        return max(below, key=_REASONING_EFFORT_ORDER.index)
+    return min(supported, key=_REASONING_EFFORT_ORDER.index)
+
+
 def fetch_openrouter_models(
     timeout: float = 8.0,
     *,
@@ -1548,6 +1760,17 @@ def fetch_openrouter_models(
         if not mid:
             continue
         live_by_id[mid] = item
+
+    # Free warm-up for the reasoning-capability cache: this is the same
+    # payload _fetch_openrouter_reasoning_caps would fetch, so parse it once
+    # here and hot-path callers (openrouter_model_reasoning_capabilities)
+    # never need their own HTTP round-trip.
+    global _openrouter_reasoning_caps_cache
+    if _openrouter_reasoning_caps_cache is None and live_by_id:
+        _openrouter_reasoning_caps_cache = {
+            mid: parse_openrouter_reasoning_capabilities(item)
+            for mid, item in live_by_id.items()
+        }
 
     curated: list[tuple[str, str]] = []
     silent_default = get_preferred_silent_default_model("openrouter")

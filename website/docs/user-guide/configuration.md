@@ -1535,6 +1535,18 @@ on its own adaptive default. The
 native Anthropic provider already controls effort directly and is unaffected.
 :::
 
+:::note OpenRouter models and supported effort levels
+For other models routed through OpenRouter, Hermes reads the live model
+catalog's reasoning metadata (`supported_parameters` + per-model
+`reasoning.supported_efforts`) to decide whether to send reasoning controls at
+all and to clamp your requested effort to the nearest level the route actually
+supports (always downward — e.g. `ultra` becomes `high` on a route that stops
+at `high`, never a silent escalation). New reasoning-capable vendors work
+automatically without waiting for a Hermes update; when the catalog is
+unreachable or a model isn't listed, Hermes falls back to its built-in
+model-family list and passes your effort through unchanged.
+:::
+
 You can also change the reasoning effort at runtime with the `/reasoning` command:
 
 ```

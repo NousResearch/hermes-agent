@@ -468,6 +468,11 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `kanban_task_claimed` | Observer | After claim commit, in dispatcher process before worker spawn; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id` | Board/task/profile/assignee identifiers. |
 | `kanban_task_completed` | Observer | After completion and cleanup, usually in worker process; return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `summary` | Summary may contain project/user content. |
 | `kanban_task_blocked` | Observer | After a blocked transition; the dependency-wait path fires before its transaction exits. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `reason` | Reason may contain project/user content. |
+| `on_kanban_worker_spawned` | Observer | In the dispatcher process, after `spawn_fn` returns and the worker PID (when one was reported) is durably persisted; runs inside the board dispatch lock like `kanban_task_claimed`, so callbacks must stay fast. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `worker_pid`, `workspace_path` | `workspace_path` is a filesystem path and may reveal project layout or usernames. |
+| `on_kanban_worker_exited` | Observer | Tick-derived in the dispatcher process: fires when `detect_crashed_workers` reclaims a dead-PID running task, after every reclaim and breaker-accounting transaction has committed; exit latency is bounded by the dispatcher tick interval. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `worker_pid`, `exit_kind`, `exit_code`, `outcome`, `retry_status` | Identifiers and exit metadata only. |
+| `on_kanban_worker_stale_claim` | Observer | In the dispatcher process when `release_stale_claims` reclaims a TTL-expired claim, after the reclaim transaction commits; live-PID claim extensions and deferred reclaims do not fire. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `worker_pid`, `heartbeat_stale`, `retry_status` | Identifiers and claim metadata only. |
+| `on_kanban_task_updated` | Observer | After a committed task-row field mutation outside the claim/complete/block lifecycle: `assign_task`, `set_model_override`, `set_reasoning_effort`, plus the dashboard plugin API's direct-SQL priority/title/body editors (single and bulk) via `kanban_db.notify_task_updated`. Return ignored. | `task_id`, `profile_name`, `board`, `assignee`, `run_id`, `changed_fields` | `changed_fields` carries field names only, never values; the named title/body values in the board DB may contain user/project content. |
+| `on_kanban_dispatch_tick` | Observer | Once per dispatcher tick in `dispatch_once`, strictly after the board's single-writer dispatch lock is released (never inside the writer critical section); also fires for idle and lock-contended ticks. Return ignored. | `board`, `profile_name`, `dry_run`, `outcome`, `result` | `result` is the tick's `DispatchResult` and carries task ids, assignees, and workspace paths. |
 
 ---
 
@@ -1520,6 +1525,30 @@ Fires after completion and cleanup, usually in the worker process. Its `summary`
 Fires after a normal blocked transition. The dependency-wait path invokes it before that write transaction exits. Its `reason` can contain project or user content.
 
 All three kanban hooks are observer-only and carry `task_id`, `profile_name`, `board`, `assignee`, and `run_id`; completed adds `summary`, and blocked adds `reason`.
+
+### Kanban worker-lifecycle, task-mutation, and dispatch observers
+
+These observers extend the kanban lifecycle family with the worker and mutation events accepted from RFC #58548 (batch disposition in #64231). All of them are observer-only, fire only after the relevant write transaction has committed, and short-circuit on `has_hook` — with no subscriber registered, no payload is built and dispatch behavior is unchanged. The task-scoped hooks carry the same common fields as the shipped kanban hooks: `task_id`, `profile_name`, `board`, `assignee`, and `run_id`.
+
+#### `on_kanban_worker_spawned`
+
+Fires in the dispatcher process after `spawn_fn` returns and the worker PID (when one was reported) has been durably persisted. Adds `worker_pid` (may be `None` when the spawn function reports no PID) and `workspace_path`. Like `kanban_task_claimed`, it runs inside the board's dispatch lock, so callbacks must stay fast.
+
+#### `on_kanban_worker_exited`
+
+Worker exits are tick-derived: this fires when `detect_crashed_workers` reclaims a running task whose worker PID is no longer alive, after every reclaim and breaker-accounting transaction has committed. Exit visibility latency is therefore bounded by the dispatcher tick interval. Adds `worker_pid`, `exit_kind` (`clean_exit` | `rate_limited` | `nonzero_exit` | `signaled` | `unknown`), `exit_code`, `outcome` (`crashed` | `rate_limited`), and `retry_status` (the phase the task was released back to).
+
+#### `on_kanban_worker_stale_claim`
+
+Fires in the dispatcher process when `release_stale_claims` reclaims a TTL-expired claim, after the reclaim transaction commits. Live-PID claim extensions and deferred reclaims do not fire. Adds `worker_pid`, `heartbeat_stale`, and `retry_status`.
+
+#### `on_kanban_task_updated`
+
+The task-mutation boundary observer. Fires after a committed task-row field write outside the claim/complete/block lifecycle: `kanban_db.assign_task`, `set_model_override`, and `set_reasoning_effort`, plus the dashboard plugin API's direct-SQL priority/title/body editors (single-task and bulk), which report through `kanban_db.notify_task_updated`. Adds `changed_fields`, a list of field names only — new values are never carried in the payload; fetch the task if you need them. Status transitions stay in the lifecycle hook family, and dispatcher bookkeeping fields (worker PID, workspace path, claim columns) are deliberately excluded as noise.
+
+#### `on_kanban_dispatch_tick`
+
+Fires once per dispatcher tick in `dispatch_once`, strictly after the board's single-writer dispatch lock has been released — never inside the writer critical section — so a slow subscriber cannot stall a sibling dispatcher. Idle and lock-contended ticks fire too. It is not task-scoped; its payload is `board`, `profile_name`, `dry_run`, `outcome` (`ok` | `skipped_locked` | `idle`), and `result` (the tick's `DispatchResult`).
 
 ---
 

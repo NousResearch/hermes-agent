@@ -210,6 +210,154 @@ def _fire_kanban_lifecycle_hook(event: str, task_id: str, **fields: Any) -> None
         _log.debug("kanban lifecycle hook %s failed: %s", event, exc)
 
 
+def _kanban_observer_consumed(event: str) -> bool:
+    """Return whether any first-party observer or plugin consumes *event*.
+
+    Hot-path short-circuit for the worker-lifecycle / task-mutation /
+    dispatch-tick observers (RFC #58548): those fire on every dispatcher
+    tick and every task write, so call sites skip payload assembly entirely
+    when nothing subscribes. Best-effort — if inspection fails the event is
+    treated as unconsumed (the invoke path would fail the same way, and
+    these are observers, so dropping is always safe).
+    """
+    try:
+        from hermes_cli.lifecycle import has_hook
+
+        return has_hook(event)
+    except Exception:  # pragma: no cover - defensive
+        return False
+
+
+def _fire_worker_spawned_hook(
+    conn: sqlite3.Connection,
+    task: "Task",
+    workspace_path: str,
+    pid: Optional[int],
+    *,
+    board: Optional[str] = None,
+) -> None:
+    """Fire ``on_kanban_worker_spawned`` for one dispatched spawn.
+
+    Called by the dispatch loop AFTER ``spawn_fn`` returned and the worker
+    PID (when one was reported) has been durably persisted — the RFC #58548
+    timing contract. Fully best-effort: any failure is swallowed so a
+    misbehaving observer can never break the dispatch loop.
+    """
+    if not _kanban_observer_consumed("on_kanban_worker_spawned"):
+        return
+    try:
+        _fire_kanban_lifecycle_hook(
+            "on_kanban_worker_spawned",
+            task.id,
+            board=board or get_current_board(),
+            assignee=task.assignee,
+            run_id=_current_run_id(conn, task.id),
+            worker_pid=int(pid) if pid else None,
+            workspace_path=str(workspace_path),
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.debug("kanban worker spawned hook failed: %s", exc)
+
+
+def notify_task_updated(
+    conn: sqlite3.Connection,
+    task_id: str,
+    changed_fields: Iterable[str],
+    *,
+    board: Optional[str] = None,
+) -> None:
+    """Fire ``on_kanban_task_updated`` for a committed task-row mutation.
+
+    Task-mutation boundary primitive from RFC #58548: a surface that mutates
+    a task row outside the claim/complete/block lifecycle calls this AFTER
+    its write txn has committed — including surfaces that write with direct
+    SQL and bypass every ``kanban_db`` mutator (the dashboard plugin API's
+    priority/title/body editors). ``changed_fields`` carries field NAMES
+    only, never values. Observer-only and fully best-effort: it can never
+    fail a task mutation, and it costs one ``has_hook`` probe when nothing
+    subscribes.
+    """
+    if not _kanban_observer_consumed("on_kanban_task_updated"):
+        return
+    try:
+        row = conn.execute(
+            "SELECT assignee, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        _fire_kanban_lifecycle_hook(
+            "on_kanban_task_updated",
+            task_id,
+            board=board or get_current_board(),
+            assignee=row["assignee"] if row else None,
+            run_id=row["current_run_id"] if row else None,
+            changed_fields=list(changed_fields),
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.debug("kanban task updated hook failed: %s", exc)
+
+
+def _fire_dispatch_tick_hook(
+    result: "DispatchResult",
+    *,
+    board: Optional[str] = None,
+    dry_run: bool = False,
+) -> None:
+    """Fire ``on_kanban_dispatch_tick`` after one dispatcher tick.
+
+    Re-port of PR #56066 per the #64231 batch disposition: renamed to the
+    taxonomy form and called by ``dispatch_once`` strictly AFTER
+    ``_dispatch_tick_lock`` has been released — the original fired inside
+    the lock, so a slow subscriber could extend the single-writer critical
+    section and stall a sibling dispatcher's tick. Observer-only and fully
+    best-effort: any subscriber failure is swallowed.
+    """
+    if not _kanban_observer_consumed("on_kanban_dispatch_tick"):
+        return
+    try:
+        from hermes_cli.lifecycle import invoke_hook
+        from hermes_cli.profiles import get_active_profile_name
+
+        try:
+            profile_name = get_active_profile_name()
+        except Exception:
+            profile_name = "default"
+        if board is None:
+            try:
+                board = get_current_board()
+            except Exception:
+                board = None
+        outcome = "ok"
+        if result.skipped_locked:
+            outcome = "skipped_locked"
+        elif not any((
+            result.spawned,
+            result.reclaimed,
+            result.promoted,
+            result.reconciled_orphans,
+            result.crashed,
+            result.stale,
+            result.timed_out,
+            result.auto_blocked,
+            result.rate_limited,
+            result.auto_assigned_default,
+            result.respawn_guarded,
+            result.skipped_per_profile_capped,
+            result.skipped_unassigned,
+            result.skipped_nonspawnable,
+        )):
+            outcome = "idle"
+        invoke_hook(
+            "on_kanban_dispatch_tick",
+            board=board,
+            profile_name=profile_name,
+            dry_run=bool(dry_run),
+            outcome=outcome,
+            result=result,
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        _log.debug("kanban dispatch tick hook failed: %s", exc)
+
+
 # A running task's claim is valid for 15 minutes by default; after that the
 # next dispatcher tick reclaims it. Workers that outlive this window should
 # call ``heartbeat_claim(task_id)`` periodically. In practice most kanban
@@ -3490,7 +3638,10 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
         else:
             conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
         _append_event(conn, task_id, "assigned", {"assignee": profile})
-        return True
+    # Task-mutation observer (RFC #58548), fired AFTER the assignment txn
+    # has committed so subscribers always observe durable board state.
+    notify_task_updated(conn, task_id, ("assignee",))
+    return True
 
 
 def set_model_override(
@@ -3535,7 +3686,9 @@ def set_model_override(
             conn, task_id, "model_override_set",
             {"model": model, "provider": provider},
         )
-        return True
+    # Task-mutation observer (RFC #58548), fired AFTER the txn commits.
+    notify_task_updated(conn, task_id, ("model_override", "provider_override"))
+    return True
 
 
 def set_reasoning_effort(
@@ -3573,7 +3726,9 @@ def set_reasoning_effort(
         _append_event(
             conn, task_id, "reasoning_effort_set", {"reasoning_effort": effort}
         )
-        return True
+    # Task-mutation observer (RFC #58548), fired AFTER the txn commits.
+    notify_task_updated(conn, task_id, ("reasoning_effort",))
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -4732,7 +4887,8 @@ def release_stale_claims(
     reclaimed = 0
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at "
+        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at, "
+        "       assignee "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?",
@@ -4843,6 +4999,24 @@ def release_stale_claims(
                 run_id=run_id,
             )
             reclaimed += 1
+        # Worker-lifecycle observer (RFC #58548): the reclaim txn above has
+        # committed. The ``continue`` branches (rowcount mismatch, claim
+        # extension, deferred reclaim) never reach this point, so only a
+        # genuinely reclaimed stale claim fires.
+        if _kanban_observer_consumed("on_kanban_worker_stale_claim"):
+            _fire_kanban_lifecycle_hook(
+                "on_kanban_worker_stale_claim",
+                row["id"],
+                board=get_current_board(),
+                assignee=row["assignee"],
+                run_id=run_id,
+                worker_pid=(
+                    int(row["worker_pid"])
+                    if row["worker_pid"] is not None else None
+                ),
+                heartbeat_stale=bool(heartbeat_stale),
+                retry_status=retry_status,
+            )
     return reclaimed
 
 
@@ -8531,9 +8705,13 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # counter (see the post-txn loop below).
     crash_details: list[tuple[str, int, str, bool, str]] = []
     # (task_id, pid, claimer, protocol_violation, error_text)
+    # Worker-exit observer payloads (RFC #58548), collected inside the main
+    # txn and fired only after every reclaim/accounting txn has committed.
+    exited_hook_payloads: list[dict] = []
     with write_txn(conn):
         rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
+            "SELECT id, worker_pid, claim_lock, started_at, assignee "
+            "FROM tasks "
             "WHERE status = 'running' AND worker_pid IS NOT NULL"
         ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -8642,6 +8820,16 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                     event_payload,
                     run_id=run_id,
                 )
+                exited_hook_payloads.append({
+                    "task_id": row["id"],
+                    "assignee": row["assignee"],
+                    "run_id": run_id,
+                    "worker_pid": pid,
+                    "exit_kind": kind,
+                    "exit_code": code,
+                    "outcome": _run_outcome,
+                    "retry_status": retry_status,
+                })
                 if rate_limited_exit:
                     # Stamp the failure-error column so ``check_respawn_guard``
                     # recognizes this as a quota blocker and defers the
@@ -8762,6 +8950,20 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # Same side-channel for rate-limited requeues — these did NOT count a
     # failure and are NOT crashes, so they stay out of the ``crashed`` return.
     detect_crashed_workers._last_rate_limited = rate_limited  # type: ignore[attr-defined]
+    # Worker-lifecycle observer (RFC #58548): exit events are tick-derived
+    # from this reclaim pass — fired only now, after the main reclaim txn
+    # AND the breaker accounting above have committed, so subscribers always
+    # observe fully durable board state.
+    if exited_hook_payloads and _kanban_observer_consumed("on_kanban_worker_exited"):
+        _board = get_current_board()
+        for hook_fields in exited_hook_payloads:
+            hook_fields = dict(hook_fields)
+            _fire_kanban_lifecycle_hook(
+                "on_kanban_worker_exited",
+                hook_fields.pop("task_id"),
+                board=_board,
+                **hook_fields,
+            )
     return crashed
 
 
@@ -9262,23 +9464,6 @@ def dispatch_once(
         # Path resolution should never fail, but if it somehow does we
         # must not lose the tick — fall through to an unguarded dispatch
         # rather than dropping work.
-        return _dispatch_once_locked(
-            conn,
-            spawn_fn=spawn_fn,
-            ttl_seconds=ttl_seconds,
-            dry_run=dry_run,
-            max_spawn=max_spawn,
-            max_in_progress=max_in_progress,
-            failure_limit=failure_limit,
-            stale_timeout_seconds=stale_timeout_seconds,
-            board=board,
-            default_assignee=default_assignee,
-            max_in_progress_per_profile=max_in_progress_per_profile,
-            reconcile_orphans=reconcile_orphans,
-        )
-    with _dispatch_tick_lock(db_path) as held:
-        if not held:
-            return DispatchResult(skipped_locked=True)
         result = _dispatch_once_locked(
             conn,
             spawn_fn=spawn_fn,
@@ -9293,10 +9478,36 @@ def dispatch_once(
             max_in_progress_per_profile=max_in_progress_per_profile,
             reconcile_orphans=reconcile_orphans,
         )
-        # Still under the dispatch lock: opportunistically truncate the WAL
-        # at a coarse interval so it cannot grow unbounded between restarts.
-        _maybe_checkpoint_wal(conn, db_path)
+        _fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
         return result
+    with _dispatch_tick_lock(db_path) as held:
+        if not held:
+            result = DispatchResult(skipped_locked=True)
+        else:
+            result = _dispatch_once_locked(
+                conn,
+                spawn_fn=spawn_fn,
+                ttl_seconds=ttl_seconds,
+                dry_run=dry_run,
+                max_spawn=max_spawn,
+                max_in_progress=max_in_progress,
+                failure_limit=failure_limit,
+                stale_timeout_seconds=stale_timeout_seconds,
+                board=board,
+                default_assignee=default_assignee,
+                max_in_progress_per_profile=max_in_progress_per_profile,
+                reconcile_orphans=reconcile_orphans,
+            )
+            # Still under the dispatch lock: run the periodic PASSIVE WAL
+            # checkpoint (see _maybe_checkpoint_wal; the -wal file size is
+            # bounded by journal_size_limit on the writer's natural reset).
+            _maybe_checkpoint_wal(conn, db_path)
+    # The dispatch lock has been released here. Fire the tick observer
+    # strictly OUTSIDE the single-writer critical section (#56066 sweeper
+    # finding / #64231 disposition): a slow subscriber must never extend
+    # the lock hold and stall a sibling dispatcher's tick.
+    _fire_dispatch_tick_hook(result, board=board, dry_run=dry_run)
+    return result
 
 
 def _dispatch_once_locked(
@@ -9595,6 +9806,13 @@ def _dispatch_once_locked(
                 pid = _spawn(claimed, str(workspace))
             if pid:
                 _set_worker_pid(conn, claimed.id, int(pid))
+            # Worker-lifecycle observer (RFC #58548): fires AFTER spawn_fn
+            # returned and the PID (when reported) is durably persisted,
+            # per the RFC timing contract. Best-effort — can never break
+            # the dispatch loop.
+            _fire_worker_spawned_hook(
+                conn, claimed, str(workspace), pid, board=board,
+            )
             # NOTE: we intentionally do NOT reset consecutive_failures
             # here. A successful spawn proves the worker can start but
             # doesn't prove the run will succeed. Under unified
@@ -9720,6 +9938,11 @@ def _dispatch_once_locked(
                 pid = _spawn(claimed, str(workspace))
             if pid:
                 _set_worker_pid(conn, claimed.id, int(pid))
+            # Worker-lifecycle observer (RFC #58548): same contract as the
+            # ready-lane fire above — after spawn + PID persistence.
+            _fire_worker_spawned_hook(
+                conn, claimed, str(workspace), pid, board=board,
+            )
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
             if _per_profile_cap is not None and claimed.assignee:

@@ -253,6 +253,73 @@ VALID_HOOKS: Set[str] = {
     "kanban_task_claimed",
     "kanban_task_completed",
     "kanban_task_blocked",
+    # Kanban worker-lifecycle, task-mutation, and dispatcher-tick observers
+    # (RFC #58548, accepted as the design basis in the #64231 batch
+    # disposition; on_kanban_dispatch_tick is the re-port of PR #56066).
+    # All five are observers only: return values are ignored, and every fire
+    # site is fully best-effort, so a broken callback can never break
+    # dispatch or a task mutation. Cost rule: every call site short-circuits
+    # on has_hook(), so when nothing subscribes no payload is built and the
+    # hot paths (each dispatcher tick, each task write) pay one dict probe.
+    #
+    # WHICH PROCESS: worker spawn/exit/stale-claim and the dispatch tick
+    # fire in the DISPATCHER process (gateway-embedded dispatcher or
+    # ``hermes kanban dispatch``); on_kanban_task_updated fires in whichever
+    # process committed the mutation (CLI, worker, or the gateway-embedded
+    # dashboard API).
+    #
+    # Common kwargs (task-scoped hooks): task_id: str, profile_name: str,
+    #   board: str | None, assignee: str | None, run_id: int | None.
+    #
+    # on_kanban_worker_spawned fires after ``spawn_fn`` returns AND the
+    # worker PID (when one was reported) is durably persisted, per the RFC
+    # timing contract; like kanban_task_claimed it runs inside the board's
+    # dispatch lock, so callbacks must stay fast. Adds:
+    #   worker_pid: int | None, workspace_path: str.
+    #   Privacy: workspace_path is a filesystem path and may reveal project
+    #   layout or usernames.
+    "on_kanban_worker_spawned",
+    # on_kanban_worker_exited is tick-derived from detect_crashed_workers —
+    # it fires when a dead-PID running task is reclaimed, AFTER every
+    # reclaim/accounting txn has committed. Exit visibility latency is
+    # bounded by the dispatcher tick interval. Adds:
+    #   worker_pid: int,
+    #   exit_kind: "clean_exit" | "rate_limited" | "nonzero_exit"
+    #              | "signaled" | "unknown",
+    #   exit_code: int | None,
+    #   outcome: "crashed" | "rate_limited",
+    #   retry_status: str  (the phase the task was released back to).
+    "on_kanban_worker_exited",
+    # on_kanban_worker_stale_claim fires when release_stale_claims reclaims
+    # a TTL-expired claim, after the reclaim txn commits. Live-PID claim
+    # extensions and deferred reclaims do NOT fire. Adds:
+    #   worker_pid: int | None, heartbeat_stale: bool, retry_status: str.
+    "on_kanban_worker_stale_claim",
+    # on_kanban_task_updated is the task-mutation boundary observer: it
+    # fires after a committed task-row field write outside the
+    # claim/complete/block lifecycle — kanban_db.assign_task,
+    # set_model_override, and set_reasoning_effort, plus the dashboard
+    # plugin API's direct-SQL priority/title/body editors (single and
+    # bulk) via kanban_db.notify_task_updated. Adds:
+    #   changed_fields: list[str] — field NAMES only; new values are never
+    #   carried (fetch the task if you need them).
+    #   Privacy: names only here, but title/body values in the board DB may
+    #   contain user/project content.
+    "on_kanban_task_updated",
+    # on_kanban_dispatch_tick fires once per dispatcher tick in
+    # dispatch_once, strictly AFTER the board's single-writer dispatch lock
+    # has been released (the #56066 original fired inside the lock — the
+    # #64231 disposition mandates the post-lock re-port), so a slow
+    # subscriber can never extend the writer critical section.
+    # Kwargs: board: str | None, profile_name: str, dry_run: bool,
+    #   outcome: "ok" | "skipped_locked" | "idle",
+    #   result: hermes_cli.kanban_db.DispatchResult (spawned, reclaimed,
+    #     promoted, reconciled_orphans, crashed, stale, timed_out,
+    #     auto_blocked, rate_limited, auto_assigned_default,
+    #     respawn_guarded, skipped_per_profile_capped, skipped_unassigned,
+    #     skipped_nonspawnable, skipped_locked).
+    #   Privacy: result carries task ids, assignees, and workspace paths.
+    "on_kanban_dispatch_tick",
     # Gateway platform-boundary observer hooks (#64176). Observer-only; each
     # callback isolated by invoke_hook. Payloads are normalized envelopes only,
     # never raw platform SDK objects (per #64176 / #64182 ground rule). This

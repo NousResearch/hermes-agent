@@ -18,9 +18,7 @@ import {
   setMainModelAssignment
 } from '@/store/cron-model-impact'
 
-function response(
-  impact: ModelAssignmentResponse['cron_model_impact']
-): ModelAssignmentResponse {
+function response(impact: ModelAssignmentResponse['cron_model_impact']): ModelAssignmentResponse {
   return {
     ok: true,
     scope: 'main',
@@ -42,9 +40,11 @@ function positive(name = 'Morning summary'): ModelAssignmentResponse['cron_model
 
 function deferred<T>() {
   let resolve!: (value: T) => void
+
   const promise = new Promise<T>(res => {
     resolve = res
   })
+
   return { promise, resolve }
 }
 
@@ -135,9 +135,9 @@ describe('setMainModelAssignment', () => {
       confirm_message: 'Confirm this expensive model.'
     } satisfies ModelAssignmentResponse)
 
-    await expect(
-      setMainModelAssignment({ provider: 'openrouter', model: 'openai/gpt-5.5-pro' })
-    ).rejects.toThrow('Confirm this expensive model.')
+    await expect(setMainModelAssignment({ provider: 'openrouter', model: 'openai/gpt-5.5-pro' })).rejects.toThrow(
+      'Confirm this expensive model.'
+    )
     expect($notifications.get()).toHaveLength(1)
     const action = $notifications.get()[0].action
     const reviewCount = $cronReviewRequest.get()

@@ -210,6 +210,7 @@ export const $sidebarMessagingOpenIds = persistentAtom(
 // workspaces" bug. The flat key keeps its historical name so an existing
 // choice survives the update.
 const $sidebarFlatAgentsGrouped = persistentAtom(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, false, Codecs.bool)
+
 const $sidebarAllProfilesAgentsGrouped = persistentAtom(
   SIDEBAR_ALL_PROFILES_AGENTS_GROUPED_STORAGE_KEY,
   false,

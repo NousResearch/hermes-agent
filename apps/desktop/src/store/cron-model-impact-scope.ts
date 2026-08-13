@@ -40,9 +40,7 @@ function identityForConnection(connection: HermesConnection | null): string {
       ? connection.remoteIdentity || connection.remoteHost || ''
       : connection.remoteIdentity || connection.baseUrl
 
-  return [connection.mode ?? '', connection.remoteKind ?? '', backendIdentity, connection.profile ?? ''].join(
-    '\u0000'
-  )
+  return [connection.mode ?? '', connection.remoteKind ?? '', backendIdentity, connection.profile ?? ''].join('\u0000')
 }
 
 /** Keep pending responses and action closures bound to the backend that issued

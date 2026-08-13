@@ -22,7 +22,8 @@ import { notifyError } from '@/store/notifications'
 // narrow: a tool erroring on its own semantics ("issue not found") must not
 // pill a reconnect. Matched against the error/result string. Exported for
 // tests.
-export const REPAIR_RE = /\b(401|403|unauthorized|forbidden|token .*(expired|invalid)|oauth|authenticat\w+ (failed|required|expired)|connection (refused|closed|reset|failed)|server (unavailable|disconnected|not connected)|ECONNREFUSED)\b/i
+export const REPAIR_RE =
+  /\b(401|403|unauthorized|forbidden|token .*(expired|invalid)|oauth|authenticat\w+ (failed|required|expired)|connection (refused|closed|reset|failed)|server (unavailable|disconnected|not connected)|ECONNREFUSED)\b/i
 
 /** `mcp__figma__get_design_context` → `figma`; null for non-MCP tools. */
 export const mcpServerFromToolName = (toolName: string): string | null => {

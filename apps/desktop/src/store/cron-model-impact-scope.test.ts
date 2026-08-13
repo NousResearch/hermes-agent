@@ -4,11 +4,7 @@ import type { HermesConnection } from '@/global'
 
 import { getCronModelImpactScope, syncCronModelImpactConnection } from './cron-model-impact-scope'
 
-function connection(
-  baseUrl: string,
-  wsUrl: string,
-  overrides: Partial<HermesConnection> = {}
-): HermesConnection {
+function connection(baseUrl: string, wsUrl: string, overrides: Partial<HermesConnection> = {}): HermesConnection {
   return {
     baseUrl,
     isFullscreen: false,
@@ -43,6 +39,7 @@ describe('cron model impact backend identity', () => {
       remoteIdentity: 'operator@remote-box',
       remoteHost: 'remote-box'
     }
+
     syncCronModelImpactConnection(connection('http://127.0.0.1:41001', 'ws://127.0.0.1:41001', ssh))
     const first = getCronModelImpactScope()
 

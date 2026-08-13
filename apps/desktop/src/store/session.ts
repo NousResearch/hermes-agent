@@ -626,6 +626,7 @@ export const setConnection = (next: Updater<HermesConnection | null>) => {
   updateAtom($connection, next)
   syncCronModelImpactConnection($connection.get())
 }
+
 export const setGatewayState = (next: Updater<ConnectionState>) => updateAtom($gatewayState, next)
 export const setSessions = (next: Updater<SessionInfo[]>) => updateAtom($sessions, next)
 export const setCronSessions = (next: Updater<SessionInfo[]>) => updateAtom($cronSessions, next)

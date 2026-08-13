@@ -23,7 +23,6 @@ const MAX_ID_CODE_POINTS = 256
 const MAX_NAME_CODE_POINTS = 120
 const ALLOWED_AXES = new Set<CronModelDriftAxis>(['provider', 'model'])
 
-
 function profileIdentity(): string {
   return getApiRequestProfile()?.trim() || 'default'
 }
@@ -114,17 +113,10 @@ function detailFor(impact: CronModelImpact): string {
   const visible = impact.jobs.slice(0, 3).map(job => job.name)
   const remaining = impact.affected_count - visible.length
 
-  return remaining > 0
-    ? translateNow('cron.modelImpact.detailMore', visible.join(', '), remaining)
-    : visible.join(', ')
+  return remaining > 0 ? translateNow('cron.modelImpact.detailMore', visible.join(', '), remaining) : visible.join(', ')
 }
 
-function publishImpact(
-  impact: CronModelImpact,
-  profile: string,
-  connection: string,
-  generation: number
-): void {
+function publishImpact(impact: CronModelImpact, profile: string, connection: string, generation: number): void {
   if (!impact.available) {
     return
   }

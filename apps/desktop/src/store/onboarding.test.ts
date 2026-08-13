@@ -423,12 +423,15 @@ describe('OAuth onboarding', () => {
       if (path === '/api/providers/oauth/nous/submit') {
         return { ok: true, status: 'approved' }
       }
+
       if (path.startsWith('/api/model/options')) {
         return { providers: [{ name: 'Nous Portal', slug: 'nous', models: [model] }] }
       }
+
       if (path.startsWith('/api/model/recommended-default?')) {
         return { provider: 'nous', model, free_tier: false }
       }
+
       if (path === '/api/model/set') {
         return {
           ok: false,
@@ -449,6 +452,7 @@ describe('OAuth onboarding', () => {
 
       throw new Error(`unexpected gateway method: ${method}`)
     })
+
     const requestGateway = requestGatewayMock as OnboardingContext['requestGateway']
     $desktopOnboarding.set(
       baseState({

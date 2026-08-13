@@ -39,11 +39,7 @@ const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
  *  underscores in the name also match spaces — people type "pr ready", the
  *  skill is `pr-ready` — while "already" can never match a skill `read`. */
 export function skillPattern(name: string): RegExp {
-  const flexible = name
-    .toLowerCase()
-    .split(/[-_]/)
-    .map(escape)
-    .join('[-_ ]')
+  const flexible = name.toLowerCase().split(/[-_]/).map(escape).join('[-_ ]')
 
   return new RegExp(`(?<![\\p{L}\\p{N}])${flexible}(?![\\p{L}\\p{N}-])`, 'u')
 }

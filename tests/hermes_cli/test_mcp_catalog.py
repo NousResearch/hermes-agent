@@ -180,21 +180,22 @@ class TestManifestParsing:
 
 
 class TestCatalogPathVariables:
-    def test_posix_bootstrap_paths_are_shell_quoted(self):
-        from hermes_cli.mcp_catalog import _expand_catalog_vars
+    def test_posix_bootstrap_paths_use_quoted_child_environment_variables(self):
+        from hermes_cli.mcp_catalog import _expand_bootstrap_vars
 
         install_dir = Path("/tmp/MCP installs/n8n")
-        command = _expand_catalog_vars(
+        command, env = _expand_bootstrap_vars(
             "${PYTHON} -m venv .venv && ${VENV_PYTHON} -m pip --version",
             install_dir,
-            for_shell=True,
             os_name="posix",
-            python_executable="/opt/Hermes Python/bin/python",
         )
 
         assert command == (
-            "'/opt/Hermes Python/bin/python' -m venv .venv && "
-            "'/tmp/MCP installs/n8n/.venv/bin/python' -m pip --version"
+            '"$HERMES_MCP_BOOTSTRAP_PYTHON" -m venv .venv && '
+            '"$HERMES_MCP_BOOTSTRAP_VENV_PYTHON" -m pip --version'
+        )
+        assert env["HERMES_MCP_BOOTSTRAP_VENV_PYTHON"] == (
+            "/tmp/MCP installs/n8n/.venv/bin/python"
         )
 
     def test_windows_transport_path_uses_scripts_python(self):
@@ -210,21 +211,36 @@ class TestCatalogPathVariables:
             r"C:\MCP installs\n8n\.venv\Scripts\python.exe"
         )
 
-    def test_windows_bootstrap_paths_are_cmd_quoted(self):
-        from hermes_cli.mcp_catalog import _expand_catalog_vars
+    def test_windows_bootstrap_paths_use_child_environment_variables(self):
+        from hermes_cli.mcp_catalog import _expand_bootstrap_vars
 
-        command = _expand_catalog_vars(
+        command, env = _expand_bootstrap_vars(
             "${PYTHON} -m venv .venv && ${VENV_PYTHON} -m pip --version",
             Path("C:/MCP installs/n8n"),
-            for_shell=True,
             os_name="nt",
-            python_executable=r"C:\Program Files\Python\python.exe",
         )
 
         assert command == (
-            '"C:\\Program Files\\Python\\python.exe" -m venv .venv && '
-            '"C:\\MCP installs\\n8n\\.venv\\Scripts\\python.exe" '
+            '"%HERMES_MCP_BOOTSTRAP_PYTHON%" -m venv .venv && '
+            '"%HERMES_MCP_BOOTSTRAP_VENV_PYTHON%" '
             "-m pip --version"
+        )
+        assert env["HERMES_MCP_BOOTSTRAP_VENV_PYTHON"] == (
+            r"C:\MCP installs\n8n\.venv\Scripts\python.exe"
+        )
+
+    def test_windows_bootstrap_escapes_percent_in_install_path(self):
+        from hermes_cli.mcp_catalog import _expand_bootstrap_vars
+
+        command, env = _expand_bootstrap_vars(
+            "${VENV_PYTHON} -m pip --version",
+            Path(r"C:/MCP&%TEMP%/n8n"),
+            os_name="nt",
+        )
+
+        assert command == '"%HERMES_MCP_BOOTSTRAP_VENV_PYTHON%" -m pip --version'
+        assert env["HERMES_MCP_BOOTSTRAP_VENV_PYTHON"] == (
+            r"C:\MCP&%TEMP%\n8n\.venv\Scripts\python.exe"
         )
 
     @pytest.mark.parametrize("variable", ["${INSTALL_DIR}", "${VENV_PYTHON}"])
@@ -252,7 +268,7 @@ class TestCatalogPathVariables:
         assert cfg["command"] == (
             r"C:\MCP installs\n8n\.venv\Scripts\python.exe"
         )
-        assert cfg["args"] == ["C:/MCP installs/n8n/server.py"]
+        assert cfg["args"] == [r"C:\MCP installs\n8n\server.py"]
 
     def test_bootstrap_expands_runtime_paths_before_shell_execution(
         self, monkeypatch
@@ -285,10 +301,16 @@ class TestCatalogPathVariables:
         )
 
         assert [call[0] for call in calls] == [
-            "'/opt/Hermes Python/bin/python' -m venv .venv",
-            "'/tmp/MCP installs/n8n/.venv/bin/python' -m pip --version",
+            '"$HERMES_MCP_BOOTSTRAP_PYTHON" -m venv .venv',
+            '"$HERMES_MCP_BOOTSTRAP_VENV_PYTHON" -m pip --version',
         ]
-        assert all(call[1] == {"cwd": str(cwd), "shell": True} for call in calls)
+        assert all(call[1]["cwd"] == str(cwd) for call in calls)
+        assert all(call[1]["shell"] is True for call in calls)
+        assert all(
+            call[1]["env"]["HERMES_MCP_BOOTSTRAP_VENV_PYTHON"]
+            == "/tmp/MCP installs/n8n/.venv/bin/python"
+            for call in calls
+        )
 
 
 

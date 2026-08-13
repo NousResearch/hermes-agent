@@ -29,7 +29,6 @@ from __future__ import annotations
 
 import os
 import re
-import shlex
 import shutil
 import subprocess
 import sys
@@ -410,20 +409,11 @@ def _venv_python_path(install_dir: Path, *, os_name: str) -> str:
     return str(PurePosixPath(str(install_dir).replace("\\", "/")) / ".venv" / "bin" / "python")
 
 
-def _install_dir_value(install_dir: Path) -> str:
-    """Render install paths for manifest args without host-OS separators.
-
-    Transport arguments are raw argv values and accept forward slashes on every
-    supported host. Keeping them POSIX-shaped also lets path-expansion tests
-    simulate another runtime OS from Windows or POSIX hosts.
-    """
-    return str(PurePosixPath(str(install_dir).replace("\\", "/")))
-
-
-def _shell_quote(value: str, *, os_name: str) -> str:
+def _install_dir_value(install_dir: Path, *, os_name: str) -> str:
+    """Render a catalog install directory with the target runtime's syntax."""
     if os_name == "nt":
-        return subprocess.list2cmdline([value])
-    return shlex.quote(value)
+        return str(PureWindowsPath(str(install_dir)))
+    return str(PurePosixPath(str(install_dir).replace("\\", "/")))
 
 
 def _expand_catalog_vars(
@@ -455,20 +445,62 @@ def _expand_catalog_vars(
         _PYTHON_VAR: python_executable or _runtime_python_executable(),
     }
     if install_dir is not None:
-        replacements[_INSTALL_DIR_VAR] = _install_dir_value(install_dir)
+        replacements[_INSTALL_DIR_VAR] = _install_dir_value(
+            install_dir, os_name=resolved_os
+        )
         replacements[_VENV_PYTHON_VAR] = _venv_python_path(
             install_dir, os_name=resolved_os
         )
 
     expanded = value
-    for variable, replacement in replacements.items():
-        rendered = (
-            _shell_quote(replacement, os_name=resolved_os)
-            if for_shell
-            else replacement
+    if resolved_os == "nt" and _INSTALL_DIR_VAR in value:
+        expanded = expanded.replace(
+            f"{_INSTALL_DIR_VAR}/", f"{replacements[_INSTALL_DIR_VAR]}\\"
         )
-        expanded = expanded.replace(variable, rendered)
+    for variable, replacement in replacements.items():
+        expanded = expanded.replace(variable, replacement)
     return expanded
+
+
+_BOOTSTRAP_PYTHON_ENV = "HERMES_MCP_BOOTSTRAP_PYTHON"
+_BOOTSTRAP_INSTALL_DIR_ENV = "HERMES_MCP_BOOTSTRAP_INSTALL_DIR"
+_BOOTSTRAP_VENV_PYTHON_ENV = "HERMES_MCP_BOOTSTRAP_VENV_PYTHON"
+
+
+def _expand_bootstrap_vars(
+    value: str, install_dir: Path, *, os_name: str
+) -> tuple[str, Dict[str, str]]:
+    """Prepare a bootstrap command without interpolating paths into its shell.
+
+    Catalog bootstrap steps intentionally support shell operators such as
+    ``&&``. User-controlled install paths must therefore travel through child
+    environment variables instead of command text: this prevents cmd.exe and
+    POSIX shells from interpreting path characters such as ``&`` or ``%``.
+    """
+    env = {
+        _BOOTSTRAP_PYTHON_ENV: _runtime_python_executable(),
+        _BOOTSTRAP_INSTALL_DIR_ENV: _install_dir_value(install_dir, os_name=os_name),
+        _BOOTSTRAP_VENV_PYTHON_ENV: _venv_python_path(
+            install_dir, os_name=os_name
+        ),
+    }
+    if os_name == "nt":
+        references = {
+            _PYTHON_VAR: f'"%{_BOOTSTRAP_PYTHON_ENV}%"',
+            _INSTALL_DIR_VAR: f'"%{_BOOTSTRAP_INSTALL_DIR_ENV}%"',
+            _VENV_PYTHON_VAR: f'"%{_BOOTSTRAP_VENV_PYTHON_ENV}%"',
+        }
+    else:
+        references = {
+            _PYTHON_VAR: f'"${_BOOTSTRAP_PYTHON_ENV}"',
+            _INSTALL_DIR_VAR: f'"${_BOOTSTRAP_INSTALL_DIR_ENV}"',
+            _VENV_PYTHON_VAR: f'"${_BOOTSTRAP_VENV_PYTHON_ENV}"',
+        }
+
+    expanded = value
+    for variable, reference in references.items():
+        expanded = expanded.replace(variable, reference)
+    return expanded, env
 
 
 def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
@@ -477,10 +509,16 @@ def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
     Each command runs through the shell (so `&&` etc. work). The output is
     streamed to the user's terminal for visibility.
     """
+    os_name = _runtime_os_name()
     for raw_cmd in commands:
-        cmd = _expand_catalog_vars(raw_cmd, cwd, for_shell=True)
+        cmd, bootstrap_env = _expand_bootstrap_vars(raw_cmd, cwd, os_name=os_name)
         print(color(f"  $ {cmd}", Colors.DIM))
-        proc = subprocess.run(cmd, cwd=str(cwd), shell=True)
+        proc = subprocess.run(
+            cmd,
+            cwd=str(cwd),
+            shell=True,
+            env={**os.environ, **bootstrap_env},
+        )
         if proc.returncode != 0:
             raise CatalogError(
                 f"bootstrap step failed (exit {proc.returncode}): {cmd}"

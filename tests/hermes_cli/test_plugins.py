@@ -537,6 +537,173 @@ class TestPluginHooks:
 
 
 
+class TestDeliveryParity:
+    """Hook/middleware delivery parity across surfaces (#64178).
+
+    Salvaged from PR #64188 (@Bartok9): module-level invoke_hook /
+    invoke_middleware / has_hook / has_middleware lazily run discovery so
+    surfaces that never imported model_tools (dashboards, TUI slash workers,
+    query mode, cron) still deliver plugin callbacks.
+    """
+
+    def _fresh_manager(self, monkeypatch, register_body):
+        """Build an undiscovered manager whose sweep registers via plugins."""
+        import hermes_cli.plugins as plugins_mod
+
+        mgr = PluginManager()
+        assert mgr._discovered is False
+        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: mgr)
+
+        def _inner(self_inner):
+            register_body(self_inner)
+
+        monkeypatch.setattr(PluginManager, "_discover_and_load_inner", _inner)
+        return mgr
+
+    def test_module_invoke_hook_lazily_discovers(self, monkeypatch):
+        import hermes_cli.plugins as plugins_mod
+
+        fired = []
+        mgr = self._fresh_manager(
+            monkeypatch,
+            lambda m: m._hooks.setdefault("kanban_task_claimed", []).append(
+                lambda **kw: fired.append(kw) or "ok"
+            ),
+        )
+
+        results = plugins_mod.invoke_hook("kanban_task_claimed", task_id="t1")
+
+        assert mgr._discovered is True
+        # invoke_hook may enrich kwargs (e.g. telemetry_schema_version);
+        # assert on what the caller passed rather than exact equality.
+        assert len(fired) == 1
+        assert fired[0]["task_id"] == "t1"
+        assert results == ["ok"]
+
+    def test_module_invoke_middleware_lazily_discovers(self, monkeypatch):
+        import hermes_cli.plugins as plugins_mod
+
+        mgr = self._fresh_manager(
+            monkeypatch,
+            lambda m: m._middleware.setdefault("llm_request", []).append(
+                lambda **kw: "mw-ok"
+            ),
+        )
+
+        results = plugins_mod.invoke_middleware("llm_request", request={})
+
+        assert mgr._discovered is True
+        assert results == ["mw-ok"]
+
+    def test_module_has_hook_and_has_middleware_lazily_discover(self, monkeypatch):
+        import hermes_cli.plugins as plugins_mod
+
+        def _register(m):
+            m._hooks.setdefault("post_llm_call", []).append(lambda **kw: None)
+            m._middleware.setdefault("tool_request", []).append(lambda **kw: None)
+
+        mgr = self._fresh_manager(monkeypatch, _register)
+
+        # A pre-discovery False from these gates would make callers skip
+        # invoke_* entirely, so they must trigger discovery too.
+        assert plugins_mod.has_hook("post_llm_call") is True
+        assert plugins_mod.has_middleware("tool_request") is True
+        assert mgr._discovered is True
+
+    def test_invoke_hook_tolerates_mock_managers(self, monkeypatch):
+        """Test doubles without _discovered are invoked untouched."""
+        import types
+
+        import hermes_cli.plugins as plugins_mod
+
+        stub = types.SimpleNamespace(invoke_hook=lambda name, **kw: ["stubbed"])
+        monkeypatch.setattr(plugins_mod, "get_plugin_manager", lambda: stub)
+
+        assert plugins_mod.invoke_hook("anything") == ["stubbed"]
+
+
+class TestForceReloadSymmetry:
+    """Force rediscovery restores non-plugin state it wiped (#64178)."""
+
+    def test_force_reload_re_registers_shell_hooks(self, monkeypatch):
+        """config.yaml shell hooks are re-wired after force=True (#60036)."""
+        calls = []
+        import agent.shell_hooks as shell_hooks_mod
+
+        monkeypatch.setattr(
+            shell_hooks_mod,
+            "re_register_config_hooks",
+            lambda: calls.append(True),
+        )
+        monkeypatch.setattr(
+            PluginManager, "_discover_and_load_inner", lambda self_inner: None
+        )
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert calls == [], "initial discovery must not re-register shell hooks"
+
+        mgr.discover_and_load(force=True)
+        assert calls == [True]
+
+    def test_shell_hook_re_register_failure_does_not_abort_reload(self, monkeypatch):
+        import agent.shell_hooks as shell_hooks_mod
+
+        def _boom():
+            raise RuntimeError("config unreadable")
+
+        monkeypatch.setattr(shell_hooks_mod, "re_register_config_hooks", _boom)
+        monkeypatch.setattr(
+            PluginManager, "_discover_and_load_inner", lambda self_inner: None
+        )
+
+        mgr = PluginManager()
+        mgr.discover_and_load(force=True)
+        assert mgr._discovered is True
+
+    def test_unload_all_sweeps_preledger_tool_names(self, monkeypatch):
+        """Tool names without ledger entries are deregistered globally (#60050)."""
+        deregistered = []
+        import tools.registry as tools_registry_mod
+
+        monkeypatch.setattr(
+            tools_registry_mod.registry,
+            "deregister",
+            lambda name: deregistered.append(name),
+        )
+
+        mgr = PluginManager()
+        # Pre-ledger state: name tracked manager-locally, no ledger handle.
+        mgr._plugin_tool_names.add("zombie_tool")
+        mgr._discovered = True
+
+        mgr.unload()
+        assert deregistered == ["zombie_tool"]
+        assert not mgr._plugin_tool_names
+        assert mgr._discovered is False
+
+    def test_re_register_config_hooks_clears_idempotence_set(self, monkeypatch):
+        import agent.shell_hooks as shell_hooks_mod
+
+        recorded = {}
+        monkeypatch.setattr(
+            shell_hooks_mod,
+            "register_from_config",
+            lambda cfg: recorded.setdefault("cfg", cfg) or [],
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config", lambda: {"hooks": {}}
+        )
+        with shell_hooks_mod._registered_lock:
+            shell_hooks_mod._registered.add(("post_llm_call", None, "echo hi"))
+
+        shell_hooks_mod.re_register_config_hooks()
+
+        with shell_hooks_mod._registered_lock:
+            assert not shell_hooks_mod._registered
+        assert recorded["cfg"] == {"hooks": {}}
+
+
 class TestPreToolCallBlocking:
     """Tests for the pre_tool_call block directive helper."""
 

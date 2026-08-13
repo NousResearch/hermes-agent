@@ -3309,6 +3309,39 @@ class PluginManager:
 
             for platform_name in tuple(self._plugin_platform_names):
                 platform_registry.unregister(platform_name)
+            # Symmetric sweep for tools: names in _plugin_tool_names that no
+            # ledger registration covers (pre-ledger state, or set manually)
+            # would survive in the process-global tools.registry as zombie
+            # entries after a force reload (#60050; tracking #64178 —
+            # extracted from PR #64188). Ledger-owned names are excluded:
+            # their handles were already disposed above with precise
+            # previous-entry restoration, and blanket deregistration here
+            # would remove entries the ledger just restored.
+            ledger_tool_names = {
+                registration.key
+                for registration in registrations
+                if registration.kind == "tool"
+            }
+            preledger_tools = tuple(
+                name
+                for name in self._plugin_tool_names
+                if name not in ledger_tool_names
+            )
+            if preledger_tools:
+                try:
+                    from tools.registry import registry as tool_registry
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.debug("unload: tools.registry unavailable: %s", exc)
+                else:
+                    for tool_name in preledger_tools:
+                        try:
+                            tool_registry.deregister(tool_name)
+                        except Exception as exc:
+                            logger.debug(
+                                "unload: tool deregister %s failed: %s",
+                                tool_name,
+                                exc,
+                            )
             self._ownership_ledger.clear()
             self._plugins.clear()
             self._hooks.clear()
@@ -3392,9 +3425,26 @@ class PluginManager:
                 # load_hermes_dotenv() already ran at import time. Re-pull so the
                 # first process sees plugin backends (tracking #64177).
                 self._refresh_secret_sources_after_discovery()
+                if force:
+                    # config.yaml shell hooks live in ``_hooks`` but are
+                    # config-owned, not plugin-owned — the ledger-driven
+                    # unload() above wiped them and cannot restore them.
+                    # Re-register so force-reload is symmetric (#60036;
+                    # tracking #64178 — salvaged from PR #64188).
+                    self._re_register_shell_hooks_after_force()
             except BaseException:
                 self._discovered = False
                 raise
+
+    def _re_register_shell_hooks_after_force(self) -> None:
+        """Restore config.yaml shell hooks wiped by force-clear of ``_hooks``."""
+        try:
+            from agent.shell_hooks import re_register_config_hooks
+
+            re_register_config_hooks()
+        except Exception as exc:
+            # Import cycle / missing module must not abort force reload.
+            logger.debug("force-reload shell-hook re-register skipped: %s", exc)
 
     def _refresh_secret_sources_after_discovery(self) -> None:
         """If any plugin secret source is enabled, reset cache and re-apply.
@@ -5231,12 +5281,37 @@ def unload_plugins(
     return get_plugin_manager().unload(plugin)
 
 
+def _delivery_manager() -> PluginManager:
+    """Return the active manager, lazily running discovery if it never ran.
+
+    Hook/middleware delivery must not depend on WHICH surface imported us:
+    dashboards, TUI slash workers, query mode, and cron delivery paths never
+    import ``model_tools`` (whose import side-effect is the discovery trigger
+    on the interactive CLI path), so hooks registered by user plugins were
+    silently dead on those surfaces (#50776, #67597, #67890, #50937;
+    tracking #64178 — salvaged from PR #64188).
+
+    ``getattr`` with a ``True`` default so test doubles that monkeypatch
+    ``get_plugin_manager()`` with a bare namespace are invoked untouched.
+    """
+    manager = get_plugin_manager()
+    if not getattr(manager, "_discovered", True):
+        _join_background_discovery()
+        manager.discover_and_load()
+    return manager
+
+
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     """Invoke a lifecycle hook on loaded plugins.
 
+    Ensures plugins are discovered on first invocation so callers in
+    processes that never explicitly call ``discover_plugins()`` (gateway
+    platform events, TUI slash workers, query mode, cron) still fire
+    callbacks registered by user plugins (tracking #64178).
+
     Returns a list of non-``None`` return values from plugin callbacks.
     """
-    return get_plugin_manager().invoke_hook(hook_name, **kwargs)
+    return _delivery_manager().invoke_hook(hook_name, **kwargs)
 
 
 def render_system_prompt_sections(
@@ -5249,14 +5324,24 @@ def render_system_prompt_sections(
 def invoke_middleware(kind: str, **kwargs: Any) -> List[Any]:
     """Invoke registered middleware callbacks.
 
+    Lazy-discovers plugins on first use — same delivery-parity guarantee as
+    :func:`invoke_hook` (tracking #64178).
+
     Returns a list of non-``None`` return values from middleware callbacks.
     """
-    return get_plugin_manager().invoke_middleware(kind, **kwargs)
+    return _delivery_manager().invoke_middleware(kind, **kwargs)
 
 
 def has_middleware(kind: str) -> bool:
-    """Return True when middleware callbacks are registered for ``kind``."""
+    """Return True when middleware callbacks are registered for ``kind``.
+
+    Lazy-discovers first: callers use this as a gate before
+    :func:`invoke_middleware`, so a pre-discovery ``False`` here would
+    silently skip delivery on surfaces that never ran discovery (#64178).
+    """
     manager = get_plugin_manager()
+    if not getattr(manager, "_discovered", True):
+        manager = _delivery_manager()
     method = getattr(manager, "has_middleware", None)
     if callable(method):
         return bool(method(kind))
@@ -5264,8 +5349,12 @@ def has_middleware(kind: str) -> bool:
 
 
 def has_hook(hook_name: str) -> bool:
-    """Return True when a loaded plugin handles a hook."""
-    return get_plugin_manager().has_hook(hook_name)
+    """Return True when a loaded plugin handles a hook.
+
+    Lazy-discovers first — same gate-before-invoke rationale as
+    :func:`has_middleware` (tracking #64178).
+    """
+    return _delivery_manager().has_hook(hook_name)
 
 
 def iter_hook_callbacks(hook_name: str) -> tuple[Callable, ...]:

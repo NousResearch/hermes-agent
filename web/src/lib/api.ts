@@ -1882,8 +1882,25 @@ export interface StatusResponse {
   gateway_updated_at: string | null;
   hermes_home: string;
   latest_config_version: number;
+  /** NS-656: memory-pressure rollup from the gateway heartbeat +
+   * lifecycle ledger. Absent on older gateways. */
+  memory?: MemoryStatus;
   release_date: string;
   version: string;
+}
+
+/** NS-656: coarse memory telemetry served by /api/status. */
+export interface MemoryStatus {
+  pressure: "ok" | "elevated" | "critical" | "unknown";
+  gateway_rss_mb?: number | null;
+  system_total_mb?: number | null;
+  system_available_mb?: number | null;
+  swap_used_mb?: number | null;
+  sampled_at?: string | null;
+  /** Previous gateway life died without running any exit path. */
+  last_boot_unclean?: boolean;
+  /** ...and its final heartbeat showed near-exhausted memory. */
+  last_boot_suspected_oom?: boolean;
 }
 
 export interface SessionInfo {

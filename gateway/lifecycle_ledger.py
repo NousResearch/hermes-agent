@@ -254,15 +254,24 @@ def record_startup(home: Optional[Path] = None) -> Optional[Dict[str, Any]]:
         logger.debug("Unclean-exit detection failed", exc_info=True)
 
     try:
-        _write_sentinel(
-            {
-                "phase": "running",
-                "pid": os.getpid(),
-                "start_time": time.time(),
-                "started_at": datetime.now(timezone.utc).isoformat(),
-            },
-            home,
-        )
+        claim: Dict[str, Any] = {
+            "phase": "running",
+            "pid": os.getpid(),
+            "start_time": time.time(),
+            "started_at": datetime.now(timezone.utc).isoformat(),
+        }
+        # Carry the verdict on the PREVIOUS life forward on the new
+        # sentinel: it is the only place the finding survives in
+        # machine-readable form (the exit-diag log is append-only prose
+        # for humans), and /api/status reads it to tell the user "your
+        # agent restarted after (suspected) running out of memory"
+        # (NS-656).  Scoped to this life only — the next clean exit or
+        # boot rewrites the sentinel and the flags age out with it.
+        if evidence is not None:
+            claim["prior_unclean_exit"] = True
+            if evidence.get("suspected_oom"):
+                claim["prior_suspected_oom"] = True
+        _write_sentinel(claim, home)
     except Exception:
         logger.debug("Failed to claim lifecycle sentinel", exc_info=True)
     return evidence

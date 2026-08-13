@@ -3332,6 +3332,28 @@ async def get_status(profile: Optional[str] = None):
             else "degraded"
         )
 
+        # Memory-pressure rollup (NS-656). Distilled from the gateway's
+        # 30s loop heartbeat + lifecycle sentinel — two small file reads,
+        # no gateway IPC. Coarse MB numbers/enums/booleans only: this
+        # endpoint is public (PUBLIC_API_PATHS), same disclosure class as
+        # nous_session_valid above. Deliberately NOT folded into
+        # components/overall — memory pressure is advisory (toast/notice
+        # material), not a liveness verdict, and flipping `overall` to
+        # "degraded" on it would page NAS's availability sweep for a
+        # condition the valve is already handling.
+        try:
+            from gateway.memory_status import collect_memory_status
+
+            status["memory"] = await asyncio.get_running_loop().run_in_executor(
+                None,
+                functools.partial(
+                    collect_memory_status,
+                    profile_dir if profile_dir else get_hermes_home(),
+                ),
+            )
+        except Exception:
+            status["memory"] = {"pressure": "unknown"}
+
         # Deferred FTS rebuild progress (schema v23): lets the desktop /
         # dashboard render a "search index rebuilding: N%" indicator instead
         # of users wondering why old-message search is slower after an

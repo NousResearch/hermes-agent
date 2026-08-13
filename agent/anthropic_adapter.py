@@ -474,6 +474,11 @@ def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
     return normalized.rstrip("/").lower().startswith("https://api.kimi.com/coding")
 
 
+def _is_opencode_endpoint(base_url: str | None) -> bool:
+    """Return True for OpenCode's Zen/Go relay (opencode.ai)."""
+    return base_url_host_matches(base_url or "", "opencode.ai")
+
+
 # Model-name prefixes that identify the Kimi / Moonshot family.  Covers
 # - official slugs: ``kimi-k2.5``, ``kimi_thinking``, ``moonshot-v1-8k``
 # - common release lines: ``k1.5-...``, ``k2-thinking``, ``k25-...``, ``k2.5-...``,
@@ -912,6 +917,18 @@ def build_anthropic_client(
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    if _is_opencode_endpoint(base_url):
+        # OpenCode identifies clients by request headers, like OpenRouter does.
+        # The OpenAI-wire paths pick these up from profile.default_headers
+        # (plugins/model-providers/opencode-zen), but the Anthropic Messages
+        # route builds its client right here and never sees the profile. Merge
+        # the same set on top of whatever auth branch ran above.
+        headers = dict(kwargs.get("default_headers") or {})
+        headers.setdefault("HTTP-Referer", "https://hermes-agent.nousresearch.com")
+        headers.setdefault("X-Title", "Hermes Agent")
+        headers.setdefault("User-Agent", f"HermesAgent/{_HERMES_VERSION}")
+        kwargs["default_headers"] = headers
 
     client = _anthropic_sdk.Anthropic(**kwargs)
     # Bearer-only construction leaves ``api_key`` unset, so the SDK fills it

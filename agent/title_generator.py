@@ -264,15 +264,33 @@ def generate_title(
         response = call_llm(
             task="title_generation",
             messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}],
-            # A title is a handful of tokens; a larger ceiling let chatty models burn seconds.
-            max_tokens=64, temperature=0.3, timeout=timeout, main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
-            # The module contract above promises thinking-disabled operation,
-            # but nothing enforced it: with the aux default reasoning_effort
-            # "" (provider default), Gemini enables internal thinking and
-            # bills thought tokens against max_tokens=64 — the JSON payload
-            # never lands, and the prose fallback stores the opening fence
-            # ("```json") as the session title (#91927).
+            # A title is a handful of tokens. The old 500-token ceiling let a
+            # chatty model burn seconds generating prose we then threw away.
+            # 64 is too small for reasoning-capable models (Qwen3.x etc.) on
+            # backends that ignore the thinking-disabled request below: their
+            # chain-of-thought alone can exceed 64 tokens, so every token goes
+            # to `reasoning_content` and `content` comes back empty -> the
+            # title silently fails. 2048 leaves room to finish thinking AND
+            # emit the tiny JSON title; non-reasoning models just stop after
+            # the short answer.
+            max_tokens=2048,
+            temperature=0.3,
+            timeout=timeout,
+            main_runtime=main_runtime,
+            # Strict json_schema response_format is rejected (HTTP 400) or
+            # silently aborted (empty content) by several OpenAI-compatible
+            # backends (DeepSeek, vLLM guided_grammar, LM Studio MLX
+            # Qwen3.x). Use free-text and let _extract_title_text's JSON scan
+            # + prose fallback handle the shape, which it already does for
+            # non-compliant providers.
+            extra_body={"response_format": {"type": "text"}},
+            # Enforce the module's documented thinking-disabled contract at
+            # the call site: with the aux default reasoning_effort "" (provider
+            # default), Gemini enables internal thinking and bills thought
+            # tokens against the budget — the JSON payload never lands, and
+            # the prose fallback stores the opening fence ("```json") as the
+            # session title (#91927). Backends that ignore this request are
+            # covered by the larger max_tokens above.
             reasoning_config={"enabled": False},
         )
         title = _clean_title(_extract_title_text(response.choices[0].message.content or ""))

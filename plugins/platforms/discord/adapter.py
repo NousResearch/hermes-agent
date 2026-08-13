@@ -1471,10 +1471,19 @@ class DiscordAdapter(BasePlatformAdapter):
         failure mode the auto-pause removal fixed. The reconnect watcher's
         NEEDS_ATTENTION escalation covers misclassified permanent failures.
         """
-        name = error.__class__.__name__
-        # String-typename fallback keeps this classifiable when discord.py is
-        # mocked (tests) or the import fails; real isinstance checks follow.
-        if name == "LoginFailure":
+        def _is(type_name: str) -> bool:
+            # Class-name check covers mocked discord.py (tests) and failed
+            # imports; the isinstance check additionally covers subclasses.
+            if error.__class__.__name__ == type_name:
+                return True
+            try:
+                import discord as _discord
+                exc_type = getattr(_discord, type_name, None)
+                return isinstance(exc_type, type) and isinstance(error, exc_type)
+            except Exception:
+                return False
+
+        if _is("LoginFailure"):
             return (
                 "discord_auth_error",
                 f"Discord bot token rejected: {error}. The token is invalid or "
@@ -1482,7 +1491,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 "and update DISCORD_BOT_TOKEN.",
                 False,
             )
-        if name == "PrivilegedIntentsRequired":
+        if _is("PrivilegedIntentsRequired"):
             return (
                 "discord_intents_required",
                 "Discord privileged intents are not enabled for this bot: "
@@ -1491,29 +1500,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 "Discord Developer Portal → Bot → Privileged Gateway Intents.",
                 False,
             )
-        try:
-            import discord as _discord
-            login_failure = getattr(_discord, "LoginFailure", None)
-            intents_required = getattr(_discord, "PrivilegedIntentsRequired", None)
-            if isinstance(login_failure, type) and isinstance(error, login_failure):
-                return (
-                    "discord_auth_error",
-                    f"Discord bot token rejected: {error}. The token is invalid "
-                    "or was revoked — regenerate it in the Discord Developer "
-                    "Portal and update DISCORD_BOT_TOKEN.",
-                    False,
-                )
-            if isinstance(intents_required, type) and isinstance(error, intents_required):
-                return (
-                    "discord_intents_required",
-                    "Discord privileged intents are not enabled for this bot: "
-                    f"{error}. Enable 'Message Content Intent' for this "
-                    "application in the Discord Developer Portal → Bot → "
-                    "Privileged Gateway Intents.",
-                    False,
-                )
-        except Exception:
-            pass
         return ("discord_connect_error", f"Discord startup failed: {error}", True)
 
     def _discord_message_admission(

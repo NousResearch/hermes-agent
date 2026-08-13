@@ -2262,6 +2262,12 @@ if _config_path.exists():
                 os.environ["HERMES_SESSION_STALL_TIMEOUT"] = str(
                     _agent_cfg["session_stall_timeout"]
                 )
+            if "reconnect_attention_after" in _agent_cfg:
+                # Internal bridge only — config.yaml (agent.reconnect_attention_after)
+                # is the documented, user-facing setting.
+                os.environ["HERMES_RECONNECT_ATTENTION_AFTER_SECONDS"] = str(
+                    _agent_cfg["reconnect_attention_after"]
+                )
             if "restart_drain_timeout" in _agent_cfg:
                 os.environ["HERMES_RESTART_DRAIN_TIMEOUT"] = str(_agent_cfg["restart_drain_timeout"])
             if "gateway_auto_continue_freshness" in _agent_cfg:
@@ -3795,8 +3801,10 @@ _RECONNECT_BACKOFF_CAP = 300
 # owners and fleet monitoring can distinguish hour one from week three.
 # A dead bot token, a revoked Discord intent, or a deterministically crashing
 # sidecar all present as "retrying" forever without this signal.
-_RECONNECT_ATTENTION_AFTER_SECONDS = int(
-    os.getenv("HERMES_RECONNECT_ATTENTION_AFTER_SECONDS", "7200")
+# User-facing setting: agent.reconnect_attention_after in config.yaml
+# (bridged to this env var above). 0 disables.
+_RECONNECT_ATTENTION_AFTER_SECONDS = _float_env(
+    "HERMES_RECONNECT_ATTENTION_AFTER_SECONDS", 7200
 )
 
 

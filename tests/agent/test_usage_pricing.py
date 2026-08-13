@@ -416,7 +416,9 @@ class TestFormatCostLabel:
         """
         label = format_cost_label(Decimal("0.00004"))
         assert label == "~$<0.0001"
-        assert "0.0000" not in label.replace("<0.0001", "")
+        # Exact boundary: $0.00005 rounds to 0.0000 under ROUND_HALF_EVEN
+        # and must also take the fallback.
+        assert format_cost_label(Decimal("0.00005")) == "~$<0.0001"
 
     def test_sub_cent_deepseek_scenario(self):
         """Reproduce the #79220 reproduction: DeepSeek at $0.004640."""

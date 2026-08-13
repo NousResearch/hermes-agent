@@ -701,7 +701,8 @@ class TestEdgeCases:
         report = engine.generate(days=30)
         text = engine.format_terminal(report)
 
-        # The cost section should appear with all three buckets
+        # The cost section should appear with the buckets this DB has
+        # (estimated + included; no unknown-cost session is created here)
         assert "💰 Cost" in text
         assert "~$1.50" in text  # estimated
         assert "included" in text.lower()

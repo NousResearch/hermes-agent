@@ -1022,7 +1022,7 @@ class InsightsEngine:
             lines.append("  💰 Cost")
             lines.append("  " + "─" * 56)
             if est_cost > 0:
-                lines.append(f"  Estimated:         {_fmt_est_cost(est_cost)}")
+                lines.append(f"  Estimated:          {_fmt_est_cost(est_cost)}")
             if included_sessions > 0:
                 lines.append(
                     f"  Included:           {included_sessions} session(s) "

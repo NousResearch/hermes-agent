@@ -476,6 +476,74 @@ class TestOnPlatformUpdate:
         asyncio.run(a._on_platform_update(MagicMock(), context=MagicMock()))  # must not raise
 
 
+class TestTelegramCallbackPluginBoundary:
+    def test_callback_query_returns_plugin_action_and_applies_edit(self):
+        """Telegram callback queries are normalized and plugin actions are applied."""
+        a = _adapter()
+        a._platform_event_handler = AsyncMock(return_value=[
+            {
+                "action": "handled",
+                "answer": "recorded",
+                "edit": {
+                    "text": "done",
+                    "buttons": [[{"label": "next", "data": "x:1"}]],
+                },
+            }
+        ])
+        query = MagicMock()
+        query.data = "wp:score:slot"
+        query.from_user.id = 777
+        query.from_user.first_name = "Rost"
+        query.from_user.username = "rost"
+        query.message.chat_id = 123
+        query.message.chat.id = 123
+        query.message.chat.type = "private"
+        query.message.message_id = 456
+        query.message.message_thread_id = None
+        query.message.text = "question"
+        query.answer = AsyncMock()
+        query.edit_message_text = AsyncMock()
+        update = MagicMock()
+        update.callback_query = query
+
+        asyncio.run(a._handle_callback_query(update, MagicMock()))
+
+        event, source = a._platform_event_handler.await_args.args
+        assert event == {
+            "platform": "telegram",
+            "event_type": "callback_query",
+            "payload": {
+                "data": "wp:score:slot",
+                "chat_id": "123",
+                "message_id": 456,
+                "message_text": "question",
+                "user_id": "777",
+                "user_name": "Rost",
+            },
+        }
+        assert source.user_id == "777"
+        query.answer.assert_awaited_once_with(text="recorded")
+        query.edit_message_text.assert_awaited_once()
+
+    def test_callback_query_plugin_error_falls_through(self):
+        """A plugin failure cannot break built-in callback handling."""
+        a = _adapter()
+        a._platform_event_handler = AsyncMock(side_effect=RuntimeError("plugin boom"))
+        query = MagicMock()
+        query.data = "unknown:callback"
+        query.from_user.id = 777
+        query.message.chat_id = 123
+        query.message.chat.id = 123
+        query.message.chat.type = "private"
+        query.message.message_id = 456
+        query.message.message_thread_id = None
+        update = MagicMock()
+        update.callback_query = query
+
+        asyncio.run(a._handle_callback_query(update, MagicMock()))
+        assert a._platform_event_handler.await_count == 1
+
+
 # ---------------------------------------------------------------------------
 # TelegramAdapter._on_platform_update post-auth gate (#64176)
 # ---------------------------------------------------------------------------

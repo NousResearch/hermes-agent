@@ -1221,6 +1221,36 @@ class TestGrok43StaleCacheGuard:
             assert ctx == 256_000, f"{slug} should stay 256000, got {ctx}"
 
 
+class TestGrok46StaleCacheGuard:
+    """Pre-catalog builds resolved grok-4.6 via the generic 'grok-4' catch-all
+    (256,000) and persisted it before the 500K catalog entry existed.
+    The step-1 cache guard must drop that stale value and re-resolve to 500K.
+    Official card: 500,000 context (docs.x.ai/developers/models/grok-4.6).
+    """
+
+    def test_suggests_grok_4_6(self):
+        from agent.model_metadata import _model_name_suggests_grok_4_6
+        assert _model_name_suggests_grok_4_6("grok-4.6")
+        assert _model_name_suggests_grok_4_6("xai/grok-4.6")
+        assert _model_name_suggests_grok_4_6("x-ai/grok-4.6")
+        assert not _model_name_suggests_grok_4_6("grok-4")
+        assert not _model_name_suggests_grok_4_6("grok-4-fast")
+        assert not _model_name_suggests_grok_4_6("grok-4.5")
+        assert not _model_name_suggests_grok_4_6("grok-4.3")
+
+    def test_stale_grok_4_6_dropped_and_reresolves_to_500k(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        import importlib
+        import agent.model_metadata as mm
+        importlib.reload(mm)
+        base = "https://api.x.ai/v1"
+        mm.save_context_length("grok-4.6", base, 256_000)
+        ctx = mm.get_model_context_length(
+            "grok-4.6", base_url=base, api_key="", provider="xai"
+        )
+        assert ctx == 500_000
+
+
 class TestMoAContextLength:
     """MoA virtual provider resolves context from the aggregator slot, not 256K default."""
 

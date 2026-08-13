@@ -2021,6 +2021,19 @@ def _model_name_suggests_grok_4_3(model: str) -> bool:
     return "grok-4.3" in model.lower()
 
 
+def _model_name_suggests_grok_4_6(model: str) -> bool:
+    """Return True if the model name looks like a Grok 4.6 variant.
+
+    Catches ``grok-4.6`` and aggregator-prefixed slugs. Used as a guard
+    against stale cache entries seeded by pre-catalog builds that resolved
+    grok-4.6 via the generic ``grok-4`` catch-all (256,000) before the
+    500K entry existed. Official card: docs.x.ai/developers/models/grok-4.6.
+    Live GET /v1/models lists ``grok-4.6`` at context_length 500000 and does
+    not publish a ``grok-4.6-latest`` alias.
+    """
+    return "grok-4.6" in model.lower()
+
+
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query a local server for the model's context length (short-TTL cached).
 
@@ -2641,6 +2654,15 @@ def get_model_context_length(
             elif cached <= 256_000 and _model_name_suggests_grok_4_3(model):
                 logger.info(
                     "Dropping stale Grok-4.3 cache entry %s@%s -> %s (pre-catalog value); "
+                    "re-resolving via hardcoded defaults",
+                    model, base_url, f"{cached:,}",
+                )
+                _invalidate_cached_context_length(model, base_url)
+            # Same class of leftover as grok-4.3: grok-4.6 is 500K, but
+            # pre-catalog builds persisted the grok-4 catch-all (256,000).
+            elif cached <= 256_000 and _model_name_suggests_grok_4_6(model):
+                logger.info(
+                    "Dropping stale Grok-4.6 cache entry %s@%s -> %s (pre-catalog value); "
                     "re-resolving via hardcoded defaults",
                     model, base_url, f"{cached:,}",
                 )

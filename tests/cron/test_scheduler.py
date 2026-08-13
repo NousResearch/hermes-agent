@@ -42,7 +42,9 @@ class TestSummarizeCronFailureForDelivery:
         )
 
         assert "provider rate limit" in summary
-        assert "Fallback chain was exhausted or unavailable" in summary
+        # Chain wording is now honest (#85508): either the exhausted phrase
+        # (chain configured) or the "No fallback chain configured" guidance.
+        assert "fallback chain" in summary.lower()
 
     def test_no_agent_rate_limit_does_not_claim_a_fallback_chain(self):
         summary = _summarize_cron_failure_for_delivery(
@@ -50,8 +52,11 @@ class TestSummarizeCronFailureForDelivery:
             "HTTP 429: Too Many Requests",
         )
 
-        assert "provider rate limit" in summary
-        assert "Fallback chain" not in summary
+        # Composed with #77648: a no_agent job never gets provider-shaped
+        # classification at all — the generic cleaner reports the script's
+        # own error instead.
+        assert "provider" not in summary.lower()
+        assert "fallback chain" not in summary.lower()
 
     def test_no_agent_timeout_is_identified_as_a_script_timeout(self):
         summary = _summarize_cron_failure_for_delivery(
@@ -59,9 +64,10 @@ class TestSummarizeCronFailureForDelivery:
             "Script timed out after 3600s",
         )
 
-        assert "script timeout" in summary
+        assert "script timed out" in summary
+        assert "No model was invoked" in summary
         assert "provider timeout" not in summary
-        assert "Fallback chain" not in summary
+        assert "fallback chain" not in summary.lower()
 
 
 class TestPerJobToolsetMcpMerge:

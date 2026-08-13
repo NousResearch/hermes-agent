@@ -207,7 +207,9 @@ def test_agent_provider_timeout_delivery_keeps_fallback_guidance(hermes_env, mon
     assert scheduler.run_one_job(job) is True
     assert len(delivered) == 1
     assert "provider timeout" in delivered[0].lower()
-    assert "fallback chain was exhausted or unavailable" in delivered[0].lower()
+    # Chain wording is now honest (#85508): exhausted when configured,
+    # "no fallback chain configured" guidance otherwise.
+    assert "fallback chain" in delivered[0].lower()
 
 
 # ---------------------------------------------------------------------------

@@ -65,6 +65,7 @@ from hermes_cli.config import cfg_get, load_config_readonly
 from hermes_cli.middleware import OBSERVER_SCHEMA_VERSION, VALID_MIDDLEWARE
 from hermes_cli.plugin_capabilities import (  # noqa: F401 — re-exported
     CAPABILITY_REGISTRY,
+    VALID_CAPABILITY_IDS,
     plugin_capability_granted,
 )
 from hermes_cli.plugin_capabilities import (
@@ -391,6 +392,103 @@ SHELL_UNSUPPORTED_HOOKS: Set[str] = {
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
+ENTRY_POINT_CAPABILITIES_GROUP = "hermes_agent.plugin_capabilities"
+
+
+def _select_entry_point_group(entry_points: Any, group: str) -> list:
+    """Return one metadata entry-point group across supported Python APIs."""
+    if hasattr(entry_points, "select"):
+        return list(entry_points.select(group=group))
+    if isinstance(entry_points, dict):
+        return list(entry_points.get(group, []))
+    return [ep for ep in entry_points if ep.group == group]
+
+
+def discover_entrypoint_manifests() -> List["PluginManifest"]:
+    """Return metadata-only manifests for installed entry-point plugins.
+
+    Composes the full entry-point manifest contract in one place:
+
+    * **Kind classification** — the module source is resolved import-free
+      (``_resolve_module_source``) and scanned for provider markers
+      (``_detect_kind_from_source``), so memory providers (``exclusive``)
+      and model providers (``model-provider``) are routed to their own
+      discovery systems instead of being eagerly imported here.
+    * **Capability declarations** — read from the companion
+      ``hermes_agent.plugin_capabilities`` entry-point group (declarations
+      named ``<plugin-id>.<capability-id>`` pointing at the same object),
+      so consent/introspection is accurate without importing plugin code.
+
+    Failures are isolated per entry point: one malformed distribution must
+    not blank the manifests of every other installed plugin.
+    """
+    manifests: List[PluginManifest] = []
+    try:
+        eps = importlib.metadata.entry_points()
+        group_eps = _select_entry_point_group(eps, ENTRY_POINTS_GROUP)
+        capability_eps = _select_entry_point_group(
+            eps, ENTRY_POINT_CAPABILITIES_GROUP
+        )
+    except Exception as exc:
+        logger.debug("Entry-point scan failed: %s", exc)
+        return manifests
+
+    for ep in group_eps:
+        try:
+            capabilities = []
+            for capability in VALID_CAPABILITY_IDS:
+                declaration_name = f"{ep.name}.{capability}"
+                if any(
+                    declaration.name == declaration_name
+                    and declaration.value == ep.value
+                    for declaration in capability_eps
+                ):
+                    capabilities.append(capability)
+            dist = getattr(ep, "dist", None)
+            metadata = getattr(dist, "metadata", None)
+            manifest = PluginManifest(
+                name=ep.name,
+                version=str(getattr(dist, "version", "") or ""),
+                description=(
+                    str(metadata.get("Summary", "") or "")
+                    if metadata is not None
+                    else ""
+                ),
+                source="entrypoint",
+                path=ep.value,
+                key=ep.name,
+                capabilities=_parse_declared_capabilities(
+                    capabilities, ep.name
+                ),
+            )
+            manifest.kind = _classify_entrypoint_value_kind(ep.value)
+            manifests.append(manifest)
+        except Exception as exc:
+            logger.debug(
+                "Entry-point manifest for %r skipped: %s",
+                getattr(ep, "name", "?"),
+                exc,
+            )
+    return manifests
+
+
+def _classify_entrypoint_value_kind(value: str) -> str:
+    """Classify an entry-point target by import-free source scan.
+
+    Module-level twin of ``PluginManager._classify_entrypoint_kind`` so
+    ``discover_entrypoint_manifests()`` callers outside the manager (the
+    CLI capabilities path) get identical routing. Unresolvable or
+    non-Python modules stay ``standalone``.
+    """
+    try:
+        module_name = str(value).split(":", 1)[0].strip()
+        if not module_name:
+            return "standalone"
+        return _detect_kind_from_source(
+            _resolve_module_source(module_name)
+        ) or "standalone"
+    except Exception:
+        return "standalone"
 
 # System-prompt sections are deliberately more constrained than lifecycle
 # hooks. They become high-trust prompt bytes and are charged on every turn.
@@ -4290,31 +4388,17 @@ class PluginManager:
             return "standalone"
 
     def _scan_entry_points(self) -> List[PluginManifest]:
-        """Check ``importlib.metadata`` for pip-installed plugins."""
-        manifests: List[PluginManifest] = []
-        try:
-            eps = importlib.metadata.entry_points()
-            # Python 3.12+ returns a SelectableGroups; earlier returns dict
-            if hasattr(eps, "select"):
-                group_eps = eps.select(group=ENTRY_POINTS_GROUP)
-            elif isinstance(eps, dict):
-                group_eps = eps.get(ENTRY_POINTS_GROUP, [])
-            else:
-                group_eps = [ep for ep in eps if ep.group == ENTRY_POINTS_GROUP]
+        """Read installed plugin and companion capability entry points.
 
-            for ep in group_eps:
-                manifest = PluginManifest(
-                    name=ep.name,
-                    source="entrypoint",
-                    path=ep.value,
-                    key=ep.name,
-                )
-                manifest.kind = self._classify_entrypoint_kind(ep)
-                manifests.append(manifest)
-        except Exception as exc:
-            logger.debug("Entry-point scan failed: %s", exc)
-
-        return manifests
+        Delegates to ``discover_entrypoint_manifests()``, which composes
+        kind classification (import-free source scan routing memory/model
+        providers away from the general manager) with capability
+        declarations from the ``hermes_agent.plugin_capabilities`` group.
+        Capability declarations live in distribution metadata so discovery
+        is available before importing untrusted plugin code and does not
+        depend on a package-data ``plugin.yaml`` being present.
+        """
+        return discover_entrypoint_manifests()
 
     # -----------------------------------------------------------------------
     # Loading

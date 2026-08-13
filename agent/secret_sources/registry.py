@@ -215,13 +215,22 @@ def list_sources(*, scope: Optional[str] = None) -> List[SecretSource]:
 
 
 def list_plugin_sources() -> List[SecretSource]:
-    """Return sources registered outside the bundled bootstrap set."""
+    """Return sources registered outside the bundled bootstrap set.
+
+    Includes both legacy global plugin registrations (``_SOURCE_ORIGINS ==
+    "plugin"``) and the current scope's profile-keyed registrations — every
+    scoped entry is plugin-registered by definition, since bundled sources
+    register with ``scope=None`` (#64229 profile isolation).
+    """
     _ensure_builtin_sources()
-    return [
-        source
-        for name, source in _SOURCES.items()
-        if _SOURCE_ORIGINS.get(name) == "plugin"
-    ]
+    with _REGISTRY_LOCK:
+        merged: Dict[str, SecretSource] = {
+            name: source
+            for name, source in _SOURCES.items()
+            if _SOURCE_ORIGINS.get(name) == "plugin"
+        }
+        merged.update(_SCOPED_SOURCES.get(hermes_home_key(), {}))
+        return list(merged.values())
 
 
 def _ensure_builtin_sources() -> None:

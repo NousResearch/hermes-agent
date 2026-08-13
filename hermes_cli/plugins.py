@@ -3155,6 +3155,17 @@ class PluginManager:
             # The handles are authoritative for global registries, while the
             # manager-local containers are also reset to clear legacy/manual
             # state that predates the ledger.
+            #
+            # Platform names may exist in _plugin_platform_names without a
+            # ledger entry (state predating the ledger, or set manually in
+            # long-lived processes). Main's force path always unregistered
+            # them from the global registry — keep that sweep so disabled
+            # plugins can't leak parsers/send handlers into the next
+            # discovery pass.
+            from gateway.platform_registry import platform_registry
+
+            for platform_name in tuple(self._plugin_platform_names):
+                platform_registry.unregister(platform_name)
             self._ownership_ledger.clear()
             self._plugins.clear()
             self._hooks.clear()

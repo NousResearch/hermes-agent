@@ -319,7 +319,20 @@ def build_write_approval_paths(home: str) -> set[str]:
     (approve-once/session/always, like the terminal tool's ``~/.ssh`` gate);
     non-interactive callers (ACP shims, background jobs) fail closed.
     """
-    return {os.path.realpath(os.path.join(home, ".ssh", "config"))}
+    return {
+        os.path.realpath(p)
+        for p in [
+            os.path.join(home, ".ssh", "config"),
+            # Pair write_file/patch with the terminal shell-rc gate (#85321).
+            # These files are routinely edited, but they run at login — same
+            # approval contract as ~/.ssh/config, not a hard credential deny.
+            os.path.join(home, ".bashrc"),
+            os.path.join(home, ".zshrc"),
+            os.path.join(home, ".profile"),
+            os.path.join(home, ".bash_profile"),
+            os.path.join(home, ".zprofile"),
+        ]
+    }
 
 
 # HERMES_HOME / root subpaths that the agent's generic file tools must not
@@ -414,8 +427,15 @@ def get_write_denied_error(path: str, *, verb: str = "Write", entry: bool = Fals
 
 
 def is_write_approval_required(path: str) -> bool:
-    """True if ``path`` is approval-gated (``~/.ssh/config``): interactive callers
-    prompt, callers without a channel treat it as a block (fail closed)."""
+    """Return True if ``path`` is an approval-gated write target.
+
+    These paths (``~/.ssh/config`` and login shell rc files) are not
+    credentials and are not hard-denied, but a write to them must be
+    confirmed by a human because they can influence process execution
+    (SSH ``ProxyCommand``, or commands in ``~/.bashrc``). Callers with
+    an interactive/gateway channel should prompt; callers without one
+    should treat this as a block (fail closed).
+    """
     homes, resolved = _homes_and_resolved(local_drive_spelling(path))
     return any(deny_key(resolved) in map(deny_key, build_write_approval_paths(home)) for home in homes)
 

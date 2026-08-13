@@ -638,6 +638,11 @@ DANGEROUS_PATTERNS = [
     # with auto-approve. Same unpaired-door rationale as #14639 / the sed-tee-redirect pairing on these
     # targets. `authorized_keys` after the `~/.ssh/` fragment).
     (rf'\b(cp|mv|install)\b.*\s["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_COMMAND_TAIL}', "copy/move file into sensitive credential/SSH/shell-rc path"),
+    # touch/mkdir/ln create or plant into the same destinations without
+    # going through write_file (which now approval-gates shell rc) or
+    # cp/sed. `touch ~/.ssh/authorized_keys` / `mkdir ~/.ssh` /
+    # `ln -s evil ~/.bashrc` were unpaired theater (#85321).
+    (rf'\b(?:touch|mkdir|ln)\b.*["\']?{_SENSITIVE_WRITE_TARGET}[^\s"\']*["\']?{_WRITE_TARGET_BOUNDARY}', "create or link a file in a sensitive credential/SSH/shell-rc path"),
     # In-place edits mutate the file directly, bypassing redirection/tee/cp coverage; gate the same
     # startup/credential files.
     (rf'\bsed\s+-[^\s]*i.*(?:{_USER_SENSITIVE_WRITE_TARGET})[^\s"\']*', "in-place edit of sensitive credential/SSH/shell-rc path"),

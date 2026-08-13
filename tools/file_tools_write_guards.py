@@ -382,9 +382,10 @@ def _check_protected_instruction_write(paths: list[str], task_id: str = "default
 
 
 def _check_approval_required_write(paths: list[str], task_id: str = "default") -> str | None:
-    """Gate a write/patch touching an approval-required path (``~/.ssh/config`` can steer
-    execution via ``ProxyCommand``). Routine gate: once/session/always, honors --yolo,
-    fail-closed without an interactive/gateway channel."""
+    """Gate a write/patch touching an approval-required path (``~/.ssh/config``
+    can steer execution via ``ProxyCommand``; login shell rc files run at
+    login). Routine gate: once/session/always, honors --yolo, fail-closed
+    without an interactive/gateway channel."""
     try:
         from agent.file_safety import is_write_approval_required
     except Exception:
@@ -398,11 +399,11 @@ def _check_approval_required_write(paths: list[str], task_id: str = "default") -
 
     display_targets = ", ".join(dict.fromkeys(targets))
     description = (
-        f"Write to SSH client config file(s): {display_targets}. "
-        "The SSH config can carry ProxyCommand / Match exec directives that "
-        "run commands, so writes require your approval.")
+        f"Write to approval-gated file(s): {display_targets}. "
+        "SSH client config and login shell rc files can run commands, "
+        "so writes require your approval.")
     blocked = (
-        f"BLOCKED: write to SSH config file(s) ({display_targets}) "
+        f"BLOCKED: write to approval-gated file(s) ({display_targets}) "
         "{why} Do NOT retry it via another path (terminal, execute_code) "
         "without the user's explicit consent.")
 

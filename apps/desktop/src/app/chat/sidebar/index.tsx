@@ -1553,7 +1553,10 @@ export function ChatSidebar({
                 collapsible={!inProject}
                 contentClassName={cn(
                   'flex min-h-0 flex-1 flex-col gap-px pb-1.75',
-                  SCROLL_Y,
+                  // The virtualized long list owns its own scroller — giving
+                  // this wrapper one too doubled the scrollbar gutter and
+                  // shaved every row 4px short of the sidebar's right edge.
+                  !recentsVirtualizes && SCROLL_Y,
                   // Flatten into the single scroll when compact — unless this is the
                   // virtualized long list, which must keep its own scroller.
                   !recentsVirtualizes && COMPACT_FLAT

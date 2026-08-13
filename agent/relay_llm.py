@@ -312,11 +312,11 @@ def stream_current(
         defer_logical_completion=defer_logical_completion,
         completed_response_predicate=completed_response_predicate,
     )
-    # In the non-managed path the factory already ran eagerly during __init__,
-    # so a completed response is visible immediately and must surface raw.
-    # In the managed path the factory runs lazily on first pull, so
-    # final_response is still None here and the managed stream is returned.
     if completed_response_predicate is not None:
+        # Relay may defer the provider callback until the first stream pull.
+        # Prime once so adapters that ignore stream=True can still return their
+        # completed response directly. A real first chunk is buffered.
+        managed._prime_completed_response()
         completed = getattr(managed, "final_response", None)
         if completed is not None:
             return completed
@@ -400,6 +400,7 @@ class ManagedLlmStream(Iterator[Any]):
         self._relay_observes_chunks = False
         self._provider_completed = False
         self._raw_chunks: list[tuple[Any, Any]] = []
+        self._prefetched_chunks: list[Any] = []
         self.output_modified = False
         callback_context = contextvars.copy_context()
 
@@ -569,9 +570,20 @@ class ManagedLlmStream(Iterator[Any]):
     def __iter__(self) -> "ManagedLlmStream":
         return self
 
+    def _prime_completed_response(self) -> None:
+        """Advance once while preserving a genuine first chunk."""
+        if self._closed or self._prefetched_chunks:
+            return
+        try:
+            self._prefetched_chunks.append(next(self))
+        except StopIteration:
+            pass
+
     def __next__(self) -> Any:
         if self._closed:
             raise StopIteration
+        if self._prefetched_chunks:
+            return self._prefetched_chunks.pop()
         if self._loop is None:
             try:
                 chunk = next(self._stream)
@@ -684,6 +696,7 @@ class ManagedLlmStream(Iterator[Any]):
         if self._closed:
             return
         self._closed = True
+        self._prefetched_chunks.clear()
         loop = self._loop
         self._loop = None
         if loop is None:

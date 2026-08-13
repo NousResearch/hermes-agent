@@ -796,6 +796,31 @@ def test_stream_current_streams_iterators_with_predicate(tmp_path, monkeypatch):
         relay_runtime._reset_for_tests()
 
 
+def test_stream_current_primes_lazy_completed_response(relay_turn, monkeypatch):
+    """A lazy Relay stream must run once before Hermes decides its shape."""
+    _relay, _turn = relay_turn
+    completed = _completed_response()
+
+    class LazyCompletedStream:
+        final_response = None
+
+        def _prime_completed_response(self):
+            self.final_response = completed
+
+    lazy_stream = LazyCompletedStream()
+    monkeypatch.setattr(relay_llm, "stream", lambda *args, **kwargs: lazy_stream)
+
+    result = relay_llm.stream_current(
+        {"model": "test-model", "messages": [], "stream": True},
+        lambda request: completed,
+        name="test-provider",
+        model_name="test-model",
+        finalizer=dict,
+        completed_response_predicate=_choices_predicate,
+    )
+
+    assert result is completed
+
 
 def _completed_response(content: str = "done") -> SimpleNamespace:
     return SimpleNamespace(
@@ -833,6 +858,8 @@ def test_stream_managed_traps_direct_completed_response(relay_turn):
         finalizer=lambda: {},
         completed_response_predicate=_choices_predicate,
     )
+    stream._prime_completed_response()
+    assert stream._closed
     assert list(stream) == []
     assert stream.final_response is not None
     assert stream.final_response.choices[0].message.content == "done"

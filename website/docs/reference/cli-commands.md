@@ -97,7 +97,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh/fish). |
 | `hermes version` | Show version information. |
-| `hermes update` | Pull latest code and reinstall dependencies. `--check` previews without installing; `--backup` takes a pre-pull `HERMES_HOME` snapshot. |
+| `hermes update` | Pull latest code and reinstall dependencies. `--check` previews without installing; `--branch <name>` targets a branch; `--version <release>` targets an official release; `--backup` takes a pre-pull `HERMES_HOME` snapshot. |
 | `hermes uninstall` | Remove Hermes from the system. |
 
 ## `hermes chat`
@@ -1671,7 +1671,7 @@ hermes completion fish > ~/.config/fish/completions/hermes.fish
 ## `hermes update`
 
 ```bash
-hermes update [--gateway] [--check] [--no-backup] [--backup] [--yes]
+hermes update [--gateway] [--check] [--no-backup] [--backup] [--yes] [--branch NAME | --version RELEASE]
 ```
 
 Pulls the latest `hermes-agent` code and reinstalls dependencies in the managed venv, then re-runs the post-install hooks (MCP servers, skills sync, completion install). Safe to run on a live install. Use `--check` to see whether your checkout is behind `origin/main` without installing.
@@ -1685,6 +1685,8 @@ Pulls the latest `hermes-agent` code and reinstalls dependencies in the managed 
 | `--no-backup` | Skip all pre-update backups for this run (both the quick state snapshot and the full zip), regardless of `updates.pre_update_backup`. |
 | `--backup` | Force a **full** pre-update backup for this run: the quick state snapshot plus a complete zip of `HERMES_HOME` (config, auth, sessions, skills, pairing data). The default mode is `quick` — a lightweight state snapshot only. Set the permanent mode via `updates.pre_update_backup: quick | full | off` in `config.yaml`. |
 | `--yes`, `-y` | Assume yes for interactive prompts such as config migration and stash restore. API-key entry is skipped; run `hermes config migrate` separately for those. |
+| `--branch NAME` | Update against `origin/NAME` instead of the default `main` branch. Mutually exclusive with `--version`. |
+| `--version RELEASE` | Install an official `vYYYY.M.D[.N]` Hermes release from the canonical repository and leave HEAD detached at its commit. Arbitrary Git tags/refspecs and the Windows ZIP fallback are unsupported. Mutually exclusive with `--branch`. |
 
 Additional behavior:
 

@@ -131,6 +131,8 @@ def _make_update_side_effect(
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-parse" in joined and "--abbrev-ref" in joined:
             return SimpleNamespace(stdout=f"{current_branch}\n", stderr="", returncode=0)
+        if joined.endswith("rev-parse HEAD"):
+            return SimpleNamespace(stdout="abc123\n", stderr="", returncode=0)
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-list" in joined:

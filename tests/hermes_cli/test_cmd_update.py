@@ -234,6 +234,42 @@ class TestCmdUpdateBranchFallback:
         captured = capsys.readouterr()
         assert "Already up to date!" in captured.out
 
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_fork_upstream_sync_that_moves_head_runs_post_update_steps(
+        self, mock_run, _mock_which, mock_args, capsys
+    ):
+        """A fork sync that pulls code must continue through post-update work."""
+        from hermes_cli import main as hm
+        from hermes_cli import update_cmd
+
+        mock_run.side_effect = _make_run_side_effect(
+            branch="main", verify_ok=True, commit_count="0"
+        )
+
+        # The first two reads bracket the upstream sync; later reads see the
+        # new HEAD while the normal update path finishes.
+        shas = iter(["aaaaaaa", "bbbbbbb"])
+
+        with patch.object(
+            hm,
+            "_get_origin_url",
+            return_value="https://github.com/example/hermes-agent.git",
+        ), patch.object(
+            update_cmd,
+            "_capture_head_sha",
+            side_effect=lambda *_args, **_kwargs: next(shas, "bbbbbbb"),
+        ), patch.object(
+            hm, "_sync_with_upstream_if_needed"
+        ), patch.object(
+            hm, "_reload_updated_runtime_modules"
+        ) as post_update_step:
+            cmd_update(mock_args)
+
+        post_update_step.assert_called_once_with()
+        captured = capsys.readouterr()
+        assert "Already up to date!" not in captured.out
+
 
     def test_update_non_interactive_runs_safe_config_migrations(self, mock_args, capsys):
         """Dashboard/web updates apply non-interactive migrations before restart."""

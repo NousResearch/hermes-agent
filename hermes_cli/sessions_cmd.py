@@ -927,7 +927,7 @@ def cmd_sessions(args, sessions_parser=None):
             v for k, v in filters.items() if k != "older_than_days"
         ):
             print(
-                "Refusing to archive every ended session: pass at least one "
+                "Refusing to archive every session: pass at least one "
                 "filter (e.g. --newer-than 5h, --source cli, --title codex)."
             )
             return
@@ -941,7 +941,12 @@ def cmd_sessions(args, sessions_parser=None):
         else:
             filters["archived"] = False
 
-        candidates = db.list_prune_candidates(**filters)
+        list_candidates = (
+            db.list_archive_candidates
+            if action == "archive"
+            else db.list_prune_candidates
+        )
+        candidates = list_candidates(**filters)
         # Archive expands each selected row to its compression lineage, which
         # can include open continuations; a direct-open count would therefore
         # describe the eventual archive effect inaccurately.

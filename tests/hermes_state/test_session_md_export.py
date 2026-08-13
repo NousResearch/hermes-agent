@@ -20,7 +20,7 @@ def test_export_candidates_via_prune_filters_ended_old_sessions(tmp_path, monkey
         db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (1_000_000.0, "old_active"))
         db._conn.commit()
 
-        # Export uses the shared prune/archive candidate selection.
+        # Filtered export keeps the ended-only prune candidate selection.
         candidates = db.list_prune_candidates(
             started_before=2_000_000.0 - 5 * 86400, archived=None
         )
@@ -92,4 +92,3 @@ def test_fork_children_created_before_continuation_do_not_hijack_lineage(tmp_pat
         assert contents == ["root msg", "continuation msg"]
     finally:
         db.close()
-

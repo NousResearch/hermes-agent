@@ -1159,7 +1159,7 @@ class TestPruneSessions:
 
 
 class TestPruneSessionFilters:
-    """Extended filter surface shared by prune/archive/list_prune_candidates."""
+    """Extended filter surface shared by prune and archive candidates."""
 
     @staticmethod
     def _mk(db, sid, *, source="cli", age_seconds=0, title=None,

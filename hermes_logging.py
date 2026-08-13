@@ -297,17 +297,30 @@ def _sanitize_exc_info(exc_info: object) -> object:
 def _sanitize_log_record(record: logging.LogRecord) -> None:
     """Redact rendered message and exception fields on a LogRecord in place."""
     try:
-        record.msg = _redact_log_record_text(_render_log_record_message(record))
-        record.args = ()
+        rendered_message = record.getMessage()
     except Exception:
         try:
-            record.msg = _safe_log_value_text(
-                record.msg,
-                "<unprintable log message>",
-            )
+            record.msg = _redact_log_record_text(_render_log_record_message(record))
             record.args = ()
         except Exception:
             pass
+    else:
+        try:
+            # Keep a sanitized argument container available to structured
+            # formatters such as ``uvicorn.logging.AccessFormatter``.  Final
+            # formatter output is sanitized by
+            # ``_install_formatter_output_sanitizer()``, which also covers a
+            # secret assembled only when the template and arguments join.
+            record.msg = _redact_log_record_value(record.msg)
+            record.args = _redact_log_record_value(record.args)
+            # Stringifying an unusual argument during sanitization can make a
+            # previously valid numeric template invalid.  In that rare case,
+            # preserve the old fail-closed behavior instead of letting logging
+            # print raw arguments in its error report.
+            record.getMessage()
+        except Exception:
+            record.msg = _redact_log_record_text(rendered_message)
+            record.args = ()
 
     try:
         if record.exc_info:

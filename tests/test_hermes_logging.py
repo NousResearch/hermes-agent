@@ -312,6 +312,62 @@ class TestSessionContext:
         assert openai_key not in output
         assert "..." in output
 
+    def test_uvicorn_access_formatter_keeps_sanitized_structured_args(self, capsys):
+        """Global sanitization preserves Uvicorn's five access-log fields."""
+        from uvicorn.logging import AccessFormatter
+
+        secret = "sk-" + "u" * 32
+        stream = io.StringIO()
+        records = []
+
+        class CapturingStreamHandler(logging.StreamHandler):
+            def emit(self, record):
+                records.append(record)
+                super().emit(record)
+
+        handler = CapturingStreamHandler(stream)
+        handler.setFormatter(
+            AccessFormatter(
+                '%(client_addr)s - "%(request_line)s" %(status_code)s',
+                use_colors=False,
+            )
+        )
+
+        logger = logging.getLogger("uvicorn.access")
+        old_propagate = logger.propagate
+        old_level = logger.level
+        logger.propagate = False
+        logger.setLevel(logging.INFO)
+        logger.addHandler(handler)
+        try:
+            logger.info(
+                '%s - "%s %s HTTP/%s" %d',
+                "127.0.0.1:4321",
+                "GET",
+                f"/health?api_key={secret}",
+                "1.1",
+                200,
+            )
+        finally:
+            logger.removeHandler(handler)
+            logger.propagate = old_propagate
+            logger.setLevel(old_level)
+            handler.close()
+
+        assert len(records) == 1
+        assert records[0].args == (
+            "127.0.0.1:4321",
+            "GET",
+            "/health?api_key=***",
+            "1.1",
+            200,
+        )
+        assert stream.getvalue() == (
+            '127.0.0.1:4321 - "GET /health?api_key=*** HTTP/1.1" 200 OK\n'
+        )
+        assert secret not in stream.getvalue()
+        assert "--- Logging error ---" not in capsys.readouterr().err
+
     def test_plain_formatter_redacts_secret_assembled_by_formatting(self):
         """Format-time token assembly is redacted before plain handlers emit."""
         secret = "sk-" + "d" * 32
@@ -1174,4 +1230,3 @@ class TestAsyncQueueLogging:
             "agent.log" in getattr(h, "baseFilename", "")
             for h in hermes_logging.rotating_file_handlers()
         )
-

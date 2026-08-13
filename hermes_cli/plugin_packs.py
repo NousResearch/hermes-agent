@@ -70,6 +70,7 @@ class PackError(Exception):
 
 
 _CYCLIC_CONFIG = object()
+_UNSUPPORTED_CONFIG = object()
 
 
 def _apply_config_key_policy(
@@ -84,7 +85,9 @@ def _apply_config_key_policy(
     keys. Omitting it produces an export-safe copy with those keys removed.
     """
     if not isinstance(value, (dict, list, tuple)):
-        return value
+        if plugin_id is not None or type(value) in (str, int, float, bool, type(None)):
+            return value
+        return _UNSUPPORTED_CONFIG
 
     active = _active if _active is not None else set()
     value_id = id(value)
@@ -106,6 +109,8 @@ def _apply_config_key_policy(
                 )
                 if sanitized is _CYCLIC_CONFIG:
                     return _CYCLIC_CONFIG
+                if sanitized is _UNSUPPORTED_CONFIG:
+                    continue
                 out_list.append(sanitized)
             return out_list
 
@@ -136,7 +141,7 @@ def _apply_config_key_policy(
             sanitized = _apply_config_key_policy(
                 child, plugin_id=plugin_id, _active=active
             )
-            if sanitized is _CYCLIC_CONFIG:
+            if sanitized is _CYCLIC_CONFIG or sanitized is _UNSUPPORTED_CONFIG:
                 continue
             out[key] = sanitized
         return out

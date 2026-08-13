@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+from datetime import date
 from types import SimpleNamespace
 from unittest import mock
 
@@ -675,6 +676,64 @@ def test_export_sanitizes_dicts_in_tuples_and_emits_yaml_safe_lists(
             {"name": "primary", "voice": "nova"},
             {"name": "backup", "voice": "alloy"},
         ]
+    }
+
+
+@pytest.mark.parametrize(
+    "unsupported",
+    [{"not", "yaml-safe"}, date(2026, 8, 13), b"bytes", object()],
+    ids=["set", "date", "bytes", "arbitrary-object"],
+)
+def test_export_omits_unsupported_nested_leaves_without_crashing(
+    tmp_path, monkeypatch, unsupported
+):
+    metadata = {
+        "tts": {
+            "pinned": True,
+            "revision": SHA_A,
+            "source": "https://github.com/owner/tts.git",
+        }
+    }
+    _seed_install_state(
+        tmp_path, monkeypatch, metadata=metadata, plugins=("tts",)
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugin_packs._sanitized_entry_config",
+        real_sanitized_entry_config,
+    )
+    fake_cfg = {
+        "plugins": {
+            "entries": {
+                "tts": {
+                    "scalars": {
+                        "string": "kept",
+                        "integer": 7,
+                        "floating": 1.5,
+                        "boolean": True,
+                        "nothing": None,
+                    },
+                    "mapping": {"kept": "yes", "unsupported": unsupported},
+                    "sequence": ["first", unsupported, {"kept": "last"}],
+                    "tuple": ("first", unsupported, "last"),
+                }
+            }
+        }
+    }
+
+    with mock.patch("hermes_cli.config.load_config", return_value=fake_cfg):
+        text, _warnings = export_pack()
+
+    assert yaml.safe_load(text)["config"]["tts"] == {
+        "scalars": {
+            "string": "kept",
+            "integer": 7,
+            "floating": 1.5,
+            "boolean": True,
+            "nothing": None,
+        },
+        "mapping": {"kept": "yes"},
+        "sequence": ["first", {"kept": "last"}],
+        "tuple": ["first", "last"],
     }
 
 

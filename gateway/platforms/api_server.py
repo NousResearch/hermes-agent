@@ -3982,12 +3982,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 await queue.put(_event_payload("error", {"message": _redact_api_error_text(exc)}))
             finally:
                 self._active_run_agents.pop(run_id, None)
-                self._active_run_tasks.pop(run_id, None)
                 await queue.put(_event_payload("done", {}))
                 await queue.put(None)
 
+        # NOTE: deliberately NOT registered in _active_run_tasks — this turn
+        # is already counted by active_agent_work_count() via
+        # _inflight_agent_runs (_run_agent), and a second task-based entry
+        # would double-count it in the shutdown drain. Run-scoped control
+        # needs only the agent ref, registered by _run_agent(active_run_id).
         task = asyncio.create_task(_run_and_signal())
-        self._active_run_tasks[run_id] = task
         try:
             self._background_tasks.add(task)
         except TypeError:

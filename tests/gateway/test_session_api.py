@@ -286,14 +286,16 @@ async def test_session_chat_stream_disconnect_keeps_control_refs_until_executor_
 
         assert interrupt_called.is_set()
         assert run_id in adapter._active_run_agents
-        assert run_id in adapter._active_run_tasks
+        # Not in _active_run_tasks: session-stream turns are counted via
+        # _inflight_agent_runs; a task entry would double-count them in the
+        # shutdown drain (active_agent_work_count).
+        assert run_id not in adapter._active_run_tasks
         assert not handler_task.done()
 
         allow_finish.set()
         await handler_task
 
     assert run_id not in adapter._active_run_agents
-    assert run_id not in adapter._active_run_tasks
 
 
 @pytest.mark.asyncio

@@ -1270,6 +1270,45 @@ class PluginContext:
         except Exception:
             return "default"
 
+    # -- lifecycle: unload callbacks and supervised tasks --------------------
+
+    def on_unload(self, callback: Callable[[], None]) -> PluginRegistration:
+        """Register a cleanup callback that runs when this plugin unloads.
+
+        Callbacks are recorded in the ownership ledger, so they run in
+        reverse acquisition order interleaved with registration teardown,
+        and each is isolated — an exception is logged, never propagated
+        (see :meth:`PluginManager._dispose_registrations`).
+        """
+        if not callable(callback):
+            raise TypeError("on_unload callback must be callable")
+        handle = self._track("on_unload", getattr(callback, "__name__", "callback"), callback)
+        logger.debug("Plugin %s registered on_unload callback", self.manifest.name)
+        return handle
+
+    def spawn_task(self, coro, *, name: Optional[str] = None) -> "asyncio.Task":
+        """Spawn a supervised background asyncio task owned by this plugin.
+
+        The task is recorded in the ownership ledger; unloading the plugin
+        (or a force reload) cancels it. Requires a running event loop.
+        """
+        if not asyncio.iscoroutine(coro):
+            raise TypeError("spawn_task expects a coroutine")
+        loop = asyncio.get_running_loop()
+        task_name = name or f"plugin:{self.plugin_id}:task"
+        task = loop.create_task(coro, name=task_name)
+
+        def _cancel_task() -> None:
+            if not task.done():
+                task.cancel()
+
+        handle = self._track("background_task", task_name, _cancel_task)
+        task.add_done_callback(lambda _t: handle.dispose())
+        logger.debug(
+            "Plugin %s spawned supervised task: %s", self.manifest.name, task_name
+        )
+        return task
+
     # -- approval transport registration ------------------------------------
 
     def register_approval_transport(self, name: str, present_fn: Callable) -> None:
@@ -1286,6 +1325,26 @@ class PluginContext:
             present_fn,
             plugin_id=self.manifest.key or self.manifest.name,
         )
+        # Record ownership so unload/force-reload removes this transport.
+        # Duplicate names are rejected above (raise), so there is never a
+        # displaced previous entry to restore.
+        clean = str(name).strip().lower()
+        entry = self._manager._approval_transports.get(clean)
+        if entry is not None:
+            self._track_replacement(
+                "approval_transport",
+                clean,
+                slot=(
+                    "manager_mapping",
+                    id(self._manager._approval_transports),
+                    clean,
+                ),
+                current=entry,
+                previous=None,
+                restore=lambda replacement: self._manager._restore_mapping(
+                    self._manager._approval_transports, clean, entry, replacement
+                ),
+            )
 
     # -- tool registration --------------------------------------------------
 
@@ -2575,7 +2634,7 @@ class PluginContext:
         *,
         position: str = "after_memory",
         max_chars: int = DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS,
-    ) -> None:
+    ) -> PluginRegistration:
         """Register bounded context that is frozen into each new session prompt.
 
         Callables receive a read-only session-info mapping. The rendered full
@@ -2610,13 +2669,40 @@ class PluginContext:
                 f"plugin {existing.plugin!r}"
             )
         plugin_id = self.manifest.key or self.manifest.name
-        self._manager._system_prompt_sections[id] = PluginSystemPromptSection(
+        section = PluginSystemPromptSection(
             id=id,
             content=content,
             position=position,
             max_chars=max_chars,
             plugin=plugin_id,
         )
+        self._manager._system_prompt_sections[id] = section
+        # Record ownership so unload/force-reload removes this section.
+        # Duplicate ids are rejected above (raise), so there is never a
+        # displaced previous entry to restore. The parameter ``id`` shadows
+        # the builtin, so capture the mapping identity via ``builtins.id``.
+        import builtins
+
+        handle = self._track_replacement(
+            "system_prompt_section",
+            id,
+            slot=(
+                "manager_mapping",
+                builtins.id(self._manager._system_prompt_sections),
+                id,
+            ),
+            current=section,
+            previous=existing,
+            restore=lambda replacement: self._manager._restore_mapping(
+                self._manager._system_prompt_sections, id, section, replacement
+            ),
+        )
+        logger.debug(
+            "Plugin %s registered system prompt section: %s",
+            self.manifest.name,
+            id,
+        )
+        return handle
 
     # -- inter-plugin event bus --------------------------------------------
 
@@ -2849,6 +2935,19 @@ class PluginManager:
         self._slack_action_handlers: List[tuple] = []
         # Registration handles are kept both per plugin (ownership lookup) and
         # globally (reverse-order teardown for overrides spanning plugins).
+        #
+        # Multi-profile constraint (#65593): several process-global registries
+        # (tools, platforms, providers) are shared across profiles while
+        # multiple PluginManager instances may coexist in one process (keyed
+        # by resolved hermes home). The ledger is therefore keyed per manager
+        # — i.e. per (hermes_home, plugin_id) — and every release/restore
+        # closure is identity-conditional, so one profile's unload can never
+        # clear another profile's registrations. Registry overlays keyed by
+        # scope_key (see tools/registry.py and gateway/platform_registry.py)
+        # carry the profile dimension; anything still process-global is
+        # guarded by the identity checks. TODO(#64178): extend explicit
+        # profile keying to any remaining process-global slots when the
+        # symmetric force-reload lands.
         self._ownership_ledger: Dict[str, List[PluginRegistration]] = {}
         self._registration_order: List[PluginRegistration] = []
 
@@ -2902,10 +3001,10 @@ class PluginManager:
 
     def _restore_mapping(
         self,
-        mapping: Dict[str, dict],
+        mapping: Dict[str, Any],
         key: str,
-        current: dict,
-        previous: Optional[dict],
+        current: Any,
+        previous: Optional[Any],
     ) -> bool:
         """Restore a manager-local mapping only when *current* is still present."""
         if mapping.get(key) is not current:
@@ -3014,8 +3113,9 @@ class PluginManager:
         reverse acquisition order.  Registry inverses are conditional on the
         exact object still being current, so a later registration is never
         removed accidentally.  ``plugin=None`` is the lifecycle operation
-        used by force rediscovery; lifecycle callbacks and supervised tasks
-        are intentionally left for the follow-up slice of #64229.
+        used by force rediscovery.  ``on_unload`` callbacks and supervised
+        background tasks registered through :class:`PluginContext` are
+        disposed through the same reverse-order ledger walk.
 
         Returns ``True`` when at least one plugin or registration was found.
         """

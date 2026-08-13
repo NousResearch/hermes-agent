@@ -33,6 +33,8 @@ def _write_plugin(hermes_home: Path) -> None:
         "def _middleware(**kwargs):\n"
         "    return {'middleware': 'ledger'}\n"
         "\n"
+        "UNLOADED = []\n"
+        "\n"
         "def register(ctx):\n"
         "    ctx.register_tool(\n"
         "        name='ledger_probe_tool',\n"
@@ -65,6 +67,13 @@ def _write_plugin(hermes_home: Path) -> None:
         "        'ledger-probe', Path(__file__).with_name('SKILL.md'),\n"
         "        'Ledger skill',\n"
         "    )\n"
+        "    ctx.register_system_prompt_section(\n"
+        "        'ledger-probe-section', 'ledger probe section content',\n"
+        "    )\n"
+        "    ctx.register_approval_transport(\n"
+        "        'ledger_probe_transport', lambda request: 'deny',\n"
+        "    )\n"
+        "    ctx.on_unload(lambda: UNLOADED.append('ledger_probe'))\n"
     )
     (hermes_home / "config.yaml").write_text(
         yaml.safe_dump({"plugins": {"enabled": ["ledger_probe"]}})
@@ -147,7 +156,12 @@ def test_load_force_reload_and_unload_remove_every_manager_registration(
         "auxiliary_task",
         "skill",
         "tool_override_policy",
+        "system_prompt_section",
+        "approval_transport",
+        "on_unload",
     }
+    assert "ledger-probe-section" in manager._system_prompt_sections
+    assert "ledger_probe_transport" in manager._approval_transports
 
     manager.discover_and_load(force=True)
 
@@ -178,6 +192,16 @@ def test_load_force_reload_and_unload_remove_every_manager_registration(
     assert "ledger-probe-command" not in manager._plugin_commands
     assert "ledger-probe-cli" not in manager._cli_commands
     assert "ledger_probe:ledger-probe" not in manager._plugin_skills
+    assert "ledger-probe-section" not in manager._system_prompt_sections
+    assert "ledger_probe_transport" not in manager._approval_transports
+    assert manager._plugins == {} or "ledger_probe" not in manager._plugins
+    reloaded_module_name = None
+    import sys as _sys
+    for _name, _mod in list(_sys.modules.items()):
+        if getattr(_mod, "UNLOADED", None) and "ledger_probe" in _mod.UNLOADED:
+            reloaded_module_name = _name
+            break
+    assert reloaded_module_name is not None, "on_unload callback never fired"
     assert manager._aux_tasks == {}
     assert manager._ownership_ledger == {}
     assert registry.snapshot_plugin_override_policy(
@@ -1273,3 +1297,68 @@ def test_same_slug_profiles_allocate_distinct_modules_concurrently(
 
     modules = [manager._plugins["profile_probe"].module.__name__ for manager in managers]
     assert modules[0] != modules[1]
+
+
+def test_spawned_supervised_task_is_cancelled_on_unload():
+    """A plugin-spawned background task is tracked and cancelled on unload."""
+    import asyncio
+
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    manager = PluginManager()
+    manifest = PluginManifest(
+        name="task_probe", version="0.1", description="", source="user",
+    )
+    ctx = PluginContext(manifest, manager)
+    cancelled = []
+
+    async def scenario():
+        async def forever():
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                cancelled.append(True)
+                raise
+
+        task = ctx.spawn_task(forever(), name="probe-task")
+        await asyncio.sleep(0)
+        kinds = {
+            registration.kind
+            for registration in manager._ownership_ledger["task_probe"]
+        }
+        assert "background_task" in kinds
+        assert manager.unload("task_probe") is True
+        with __import__("pytest").raises(asyncio.CancelledError):
+            await task
+        # Done-callback disposal removes the handle from the ledger.
+        await asyncio.sleep(0)
+        assert "task_probe" not in manager._ownership_ledger
+
+    asyncio.run(scenario())
+    assert cancelled == [True]
+
+
+def test_on_unload_exception_does_not_block_other_teardown():
+    """A raising on_unload callback is isolated; later cleanup still runs."""
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    manager = PluginManager()
+    manifest = PluginManifest(
+        name="boom_probe", version="0.1", description="", source="user",
+    )
+    ctx = PluginContext(manifest, manager)
+    order = []
+
+    ctx.on_unload(lambda: order.append("first"))
+
+    def _boom():
+        order.append("boom")
+        raise RuntimeError("cleanup failed")
+
+    ctx.on_unload(_boom)
+    ctx.on_unload(lambda: order.append("last"))
+
+    assert manager.unload("boom_probe") is True
+    # Reverse acquisition order, exception isolated.
+    assert order == ["last", "boom", "first"]
+    assert "boom_probe" not in manager._ownership_ledger

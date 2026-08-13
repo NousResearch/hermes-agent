@@ -438,8 +438,12 @@ function SidebarSessionRowImpl({
                 <>
                   {leadNode}
                   {handoffBadge}
-                  <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
-                    {title}
+                  <SidebarRowLabel
+                    className="hover-marquee flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
+                    onPointerEnter={armMarquee}
+                    onPointerLeave={disarmMarquee}
+                  >
+                    <span className="hover-marquee-inner">{title}</span>
                   </SidebarRowLabel>
                 </>
               )

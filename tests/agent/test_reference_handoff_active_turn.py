@@ -14,8 +14,11 @@ from agent.context_compressor import (
     COMPRESSED_SUMMARY_HAS_USER_TURN_KEY,
     COMPRESSED_SUMMARY_METADATA_KEY,
     COMPRESSION_CONTINUATION_USER_CONTENT,
+    ContextCompressor,
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
+    _MERGED_PRIOR_CONTEXT_HEADER,
+    _MERGED_SUMMARY_DELIMITER,
     _SUMMARY_END_MARKER,
     is_compaction_summary_message,
     is_user_originated_turn,
@@ -34,6 +37,24 @@ def _standalone_handoff(task: str = "finish the already-done refactor") -> dict:
             f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\n"
             f"User asked: '{task}'\n\n{_SUMMARY_END_MARKER}"
         ),
+        COMPRESSED_SUMMARY_METADATA_KEY: True,
+        COMPRESSED_SUMMARY_HAS_USER_TURN_KEY: True,
+    }
+
+
+def _merged_assistant_carrier() -> dict:
+    """Production merge-into-tail shape: assistant role/tool_calls survive."""
+    return {
+        "role": "assistant",
+        "content": (
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
+            "Refactor complete.\n\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n"
+            f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\n"
+            "User asked: 'finish the already-done refactor'\n\n"
+            f"{_SUMMARY_END_MARKER}"
+        ),
+        "tool_calls": [{"id": "stale-c1", "function": {"name": "terminal"}}],
         COMPRESSED_SUMMARY_METADATA_KEY: True,
         COMPRESSED_SUMMARY_HAS_USER_TURN_KEY: True,
     }
@@ -73,6 +94,70 @@ class TestReferenceHandoffWouldDriveNextModelCall:
                 "tool_calls": [{"id": "c1", "function": {"name": "terminal"}}],
             },
             {"role": "tool", "tool_call_id": "c1", "content": "ok"},
+        ]
+        assert reference_handoff_would_drive_next_model_call(messages) is False
+
+    def test_merged_assistant_carrier_after_completed_stop_drives(self):
+        """Completed assistant prose/tool_calls on the carrier are not a user ask."""
+        messages = [
+            {"role": "user", "content": "please finish the refactor"},
+            {
+                "role": "assistant",
+                "content": "Refactor complete.",
+                "finish_reason": "stop",
+            },
+            _merged_assistant_carrier(),
+        ]
+        assert reference_handoff_would_drive_next_model_call(messages) is True
+
+    def test_merged_assistant_carrier_without_completed_stop_stays_in_flight(self):
+        messages = [
+            {"role": "user", "content": "please finish the refactor"},
+            _merged_assistant_carrier(),
+        ]
+        assert reference_handoff_would_drive_next_model_call(messages) is False
+
+    def test_standalone_assistant_handoff_after_stop_uses_existing_guard(self):
+        handoff = _standalone_handoff()
+        handoff["role"] = "assistant"
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Refactor complete.",
+                "finish_reason": "stop",
+            },
+            handoff,
+        ]
+        assert ContextCompressor.classify_summary_content(handoff["content"]) == (
+            "standalone"
+        )
+        assert reference_handoff_would_drive_next_model_call(messages) is True
+
+    def test_real_user_after_merged_assistant_carrier_does_not_drive(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Refactor complete.",
+                "finish_reason": "stop",
+            },
+            _merged_assistant_carrier(),
+            {"role": "user", "content": "start a different task"},
+        ]
+        assert reference_handoff_would_drive_next_model_call(messages) is False
+
+    def test_distinct_tool_call_after_merged_carrier_stays_in_flight(self):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Refactor complete.",
+                "finish_reason": "stop",
+            },
+            _merged_assistant_carrier(),
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "live-c2", "function": {"name": "terminal"}}],
+            },
         ]
         assert reference_handoff_would_drive_next_model_call(messages) is False
 

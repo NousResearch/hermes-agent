@@ -525,6 +525,54 @@ display:
 |-----|---------|-------------|
 | `display.live_status` | `"full"` | Live per-tool status line. `full` shows verb + argument preview; `verb` shows the verb only (keeps file paths and commands out of shared channels); `off` restores the static text. Requires the `assistant:write` scope, same as the static status line. |
 
+### Native Streaming (live-typing replies)
+
+Slack's [Agents & AI Apps](https://docs.slack.dev/ai/) feature ships a native
+streaming surface (`chat.startStream` / `chat.appendStream` /
+`chat.stopStream`) that renders the reply as a live-typing message — much
+smoother than the edit-based progressive updates used otherwise. When
+`streaming.enabled` is on (transport `auto` or `draft`), Hermes uses native
+streaming automatically wherever it's available:
+
+- The stream starts on the first frame and appends only deltas (the API is
+  append-only). The streamed message **is** the final message — Hermes seals
+  it via `chat.stopStream` instead of posting a duplicate final reply.
+- If your Slack app doesn't have the AI features enabled (or lacks the
+  `assistant:write` scope), the first failure is cached and Hermes falls back
+  to edit-based streaming with a single log warning naming the fix.
+- Opt-in Block Kit (`rich_blocks: true`) is applied to the sealed message,
+  same as the edit-based finalize path.
+
+No extra configuration is needed beyond enabling streaming:
+
+```yaml
+streaming:
+  enabled: true       # transport auto/draft lights up Slack native streaming
+```
+
+### Native Task Cards (live tool progress)
+
+With `platforms.slack.extra.native_task_cards: true`, live tool calls render
+as Slack-native **plan/task cards** (the same UI Slack's own AI features use)
+instead of text progress bubbles: one card per turn, one row per tool call,
+with per-task running/complete/error states updating in place.
+
+```yaml
+platforms:
+  slack:
+    extra:
+      native_task_cards: true
+```
+
+- This is an explicit progress opt-in — it works even though Slack's default
+  is `tool_progress: off` (text bubbles spam channels; native cards don't).
+- Concurrent calls to the same tool are correlated by real tool-call ID, so
+  parallel `web_search` calls each get their own row with the right status.
+- If the native stream can't start or update, Hermes falls back to a single
+  continuously edited text message so progress stays live for the turn.
+- The card stream is stopped exactly once when the turn finalizes, including
+  on interrupt/disconnect, so no dangling live indicator is left behind.
+
 ### Session Isolation
 
 ```yaml

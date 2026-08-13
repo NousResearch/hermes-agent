@@ -403,47 +403,20 @@ def _sanitize_oauth_text(text: str) -> str:
     return text
 
 
-def _extract_cache_ttl(system) -> str:
-    """Return the cache TTL carried by the system block(s) being relocated.
+def _prepend_oauth_system_context(
+    messages, preamble: str | List[Dict[str, Any]], ttl: str = "5m"
+) -> None:
+    """Prepend relocated system blocks to the first user message.
 
-    The OAuth path discards ``system[]`` and moves its text onto the first user
-    message. The displaced block may carry a ``cache_control`` marker whose TTL
-    was chosen by the user's ``cache_ttl`` config (``5m`` or ``1h``); the
-    relocated preamble must inherit it, or a 1h-configured user is silently
-    downgraded to 5m caching. Defaults to ``5m`` when no marker is present.
-    """
-    if isinstance(system, list):
-        for b in system:
-            if not isinstance(b, dict):
-                continue
-            marker = b.get("cache_control")
-            if isinstance(marker, dict) and marker.get("ttl"):
-                return marker["ttl"]
-    return "5m"
+    Current-main's cache planner may split the system prompt into separately
+    marked stable and volatile text blocks. When ``preamble`` is a block list,
+    preserve those boundaries and markers exactly so a volatile-tail change
+    does not invalidate the expensive stable prefix. String callers receive a
+    single marker built from ``ttl`` for backward compatibility.
 
-
-def _prepend_oauth_system_context(messages, preamble: str, ttl: str = "5m") -> None:
-    """Prepend ``preamble`` as a cache-marked leading block of the first user message.
-
-    Used on the OAuth path to relocate the real system prompt out of ``system[]``
-    (which Anthropic's billing classifier fingerprints as third-party traffic)
-    and into the conversation, mirroring how Claude Code keeps only its identity
-    line in ``system[]``.
-
-    The relocated block carries a ``cache_control`` marker (built via
-    ``prompt_caching._build_marker``) so the heavy prompt prefix is still cached
-    across turns — the first user message is a stable prefix within a
-    conversation, so the cache breakpoint simply moves from the system slot to
-    the first-user-message slot without breaking caching. ``ttl`` is inherited
-    from the displaced system block (see ``_extract_cache_ttl``) so a user
-    configured for 1-hour caching is not silently downgraded to 5m.
-
-    Note on the 4-breakpoint cap: the upstream ``apply_anthropic_cache_control``
-    pass places a marker on the (heavy) system block + the last 3 messages. When
-    the OAuth path below reduces ``system[]`` to the identity line, that system
-    marker is discarded along with the block it rode on, and this preamble marker
-    takes its place — net total stays at exactly 4 (verified by
-    ``test_oauth_relocation_respects_4_breakpoint_cap``).
+    The system-side markers disappear when ``system[]`` becomes identity-only;
+    relocating the same marked blocks to the first user message therefore keeps
+    the wire under Anthropic's four-breakpoint cap.
 
     Mutates ``messages`` in place. Handles user messages whose content is a
     plain string or a list of content blocks, and synthesises a user message at
@@ -451,26 +424,43 @@ def _prepend_oauth_system_context(messages, preamble: str, ttl: str = "5m") -> N
     """
     if not preamble:
         return
-    from agent.prompt_caching import _build_marker
-    block = {
-        "type": "text",
-        "text": preamble,
-        "cache_control": _build_marker(ttl),
-    }
+    if isinstance(preamble, str):
+        from agent.prompt_caching import _build_marker
+
+        blocks = [
+            {
+                "type": "text",
+                "text": preamble,
+                "cache_control": _build_marker(ttl),
+            }
+        ]
+    else:
+        blocks = [
+            {
+                **block,
+                **(
+                    {"cache_control": dict(block["cache_control"])}
+                    if isinstance(block.get("cache_control"), dict)
+                    else {}
+                ),
+            }
+            for block in preamble
+        ]
+
     for msg in messages:
         if msg.get("role") != "user":
             continue
         content = msg.get("content")
         if isinstance(content, str):
             msg["content"] = (
-                [block, {"type": "text", "text": content}] if content else [block]
+                blocks + [{"type": "text", "text": content}] if content else blocks
             )
         elif isinstance(content, list):
-            msg["content"] = [block] + content
+            msg["content"] = blocks + content
         else:
-            msg["content"] = [block]
+            msg["content"] = blocks
         return
-    messages.insert(0, {"role": "user", "content": [block]})
+    messages.insert(0, {"role": "user", "content": blocks})
 
 
 def _get_claude_code_version() -> str:
@@ -2860,38 +2850,50 @@ def build_anthropic_kwargs(
     # line in system[]): system[] becomes identity-only, and the real Hermes
     # prompt is relocated into a <system_context> preamble on the first user
     # message — Anthropic does not apply the classifier to user content. The
-    # relocated block carries a cache_control marker so the heavy prefix is
-    # still cached across turns (the first user message is a stable prefix; a
-    # 2-turn check confirms cache_read on turn 2).
+    # relocated blocks preserve the cache planner's markers, TTLs, and stable /
+    # volatile boundary so prompt caching remains effective across turns.
     if is_oauth:
-        # 1. Collect + sanitize existing system text in one pass (string or
-        #    content blocks). Sanitizing inline avoids a second list rebuild.
-        #    Capture the displaced block's cache TTL BEFORE system[] is
-        #    replaced, so the relocated preamble inherits the user's configured
-        #    cache_ttl instead of silently downgrading 1h users to 5m.
-        extra_system_parts: List[str] = []
-        relocated_cache_ttl = _extract_cache_ttl(system)
+        # 1. Collect + sanitize existing system text without collapsing the
+        #    cache planner's current-main [stable prefix, volatile tail] split.
+        #    Each relocated block keeps its original cache marker and TTL.
+        relocated_system_blocks: List[Dict[str, Any]] = []
         if isinstance(system, list):
             for b in system:
-                if isinstance(b, dict) and b.get("type") == "text" and b.get("text"):
-                    extra_system_parts.append(_sanitize_oauth_text(b["text"]))
+                if not isinstance(b, dict) or b.get("type") != "text" or not b.get("text"):
+                    continue
+                relocated: Dict[str, Any] = {
+                    "type": "text",
+                    "text": _sanitize_oauth_text(b["text"]),
+                }
+                if isinstance(b.get("cache_control"), dict):
+                    relocated["cache_control"] = dict(b["cache_control"])
+                relocated_system_blocks.append(relocated)
         elif isinstance(system, str) and system:
-            extra_system_parts.append(_sanitize_oauth_text(system))
+            relocated_system_blocks.append(
+                {"type": "text", "text": _sanitize_oauth_text(system)}
+            )
 
         # 2. system[] = the official Claude Code identity line only.
         system = [{"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}]
 
-        # 3. Relocate the real prompt into a <system_context> preamble on the
-        #    first user message, with cache_control to preserve prompt caching.
-        if extra_system_parts:
-            preamble = (
+        # 3. Wrap the relocated blocks as one logical <system_context> while
+        #    preserving their independent cache boundaries. A plain unmarked
+        #    system string still gets the helper's default 5m marker.
+        if relocated_system_blocks:
+            relocated_system_blocks[0]["text"] = (
                 f"<{_OAUTH_SYSTEM_CONTEXT_TAG}>\n"
-                + "\n\n".join(extra_system_parts).strip()
-                + f"\n</{_OAUTH_SYSTEM_CONTEXT_TAG}>"
+                + relocated_system_blocks[0]["text"]
             )
-            _prepend_oauth_system_context(
-                anthropic_messages, preamble, relocated_cache_ttl
+            relocated_system_blocks[-1]["text"] += (
+                f"\n</{_OAUTH_SYSTEM_CONTEXT_TAG}>"
             )
+            if not any("cache_control" in block for block in relocated_system_blocks):
+                preamble: str | List[Dict[str, Any]] = "".join(
+                    block["text"] for block in relocated_system_blocks
+                )
+            else:
+                preamble = relocated_system_blocks
+            _prepend_oauth_system_context(anthropic_messages, preamble)
 
         # 4. Normalize tool names so NOTHING goes on the OAuth wire with a
         #    single-underscore ``mcp_`` prefix.  Anthropic's subscription/OAuth

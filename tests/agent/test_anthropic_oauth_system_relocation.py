@@ -181,6 +181,48 @@ class TestOAuthCacheBreakpointCap:
         assert "cache_control" in blocks[0]
         assert blocks[0]["text"].startswith("<system_context>")
 
+    def test_oauth_relocation_preserves_static_volatile_cache_boundaries(self):
+        """Current-main's split system cache must survive OAuth relocation.
+
+        ``build_prompt_cache_plan`` isolates the stable system prefix from the
+        volatile tail so a timestamp/memory change does not invalidate the
+        expensive stable prefix. Relocation must preserve both blocks and their
+        markers rather than joining them into one cache entry.
+        """
+        from agent.prompt_caching import build_prompt_cache_plan
+
+        msgs = [
+            {"role": "system", "content": "stable prefix\n\nvolatile tail"},
+            {"role": "user", "content": "hello"},
+        ]
+        plan = build_prompt_cache_plan(
+            api_messages=msgs,
+            tools=[],
+            cache_ttl="1h",
+            native_anthropic=True,
+            static_system_prefix="stable prefix",
+        )
+        assert len(plan.messages[0]["content"]) == 2
+
+        kw = build_anthropic_kwargs(
+            model="claude-opus-4-8",
+            messages=plan.messages,
+            tools=None,
+            max_tokens=8,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+        first_user = next(m for m in kw["messages"] if m["role"] == "user")
+        blocks = first_user["content"]
+        assert blocks[0]["text"].startswith("<system_context>\nstable prefix")
+        assert "volatile tail" not in blocks[0]["text"]
+        assert blocks[0]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+        assert "volatile tail" in blocks[1]["text"]
+        assert blocks[1]["text"].endswith("\n</system_context>")
+        assert blocks[1]["cache_control"] == {"type": "ephemeral", "ttl": "1h"}
+        total = _count_cache_markers(kw.get("system")) + _count_cache_markers(kw.get("messages"))
+        assert total <= 4, f"OAuth wire exceeded Anthropic's 4-breakpoint cap: {total}"
+
     def test_oauth_relocation_preserves_1h_cache_ttl(self):
         """A user configured for 1h caching must not be silently downgraded to 5m.
 

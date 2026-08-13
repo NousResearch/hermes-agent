@@ -2,6 +2,16 @@
 
 import re
 
+# An email-shaped token (incl. provider-prefixed ``openai:user@example.com``): Telegram's rich entity
+# detection can auto-link it into an invalid email entity and reject the whole message
+# (RICH_MESSAGE_EMAIL_INVALID), so the payload builder turns detection off when one is present.
+RICH_EMAIL_TOKEN_RE = re.compile(
+    r"[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9]"
+    r"(?:[A-Z0-9-]{0,61}[A-Z0-9])?"
+    r"(?:\.[A-Z0-9](?:[A-Z0-9-]{0,61}[A-Z0-9])?)+",
+    re.IGNORECASE,
+)
+
 
 # Consume code/math before looking for block prefixes so their literal contents
 # survive unchanged, including an unfinished code fence in a streaming draft.

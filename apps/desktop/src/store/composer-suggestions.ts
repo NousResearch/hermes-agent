@@ -123,7 +123,11 @@ const eventOfferings = new Map<string, Map<string, ComposerSuggestion[]>>()
 /** Offer suggestions from an event provider (session state, tool results,
  *  connection events…). Replaces that provider's previous offerings for the
  *  session; providers withdraw by offering []. */
-export function offerSuggestions(sessionId: string | null | undefined, provider: string, suggestions: ComposerSuggestion[]): void {
+export function offerSuggestions(
+  sessionId: string | null | undefined,
+  provider: string,
+  suggestions: ComposerSuggestion[]
+): void {
   const key = keyFor(sessionId)
   let providers = eventOfferings.get(key)
 

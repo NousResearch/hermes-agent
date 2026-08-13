@@ -10,9 +10,7 @@ const INDEX = [
 
 describe('matchSuggestions', () => {
   it('matches a whole word and reports the keyword that hit', () => {
-    expect(matchSuggestions('can you check the linear board', INDEX)).toEqual([
-      { keyword: 'linear', server: 'linear' }
-    ])
+    expect(matchSuggestions('can you check the linear board', INDEX)).toEqual([{ keyword: 'linear', server: 'linear' }])
   })
 
   it('does not match inside other words', () => {

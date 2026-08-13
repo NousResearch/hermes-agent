@@ -1,12 +1,16 @@
-import { addMcpServer, authMcpServer, cancelMcpOAuthFlow, getMcpOAuthFlow, listMcpServers, removeMcpServer } from '@/hermes'
+import {
+  addMcpServer,
+  authMcpServer,
+  cancelMcpOAuthFlow,
+  getMcpOAuthFlow,
+  listMcpServers,
+  removeMcpServer
+} from '@/hermes'
 import { translateNow } from '@/i18n'
 import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
 import { directoryEntry, MCP_DIRECTORY } from '@/lib/mcp-directory'
 import { prettyName } from '@/lib/text'
-import {
-  type ComposerSuggestion,
-  registerDraftProvider
-} from '@/store/composer-suggestions'
+import { type ComposerSuggestion, registerDraftProvider } from '@/store/composer-suggestions'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 

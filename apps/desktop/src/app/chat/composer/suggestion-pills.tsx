@@ -45,7 +45,8 @@ export function SuggestionPills({ sessionId }: { sessionId: null | string }) {
     const brand = suggestion.brand ? brandFor(suggestion.brand) : null
     const phase = phases[key] ?? 'idle'
 
-    const label = phase === 'working' ? suggestion.workingLabel : phase === 'done' ? suggestion.doneLabel : suggestion.label
+    const label =
+      phase === 'working' ? suggestion.workingLabel : phase === 'done' ? suggestion.doneLabel : suggestion.label
     const tip = phase === 'working' ? suggestion.workingTip : phase === 'done' ? suggestion.doneTip : suggestion.tip
 
     const invoke = async () => {

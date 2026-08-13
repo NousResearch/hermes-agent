@@ -983,7 +983,11 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           setMcpSetupRequest({ action, reason, requestId, server, sessionId: sessionId ?? null })
 
           if (sessionId) {
-            upsertToolCall(sessionId, { args: { action, reason, server }, name: 'setup_mcp', tool_id: requestId }, 'running')
+            upsertToolCall(
+              sessionId,
+              { args: { action, reason, server }, name: 'setup_mcp', tool_id: requestId },
+              'running'
+            )
             updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
           }
 

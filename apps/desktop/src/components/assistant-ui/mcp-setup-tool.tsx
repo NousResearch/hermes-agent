@@ -154,9 +154,7 @@ function McpSetupSettled({ args, result }: ToolCallMessagePartProps) {
         }
       >
         <span className={cn('font-medium', neutral && 'italic text-(--ui-text-tertiary)')}>{line}</span>
-        {ok && toolCount > 0 && (
-          <span className="ml-2 text-(--ui-text-tertiary)">{copy.toolCount(toolCount)}</span>
-        )}
+        {ok && toolCount > 0 && <span className="ml-2 text-(--ui-text-tertiary)">{copy.toolCount(toolCount)}</span>}
         {!ok && !neutral && fromResult.detail ? (
           <p className="mt-0.5 text-(--ui-text-secondary)">{fromResult.detail}</p>
         ) : null}

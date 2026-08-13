@@ -34,8 +34,7 @@ export function normalizeChoices(choices: unknown): string[] {
   }
 
   return choices.filter(
-    (c): c is string =>
-      typeof c === 'string' && c.trim().length > 0 && bareChoice(c).length <= 200 && !c.includes('\n')
+    (c): c is string => typeof c === 'string' && c.trim().length > 0 && bareChoice(c).length <= 200 && !c.includes('\n')
   )
 }
 

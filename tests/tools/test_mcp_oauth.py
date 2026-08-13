@@ -403,6 +403,101 @@ class TestRemoveOAuthTokens:
 
 
 # ---------------------------------------------------------------------------
+# Client-change token invalidation (port of cline/cline#12983)
+# ---------------------------------------------------------------------------
+
+class TestInvalidateTokensOnClientChange:
+    """Editing oauth.client_id/client_secret must discard tokens minted
+    under the previous client identity (they can only fail with
+    invalid_client), while an unchanged identity preserves them."""
+
+    def _seed(self, tmp_path, monkeypatch, client_id="client-a",
+              client_secret=None):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("chg-server")
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True, exist_ok=True)
+        info = {"client_id": client_id, "redirect_uris": ["http://localhost:1455/callback"]}
+        if client_secret:
+            info["client_secret"] = client_secret
+        (d / "chg-server.client.json").write_text(json.dumps(info))
+        (d / "chg-server.json").write_text(json.dumps({
+            "access_token": "old-token", "token_type": "Bearer",
+        }))
+        (d / "chg-server.meta.json").write_text(json.dumps({
+            "issuer": "https://idp.example",
+            "authorization_endpoint": "https://idp.example/auth",
+            "token_endpoint": "https://idp.example/token",
+        }))
+        return storage, d
+
+    def test_changed_client_id_drops_tokens(self, tmp_path, monkeypatch):
+        from tools.mcp_oauth import _invalidate_tokens_on_client_change
+        storage, d = self._seed(tmp_path, monkeypatch)
+        _invalidate_tokens_on_client_change(storage, "client-b", None)
+        assert not (d / "chg-server.json").exists()
+        assert not (d / "chg-server.meta.json").exists()
+        # client.json is left for _maybe_preregister_client to overwrite
+        assert (d / "chg-server.client.json").exists()
+
+    def test_changed_secret_drops_tokens(self, tmp_path, monkeypatch):
+        from tools.mcp_oauth import _invalidate_tokens_on_client_change
+        storage, d = self._seed(tmp_path, monkeypatch,
+                                client_secret="old-secret")
+        _invalidate_tokens_on_client_change(storage, "client-a", "new-secret")
+        assert not (d / "chg-server.json").exists()
+
+    def test_same_client_preserves_tokens(self, tmp_path, monkeypatch):
+        from tools.mcp_oauth import _invalidate_tokens_on_client_change
+        storage, d = self._seed(tmp_path, monkeypatch,
+                                client_secret="sec")
+        _invalidate_tokens_on_client_change(storage, "client-a", "sec")
+        assert (d / "chg-server.json").exists()
+        assert (d / "chg-server.meta.json").exists()
+
+    def test_no_prior_client_info_is_noop(self, tmp_path, monkeypatch):
+        from tools.mcp_oauth import _invalidate_tokens_on_client_change
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("fresh-server")
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "fresh-server.json").write_text(json.dumps({
+            "access_token": "tok", "token_type": "Bearer",
+        }))
+        _invalidate_tokens_on_client_change(storage, "client-x", None)
+        # No recorded client identity -> nothing provably stale.
+        assert (d / "fresh-server.json").exists()
+
+    def test_preregister_flow_invalidates_end_to_end(self, tmp_path, monkeypatch):
+        """_maybe_preregister_client wires the check in before overwriting
+        client.json — the full config-edit flow drops stale tokens."""
+        pytest.importorskip("mcp")
+        from tools.mcp_oauth import (
+            _build_client_metadata, _maybe_preregister_client,
+        )
+        storage, d = self._seed(tmp_path, monkeypatch)
+        cfg = {"client_id": "client-b", "_resolved_port": 1455}
+        meta = _build_client_metadata(dict(cfg))
+        _maybe_preregister_client(storage, cfg, meta)
+        assert not (d / "chg-server.json").exists(), (
+            "tokens minted under client-a must not survive switch to client-b"
+        )
+        info = json.loads((d / "chg-server.client.json").read_text())
+        assert info["client_id"] == "client-b"
+
+    def test_preregister_flow_same_client_keeps_tokens(self, tmp_path, monkeypatch):
+        pytest.importorskip("mcp")
+        from tools.mcp_oauth import (
+            _build_client_metadata, _maybe_preregister_client,
+        )
+        storage, d = self._seed(tmp_path, monkeypatch)
+        cfg = {"client_id": "client-a", "_resolved_port": 1455}
+        meta = _build_client_metadata(dict(cfg))
+        _maybe_preregister_client(storage, cfg, meta)
+        assert (d / "chg-server.json").exists()
+
+
+# ---------------------------------------------------------------------------
 # Non-interactive / startup-safety tests
 # ---------------------------------------------------------------------------
 

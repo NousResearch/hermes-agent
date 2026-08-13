@@ -59,6 +59,70 @@ def test_blank_memory_provider_does_not_auto_enable_honcho():
     save_config.assert_not_called()
 
 
+def test_aiagent_initializes_severian_with_trusted_profile_scope():
+    provider = RecordingMemoryProvider()
+    cfg = {"memory": {"provider": "severian"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("hermes_cli.profiles.get_active_profile_name", return_value="remii"),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+            session_id="sess-severian",
+        )
+
+    assert provider.init_session_id == "sess-severian"
+    assert provider.init_kwargs["tenant_id"] == "kensei"
+    assert provider.init_kwargs["profile_id"] == "remii"
+    assert provider.init_kwargs["collection_id"] == "session"
+    assert provider.init_kwargs["agent_id"] == "remii"
+
+
+def test_aiagent_leaves_severian_unscoped_for_custom_home():
+    provider = RecordingMemoryProvider()
+    cfg = {"memory": {"provider": "severian"}, "agent": {}}
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch("plugins.memory.load_memory_provider", return_value=provider),
+        patch("hermes_cli.profiles.get_active_profile_name", return_value="custom"),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+            session_id="sess-custom",
+        )
+
+    assert provider.init_session_id == "sess-custom"
+    assert "tenant_id" not in provider.init_kwargs
+    assert "profile_id" not in provider.init_kwargs
+    assert "collection_id" not in provider.init_kwargs
+    assert "agent_id" not in provider.init_kwargs
+
+
 def test_aiagent_forwards_user_id_alt_to_memory_provider():
     provider = RecordingMemoryProvider()
     cfg = {"memory": {"provider": "recording"}, "agent": {}}

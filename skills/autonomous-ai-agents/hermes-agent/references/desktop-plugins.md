@@ -7,6 +7,19 @@ changes. A plugin can also talk to its own Python backend namespace
 (`ctx.rest`/`ctx.socket` → `/api/plugins/<id>`); the general Python plugin
 system (`~/.hermes/plugins/`) is otherwise documented separately.
 
+There are TWO on-disk doors, same contract and hot reload:
+
+- `$HERMES_HOME/desktop-plugins/<id>/plugin.js` — standalone desktop plugin.
+  Loads enabled by default.
+- `$HERMES_HOME/plugins/<id>/desktop/plugin.js` — the desktop HALF of a
+  unified agent-plugin package: the same folder that carries the Python
+  plugin (`plugin.yaml`) and its `dashboard/plugin_api.py` backend ships its
+  desktop UI beside them, so one feature installs/uninstalls as one folder.
+  This half is OPT-IN: it inventories in Settings → Plugins but stays off
+  until the user toggles it (matching the Python half's `plugins.enabled`
+  gate). Tell the user to flip it on after installing — don't debug a
+  "plugin not appearing" report before checking that toggle.
+
 Full human reference (every export, area payloads, backend, security):
 `website/docs/developer-guide/desktop-plugin-sdk.md`.
 

@@ -291,6 +291,27 @@ class TestGatewayConfigRoundtrip:
         # Bridged top-level keys still land in extra
         assert wa.extra.get("group_policy") == "allowlist"
 
+    def test_top_level_platform_nested_extra_preserved_without_bridged_keys(
+        self, tmp_path, monkeypatch
+    ):
+        """A platform block containing only ``extra`` must not be skipped."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "whatsapp:\n"
+            "  extra:\n"
+            "    group_sessions_per_user: false\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert (
+            config.platforms[Platform.WHATSAPP].extra["group_sessions_per_user"]
+            is False
+        )
+
     def test_email_defaults_to_ignore_for_unauthorized_dm_behavior(self):
         config = GatewayConfig(
             platforms={Platform.EMAIL: PlatformConfig(enabled=True)},

@@ -357,6 +357,39 @@ class TestPerPlatformSharedSessionAttribution:
 
         assert result == "[Alice] hello"
 
+    @pytest.mark.asyncio
+    async def test_prospective_thread_uses_thread_override_for_sender_prefix(self):
+        """A prospective auto-thread is a thread for both keying and attribution."""
+        from gateway.run import GatewayRunner
+
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = GatewayConfig(
+            group_sessions_per_user=True,
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    extra={"thread_sessions_per_user": False},
+                )
+            },
+        )
+        runner.adapters = {}
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="channel-1",
+            chat_type="group",
+            user_id="alice",
+            user_name="Alice",
+            prospective_thread_id="message-1",
+        )
+
+        result = await runner._prepare_inbound_message_text(
+            event=MessageEvent(text="hello", source=source),
+            source=source,
+            history=[],
+        )
+
+        assert result == "[Alice] hello"
+
 
 class TestSenderPrefixWithBackfill:
     """Regression: sender prefix must not wrap the backfill context block.

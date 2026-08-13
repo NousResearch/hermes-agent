@@ -1046,6 +1046,32 @@ def build_channel_continuity_note(
     )
 
 
+def effective_session_thread_id(source: SessionSource) -> Optional[str]:
+    """Return the thread id used by session routing."""
+    return source.thread_id or source.prospective_thread_id
+
+
+def effective_session_chat_type(source: SessionSource) -> str:
+    """Return the chat type represented by the routed session key."""
+    if source.prospective_thread_id and not source.thread_id:
+        return "thread"
+    return source.chat_type
+
+
+def resolve_session_isolation(
+    config: Any, source: SessionSource
+) -> tuple[bool, bool]:
+    """Resolve global session-isolation defaults plus platform overrides."""
+    group_per_user = getattr(config, "group_sessions_per_user", True)
+    thread_per_user = getattr(config, "thread_sessions_per_user", False)
+    platform_cfg = getattr(config, "platforms", {}).get(source.platform)
+    extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+    if isinstance(extra, dict):
+        group_per_user = extra.get("group_sessions_per_user", group_per_user)
+        thread_per_user = extra.get("thread_sessions_per_user", thread_per_user)
+    return group_per_user, thread_per_user
+
+
 def is_shared_multi_user_session(
     source: SessionSource,
     *,
@@ -1062,7 +1088,7 @@ def is_shared_multi_user_session(
     """
     if source.chat_type == "dm":
         return False
-    if source.thread_id:
+    if effective_session_thread_id(source):
         return not thread_sessions_per_user
     return not group_sessions_per_user
 
@@ -1185,10 +1211,8 @@ def build_session_key(
     # when keying on a prospective id so the two byte-match. (Real-thread events
     # already carry chat_type="thread", so this only rewrites the initiating
     # channel message's slot.)
-    effective_thread_id = source.thread_id or source.prospective_thread_id
-    chat_type_slot = source.chat_type
-    if source.prospective_thread_id and not source.thread_id:
-        chat_type_slot = "thread"
+    effective_thread_id = effective_session_thread_id(source)
+    chat_type_slot = effective_session_chat_type(source)
     key_parts = [ns, platform, chat_type_slot]
 
     if slack_scope_id:
@@ -1949,16 +1973,7 @@ class SessionStore:
         resolution the adapters use for text-batching keys so the main
         dispatch path and the adapter's batching key never diverge.
         """
-        default_group = getattr(self.config, "group_sessions_per_user", True)
-        default_thread = getattr(self.config, "thread_sessions_per_user", False)
-        platform_cfg = getattr(self.config, "platforms", {}).get(source.platform)
-        if platform_cfg and isinstance(getattr(platform_cfg, "extra", None), dict):
-            extra = platform_cfg.extra
-            return (
-                extra.get("group_sessions_per_user", default_group),
-                extra.get("thread_sessions_per_user", default_thread),
-            )
-        return default_group, default_thread
+        return resolve_session_isolation(self.config, source)
 
     def _legacy_slack_session_key(self, source: SessionSource) -> Optional[str]:
         """Return the pre-workspace Slack key for an explicitly scoped source.
@@ -2098,7 +2113,7 @@ class SessionStore:
                 session_key=session_key,
                 chat_id=source.chat_id if allow_peer_fallback else None,
                 chat_type=source.chat_type if allow_peer_fallback else None,
-                thread_id=source.thread_id,
+                thread_id=effective_session_thread_id(source),
             )
         except Exception as exc:
             logger.debug(
@@ -2278,8 +2293,8 @@ class SessionStore:
                 user_id=source.user_id,
                 session_key=session_key,
                 chat_id=source.chat_id,
-                chat_type=source.chat_type,
-                thread_id=source.thread_id,
+                chat_type=effective_session_chat_type(source),
+                thread_id=effective_session_thread_id(source),
                 display_name=display_name or source.chat_name,
                 origin_json=origin_json,
                 include_compression_ancestors=include_compression_ancestors,
@@ -2293,8 +2308,8 @@ class SessionStore:
                     user_id=source.user_id,
                     session_key=session_key,
                     chat_id=source.chat_id,
-                    chat_type=source.chat_type,
-                    thread_id=source.thread_id,
+                    chat_type=effective_session_chat_type(source),
+                    thread_id=effective_session_thread_id(source),
                 )
             except Exception as exc:
                 logger.debug("Gateway session peer record failed for %s: %s", session_key, exc)
@@ -2892,8 +2907,8 @@ class SessionStore:
                     "user_id": source.user_id,
                     "session_key": session_key,
                     "chat_id": source.chat_id,
-                    "chat_type": source.chat_type,
-                    "thread_id": source.thread_id,
+                    "chat_type": effective_session_chat_type(source),
+                    "thread_id": effective_session_thread_id(source),
                     "profile_name": source.profile,
                     # Identity lands atomically in the INSERT (#82616): a
                     # crash after this write can no longer strand the row

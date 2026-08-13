@@ -2565,6 +2565,7 @@ from gateway.session import (
     build_channel_continuity_note,
     build_session_key,
     is_shared_multi_user_session,
+    resolve_session_isolation,
     neutralize_untrusted_inline_text,
 )
 from gateway.delivery import (
@@ -7705,18 +7706,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # Honor per-platform extra overrides (mirrors SessionStore._generate_session_key
         # and the adapters' text-batching keys) so the fallback path never diverges
         # from the primary path on group/thread session isolation.
-        _group_sessions_per_user = getattr(config, "group_sessions_per_user", True)
-        _thread_sessions_per_user = getattr(config, "thread_sessions_per_user", False)
-        if config is not None and getattr(source, "platform", None) is not None:
-            _platform_cfg = getattr(config, "platforms", {}).get(source.platform)
-            if _platform_cfg and isinstance(getattr(_platform_cfg, "extra", None), dict):
-                _extra = _platform_cfg.extra
-                _group_sessions_per_user = _extra.get(
-                    "group_sessions_per_user", _group_sessions_per_user
-                )
-                _thread_sessions_per_user = _extra.get(
-                    "thread_sessions_per_user", _thread_sessions_per_user
-                )
+        _group_sessions_per_user, _thread_sessions_per_user = (
+            resolve_session_isolation(config, source)
+        )
         return build_session_key(
             source,
             group_sessions_per_user=_group_sessions_per_user,
@@ -18011,20 +18003,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _pending_stt_prepared
             else event.text
         ) or ""
-        _group_sessions_per_user = getattr(self.config, "group_sessions_per_user", True)
-        _thread_sessions_per_user = getattr(self.config, "thread_sessions_per_user", False)
-        # Resolve per-platform extra overrides so shared-session attribution
-        # (user_name prefixing) matches the session key that build_session_key
-        # produced for this source (see _session_key_for_source).
-        _platform_cfg = getattr(self.config, "platforms", {}).get(source.platform)
-        if _platform_cfg and isinstance(getattr(_platform_cfg, "extra", None), dict):
-            _extra = _platform_cfg.extra
-            _group_sessions_per_user = _extra.get(
-                "group_sessions_per_user", _group_sessions_per_user
-            )
-            _thread_sessions_per_user = _extra.get(
-                "thread_sessions_per_user", _thread_sessions_per_user
-            )
+        _group_sessions_per_user, _thread_sessions_per_user = (
+            resolve_session_isolation(self.config, source)
+        )
         # Prefer the already resolved session key from the caller so this write
         # key matches the consume key at the run_conversation site. Fall back
         # to deriving it here for tests and legacy standalone callers.

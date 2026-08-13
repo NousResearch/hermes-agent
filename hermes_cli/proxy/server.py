@@ -112,11 +112,17 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
     app[_adapter_key] = adapter
 
     async def handle_health(request: "web.Request") -> "web.Response":
+        # ``is_authenticated`` is documented as cheap (see UpstreamAdapter),
+        # but both shipped adapters read auth state off disk, and the Nous one
+        # does it under ``_auth_store_lock()`` — 15s cross-process. Offload it
+        # so a healthcheck poll can never freeze the loop behind a lock held by
+        # a concurrent ``hermes auth`` command.
+        authenticated = await asyncio.to_thread(adapter.is_authenticated)
         return web.json_response(
             {
                 "status": "ok",
                 "upstream": adapter.display_name,
-                "authenticated": adapter.is_authenticated(),
+                "authenticated": authenticated,
             }
         )
 

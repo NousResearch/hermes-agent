@@ -321,6 +321,18 @@ same `command_id`, an exact boolean `ok`, and either `result` or `error`.
 Cancellation and timeout emit `browser.controller.cancel`; late results are
 ignored.
 
+An unexpected socket loss marks the controller offline and preserves work
+already in flight until each command's original deadline. A reconnect with the
+same principal, profile, session, controller id, browser profile, and transport
+identity refreshes the transport without admitting new work before any deferred
+cancels are flushed. Negotiated capabilities may change on that reconnect; they
+are not an identity field. A different controller id or browser profile in the
+same authenticated session lane is a hard replacement: old pending work is
+cancelled before the successor becomes routable. Send
+`browser.controller.detach` on the authenticated controller transport for an
+intentional hard detach — that immediately cancels pending work. Merely closing
+the socket is treated as a recoverable disconnect.
+
 The authenticated dashboard transport exposes the same registration, result,
 heartbeat, capability, and ownership semantics over its Gateway RPC/event
 channel. In both transports, selection requires one unambiguous exact match on

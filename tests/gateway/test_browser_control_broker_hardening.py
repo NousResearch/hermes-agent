@@ -131,21 +131,254 @@ def test_completion_requires_the_same_scope_as_the_pending_command():
     assert broker.pending_count == 0
 
 
-def test_reattach_cancels_pending_work_from_the_previous_controller_generation():
+def test_same_identity_reattach_preserves_pending_work_and_completes_on_new_owner():
     broker = BrowserControlBroker(command_timeout=1.0)
     scope = _scope()
     thread, outcome, frames = _start_pending(broker, scope)
-    old_command_id = frames[0]["params"]["command_id"]
+    command_id = frames[0]["params"]["command_id"]
+    replacement_frames = []
 
-    broker.attach(scope, lambda _frame: None, owner="replacement-owner")
+    broker.attach(scope, replacement_frames.append, owner="replacement-owner")
+    assert thread.is_alive()
+    assert broker.pending_count == 1
+    assert broker.complete(
+        command_id,
+        scope=scope,
+        ok=True,
+        result={"reconnected": True},
+    ) is True
     thread.join(timeout=1.0)
 
     assert not thread.is_alive()
+    assert outcome.get("result") == {"reconnected": True}
+    assert "error" not in outcome
+    assert replacement_frames == []
+
+
+def test_same_stable_identity_can_renegotiate_capabilities_without_ambiguity():
+    broker = BrowserControlBroker(command_timeout=1.0)
+    original = _scope()
+    thread, outcome, frames = _start_pending(broker, original)
+    command_id = frames[0]["params"]["command_id"]
+    refreshed = _scope(capabilities=frozenset({"controller.noop", "browser_snapshot"}))
+
+    broker.attach(refreshed, lambda _frame: None, owner="replacement-owner")
+
+    assert broker.scope_for_session(
+        session_id="session-fixture",
+        principal_id="principal-fixture",
+        transport_family="local-api",
+    ) == refreshed
+    assert broker.complete(
+        command_id,
+        scope=refreshed,
+        ok=True,
+        result={"capabilities": "refreshed"},
+    ) is True
+    thread.join(timeout=1.0)
+    assert outcome.get("result") == {"capabilities": "refreshed"}
+
+
+def test_transport_disconnect_parks_pending_and_reconnect_completes_it():
+    broker = BrowserControlBroker(command_timeout=1.0)
+    scope = _scope()
+    thread, outcome, frames = _start_pending(broker, scope)
+    command_id = frames[0]["params"]["command_id"]
+
+    assert broker.disconnect_owner("owner-fixture") == 1
+    assert thread.is_alive()
+    assert broker.pending_count == 1
+    assert broker.select(scope, "controller.noop") is None
+    with pytest.raises(ControllerUnavailable):
+        broker.dispatch(scope, action="controller.noop")
+
+    broker.attach(scope, lambda _frame: None, owner="replacement-owner")
+    assert broker.complete(
+        command_id,
+        scope=scope,
+        ok=True,
+        result={"after": "reconnect"},
+    ) is True
+    thread.join(timeout=1.0)
+    assert outcome.get("result") == {"after": "reconnect"}
+
+
+def test_timeout_while_disconnected_flushes_cancel_before_new_dispatch():
+    broker = BrowserControlBroker(command_timeout=0.02)
+    scope = _scope()
+    thread, outcome, frames = _start_pending(broker, scope)
+    command_id = frames[0]["params"]["command_id"]
+
+    assert broker.disconnect_owner("owner-fixture") == 1
+    thread.join(timeout=1.0)
+    assert isinstance(outcome.get("error"), ControllerTimeout)
+    assert broker.pending_count == 0
+
+    replacement_frames = []
+    broker.attach(scope, replacement_frames.append, owner="replacement-owner")
+    assert replacement_frames == [
+        {
+            "method": "browser.controller.cancel",
+            "params": {
+                "command_id": command_id,
+                "tool_call_id": "tool-call-fixture",
+            },
+        }
+    ]
+
+    second = {}
+
+    def run_second():
+        try:
+            second["result"] = broker.dispatch(
+                scope,
+                action="controller.noop",
+                tool_call_id="tool-call-second",
+            )
+        except Exception as exc:
+            second["error"] = exc
+
+    second_thread = threading.Thread(target=run_second)
+    second_thread.start()
+    while len(replacement_frames) < 2:
+        second_thread.join(timeout=0.01)
+    assert replacement_frames[1]["method"] == "browser.controller.command"
+    assert broker.complete(
+        replacement_frames[1]["params"]["command_id"],
+        scope=scope,
+        ok=True,
+        result={"second": True},
+    ) is True
+    second_thread.join(timeout=1.0)
+    assert second.get("result") == {"second": True}
+
+
+def test_old_transport_owner_cannot_complete_after_same_identity_reconnect():
+    broker = BrowserControlBroker(command_timeout=1.0)
+    scope = _scope()
+    thread, outcome, frames = _start_pending(broker, scope)
+    command_id = frames[0]["params"]["command_id"]
+    refreshed_scope = _scope(capabilities=frozenset({"controller.noop", "browser_snapshot"}))
+
+    broker.attach(refreshed_scope, lambda _frame: None, owner="replacement-owner")
+
+    assert broker.is_owner(refreshed_scope, "owner-fixture") is False
+    assert broker.is_owner(refreshed_scope, "replacement-owner") is True
+    assert broker.complete(
+        command_id,
+        scope=scope,
+        ok=True,
+        result={"stale": True},
+    ) is False
+    assert broker.complete(
+        command_id,
+        scope=refreshed_scope,
+        ok=True,
+        result={"fresh": True},
+    ) is True
+    thread.join(timeout=1.0)
+    assert outcome.get("result") == {"fresh": True}
+
+
+def test_cancel_with_pre_reconnect_scope_still_cancels_same_stable_identity():
+    broker = BrowserControlBroker(command_timeout=1.0)
+    original = _scope()
+    thread, outcome, frames = _start_pending(
+        broker,
+        original,
+        tool_call_id="tool-call-before-reconnect",
+    )
+    refreshed = _scope(capabilities=frozenset({"controller.noop", "browser_snapshot"}))
+    refreshed_frames = []
+    broker.attach(refreshed, refreshed_frames.append, owner="replacement-owner")
+
+    assert broker.cancel(
+        original,
+        tool_call_id="tool-call-before-reconnect",
+    ) is True
+    thread.join(timeout=1.0)
     assert isinstance(outcome.get("error"), ControllerCancelled)
-    assert broker.complete(old_command_id, scope=scope, ok=True, result={}) is False
+    assert refreshed_frames == [
+        {
+            "method": "browser.controller.cancel",
+            "params": {
+                "command_id": frames[0]["params"]["command_id"],
+                "tool_call_id": "tool-call-before-reconnect",
+            },
+        }
+    ]
 
 
-def test_session_lookup_fails_closed_on_ambiguity_and_owner_detach_is_scoped():
+def test_different_stable_identity_hard_replaces_and_cancels_pending_work():
+    broker = BrowserControlBroker(command_timeout=1.0)
+    original = _scope()
+    thread, outcome, frames = _start_pending(broker, original)
+    command_id = frames[0]["params"]["command_id"]
+    replacement = _scope(controller_id="different-controller")
+
+    broker.attach(replacement, lambda _frame: None, owner="replacement-owner")
+
+    assert broker.complete(
+        command_id,
+        scope=replacement,
+        ok=True,
+        result={"unsafe": True},
+    ) is False
+    assert broker.complete(
+        command_id,
+        scope=original,
+        ok=True,
+        result={"original": True},
+    ) is False
+    thread.join(timeout=1.0)
+    assert isinstance(outcome.get("error"), ControllerCancelled)
+
+
+def test_different_controller_identity_hard_replaces_parked_session_controller():
+    broker = BrowserControlBroker(command_timeout=1.0)
+    original = _scope()
+    thread, outcome, _frames = _start_pending(broker, original)
+    assert broker.disconnect_owner("owner-fixture") == 1
+
+    replacement = ControllerScope(
+        principal_id=original.principal_id,
+        profile_id=original.profile_id,
+        session_id=original.session_id,
+        controller_id="replacement-controller",
+        browser_profile_id=original.browser_profile_id,
+        transport_family=original.transport_family,
+        capabilities=original.capabilities,
+    )
+    broker.attach(replacement, lambda _frame: None, owner="replacement-owner")
+
+    thread.join(timeout=1.0)
+    assert isinstance(outcome.get("error"), ControllerCancelled)
+    assert broker.scope_for_session(
+        session_id=original.session_id,
+        principal_id=original.principal_id,
+        transport_family=original.transport_family,
+    ) == replacement
+    assert broker.select(original, "controller.noop") is None
+    assert broker.select(replacement, "controller.noop") is not None
+
+
+def test_failed_deferred_cancel_flush_keeps_controller_offline():
+    broker = BrowserControlBroker(command_timeout=0.01)
+    scope = _scope()
+    thread, outcome, _frames = _start_pending(broker, scope)
+    assert broker.disconnect_owner("owner-fixture") == 1
+    thread.join(timeout=1.0)
+    assert isinstance(outcome.get("error"), ControllerTimeout)
+
+    def fail_send(_frame):
+        raise ConnectionError("fixture flush failed")
+
+    with pytest.raises(ConnectionError, match="flush"):
+        broker.attach(scope, fail_send, owner="replacement-owner")
+    assert broker.select(scope, "controller.noop") is None
+
+
+def test_session_lane_replacement_and_owner_detach_are_scoped():
     broker = BrowserControlBroker()
     first = _scope(controller_id="controller-one")
     second = _scope(controller_id="controller-two")
@@ -162,14 +395,19 @@ def test_session_lookup_fails_closed_on_ambiguity_and_owner_detach_is_scoped():
         session_id="session-fixture",
         principal_id="principal-fixture",
         transport_family="local-api",
-    ) is None
+    ) == second
     assert broker.scope_for_session(
         session_id="other-session",
         principal_id="principal-fixture",
         transport_family="cloud-ticket-ws",
     ) == other
 
-    assert broker.detach_owner("owner-shared") == 2
+    assert broker.detach_owner("owner-shared") == 1
+    assert broker.scope_for_session(
+        session_id="session-fixture",
+        principal_id="principal-fixture",
+        transport_family="local-api",
+    ) is None
     assert broker.scope_for_session(
         session_id="other-session",
         principal_id="principal-fixture",

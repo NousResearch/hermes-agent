@@ -28,10 +28,12 @@ Contract (each rule is exercised by tests/gateway/test_browser_control_broker.py
 
 - **Exact identity and capability selection.** ``attach`` registers a send
   callback under a :class:`ControllerScope`; ``select`` returns a controller
-  only when the caller's scope matches on *every* identity field —
+  only when the caller's scope matches on *every stable identity field* —
   principal, profile, session, controller id, browser profile id, and
   transport family — and the requested capability is present in the
-  controller's capability set. Partial matches return ``None``.
+  controller's current negotiated capability set. Partial matches return
+  ``None``. A same-identity reconnect may renegotiate capabilities without
+  creating an ambiguous second controller.
 
 - **One pending command per command id; single-shot completion.** Each
   ``dispatch`` mints a fresh command id, emits one
@@ -47,6 +49,13 @@ Contract (each rule is exercised by tests/gateway/test_browser_control_broker.py
   pending command of that scope; waiting dispatchers observe
   :class:`ControllerCancelled` rather than hanging or racing a detached
   controller's late ``complete``.
+
+- **Unexpected disconnects are recoverable.** ``disconnect`` marks an exact
+  transport owner offline without accepting new dispatches or cancelling
+  already-running work. Re-attaching the same stable identity refreshes the
+  transport callback and can deliver a terminal result for the original
+  command. Explicit detach, cancel, identity replacement, and timeout remain
+  terminal boundaries.
 
 Thread-safety: all public state transitions happen under a single reentrant
 lock; the send callback is invoked *outside* the lock so a controller may
@@ -70,6 +79,8 @@ _OWNER_UNSET = object()
 DEFAULT_TICKET_TTL = 30.0
 #: Default wall time a dispatch waits for the controller to complete.
 DEFAULT_COMMAND_TIMEOUT = 30.0
+#: Maximum cancel frames retained while a same-identity controller is offline.
+MAX_DEFERRED_CANCELS = 512
 
 #: Current wire protocol version. Registration requires this exact integer;
 #: booleans are rejected even though ``bool`` subclasses ``int`` in Python.
@@ -163,6 +174,22 @@ class ControllerScope:
     capabilities: frozenset = frozenset()
 
 
+def _scope_identity(scope: ControllerScope) -> tuple:
+    """Return stable controller identity, excluding negotiated capabilities."""
+    return (
+        scope.principal_id,
+        scope.profile_id,
+        scope.session_id,
+        scope.controller_id,
+        scope.browser_profile_id,
+        scope.transport_family,
+    )
+
+
+def _same_scope_identity(first: ControllerScope, second: ControllerScope) -> bool:
+    return _scope_identity(first) == _scope_identity(second)
+
+
 @dataclass(frozen=True)
 class Ticket:
     """Opaque, single-use registration credential."""
@@ -183,6 +210,8 @@ class _Controller:
     scope: ControllerScope
     send: Callable[[dict], None]
     owner: Any = None
+    connected: bool = True
+    deferred_cancels: list[dict] = field(default_factory=list)
     # Serialize command/cancel writes with detach or replacement.  Broker state
     # is never held while waiting for this lock, so a transport callback may
     # synchronously call complete() without deadlocking the broker.
@@ -281,72 +310,155 @@ class BrowserControlBroker:
         *,
         owner: Any = None,
     ) -> None:
-        """Register the controller owning ``scope`` with frame callback ``send``.
+        """Attach or refresh the controller for one stable identity.
 
-        Re-attaching an already-attached scope replaces the prior controller
-        (logged); a controller that wants to go away must call ``detach``.
+        A reconnect with the same principal/profile/session/controller/browser
+        profile/transport identity refreshes the send callback and negotiated
+        capabilities without cancelling pending work. Capabilities are not an
+        identity field. A different controller or browser profile in the same
+        authenticated session lane hard-replaces the previous identity.
         """
-        replacement = _Controller(scope=scope, send=send, owner=owner)
-        with self._lock:
-            existing = self._controllers.get(scope)
-        if existing is None:
+        while True:
             with self._lock:
-                # A concurrent attach may have won after the optimistic read;
-                # retry through the replacement path rather than overwriting it.
-                existing = self._controllers.get(scope)
-                if existing is None:
-                    self._controllers[scope] = replacement
+                existing_entry = next(
+                    (
+                        (candidate_scope, controller)
+                        for candidate_scope, controller in self._controllers.items()
+                        if _same_scope_identity(candidate_scope, scope)
+                    ),
+                    None,
+                )
+                lane_scopes = [
+                    candidate_scope
+                    for candidate_scope in self._controllers
+                    if candidate_scope.principal_id == scope.principal_id
+                    and candidate_scope.profile_id == scope.profile_id
+                    and candidate_scope.session_id == scope.session_id
+                    and candidate_scope.transport_family == scope.transport_family
+                    and not _same_scope_identity(candidate_scope, scope)
+                ]
+                if existing_entry is None and not lane_scopes:
+                    self._controllers[scope] = _Controller(
+                        scope=scope,
+                        send=send,
+                        owner=owner,
+                    )
                     return
 
-        assert existing is not None
-        logger.warning(
-            "browser controller re-attached for scope %r; replacing prior controller",
-            scope,
-        )
-        with existing.send_lock:
-            with self._lock:
-                if self._controllers.get(scope) is not existing:
-                    # Another replacement won while this caller waited. Re-run
-                    # against the new generation so its pending work is not
-                    # orphaned by an unconditional overwrite.
-                    retry = True
-                    pendings = []
-                else:
-                    retry = False
-                    pendings = self._pending_for_scope_locked(scope)
-                    for pending in pendings:
-                        self._resolve_pending(pending, cancelled=True)
-                    self._controllers[scope] = replacement
-            if not retry:
-                self._emit_cancel_frames(existing, pendings)
+            # A different identity in the same authenticated session lane is a
+            # hard replacement, not a recoverable reconnect. Terminalize it
+            # before inserting the successor so session lookup stays unique.
+            if lane_scopes:
+                for lane_scope in lane_scopes:
+                    self.detach(lane_scope, notify_controller=False)
+                continue
+
+            if existing_entry is not None:
+                existing_scope, existing = existing_entry
+
+            with existing.send_lock:
+                with self._lock:
+                    if self._controllers.get(existing_scope) is not existing:
+                        continue
+                    self._controllers.pop(existing_scope, None)
+                    existing.scope = scope
+                    existing.send = send
+                    existing.owner = owner
+                    existing.connected = False
+                    for pending in self._pending.values():
+                        if _same_scope_identity(pending.scope, scope):
+                            pending.scope = scope
+                    deferred = list(existing.deferred_cancels)
+                    existing.deferred_cancels.clear()
+                    self._controllers[scope] = existing
+
+                unsent: list[dict] = []
+                for index, frame in enumerate(deferred):
+                    try:
+                        send(frame)
+                    except Exception:
+                        logger.exception(
+                            "failed to flush deferred browser-controller cancel"
+                        )
+                        unsent = deferred[index:]
+                        break
+                if unsent:
+                    with self._lock:
+                        if self._controllers.get(scope) is existing:
+                            existing.deferred_cancels = unsent[
+                                -MAX_DEFERRED_CANCELS:
+                            ]
+                    raise ConnectionError(
+                        "browser controller reconnect could not flush deferred cancels"
+                    )
+                with self._lock:
+                    if self._controllers.get(scope) is existing:
+                        existing.connected = True
                 return
-        self.attach(scope, send, owner=owner)
 
     def select(self, scope: ControllerScope, capability: str) -> Optional[_Controller]:
-        """Return the controller exactly matching ``scope`` and ``capability``.
+        """Return the connected controller matching identity and capability.
 
-        ``None`` when any identity field differs or the capability is not in
-        the controller's capability set. The controller's own scope is the
-        authority on capabilities.
+        The caller's capabilities are not authoritative on reconnect. Selection
+        matches the stable identity fields, then checks the attached
+        controller's current negotiated capability set. Offline controllers
+        preserve old pending work but never accept new dispatches.
         """
         with self._lock:
-            controller = self._controllers.get(scope)
-            if controller is None:
-                return None
-            if capability not in controller.scope.capabilities:
-                return None
-            return controller
+            matches = [
+                controller
+                for controller in self._controllers.values()
+                if _same_scope_identity(controller.scope, scope)
+                and controller.connected
+                and capability in controller.scope.capabilities
+            ]
+        return matches[0] if len(matches) == 1 else None
 
     def is_owner(self, scope: ControllerScope, owner: Any) -> bool:
-        """Return whether ``owner`` is the exact transport attached to ``scope``.
+        """Return whether ``owner`` is the exact live transport for ``scope``.
 
         Ownership is independent of capabilities. Transport handlers use this
         for heartbeat and result admission so a least-privilege controller does
         not need to request ``controller.noop`` merely to complete a real action.
         """
         with self._lock:
-            controller = self._controllers.get(scope)
-            return controller is not None and controller.owner is owner
+            matches = [
+                controller
+                for controller in self._controllers.values()
+                if _same_scope_identity(controller.scope, scope)
+                and controller.connected
+                and controller.owner is owner
+            ]
+        return len(matches) == 1
+
+    def disconnect(
+        self,
+        scope: ControllerScope,
+        *,
+        owner: Any = _OWNER_UNSET,
+    ) -> bool:
+        """Mark one exact controller transport offline without cancelling work."""
+        with self._lock:
+            entry = next(
+                (
+                    (candidate_scope, controller)
+                    for candidate_scope, controller in self._controllers.items()
+                    if _same_scope_identity(candidate_scope, scope)
+                ),
+                None,
+            )
+        if entry is None:
+            return False
+        candidate_scope, controller = entry
+        with controller.send_lock:
+            with self._lock:
+                if self._controllers.get(candidate_scope) is not controller:
+                    return False
+                if owner is not _OWNER_UNSET and controller.owner is not owner:
+                    return False
+                controller.connected = False
+                controller.owner = None
+        return True
 
     def detach(
         self,
@@ -428,19 +540,28 @@ class BrowserControlBroker:
             },
         }
         pending = _PendingCommand(
-            scope=scope,
+            scope=controller.scope,
             command_id=command_id,
             tool_call_id=tool_call_id,
         )
         with controller.send_lock:
             with self._lock:
                 # select() intentionally runs outside the send lock. Revalidate
-                # the exact controller generation after acquiring it so detach
-                # or replacement cannot leave a stale command waiting forever.
-                if self._controllers.get(scope) is not controller:
+                # the exact live controller after acquiring it so disconnect or
+                # identity replacement cannot leave a stale command waiting.
+                attached = next(
+                    (
+                        candidate
+                        for candidate in self._controllers.values()
+                        if _same_scope_identity(candidate.scope, scope)
+                    ),
+                    None,
+                )
+                if attached is not controller or not controller.connected:
                     raise ControllerUnavailable(
                         f"controller for scope {scope!r} detached before dispatch"
                     )
+                pending.scope = controller.scope
                 self._pending[command_id] = pending
 
             try:
@@ -464,9 +585,21 @@ class BrowserControlBroker:
             if timed_out:
                 with controller.send_lock:
                     with self._lock:
-                        still_attached = self._controllers.get(scope) is controller
-                    if still_attached:
-                        self._emit_cancel_frames(controller, [pending])
+                        active = next(
+                            (
+                                candidate
+                                for candidate in self._controllers.values()
+                                if _same_scope_identity(candidate.scope, scope)
+                            ),
+                            None,
+                        )
+                        if active is None:
+                            active = controller
+                        if not active.connected:
+                            self._defer_cancel_locked(active, pending)
+                            active = None
+                    if active is not None:
+                        self._emit_cancel_frames(active, [pending])
                 raise ControllerTimeout(
                     f"controller did not complete command {command_id!r} "
                     f"within {self._command_timeout}s"
@@ -517,17 +650,32 @@ class BrowserControlBroker:
         without inventing state).
         """
         with self._lock:
-            controller = self._controllers.get(scope)
-        if controller is None:
+            controller = next(
+                (
+                    candidate
+                    for candidate in self._controllers.values()
+                    if _same_scope_identity(candidate.scope, scope)
+                ),
+                None,
+            )
+        if controller is None or not controller.connected:
             return False
         with controller.send_lock:
             with self._lock:
-                if self._controllers.get(scope) is not controller:
+                attached = next(
+                    (
+                        candidate
+                        for candidate in self._controllers.values()
+                        if _same_scope_identity(candidate.scope, scope)
+                    ),
+                    None,
+                )
+                if attached is not controller or not controller.connected:
                     return False
                 target = None
                 for pending in self._pending.values():
                     if (
-                        pending.scope == scope
+                        _same_scope_identity(pending.scope, scope)
                         and pending.tool_call_id == tool_call_id
                         and not pending.done
                     ):
@@ -550,24 +698,37 @@ class BrowserControlBroker:
         del self._pending[pending.command_id]
         pending.event.set()
 
+    @staticmethod
+    def _cancel_frame(pending: _PendingCommand) -> dict:
+        return {
+            "method": FRAME_CANCEL,
+            "params": {
+                "command_id": pending.command_id,
+                "tool_call_id": pending.tool_call_id,
+            },
+        }
+
+    def _defer_cancel_locked(
+        self,
+        controller: _Controller,
+        pending: _PendingCommand,
+    ) -> None:
+        controller.deferred_cancels.append(self._cancel_frame(pending))
+        if len(controller.deferred_cancels) > MAX_DEFERRED_CANCELS:
+            del controller.deferred_cancels[:-MAX_DEFERRED_CANCELS]
+
     def _pending_for_scope_locked(self, scope: ControllerScope) -> list[_PendingCommand]:
         return [
             pending
             for pending in list(self._pending.values())
-            if pending.scope == scope
+            if _same_scope_identity(pending.scope, scope)
         ]
 
     def _emit_cancel_frames(
         self, controller: _Controller, pendings: list[_PendingCommand]
     ) -> None:
         for pending in pendings:
-            frame = {
-                "method": FRAME_CANCEL,
-                "params": {
-                    "command_id": pending.command_id,
-                    "tool_call_id": pending.tool_call_id,
-                },
-            }
+            frame = self._cancel_frame(pending)
             try:
                 controller.send(frame)
             except Exception:
@@ -605,13 +766,26 @@ class BrowserControlBroker:
             ]
         return matches[0] if len(matches) == 1 else None
 
-    def detach_owner(self, owner: Any, *, notify_controller: bool = True) -> int:
-        """Detach every controller owned by one transport connection."""
+    def disconnect_owner(self, owner: Any) -> int:
+        """Mark every controller owned by one lost transport offline."""
         with self._lock:
             scopes = [
                 scope
                 for scope, controller in self._controllers.items()
-                if controller.owner == owner
+                if controller.owner is owner
+            ]
+        disconnected = 0
+        for scope in scopes:
+            disconnected += int(self.disconnect(scope, owner=owner))
+        return disconnected
+
+    def detach_owner(self, owner: Any, *, notify_controller: bool = True) -> int:
+        """Hard-detach every controller owned by one transport connection."""
+        with self._lock:
+            scopes = [
+                scope
+                for scope, controller in self._controllers.items()
+                if controller.owner is owner
             ]
         for scope in scopes:
             self.detach(

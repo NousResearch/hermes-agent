@@ -345,6 +345,40 @@ def _(
     return _ok(rid, {"ok": True})
 
 
+@method("browser.controller.detach")
+def _(
+    rid,
+    params: dict,
+    _family=_CLOUD_TRANSPORT_FAMILY,
+    _forbidden=_ERR_FORBIDDEN,
+    _identity_ok=_is_authenticated_identity,
+    _digest=_principal_digest,
+) -> dict:
+    """Hard-detach only the controller owned by this authenticated transport."""
+    from gateway import browser_control_broker
+
+    transport = current_transport()
+    identity = getattr(transport, "auth_identity", None)
+    if not _identity_ok(identity):
+        return _err(rid, _forbidden, "authenticated controller identity required")
+    session_id = str(params.get("session_id") or "")
+    with _sessions_lock:
+        session = _sessions.get(session_id)
+        if session is None or session.get("transport") is not transport:
+            return _err(rid, _forbidden, "session is not owned by this transport")
+
+    broker = browser_control_broker.get_browser_control_broker()
+    scope = broker.scope_for_session(
+        session_id=session_id,
+        principal_id=_digest(identity),
+        transport_family=_family,
+    )
+    if scope is None or not broker.is_owner(scope, transport):
+        return _err(rid, _forbidden, "controller is not owned by this transport")
+    broker.detach(scope, owner=transport, notify_controller=False)
+    return _ok(rid, {"detached": True})
+
+
 def register(server) -> None:
     """Bind this module's handlers onto ``server``'s globals and registry."""
     _registry.install(server)

@@ -462,20 +462,18 @@ async def handle_ws(
         if transport is not None:
             server.unregister_live_transport(transport)
 
-            # Owner-safely detach browser controllers this transport
-            # registered. The socket itself is closing, so no
-            # peer cancel write is attempted; every server-side pending command
-            # is still failed closed immediately.
+            # Owner-safely park browser controllers this transport registered.
+            # A reconnect with the same stable identity may deliver a terminal
+            # result for work already in flight; no new dispatch is admitted
+            # while the controller is offline.
             try:
                 from gateway.browser_control_broker import (
                     get_browser_control_broker,
                 )
 
-                get_browser_control_broker().detach_owner(
-                    transport, notify_controller=False
-                )
+                get_browser_control_broker().disconnect_owner(transport)
             except Exception:
-                _log.exception("ws browser-controller detach failed peer=%s", peer)
+                _log.exception("ws browser-controller disconnect failed peer=%s", peer)
 
             transport.close()
 

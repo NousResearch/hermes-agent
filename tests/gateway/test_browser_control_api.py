@@ -1,13 +1,21 @@
 import asyncio
+import concurrent.futures
 import time
 
 import pytest
 from aiohttp import WSServerHandshakeError, web
 from aiohttp.test_utils import TestClient, TestServer
 
-from gateway.browser_control_broker import ControllerRejected, ControllerScope
+from gateway.browser_control_broker import (
+    ControllerCancelled,
+    ControllerRejected,
+    ControllerScope,
+)
 from gateway.config import PlatformConfig
-from gateway.platforms.api_server import APIServerAdapter
+from gateway.platforms.api_server import (
+    APIServerAdapter,
+    _browser_controller_ws_sender,
+)
 from tools.browser_extension_router import route_browser_tool
 
 
@@ -146,6 +154,65 @@ def test_route_table_advertises_registration_and_controller_ws_without_replacing
     assert ("POST", "/v1/browser-control/register") in routes
     assert ("GET", "/v1/browser-control/ws") in routes
     assert ("POST", "/v1/chat/completions") in routes
+
+
+def test_ws_sender_treats_wait_timeout_as_in_flight_and_real_error_as_failure(monkeypatch):
+    class WS:
+        closed = False
+
+        async def send_json(self, _frame):
+            return None
+
+    class Future:
+        def __init__(self, error, *, done=False):
+            self.error = error
+            self._done = done
+            self.callbacks = []
+
+        def result(self, timeout=None):
+            if self.error is not None:
+                raise self.error
+            return None
+
+        def add_done_callback(self, callback):
+            self.callbacks.append(callback)
+
+        def done(self):
+            return self._done
+
+    timeout_future = Future(concurrent.futures.TimeoutError())
+    def return_timeout(coro, _loop):
+        coro.close()
+        return timeout_future
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", return_timeout)
+    sender = _browser_controller_ws_sender(WS(), object(), wait_timeout=0.01)
+    sender({"method": "browser.controller.command"})
+    assert len(timeout_future.callbacks) == 1
+
+    error_future = Future(ConnectionError("socket write failed"))
+    def return_error(coro, _loop):
+        coro.close()
+        return error_future
+
+    monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", return_error)
+    sender = _browser_controller_ws_sender(WS(), object(), wait_timeout=0.01)
+    with pytest.raises(ConnectionError, match="socket write failed"):
+        sender({"method": "browser.controller.command"})
+
+    completed_timeout = Future(concurrent.futures.TimeoutError(), done=True)
+    def return_completed_timeout(coro, _loop):
+        coro.close()
+        return completed_timeout
+
+    monkeypatch.setattr(
+        asyncio,
+        "run_coroutine_threadsafe",
+        return_completed_timeout,
+    )
+    sender = _browser_controller_ws_sender(WS(), object(), wait_timeout=0.01)
+    with pytest.raises(concurrent.futures.TimeoutError):
+        sender({"method": "browser.controller.command"})
 
 
 def test_api_agent_context_binds_server_principal_and_transport_family():
@@ -470,6 +537,129 @@ async def test_real_browser_action_routes_through_controller_without_legacy_fall
         )
         assert legacy_calls == []
         await ws.close()
+
+
+@pytest.mark.asyncio
+async def test_local_api_same_identity_reconnect_completes_command_started_on_old_socket(monkeypatch):
+    adapter = _adapter()
+    monkeypatch.setattr(adapter, "_browser_control_enabled", lambda: True)
+    async with TestClient(TestServer(_app(adapter))) as client:
+        first_response = await client.post(
+            "/v1/browser-control/register",
+            json=_registration_body(capabilities=["browser_snapshot"]),
+            headers={"Authorization": f"Bearer {API_KEY}"},
+        )
+        first = await first_response.json()
+        first_ws = await client.ws_connect(
+            "/v1/browser-control/ws",
+            protocols=[CONTROL_PROTOCOL, _ticket_protocol(first["ticket"])],
+        )
+
+        pending = asyncio.create_task(
+            asyncio.to_thread(
+                route_browser_tool,
+                "browser_snapshot",
+                {},
+                fallback=lambda: "legacy-result",
+                broker=adapter._browser_control_broker,
+                enabled=True,
+                session_id="session-fixture",
+                principal_id=first["scope"]["principal_id"],
+                transport_family="local-api",
+                tool_call_id="tool-call-reconnect",
+            )
+        )
+        command = await first_ws.receive_json(timeout=2.0)
+        await first_ws.close()
+        await asyncio.sleep(0)
+        assert not pending.done()
+
+        second_response = await client.post(
+            "/v1/browser-control/register",
+            json=_registration_body(capabilities=["browser_snapshot"]),
+            headers={"Authorization": f"Bearer {API_KEY}"},
+        )
+        second = await second_response.json()
+        second_ws = await client.ws_connect(
+            "/v1/browser-control/ws",
+            protocols=[CONTROL_PROTOCOL, _ticket_protocol(second["ticket"])],
+        )
+        await second_ws.send_json(
+            {
+                "method": "browser.controller.result",
+                "params": {
+                    "command_id": command["params"]["command_id"],
+                    "ok": True,
+                    "result": {"reconnected": True},
+                },
+            }
+        )
+        assert await asyncio.wait_for(pending, timeout=2.0) == '{"reconnected": true}'
+        await second_ws.close()
+
+
+@pytest.mark.asyncio
+async def test_local_api_explicit_detach_is_hard_and_stale_socket_cannot_detach_refresh(monkeypatch):
+    adapter = _adapter()
+    monkeypatch.setattr(adapter, "_browser_control_enabled", lambda: True)
+    async with TestClient(TestServer(_app(adapter))) as client:
+        first_response = await client.post(
+            "/v1/browser-control/register",
+            json=_registration_body(capabilities=["controller.noop"]),
+            headers={"Authorization": f"Bearer {API_KEY}"},
+        )
+        first = await first_response.json()
+        first_ws = await client.ws_connect(
+            "/v1/browser-control/ws",
+            protocols=[CONTROL_PROTOCOL, _ticket_protocol(first["ticket"])],
+        )
+        second_response = await client.post(
+            "/v1/browser-control/register",
+            json=_registration_body(capabilities=["controller.noop"]),
+            headers={"Authorization": f"Bearer {API_KEY}"},
+        )
+        second = await second_response.json()
+        second_ws = await client.ws_connect(
+            "/v1/browser-control/ws",
+            protocols=[CONTROL_PROTOCOL, _ticket_protocol(second["ticket"])],
+        )
+
+        await first_ws.send_json(
+            {"method": "browser.controller.detach", "params": {}}
+        )
+        with pytest.raises(asyncio.TimeoutError):
+            await first_ws.receive_json(timeout=0.05)
+
+        pending = asyncio.create_task(
+            asyncio.to_thread(
+                adapter._browser_control_broker.dispatch,
+                ControllerScope(
+                    principal_id=second["scope"]["principal_id"],
+                    profile_id=second["scope"]["profile_id"],
+                    session_id=second["scope"]["session_id"],
+                    controller_id=second["scope"]["controller_id"],
+                    browser_profile_id=second["scope"]["browser_profile_id"],
+                    transport_family=second["scope"]["transport_family"],
+                    capabilities=frozenset(second["scope"]["capabilities"]),
+                ),
+                action="controller.noop",
+                tool_call_id="tool-call-explicit-detach",
+            )
+        )
+        command = await second_ws.receive_json(timeout=2.0)
+        await second_ws.send_json(
+            {"method": "browser.controller.detach", "params": {}}
+        )
+        detached = await second_ws.receive_json(timeout=2.0)
+        assert detached == {
+            "method": "browser.controller.detach",
+            "params": {"ok": True},
+        }
+        with pytest.raises(ControllerCancelled):
+            await asyncio.wait_for(pending, timeout=2.0)
+        assert command["method"] == "browser.controller.command"
+        await first_ws.close()
+        await second_ws.close()
 
 
 @pytest.mark.asyncio

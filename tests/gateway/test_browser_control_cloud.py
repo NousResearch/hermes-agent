@@ -400,3 +400,189 @@ def test_cloud_gateway_real_action_round_trip_is_bound_to_identity_and_transport
     finally:
         broker.reset()
         server._sessions.pop("session-fixture", None)
+
+
+def test_cloud_same_identity_reconnect_refreshes_transport_and_completes_pending(monkeypatch):
+    monkeypatch.setattr(
+        "gateway.browser_control_broker.browser_control_enabled", lambda: True
+    )
+    broker = get_browser_control_broker()
+    broker.reset()
+    ready = threading.Event()
+    first_frames = []
+    second_frames = []
+
+    class Transport:
+        auth_identity = {
+            "user_id": "reconnect-user",
+            "provider": "provider-fixture",
+        }
+
+        def __init__(self, frames):
+            self.frames = frames
+
+        def write(self, frame):
+            self.frames.append(frame)
+            if frame.get("method") == "event":
+                ready.set()
+            return True
+
+    first = Transport(first_frames)
+    second = Transport(second_frames)
+    session = {
+        "transport": first,
+        "session_key": "stored-reconnect-session",
+        "profile": "default",
+    }
+    server._sessions["reconnect-session"] = session
+    try:
+        first_registration = server.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "browser.controller.register",
+                "params": {
+                    "protocol_version": 1,
+                    "session_id": "reconnect-session",
+                    "controller_id": "controller-fixture",
+                    "browser_profile_id": "browser-profile-fixture",
+                    "capabilities": ["browser_navigate"],
+                },
+            },
+            first,
+        )
+        scope_payload = first_registration["result"]["scope"]
+        scope = broker.scope_for_session(
+            session_id="reconnect-session",
+            principal_id=scope_payload["principal_id"],
+            transport_family="cloud-ticket-ws",
+        )
+        outcome = {}
+
+        def dispatch():
+            outcome["result"] = broker.dispatch(
+                scope,
+                action="browser_navigate",
+                arguments={"url": "https://example.test"},
+                tool_call_id="tool-call-reconnect",
+            )
+
+        thread = threading.Thread(target=dispatch)
+        thread.start()
+        assert ready.wait(timeout=1.0)
+        command_id = first_frames[-1]["params"]["payload"]["command_id"]
+
+        assert broker.disconnect_owner(first) == 1
+        assert thread.is_alive()
+        session["transport"] = second
+        second_registration = server.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "browser.controller.register",
+                "params": {
+                    "protocol_version": 1,
+                    "session_id": "reconnect-session",
+                    "controller_id": "controller-fixture",
+                    "browser_profile_id": "browser-profile-fixture",
+                    "capabilities": ["browser_navigate", "browser_snapshot"],
+                },
+            },
+            second,
+        )
+        assert second_registration["result"]["scope"]["capabilities"] == [
+            "browser_navigate",
+            "browser_snapshot",
+        ]
+        result = server.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "browser.controller.result",
+                "params": {
+                    "session_id": "reconnect-session",
+                    "command_id": command_id,
+                    "ok": True,
+                    "result": {"reconnected": True},
+                },
+            },
+            second,
+        )
+        assert result["result"]["accepted"] is True
+        thread.join(timeout=1.0)
+        assert outcome.get("result") == {"reconnected": True}
+    finally:
+        broker.reset()
+        server._sessions.pop("reconnect-session", None)
+
+
+def test_cloud_explicit_detach_requires_current_authenticated_owner(monkeypatch):
+    monkeypatch.setattr(
+        "gateway.browser_control_broker.browser_control_enabled", lambda: True
+    )
+    broker = get_browser_control_broker()
+    broker.reset()
+
+    class Transport:
+        auth_identity = {
+            "user_id": "detach-user",
+            "provider": "provider-fixture",
+        }
+
+        def write(self, _frame):
+            return True
+
+    owner = Transport()
+    foreign = Transport()
+    server._sessions["detach-session"] = {
+        "transport": owner,
+        "session_key": "stored-detach-session",
+        "profile": "default",
+    }
+    try:
+        registration = server.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "browser.controller.register",
+                "params": {
+                    "protocol_version": 1,
+                    "session_id": "detach-session",
+                    "controller_id": "controller-fixture",
+                    "browser_profile_id": "browser-profile-fixture",
+                    "capabilities": ["controller.noop"],
+                },
+            },
+            owner,
+        )
+        assert "result" in registration
+
+        foreign_result = server.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "browser.controller.detach",
+                "params": {"session_id": "detach-session"},
+            },
+            foreign,
+        )
+        assert foreign_result["error"]["code"] == 4403
+
+        detached = server.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "browser.controller.detach",
+                "params": {"session_id": "detach-session"},
+            },
+            owner,
+        )
+        assert detached["result"] == {"detached": True}
+        assert broker.scope_for_session(
+            session_id="detach-session",
+            principal_id=registration["result"]["scope"]["principal_id"],
+            transport_family="cloud-ticket-ws",
+        ) is None
+    finally:
+        broker.reset()
+        server._sessions.pop("detach-session", None)

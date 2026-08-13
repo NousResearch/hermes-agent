@@ -41,6 +41,7 @@ Requires:
 """
 
 import asyncio
+import concurrent.futures
 import errno
 import hashlib
 import hmac
@@ -142,6 +143,42 @@ def _get_scoped_secret(name, default=None):
 
 
 logger = logging.getLogger(__name__)
+
+
+def _browser_controller_ws_sender(ws, loop, *, wait_timeout: float = 10.0):
+    """Return a loop-aware broker sender for one aiohttp controller socket.
+
+    A wait timeout means the coroutine is still in flight on a live loop, not
+    that the frame was rejected. Keep the broker command pending and let its
+    own deadline/cancel path decide; a real send exception still propagates.
+    """
+
+    def send(frame: dict) -> None:
+        if ws.closed:
+            raise ConnectionError("browser-control websocket is closed")
+        try:
+            on_loop = asyncio.get_running_loop() is loop
+        except RuntimeError:
+            on_loop = False
+        if on_loop:
+            loop.create_task(ws.send_json(frame))
+            return
+        future = asyncio.run_coroutine_threadsafe(ws.send_json(frame), loop)
+        try:
+            future.result(timeout=wait_timeout)
+        except concurrent.futures.TimeoutError:
+            if future.done():
+                raise
+
+            def observe_late_send(completed):
+                try:
+                    completed.result()
+                except Exception:
+                    logger.exception("browser-controller websocket send failed after wait timeout")
+
+            future.add_done_callback(observe_late_send)
+
+    return send
 
 
 def _hermes_version() -> str:
@@ -3495,26 +3532,7 @@ class APIServerAdapter(BasePlatformAdapter):
         )
         await ws.prepare(request)
         loop = asyncio.get_running_loop()
-
-        def _send(frame: dict) -> None:
-            """Broker send callback: forward a frame onto the aiohttp loop.
-
-            Called from broker dispatch threads; aiohttp socket writes must
-            happen on the event loop. Waiting for the write here preserves
-            command ordering and lets a closed socket fail the dispatch
-            instead of silently dropping the frame.
-            """
-            if ws.closed:
-                raise ConnectionError("browser-control websocket is closed")
-            try:
-                on_loop = asyncio.get_running_loop() is loop
-            except RuntimeError:
-                on_loop = False
-            if on_loop:
-                loop.create_task(ws.send_json(frame))
-                return
-            future = asyncio.run_coroutine_threadsafe(ws.send_json(frame), loop)
-            future.result(timeout=10.0)
+        _send = _browser_controller_ws_sender(ws, loop)
 
         self._browser_control_broker.attach(scope, _send, owner=ws)
         try:
@@ -3525,24 +3543,35 @@ class APIServerAdapter(BasePlatformAdapter):
                     except Exception:
                         continue
                     if isinstance(frame, dict):
-                        reply = self._handle_browser_control_frame(scope, frame)
+                        reply = self._handle_browser_control_frame(
+                            scope,
+                            frame,
+                            owner=ws,
+                        )
                         if isinstance(reply, dict):
                             await ws.send_json(reply)
                 elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
                     break
         finally:
-            self._browser_control_broker.detach(
+            self._browser_control_broker.disconnect(
                 scope,
                 owner=ws,
-                notify_controller=False,
             )
         return ws
 
-    def _handle_browser_control_frame(self, scope: "ControllerScope", frame: dict) -> None:
+    def _handle_browser_control_frame(
+        self,
+        scope: "ControllerScope",
+        frame: dict,
+        *,
+        owner: Any = None,
+    ) -> None:
         """Apply one controller→broker frame with exact-scope checks."""
         method = frame.get("method")
         params = frame.get("params")
         if not isinstance(params, dict):
+            return
+        if owner is None or not self._browser_control_broker.is_owner(scope, owner):
             return
         if method == "browser.controller.heartbeat":
             nonce = str(params.get("nonce") or "").strip()
@@ -3554,6 +3583,16 @@ class APIServerAdapter(BasePlatformAdapter):
             return {
                 "method": "browser.controller.heartbeat",
                 "params": {"nonce": nonce, "ok": True},
+            }
+        if method == "browser.controller.detach":
+            self._browser_control_broker.detach(
+                scope,
+                owner=owner,
+                notify_controller=False,
+            )
+            return {
+                "method": "browser.controller.detach",
+                "params": {"ok": True},
             }
         if method == "browser.controller.result":
             command_id = params.get("command_id")

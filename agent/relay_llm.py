@@ -8,6 +8,7 @@ import inspect
 import json
 import logging
 from collections.abc import Callable, Iterator
+from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
@@ -22,19 +23,51 @@ _PROVIDER_MESSAGE_EXTENSION_KEYS = frozenset(
 _RELAY_INTERNAL_PROVIDER_HEADERS = frozenset(
     {"x-dynamo-parent-session-id", "x-dynamo-session-id"}
 )
-_RELAY_OPERATION_BY_API_MODE = {
-    "chat_completions": "openai.chat_completions",
-    "codex_responses": "openai.responses",
-    "anthropic_messages": "anthropic.messages",
+@dataclass(frozen=True, slots=True)
+class _RelayProtocol:
+    operation: str
+    codec_class: str
+
+
+_RELAY_PROTOCOL_BY_API_MODE = {
+    "chat_completions": _RelayProtocol(
+        operation="openai.chat_completions",
+        codec_class="OpenAIChatCodec",
+    ),
+    "codex_responses": _RelayProtocol(
+        operation="openai.responses",
+        codec_class="OpenAIResponsesCodec",
+    ),
+    "anthropic_messages": _RelayProtocol(
+        operation="anthropic.messages",
+        codec_class="AnthropicMessagesCodec",
+    ),
 }
+
+
+def _relay_protocol(metadata: dict[str, Any] | None) -> _RelayProtocol | None:
+    """Return Relay's operation and codec descriptor for an API mode."""
+    api_mode = (metadata or {}).get("api_mode")
+    if not isinstance(api_mode, str):
+        return None
+    return _RELAY_PROTOCOL_BY_API_MODE.get(api_mode)
 
 
 def _relay_operation_name(provider_name: str, metadata: dict[str, Any] | None) -> str:
     """Return Relay's canonical operation name when Hermes knows the API mode."""
-    api_mode = (metadata or {}).get("api_mode")
-    if not isinstance(api_mode, str):
-        return provider_name
-    return _RELAY_OPERATION_BY_API_MODE.get(api_mode, provider_name)
+    protocol = _relay_protocol(metadata)
+    return protocol.operation if protocol is not None else provider_name
+
+
+def _relay_metadata(
+    provider_name: str, metadata: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Preserve the physical provider when the operation name is canonicalized."""
+    relay_metadata = _jsonable(metadata or {})
+    if not isinstance(relay_metadata, dict):
+        relay_metadata = {}
+    relay_metadata.setdefault("hermes.provider", provider_name)
+    return relay_metadata
 
 
 def execute(
@@ -100,7 +133,7 @@ def execute(
                 relay_request,
                 invoke,
                 handle=parent,
-                metadata=_jsonable(metadata or {}),
+                metadata=_relay_metadata(name, metadata),
                 model_name=model_name,
                 codec=_codec(runtime.relay, metadata),
                 response_codec=_codec(runtime.relay, metadata),
@@ -194,7 +227,7 @@ async def execute_async(
             relay_request,
             invoke,
             handle=parent,
-            metadata=_jsonable(metadata or {}),
+            metadata=_relay_metadata(name, metadata),
             model_name=model_name,
             codec=_codec(runtime.relay, metadata),
             response_codec=_codec(runtime.relay, metadata),
@@ -547,7 +580,7 @@ class ManagedLlmStream(Iterator[Any]):
                     observe_chunk,
                     relay_finalizer,
                     handle=parent,
-                    metadata=_jsonable(metadata or {}),
+                    metadata=_relay_metadata(name, metadata),
                     model_name=model_name,
                     codec=_codec(runtime.relay, metadata),
                     response_codec=_codec(runtime.relay, metadata),
@@ -1199,18 +1232,11 @@ def _provider_request_body(
 
 
 def _codec(relay: Any, metadata: dict[str, Any] | None) -> Any:
-    api_mode = str((metadata or {}).get("api_mode") or "")
+    protocol = _relay_protocol(metadata)
     codecs = getattr(relay, "codecs", None)
-    if codecs is None:
+    if protocol is None or codecs is None:
         return None
-    if api_mode == "chat_completions":
-        codec = getattr(codecs, "OpenAIChatCodec", None)
-    elif api_mode == "anthropic_messages":
-        codec = getattr(codecs, "AnthropicMessagesCodec", None)
-    elif api_mode == "codex_responses":
-        codec = getattr(codecs, "OpenAIResponsesCodec", None)
-    else:
-        codec = None
+    codec = getattr(codecs, protocol.codec_class, None)
     return codec() if callable(codec) else None
 
 

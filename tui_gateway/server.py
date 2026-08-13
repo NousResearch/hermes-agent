@@ -1164,9 +1164,21 @@ def _schedule_ws_orphan_reap(sid: str) -> None:
         session = None
         with _session_resume_lock:
             current = _sessions.get(sid)
-            if not _ws_session_is_orphaned(current):
+            # Mid-turn detached sessions are not yet orphaned (_running
+            # short-circuits _ws_session_is_orphaned). If we return here
+            # the single Timer is gone and the session is immortal until
+            # the 6h TTL — which also skips running (#85578). Reschedule
+            # like the active-delegation branch below.
+            if (
+                current
+                and not current.get("_finalized")
+                and current.get("running")
+                and current.get("transport") is _detached_ws_transport
+            ):
+                reschedule = True
+            elif not _ws_session_is_orphaned(current):
                 return
-            if _session_has_active_delegations(sid, current):
+            elif _session_has_active_delegations(sid, current):
                 reschedule = True
             else:
                 session = _pop_session_by_id(sid)

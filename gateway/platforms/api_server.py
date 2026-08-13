@@ -6023,12 +6023,30 @@ class APIServerAdapter(BasePlatformAdapter):
         if not isinstance(agent_messages, list) or not agent_messages:
             return 0
 
+        def _without_persistence_metadata(message: Any) -> Any:
+            if not isinstance(message, dict):
+                return message
+            return {
+                key: value
+                for key, value in message.items()
+                if key not in {"_db_persisted", "_row_id"}
+            }
+
+        def _prefix_matches(expected: List[Dict[str, Any]]) -> bool:
+            if len(agent_messages) < len(expected):
+                return False
+            return all(
+                _without_persistence_metadata(actual)
+                == _without_persistence_metadata(wanted)
+                for actual, wanted in zip(agent_messages, expected)
+            )
+
         prior = list(conversation_history)
         current_user = {"role": "user", "content": user_message}
         expected_prefix = prior + [current_user]
-        if agent_messages[:len(expected_prefix)] == expected_prefix:
+        if _prefix_matches(expected_prefix):
             return len(expected_prefix)
-        if prior and agent_messages[:len(prior)] == prior:
+        if prior and _prefix_matches(prior):
             return len(prior)
         return 0
 

@@ -263,3 +263,73 @@ def test_credential_failure_still_maps_to_401():
             await upstream_runner.cleanup()
 
     asyncio.run(run())
+
+
+# ---------------------------------------------------------------------------
+# handle_health -> is_authenticated
+# ---------------------------------------------------------------------------
+
+
+def test_is_authenticated_runs_off_the_event_loop():
+    """`/health` must not resolve auth state on the loop thread.
+
+    ``adapters/base.py`` documents ``is_authenticated`` as "cheap — no network
+    calls", but ``NousPortalAdapter`` implements it via ``_read_state()``, which
+    takes the same 15s cross-process ``_auth_store_lock()``. ``/health`` is what
+    a supervisor, systemd unit, container healthcheck or load balancer polls, so
+    it is the endpoint least able to afford a lock wait.
+    """
+    async def run():
+        loop_thread = threading.get_ident()
+        adapter = _RecordingAdapter("http://127.0.0.1:1/v1")
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{proxy_base}/health") as resp:
+                    assert resp.status == 200
+                    payload = await resp.json()
+
+            assert payload["authenticated"] is True
+            assert adapter.authenticated_thread is not None, "is_authenticated was never called"
+            assert adapter.authenticated_thread != loop_thread, (
+                "is_authenticated ran on the event-loop thread "
+                f"({adapter.authenticated_thread}); it takes the cross-process "
+                "auth-store lock and must be offloaded"
+            )
+        finally:
+            await proxy_runner.cleanup()
+
+    asyncio.run(run())
+
+
+def test_event_loop_keeps_running_while_health_resolves_auth_state():
+    """A contended auth store must not freeze the loop behind `/health`.
+
+    Same loop-side heartbeat measurement as the credential test — a client on
+    the blocked loop cannot observe its own starvation.
+    """
+    async def run():
+        ticks = [0]
+        running = [True]
+        adapter = _RecordingAdapter(
+            "http://127.0.0.1:1/v1", stall=_STALL_SECONDS, ticks=ticks
+        )
+        proxy_runner, proxy_base = await _start_runner(create_app(adapter))
+        beat = asyncio.create_task(_heartbeat(ticks, running))
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(f"{proxy_base}/health") as resp:
+                    await resp.read()
+
+            assert adapter.ticks_across_is_authenticated is not None
+            assert adapter.ticks_across_is_authenticated >= _MIN_TICKS_ACROSS_STALL, (
+                f"only {adapter.ticks_across_is_authenticated} loop iterations ran during "
+                f"a {_STALL_SECONDS}s /health auth check — the event loop was frozen"
+            )
+        finally:
+            running[0] = False
+            beat.cancel()
+            await asyncio.gather(beat, return_exceptions=True)
+            await proxy_runner.cleanup()
+
+    asyncio.run(run())

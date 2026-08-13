@@ -160,6 +160,18 @@ def _discover_entry_point_providers() -> None:
     (``module`` — imported for its module-level ``register_provider`` side
     effect, mirroring the directory-plugin ``__init__.py`` contract).
 
+    Gating and safety:
+
+    * **Opt-in.** Entry-point plugins are subject to the same
+      ``plugins.enabled`` allow-list (and ``plugins.disabled`` deny-list) the
+      general PluginManager enforces — a pip package is never imported just
+      because it is installed. An entry point whose name is not enabled is
+      skipped without loading.
+    * **Provider targets only.** The ``hermes_agent.plugins`` group is shared
+      with general plugins whose target is ``register(ctx)``. Callables that
+      require arguments are skipped here (the PluginManager owns them);
+      provider registration hooks take no arguments by contract.
+
     Failures are swallowed per-entry (a broken third-party package must not
     break provider discovery) and logged at warning level. This scan runs
     first, so filesystem plugins (bundled + ``$HERMES_HOME``) keep their
@@ -170,6 +182,18 @@ def _discover_entry_point_providers() -> None:
     try:
         import importlib.metadata as _md
     except Exception:  # pragma: no cover — importlib.metadata always present ≥3.8
+        return
+
+    # Same opt-in gate as the general PluginManager: only entry points named
+    # in ``plugins.enabled`` load, and ``plugins.disabled`` always wins.
+    try:
+        from hermes_cli.plugins import _get_disabled_plugins, _get_enabled_plugins
+
+        enabled = _get_enabled_plugins()  # None = nothing enabled yet (opt-in default)
+        disabled = _get_disabled_plugins()
+    except Exception:  # pragma: no cover — config layer unavailable
+        enabled, disabled = None, set()
+    if not enabled:
         return
 
     group = "hermes_agent.plugins"
@@ -185,6 +209,11 @@ def _discover_entry_point_providers() -> None:
         return
 
     for ep in group_eps:
+        if ep.name not in enabled or ep.name in disabled:
+            logger.debug(
+                "entry-point provider %r skipped: not enabled in config", ep.name
+            )
+            continue
         try:
             loaded = ep.load()
         except Exception as exc:
@@ -193,8 +222,18 @@ def _discover_entry_point_providers() -> None:
             )
             continue
         # ``module:func`` → callable we invoke; bare ``module`` → import side
-        # effect already happened during load(). Only call when it's callable.
+        # effect already happened during load(). Only call when it's callable
+        # AND zero-arg: general plugins in this shared group expose
+        # ``register(ctx)`` (requires an argument) and belong to the
+        # PluginManager, not the provider registry.
         if callable(loaded):
+            if _requires_arguments(loaded):
+                logger.debug(
+                    "entry-point %r skipped by provider scan: target requires "
+                    "arguments (general plugin owned by PluginManager)",
+                    ep.name,
+                )
+                continue
             try:
                 loaded()
             except Exception as exc:
@@ -203,6 +242,30 @@ def _discover_entry_point_providers() -> None:
                     ep.name,
                     exc,
                 )
+
+
+def _requires_arguments(fn) -> bool:
+    """True when ``fn`` cannot be called with zero arguments.
+
+    Used to distinguish provider registration hooks (zero-arg by contract)
+    from general plugin hooks (``register(ctx)``) sharing the same entry-point
+    group. Unintrospectable callables (C extensions) are treated as zero-arg
+    and left to the per-entry exception guard.
+    """
+    import inspect
+
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):  # pragma: no cover — builtins/C callables
+        return False
+    for param in sig.parameters.values():
+        if param.kind in (
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        ) and param.default is inspect.Parameter.empty:
+            return True
+    return False
 
 
 def _discover_providers() -> None:

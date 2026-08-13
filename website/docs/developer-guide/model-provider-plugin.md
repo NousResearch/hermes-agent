@@ -264,16 +264,33 @@ The target may be either:
   `register_provider(...)` side effect, mirroring the directory-plugin
   `__init__.py` contract.
 
-`providers/__init__.py` discovers these entry points itself (the general
-`PluginManager` records model-provider manifests but never imports them, so it
-cannot register the profile). Entry-point plugins are discovered **before**
-filesystem plugins, giving them the lowest precedence: because
-`register_provider()` is last-writer-wins, a bundled or `$HERMES_HOME` profile
-of the same name always overrides a pip-installed one. A pip package can add a
-genuinely new provider, but cannot silently hijack a first-party provider name.
+`providers/__init__.py` discovers these entry points itself — the general
+`PluginManager` never invokes provider registration for pip packages (its
+entry-point path targets `register(ctx)`-style general plugins, gated by
+`plugins.enabled`), so the provider registry does its own scan. Two rules
+apply:
 
-A broken entry point is isolated — it is logged at warning level and skipped,
-and never blocks discovery of the other providers.
+- **Opt-in required.** The same `plugins.enabled` allow-list (and
+  `plugins.disabled` deny-list) from `config.yaml` governs this scan. A pip
+  package is never imported just because it is installed — users must add the
+  entry-point name to `plugins.enabled`:
+
+  ```yaml
+  plugins:
+    enabled:
+      - acme-inference
+  ```
+
+- **Lowest precedence.** Entry-point plugins are discovered **before**
+  filesystem plugins: because `register_provider()` is last-writer-wins, a
+  bundled or `$HERMES_HOME` profile of the same name always overrides a
+  pip-installed one. A pip package can add a genuinely new provider, but
+  cannot silently hijack a first-party provider name.
+
+Targets that require arguments (a general plugin's `register(ctx)`) are
+skipped by the provider scan — they belong to the `PluginManager`. A broken
+entry point is isolated — it is logged at warning level and skipped, and never
+blocks discovery of the other providers.
 
 See [Building a Hermes Plugin](/developer-guide/plugins#distribute-via-pip) for the full entry-points setup.
 

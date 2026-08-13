@@ -60,6 +60,19 @@ class _FakeEP:
         return self._loader()
 
 
+def _enable(monkeypatch, *names, disabled=()):
+    """Gate helper: mark entry-point names enabled/disabled in config.
+
+    ``_discover_entry_point_providers`` enforces the PluginManager's
+    ``plugins.enabled`` opt-in allow-list, so tests must enable their fake
+    entry points explicitly.
+    """
+    import hermes_cli.plugins as hp
+
+    monkeypatch.setattr(hp, "_get_enabled_plugins", lambda: set(names))
+    monkeypatch.setattr(hp, "_get_disabled_plugins", lambda: set(disabled))
+
+
 class _FakeEntryPoints:
     def __init__(self, eps):
         self._eps = eps
@@ -100,11 +113,63 @@ def test_entry_point_callable_and_module_targets(monkeypatch):
     import importlib.metadata as md
 
     monkeypatch.setattr(md, "entry_points", lambda: fake_eps)
+    _enable(monkeypatch, "ep-callable", "ep-module")
     _clear_provider_caches()
     try:
         assert providers.get_provider_profile("ep-callable") is not None
         assert providers.get_provider_profile("epc") is not None  # alias
         assert providers.get_provider_profile("ep-module") is not None
+    finally:
+        _clear_provider_caches()
+
+
+def test_entry_point_not_enabled_is_skipped(monkeypatch):
+    """Entry points honor the plugins.enabled opt-in gate — installed ≠ loaded."""
+    fake_eps = _FakeEntryPoints([_FakeEP("ep-callable", _register_via_callable)])
+    import importlib.metadata as md
+
+    monkeypatch.setattr(md, "entry_points", lambda: fake_eps)
+    _enable(monkeypatch, "some-other-plugin")  # ep-callable NOT enabled
+    _clear_provider_caches()
+    try:
+        assert providers.get_provider_profile("ep-callable") is None
+    finally:
+        _clear_provider_caches()
+
+
+def test_entry_point_disabled_wins_over_enabled(monkeypatch):
+    """plugins.disabled is a deny-list that beats plugins.enabled."""
+    fake_eps = _FakeEntryPoints([_FakeEP("ep-callable", _register_via_callable)])
+    import importlib.metadata as md
+
+    monkeypatch.setattr(md, "entry_points", lambda: fake_eps)
+    _enable(monkeypatch, "ep-callable", disabled=("ep-callable",))
+    _clear_provider_caches()
+    try:
+        assert providers.get_provider_profile("ep-callable") is None
+    finally:
+        _clear_provider_caches()
+
+
+def test_general_plugin_register_ctx_not_invoked(monkeypatch):
+    """A register(ctx)-style general plugin sharing the group is never called."""
+    calls = []
+
+    def _general_plugin_target():
+        def register(ctx):  # requires an argument — PluginManager contract
+            calls.append(ctx)
+
+        return register
+
+    fake_eps = _FakeEntryPoints([_FakeEP("general-plugin", _general_plugin_target)])
+    import importlib.metadata as md
+
+    monkeypatch.setattr(md, "entry_points", lambda: fake_eps)
+    _enable(monkeypatch, "general-plugin")
+    _clear_provider_caches()
+    try:
+        providers._discover_providers()
+        assert calls == []  # never invoked (would have been a TypeError anyway)
     finally:
         _clear_provider_caches()
 
@@ -122,6 +187,7 @@ def test_entry_point_failure_is_isolated(monkeypatch):
     import importlib.metadata as md
 
     monkeypatch.setattr(md, "entry_points", lambda: fake_eps)
+    _enable(monkeypatch, "broken", "ep-callable")
     _clear_provider_caches()
     try:
         # A broken entry point must not prevent the good one from registering.
@@ -131,7 +197,9 @@ def test_entry_point_failure_is_isolated(monkeypatch):
 
 
 def test_filesystem_plugins_win_over_entry_points(monkeypatch):
-    """Entry points scan last, so a bundled/user profile of the same name wins."""
+    """Entry points are discovered FIRST (lowest precedence): last-writer-wins
+    in register_provider() means a bundled/user profile of the same name
+    overrides a pip impostor."""
     from providers.base import ProviderProfile
 
     def _register_ep_openrouter():
@@ -146,6 +214,7 @@ def test_filesystem_plugins_win_over_entry_points(monkeypatch):
     import importlib.metadata as md
 
     monkeypatch.setattr(md, "entry_points", lambda: fake_eps)
+    _enable(monkeypatch, "openrouter")  # enabled, so precedence is what's tested
     _clear_provider_caches()
     try:
         p = providers.get_provider_profile("openrouter")

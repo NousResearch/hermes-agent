@@ -18,6 +18,8 @@ import os
 import urllib.request
 from urllib.parse import urljoin
 
+from hermes_cli.urllib_security import open_credentialed_url
+
 logger = logging.getLogger(__name__)
 
 # The Bank Templates catalog lives in the Hindsight docs repo and is the same
@@ -69,8 +71,8 @@ def apply_template(api_url: str, bank_id: str, api_key: str | None, manifest: di
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(endpoint, data=data, headers=headers, method="POST")  # noqa: S310
-    with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # noqa: S310
-        resp.read()  # drain; urlopen raises HTTPError on non-2xx
+    with open_credentialed_url(req, timeout=_HTTP_TIMEOUT) as resp:
+        resp.read()  # drain; open_credentialed_url raises HTTPError on non-2xx
 
 
 def probe_existing_customization(api_url: str, bank_id: str, api_key: str | None) -> bool:
@@ -86,7 +88,7 @@ def probe_existing_customization(api_url: str, bank_id: str, api_key: str | None
         headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(endpoint, headers=headers)  # noqa: S310
     try:
-        with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as resp:  # noqa: S310
+        with open_credentialed_url(req, timeout=_HTTP_TIMEOUT) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception as e:  # missing bank / network — treat as not customized
         logger.debug("Hindsight: bank customization probe skipped: %s", e)

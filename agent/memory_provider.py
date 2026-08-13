@@ -41,10 +41,9 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-# Default glyph for the deterministic memory indicators. Hindsight's brand mark
-# is an eye (the logo is an eye ringed by graph nodes), so the terminal-safe
-# stand-in for the logo is the eye emoji. Providers can override per-status.
-INDICATOR_GLYPH = "👁️"
+# Default glyph for the deterministic memory indicators. Providers override
+# per-status with their own brand mark (e.g. Hindsight uses "👁️").
+INDICATOR_GLYPH = "🧠"
 
 
 @dataclass(frozen=True)

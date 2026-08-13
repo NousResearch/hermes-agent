@@ -47,7 +47,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from agent.secret_scope import get_secret
 
-from agent.memory_provider import MemoryProvider, RecallStatus, INDICATOR_GLYPH
+from agent.memory_provider import MemoryProvider, RecallStatus
 from hermes_constants import get_hermes_home
 from tools.registry import tool_error
 from hermes_cli.config import cfg_get
@@ -79,6 +79,9 @@ _DEFAULT_IDLE_TIMEOUT = 300  # seconds — Hindsight embedded daemon default
 # generic user-facing opt-in exists, so this stays unset unless the user sets it
 # via the ``retain_source`` config key or HINDSIGHT_RETAIN_SOURCE (e.g. "hermes").
 _DEFAULT_RETAIN_SOURCE = ""
+# Hindsight brand mark — the logo is an eye ringed by graph nodes. Used for
+# the deterministic recall/retain indicators (overrides the generic core default).
+_HINDSIGHT_GLYPH = "👁️"
 # Mirrors hindsight-integrations/openclaw — Hindsight 0.5.0 added
 # `update_mode='append'` semantics on retain (vectorize-io/hindsight#932).
 # Without it, reusing a stable session-scoped document_id silently
@@ -1942,7 +1945,7 @@ class HindsightMemoryProvider(MemoryProvider):
         """
         if not self._recall_indicator or not self._last_recall_returned:
             return None
-        return RecallStatus(provider_label="Hindsight", count=self._last_recall_count)
+        return RecallStatus(provider_label="Hindsight", count=self._last_recall_count, glyph=_HINDSIGHT_GLYPH)
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         # In synchronous mode prefetch() does a live recall each turn, so
@@ -2160,7 +2163,7 @@ class HindsightMemoryProvider(MemoryProvider):
         if not self._retain_indicator or self._status_callback is None:
             return
         try:
-            self._status_callback(f"{INDICATOR_GLYPH} Hindsight — saving to memory…")
+            self._status_callback(f"{_HINDSIGHT_GLYPH} Hindsight — saving to memory…")
         except Exception:
             logger.debug("Retain indicator emit failed (non-fatal)", exc_info=True)
 

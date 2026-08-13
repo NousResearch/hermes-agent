@@ -1784,11 +1784,17 @@ def init_agent(
                 if _mp and _mp.is_available():
                     agent._memory_manager.add_provider(_mp)
                 elif _mp is not None:
-                    try:
-                        _unavailable_reason = _mp.unavailable_reason()
-                    except Exception:
-                        _unavailable_reason = ""
-                    _warn_memory_provider_unavailable(_mem_provider_name, _unavailable_reason)
+                    # Skip the (potentially expensive) unavailable_reason() call
+                    # if we've already warned for this provider — the gateway
+                    # builds a fresh AIAgent per message, so without this guard
+                    # unavailable_reason() (which reads config from disk and may
+                    # probe importlib) runs on every turn.
+                    if _mem_provider_name not in _warned_unavailable_providers:
+                        try:
+                            _unavailable_reason = _mp.unavailable_reason()
+                        except Exception:
+                            _unavailable_reason = ""
+                        _warn_memory_provider_unavailable(_mem_provider_name, _unavailable_reason)
                 if agent._memory_manager.providers:
                     _init_kwargs = {
                         "session_id": agent.session_id,

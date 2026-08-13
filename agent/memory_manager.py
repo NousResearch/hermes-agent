@@ -599,7 +599,7 @@ class MemoryManager:
 
         Call right after :meth:`prefetch_all` on the turn thread. Collects each
         provider's :meth:`MemoryProvider.recall_status` and renders a single
-        status string (e.g. ``"👁️ Hindsight — recalled 3 memories"``) so the
+        status string (e.g. ``"🧠 Provider — recalled 3 memories"``) so the
         user SEES memory was used regardless of whether the model mentions it.
         Returns ``""`` when no provider injected memory this turn — callers can
         emit the result unconditionally.

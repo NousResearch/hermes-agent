@@ -46,7 +46,7 @@ def test_apply_template_posts_to_import_endpoint(monkeypatch):
     captured = {}
 
     @contextmanager
-    def _fake_urlopen(req, timeout=None):
+    def _fake_open(req, timeout=None):
         captured["url"] = req.full_url
         captured["method"] = req.get_method()
         captured["auth"] = req.get_header("Authorization")
@@ -58,7 +58,7 @@ def test_apply_template_posts_to_import_endpoint(monkeypatch):
 
         yield _Resp()
 
-    monkeypatch.setattr(tpl.urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(tpl, "open_credentialed_url", _fake_open)
     tpl.apply_template("https://api.hindsight.vectorize.io/", "hermes", "hsk_abc", {"version": "1"})
 
     assert captured["url"] == "https://api.hindsight.vectorize.io/v1/default/banks/hermes/import"
@@ -71,7 +71,7 @@ def test_apply_template_omits_auth_when_no_key(monkeypatch):
     captured = {}
 
     @contextmanager
-    def _fake_urlopen(req, timeout=None):
+    def _fake_open(req, timeout=None):
         captured["auth"] = req.get_header("Authorization")
 
         class _Resp:
@@ -80,7 +80,7 @@ def test_apply_template_omits_auth_when_no_key(monkeypatch):
 
         yield _Resp()
 
-    monkeypatch.setattr(tpl.urllib.request, "urlopen", _fake_urlopen)
+    monkeypatch.setattr(tpl, "open_credentialed_url", _fake_open)
     tpl.apply_template("http://localhost:8888", "hermes", None, {"version": "1"})
     assert captured["auth"] is None
 
@@ -184,7 +184,7 @@ def test_run_template_step_swallows_apply_errors(monkeypatch):
     assert any("Could not apply" in line for line in logs)
 
 
-def _fake_urlopen(payload):
+def _fake_open(payload):
     @contextmanager
     def _cm(req, timeout=None):
         class _Resp:
@@ -197,14 +197,14 @@ def _fake_urlopen(payload):
 
 
 def test_probe_existing_customization_true_when_bank_has_config(monkeypatch):
-    monkeypatch.setattr(tpl.urllib.request, "urlopen",
-                        _fake_urlopen({"version": "1", "bank": {"reflect_mission": "x"}}))
+    monkeypatch.setattr(tpl, "open_credentialed_url",
+                        _fake_open({"version": "1", "bank": {"reflect_mission": "x"}}))
     assert tpl.probe_existing_customization("https://api", "hermes", "k") is True
 
 
 def test_probe_existing_customization_false_when_empty(monkeypatch):
-    monkeypatch.setattr(tpl.urllib.request, "urlopen",
-                        _fake_urlopen({"version": "1"}))
+    monkeypatch.setattr(tpl, "open_credentialed_url",
+                        _fake_open({"version": "1"}))
     assert tpl.probe_existing_customization("https://api", "hermes", "k") is False
 
 
@@ -212,7 +212,7 @@ def test_probe_existing_customization_false_on_error(monkeypatch):
     def _boom(req, timeout=None):
         raise OSError("no bank")
 
-    monkeypatch.setattr(tpl.urllib.request, "urlopen", _boom)
+    monkeypatch.setattr(tpl, "open_credentialed_url", _boom)
     assert tpl.probe_existing_customization("https://api", "missing", None) is False
 
 

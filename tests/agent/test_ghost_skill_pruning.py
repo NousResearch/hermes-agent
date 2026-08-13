@@ -21,6 +21,11 @@ Test patterns for the marker emit checks adapted from PR #32375
 from unittest.mock import MagicMock, patch
 
 from agent.context_compressor import (
+    CURRENT_SUBTASK_HEADING,
+    GOVERNING_OUTCOME_HEADING,
+    HISTORICAL_TASK_HEADING,
+    LATEST_USER_CORRECTION_HEADING,
+    NEXT_OUTCOME_STEP_HEADING,
     SKILL_PRUNED_MARKER_PREFIX,
     SUMMARY_PREFIX,
     ContextCompressor,
@@ -31,6 +36,27 @@ from agent.context_compressor import (
     _skill_pruned_marker,
     _summarize_tool_result,
 )
+
+
+def _valid_summary_without_pruned_marker(detail: str) -> str:
+    """Return a valid summary that deliberately omits skill-pruning markers."""
+    return f"""{HISTORICAL_TASK_HEADING}
+User asked: 'build the PDF report'
+
+{GOVERNING_OUTCOME_HEADING}
+Deliver the requested PDF report.
+
+{CURRENT_SUBTASK_HEADING}
+Continue the grounded report work.
+
+{LATEST_USER_CORRECTION_HEADING}
+None.
+
+{NEXT_OUTCOME_STEP_HEADING}
+Complete the next grounded report step.
+
+## Completed Actions
+{detail}"""
 
 
 def _make_compressor(**overrides):
@@ -216,8 +242,9 @@ class TestMarkerSurvivesRealCompress:
         c = _make_compressor(protect_first_n=1, protect_last_n=2)
         msgs = self._messages_with_pruned_skill_in_middle()
         drop_response = self._mock_response(
-            "## Goal\nBuild the PDF report.\n\n## Completed Actions\n"
-            "1. Loaded some skills and worked on the report."
+            _valid_summary_without_pruned_marker(
+                "1. Loaded some skills and worked on the report."
+            )
         )
         with (
             patch.object(c, "_find_tail_cut_by_tokens", return_value=7),
@@ -255,7 +282,9 @@ class TestMarkerSurvivesRealCompress:
             {"role": "assistant" if i % 2 == 0 else "user", "content": f"turn {i} " + "q" * 300}
             for i in range(8)
         ]
-        drop_response = self._mock_response("## Goal\nNext task in flight.")
+        drop_response = self._mock_response(
+            _valid_summary_without_pruned_marker("1. Next task remains in flight.")
+        )
         with (
             patch.object(c, "_find_tail_cut_by_tokens", return_value=8),
             patch("agent.context_compressor.call_llm", return_value=drop_response),

@@ -4,7 +4,12 @@ from unittest.mock import MagicMock, patch
 
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
+    CURRENT_SUBTASK_HEADING,
     ContextCompressor,
+    GOVERNING_OUTCOME_HEADING,
+    HISTORICAL_TASK_HEADING,
+    LATEST_USER_CORRECTION_HEADING,
+    NEXT_OUTCOME_STEP_HEADING,
     SUMMARY_PREFIX,
     _MERGED_PRIOR_CONTEXT_HEADER,
     _MERGED_SUMMARY_DELIMITER,
@@ -24,7 +29,29 @@ def _compressor(protect_first_n: int = 1) -> ContextCompressor:
         )
 
 
+def _valid_user_summary(content: str) -> str:
+    return f"""{HISTORICAL_TASK_HEADING}
+User asked: 'continue the requested work'
+
+{GOVERNING_OUTCOME_HEADING}
+Deliver the requested result.
+
+{CURRENT_SUBTASK_HEADING}
+Continue the current grounded step.
+
+{LATEST_USER_CORRECTION_HEADING}
+None.
+
+{NEXT_OUTCOME_STEP_HEADING}
+Complete the next grounded step.
+
+## Critical Context
+{content}"""
+
+
 def _response(content: str):
+    if GOVERNING_OUTCOME_HEADING not in content:
+        content = _valid_user_summary(content)
     mock_response = MagicMock()
     mock_response.choices = [MagicMock()]
     mock_response.choices[0].message.content = content

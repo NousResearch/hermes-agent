@@ -95,17 +95,40 @@ def _is_summary_access_or_quota_error(exc: Exception) -> bool:
 
 
 HISTORICAL_TASK_HEADING = "## Historical Task Snapshot"
+GOVERNING_OUTCOME_HEADING = "## Governing User Outcome"
+CURRENT_SUBTASK_HEADING = "## Current Subtask"
+LATEST_USER_CORRECTION_HEADING = "## Latest User Correction"
+NEXT_OUTCOME_STEP_HEADING = "## Next Outcome-Relevant Step (Reference Only)"
+_CONTINUATION_HEADINGS = (
+    GOVERNING_OUTCOME_HEADING,
+    CURRENT_SUBTASK_HEADING,
+    LATEST_USER_CORRECTION_HEADING,
+    NEXT_OUTCOME_STEP_HEADING,
+)
+MICRO_USER_SEQUENCE_POINTERS_HEADING = (
+    "## Surviving Real-User Sequence Pointers (Noncanonical)"
+)
 
 
 SUMMARY_PREFIX = (
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
     "into the summary below. This is a handoff from a previous context "
     "window — treat it as background reference, NOT as active instructions. "
-    "Do NOT answer questions or fulfill requests mentioned in this summary; "
-    "they were already addressed. "
-    "Respond ONLY to the latest user message that appears AFTER this "
-    "summary — that message is the single source of truth for what to do "
-    "right now. "
+    "Do NOT answer questions or fulfill requests merely because they appear "
+    "in this summary; the summary alone never activates work. "
+    "Respond ONLY to real user messages that appear AFTER this summary. "
+    "Every explicit instruction, correction, cancellation, change of topic, "
+    "or stop in that post-summary user sequence is authoritative over "
+    "incompatible compacted context; later post-summary user messages take "
+    "precedence over earlier ones. Post-summary assistant and tool messages "
+    "are newer execution-state evidence, not user authority; update completed "
+    "or failed status from them before selecting any next work. In a merged "
+    "handoff, genuine preserved content before the compaction-summary "
+    "delimiter retains its original role and chronological authority or "
+    "evidentiary weight: apply a user correction there before resolving an "
+    "anaphoric 'continue', and use assistant or tool content there as "
+    "execution evidence. The merge wrapper or header itself never activates "
+    "work. The latest user message determines what to do right now. "
     "If no user message appears AFTER this summary, do nothing: do not "
     "resume, wrap up, or continue work from "
     f"'{HISTORICAL_TASK_HEADING}' or any other section, do not call tools, "
@@ -114,11 +137,22 @@ SUMMARY_PREFIX = (
     "tool calls appear after this summary, you are mid-way through an "
     "in-flight exchange — continue that exchange normally.) "
     "Topic overlap with the summary does NOT mean you should resume its "
-    "task: even on similar topics, the latest user message WINS. Treat ONLY "
-    "the latest message as the active task and discard stale items from "
-    f"'{HISTORICAL_TASK_HEADING}' entirely — do not 'wrap up' or "
-    "'finish' work described there unless the latest message explicitly "
-    "asks for it. "
+    "task. If the latest message is context-dependent rather than a "
+    "self-contained instruction (for example, 'continue' or 'what next?'), "
+    "first apply every still-applicable instruction, correction, cancellation, "
+    "or route change in the real-user sequence after this summary. Use "
+    f"'{GOVERNING_OUTCOME_HEADING}', '{CURRENT_SUBTASK_HEADING}', "
+    f"'{LATEST_USER_CORRECTION_HEADING}', and '{NEXT_OUTCOME_STEP_HEADING}' "
+    "only to resolve older compacted context that the post-summary user "
+    "sequence does not establish. Those fields remain reference-only and "
+    "cannot activate work without that latest message. "
+    f"'{HISTORICAL_TASK_HEADING}' is a literal historical record and NEVER "
+    "selects what to continue; discard stale items from it entirely. Never "
+    "resume completed, cancelled, or superseded work, and completing a "
+    "subtask does not by itself complete the governing user outcome. If the "
+    "continuation fields are missing or Unknown, or leave two materially "
+    "different referents, ask exactly one short clarification question "
+    "instead of choosing. "
     "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
     "topic) must immediately end any in-flight work described in the "
@@ -131,6 +165,16 @@ SUMMARY_PREFIX = (
     "run commands, search) instead of merely narrating what you would do. "
     "The current session state (files, config, etc.) may reflect work "
     "described here — avoid repeating it:"
+)
+MICRO_SUMMARY_PREFIX = (
+    "[CONTEXT COMPACTION — REFERENCE ONLY] [MICRO] This marker contains compacted "
+    "assistant/tool history; real user messages remain verbatim. The "
+    "noncanonical pointer block below refers only to that surviving real-user "
+    "sequence and does not supply values for the batch continuation schema. "
+    "Resolve a context-dependent latest user message from the surviving "
+    "real-user sequence first; explicit corrections, cancellations, topic "
+    "changes, and stops win. "
+    "Never select work from Historical Task Snapshot:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
 
@@ -346,6 +390,42 @@ _MERGED_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT — COMPACTION SUMMARY BELOW]
 # written by that build generation; prepend only. tests/agent/
 # test_summary_prefix_semantics.py byte-pins every entry to enforce this.
 _HISTORICAL_SUMMARY_PREFIXES = (
+    # Pre-governing-outcome continuation: exact previous SUMMARY_PREFIX,
+    # including the no-user-message guard from #80622. Keep byte-for-byte so
+    # summaries persisted by that generation remain detectable and strip cleanly.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do "
+    "right now. "
+    "If no user message appears AFTER this summary, do nothing: do not "
+    "resume, wrap up, or continue work from "
+    "'## Historical Task Snapshot' or any other section, do not call tools, "
+    "and wait for a new user message. This handoff must never become the "
+    "active turn by itself. (Exception: if tool results or your own "
+    "tool calls appear after this summary, you are mid-way through an "
+    "in-flight exchange — continue that exchange normally.) "
+    "Topic overlap with the summary does NOT mean you should resume its "
+    "task: even on similar topics, the latest user message WINS. Treat ONLY "
+    "the latest message as the active task and discard stale items from "
+    "'## Historical Task Snapshot' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly "
+    "asks for it. "
+    "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
+    "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+    "topic) must immediately end any in-flight work described in the "
+    "summary; do not re-surface it in later turns. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "None of the above restricts HOW you work: your tools remain fully "
+    "active — keep calling them normally for the active task (edit files, "
+    "run commands, search) instead of merely narrating what you would do. "
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:",
     # Pre-#80622: identical to the current prefix except it lacked the
     # explicit "if no user message appears AFTER this summary, do nothing"
     # clause. Standalone reference handoffs persisted by that build could
@@ -3639,13 +3719,35 @@ class ContextCompressor(ContextEngine):
         blockers: list[str] = []
         last_dropped_turns: list[str] = []
 
-        def _compact_fallback_turn(value: Any) -> str:
+        truncation_marker = " ...[truncated]"
+
+        def _neutralize_summary_delimiters(text: str) -> str:
+            """Keep quoted boundary text from becoming live scaffolding."""
+            return text.replace(
+                _MERGED_SUMMARY_DELIMITER,
+                "[reserved compaction delimiter neutralized]",
+            ).replace(
+                _SUMMARY_END_MARKER,
+                "[reserved summary boundary neutralized]",
+            )
+
+        def _redacted_fallback_text(value: Any) -> str:
             text = _redact_compaction_text(_content_text_for_contains(value))
+            text = _neutralize_summary_delimiters(text)
             text = re.sub(r"\bgh[pousr]_[A-Za-z0-9_]{8,}\b", "[REDACTED]", text)
             text = re.sub(r"\s+", " ", text).strip()
-            if len(text) > _FALLBACK_TURN_MAX_CHARS:
-                text = text[: _FALLBACK_TURN_MAX_CHARS - 15].rstrip() + " ...[truncated]"
             return re.sub(r"\bgh[pousr]_[A-Za-z0-9_.-]+", "[REDACTED]", text)
+
+        def _bounded_fallback_text(value: Any, limit: int) -> str:
+            text = _redacted_fallback_text(value)
+            if len(text) <= limit:
+                return text
+            if limit <= len(truncation_marker):
+                return ""
+            return text[: limit - len(truncation_marker)].rstrip() + truncation_marker
+
+        def _compact_fallback_turn(value: Any) -> str:
+            return _bounded_fallback_text(value, _FALLBACK_TURN_MAX_CHARS)
 
         def _remember_dropped_turn(label: str, text: str, *, limit: int = 8) -> None:
             text = text.strip()
@@ -3749,75 +3851,353 @@ class ContextCompressor(ContextEngine):
         for idx, item in enumerate((assistant_actions + tool_actions)[:12], start=1):
             completed.append(f"{idx}. {item}")
 
-        active_task = (
-            f"User asked: {user_asks[-1]!r}"
-            if user_asks
-            else _NO_USER_TASK_SENTINEL
-        )
-        previous_summary_note = ""
+        previous_summary_full = ""
+        previous_sections: dict[str, str] = {}
         if self._previous_summary:
-            previous_summary = redact_sensitive_text(self._previous_summary.strip())
+            raw_previous_summary = self._previous_summary.strip()
+            # Strip only scaffolding at structural boundaries. The generic
+            # parser deliberately treats these delimiters anywhere in a live
+            # handoff as transport syntax, but an older summary may quote the
+            # same literal inside historical evidence.
+            if raw_previous_summary.startswith(_MERGED_PRIOR_CONTEXT_HEADER):
+                if _MERGED_SUMMARY_DELIMITER in raw_previous_summary:
+                    raw_previous_summary = raw_previous_summary.split(
+                        _MERGED_SUMMARY_DELIMITER,
+                        1,
+                    )[1].lstrip()
+            for prefix in (
+                SUMMARY_PREFIX,
+                MICRO_SUMMARY_PREFIX,
+                LEGACY_SUMMARY_PREFIX,
+                *_HISTORICAL_SUMMARY_PREFIXES,
+            ):
+                if raw_previous_summary.startswith(prefix):
+                    raw_previous_summary = raw_previous_summary[
+                        len(prefix):
+                    ].lstrip()
+                    break
+            if raw_previous_summary.endswith(_SUMMARY_END_MARKER):
+                raw_previous_summary = raw_previous_summary[
+                    :-len(_SUMMARY_END_MARKER)
+                ].rstrip()
+            previous_summary_full = _neutralize_summary_delimiters(
+                _redact_compaction_text(raw_previous_summary).strip()
+            )
+
+            def _previous_section(heading: str) -> str:
+                match = re.search(
+                    rf"(?ms)^{re.escape(heading)}\s*\n(.*?)(?=\n##\s|\Z)",
+                    previous_summary_full,
+                )
+                return match.group(1).strip() if match else ""
+
+            for heading in (
+                HISTORICAL_TASK_HEADING,
+                GOVERNING_OUTCOME_HEADING,
+                CURRENT_SUBTASK_HEADING,
+                LATEST_USER_CORRECTION_HEADING,
+                NEXT_OUTCOME_STEP_HEADING,
+            ):
+                value = _previous_section(heading)
+                if value:
+                    previous_sections[heading] = value
+
+        has_user_provenance = bool(user_asks) or self._summary_has_user_turn is True
+        if user_asks:
+            historical_task_snapshot = _bounded_fallback_text(
+                f"User asked: {user_asks[-1]!r}",
+                _FALLBACK_TURN_MAX_CHARS,
+            )
+        elif has_user_provenance:
+            historical_task_snapshot = _bounded_fallback_text(
+                previous_sections.get(
+                    HISTORICAL_TASK_HEADING,
+                    "None. No new user-authored turn was compacted by this fallback.",
+                ),
+                _FALLBACK_TURN_MAX_CHARS,
+            )
+        else:
+            historical_task_snapshot = _NO_USER_TASK_SENTINEL
+
+        if has_user_provenance:
+            fixed_continuation_values = {
+                GOVERNING_OUTCOME_HEADING: (
+                    "Unknown from deterministic fallback. Do not infer the "
+                    "user's current final desired result from recency or from "
+                    "the previous value alone."
+                ),
+                CURRENT_SUBTASK_HEADING: (
+                    "Unknown from deterministic fallback. The compacted turns "
+                    "may have completed, cancelled, or changed the previous "
+                    "subtask."
+                ),
+                LATEST_USER_CORRECTION_HEADING: (
+                    "Unknown from deterministic fallback. Do not infer that no "
+                    "user correction exists."
+                ),
+                NEXT_OUTCOME_STEP_HEADING: (
+                    "Unknown from deterministic fallback. Do not invent or "
+                    "execute a pending action."
+                ),
+            }
+        else:
+            fixed_continuation_values = {
+                GOVERNING_OUTCOME_HEADING: (
+                    "Unknown. No user-authored governing outcome is available."
+                ),
+                CURRENT_SUBTASK_HEADING: (
+                    "None. No user-authored subtask exists."
+                ),
+                LATEST_USER_CORRECTION_HEADING: (
+                    "None. No user-authored correction exists."
+                ),
+                NEXT_OUTCOME_STEP_HEADING: (
+                    "None. No user-authored next step exists."
+                ),
+            }
+
+        def _render_canonical_handoff(values: dict[str, str]) -> str:
+            blocks = [f"{HISTORICAL_TASK_HEADING}\n{historical_task_snapshot}"]
+            blocks.extend(
+                f"{heading}\n{values[heading]}"
+                for heading in _CONTINUATION_HEADINGS
+            )
+            return "\n\n".join(blocks)
+
+        def _prefix_fallback_body(fallback_body: str) -> str:
+            # The body was built locally and already has the canonical shape.
+            # Calling _with_summary_prefix here would parse reserved delimiter
+            # literals out of evidence before the schema can be validated.
+            fallback_body = fallback_body.strip()
+            return (
+                f"{SUMMARY_PREFIX}\n{fallback_body}"
+                if fallback_body
+                else SUMMARY_PREFIX
+            )
+
+        def _last_known_blob(value: str, budget: int) -> str:
+            label = "Last known value from the previous summary (reference only):"
+            prefix = f"\n{label}\n"
+            value_budget = budget - len(prefix)
+            if value_budget <= len(truncation_marker):
+                return ""
+            bounded = _bounded_fallback_text(value, value_budget)
+            return prefix + bounded if bounded else ""
+
+        continuation_values = dict(fixed_continuation_values)
+        canonical_body = _render_canonical_handoff(continuation_values)
+
+        # Prior continuation values are evidence, never the live state. Give
+        # each present value an equal, bounded share only after reserving the
+        # complete canonical skeleton. This prevents one oversized historical
+        # field from truncating a later required heading.
+        if has_user_provenance:
+            prior_values = {
+                heading: _redacted_fallback_text(previous_sections.get(heading, ""))
+                for heading in _CONTINUATION_HEADINGS
+            }
+            present_headings = [
+                heading for heading, value in prior_values.items() if value
+            ]
+            if present_headings:
+                fixed_prefixed_length = len(_prefix_fallback_body(canonical_body))
+                available = max(
+                    0,
+                    _FALLBACK_SUMMARY_MAX_CHARS - fixed_prefixed_length,
+                )
+                per_value_budget = min(
+                    _FALLBACK_TURN_MAX_CHARS,
+                    available // len(present_headings),
+                )
+                for heading in present_headings:
+                    continuation_values[heading] += _last_known_blob(
+                        prior_values[heading],
+                        per_value_budget,
+                    )
+                candidate = _render_canonical_handoff(continuation_values)
+                if len(_prefix_fallback_body(candidate)) <= _FALLBACK_SUMMARY_MAX_CHARS:
+                    canonical_body = candidate
+                else:
+                    # The fixed skeleton remains authoritative; historical
+                    # evidence is all-or-nothing if a future prefix expansion
+                    # makes the calculated shares insufficient.
+                    continuation_values = dict(fixed_continuation_values)
+                    canonical_body = _render_canonical_handoff(continuation_values)
+
+        previous_summary_snapshot = ""
+        if previous_summary_full:
+            previous_summary = previous_summary_full
+            # The four live continuation values are already copied above as
+            # explicitly last-known, reference-only evidence. Repeating their
+            # original top-level sections inside Previous Summary Snapshot
+            # creates a second competing schema that a weak model can mistake
+            # for the current value after a fallback.
+            for heading in _CONTINUATION_HEADINGS:
+                previous_summary = re.sub(
+                    rf"(?ms)^{re.escape(heading)}\s*\n.*?(?=\n##\s|\Z)",
+                    "",
+                    previous_summary,
+                )
+            previous_summary = re.sub(r"\n{3,}", "\n\n", previous_summary).strip()
+            previous_summary = "\n".join(
+                f"> {line}" if line else ">"
+                for line in previous_summary.splitlines()
+            )
             if len(previous_summary) > _FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS:
                 previous_summary = (
                     previous_summary[: _FALLBACK_PREVIOUS_SUMMARY_MAX_CHARS - 45].rstrip()
                     + "\n...[previous summary snapshot truncated]"
                 )
-            previous_summary_note = (
-                "\n\n## Previous Summary Snapshot\n"
+            previous_summary_snapshot = (
                 f"{previous_summary}\n\n"
                 "The previous compaction summary above remains background "
                 "continuity context because the latest LLM summary update failed."
             )
 
-        reason_text = f" Summary failure reason: {reason}." if reason else ""
-        body = f"""{HISTORICAL_TASK_HEADING}
-{active_task}
+        reason_text = _bounded_fallback_text(reason, _FALLBACK_TURN_MAX_CHARS)
+        critical_context = (
+            "Summary generation was unavailable, so this is a best-effort "
+            f"deterministic fallback for {len(turns_to_summarize)} compacted "
+            "message(s)."
+        )
+        if reason_text:
+            critical_context += f" Summary failure reason: {reason_text}."
 
-## Goal
-Recovered from a deterministic fallback because the LLM context summarizer was unavailable. Continue from the protected recent messages after this summary and use current file/system state for exact details.{previous_summary_note}
+        optional_sections = [
+            (
+                "## Constraints & Preferences",
+                "- This fallback was generated locally without an LLM summary call.\n"
+                "- Secrets and credentials were redacted before preservation.\n"
+                "- The summary may be incomplete; prefer verifying current files, "
+                "git state, processes, and test results instead of assuming omitted "
+                "details.",
+            ),
+            ("## Critical Context", critical_context),
+            (
+                "## Completed Actions",
+                "\n".join(completed)
+                if completed
+                else "None recoverable from compacted turns.",
+            ),
+            ("## Blocked", _bullets(blockers, limit=5)),
+            ("## Relevant Files", _bullets(relevant_files, limit=12)),
+            ("## Last Dropped Turns", _bullets(last_dropped_turns, limit=8)),
+        ]
+        if previous_summary_snapshot:
+            optional_sections.append(
+                ("## Previous Summary Snapshot", previous_summary_snapshot)
+            )
+        optional_sections.extend(
+            [
+                (
+                    "## Active State",
+                    "Unknown from deterministic fallback. Inspect current "
+                    "repository/session state if needed.",
+                ),
+                (
+                    "## Key Decisions",
+                    "None recoverable from deterministic fallback.",
+                ),
+                (
+                    "## Resolved Questions",
+                    "None recoverable from deterministic fallback.",
+                ),
+            ]
+        )
 
-## Constraints & Preferences
-- This fallback was generated locally without an LLM summary call.
-- Secrets and credentials were redacted before preservation.
-- The summary may be incomplete; prefer verifying current files, git state, processes, and test results instead of assuming omitted details.
+        # Add optional evidence only as complete, pre-redacted sections. A
+        # section that does not fit is omitted rather than sliced through a
+        # heading, item, or canonical continuation value.
+        body = canonical_body
+        for heading, content in optional_sections:
+            clean_content = _redact_compaction_text(content).strip()
+            clean_content = _neutralize_summary_delimiters(clean_content)
+            if not clean_content:
+                continue
+            candidate = f"{body}\n\n{heading}\n{clean_content}"
+            if len(_prefix_fallback_body(candidate)) <= _FALLBACK_SUMMARY_MAX_CHARS:
+                body = candidate
 
-## Completed Actions
-{chr(10).join(completed) if completed else "None recoverable from compacted turns."}
-
-## Active State
-Unknown from deterministic fallback. Inspect current repository/session state if needed.
-
-## Blocked
-{_bullets(blockers, limit=5)}
-
-## Key Decisions
-None recoverable from deterministic fallback.
-
-## Resolved Questions
-None recoverable from deterministic fallback.
-
-## Relevant Files
-{_bullets(relevant_files, limit=12)}
-
-## Last Dropped Turns
-{_bullets(last_dropped_turns, limit=8)}
-
-## Critical Context
-Summary generation was unavailable, so this is a best-effort deterministic fallback for {len(turns_to_summarize)} compacted message(s).{reason_text}"""
         # Ghost-skill defense (#32106): the fallback's per-turn truncation
         # (``_FALLBACK_TURN_MAX_CHARS``) routinely cuts [SKILL_PRUNED: ...]
         # markers out of the compacted turns. Re-derive the ghosted skills
         # from the raw turn contents and re-inject deterministically,
         # exactly like the LLM-summary path.
         _pruned_names = _collect_ghosted_skill_names(turns_to_summarize)
+        for _name in _extract_pruned_skill_names(self._previous_summary or ""):
+            if _name not in _pruned_names:
+                _pruned_names.append(_name)
         del _pruned_names[_MAX_PRUNED_SKILL_MARKERS:]
-        summary = self._with_summary_prefix(_redact_compaction_text(body.strip()))
-        if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
-            summary = summary[: _FALLBACK_SUMMARY_MAX_CHARS - 42].rstrip() + "\n...[fallback summary truncated]"
-        # Re-inject AFTER the size cap: the markers live at the end of the
-        # body, exactly where the truncation above cuts.
-        summary = _reinject_pruned_skill_markers(summary, _pruned_names)
-        return summary
+        for _name in _pruned_names:
+            body = body.replace(
+                _skill_pruned_marker(_name),
+                "[pruned skill marker carried in the appendix]",
+            )
+
+        def _validate_fallback(summary: str) -> None:
+            expected_prefix = f"{SUMMARY_PREFIX}\n"
+            if not summary.startswith(expected_prefix):
+                raise RuntimeError(
+                    "deterministic fallback lost its canonical handoff prefix"
+                )
+            validation_copy = summary[len(expected_prefix):].strip()
+            self._validate_summary_user_provenance(
+                validation_copy,
+                has_user_provenance,
+            )
+            self._validate_summary_continuation_schema(
+                validation_copy,
+                has_user_provenance,
+            )
+
+        try:
+            summary = _prefix_fallback_body(body)
+            if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
+                raise RuntimeError(
+                    "deterministic fallback base exceeded its character budget"
+                )
+            # The bounded marker appendix is an existing exception to the base
+            # fallback cap, so reinject it only after measuring the prefixed
+            # canonical handoff.
+            summary = _reinject_pruned_skill_markers(summary, _pruned_names)
+            summary = _neutralize_summary_delimiters(summary)
+            _validate_fallback(summary)
+            return summary
+        except RuntimeError as exc:
+            logger.warning(
+                "Deterministic fallback handoff failed validation; emitting "
+                "the minimal safe schema instead: %s",
+                exc,
+            )
+
+        minimal_body = _render_canonical_handoff(fixed_continuation_values)
+        minimal_summary = _prefix_fallback_body(minimal_body)
+        minimal_summary = _reinject_pruned_skill_markers(
+            minimal_summary,
+            _pruned_names,
+        )
+        minimal_summary = _neutralize_summary_delimiters(minimal_summary)
+        try:
+            _validate_fallback(minimal_summary)
+        except RuntimeError as exc:
+            # Drop the remaining dynamic Historical text and skill appendix.
+            # Do not turn a summarizer outage into a compaction abort if either
+            # one violated a future schema invariant.
+            logger.error(
+                "Minimal deterministic fallback invariant failed: %s",
+                exc,
+            )
+            ultra_safe_historical = (
+                "User-authored task context exists, but its historical wording "
+                "is unavailable."
+                if has_user_provenance
+                else _NO_USER_TASK_SENTINEL
+            )
+            historical_task_snapshot = ultra_safe_historical
+            minimal_summary = _prefix_fallback_body(
+                _render_canonical_handoff(fixed_continuation_values)
+            )
+        return minimal_summary
 
     @classmethod
     def _bound_summary_input(cls, content: str) -> str:
@@ -3891,10 +4271,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
     ) -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
-        Uses a structured template (Goal, Progress, Decisions, Resolved/Pending
-        Questions, Files, Remaining Work) with explicit preamble telling the
-        summarizer not to answer questions.  When a previous summary exists,
-        generates an iterative update instead of summarizing from scratch.
+        Uses a structured template that separates the governing user outcome,
+        current subtask, latest correction, next outcome-relevant step, progress,
+        and state. When a previous summary exists, it generates an iterative
+        update instead of summarizing from scratch.
 
         Args:
             focus_topic: Optional focus string for guided compression.  When
@@ -3987,29 +4367,37 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 "Write the summary in the same language the user was using in the "
                 "conversation — do not translate or switch to English. "
             )
-            _historical_task_instructions = """[THE SINGLE MOST IMPORTANT FIELD. Capture the user's most recent unfulfilled
-input verbatim — the exact words they used. This includes:
-- Explicit task assignments ("<specific user task>")
-- Questions awaiting an answer ("<specific user question>")
-- Decisions awaiting input ("<option A or B?>")
-- Ongoing discussions where the assistant owes the next substantive reply
-A conversation where the user just asked a question IS an active task — the
-task is "answer that question with full context". Do NOT write "None" merely
-because the user did not issue an imperative command; reserve "None" for the
-rare case where the last exchange was fully resolved and the user said
-something like "thanks, that's all".
-If multiple items are outstanding, list only the ones NOT yet completed.
-This historical snapshot must identify the latest unresolved user input precisely. Examples:
-"User asked: '<exact latest user request>'"
-"User asked: '<exact latest user question>' — needs investigation + answer"
-"User chose <option>; awaiting implementation of <specific next step>"
-If the user's most recent message was a reverse signal (stop, undo, roll
-back, never mind, just verify, change of topic) that supersedes earlier
-work, write the reverse signal verbatim and DO NOT carry forward the
-cancelled task. Example: "User asked: '<exact reverse signal>' — earlier
-in-flight work is cancelled."
-If no outstanding task exists, write "None."]"""
-            _goal_instructions = "[What the user is trying to accomplish overall]"
+            _historical_task_instructions = """[Literal historical record of the newest real user input in the compacted
+turns. Capture the user's exact words when possible. This is source evidence,
+NOT the most important field, NOT an active-task selector, and NOT permission
+to resume anything. If the latest input is a correction, cancellation, stop,
+or change of topic, record it literally. If no user input exists, write "None."]"""
+            _governing_outcome_instructions = """[The final result the user still wants delivered. Distinguish the desired
+result from a method, tool, artifact, experiment, research activity, update, or
+intermediate step. A recent subtask must not replace the governing outcome
+merely because it is recent. Preserve this outcome across successive
+compactions unless a user explicitly replaces, narrows, cancels, or changes it,
+including by assigning a clearly independent new task or topic, or the
+transcript explicitly establishes that the result was delivered. If the source
+explicitly establishes that the governing outcome itself was delivered or
+cancelled, write "None — delivered: <result>" or "None — cancelled: <result>"
+and require both the current subtask and next outcome-relevant step to be
+"None." If the source does not establish a final desired result, write
+"Unknown." Never invent intent.]"""
+            _current_subtask_instructions = """[The immediate intermediate step, its relationship to the governing outcome,
+and its current state. A completed, cancelled, or superseded subtask belongs in
+historical progress, not here. If no subtask remains open, write "None."]"""
+            _latest_user_correction_instructions = """[The latest still-applicable user correction, narrowing, cancellation, stop,
+or change of route. Preserve the user's words when possible and state exactly
+which prior route it invalidates. If none exists, write "None."]"""
+            _next_outcome_step_instructions = """[Exactly one pending action that directly advances the still-open governing
+outcome. This field is reference only: a later context-dependent message such
+as "continue" or "what next?" may use it to resolve its referent, but the field
+does not activate work by itself. Never select work that is completed,
+cancelled, or superseded. If two materially different referents remain, make
+the one next step "Ask one short clarification question: <referent A> or
+<referent B>?"; do not choose or activate either referent.
+If the outcome is complete or no next action is grounded, write "None."]"""
             _constraints_instructions = (
                 "[User preferences, coding style, constraints, important decisions]"
             )
@@ -4024,6 +4412,7 @@ If no outstanding task exists, write "None."]"""
                 "unless the latest user message explicitly requests it. If none, "
                 'write "None."]'
             )
+            _iterative_intent_instructions = f"""Treat a legacy "## Goal" value only as candidate evidence, never as authority: first confirm from the available source context that it is the user's final desired result rather than a recent subtask or proxy. If confirmed, migrate it into "{GOVERNING_OUTCOME_HEADING}" and do not emit "## Goal". If it is a subtask, place it under "{CURRENT_SUBTASK_HEADING}"; if the evidence is insufficient, write "Unknown." Preserve a confirmed governing user outcome across iterations unless the new turns explicitly replace, narrow, cancel, or change it, or explicitly establish that it was delivered. An explicit independent new task or topic is such a change, but recency alone is not supersession. If the governing outcome itself was delivered or cancelled, record it as "None — delivered: <result>" or "None — cancelled: <result>" and set both "{CURRENT_SUBTASK_HEADING}" and "{NEXT_OUTCOME_STEP_HEADING}" to "None." Otherwise, update "{CURRENT_SUBTASK_HEADING}" with the current intermediate step and its relationship to the outcome. Update "{LATEST_USER_CORRECTION_HEADING}" with the latest still-applicable correction and the route it invalidates. Update "{NEXT_OUTCOME_STEP_HEADING}" with exactly one grounded pending action or one short clarification question when two material referents remain. Completing a subtask does not establish that the governing outcome is complete."""
         else:
             _language_and_provenance_rule = (
                 "This session contains no user-authored turns. Write the summary "
@@ -4036,9 +4425,17 @@ If no outstanding task exists, write "None."]"""
 {_NO_USER_TASK_SENTINEL}
 Do not write "User asked:" or any translated equivalent anywhere in the summary.
 Describe agent/tool work only as completed actions, state, or historical work.]"""
-            _goal_instructions = (
-                "[Historical cron/agent objective inferred only from assistant and "
-                "tool activity. Never call it a user goal.]"
+            _governing_outcome_instructions = (
+                "[Write exactly: Unknown. No user-authored governing outcome is available.]"
+            )
+            _current_subtask_instructions = (
+                "[Write exactly: None. No user-authored subtask exists.]"
+            )
+            _latest_user_correction_instructions = (
+                "[Write exactly: None. No user-authored correction exists.]"
+            )
+            _next_outcome_step_instructions = (
+                "[Write exactly: None. No user-authored next step exists.]"
             )
             _constraints_instructions = (
                 "[Runtime, configuration, and technical constraints only. Do not "
@@ -4050,6 +4447,7 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
             _pending_asks_instructions = (
                 "[Write exactly: None. No user-authored requests exist.]"
             )
+            _iterative_intent_instructions = f"""This session has no user-authored turns. Do NOT migrate a legacy "## Goal" value into "{GOVERNING_OUTCOME_HEADING}" or any other user-intent field. A legacy goal may describe historical cron/agent activity; preserve it only as non-user state, a decision, or a completed action when relevant. Emit the four user-intent fields exactly as specified below."""
 
         _summarizer_preamble = (
             "You are a summarization agent creating a context checkpoint. "
@@ -4058,6 +4456,11 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
             "Produce only the structured summary; do not add a greeting, "
             "preamble, or prefix. "
             + _language_and_provenance_rule +
+            "Keep the structural terminal tokens 'None — delivered:', "
+            "'None — cancelled:', and 'None.' literally in English whenever "
+            "the template requires them; descriptive result text after a colon "
+            "may follow the user's language. Keep every exact no-user sentinel "
+            "below literal even when surrounding prose uses another language. "
             "NEVER include API keys, tokens, passwords, secrets, credentials, "
             "or connection strings in the summary — replace any that appear "
             "with [REDACTED]. Note that credentials were present, but do not "
@@ -4086,8 +4489,17 @@ Describe agent/tool work only as completed actions, state, or historical work.]"
         _template_sections = f"""{HISTORICAL_TASK_HEADING}
 {_historical_task_instructions}
 
-## Goal
-{_goal_instructions}
+{GOVERNING_OUTCOME_HEADING}
+{_governing_outcome_instructions}
+
+{CURRENT_SUBTASK_HEADING}
+{_current_subtask_instructions}
+
+{LATEST_USER_CORRECTION_HEADING}
+{_latest_user_correction_instructions}
+
+{NEXT_OUTCOME_STEP_HEADING}
+{_next_outcome_step_instructions}
 
 ## Constraints & Preferences
 {_constraints_instructions}
@@ -4155,7 +4567,7 @@ PREVIOUS SUMMARY:
 NEW TURNS TO INCORPORATE:
 {content_to_summarize}{_memory_section}
 
-Update the summary using this exact structure. PRESERVE all existing information that is still relevant. ADD new completed actions to the numbered list (continue numbering). Move items from "In Progress" to "Completed Actions" when done. Move answered questions to "Resolved Questions". Update "Active State" to reflect current state. Remove information only if it is clearly obsolete. CRITICAL: Update "## Active Task" to reflect the user's most recent unfulfilled input — this includes any question, decision request, or discussion turn that the assistant has not yet answered. Only write "None" if the last exchange was fully resolved.
+Update the summary using this exact structure. PRESERVE all existing information that is still relevant. {_iterative_intent_instructions} ADD new completed actions to the numbered list (continue numbering). Move newly finished work to "Completed Actions", move answered questions to "Resolved Questions", and update "Active State" to reflect current state. Remove information only if it is clearly obsolete.
 
 {_template_sections}"""
         else:
@@ -4172,12 +4584,13 @@ Use this exact structure:
 {_template_sections}"""
 
         # Inject focus topic guidance when the user provides one via /compress <focus>.
-        # This goes at the end of the prompt so it takes precedence.
+        # This goes at the end of the prompt so it controls detail allocation
+        # without overriding the outcome hierarchy above.
         if focus_topic:
             prompt += f"""
 
 FOCUS TOPIC: "{focus_topic}"
-This compaction should PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
+The focus topic distributes detail; it never replaces or omits "{GOVERNING_OUTCOME_HEADING}", "{LATEST_USER_CORRECTION_HEADING}", or "{NEXT_OUTCOME_STEP_HEADING}". If the focus topic is an intermediate step, record it under "{CURRENT_SUBTASK_HEADING}" and keep its relationship to the governing outcome. This compaction should PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
 
         try:
             call_kwargs = {
@@ -4286,6 +4699,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             summary = _reinject_pruned_skill_markers(summary, _pruned_skill_names)
             summary = self._ground_historical_task_snapshot(summary, turns_to_summarize)
             self._validate_summary_user_provenance(summary, has_user_turn)
+            self._validate_summary_continuation_schema(summary, has_user_turn)
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._clear_compression_failure_cooldown()
@@ -4488,7 +4902,12 @@ This compaction should PRIORITISE preserving all information related to the focu
         # summarizer prompt.
         if _MERGED_SUMMARY_DELIMITER in text:
             text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].strip()
-        for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES):
+        for prefix in (
+            SUMMARY_PREFIX,
+            MICRO_SUMMARY_PREFIX,
+            LEGACY_SUMMARY_PREFIX,
+            *_HISTORICAL_SUMMARY_PREFIXES,
+        ):
             if text.startswith(prefix):
                 text = text[len(prefix):].lstrip()
                 break
@@ -4512,7 +4931,11 @@ This compaction should PRIORITISE preserving all information related to the focu
     @staticmethod
     def _starts_with_summary_prefix(text: str) -> bool:
         """Return True if *text* begins with any known handoff prefix."""
-        if text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX):
+        if (
+            text.startswith(SUMMARY_PREFIX)
+            or text.startswith(MICRO_SUMMARY_PREFIX)
+            or text.startswith(LEGACY_SUMMARY_PREFIX)
+        ):
             return True
         return any(text.startswith(p) for p in _HISTORICAL_SUMMARY_PREFIXES)
 
@@ -4647,6 +5070,87 @@ This compaction should PRIORITISE preserving all information related to the focu
                 "Context compression summary invented user attribution for a "
                 "session with no user-authored turns"
             )
+
+    @staticmethod
+    def _validate_summary_continuation_schema(
+        summary: str,
+        has_user_turn: bool,
+    ) -> None:
+        """Reject ambiguous or invented continuation state before persistence."""
+        required_headings = (HISTORICAL_TASK_HEADING, *_CONTINUATION_HEADINGS)
+        section_values: dict[str, str] = {}
+        positions: list[int] = []
+
+        for heading in required_headings:
+            matches = list(
+                re.finditer(
+                    rf"(?m)^{re.escape(heading)}[ \t]*\r?$",
+                    summary,
+                )
+            )
+            if len(matches) != 1:
+                raise RuntimeError(
+                    "Context compression summary has invalid continuation schema: "
+                    f"expected exactly one {heading!r}, found {len(matches)}"
+                )
+            match = matches[0]
+            positions.append(match.start())
+            remainder = summary[match.end():]
+            next_heading = re.search(r"(?m)^##[ \t]+", remainder)
+            value = remainder[: next_heading.start() if next_heading else None].strip()
+            if not value:
+                raise RuntimeError(
+                    "Context compression summary has invalid continuation schema: "
+                    f"{heading!r} is empty"
+                )
+            section_values[heading] = value
+
+        if positions != sorted(positions):
+            raise RuntimeError(
+                "Context compression summary has invalid continuation schema: "
+                "required headings are out of order"
+            )
+
+        if re.search(r"(?m)^## Goal[ \t]*\r?$", summary):
+            raise RuntimeError(
+                "Context compression summary has invalid continuation schema: "
+                "legacy '## Goal' is not allowed"
+            )
+
+        governing_outcome = section_values[GOVERNING_OUTCOME_HEADING]
+        terminal_outcome_prefixes = (
+            "None — delivered:",
+            "None — cancelled:",
+        )
+        if governing_outcome.startswith(terminal_outcome_prefixes):
+            for heading in (CURRENT_SUBTASK_HEADING, NEXT_OUTCOME_STEP_HEADING):
+                if section_values[heading] != "None.":
+                    raise RuntimeError(
+                        "Context compression summary has contradictory "
+                        "continuation state: a delivered or cancelled governing "
+                        f"outcome requires {heading!r} to be exactly 'None.'"
+                    )
+
+        if not has_user_turn:
+            expected = {
+                GOVERNING_OUTCOME_HEADING: (
+                    "Unknown. No user-authored governing outcome is available."
+                ),
+                CURRENT_SUBTASK_HEADING: "None. No user-authored subtask exists.",
+                LATEST_USER_CORRECTION_HEADING: (
+                    "None. No user-authored correction exists."
+                ),
+                NEXT_OUTCOME_STEP_HEADING: (
+                    "None. No user-authored next step exists."
+                ),
+            }
+            for heading, exact_value in expected.items():
+                if section_values[heading] != exact_value:
+                    raise RuntimeError(
+                        "Context compression summary invented continuation state "
+                        "for a session with no user-authored turns: "
+                        f"{heading!r}"
+                    )
 
     @classmethod
     def _is_context_summary_message(cls, message: Any) -> bool:
@@ -6370,9 +6874,25 @@ This compaction should PRIORITISE preserving all information related to the focu
 
     @staticmethod
     def _render_micro_marker_content(summary_text: str) -> str:
-        """Assemble the marker content wrapper around *summary_text*."""
+        """Wrap assistant/tool history without inventing user intent.
+
+        Micro-compaction never absorbs user turns, so the four canonical
+        continuation fields cannot be derived here. Distinct noncanonical
+        pointer labels direct a context-dependent follow-up to the real user
+        messages that remain verbatim without supplying values that a later
+        batch compaction could preserve as confirmed continuation state.
+        """
         return (
-            f"{SUMMARY_PREFIX}\n\n"
+            f"{MICRO_SUMMARY_PREFIX}\n\n"
+            f"{MICRO_USER_SEQUENCE_POINTERS_HEADING}\n"
+            "- Governing User Outcome pointer: surviving real-user sequence; "
+            "latest still-open explicit outcome.\n"
+            "- Current Subtask pointer: surviving real-user sequence; "
+            "latest non-cancelled subtask.\n"
+            "- Latest User Correction pointer: surviving real-user sequence; "
+            "latest applicable correction wins.\n"
+            "- Next Outcome-Relevant Step pointer: surviving real-user sequence; "
+            "derive one step and clarify if ambiguous.\n\n"
             f"{HISTORICAL_TASK_HEADING}\n"
             f"{summary_text.strip()}"
             f"\n\n{_SUMMARY_END_MARKER}"

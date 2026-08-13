@@ -26,7 +26,7 @@ import { onGatewayEvent } from '@/contrib/events'
 import { getLogs, getStatus } from '@/hermes'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $activeGatewayProfile, ensureGatewayProfile, newSessionInProfile } from '@/store/profile'
+import { $activeGatewayProfile, ensureGatewayProfile, newSessionInProfile, setShowAllProfiles } from '@/store/profile'
 import { $activeSessionId, $currentCwd, $currentModel, $gatewayState } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
 
@@ -91,15 +91,23 @@ export const host = {
   /** Open a stored session the way core surfaces do (focus an existing
    *  tile/main, else load into main). When `profile` names a non-active
    *  profile, its backend is activated first so the resume routes to the
-   *  right state.db — the same soft profile swap the unified sidebar does. */
+   *  right state.db — the same soft profile swap the unified sidebar does.
+   *  `keepAllProfilesScope` (default true) keeps the Sessions sidebar in the
+   *  unified all-profiles view instead of narrowing it to the target
+   *  profile's sessions — a cross-profile open from a plugin surface is a
+   *  navigation, not a scope choice; pass false to also scope the sidebar. */
   openSession: async (
     storedSessionId: string,
-    options: { intent?: OpenSessionIntent; profile?: null | string } = {}
+    options: { intent?: OpenSessionIntent; keepAllProfilesScope?: boolean; profile?: null | string } = {}
   ): Promise<void> => {
     const profile = (options.profile ?? '').trim()
 
     if (profile && profile !== $activeGatewayProfile.get()) {
       await ensureGatewayProfile(profile)
+
+      if (options.keepAllProfilesScope !== false) {
+        setShowAllProfiles(true)
+      }
     }
 
     openSession(

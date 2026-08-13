@@ -299,6 +299,20 @@ class TestCopilotNormalization:
         # Qwen anthropic_messages.
         assert opencode_model_api_mode("opencode-go", "glm-5.3") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "qwen3.8-max") == "anthropic_messages"
+        # Custom opencode-go-* providers route according to opencode-go rules
+        # (family-prefix providers, issue #85589).
+        assert opencode_model_api_mode("opencode-go-bridge", "grok-4.5") == "codex_responses"
+        assert opencode_model_api_mode("opencode-go-bridge", "opencode-go-bridge/grok-4.5") == "codex_responses"
+        assert opencode_model_api_mode("opencode-go-bridge", "minimax-m2.5") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-go-bridge", "deepseek-v4-flash") == "chat_completions"
+        # Case-insensitive provider ID handling (e.g. OpenCode-Go-Bridge).
+        assert opencode_model_api_mode("OpenCode-Go-Bridge", "grok-4.5") == "codex_responses"
+        assert opencode_model_api_mode("OpenCode-Go-Bridge", "minimax-m2.5") == "anthropic_messages"
+        # Custom opencode-zen-* providers route according to opencode-zen rules.
+        assert opencode_model_api_mode("opencode-zen-custom", "claude-3-5-sonnet") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-zen-custom", "gpt-5") == "codex_responses"
+        assert opencode_model_api_mode("opencode-zen-custom", "grok-4.5") == "codex_responses"
+        assert opencode_model_api_mode("OpenCode-Zen-Custom", "claude-3-7-sonnet") == "anthropic_messages"
 
 
 class TestNormalizeOpencodeBaseUrl:

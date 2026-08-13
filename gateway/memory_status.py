@@ -160,6 +160,12 @@ def collect_memory_status(
         "sampled_at": None,
         "last_boot_unclean": False,
         "last_boot_suspected_oom": False,
+        # Identity of the CURRENT gateway life (the sentinel's started_at).
+        # A suspected-OOM restart writes a fresh sentinel, so this changes on
+        # every boot — the dashboard keys banner dismissal on it so that
+        # acknowledging one OOM restart does not mute reports of the NEXT
+        # one (the hourly-restart-loop case is exactly the one that matters).
+        "boot_id": None,
     }
 
     heartbeat = _read_heartbeat(home)
@@ -190,5 +196,8 @@ def collect_memory_status(
         status["last_boot_suspected_oom"] = bool(
             sentinel.get("prior_suspected_oom")
         )
+        started_at = sentinel.get("started_at")
+        if isinstance(started_at, str) and started_at:
+            status["boot_id"] = started_at
 
     return status

@@ -1899,8 +1899,12 @@ export interface MemoryPressureStatus {
   sampled_at?: string | null;
   /** Previous gateway life died without running any exit path. */
   last_boot_unclean?: boolean;
-  /** ...and its final heartbeat showed near-exhausted memory. */
+  /** ...and its final heartbeat showed near-exhausted memory. Heuristic —
+   * strong evidence of an OOM kill, not proof the kernel OOM killer acted. */
   last_boot_suspected_oom?: boolean;
+  /** Identity of the current gateway life (sentinel started_at). Changes on
+   * every restart; keys per-incident banner dismissal. */
+  boot_id?: string | null;
 }
 
 export interface SessionInfo {

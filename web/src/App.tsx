@@ -566,11 +566,16 @@ export default function App() {
         />
       )}
 
+      {/* Single mobile header clearance for the banner stack + content. The
+          fixed lg:hidden header is h-14/z-40; previously each banner carried
+          its own mt-14 AND the content kept pt-14, so two visible banners
+          stacked three offsets (NS-656 review P3). One spacer, applied once. */}
+      <div aria-hidden className="h-14 shrink-0 lg:hidden" />
       <PluginSlot name="header-banner" />
       <ProfileScopeBanner />
       <MemoryPressureBanner status={sidebarStatus} />
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <div className="flex min-h-0 min-w-0 flex-1">
           <aside
             id="app-sidebar"

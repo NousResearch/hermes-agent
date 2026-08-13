@@ -133,6 +133,7 @@ class TestCollectMemoryStatus:
             {
                 "phase": "running",
                 "pid": 999,
+                "started_at": "2026-08-13T01:00:00+00:00",
                 "prior_unclean_exit": True,
                 "prior_suspected_oom": True,
             },
@@ -140,6 +141,20 @@ class TestCollectMemoryStatus:
         status = collect_memory_status(tmp_path, now=_NOW)
         assert status["last_boot_unclean"] is True
         assert status["last_boot_suspected_oom"] is True
+        # boot_id identifies the reporting life so the dashboard can key
+        # banner dismissal per incident (a NEW restart re-surfaces it).
+        assert status["boot_id"] == "2026-08-13T01:00:00+00:00"
+
+    def test_boot_id_absent_or_malformed_stays_none(self, tmp_path: Path) -> None:
+        _write_sentinel(
+            tmp_path,
+            {"phase": "running", "pid": 999, "started_at": 12345},
+        )
+        status = collect_memory_status(tmp_path, now=_NOW)
+        assert status["boot_id"] is None
+        assert collect_memory_status(tmp_path.joinpath("nohome"), now=_NOW)[
+            "boot_id"
+        ] is None
 
     def test_clean_sentinel_has_no_flags(self, tmp_path: Path) -> None:
         _write_sentinel(

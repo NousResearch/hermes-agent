@@ -2177,6 +2177,7 @@ export const zh: Translations = {
       untitledPlaceholder: '无标题会话',
       untitledChat: id => `会话 ${id}`,
       messageCount: count => `${count} 条消息`,
+      todoProgress: '任务完成度',
       ageNow: '刚刚',
       ageDay: '天',
       ageHour: '时',

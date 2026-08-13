@@ -29,6 +29,7 @@ import { $projects } from '@/store/projects'
 import { $pullRequestsByBranch, sessionPrKey } from '@/store/pull-requests'
 import { $sessionDotStateById, hasLiveTurn, showsRunningArc } from '@/store/session-dot-state'
 import { sessionCostUsd } from '@/store/sidebar-archive'
+import { $todoProgressBySession } from '@/store/todos'
 
 import { SessionStatusDot } from '../session-status-dot'
 
@@ -237,6 +238,9 @@ function SidebarSessionRowImpl({
   // between them (HTML collapses runs of whitespace to one).
   const model = card && session.model ? displayModelName(session.model) : ''
   const size = card && session.message_count > 0 ? r.messageCount(session.message_count) : ''
+  // Live plan progress ("3/7"), far right of the footer. A selector keyed to
+  // this row: only rows whose own fraction changes repaint on todo events.
+  const todoProgress = useStoreSelector($todoProgressBySession, progress => (card ? progress[session.id] : undefined))
 
   // An archived session has no live status to paint, so the archive glyph takes
   // the lead slot the dot would occupy instead of adding a column of its own.
@@ -471,10 +475,15 @@ function SidebarSessionRowImpl({
                     </span>
                   ) : null}
                 </div>
-                {model || size ? (
+                {model || size || todoProgress ? (
                   <span className="flex min-w-0 items-baseline gap-2 text-[0.625rem] leading-none text-(--ui-text-tertiary)">
                     {model ? <span className="min-w-0 truncate">{model}</span> : null}
                     {size ? <span className="shrink-0 tabular-nums">{size}</span> : null}
+                    {todoProgress ? (
+                      <span className="ml-auto shrink-0 tabular-nums" title={r.todoProgress}>
+                        {todoProgress}
+                      </span>
+                    ) : null}
                   </span>
                 ) : null}
               </>

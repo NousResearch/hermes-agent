@@ -1413,6 +1413,7 @@ class _CodexCompletionsAdapter:
             classify_responses_route,
         )
         from agent.transports.codex import _alias_wire_tools
+        from agent.auxiliary_request import _codex_replay_messages
         model = kwargs.get("model", self._model)
         wire_model = _wire_model_identity(model)
         host = str(getattr(self._client, "base_url", "") or "")
@@ -1420,7 +1421,8 @@ class _CodexCompletionsAdapter:
         route = classify_responses_route(SimpleNamespace(provider=None, base_url=host))
         is_xai = route.is_xai_responses
         tools = kwargs.get("tools")
-        if tools:
+        from agent.context_compressor_cache import using_summary_prefix, summary_instruction_for_request
+        if tools and (is_xai or not using_summary_prefix()):
             # xAI Responses rejects ``pattern``/``format`` JSON Schema keywords (400); strip for
             # chat_completion_helpers.py parity. Deep-copy first — sanitizers mutate inner dicts
             # in place and would strip the caller's tool registry.
@@ -1449,21 +1451,7 @@ class _CodexCompletionsAdapter:
         # System → ``instructions``; the rest goes through the SINGLE shared chat→Responses
         # converter (a private loop here once let role="tool" leak into input[]; the shared one
         # encodes tool history as function_call/function_call_output).
-        instructions = "You are a helpful assistant."
-        replay_messages: list[dict[str, Any]] = []
-        for msg in kwargs.get("messages", []):
-            content = msg.get("content") or ""
-            if msg.get("role", "user") == "system":
-                instructions = content if isinstance(content, str) else str(content)
-                continue
-            # Replayed history names each tool the way THIS request declares it.
-            if renamed and msg.get("tool_calls"):
-                msg = {**msg, "tool_calls": [
-                    {**tc, "function": {**tc["function"], "name": renamed[tc["function"]["name"]]}}
-                    if isinstance(tc, dict) and (tc.get("function") or {}).get("name") in renamed else tc
-                    for tc in msg["tool_calls"]
-                ]}
-            replay_messages.append(msg)
+        instructions, replay_messages = _codex_replay_messages(kwargs.get("messages", []), renamed)
         # Endpoints that bind replayed codex_message_items ids to a backend connection 401 on a stale id
         # (``replay_item_ids=False``) — same guard as build_kwargs. Aux calls
         # never send ``context_management`` (main-turn feature): no compaction checkpoint.
@@ -1477,6 +1465,11 @@ class _CodexCompletionsAdapter:
             current_issuer_kind=issuer_kind,
             current_issuer_model=wire_model, native_compaction_eligible=False,
         )
+        summary_instruction = summary_instruction_for_request()
+        if summary_instruction is not None:
+            # Replay conversion omits system/developer rows. Append this task
+            # instruction explicitly, keeping the original instructions intact.
+            input_items.append(_role_message_item("developer", summary_instruction))
         resp_kwargs: dict[str, Any] = {
             # Codex only knows the base slug; strip the Hermes ``-900k`` picker suffix.
             "model": wire_model, "instructions": instructions,
@@ -1543,6 +1536,8 @@ class _CodexCompletionsAdapter:
                     resp_kwargs["prompt_cache_retention"] = cache_retention
         except Exception:
             logger.debug("Codex auxiliary: prompt_cache_key derivation skipped", exc_info=True)
+        from agent.context_compressor_cache import inherit_summary_wire_options
+        inherit_summary_wire_options(resp_kwargs)
         # Last, like the main transport: caller extra_body must not put a rejected Astra field back.
         from agent.transports.codex import _sanitize_astra_request_kwargs
         _sanitize_astra_request_kwargs(resp_kwargs, model, host)
@@ -6621,6 +6616,8 @@ def _build_call_kwargs(
     # Conversation affinity (OpenCode relay, opt-in custom-provider header) — same key as the main
     # turn so compression/title/vision calls stay on the conversation's warm backend.
     from agent.opencode_affinity import merge_session_affinity_headers
+    from agent.context_compressor_cache import note_summary_request
+    note_summary_request(task, messages, kwargs.get("tools"))
     return merge_session_affinity_headers(kwargs, provider, base_url, _runtime_main_value("session_id") or None)
 
 
@@ -7311,72 +7308,7 @@ class _PreparedAuxRequest(NamedTuple):
     base_info: str
 
 
-def _prepare_aux_request(
-    task: Optional[str], *, provider: Optional[str], model: Optional[str], base_url: Optional[str],
-    api_key: Optional[str], main_runtime: dict[str, Any], messages: list,
-    temperature: Optional[float], max_tokens: Optional[int], tools: Optional[list],
-    timeout: Optional[float], extra_body: Optional[dict], reasoning_config: Optional[dict],
-    extra_headers: Optional[dict[str, str]], api_mode: Optional[str],
-    route_info: Optional[dict[str, str]], async_mode: bool,
-) -> _PreparedAuxRequest:
-    """Shared head of call_llm/async_call_llm: resolve route + client, publish it, build request kwargs.
-    Sync-only: compression fast lane, per-request ``extra_headers``, and ``base_info`` falling
-    back to the resolved base_url when the client exposes none."""
-    resolved_provider, resolved_model, resolved_base_url, resolved_api_key, resolved_api_mode = _resolve_task_provider_model(
-        task, provider, model, base_url, api_key)
-    if api_mode:
-        resolved_api_mode = api_mode
-    effective_extra_body = _get_task_extra_body(task)
-    effective_extra_body.update(extra_body or {})
-    client, final_model, resolved_provider, effective_provider = _resolve_call_client(
-        task, provider=provider, model=model, base_url=base_url, api_key=api_key,
-        resolved_provider=resolved_provider, resolved_model=resolved_model,
-        resolved_base_url=resolved_base_url, resolved_api_key=resolved_api_key,
-        resolved_api_mode=resolved_api_mode, main_runtime=main_runtime, async_mode=async_mode,
-    )
-    effective_timeout = _effective_aux_timeout(task, timeout)
-    # Codex-Responses-only: real SDK clients reject an unrecognized ``no_progress_timeout``
-    # kwarg, so only resolve/forward it when the route is actually a Codex stream (#108104).
-    no_progress_timeout = (
-        _get_task_no_progress_timeout(task)
-        if isinstance(client, (CodexAuxiliaryClient, AsyncCodexAuxiliaryClient)) else None
-    )
-    request_provider = effective_provider or resolved_provider
-    if not async_mode:
-        compression_config = _get_auxiliary_task_config(task) if task == "compression" else {}  # authoritative: no aux route
-        _, effective_extra_body = _compression_fast_lane_controls(
-            task, actual_provider=request_provider, actual_model=final_model,
-            requested_provider=provider, requested_model=model, route_config=compression_config,
-            leak_guard_config=compression_config, max_tokens=max_tokens,
-            extra_body=effective_extra_body,
-        )
-    _set_relay_auxiliary_route(request_provider, final_model, resolved_api_mode)
-    _record_route_info(route_info, _fallback_provider_from_label(request_provider), final_model)
-    if async_mode:
-        base_info = str(getattr(client, "base_url", "") or "")
-    else:
-        base_info = str(getattr(client, "base_url", resolved_base_url) or "")
-        if task:
-            logger.info("Auxiliary %s: using %s (%s)%s",
-                         task, request_provider or "auto", final_model or "default",
-                         f" at {base_info}" if base_info and "openrouter" not in base_info else "")
-    # Client's actual base_url so endpoint-specific temperature overrides work on
-    # auto-detected routes (api.moonshot.ai vs api.kimi.com/coding).
-    kwargs = _build_call_kwargs(
-        request_provider, final_model, messages, temperature=temperature, max_tokens=max_tokens,
-        tools=tools, timeout=effective_timeout, extra_body=effective_extra_body,
-        reasoning_config=reasoning_config, base_url=base_info or resolved_base_url, task=task,
-        no_progress_timeout=no_progress_timeout)
-    if extra_headers:
-        kwargs["extra_headers"] = dict(extra_headers)
-    # Convert image blocks for Anthropic-compatible endpoints (e.g. MiniMax)
-    client_base = str(getattr(client, "base_url", "") or "")
-    if _is_anthropic_compat_endpoint(request_provider, client_base):
-        kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
-    return _PreparedAuxRequest(
-        client, final_model, kwargs, resolved_provider, request_provider, resolved_model,
-        resolved_base_url, resolved_api_key, resolved_api_mode, effective_timeout,
-        effective_extra_body, base_info)
+from agent.auxiliary_request import _prepare_aux_request
 
 
 def _outcome(call: Callable[..., Any], *args: Any, **kwargs: Any) -> tuple[Any, Optional[Exception]]:

@@ -104,6 +104,23 @@ def _prepare_moa_request(agent: Any, api_messages: Any, pending_moa_prepared_req
     return prepared, api_messages, pending_moa_prepared_request
 
 
+def normalize_api_messages_for_send(agent: Any, api_messages: list) -> list:
+    """Closing normalization shared by normal requests and compression prefix replay."""
+    from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE, _canonicalize_api_tool_calls
+
+    cross_protocol = agent.api_mode != "codex_responses"
+    api_messages = agent._drop_thinking_only_and_merge_users(
+        api_messages, drop_codex_reasoning_items=cross_protocol,
+        drop_nudge_marker=_CODEX_INCOMPLETE_NUDGE if cross_protocol else None,
+    )
+    for message in api_messages:
+        if isinstance(message.get("content"), str):
+            message["content"] = message["content"].strip()
+    _canonicalize_api_tool_calls(api_messages)
+    _sanitize_messages_surrogates(api_messages)
+    return api_messages
+
+
 def assemble_api_request(
     agent: Any, *, messages: Any, current_turn_user_idx: Any, _ext_prefetch_cache: Any,
     _plugin_user_context: Any, moa_config: Any, active_system_prompt: Any,
@@ -113,7 +130,7 @@ def assemble_api_request(
     are injected only after whitespace normalization, the orphan sweep, thinking-only drop /
     user merge and surrogate stripping, so the same row's bytes never vary across turns."""
     from agent.conversation_loop import (
-        _CODEX_INCOMPLETE_NUDGE, _apply_context_engine_selection, _canonicalize_api_tool_calls,
+        _apply_context_engine_selection,
         _clone_message_for_send, _midturn_request_pressure_tokens, _pressure_with_real_floor,
     )
     from agent.model_metadata import (
@@ -182,22 +199,7 @@ def assemble_api_request(
     # Off the Codex wire (e.g. after a reasoning-only stall fell over to a Chat Completions
     # provider, #67321) the synthetic continuation nudge is Codex-only control text: drop it
     # alongside the opaque replay state.
-    _cross_protocol = agent.api_mode != "codex_responses"
-    api_messages = agent._drop_thinking_only_and_merge_users(
-        api_messages, drop_codex_reasoning_items=_cross_protocol,
-        drop_nudge_marker=_CODEX_INCOMPLETE_NUDGE if _cross_protocol else None,
-    )
-
-    # Normalize whitespace and tool-call JSON for bit-perfect prefixes across turns
-    # (KV-cache reuse on local servers, better cloud cache hits); API copy only.
-    for am in api_messages:
-        if isinstance(am.get("content"), str):
-            am["content"] = am["content"].strip()
-    _canonicalize_api_tool_calls(api_messages)
-
-    # Strip lone surrogates (U+D800-U+DFFF) that some Ollama-served models emit;
-    # they crash json.dumps() inside the OpenAI SDK and trigger the 3-retry cycle.
-    _sanitize_messages_surrogates(api_messages)
+    api_messages = normalize_api_messages_for_send(agent, api_messages)
 
     _empty_retry_suffix = add_empty_response_retry_hint(agent, api_messages)
 

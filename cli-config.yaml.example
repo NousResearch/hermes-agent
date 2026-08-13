@@ -1005,6 +1005,10 @@ prompt_caching:
 #   compression:
 #     provider: "auto"
 #     model: ""
+#     # reuse_prompt_cache: false  # Opt-in: replay the main request prefix when the
+#                                 # resolved model, endpoint and wire match. Provider cache
+#                                 # retention still applies; replay can be larger than the
+#                                 # bounded summary input, so compare actual input costs.
 #     # max_concurrency: 2    # Optional: cap simultaneous compression calls
 #     # no_progress_timeout: 60   # Codex/Responses-only: seconds a stream may go without a
 #                                 # substantive event before it fails fast (default: 60).

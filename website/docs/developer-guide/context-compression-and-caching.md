@@ -492,6 +492,48 @@ Hermes' local transcript is never rewritten on this runtime — state.db records
 the compaction boundary while the visible transcript stays intact. All other
 routes (including Codex OAuth chat sessions) keep Hermes' summary compressor.
 
+### Reusing the main request prefix for a summary
+
+The optional `auxiliary.compression.reuse_prompt_cache` setting lets an inline
+summary request reuse the main conversation's prompt prefix:
+
+```yaml
+auxiliary:
+  compression:
+    reuse_prompt_cache: true  # Default: false
+```
+
+When the resolved auxiliary model, provider, endpoint and API mode match the
+main request, Hermes sends the existing system prompt, tool schemas and full
+history, then appends the structured
+summary instruction as a final developer message in Responses `input`, preserving
+the original `instructions` field. That instruction identifies the protected head
+and tail so only the middle window is summarized. Keeping the full input avoids
+depending on an intermediate cache checkpoint near the end of that window. The conversation's
+cache scope and actual reasoning wire options (including `context: all_turns`)
+travel with that request. The initial implementation
+supports `api_mode: codex_responses`, including compatible custom endpoints. It
+uses ordinary Responses calls and does not require `/responses/compact`.
+
+The input is selected after auxiliary routing, so a separately configured summary
+model or another API mode keeps the ordinary bounded summary input. Provider/model recovery also
+rebuilds from that bounded input. Hermes checks strict redaction, attachment and
+reasoning-block boundaries and reserves 16K tokens of context headroom; if replay
+cannot preserve those boundaries, it uses the bounded request. Logs report
+`Compression summary input=cached_prefix` or `input=bounded reason=...` without
+recording conversation content.
+
+This setting makes the prefix eligible for the provider's cache; it cannot keep
+an expired or evicted cache warm. Replay can contain more tokens than the sampled
+summary input, especially for long tool outputs. Compare **uncached tokens,
+cached tokens and actual input cost**, rather than hit percentage alone. The
+setting is disabled by default for that reason. It applies to inline compaction
+and manual compression on a live agent. Prepared background summaries and detached
+gateway hygiene agents with reduced toolsets retain the bounded path.
+
+The next normal request still has the newly compacted history. Its cache behavior
+is a separate question from reuse by the summary-generating request itself.
+
 ### Native Responses compaction (gpt-5.6 and Astra on supported routes)
 
 OpenAI's Responses API supports server-side compaction: when a request includes

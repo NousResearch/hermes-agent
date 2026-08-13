@@ -484,6 +484,13 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("OPENCODE_GO_API_KEY",),
         base_url_env_var="OPENCODE_GO_BASE_URL",
     ),
+    "opencode-free": ProviderConfig(
+        id="opencode-free",
+        name="OpenCode Free",
+        auth_type="api_key",
+        inference_base_url="https://opencode.ai/zen/v1",
+        api_key_env_vars=("OPENCODE_FREE_API_KEY",),
+    ),
     "kilocode": ProviderConfig(
         id="kilocode",
         name="Kilo Code",
@@ -2112,6 +2119,7 @@ def resolve_provider(
         "github-copilot-acp": "copilot-acp", "copilot-acp-agent": "copilot-acp",
         "aigateway": "ai-gateway", "vercel": "ai-gateway", "vercel-ai-gateway": "ai-gateway",
         "opencode": "opencode-zen", "zen": "opencode-zen",
+        "free": "opencode-free", "opencode_free": "opencode-free",
         "qwen-portal": "qwen-oauth", "qwen-cli": "qwen-oauth", "qwen-oauth": "qwen-oauth",
         "hf": "huggingface", "hugging-face": "huggingface", "huggingface-hub": "huggingface",
         "mimo": "xiaomi", "xiaomi-mimo": "xiaomi",
@@ -7284,6 +7292,16 @@ def resolve_api_key_provider_credentials(provider_id: str) -> Dict[str, Any]:
     if not api_key and provider_id == "lmstudio":
         api_key = LMSTUDIO_NOAUTH_PLACEHOLDER
         key_source = key_source or "default"
+
+    # OpenCode Free: the free tier historically accepted unauthenticated
+    # requests, so OPENCODE_FREE_API_KEY was used only for provider
+    # auto-detection and its value was never sent as a Bearer token.  The tier
+    # has since changed: requests without a real account API key are rejected
+    # with 401 AuthError, and third-party clients that don't identify as the
+    # opencode client get 429 FreeUsageLimitError.  Preserve the keyless
+    # fallback only when no usable key is configured.
+    if provider_id == "opencode-free" and not has_usable_secret(api_key):
+        api_key = ""
 
     env_url = ""
     if pconfig.base_url_env_var:

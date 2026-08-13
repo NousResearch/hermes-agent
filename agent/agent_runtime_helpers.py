@@ -2576,6 +2576,43 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
             client_kwargs["default_headers"] = existing
     except Exception:
         _ra().logger.debug("Copilot default-header guard skipped", exc_info=True)
+
+    # OpenCode Free: the free tier historically rejected any Authorization
+    # header entirely (the OpenAI SDK always injects "Authorization: Bearer
+    # <api_key>" even when api_key is empty, so we wrapped the httpx client
+    # with an event hook that strips it).  The tier has since changed: it now
+    # requires a real account API key (the old literal "free"/anonymous key
+    # returns 401 AuthError) and throttles third-party clients by User-Agent,
+    # returning 429 FreeUsageLimitError unless the request identifies as the
+    # opencode client.  So when a usable key is configured we keep the
+    # Authorization header AND send the opencode User-Agent; the keyless
+    # strip path is only preserved for setups with no key configured at all.
+    if agent.provider == "opencode-free":
+        import httpx
+
+        _free_key = str(client_kwargs.get("api_key") or "").strip()
+        if _free_key and _free_key.lower() not in ("free", "none", "no-key", "no-key-required"):
+            _existing = dict(client_kwargs.get("default_headers") or {})
+            if "user-agent" not in {k.lower() for k in _existing}:
+                _existing["User-Agent"] = "opencode/latest"
+            client_kwargs["default_headers"] = _existing
+        else:
+            _inner = client_kwargs.get("http_client") or httpx.Client()
+
+            def _strip_auth(request: httpx.Request) -> httpx.Request:
+                request.headers.pop("Authorization", None)
+                return request
+
+            _wrapped = httpx.Client(
+                transport=_inner._transport,
+                headers={k: v for k, v in _inner.headers.items() if k.lower() != "authorization"},
+            )
+            _wrapped.event_hooks["request"].append(_strip_auth)
+            client_kwargs["http_client"] = _wrapped
+            _existing = dict(client_kwargs.get("default_headers") or {})
+            if "user-agent" not in {k.lower() for k in _existing}:
+                _existing["User-Agent"] = "opencode/latest"
+            client_kwargs["default_headers"] = _existing
     # Uses the module-level `OpenAI` name, resolved lazily on first
     # access via __getattr__ below. Tests patch via `run_agent.OpenAI`.
     client = _ra().OpenAI(**client_kwargs)

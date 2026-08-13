@@ -1622,3 +1622,58 @@ def test_resolve_named_custom_runtime_pool_result_includes_extra_headers(monkeyp
     assert resolved["source"] == "pool:lmstudio-pool"
     assert resolved["provider"] == "custom"
     assert resolved["requested_provider"] == "custom:lmstudio"
+
+
+def test_resolve_runtime_provider_opencode_free_keyless_despite_exhausted_pool(monkeypatch):
+    """OpenCode Free is keyless: an exhausted credential pool must not raise
+    the misleading 'Set OPENCODE_FREE_API_KEY' error. The provider resolves
+    with an empty api_key and its base URL so the request can go out with no
+    Authorization header."""
+    class _ExhaustedPool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return None
+
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-free")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "opencode-free", "default": "deepseek-v4-flash-free"},
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _ExhaustedPool())
+
+    resolved = rp.resolve_runtime_provider(
+        requested="opencode-free", target_model="deepseek-v4-flash-free"
+    )
+
+    assert resolved["provider"] == "opencode-free"
+    assert resolved["api_key"] == ""
+    assert resolved["base_url"] == "https://opencode.ai/zen/v1"
+    assert resolved["api_mode"] == "chat_completions"
+
+
+def test_resolve_runtime_provider_opencode_free_missing_env_still_resolves(monkeypatch):
+    """OpenCode Free resolves keylessly even when OPENCODE_FREE_API_KEY is
+    unset (the env var exists only for provider auto-detection)."""
+    class _NoPool:
+        def has_credentials(self):
+            return False
+
+    monkeypatch.delenv("OPENCODE_FREE_API_KEY", raising=False)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "opencode-free")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {"provider": "opencode-free", "default": "deepseek-v4-flash-free"},
+    )
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _NoPool())
+
+    resolved = rp.resolve_runtime_provider(
+        requested="opencode-free", target_model="deepseek-v4-flash-free"
+    )
+
+    assert resolved["provider"] == "opencode-free"
+    assert resolved["api_key"] == ""
+    assert resolved["base_url"] == "https://opencode.ai/zen/v1"

@@ -3005,6 +3005,43 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                     print(
                         f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
                     )
+    elif provider_id == "opencode-free":
+        # OpenCode Free: fetch from models.dev with same filter as
+        # opencode CLI — cost.input == 0 AND status != "deprecated".
+        from agent.models_dev import fetch_models_dev as _fetch_mdev
+
+        try:
+            _mdev = _fetch_mdev()
+            _pd = _mdev.get("opencode", {})
+            _mmodels = _pd.get("models", {}) if isinstance(_pd, dict) else {}
+            if isinstance(_mmodels, dict):
+                model_list = sorted(
+                    mid for mid, m in _mmodels.items()
+                    if isinstance(m, dict)
+                    and isinstance(m.get("cost"), dict)
+                    and m["cost"].get("input") == 0
+                    and m.get("status") != "deprecated"
+                )
+                if model_list:
+                    print(f"  Found {len(model_list)} model(s) for OpenCode Free")
+                else:
+                    model_list = _PROVIDER_MODELS.get(provider_id, [])
+                    if model_list:
+                        print(
+                            "  Using curated model list — models.dev had no free models."
+                        )
+            else:
+                model_list = _PROVIDER_MODELS.get(provider_id, [])
+                if model_list:
+                    print(
+                        f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
+                    )
+        except Exception:
+            model_list = _PROVIDER_MODELS.get(provider_id, [])
+            if model_list:
+                print(
+                    f'  Showing {len(model_list)} curated models — use "Enter custom model name" for others.'
+                )
     else:
         curated = _PROVIDER_MODELS.get(provider_id, [])
 
@@ -3053,7 +3090,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
                     )
             # else: no defaults either, will fall through to raw input
 
-    if provider_id in {"opencode-zen", "opencode-go"}:
+    if provider_id in {"opencode-zen", "opencode-go", "opencode-free"}:
         model_list = [
             normalize_opencode_model_id(provider_id, mid) for mid in model_list
         ]
@@ -3088,7 +3125,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             selected = None
 
     if selected:
-        if provider_id in {"opencode-zen", "opencode-go"}:
+        if provider_id in {"opencode-zen", "opencode-go", "opencode-free"}:
             selected = normalize_opencode_model_id(provider_id, selected)
 
         _save_model_choice(selected)
@@ -3102,7 +3139,7 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         model["provider"] = provider_id
         model["base_url"] = effective_base
         clear_model_endpoint_credentials(model, clear_api_mode=False)
-        if provider_id in {"opencode-zen", "opencode-go"}:
+        if provider_id in {"opencode-zen", "opencode-go", "opencode-free"}:
             model["api_mode"] = opencode_model_api_mode(provider_id, selected)
         else:
             model.pop("api_mode", None)

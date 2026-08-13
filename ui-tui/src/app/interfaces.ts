@@ -293,8 +293,6 @@ export interface OverlayState {
   askUserQuestions: AskUserQuestionsReq | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
-  /** KENSEI CUSTOM: Control Room overlay (Ctrl+P). */
-  controlRoom: boolean
   /** Ambient widget apps — glanceable dock, non-blocking (never in $isBlocked). */
   ambient: ActiveWidget[]
   /** Modal widget app — owns input, blocks the composer. */

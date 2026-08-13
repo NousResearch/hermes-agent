@@ -537,39 +537,6 @@ class CLICommandsMixin:
         agent_running = getattr(self, "_agent_running", False)
         _cprint(f"  Agent: {'running' if agent_running else 'idle'}")
 
-    def _handle_control_command(self, cmd_original: str) -> None:
-        """Handle /control — open the Control Room read model in plain text.
-
-        Builds a profile-scoped snapshot through the Control Room service and
-        renders the requested section (home by default). Pure read: no
-        mutation, no overlay — safe over SSH and in non-interactive shells.
-        """
-        from cli import _cprint
-        from control_room.service import ControlRoomService
-        from control_room.text import normalize_section, render_section
-
-        parts = cmd_original.split(None, 1)
-        section = normalize_section(parts[1].strip() if len(parts) > 1 else "home")
-
-        # Live CLI context feeds the agents provider; everything else uses the
-        # real authoritative readers through the default providers.
-        context = {}
-        running = getattr(self, "_running_agents", None)
-        if isinstance(running, dict) and running:
-            context["running_agents"] = running
-        running_ts = getattr(self, "_running_agents_ts", None)
-        if isinstance(running_ts, dict):
-            context["running_agents_ts"] = running_ts
-
-        service = ControlRoomService()
-        snapshot = service.build_snapshot(profile=self._get_control_room_profile(), context=context)
-        _cprint(render_section(section, snapshot))
-
-    def _get_control_room_profile(self) -> str:
-        """Return the profile label for this CLI session (default unless
-        explicitly overridden)."""
-        return str(getattr(self, "profile", "") or "default")
-
     def _handle_journey_command(self, cmd_original: str) -> None:
         """Handle /journey — the learning timeline (see `hermes journey`).
 

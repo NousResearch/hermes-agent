@@ -25,15 +25,6 @@ const fsAllow = [
   )
 ]
 
-// React lives at the npm-hoist root (../../node_modules/react) under npm
-// workspaces, but under pnpm it is linked into apps/desktop/node_modules.
-// Resolve whichever layout is present so the alias works under both.
-const reactRoot = () => {
-  const hoisted = path.resolve(__dirname, '../../node_modules/react')
-  const local = path.resolve(__dirname, 'node_modules/react')
-  return fs.existsSync(hoisted) ? hoisted : local
-}
-
 // The dev-only render/state churn counters (src/debug) must be imported
 // STATICALLY above react-dom — react-dom captures the devtools hook at module
 // init, so a dynamic import lands too late and observes zero commits. A static
@@ -156,10 +147,10 @@ export default defineConfig(({ command }) => ({
       '@hermes/plugin-sdk': path.resolve(__dirname, './src/sdk/index.ts'),
       '@hermes/shared/billing': path.resolve(__dirname, '../shared/src/billing-types.ts'),
       '@hermes/shared': path.resolve(__dirname, '../shared/src'),
-      react: reactRoot(),
-      'react-dom': path.resolve(path.dirname(reactRoot()), 'react-dom'),
-      'react/jsx-dev-runtime': path.resolve(path.dirname(reactRoot()), 'react/jsx-dev-runtime.js'),
-      'react/jsx-runtime': path.resolve(path.dirname(reactRoot()), 'react/jsx-runtime.js')
+      react: path.resolve(__dirname, '../../node_modules/react'),
+      'react-dom': path.resolve(__dirname, '../../node_modules/react-dom'),
+      'react/jsx-dev-runtime': path.resolve(__dirname, '../../node_modules/react/jsx-dev-runtime.js'),
+      'react/jsx-runtime': path.resolve(__dirname, '../../node_modules/react/jsx-runtime.js')
     },
     dedupe: ['react', 'react-dom', 'react-router']
   },

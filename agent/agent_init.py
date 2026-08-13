@@ -1837,21 +1837,7 @@ def init_agent(
                     # Profile identity for per-profile provider scoping
                     try:
                         from hermes_cli.profiles import get_active_profile_name
-
                         _profile = get_active_profile_name()
-                        # Severian requires a complete scope, but the values
-                        # come only from the trusted process/profile runtime —
-                        # never from model-visible tool arguments. Custom
-                        # HERMES_HOME locations intentionally remain unscoped
-                        # so the provider fails closed instead of collapsing
-                        # unrelated identities into a shared tenant.
-                        if _mem_provider_name.strip().casefold() == "severian" and _profile != "custom":
-                            _init_kwargs.update(
-                                tenant_id="kensei",
-                                profile_id=_profile,
-                                collection_id="session",
-                                agent_id=_profile,
-                            )
                         _init_kwargs["agent_identity"] = _profile
                         _init_kwargs["agent_workspace"] = "hermes"
                     except Exception:

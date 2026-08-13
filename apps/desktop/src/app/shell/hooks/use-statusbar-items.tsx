@@ -2,7 +2,6 @@ import { useStore } from '@nanostores/react'
 import { useCallback, useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
-import { ControlRoomStatusBadge } from '@/app/command-center/control-room-status-badge'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
@@ -392,14 +391,6 @@ export function useStatusbarItems({
         lockedVisible: true,
         onSelect: toggleCommandCenter,
         title: commandCenterOpen ? copy.closeCommandCenter : copy.openCommandCenter,
-        toggleLabel: copy.toggleCommandCenter,
-        variant: 'action'
-      },
-      {
-        id: 'control-room-attention',
-        // CR-405: compact attention badge — live counts + one-click Control
-        // Room. Uses the render escape hatch so it owns its bounded poll.
-        render: () => <ControlRoomStatusBadge onOpen={toggleCommandCenter} />,
         toggleLabel: copy.toggleCommandCenter,
         variant: 'action'
       },

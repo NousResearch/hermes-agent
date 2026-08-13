@@ -62,34 +62,11 @@ def _register_synthetic_package(name: str, search_locations: List[str]) -> None:
 # ---------------------------------------------------------------------------
 
 def _get_user_plugins_dir() -> Optional[Path]:
-    """Return profile-local ``$HERMES_HOME/plugins/`` or None if absent."""
+    """Return ``$HERMES_HOME/plugins/`` or None if unavailable."""
     try:
         from hermes_constants import get_hermes_home
         d = get_hermes_home() / "plugins"
         return d if d.is_dir() else None
-    except Exception:
-        return None
-
-
-def _get_shared_user_plugins_dir() -> Optional[Path]:
-    """Return the root Hermes plugin directory for a named profile.
-
-    A profile is intentionally isolated for its configuration and mutable
-    state, but an administrator-installed provider plugin at
-    ``<root>/plugins`` is executable code shared by every profile.  This
-    fallback prevents operators from copying a plugin into every profile while
-    preserving precedence: bundled providers win, then profile-local plugins,
-    then this root-shared directory.  The default home is already the root, so
-    it is never returned twice.
-    """
-    try:
-        from hermes_constants import get_default_hermes_root, get_hermes_home
-
-        local = get_hermes_home() / "plugins"
-        shared = get_default_hermes_root() / "plugins"
-        if shared.resolve() == local.resolve():
-            return None
-        return shared if shared.is_dir() else None
     except Exception:
         return None
 
@@ -140,37 +117,25 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
             if not _is_memory_provider_dir(child):
                 continue  # skip non-memory plugins
             dirs.append((child.name, child))
-            seen.add(child.name)
-
-    # 3. Root-shared user providers (only for named profile homes).
-    # Profile-local entries win over this layer; bundled entries still win over
-    # both. The seen set is updated after each precedence layer.
-    shared_dir = _get_shared_user_plugins_dir()
-    if shared_dir:
-        for child in sorted(shared_dir.iterdir()):
-            if not child.is_dir() or child.name.startswith(("_", ".")):
-                continue
-            if child.name in seen:
-                continue
-            if not _is_memory_provider_dir(child):
-                continue
-            dirs.append((child.name, child))
-            seen.add(child.name)
 
     return dirs
 
 
 def find_provider_dir(name: str) -> Optional[Path]:
-    """Resolve a provider name by bundled, profile-local, then root-shared precedence."""
+    """Resolve a provider name to its directory.
+
+    Checks bundled first, then user-installed.
+    """
+    # Bundled
     bundled = _MEMORY_PLUGINS_DIR / name
     if bundled.is_dir() and (bundled / "__init__.py").exists():
         return bundled
-    for plugins_dir in (_get_user_plugins_dir(), _get_shared_user_plugins_dir()):
-        if plugins_dir is None:
-            continue
-        candidate = plugins_dir / name
-        if candidate.is_dir() and _is_memory_provider_dir(candidate):
-            return candidate
+    # User-installed
+    user_dir = _get_user_plugins_dir()
+    if user_dir:
+        user = user_dir / name
+        if user.is_dir() and _is_memory_provider_dir(user):
+            return user
     return None
 
 

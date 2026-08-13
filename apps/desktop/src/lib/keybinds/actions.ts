@@ -95,11 +95,7 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   { id: 'workspace.openFolder', category: 'session', defaults: ['mod+o'] },
 
   // ── Navigation ───────────────────────────────────────────────────────────
-  // ⌘K opens the command palette; ⌘P opens Control Room (the keyboard-first
-  // attention surface). P was historically a palette alias — the plan moves
-  // it to Control Room and keeps ⌘K as the palette's only default.
-  { id: 'nav.commandPalette', category: 'navigation', defaults: ['mod+k'] },
-  { id: 'nav.controlRoom', category: 'navigation', defaults: ['mod+p'] },
+  { id: 'nav.commandPalette', category: 'navigation', defaults: ['mod+k', 'mod+p'] },
   { id: 'nav.commandCenter', category: 'navigation', defaults: ['mod+.'] },
   { id: 'nav.settings', category: 'navigation', defaults: ['mod+,'] },
   { id: 'nav.profiles', category: 'navigation', defaults: [] },

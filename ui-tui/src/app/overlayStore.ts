@@ -11,7 +11,6 @@ const buildOverlayState = (): OverlayState => ({
   askUserQuestions: null,
   clarify: null,
   confirm: null,
-  controlRoom: false,
   ambient: [],
   widget: null,
   journey: false,
@@ -37,7 +36,6 @@ export const $isBlocked = computed(
     billing,
     clarify,
     confirm,
-    controlRoom,
     journey,
     modelPicker,
     pager,
@@ -57,7 +55,6 @@ export const $isBlocked = computed(
       billing ||
       clarify ||
       confirm ||
-      controlRoom ||
       journey ||
       modelPicker ||
       pager ||

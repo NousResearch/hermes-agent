@@ -1124,7 +1124,7 @@ export const ja = defineLocale({
     goToSession: 'セッションへ移動',
     branches: 'ブランチ',
     startInBranch: branch => `${branch} で新しい会話`,
-    commandCenter: 'コントロールルーム',
+    commandCenter: 'コマンドセンター',
     appearance: '外観',
     settings: '設定',
     changeTheme: 'テーマを変更',
@@ -1188,9 +1188,8 @@ export const ja = defineLocale({
     settingsFields: '設定フィールド',
     mcpServers: 'MCP サーバー',
     archivedChats: 'アーカイブ済みチャット',
-    sections: { home: 'コントロールルーム', sessions: 'セッション', system: 'システム', usage: '使用状況' },
+    sections: { sessions: 'セッション', system: 'システム', usage: '使用状況' },
     sectionDescriptions: {
-      home: '注意優先の制御画面 — あなたを必要とする項目、エージェント、タスク、メッセージ、システム',
       sessions: 'セッションの検索と管理',
       system: 'ステータス、ログ、システムアクション',
       usage: 'トークン、コスト、スキルの活動履歴'
@@ -1880,7 +1879,6 @@ export const ja = defineLocale({
       'composer.sendNewline': '送信 · 改行は Shift+Enter',
       'composer.sendQueued': '次のキュー済みターンを送信',
       'keybinds.openPanel': 'すべてのキーボードショートカット',
-      'nav.controlRoom': 'コントロールルームを開く',
       'composer.cancel': 'ポップオーバーを閉じる · 実行をキャンセル',
       'composer.history': 'ポップオーバー / 履歴を切り替え'
     },

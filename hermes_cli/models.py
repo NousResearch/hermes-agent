@@ -2390,10 +2390,15 @@ def _github_reasoning_efforts_for_model_id(model_id: str) -> list[str]:
 
 
 def _should_use_copilot_responses_api(model_id: str) -> bool:
-    """opencode's ``shouldUseCopilotResponsesApi``: GPT-5+ uses the Responses API except
-    ``gpt-5-mini``; non-GPT models (Claude, Gemini, ...) use Chat Completions."""
+    """``opencode``'s ``shouldUseCopilotResponsesApi`` (GPT-5+ except ``gpt-5-mini`` -> Responses),
+    plus grok as an offline fallback: the Copilot catalog serves grok exclusively on ``/responses``
+    (``grok-4.5 -> ['/responses']``). ``copilot_model_api_mode`` consults the live catalog's
+    ``supported_endpoints`` first, so this heuristic only decides when the catalog is unavailable."""
     match = re.match(r"^gpt-(\d+)", model_id)
-    return bool(match) and int(match.group(1)) >= 5 and not model_id.startswith("gpt-5-mini")
+    if match:
+        return int(match.group(1)) >= 5 and not model_id.startswith("gpt-5-mini")
+    lowered = model_id.lower()
+    return lowered.startswith("grok-") or lowered.startswith("x-ai/grok")
 
 
 def copilot_model_api_mode(
@@ -2405,8 +2410,50 @@ def copilot_model_api_mode(
     if catalog is None and api_key:  # fetch once so normalize + endpoint check share it
         catalog = fetch_github_model_catalog(api_key=api_key)
     normalized = normalize_copilot_model_id(model_id, catalog=catalog, api_key=api_key)
+
+    # Authoritative check first: consult the live catalog's supported_endpoints.
+    # Some non-GPT models (e.g. grok-4.5 -> ['/responses']) are served ONLY on
+    # the Responses API, and no ID-pattern heuristic can anticipate every future
+    # family. If the catalog lists /responses as the only HTTP endpoint, route
+    # there so we don't hit "model ... not accessible via /chat/completions".
+    # Endpoint strings are normalized (leading /v1 and trailing / stripped) so
+    # catalog variants like "/v1/responses" still match.
+    listed = False
+    if isinstance(catalog, list) and normalized:
+        for item in catalog:
+            if str(item.get("id", "")).strip() != normalized:
+                continue
+            endpoints = set()
+            for endpoint in item.get("supported_endpoints") or []:
+                cleaned = str(endpoint).strip().lower().rstrip("/")
+                if cleaned.startswith("/v1/"):
+                    cleaned = cleaned[len("/v1"):]
+                if cleaned:
+                    endpoints.add(cleaned)
+            if "/responses" in endpoints and "/chat/completions" not in endpoints:
+                return "codex_responses"
+            # The catalog lists this id: its endpoint verdict is authoritative,
+            # so the ID-pattern heuristic below must not override it.
+            listed = True
+            break
+
+    if listed:
+        # Catalog knows this id and it is NOT responses-only. Keep the opencode
+        # GPT-5+ rule (those models work on both endpoints and upstream routes
+        # them to Responses), but the grok offline heuristic must not fire.
+        match = re.match(r"^gpt-(\d+)", normalized)
+        if match and int(match.group(1)) >= 5 and not normalized.startswith("gpt-5-mini"):
+            return "codex_responses"
+        return "chat_completions"
+
+    # Offline fallback when the catalog is unavailable or has no entry for this
+    # id: ID-pattern heuristic (GPT-5+ / grok families).
     if normalized and _should_use_copilot_responses_api(normalized):
         return "codex_responses"
+
+    # Anything else (including Claude, which the catalog may advertise on
+    # /v1/messages but whose Copilot token/header scheme needs the OpenAI
+    # client path, not the native Anthropic adapter) stays on chat_completions.
     return "chat_completions"
 
 

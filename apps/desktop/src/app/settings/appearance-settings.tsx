@@ -18,6 +18,7 @@ import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/p
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
+import { $vibeHeartsEnabled, setVibeHeartsEnabled } from '@/store/vibe-hearts-enabled'
 import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
@@ -253,6 +254,7 @@ export function AppearanceSettings() {
   const embedAllowed = useStore($embedAllowed)
   const translucency = useStore($translucency)
   const reactionsEnabled = useStore($reactionsEnabled)
+  const vibeHeartsEnabled = useStore($vibeHeartsEnabled)
   const backdrop = useStore($backdrop)
   const installs = useStore($marketplaceInstalls)
   const profiles = useStore($profiles)
@@ -493,6 +495,24 @@ export function AppearanceSettings() {
             }
             description={a.reactionsDesc}
             title={a.reactionsTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setVibeHeartsEnabled(id === 'on')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={vibeHeartsEnabled ? 'on' : 'off'}
+              />
+            }
+            description={a.vibeHeartsDesc}
+            title={a.vibeHeartsTitle}
           />
 
           <ListRow

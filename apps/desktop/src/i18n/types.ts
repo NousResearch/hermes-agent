@@ -372,6 +372,8 @@ export interface Translations {
       backdropDesc: string
       reactionsTitle: string
       reactionsDesc: string
+      vibeHeartsTitle: string
+      vibeHeartsDesc: string
       embedsTitle: string
       embedsDesc: string
       embedsAsk: string

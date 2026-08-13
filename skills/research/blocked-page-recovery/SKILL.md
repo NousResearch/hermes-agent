@@ -1,6 +1,6 @@
 ---
 name: blocked-page-recovery
-description: "Recover blocked/paywalled/WAF'd pages via archive snapshots and reader fallbacks. Use when web_extract or the browser hits 403/429/challenge pages, paywalls, or bot-detection interstitials."
+description: "Recover blocked/paywalled/WAF'd pages via fallbacks."
 version: 1.0.0
 author: Hermes Agent
 license: MIT

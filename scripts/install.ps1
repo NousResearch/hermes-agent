@@ -15,6 +15,7 @@
 param(
     [switch]$NoVenv,
     [switch]$SkipSetup,
+    [switch]$SkipComputerUse,
     [string]$Branch = "main",
     # -Commit and -Tag are higher-precedence variants of -Branch for users
     # who need reproducible installs (desktop installer pinning, CI, release
@@ -653,14 +654,21 @@ function Write-BrowserEnv {
 }
 
 function Install-AgentBrowser {
-    param([switch]$SkipChromium)
     $npm = Resolve-NpmCmd
     if (-not $npm) {
         Write-Err "npm not found -- install Node.js first"
         throw "npm not found"
     }
 
-    Write-Info "Installing agent-browser via npm -g --prefix..."
+    # agent-browser itself is intentionally NOT installed here (#43564 /
+    # PR #44772 review): it resolves lazily via `npx agent-browser` instead,
+    # which every consumer (tools/browser_tool.py, `hermes update`'s npx
+    # cache warm) already goes through. Eagerly npm-installing a second,
+    # separately version-pinned copy here -- only reachable via this
+    # explicit -Ensure browser fallback in the first place -- was redundant
+    # complexity and an extra credential/supply-chain surface for a path
+    # npx already covers.
+    Write-Info "Installing camofox browser server..."
     $prefixDir = Join-Path $HermesHome "node"
     if (-not (Test-Path $prefixDir)) {
         New-Item -ItemType Directory -Path $prefixDir -Force | Out-Null
@@ -668,7 +676,7 @@ function Install-AgentBrowser {
     $npmLog = [System.IO.Path]::GetTempFileName()
     $prevEAP = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
-    & $npm install -g --prefix $prefixDir --silent --ignore-scripts "agent-browser@^0.26.0" "@askjo/camofox-browser@^1.5.2" 2>&1 | Tee-Object -FilePath $npmLog | Out-Null
+    & $npm install -g --prefix $prefixDir --silent --ignore-scripts "@askjo/camofox-browser@^1.5.2" 2>&1 | Tee-Object -FilePath $npmLog | Out-Null
     $npmExit = $LASTEXITCODE
     $ErrorActionPreference = $prevEAP
     if ($npmExit -ne 0) {
@@ -683,30 +691,10 @@ function Install-AgentBrowser {
     }
     Remove-Item $npmLog -Force -ErrorAction SilentlyContinue
 
-    if (-not $SkipChromium) {
-        $sysBrowser = Find-SystemBrowser
-        if ($sysBrowser) {
-            Write-BrowserEnv -BrowserPath $sysBrowser
-            Write-Info "Explicit browser override set -- skipping bundled Chromium download"
-        } else {
-            $abExe = Join-Path $prefixDir "agent-browser.cmd"
-            if (Test-Path $abExe) {
-                Write-Info "Installing Chromium via agent-browser install..."
-                $abLog = [System.IO.Path]::GetTempFileName()
-                $prevEAP = $ErrorActionPreference
-                $ErrorActionPreference = "Continue"
-                & $abExe install 2>&1 | Tee-Object -FilePath $abLog | Out-Null
-                $abExit = $LASTEXITCODE
-                $ErrorActionPreference = $prevEAP
-                if ($abExit -ne 0) {
-                    $abDetail = Get-Content $abLog -Raw -ErrorAction SilentlyContinue
-                    Write-Warn "Chromium install failed (exit $abExit): $abDetail"
-                }
-                Remove-Item $abLog -Force -ErrorAction SilentlyContinue
-            } else {
-                Write-Warn "agent-browser.cmd not found at $abExe"
-            }
-        }
+    $sysBrowser = Find-SystemBrowser
+    if ($sysBrowser) {
+        Write-BrowserEnv -BrowserPath $sysBrowser
+        Write-Info "Explicit browser override set -- Chromium download will be skipped when agent-browser installs on demand"
     }
     Write-Success "Agent-browser ready"
 }
@@ -3182,6 +3170,7 @@ function Install-NodeDeps {
     }
 
     Install-BrowserUseCli
+    Install-CuaDriver
 }
 
 # The Browser Use CLI is the default browser backend when it is runnable
@@ -3223,6 +3212,56 @@ function Install-BrowserUseCli {
         $ErrorActionPreference = $prevEAP
         Remove-Item Env:\UV_TOOL_BIN_DIR -ErrorAction SilentlyContinue
         Remove-Item Env:\UV_NO_CONFIG -ErrorAction SilentlyContinue
+    }
+}
+
+# cua-driver powers the computer_use toolset (background desktop control).
+# Provision it at install time so enabling the tool later -- via `hermes
+# tools`, the dashboard, or the desktop app -- is a config flip, not a
+# surprise multi-minute binary fetch. Best-effort and non-fatal: the enable
+# paths still lazy-install via install_cua_driver() (hermes_cli/tools_config)
+# when this step was skipped or failed.
+function Install-CuaDriver {
+    if ($SkipComputerUse) {
+        Write-Info "Skipping Computer Use (cua-driver) install (-SkipComputerUse)"
+        return
+    }
+    if (Get-Command cua-driver -ErrorAction SilentlyContinue) {
+        Write-Success "Computer Use driver (cua-driver) already installed"
+        return
+    }
+
+    Write-Info "Installing Computer Use driver (cua-driver)..."
+    $prevEAP = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        # Same upstream installer `hermes computer-use install` runs. Bounded
+        # via a background job: the upstream installer serializes with its own
+        # lock (600s stale window), so the ceiling sits above that -- matching
+        # Hermes' _CUA_INSTALLER_TIMEOUT (660s).
+        $job = Start-Job -ScriptBlock {
+            Invoke-RestMethod -UseBasicParsing "https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.ps1" | Invoke-Expression
+        }
+        if (Wait-Job $job -Timeout 660) {
+            Receive-Job $job -ErrorAction SilentlyContinue | Out-Null
+            Remove-Job $job -Force -ErrorAction SilentlyContinue
+            if (Get-Command cua-driver -ErrorAction SilentlyContinue) {
+                Write-Success "Computer Use driver installed (enable via 'hermes tools' -> Computer Use)"
+            } else {
+                Write-Warn "Computer Use driver install did not complete -- it will install on demand when you enable the tool."
+                Write-Info "Install later with: hermes computer-use install"
+            }
+        } else {
+            Stop-Job $job -ErrorAction SilentlyContinue
+            Remove-Job $job -Force -ErrorAction SilentlyContinue
+            Write-Warn "Computer Use driver install timed out -- it will install on demand when you enable the tool."
+            Write-Info "Install later with: hermes computer-use install"
+        }
+    } catch {
+        Write-Warn "Computer Use driver install failed: $_"
+        Write-Info "Install later with: hermes computer-use install"
+    } finally {
+        $ErrorActionPreference = $prevEAP
     }
 }
 

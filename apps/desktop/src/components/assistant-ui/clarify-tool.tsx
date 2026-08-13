@@ -25,7 +25,14 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { CircleLetterA, Loader2, MessageQuestion } from '@/lib/icons'
 import { cn } from '@/lib/utils'
-import { clearClarifyRequest, normalizeChoices, sessionClarifyRequest, warnDroppedChoices } from '@/store/clarify'
+import {
+  bareChoice,
+  clearClarifyRequest,
+  normalizeChoices,
+  RECOMMENDED_LABEL,
+  sessionClarifyRequest,
+  warnDroppedChoices
+} from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
 
@@ -86,6 +93,22 @@ export function readClarifyResult(result: unknown): ClarifyResult {
 }
 
 const letterFor = (index: number): string => String.fromCharCode(65 + index)
+
+// The backend tags the agent's preferred option (`mark_recommended`); the card
+// renders the label in tertiary text so the option itself still reads first.
+function ChoiceLabel({ choice }: { choice: string }) {
+  const bare = bareChoice(choice)
+
+  if (bare === choice) {
+    return <>{choice}</>
+  }
+
+  return (
+    <>
+      {bare} <span className="text-(--ui-text-tertiary)">{RECOMMENDED_LABEL}</span>
+    </>
+  )
+}
 
 const OPTION_ROW_CLASS =
   'flex w-full items-start gap-2 rounded-[0.25rem] px-1.5 py-1 text-left disabled:cursor-not-allowed disabled:opacity-50'
@@ -182,7 +205,9 @@ function ChoiceButton({
         type="button"
       >
         <KeyBadge char={char} preview={active} selected={selected} />
-        <span className="flex-1 wrap-anywhere">{choice}</span>
+        <span className="flex-1 wrap-anywhere">
+          <ChoiceLabel choice={choice} />
+        </span>
       </button>
     </Tip>
   )
@@ -301,7 +326,11 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const question = fromArgs.question || matchingRequest?.question || ''
 
   const choices = useMemo(
-    () => fromArgs.choices ?? matchingRequest?.choices ?? [],
+    // Prefer the gateway request's choices over the raw tool args: the backend
+    // labels the recommended option there (`mark_recommended`), and the card
+    // only renders once `matchingRequest` exists, so the args are a fallback
+    // for a hydration race, not the normal path.
+    () => matchingRequest?.choices ?? fromArgs.choices ?? [],
     [fromArgs.choices, matchingRequest?.choices]
   )
 

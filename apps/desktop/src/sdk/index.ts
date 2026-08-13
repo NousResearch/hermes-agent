@@ -20,12 +20,13 @@
 
 import { atom, type ReadableAtom } from 'nanostores'
 
+import { openSession, type OpenSessionIntent } from '@/app/open-session'
 import { $narrowViewport } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
 import { getLogs, getStatus } from '@/hermes'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $activeGatewayProfile } from '@/store/profile'
+import { $activeGatewayProfile, ensureGatewayProfile, newSessionInProfile, setShowAllProfiles } from '@/store/profile'
 import { $activeSessionId, $currentCwd, $currentModel, $gatewayState } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
 
@@ -85,6 +86,51 @@ export const host = {
   /** Navigate the app router (hash routes, e.g. '/command-center?section=system'). */
   navigate: (path: string) => {
     window.location.hash = path.startsWith('#') ? path : `#${path}`
+  },
+
+  /** Open a stored session the way core surfaces do (focus an existing
+   *  tile/main, else load into main). When `profile` names a non-active
+   *  profile, its backend is activated first so the resume routes to the
+   *  right state.db — the same soft profile swap the unified sidebar does.
+   *  `keepAllProfilesScope` (default true) keeps the Sessions sidebar in the
+   *  unified all-profiles view instead of narrowing it to the target
+   *  profile's sessions — a cross-profile open from a plugin surface is a
+   *  navigation, not a scope choice; pass false to also scope the sidebar. */
+  openSession: async (
+    storedSessionId: string,
+    options: { intent?: OpenSessionIntent; keepAllProfilesScope?: boolean; profile?: null | string } = {}
+  ): Promise<void> => {
+    const profile = (options.profile ?? '').trim()
+
+    if (profile && profile !== $activeGatewayProfile.get()) {
+      await ensureGatewayProfile(profile)
+
+      if (options.keepAllProfilesScope !== false) {
+        setShowAllProfiles(true)
+      }
+    }
+
+    openSession(
+      storedSessionId,
+      (to: string, opts?: { replace?: boolean }) => {
+        const target = to.startsWith('#') ? to : `#${to}`
+
+        if (opts?.replace) {
+          window.location.replace(target)
+        } else {
+          window.location.hash = target
+        }
+      },
+      options.intent ?? 'in-place'
+    )
+  },
+
+  /** Start a fresh chat draft, optionally pointed at another profile (its
+   *  backend spins up in the background — same door the sidebar's per-profile
+   *  "+" uses). */
+  newChat: (profile?: null | string): void => {
+    newSessionInProfile((profile ?? '').trim() || $activeGatewayProfile.get())
+    window.location.hash = '#/'
   },
 
   /** HEAR the gateway stream (message deltas, session lifecycle, tool

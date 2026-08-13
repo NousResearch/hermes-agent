@@ -410,6 +410,7 @@ def _maybe_apply_moa_cache_control(
     runtime: dict[str, Any],
     *,
     cache_disabled: bool | None = None,
+    cache_ttl: str | None = None,
 ) -> list[dict[str, Any]]:
     """Decorate an advisor or aggregator request with cache_control when its
     route honors it.
@@ -427,13 +428,20 @@ def _maybe_apply_moa_cache_control(
     ``cache_disabled`` (or the live config when omitted) is stamped onto the
     policy stub so ``prompt_caching.cache_ttl: off`` is not bypassed by the
     blank-agent pattern (#76085).
+
+    ``cache_ttl`` threads the agent's configured tier (default ``5m``) so
+    advisor/synthesis requests stop regressing 1h → 5m; it is clamped
+    per-destination by :func:`effective_cache_ttl` (Qwen → 5m, #84733).
     """
     try:
         from agent.agent_runtime_helpers import (
             anthropic_prompt_cache_policy,
             blank_cache_policy_stub,
         )
-        from agent.prompt_caching import apply_anthropic_cache_control
+        from agent.prompt_caching import (
+            apply_anthropic_cache_control,
+            effective_cache_ttl,
+        )
 
         # Prefer an explicit kwarg, then a snapshot on the runtime dict
         # (threaded from the live agent), else config via the stub factory.
@@ -454,7 +462,15 @@ def _maybe_apply_moa_cache_control(
         if not should_cache:
             return messages
         return apply_anthropic_cache_control(
-            messages, native_anthropic=native_layout
+            messages,
+            cache_ttl=effective_cache_ttl(
+                # effective_cache_ttl resolves None → "5m"; the should_cache
+                # gate above already returned for cache-disabled routes.
+                cache_ttl,
+                provider=runtime.get("provider") or "",
+                model=runtime.get("model") or "",
+            ),
+            native_anthropic=native_layout,
         )
     except Exception as exc:  # pragma: no cover - decoration must never break a call
         logger.debug("MoA cache_control decoration skipped: %s", exc)
@@ -470,6 +486,7 @@ def _run_reference(
     reference_timeout: float | None = None,
     context_length_cache: Any = None,
     cache_disabled: bool | None = None,
+    cache_ttl: str | None = None,
 ) -> tuple[str, str, Any]:
     """Call one reference model and return ``(label, text, accounting)``.
 
@@ -536,7 +553,9 @@ def _run_reference(
         cache_runtime = runtime
         if cache_disabled is not None:
             cache_runtime = {**runtime, "_cache_disabled": cache_disabled}
-        messages = _maybe_apply_moa_cache_control(messages, cache_runtime)
+        messages = _maybe_apply_moa_cache_control(
+            messages, cache_runtime, cache_ttl=cache_ttl
+        )
         # Per-slot max_tokens takes precedence over the preset-level
         # reference_max_tokens passed in by the caller. This lets each
         # reference model have its own output cap independently.
@@ -843,6 +862,10 @@ def _run_references_parallel(
     cache_disabled = (
         getattr(agent, "_cache_disabled", None) if agent is not None else None
     )
+    # Thread the agent's configured cache TTL into every advisor request so
+    # the fan-out stops regressing 1h → 5m (#84733); the destination-aware
+    # clamp (Qwen → 5m) runs inside _maybe_apply_moa_cache_control.
+    cache_ttl = getattr(agent, "_cache_ttl", None) if agent is not None else None
     try:
         for idx, slot in enumerate(reference_models):
             if slot.get("provider") == "moa":
@@ -862,6 +885,7 @@ def _run_references_parallel(
                     reference_timeout=reference_timeout,
                     context_length_cache=_ctx_len_cache,
                     cache_disabled=cache_disabled,
+                    cache_ttl=cache_ttl,
                 )
             ] = idx
 
@@ -1322,6 +1346,9 @@ def aggregate_moa_context(
             **agg_runtime,
             "_cache_disabled": _agg_cache_disabled,
         }
+    # Thread the agent's configured cache TTL into the synthesis decoration
+    # so the one-shot /moa path stops regressing 1h → 5m (#84733).
+    _agg_cache_ttl = getattr(agent, "_cache_ttl", None) if agent is not None else None
     try:
         # Same cache_control decoration as _run_reference's advisor calls
         # (see _maybe_apply_moa_cache_control) — this synthesis call is a
@@ -1334,7 +1361,9 @@ def aggregate_moa_context(
         # breakpoints, even when the resolved aggregator slot is a
         # cache-honoring route (e.g. Claude on OpenRouter/native Anthropic).
         agg_messages = _maybe_apply_moa_cache_control(
-            [{"role": "user", "content": synth_prompt}], agg_cache_runtime
+            [{"role": "user", "content": synth_prompt}],
+            agg_cache_runtime,
+            cache_ttl=_agg_cache_ttl,
         )
         response = call_llm(
             task="moa_aggregator",
@@ -1751,6 +1780,13 @@ class MoAChatCompletions:
                 api_mode=agg_runtime.get("api_mode") or "",
                 model=agg_runtime.get("model") or "",
                 cache_disabled=_cache_disabled,
+                # Thread the agent's configured TTL and stable system prefix
+                # into the aggregator plan so MoA stops regressing 1h → 5m and
+                # marking the whole system prompt as one breakpoint (#84733).
+                cache_ttl=getattr(_agent, "_cache_ttl", None),
+                static_system_prefix=getattr(
+                    _agent, "_cached_system_prompt_static", None
+                ),
             )
             if guidance:
                 _attach_reference_guidance(agg_messages, str(guidance))

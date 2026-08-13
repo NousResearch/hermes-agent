@@ -9,7 +9,7 @@ import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { openSession } from '@/app/open-session'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
-import { Tip } from '@/components/ui/tooltip'
+import { OverflowTip, Tip } from '@/components/ui/tooltip'
 import type { SessionInfo } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
 import { sessionTitle } from '@/lib/chat-runtime'
@@ -438,9 +438,15 @@ function SidebarSessionRowImpl({
                 <>
                   {leadNode}
                   {handoffBadge}
-                  <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
-                    {title}
-                  </SidebarRowLabel>
+                  <OverflowTip label={title}>
+                    <SidebarRowLabel
+                      className="hover-marquee flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90"
+                      onPointerEnter={armMarquee}
+                      onPointerLeave={disarmMarquee}
+                    >
+                      <span className="hover-marquee-inner">{title}</span>
+                    </SidebarRowLabel>
+                  </OverflowTip>
                 </>
               )
             }
@@ -463,13 +469,15 @@ function SidebarSessionRowImpl({
                 {/* Title + preview: ONE grouped cell with its own tight
                     internal gap — it does not inherit the card's rhythm. */}
                 <div className="-mt-[0.2em] flex min-w-0 flex-col gap-[0.3rem]">
-                  <SidebarRowLabel
-                    className="hover-marquee text-[0.8125rem] leading-none font-medium text-(--ui-text-primary) group-data-[working=true]:text-foreground"
-                    onPointerEnter={armMarquee}
-                    onPointerLeave={disarmMarquee}
-                  >
-                    <span className="hover-marquee-inner">{title}</span>
-                  </SidebarRowLabel>
+                  <OverflowTip label={title}>
+                    <SidebarRowLabel
+                      className="hover-marquee text-[0.8125rem] leading-none font-medium text-(--ui-text-primary) group-data-[working=true]:text-foreground"
+                      onPointerEnter={armMarquee}
+                      onPointerLeave={disarmMarquee}
+                    >
+                      <span className="hover-marquee-inner">{title}</span>
+                    </SidebarRowLabel>
+                  </OverflowTip>
                   {session.preview && rowMeta.includes('preview') ? (
                     <span className="min-w-0 truncate text-[0.625rem] leading-none text-(--ui-text-quaternary)">
                       {session.preview}

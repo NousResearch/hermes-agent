@@ -170,6 +170,78 @@ function Tip({ label, children, delayDuration = TIP_DELAY_MS, ...props }: TipPro
   return provided ? tip : <TooltipProvider delayDuration={delayDuration}>{tip}</TooltipProvider>
 }
 
+/** Hover-open delay for `OverflowTip`. Longer than `TIP_DELAY_MS`: the trigger
+ *  is a row's own content (not a control), so the tip should only appear on a
+ *  deliberate, lingering hover — a cursor travelling the list must not pop a
+ *  trail of titles. */
+const OVERFLOW_TIP_DELAY_MS = 600
+
+/**
+ * A `Tip` that only opens when the trigger's content is actually truncated
+ * (its `scrollWidth` exceeds its `clientWidth` at pointerenter). A tooltip that
+ * repeats a fully visible label is noise, and Radix's uncontrolled hover-open
+ * can't see overflow — so this owns `open` and arms its own timer after
+ * measuring. Pointer-only by design: keyboard focus keeps the child's existing
+ * a11y affordances (the full text is already in the accessible name).
+ *
+ * Measurement happens on the CHILD element (`asChild` puts the trigger props on
+ * it), so wrap the element that carries the truncation/overflow styling.
+ */
+function OverflowTip({ label, children, delayDuration = OVERFLOW_TIP_DELAY_MS, ...props }: TipProps) {
+  const provided = React.useContext(HasTooltipProvider)
+  const [open, setOpen] = React.useState(false)
+  const timer = React.useRef<number | undefined>(undefined)
+
+  const cancel = React.useCallback(() => {
+    if (timer.current !== undefined) {
+      window.clearTimeout(timer.current)
+      timer.current = undefined
+    }
+  }, [])
+
+  // A row unmounting mid-hover (list refresh, filter) must not fire a stale
+  // timer into a torn-down tooltip.
+  React.useEffect(() => cancel, [cancel])
+
+  if (!label) {
+    return <>{children}</>
+  }
+
+  const close = () => {
+    cancel()
+    setOpen(false)
+  }
+
+  const tip = (
+    // Controlled: only closes are honored from Radix (Escape, pointer-down
+    // grace); opens are ours, gated on the measured overflow below.
+    <Tooltip onOpenChange={next => !next && close()} open={open}>
+      <TooltipTrigger
+        asChild
+        // Clicking the row means the user is acting on it, not reading the tip.
+        onPointerDown={close}
+        onPointerEnter={event => {
+          const el = event.currentTarget
+
+          cancel()
+
+          // Same 2px slack the sidebar marquee uses: sub-pixel rounding can
+          // report a 1px "overflow" on a title that fully fits.
+          if (el.scrollWidth - el.clientWidth > 2) {
+            timer.current = window.setTimeout(() => setOpen(true), delayDuration)
+          }
+        }}
+        onPointerLeave={close}
+      >
+        {children}
+      </TooltipTrigger>
+      <TooltipContent {...props}>{label}</TooltipContent>
+    </Tooltip>
+  )
+
+  return provided ? tip : <TooltipProvider delayDuration={delayDuration}>{tip}</TooltipProvider>
+}
+
 /** The app's single tooltip provider. Mounted once at the root so no `Tip`
  *  needs its own. Defaults match what `Tip` used to pass per instance. */
 function RootTooltipProvider({ children }: { children: React.ReactNode }) {
@@ -223,6 +295,7 @@ function TipKeybindLabel({ actionId, text }: TipKeybindLabelProps) {
 }
 
 export {
+  OverflowTip,
   RootTooltipProvider,
   Tip,
   TipHintLabel,

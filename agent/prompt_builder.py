@@ -903,7 +903,11 @@ PLATFORM_HINTS = {
         "in your response. Images (.png, .jpg, .webp) appear inline, audio and "
         "video play inline, and other files arrive as download links. You can "
         "also include image URLs in markdown format ![alt](url) and they "
-        "render inline as photos."
+        "render inline as photos. "
+        "When the user asks to add, enable, or authorize an MCP server (or a "
+        "task clearly needs one that is missing), use the setup_mcp tool if "
+        "it is available — it shows an inline consent card right in the chat; "
+        "never hand-edit mcp_servers config for them."
     ),
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text "

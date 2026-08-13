@@ -678,7 +678,7 @@ class TestTodoSnapshotScaffoldingTails:
             _msgs(), "sys", approx_tokens=120_000
         )
 
-        assert compressed == expected
+        assert [{k: v for k, v in m.items() if k != "_row_id"} for m in compressed] == expected
         assert not any(
             TODO_INJECTION_HEADER in str(message.get("content") or "")
             for message in compressed

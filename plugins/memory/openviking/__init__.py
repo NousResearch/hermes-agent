@@ -451,8 +451,39 @@ class _VikingClient:
         )
         return self._parse_response(resp)
 
+    def _authenticated_json(self, path: str) -> dict:
+        """JSON GET with the configured API key (no tenant headers).
+
+        Used only after an anonymous probe is rejected for missing auth, so we
+        still avoid disclosing credentials to a server that answers health
+        anonymously.
+        """
+        headers = self._headers(include_tenant=False)
+        resp = self._httpx.get(
+            self._url(path), headers=headers, timeout=3.0
+        )
+        return self._parse_response(resp)
+
+    @staticmethod
+    def _health_requires_credentials(exc: Exception) -> bool:
+        """True when /health rejected the anonymous probe for auth reasons."""
+        return _status_code_from_error(exc) in {401, 403}
+
     def health_payload(self) -> dict:
-        return self._anonymous_json("/health")
+        """Fetch ``GET /health``.
+
+        Prefer an anonymous probe so credentials are never sent to an unknown
+        host during identity checks. Hosted OpenViking (e.g. Volcengine cloud)
+        requires authentication on ``/health``; when an API key is configured
+        and the anonymous call is rejected for auth, retry once with that key
+        so automatic memory mirroring is not silently disabled (#78410).
+        """
+        try:
+            return self._anonymous_json("/health")
+        except _OpenVikingHTTPError as exc:
+            if not self._api_key or not self._health_requires_credentials(exc):
+                raise
+            return self._authenticated_json("/health")
 
     def openapi_payload(self) -> dict:
         return self._anonymous_json("/openapi.json")

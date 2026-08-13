@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 
 from agent.account_usage import (
@@ -12,13 +13,23 @@ class _Response:
     def __init__(self, payload, status_code=200):
         self._payload = payload
         self.status_code = status_code
+        self.headers = {}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
 
     def raise_for_status(self):
         if self.status_code >= 400:
             raise RuntimeError(f"HTTP {self.status_code}")
 
-    def json(self):
-        return self._payload
+    def iter_raw(self):
+        yield json.dumps(self._payload).encode()
+
+    def close(self):
+        pass
 
 
 class _Client:
@@ -31,7 +42,7 @@ class _Client:
     def __exit__(self, exc_type, exc, tb):
         return False
 
-    def get(self, url, headers=None):
+    def stream(self, method, url, headers=None, **kwargs):
         return _Response(self._payload)
 
 
@@ -45,7 +56,7 @@ class _RoutingClient:
     def __exit__(self, exc_type, exc, tb):
         return False
 
-    def get(self, url, headers=None):
+    def stream(self, method, url, headers=None, **kwargs):
         return _Response(self._payloads[url])
 
 

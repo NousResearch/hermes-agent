@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Callable, Optional
 import httpx
 
 from agent.anthropic_credentials import _is_oauth_token, resolve_anthropic_token
+from agent.bounded_response import read_streaming_json_response
 from hermes_cli.auth import AuthError, _read_codex_tokens, resolve_codex_runtime_credentials
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _DEPLETED_LINE = "Status: access depleted — top up to restore"
+USAGE_RESPONSE_MAX_BYTES = 1_048_576
 
 
 def _utc_now() -> datetime:
@@ -340,9 +342,16 @@ def _codex_headers(token: str, account_id: Optional[str]) -> dict[str, str]:
 
 def _get_json(url: str, headers: dict[str, str], *, timeout: float) -> dict:
     with httpx.Client(timeout=timeout) as client:
-        response = client.get(url, headers=headers)
+        return _request_usage_json(client, "GET", url, headers=headers) or {}
+
+
+def _request_usage_json(client: httpx.Client, method: str, url: str, **kwargs: Any) -> Any:
+    """Keep every usage/reset response inside the same byte and deadline bounds."""
+    headers = httpx.Headers(kwargs.pop("headers", None))
+    headers["Accept-Encoding"] = "identity"
+    with client.stream(method, url, headers=headers, **kwargs) as response:
         response.raise_for_status()
-    return response.json() or {}
+        return read_streaming_json_response(response, max_bytes=USAGE_RESPONSE_MAX_BYTES)
 
 
 def _usage_windows(
@@ -472,19 +481,15 @@ def redeem_codex_reset_credit(
     headers = _codex_headers(token, account_id)
     try:
         with httpx.Client(timeout=15.0) as client:
-            usage_resp = client.get(usage_url, headers=headers)
-            usage_resp.raise_for_status()
-            payload = usage_resp.json() or {}
+            payload = _request_usage_json(client, "GET", usage_url, headers=headers) or {}
             available = _codex_banked_resets(payload)
             refused = _codex_reset_guard(payload, available, force)
             if refused is not None:
                 return refused
-            consume_resp = client.post(
-                consume_url, headers={**headers, "Content-Type": "application/json"},
+            body = _request_usage_json(
+                client, "POST", consume_url, headers={**headers, "Content-Type": "application/json"},
                 json={"redeem_request_id": str(uuid.uuid4())},
-            )
-            consume_resp.raise_for_status()
-            body = consume_resp.json() or {}
+            ) or {}
     except httpx.HTTPStatusError as exc:
         code = exc.response.status_code
         if code in (401, 403):
@@ -529,9 +534,8 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     with httpx.Client(timeout=10.0) as client:
         def _data(path: str) -> dict:
-            resp = client.get(f"{normalized}/{path}", headers=headers)
-            resp.raise_for_status()
-            return (resp.json() or {}).get("data") or {}
+            payload = _request_usage_json(client, "GET", f"{normalized}/{path}", headers=headers)
+            return (payload or {}).get("data") or {}
         credits = _data("credits")
         try:
             key_data = _data("key")

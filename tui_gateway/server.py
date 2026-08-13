@@ -3286,6 +3286,7 @@ def _block(event: str, sid: str, payload: dict, timeout: float | None = 300) -> 
         "terminal.read.request",
         "preview.read.request",
         "window.read.request",
+        "mcp.setup.request",
     }:
         _emit(
             f"{event.removesuffix('.request')}.expire",
@@ -4394,7 +4395,8 @@ def _tool_lifecycle_required_for_ui(name: str) -> bool:
     # Desktop renders the clarify choices/question from the tool-call part, then
     # wires request_id from clarify.request. If tool progress is off, suppressing
     # clarify's lifecycle events leaves only the sidebar attention dot visible.
-    return name == "clarify"
+    # setup_mcp is the same shape: its consent card mounts on the tool part.
+    return name in ("clarify", "setup_mcp")
 
 
 def _restart_slash_worker(sid: str, session: dict):
@@ -5876,6 +5878,18 @@ def _agent_cbs(sid: str) -> dict:
             sid,
             {},
             timeout=30,
+        ),
+        # setup_mcp tool (desktop GUI): the renderer shows an inline consent
+        # card and walks the user through install/enable/OAuth via the REST
+        # endpoints, then answers mcp.setup.respond with the JSON outcome.
+        # Long timeout on purpose — the flow can include typing an API key or
+        # a browser OAuth round-trip. Same lifecycle as clarify: on timeout
+        # the tool returns "unanswered" and a late answer is tolerated.
+        "setup_mcp_callback": lambda server, action, reason: _block(
+            "mcp.setup.request",
+            sid,
+            {"server": server, "action": action, "reason": reason},
+            timeout=600,
         ),
     }
 

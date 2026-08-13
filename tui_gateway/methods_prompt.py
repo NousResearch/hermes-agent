@@ -974,6 +974,15 @@ def _(rid, params: dict) -> dict:
     return _respond(rid, params, "text", allow_expired=True)
 
 
+@method("mcp.setup.respond")
+def _(rid, params: dict) -> dict:
+    # `result` is a JSON string of the setup card's outcome ({status, server,
+    # detail?, tools?}). allow_expired=True: the setup_mcp tool waits 10
+    # minutes, but an OAuth round-trip or a slow install can outlive that —
+    # a late answer must resolve gracefully, not surface a raw 4009.
+    return _respond(rid, params, "result", allow_expired=True)
+
+
 @method("sudo.respond")
 def _(rid, params: dict) -> dict:
     return _respond(rid, params, "password", allow_expired=True)

@@ -251,11 +251,15 @@ def test_stream_lifecycle_plugin_hooks_are_queued(monkeypatch):
     _wait_for(lambda: len(calls) == 2)
     shutdown_plugin_stream_hook_dispatcher()
 
-    assert [call[0] for call in calls] == ["on_stream_start", "on_stream_end"]
-    assert calls[0][1]["model"] == "test/model"
-    assert calls[1][1]["final_text"] == "done"
-    assert calls[1][1]["finished"] is True
-    assert calls[1][1]["error"] is None
+    # start/end are delivered by separate per-callback workers; cross-hook
+    # arrival order is not guaranteed. Assert content, not interleaving.
+    assert sorted(call[0] for call in calls) == ["on_stream_end", "on_stream_start"]
+    start_call = next(call for call in calls if call[0] == "on_stream_start")
+    end_call = next(call for call in calls if call[0] == "on_stream_end")
+    assert start_call[1]["model"] == "test/model"
+    assert end_call[1]["final_text"] == "done"
+    assert end_call[1]["finished"] is True
+    assert end_call[1]["error"] is None
 
 
 @patch("run_agent.AIAgent._create_request_openai_client")
@@ -293,18 +297,26 @@ def test_chat_completion_stream_emits_lifecycle_hooks(_mock_close, mock_create, 
     agent.api_mode = "chat_completions"
     response = agent._interruptible_streaming_api_call({})
 
-    _wait_for(lambda: [call[0] for call in calls].count("on_stream_end") == 1)
+    _wait_for(lambda: len(calls) == 4)
     shutdown_plugin_stream_hook_dispatcher()
 
     assert response.choices[0].message.content == "hello world"
-    assert [call[0] for call in calls] == [
-        "on_stream_start",
+    # The dispatcher runs ONE worker per callback, so ordering is guaranteed
+    # only per hook, not across hooks: the three callbacks here append from
+    # three concurrent worker threads. Assert the per-hook contract instead
+    # of a strict global interleaving (which is racy by design).
+    names = [call[0] for call in calls]
+    assert sorted(names) == [
         "on_stream_delta",
         "on_stream_delta",
         "on_stream_end",
+        "on_stream_start",
     ]
-    assert calls[-1][1]["final_text"] == "hello world"
-    assert calls[-1][1]["finished"] is True
+    delta_texts = [call[1]["delta"] for call in calls if call[0] == "on_stream_delta"]
+    assert delta_texts == ["hello ", "world"]  # in-order within the hook
+    end_call = next(call for call in calls if call[0] == "on_stream_end")
+    assert end_call[1]["final_text"] == "hello world"
+    assert end_call[1]["finished"] is True
 
 
 def test_bedrock_reasoning_delta_reaches_plugin_only_observer(monkeypatch):

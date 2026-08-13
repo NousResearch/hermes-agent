@@ -106,6 +106,18 @@ def _(rid, params: dict) -> dict:
                         row["ui_meta"] = ui_meta
             except Exception:
                 pass
+
+            # Cheap existence flag so roster UIs know to profiles.get_asset
+            # without a probe call per profile per paint.
+            try:
+                from pathlib import Path as _Path
+
+                assets = _Path(str(p.path)) / "assets"
+                row["has_avatar"] = any(
+                    (assets / f"avatar.{ext}").is_file() for ext in ("png", "jpg", "webp")
+                )
+            except Exception:
+                row["has_avatar"] = False
             out.append(row)
         return _ok(rid, {"profiles": out})
     except Exception as e:
@@ -518,6 +530,133 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"ok": all(applied.values()) if applied else True, "applied": applied})
     except Exception as e:
         return _err(rid, 5064, str(e))
+
+
+@method("profiles.set_asset")
+def _(rid, params: dict) -> dict:
+    """Store a small binary asset (e.g. avatar image) in a profile's dir.
+
+    Params: ``name`` (profile), ``asset`` (currently only ``"avatar"``),
+    ``data`` (data URL or raw base64; PNG/JPEG/WebP; decoded size capped at
+    2MB), or ``clear: true`` to delete. Written atomically as
+    ``assets/<asset>.<ext>`` inside the profile directory — server-side, so
+    every client machine sees the same image via ``profiles.get_asset``.
+
+    Result: ``{ok, asset, size}`` (``size`` 0 on clear).
+    """
+    name = str(params.get("name") or "").strip()
+    asset = str(params.get("asset") or "avatar").strip().lower()
+    if not name:
+        return _err(rid, 4063, "name required")
+    if asset not in {"avatar"}:
+        return _err(rid, 4066, f"unknown asset '{asset}' (supported: avatar)")
+    try:
+        import base64
+        import re as _re
+        from pathlib import Path as _Path
+
+        from hermes_cli.profiles import get_profile_dir
+
+        profile_dir = _Path(get_profile_dir(name))
+        if not profile_dir.is_dir():
+            return _err(rid, 4064, f"profile '{name}' not found")
+
+        assets_dir = profile_dir / "assets"
+        exts = {"image/png": "png", "image/jpeg": "jpg", "image/webp": "webp"}
+
+        if is_truthy_value(params.get("clear", False)):
+            removed = 0
+            for ext in exts.values():
+                target = assets_dir / f"{asset}.{ext}"
+                if target.is_file():
+                    target.unlink()
+                    removed += 1
+            return _ok(rid, {"ok": True, "asset": asset, "size": 0, "removed": removed})
+
+        data = str(params.get("data") or "")
+        if not data:
+            return _err(rid, 4067, "data required (data URL or base64)")
+
+        mime = "image/png"
+        match = _re.match(r"^data:(image/(?:png|jpeg|webp));base64,(.*)$", data, _re.DOTALL)
+        if match:
+            mime, payload = match.group(1), match.group(2)
+        else:
+            payload = data
+
+        try:
+            blob = base64.b64decode(payload, validate=True)
+        except Exception:
+            return _err(rid, 4068, "data is not valid base64")
+
+        if len(blob) > 2_000_000:
+            return _err(rid, 4069, f"asset too large ({len(blob)} bytes; max 2MB)")
+
+        # Magic-byte check — don't trust the declared mime.
+        if blob[:8] == b"\x89PNG\r\n\x1a\n":
+            mime = "image/png"
+        elif blob[:3] == b"\xff\xd8\xff":
+            mime = "image/jpeg"
+        elif blob[:4] == b"RIFF" and blob[8:12] == b"WEBP":
+            mime = "image/webp"
+        else:
+            return _err(rid, 4070, "unsupported image format (PNG/JPEG/WebP only)")
+
+        assets_dir.mkdir(parents=True, exist_ok=True)
+        # One canonical file per asset: clear other extensions first.
+        for ext in exts.values():
+            stale = assets_dir / f"{asset}.{ext}"
+            if stale.is_file():
+                stale.unlink()
+
+        target = assets_dir / f"{asset}.{exts[mime]}"
+        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp.write_bytes(blob)
+        tmp.replace(target)
+        return _ok(rid, {"ok": True, "asset": asset, "size": len(blob)})
+    except Exception as e:
+        return _err(rid, 5065, str(e))
+
+
+@method("profiles.get_asset")
+def _(rid, params: dict) -> dict:
+    """Fetch a profile asset as a data URL.
+
+    Params: ``name`` (profile), ``asset`` (default ``"avatar"``).
+    Result: ``{found, data?, mime?, size?}`` — ``found: false`` (not an
+    error) when the asset doesn't exist, so roster UIs can probe cheaply.
+    """
+    name = str(params.get("name") or "").strip()
+    asset = str(params.get("asset") or "avatar").strip().lower()
+    if not name:
+        return _err(rid, 4063, "name required")
+    try:
+        import base64
+        from pathlib import Path as _Path
+
+        from hermes_cli.profiles import get_profile_dir
+
+        profile_dir = _Path(get_profile_dir(name))
+        if not profile_dir.is_dir():
+            return _err(rid, 4064, f"profile '{name}' not found")
+
+        mimes = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
+        for ext, mime in mimes.items():
+            target = profile_dir / "assets" / f"{asset}.{ext}"
+            if target.is_file():
+                blob = target.read_bytes()
+                return _ok(
+                    rid,
+                    {
+                        "found": True,
+                        "mime": mime,
+                        "size": len(blob),
+                        "data": f"data:{mime};base64,{base64.b64encode(blob).decode('ascii')}",
+                    },
+                )
+        return _ok(rid, {"found": False})
+    except Exception as e:
+        return _err(rid, 5066, str(e))
 
 
 def register(server) -> None:

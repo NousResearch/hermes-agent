@@ -148,6 +148,50 @@ export function offerSuggestions(
 // Last draft-provider results per session, merged with event offerings.
 const draftOfferings = new Map<string, ComposerSuggestion[]>()
 
+// ---------------------------------------------------------------------------
+// Declined ledger (VS Code's hardest-won recommendation lesson: never keep
+// re-firing at someone who has seen the offer and not taken it)
+// ---------------------------------------------------------------------------
+
+// Times a suggestion key was WITHDRAWN without ever being invoked, per
+// session. A pill the user watched appear and let die N times is a declined
+// offer — stop making it for the rest of the session. Session-scoped and
+// in-memory on purpose: a fresh session is a fresh chance, and acting on a
+// pill clears its count.
+const IGNORED_LIMIT = 3
+const ignoredCounts = new Map<string, Map<string, number>>()
+const shown = new Map<string, Set<string>>()
+
+/** The pill strip marks a suggestion invoked so its withdrawal isn't
+ *  miscounted as the user ignoring it. */
+export function markSuggestionInvoked(sessionId: string | null | undefined, key: string): void {
+  ignoredCounts.get(keyFor(sessionId))?.delete(key)
+  shown.get(keyFor(sessionId))?.delete(key)
+}
+
+const quieted = (sessionKey: string, key: string): boolean =>
+  (ignoredCounts.get(sessionKey)?.get(key) ?? 0) >= IGNORED_LIMIT
+
+// Suggestions visible in the last publish that vanish uninvoked get a strike.
+function recordWithdrawals(sessionKey: string, next: readonly ComposerSuggestion[]): void {
+  const previous = shown.get(sessionKey)
+
+  if (previous) {
+    const surviving = new Set(next.map(suggestionKey))
+
+    for (const key of previous) {
+      if (!surviving.has(key)) {
+        const counts = ignoredCounts.get(sessionKey) ?? new Map<string, number>()
+
+        counts.set(key, (counts.get(key) ?? 0) + 1)
+        ignoredCounts.set(sessionKey, counts)
+      }
+    }
+  }
+
+  shown.set(sessionKey, new Set(next.map(suggestionKey)))
+}
+
 /** Event offerings first (they carry session/tool state, stronger signal
  *  than draft keywords), then draft matches, capped. */
 function publish(sessionId: string | null): void {
@@ -160,7 +204,7 @@ function publish(sessionId: string | null): void {
   for (const suggestion of [...event, ...draft]) {
     const k = suggestionKey(suggestion)
 
-    if (!seen.has(k)) {
+    if (!seen.has(k) && !quieted(key, k)) {
       seen.add(k)
       merged.push(suggestion)
     }
@@ -170,6 +214,7 @@ function publish(sessionId: string | null): void {
     }
   }
 
+  recordWithdrawals(key, merged)
   write(sessionId, merged)
 }
 

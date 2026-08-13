@@ -458,6 +458,38 @@ class TestRuntimeProviderResolution:
         assert result["base_url"] == "https://api.minimax.io/anthropic"
         assert result["api_mode"] == "anthropic_messages"
 
+    def test_runtime_minimax_remaps_persisted_v1_catalog_url(self, monkeypatch):
+        """hermes setup writes model.base_url=/v1; that path 404s (#84838)."""
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-key")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {
+                "provider": "minimax",
+                "default": "MiniMax-M3",
+                "base_url": "https://api.minimax.io/v1",
+            },
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="minimax")
+        assert result["base_url"] == "https://api.minimax.io/anthropic"
+        assert result["api_mode"] == "anthropic_messages"
+
+    def test_runtime_minimax_keeps_explicit_custom_host(self, monkeypatch):
+        monkeypatch.setenv("MINIMAX_API_KEY", "mm-key")
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider._get_model_config",
+            lambda: {
+                "provider": "minimax",
+                "default": "MiniMax-M3",
+                "base_url": "https://api.minimaxi.com/anthropic",
+            },
+        )
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        result = resolve_runtime_provider(requested="minimax")
+        assert result["base_url"] == "https://api.minimaxi.com/anthropic"
+
     def test_runtime_ai_gateway(self, monkeypatch):
         monkeypatch.setenv("AI_GATEWAY_API_KEY", "gw-key")
         from hermes_cli.runtime_provider import resolve_runtime_provider

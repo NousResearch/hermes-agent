@@ -11,6 +11,17 @@ export interface ClarifyRequest {
 }
 
 /**
+ * The backend labels the agent's recommended option by appending this to the
+ * first choice (`tools/clarify_tool.py::mark_recommended`). The renderer never
+ * writes it — it only styles it, and discounts it when measuring a choice so a
+ * long option isn't dropped for length the label added.
+ */
+export const RECOMMENDED_LABEL = '(Recommended)'
+
+export const bareChoice = (choice: string): string =>
+  choice.endsWith(RECOMMENDED_LABEL) ? choice.slice(0, -RECOMMENDED_LABEL.length).trim() : choice
+
+/**
  * Validate and normalize a choices array.
  *
  * Keeps non-blank, newline-free strings of length ≤ 200; drops everything else
@@ -23,7 +34,8 @@ export function normalizeChoices(choices: unknown): string[] {
   }
 
   return choices.filter(
-    (c): c is string => typeof c === 'string' && c.trim().length > 0 && c.length <= 200 && !c.includes('\n')
+    (c): c is string =>
+      typeof c === 'string' && c.trim().length > 0 && bareChoice(c).length <= 200 && !c.includes('\n')
   )
 }
 

@@ -197,8 +197,20 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "ollama-cloud": "ollama-cloud",
 }
 
-# Reverse mapping: models.dev → Hermes (built lazily)
-_MODELS_DEV_TO_PROVIDER: Optional[Dict[str, str]] = None
+# Reverse mapping: models.dev id → Hermes ids (built lazily; many-to-one,
+# e.g. both "meta" and "meta-ai" may map to the same models.dev id).
+_MODELS_DEV_TO_PROVIDER: Optional[Dict[str, List[str]]] = None
+
+
+def _models_dev_to_hermes_ids(mdev_id: str) -> List[str]:
+    """Return the Hermes provider ids that map to *mdev_id* (may be [])."""
+    global _MODELS_DEV_TO_PROVIDER
+    if _MODELS_DEV_TO_PROVIDER is None:
+        reverse: Dict[str, List[str]] = {}
+        for hermes_id, mapped in PROVIDER_TO_MODELS_DEV.items():
+            reverse.setdefault(mapped, []).append(hermes_id)
+        _MODELS_DEV_TO_PROVIDER = reverse
+    return _MODELS_DEV_TO_PROVIDER.get(mdev_id, [])
 
 
 
@@ -627,29 +639,22 @@ class ModelCapabilities:
 # config.yaml) or the models.dev provider id. Model ids match exactly,
 # then case-insensitively (mirroring catalog lookup).
 
-_OVERRIDE_CACHE: Optional[Dict[str, Any]] = None
-_OVERRIDE_CACHE_CFG_ID: int = 0
 _OVERRIDE_WARNED_KEYS: set = set()
 
 
 def _load_model_overrides() -> Dict[str, Any]:
-    """Load and cache the ``model_overrides`` config section.
+    """Load the ``model_overrides`` config section.
 
-    Caches by ``id(cfg)`` so a config reload (new dict identity) invalidates
-    automatically. Returns empty dict on any failure.
+    No local memoization on purpose: ``load_config_readonly()`` is already
+    (mtime, size)-cached upstream (a hit is ~one stat, no deepcopy, no
+    parse), and an ``id(cfg)``-keyed layer here can serve stale overrides
+    after a config reload when CPython reuses the freed dict's address.
+    Returns empty dict on any failure.
     """
-    global _OVERRIDE_CACHE, _OVERRIDE_CACHE_CFG_ID
     try:
         from hermes_cli.config import cfg_get, load_config_readonly
-        cfg = load_config_readonly()
-        cfg_id = id(cfg)
-        if cfg_id == _OVERRIDE_CACHE_CFG_ID and _OVERRIDE_CACHE is not None:
-            return _OVERRIDE_CACHE
-        raw = cfg_get(cfg, "model_overrides", default={})
-        overrides = raw if isinstance(raw, dict) else {}
-        _OVERRIDE_CACHE = overrides
-        _OVERRIDE_CACHE_CFG_ID = cfg_id
-        return overrides
+        raw = cfg_get(load_config_readonly(), "model_overrides", default={})
+        return raw if isinstance(raw, dict) else {}
     except Exception:
         return {}
 
@@ -673,8 +678,8 @@ def _provider_override_section(provider: str) -> Optional[Dict[str, Any]]:
     if mapped and mapped != provider_key:
         candidates.append(mapped)
     # Reverse: caller passed a models.dev id, config keyed by Hermes id.
-    for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():
-        if mdev_id == provider_key and hermes_id != provider_key:
+    for hermes_id in _models_dev_to_hermes_ids(provider_key):
+        if hermes_id != provider_key:
             candidates.append(hermes_id)
 
     for key in candidates:
@@ -780,7 +785,9 @@ def _override_context_window(provider: str, model: str) -> Optional[int]:
     return _override_int(ov, "context_window")
 
 
-def _override_to_catalog_shape(override: Dict[str, Any]) -> Dict[str, Any]:
+def _override_to_catalog_shape(
+    override: Dict[str, Any],
+) -> Tuple[Dict[str, Any], Optional[bool]]:
     """Translate canonical override keys into a models.dev-shaped patch.
 
     ``get_model_info``/``_parse_model_info`` consume the raw catalog shape
@@ -788,6 +795,10 @@ def _override_to_catalog_shape(override: Dict[str, Any]) -> Dict[str, Any]:
     ONE canonical schema (the documented ``context_window``/``supports_*``
     keys), so this boundary translates rather than forcing users to know
     the internal catalog shape.
+
+    Returns ``(patch, vision)`` — vision is returned out-of-band (not as
+    a key in the patch) because it maps onto the catalog's
+    ``modalities.input`` list rather than a scalar field.
     """
     patch: Dict[str, Any] = {}
     limit: Dict[str, Any] = {}
@@ -803,12 +814,13 @@ def _override_to_catalog_shape(override: Dict[str, Any]) -> Dict[str, Any]:
         patch["tool_call"] = bool(override["supports_tools"])
     if "supports_reasoning" in override:
         patch["reasoning"] = bool(override["supports_reasoning"])
+    vision: Optional[bool] = None
     if "supports_vision" in override:
-        patch["attachment"] = bool(override["supports_vision"])
-        patch["_vision_override"] = bool(override["supports_vision"])
+        vision = bool(override["supports_vision"])
+        patch["attachment"] = vision
     if "model_family" in override:
         patch["family"] = str(override["model_family"] or "")
-    return patch
+    return patch, vision
 
 
 def _merge_catalog_entry_with_override(
@@ -820,7 +832,7 @@ def _merge_catalog_entry_with_override(
     override setting only ``context_window`` must not wipe the catalog's
     ``limit.output``.
     """
-    shaped = _override_to_catalog_shape(override)
+    shaped, vision_override = _override_to_catalog_shape(override)
     merged = dict(raw)
     limit_patch = shaped.pop("limit", None)
     if limit_patch:
@@ -828,7 +840,6 @@ def _merge_catalog_entry_with_override(
         base_limit = dict(base_limit) if isinstance(base_limit, dict) else {}
         base_limit.update(limit_patch)
         merged["limit"] = base_limit
-    vision_override = shaped.pop("_vision_override", None)
     if vision_override is not None:
         base_mods = raw.get("modalities")
         base_mods = dict(base_mods) if isinstance(base_mods, dict) else {}
@@ -866,7 +877,15 @@ def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
 
 
 def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
-    """Find a model entry by exact match, then case-insensitive fallback."""
+    """Find a model entry: exact, case-insensitive, then suffix fallback.
+
+    The ``:cloud``/``-cloud`` suffix fallback mirrors
+    ``lookup_models_dev_context`` so "is this model in the catalog" means
+    the same thing to every consumer — important for ``model_overrides``
+    fill-gap ``_default`` semantics, where a suffix-keyed catalog model
+    (e.g. ``kimi-k2.6:cloud``) must count as KNOWN and keep its catalog
+    metadata rather than being displaced by a ``_default``.
+    """
     # Exact match
     entry = models.get(model)
     if isinstance(entry, dict):
@@ -877,6 +896,17 @@ def _find_model_entry(models: Dict[str, Any], model: str) -> Optional[Dict[str, 
     for mid, mdata in models.items():
         if mid.lower() == model_lower and isinstance(mdata, dict):
             return mdata
+
+    # Suffix-aware fallback (e.g. ollama-cloud stores kimi-k2.6:cloud
+    # while the live API returns the bare name).
+    for suffix in (":cloud", "-cloud"):
+        entry = models.get(model + suffix)
+        if isinstance(entry, dict):
+            return entry
+        suffixed_lower = model_lower + suffix
+        for mid, mdata in models.items():
+            if mid.lower() == suffixed_lower and isinstance(mdata, dict):
+                return mdata
 
     return None
 
@@ -1195,8 +1225,15 @@ def get_model_info(
         override = _override_for(provider_id, model_id, catalog_hit=False)
         if override is None:
             return None
-        shaped = _merge_catalog_entry_with_override({}, override)
-        shaped.pop("_vision_override", None)
+        # Seed the same safe defaults get_model_capabilities uses for
+        # unknown models (200K context, tools on) so the two
+        # unknown-model paths agree; the override patches its fields on
+        # top.
+        base = {
+            "limit": {"context": 200000, "output": 8192},
+            "tool_call": True,
+        }
+        shaped = _merge_catalog_entry_with_override(base, override)
         return _parse_model_info(model_id, shaped, mdev_id)
 
     data = fetch_models_dev()
@@ -1212,7 +1249,6 @@ def get_model_info(
         override = _override_for(provider_id, model_id, catalog_hit=True)
         if override is not None:
             merged = _merge_catalog_entry_with_override(raw, override)
-            merged.pop("_vision_override", None)
             return _parse_model_info(mid, merged, mdev_id)
         return _parse_model_info(mid, raw, mdev_id)
 

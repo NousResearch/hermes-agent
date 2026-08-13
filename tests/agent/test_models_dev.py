@@ -800,9 +800,8 @@ class TestModelOverrides:
         )
         monkeypatch.setenv("HERMES_HOME", str(home))
 
-        # Reset caches that memoize config identity/paths.
-        monkeypatch.setattr(md, "_OVERRIDE_CACHE", None)
-        monkeypatch.setattr(md, "_OVERRIDE_CACHE_CFG_ID", 0)
+        # Reset caches that memoize config paths (the override layer has
+        # no local cache — it rides load_config_readonly's mtime cache).
         hc_cache = getattr(hc, "_LOAD_CONFIG_CACHE", None)
         if isinstance(hc_cache, dict):
             hc_cache.clear()
@@ -814,6 +813,51 @@ class TestModelOverrides:
         with patch("agent.models_dev.fetch_models_dev", return_value={}):
             ctx = lookup_models_dev_context("upstage", "solar-pro4")
         assert ctx == 524288
+
+    def test_suffix_keyed_model_counts_as_catalog_hit(self):
+        """A suffix-keyed catalog model (kimi-k2.6:cloud) is KNOWN: a
+        _default must not displace its capabilities."""
+        registry = {
+            "ollama-cloud": {
+                "id": "ollama-cloud",
+                "models": {
+                    "kimi-k2.6:cloud": {
+                        "id": "kimi-k2.6:cloud",
+                        "tool_call": True,
+                        "limit": {"context": 262144, "output": 8192},
+                    },
+                },
+            },
+        }
+        overrides = {
+            "ollama-cloud": {
+                "_default": {"context_window": 1000, "supports_tools": False},
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value=registry):
+            caps = get_model_capabilities("ollama-cloud", "kimi-k2.6")
+        assert caps is not None
+        assert caps.context_window == 262144  # catalog, not the _default
+        assert caps.supports_tools is True
+
+    def test_model_info_unknown_model_gets_safe_defaults(self):
+        """get_model_info's unknown-model path seeds the same safe
+        defaults as get_model_capabilities (200K/tools-on), so a partial
+        override doesn't yield ctx=0/tools-off."""
+        overrides = {
+            "custom:my-vllm": {
+                "my-model": {"supports_reasoning": True},
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            info = get_model_info("custom:my-vllm", "my-model")
+        assert info is not None
+        assert info.context_window == 200000
+        assert info.max_output == 8192
+        assert info.tool_call is True
+        assert info.reasoning is True
 
     def test_model_info_vision_override_sets_input_modality(self):
         """supports_vision: true surfaces as an image input modality."""

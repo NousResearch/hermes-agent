@@ -23,22 +23,30 @@ _NOUS_DEFAULT_BASE_URL = "https://inference-api.nousresearch.com/v1"
 _SUBCENT_THRESHOLD = Decimal("0.01")
 
 
-def _format_cost_label(amount: Decimal) -> str:
+def format_cost_label(amount: Decimal) -> str:
     """Format a cost amount as a display label.
 
     Scales precision to magnitude:
     - Zero → "$0.00"
-    - Sub-cent (< $0.01) → "~$0.0046" (4 dp, always non-zero)
+    - Sub-cent (< $0.01) → "~$0.0046" (4 dp; below $0.00005 falls back
+      to "~$<0.0001" so the label never reads as zero)
     - Normal → "~$1.23" (2 dp)
 
     This fixes #79220 where sub-cent per-turn costs on cheap models
     (DeepSeek, etc.) rendered as "$0.00" despite amount_usd carrying
     full Decimal precision.
+
+    Shared by per-response cost labels (estimate_usage_cost) and the
+    insights cost-bucket formatters — keep both surfaces on this one
+    implementation so sub-cent honesty can't regress on one of them.
     """
     if amount == _ZERO:
         return "$0.00"
     if amount < _SUBCENT_THRESHOLD:
-        return f"~${amount:.4f}"
+        label = f"~${amount:.4f}"
+        # 4dp truncation of a positive amount below $0.00005 would render
+        # "~$0.0000" — a zero-looking label, the exact #79220 dishonesty.
+        return label if label != "~$0.0000" else "~$<0.0001"
     return f"~${amount:.2f}"
 
 CostStatus = Literal["actual", "estimated", "included", "unknown"]
@@ -1402,7 +1410,7 @@ def estimate_usage_cost(
         amount += Decimal(usage.request_count) * entry.request_cost
 
     status: CostStatus = "estimated"
-    label = _format_cost_label(amount)
+    label = format_cost_label(amount)
     if entry.source == "none" and amount == _ZERO:
         status = "included"
         label = "included"

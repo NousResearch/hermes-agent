@@ -545,8 +545,8 @@ class TestTerminalFormatting:
 
 
 
-    def test_terminal_format_hides_cost_for_custom_models(self, db):
-        """Cost display is hidden entirely — custom models no longer show 'N/A' either."""
+    def test_terminal_format_unknown_bucket_for_custom_models(self, db):
+        """Custom models with no pricing surface as the Unknown bucket (#77223)."""
         db.create_session(session_id="s1", source="cli", model="my-custom-model")
         db.update_token_counts("s1", input_tokens=1000, output_tokens=500)
         db._conn.commit()
@@ -557,9 +557,11 @@ class TestTerminalFormatting:
 
         assert "N/A" not in text
         assert "custom/self-hosted" not in text
-        # Cost section now surfaces unknown-cost sessions (#77223) instead
-        # of hiding them — a custom model with no pricing data should show
-        # "Unknown: 1 session(s)" rather than silently reporting $0.
+        # Cost section surfaces unknown-cost sessions (#77223) instead of
+        # hiding them — a custom model with no pricing data shows in the
+        # Unknown bucket rather than silently reporting $0.
+        assert "Unknown" in text
+        assert "no pricing data" in text
 
 
 class TestGatewayFormatting:
@@ -572,7 +574,7 @@ class TestGatewayFormatting:
         assert len(gateway_text) < len(terminal_text)
 
 
-    def test_gateway_format_hides_cost(self, populated_db):
+    def test_gateway_format_hides_cache_details(self, populated_db):
         """Gateway format omits internal cache details.
 
         Dollar figures now appear when there are estimated/included/unknown
@@ -705,6 +707,30 @@ class TestEdgeCases:
         assert "included" in text.lower()
         assert "subscription" in text.lower()
 
+    def test_sub_cent_aggregate_estimated_cost_not_zero(self, db):
+        """A sub-cent aggregate must not render 'Estimated: ~$0.00' (#79220).
+
+        The insights formatters share format_cost_label with per-response
+        labels; a cheap-model period totaling $0.0046 shows 4dp, not $0.00.
+        """
+        db.create_session(session_id="est", source="cli", model="model-a")
+        db.update_token_counts(
+            "est", input_tokens=100, model="model-a",
+            billing_provider="custom",
+            estimated_cost_usd=0.0046, actual_cost_usd=0.0,
+            cost_status="estimated", cost_source="provider", api_call_count=1,
+        )
+
+        engine = InsightsEngine(db)
+        report = engine.generate(days=30)
+        terminal_text = engine.format_terminal(report)
+        gateway_text = engine.format_gateway(report)
+
+        assert "~$0.00\n" not in terminal_text
+        assert "~$0.0046" in terminal_text
+        assert "~$0.00 estimated" not in gateway_text
+        assert "~$0.0046 estimated" in gateway_text
+
     def test_cost_buckets_displayed_in_gateway_format(self, db):
         """#77223: included/estimated/unknown cost buckets surface in gateway."""
         db.create_session(session_id="est", source="cli", model="model-a")
@@ -730,7 +756,7 @@ class TestEdgeCases:
         assert "~$2.25" in text
         assert "included" in text.lower()
 
-    def test_no_cost_section_when_all_zero(self, db):
+    def test_unknown_bucket_shown_for_costless_session(self, db):
         """A session with no model still shows unknown cost bucket (#77223).
 
         The unknown bucket is surfaced so users can see they have sessions

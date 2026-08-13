@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 from agent.usage_pricing import (
     CanonicalUsage,
-    _format_cost_label,
+    format_cost_label,
     estimate_usage_cost,
     get_pricing_entry,
     normalize_usage,
@@ -383,37 +383,47 @@ class TestFormatCostLabel:
     """Tests for magnitude-scaled cost label formatting."""
 
     def test_zero_renders_as_dollar_zero(self):
-        assert _format_cost_label(Decimal("0")) == "$0.00"
+        assert format_cost_label(Decimal("0")) == "$0.00"
 
     def test_sub_cent_renders_4dp(self):
         """Costs below $0.01 render at 4 decimal places (#79220)."""
-        label = _format_cost_label(Decimal("0.004640"))
+        label = format_cost_label(Decimal("0.004640"))
         assert label == "~$0.0046"
         # Must NOT be $0.00
         assert "$0.00" != label
 
     def test_exactly_one_cent_renders_2dp(self):
         """$0.01 renders at 2dp."""
-        assert _format_cost_label(Decimal("0.01")) == "~$0.01"
+        assert format_cost_label(Decimal("0.01")) == "~$0.01"
 
     def test_normal_cost_renders_2dp(self):
-        assert _format_cost_label(Decimal("1.23")) == "~$1.23"
+        assert format_cost_label(Decimal("1.23")) == "~$1.23"
 
     def test_large_cost_renders_2dp(self):
-        assert _format_cost_label(Decimal("42.50")) == "~$42.50"
+        assert format_cost_label(Decimal("42.50")) == "~$42.50"
 
     def test_very_small_sub_cent(self):
         """Even very small costs render non-zero."""
-        label = _format_cost_label(Decimal("0.0001"))
+        label = format_cost_label(Decimal("0.0001"))
         assert label == "~$0.0001"
         assert label != "$0.00"
+
+    def test_below_4dp_floor_never_reads_zero(self):
+        """Amounts below $0.00005 must not render as '~$0.0000' (#79220).
+
+        4dp truncation of a positive amount would produce a zero-looking
+        label — the exact dishonesty the formatter exists to fix.
+        """
+        label = format_cost_label(Decimal("0.00004"))
+        assert label == "~$<0.0001"
+        assert "0.0000" not in label.replace("<0.0001", "")
 
     def test_sub_cent_deepseek_scenario(self):
         """Reproduce the #79220 reproduction: DeepSeek at $0.004640."""
         # DeepSeek V4 Pro: 8K input + 1.2K output + 32K cache read
         # = $0.004640 per turn
         amount = Decimal("0.004640")
-        label = _format_cost_label(amount)
+        label = format_cost_label(amount)
         assert "0.0046" in label
         assert label != "$0.00"
         assert label != "~$0.00"

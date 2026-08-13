@@ -21,14 +21,26 @@ import sqlite3
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
 from agent.usage_pricing import (
     CanonicalUsage,
     estimate_usage_cost,
+    format_cost_label,
     format_duration_compact,
     has_known_pricing,
 )
+
+
+def _fmt_est_cost(est_cost: float) -> str:
+    """Format an aggregate estimated cost via the shared cost-label helper.
+
+    Routes through ``format_cost_label`` so sub-cent aggregates render at
+    4dp instead of collapsing to "~$0.00" (#79220 bug class — the same
+    dishonesty this module's cost buckets exist to fix, #77223).
+    """
+    return format_cost_label(Decimal(str(est_cost)))
 
 
 
@@ -1010,7 +1022,7 @@ class InsightsEngine:
             lines.append("  💰 Cost")
             lines.append("  " + "─" * 56)
             if est_cost > 0:
-                lines.append(f"  Estimated:         ~${est_cost:.2f}")
+                lines.append(f"  Estimated:         {_fmt_est_cost(est_cost)}")
             if included_sessions > 0:
                 lines.append(
                     f"  Included:           {included_sessions} session(s) "
@@ -1143,7 +1155,7 @@ class InsightsEngine:
         unknown = o.get("unknown_cost_sessions", 0)
         cost_parts: list[str] = []
         if est_cost > 0:
-            cost_parts.append(f"~${est_cost:.2f} estimated")
+            cost_parts.append(f"{_fmt_est_cost(est_cost)} estimated")
         if included > 0:
             cost_parts.append(f"{included} included (subscription)")
         if unknown > 0:

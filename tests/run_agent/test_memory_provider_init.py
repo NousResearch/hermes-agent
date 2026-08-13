@@ -94,6 +94,61 @@ def test_aiagent_forwards_user_id_alt_to_memory_provider():
     assert "status_callback" not in provider.init_kwargs
 
 
+def test_aiagent_hindsight_loader_exposes_host_llm_facade():
+    """Normal AIAgent init must give Hindsight the host-owned LLM surface.
+
+    This exercises the production loader path rather than calling
+    ``plugins.memory.load_memory_provider`` with a hand-built context.  The
+    embedded runtime itself is stubbed because this test verifies wiring, not
+    daemon startup or a real model request.
+    """
+    from plugins.memory.hindsight import HindsightMemoryProvider
+
+    cfg = {"memory": {"provider": "hindsight"}, "agent": {}}
+    observed = {}
+
+    def _record_initialize(self, session_id, **kwargs):
+        observed["provider"] = self
+        observed["session_id"] = session_id
+        observed["kwargs"] = kwargs
+
+    with (
+        patch("hermes_cli.config.load_config", return_value=cfg),
+        patch("hermes_cli.config.load_config_readonly", return_value=cfg),
+        patch(
+            "plugins.memory.hindsight._load_config",
+            return_value={"mode": "local_embedded", "llm_provider": "hermes"},
+        ),
+        patch(
+            "plugins.memory.hindsight._check_local_runtime",
+            return_value=(True, None),
+        ),
+        patch.object(HindsightMemoryProvider, "initialize", _record_initialize),
+        patch("agent.model_metadata.get_model_context_length", return_value=204_800),
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        from run_agent import AIAgent
+
+        agent = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=False,
+            session_id="sess-hindsight",
+        )
+
+    provider = observed["provider"]
+    assert getattr(agent, "_memory_manager", None) is not None
+    assert provider._host_context is not None
+    host_llm = provider._host_context.llm
+    assert host_llm is not None
+    assert host_llm is provider._host_context.llm
+    assert getattr(host_llm, "_plugin_id", "") == "memory.hindsight"
+
+
 class CoreShadowProvider:
     """Provider that tries to register tools shadowing built-in core tools."""
 

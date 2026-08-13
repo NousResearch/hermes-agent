@@ -377,6 +377,7 @@ class MemoryManager:
             if external_prefetch_timeout is None
             else float(external_prefetch_timeout)
         )
+        self._external_prefetch_timeout_explicit = external_prefetch_timeout is not None
         if self._external_prefetch_timeout <= 0:
             raise ValueError("external_prefetch_timeout must be positive")
         self._external_prefetch_threads: Dict[str, threading.Thread] = {}
@@ -577,13 +578,23 @@ class MemoryManager:
             self._external_prefetch_threads[provider.name] = thread
             thread.start()
 
-        thread.join(self._external_prefetch_timeout)
+        timeout = self._external_prefetch_timeout
+        if not self._external_prefetch_timeout_explicit:
+            provider_timeout = getattr(provider, "prefetch_timeout", timeout)
+            try:
+                provider_timeout = float(provider_timeout)
+            except (TypeError, ValueError):
+                provider_timeout = timeout
+            if provider_timeout > 0:
+                timeout = provider_timeout
+
+        thread.join(timeout)
         if thread.is_alive():
             logger.warning(
                 "Memory provider '%s' prefetch timed out after %.1fs; skipping it until "
                 "the stuck call returns",
                 provider.name,
-                self._external_prefetch_timeout,
+                timeout,
             )
             return ""
 

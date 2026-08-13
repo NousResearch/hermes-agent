@@ -310,6 +310,21 @@ class TestMemoryManager:
         assert external.prefetch_queries == ["query", "query 3"]
         assert external.name not in mgr._external_prefetch_threads
 
+    def test_provider_prefetch_timeout_extends_default(self, monkeypatch):
+        monkeypatch.setattr("agent.memory_manager._EXTERNAL_PREFETCH_TIMEOUT_S", 0.001)
+        mgr = MemoryManager()
+        external = FakeMemoryProvider("hindsight")
+        external.prefetch_timeout = 0.05
+
+        def delayed_prefetch(query, *, session_id=""):
+            time.sleep(0.02)
+            return "external memory"
+
+        external.prefetch = delayed_prefetch
+        mgr.add_provider(external)
+
+        assert mgr.prefetch_all("query") == "external memory"
+
 
 
 class TestPluginMemoryDiscovery:

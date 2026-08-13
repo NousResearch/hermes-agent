@@ -27,7 +27,7 @@ import importlib.util
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
@@ -191,7 +191,11 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
     return results
 
 
-def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
+def load_memory_provider(
+    name: str,
+    *,
+    host_context: Any = None,
+) -> Optional["MemoryProvider"]:
     """Load and return a MemoryProvider instance by name.
 
     Checks both bundled (``plugins/memory/<name>/``) and user-installed
@@ -206,7 +210,7 @@ def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
         return None
 
     try:
-        provider = _load_provider_from_dir(provider_dir)
+        provider = _load_provider_from_dir(provider_dir, host_context=host_context)
         if provider:
             return provider
         logger.warning("Memory provider '%s' loaded but no provider instance found", name)
@@ -216,7 +220,11 @@ def load_memory_provider(name: str) -> Optional["MemoryProvider"]:
         return None
 
 
-def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
+def _load_provider_from_dir(
+    provider_dir: Path,
+    *,
+    host_context: Any = None,
+) -> Optional["MemoryProvider"]:
     """Import a provider module and extract the MemoryProvider instance.
 
     The module must have either:
@@ -305,7 +313,7 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
 
     # Try register(ctx) pattern first (how our plugins are written)
     if hasattr(mod, "register"):
-        collector = _ProviderCollector()
+        collector = _ProviderCollector(host_context=host_context, plugin_id=name)
         try:
             mod.register(collector)
             if collector.provider:
@@ -330,8 +338,31 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
 class _ProviderCollector:
     """Fake plugin context that captures register_memory_provider calls."""
 
-    def __init__(self):
+    def __init__(self, *, host_context: Any = None, plugin_id: str = ""):
         self.provider = None
+        self._host_context = host_context
+        self._plugin_id = plugin_id
+        self._llm = None
+
+    @property
+    def llm(self):
+        """Expose the host-owned LLM facade to memory providers.
+
+        Memory providers are discovered by their own loader rather than the
+        general ``PluginManager``.  Keep the loader's compatibility collector
+        while giving providers the same host-owned surface as ``PluginContext``
+        (without exposing raw provider credentials).
+        """
+        if self._host_context is not None:
+            host_llm = getattr(self._host_context, "llm", None)
+            if host_llm is not None:
+                return host_llm
+        if self._llm is None:
+            from agent.plugin_llm import PluginLlm
+
+            plugin_id = self._plugin_id or "memory"
+            self._llm = PluginLlm(plugin_id=f"memory.{plugin_id}")
+        return self._llm
 
     def register_memory_provider(self, provider):
         self.provider = provider

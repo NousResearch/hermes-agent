@@ -9,7 +9,7 @@ import type { ReactNode } from "react";
 
 import { I18nProvider } from "@/i18n";
 import { MemoryPressureBanner } from "./MemoryPressureBanner";
-import type { StatusResponse, MemoryStatus } from "@/lib/api";
+import type { StatusResponse, MemoryPressureStatus } from "@/lib/api";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -34,7 +34,7 @@ afterEach(async () => {
   container?.remove();
 });
 
-function statusWith(memory: MemoryStatus | undefined): StatusResponse {
+function statusWith(memory: MemoryPressureStatus | undefined): StatusResponse {
   return { memory } as StatusResponse;
 }
 

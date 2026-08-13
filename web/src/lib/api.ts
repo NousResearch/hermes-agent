@@ -1884,13 +1884,13 @@ export interface StatusResponse {
   latest_config_version: number;
   /** NS-656: memory-pressure rollup from the gateway heartbeat +
    * lifecycle ledger. Absent on older gateways. */
-  memory?: MemoryStatus;
+  memory?: MemoryPressureStatus;
   release_date: string;
   version: string;
 }
 
 /** NS-656: coarse memory telemetry served by /api/status. */
-export interface MemoryStatus {
+export interface MemoryPressureStatus {
   pressure: "ok" | "elevated" | "critical" | "unknown";
   gateway_rss_mb?: number | null;
   system_total_mb?: number | null;

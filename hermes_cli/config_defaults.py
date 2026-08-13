@@ -3221,6 +3221,17 @@ DEFAULT_CONFIG = {
         #   false   - always keep GPU acceleration on, even over a remote display.
         # Bridged to the HERMES_DESKTOP_DISABLE_GPU env var the Electron app reads.
         "disable_gpu": "auto",
+        # Linux keychain backend for secure token storage (Chromium's
+        # --password-store switch, which safeStorage needs before it can
+        # encrypt remote gateway tokens):
+        #   "auto"  - detect the session keychain: KWallet via KDE session env
+        #             vars, GNOME Keyring / any org.freedesktop.secrets
+        #             provider (e.g. KeePassXC) via D-Bus (default).
+        #   "gnome-libsecret" / "kwallet" / "kwallet5" / "kwallet6" / "basic"
+        #           - force a specific backend ("basic" = unencrypted store).
+        # Ignored on macOS/Windows. Bridged to the HERMES_DESKTOP_PASSWORD_STORE
+        # env var the Electron app reads, so an explicit env var still wins.
+        "password_store": "auto",
         # macOS only: optional persistent code-signing identity (a cert in the
         # login keychain — a self-signed "Code Signing" cert from Keychain
         # Access works; no Apple Developer account needed) used to re-sign

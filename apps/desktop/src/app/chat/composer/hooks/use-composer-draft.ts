@@ -12,6 +12,7 @@ import {
   takeSessionDraft
 } from '@/store/composer'
 import { isBrowsingHistory } from '@/store/composer-input-history'
+import { clearMcpSuggestions, sampleComposerDraftForMcpSuggestions } from '@/store/mcp-suggestions'
 
 import {
   cloneAttachments,
@@ -281,6 +282,9 @@ export function useComposerDraft({
     const sync = () => {
       const text = composerRuntime.getState().text
       draftRef.current = text
+      // Keyword-triggered MCP suggestion pills for THIS session's draft
+      // (debounced + change-gated in the store — this is just a timer reset).
+      sampleComposerDraftForMcpSuggestions(sessionIdRef.current ?? null, text)
 
       const editor = editorRef.current
 
@@ -395,6 +399,12 @@ export function useComposerDraft({
       } else if (!isBrowsingHistory(sessionId)) {
         stashAt(activeQueueSessionKey, latestText)
       }
+
+      // Withdraw the outgoing session's suggestion pills (and any pending
+      // sample timer). The incoming session re-earns its own from the draft
+      // restore above — without this a leaving session's "Add GitHub" pill
+      // lingers in the map and re-appears stale on the way back.
+      clearMcpSuggestions(sessionIdRef.current)
     }
   }, [activeQueueSessionKey]) // eslint-disable-line react-hooks/exhaustive-deps
 

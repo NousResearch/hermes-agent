@@ -317,6 +317,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
         await addMcpServer({ name: known.name, url: known.url })
 
         let flow
+
         try {
           flow = await completeMcpDesktopOAuth({
             serverName: known.name,

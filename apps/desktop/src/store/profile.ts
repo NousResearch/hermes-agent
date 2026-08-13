@@ -12,7 +12,12 @@ import {
   storedStringRecord
 } from '@/lib/storage'
 import { invalidateCronModelImpactScopeState } from '@/store/cron-model-impact-scope'
-import { $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile } from '@/store/gateway'
+import {
+  $gateway,
+  ensureGatewayForAgent,
+  openGatewayForProfile,
+  prepareGatewayForProfile
+} from '@/store/gateway'
 import { setConnection } from '@/store/session'
 import { resetStarmapGraph } from '@/store/starmap'
 import type { ProfileInfo } from '@/types/hermes'
@@ -269,30 +274,24 @@ export function prewarmProfileBackend(name: string): void {
 
 let gatewaySwitch: Promise<void> | null = null
 
-// Keep the renderer's $connection (mode / baseUrl / profile) in lockstep with
-// the profile the live gateway is now on. $connection seeds from the PRIMARY
+// The target profile's connection descriptor (mode / baseUrl / …), fetched
+// BEFORE activation so the switch can publish it in the same synchronous frame
+// as the gateway and profile pointer. $connection seeds from the PRIMARY
 // (window) backend at boot and otherwise only refreshes on a sleep/wake
-// reconnect — so activating a *background* profile left $connection describing
-// the primary, with the wrong `mode` for everything that branches on
-// local-vs-remote. Headline symptom: with a local primary and a remote pool
-// profile active, image attachments went out via the path-based `image.attach`
-// instead of `image.attach_bytes`, handing the remote gateway a client-only
-// path it can't resolve ("image not found: C:\…"), while the /api/fs/* file
-// browser and /api/media fetches targeted the wrong machine (#46651).
-// Best-effort: a failed descriptor fetch leaves the prior connection intact for
-// boot/reconnect to resync.
-async function syncConnectionToActiveProfile(profile: string): Promise<void> {
+// reconnect — so activating a *background* profile without this left
+// $connection describing the primary, with the wrong `mode` for everything
+// that branches on local-vs-remote (#46651: path-based `image.attach` against
+// a remote gateway, /api/fs/* and /api/media on the wrong machine).
+//
+// Null means "no desktop bridge" (plain browser) — there is no descriptor to
+// sync then. A bridge REJECTION propagates: the caller aborts the whole switch
+// rather than activating a backend whose descriptor (and thus mode) is
+// unknown, which previously left $gateway on the new backend while
+// $connection kept describing the old one for the rest of the session.
+async function resolveConnectionForProfile(profile: string) {
   const getConnection = window.hermesDesktop?.getConnection
 
-  if (!getConnection) {
-    return
-  }
-
-  try {
-    setConnection(await getConnection(profile))
-  } catch {
-    // Leave the prior connection in place; boot/reconnect resyncs it later.
-  }
+  return getConnection ? getConnection(profile) : null
 }
 
 // Make `profile`'s backend the active gateway, lazily opening its socket if it
@@ -331,14 +330,31 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
   $gatewaySwapTarget.set(target)
   gatewaySwitch = (async () => {
-    // ensureGatewayForProfile opens (or reuses) the target's socket and points
-    // the active gateway at it — without closing the profile you came from.
-    await ensureGatewayForProfile(target)
+    // Resolve the target's connection descriptor and open (or reuse) its
+    // socket BEFORE anything is published — without closing the profile you
+    // came from. The gateway used to be activated (and the profile atom set)
+    // while the descriptor fetch was still in flight, so during that window
+    // $gateway already targeted the new backend while $connection still
+    // described the previous one — and any request or plugin mode-listener
+    // firing then announced the WRONG mode to the new backend.
+    const [connection, activate] = await Promise.all([
+      resolveConnectionForProfile(target),
+      prepareGatewayForProfile(target)
+    ])
+
+    // One synchronous publication frame — no awaits from here down, so the
+    // active gateway, $activeGatewayProfile, and $connection flip together.
+    activate()
     $activeGatewayProfile.set(target)
-    // The active backend just changed; resync $connection so remote-aware
-    // paths (image.attach_bytes vs image.attach, /api/fs/*, /api/media) follow.
-    await syncConnectionToActiveProfile(target)
-  })()
+
+    if (connection) {
+      setConnection(connection)
+    }
+  })().catch(() => {
+    // Descriptor lookup failed: the switch fails as a unit. Nothing was
+    // published, so every atom still consistently describes the previous
+    // profile; the user can retry the switch.
+  })
 
   try {
     await gatewaySwitch

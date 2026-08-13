@@ -717,27 +717,34 @@ export async function ensureGatewayForAgent(connectionId: null | string, profile
   return activated
 }
 
-// Make `profile` the active gateway, lazily opening its socket if needed. The
-// primary is a no-op fast path. Background sockets are never closed here.
-export async function ensureGatewayForProfile(profile: string): Promise<void> {
+// Open `profile`'s socket if needed and hand back a synchronous activation
+// thunk — the publication seam for atomic profile switches. The caller invokes
+// the thunk in the same synchronous frame as its own atom writes (profile
+// pointer, connection descriptor), so no subscriber can observe the active
+// gateway pointing at one backend while companion state still describes
+// another. Nothing is published until the thunk runs.
+export async function prepareGatewayForProfile(profile: string): Promise<() => void> {
   const key = normKey(profile)
   const activationEpoch = beginGatewayActivation()
 
   if (key === g.primaryProfile) {
-    applyActive(key, activationEpoch)
-
-    return
+    return () => {
+      applyActive(key, activationEpoch)
+    }
   }
 
   // Global-remote share (routing case 3): one remote host serves every
   // profile through the PRIMARY socket, scoped per request. Activate the
   // primary instead of dialing a doomed duplicate socket at the same
-  // descriptor — $activeGatewayProfile still moves to `key`, so request
-  // scoping and profile-aware surfaces behave identically.
+  // descriptor - $activeGatewayProfile still moves to `key`, so request
+  // scoping and profile-aware surfaces behave identically. Checked BEFORE
+  // createSecondary so a shared-remote profile never mints a secondary
+  // entry, and returned as a thunk like every other path here so this
+  // switch publishes as atomically as a dedicated-socket one.
   if (await sharedPrimaryRoute(key)) {
-    applyActive(g.primaryProfile, activationEpoch)
-
-    return
+    return () => {
+      applyActive(g.primaryProfile, activationEpoch)
+    }
   }
 
   let entry = g.secondaries.get(key)
@@ -760,9 +767,29 @@ export async function ensureGatewayForProfile(profile: string): Promise<void> {
     }
   }
 
-  if (entry.wantOpen && g.secondaries.get(key) === entry && applyActive(key, activationEpoch) && entry.connection) {
-    publishActiveConnection(entry.connection)
+  // Bind the entry the await settled on. `g.secondaries.get(key)` can be a
+  // DIFFERENT object by the time the thunk runs (a teardown + redial between
+  // prepare and publish), and publishing that one's descriptor would be the
+  // very mismatch this seam exists to prevent, so the identity re-check below
+  // compares against this exact entry.
+  const prepared = entry
+
+  return () => {
+    if (
+      prepared.wantOpen &&
+      g.secondaries.get(key) === prepared &&
+      applyActive(key, activationEpoch) &&
+      prepared.connection
+    ) {
+      publishActiveConnection(prepared.connection)
+    }
   }
+}
+
+// Make `profile` the active gateway, lazily opening its socket if needed. The
+// primary is a no-op fast path. Background sockets are never closed here.
+export async function ensureGatewayForProfile(profile: string): Promise<void> {
+  ;(await prepareGatewayForProfile(profile))()
 }
 
 // Reconnect the active gateway after a transient request failure. Primary

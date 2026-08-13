@@ -6,13 +6,21 @@ import type { ProfileInfo } from '@/types/hermes'
 
 // Keep profile.ts's side-effecting imports inert: the gateway socket layer and
 // the REST query client must not run for real in a unit test.
+const activateGateway = vi.fn()
 const ensureGatewayForProfile = vi.fn(async () => undefined)
 const ensureGatewayForAgent = vi.fn(async () => undefined)
+const prepareGatewayForProfile = vi.fn(async (_profile: string) => activateGateway)
 const openGatewayForProfile = vi.fn(async (_profile: string) => undefined)
 const $gateway = atom<unknown>({ id: 'live-socket' })
 const resetStarmapGraph = vi.fn()
 
-vi.mock('@/store/gateway', () => ({ $gateway, ensureGatewayForAgent, ensureGatewayForProfile, openGatewayForProfile }))
+vi.mock('@/store/gateway', () => ({
+  $gateway,
+  ensureGatewayForAgent,
+  ensureGatewayForProfile,
+  openGatewayForProfile,
+  prepareGatewayForProfile
+}))
 vi.mock('@/hermes', () => ({
   getProfiles: vi.fn(async () => ({ profiles: [] })),
   setApiRequestProfile: vi.fn()
@@ -53,7 +61,9 @@ const getConnection = vi.fn<(profile?: string | null) => Promise<HermesConnectio
 
 beforeEach(() => {
   getConnection.mockReset()
+  activateGateway.mockClear()
   ensureGatewayForProfile.mockClear()
+  prepareGatewayForProfile.mockClear()
   openGatewayForProfile.mockClear()
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
@@ -79,7 +89,8 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
 
     await ensureGatewayProfile('vps-remote')
 
-    expect(ensureGatewayForProfile).toHaveBeenCalledWith('vps-remote')
+    expect(prepareGatewayForProfile).toHaveBeenCalledWith('vps-remote')
+    expect(activateGateway).toHaveBeenCalledTimes(1)
     expect(getConnection).toHaveBeenCalledWith('vps-remote')
     expect($connection.get()?.mode).toBe('remote')
     expect($connection.get()?.profile).toBe('vps-remote')
@@ -96,13 +107,49 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     expect($connection.get()?.mode).toBe('local')
   })
 
-  it('leaves the prior connection intact when the descriptor fetch fails', async () => {
+  it('fails as a unit when the descriptor fetch fails — no mixed state', async () => {
+    // Previously the gateway was activated and $activeGatewayProfile set even
+    // when the descriptor lookup failed, leaving $gateway on the new backend
+    // while $connection kept describing the old one for the rest of the
+    // session. Now nothing is published: every atom still consistently
+    // describes the previous profile and the user can retry.
     getConnection.mockRejectedValue(new Error('backend unreachable'))
 
     await ensureGatewayProfile('vps-remote')
 
-    // Best-effort: boot/reconnect resyncs later; we must not null it out here.
+    expect(activateGateway).not.toHaveBeenCalled()
+    expect($activeGatewayProfile.get()).toBe('default')
     expect($connection.get()?.mode).toBe('local')
+  })
+
+  it('never publishes the new gateway before its connection descriptor', async () => {
+    // The exact mixed-state window from the follow-up review: a slow
+    // descriptor fetch must not leave $gateway/$activeGatewayProfile on the
+    // remote backend while $connection still says local. All three flip
+    // together only once the descriptor is in hand.
+    let resolveDescriptor: (conn: HermesConnection) => void = () => undefined
+    getConnection.mockReturnValue(
+      new Promise<HermesConnection>(resolve => {
+        resolveDescriptor = resolve
+      })
+    )
+
+    const switching = ensureGatewayProfile('vps-remote')
+    // Let the socket-open half of the switch settle; the descriptor is still
+    // deliberately pending.
+    await Promise.resolve()
+    await Promise.resolve()
+
+    expect(activateGateway).not.toHaveBeenCalled()
+    expect($activeGatewayProfile.get()).toBe('default')
+    expect($connection.get()?.mode).toBe('local')
+
+    resolveDescriptor(remoteConn())
+    await switching
+
+    expect(activateGateway).toHaveBeenCalledTimes(1)
+    expect($activeGatewayProfile.get()).toBe('vps-remote')
+    expect($connection.get()?.mode).toBe('remote')
   })
 
   it('does not churn $connection when the target is already the active profile', async () => {
@@ -112,7 +159,7 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     await ensureGatewayProfile('vps-remote')
 
     expect(getConnection).not.toHaveBeenCalled()
-    expect(ensureGatewayForProfile).not.toHaveBeenCalled()
+    expect(prepareGatewayForProfile).not.toHaveBeenCalled()
     expect($connection.get()?.mode).toBe('remote')
   })
 })

@@ -22,6 +22,19 @@ _PROVIDER_MESSAGE_EXTENSION_KEYS = frozenset(
 _RELAY_INTERNAL_PROVIDER_HEADERS = frozenset(
     {"x-dynamo-parent-session-id", "x-dynamo-session-id"}
 )
+_RELAY_OPERATION_BY_API_MODE = {
+    "chat_completions": "openai.chat_completions",
+    "codex_responses": "openai.responses",
+    "anthropic_messages": "anthropic.messages",
+}
+
+
+def _relay_operation_name(provider_name: str, metadata: dict[str, Any] | None) -> str:
+    """Return Relay's canonical operation name when Hermes knows the API mode."""
+    api_mode = (metadata or {}).get("api_mode")
+    if not isinstance(api_mode, str):
+        return provider_name
+    return _RELAY_OPERATION_BY_API_MODE.get(api_mode, provider_name)
 
 
 def execute(
@@ -83,7 +96,7 @@ def execute(
             runtime.run_in_session_async(
                 session,
                 runtime.relay.llm.execute,
-                name,
+                _relay_operation_name(name, metadata),
                 relay_request,
                 invoke,
                 handle=parent,
@@ -177,7 +190,7 @@ async def execute_async(
         managed = await runtime.run_in_session_async(
             session,
             runtime.relay.llm.execute,
-            name,
+            _relay_operation_name(name, metadata),
             relay_request,
             invoke,
             handle=parent,
@@ -528,7 +541,7 @@ class ManagedLlmStream(Iterator[Any]):
                 runtime.run_in_session_async(
                     session,
                     runtime.relay.llm.stream_execute,
-                    name,
+                    _relay_operation_name(name, metadata),
                     relay_request,
                     provider_stream,
                     observe_chunk,

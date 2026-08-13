@@ -39,6 +39,98 @@ def relay_turn(tmp_path, monkeypatch):
         relay_runtime._reset_for_tests()
 
 
+def test_sync_execution_uses_canonical_relay_operation_name(relay_turn, monkeypatch):
+    relay, _turn = relay_turn
+    observed_names = []
+    original_execute = relay.llm.execute
+
+    async def capture_name(name, *args, **kwargs):
+        observed_names.append(name)
+        return await original_execute(name, *args, **kwargs)
+
+    monkeypatch.setattr(relay.llm, "execute", capture_name)
+    monkeypatch.setattr(relay_llm, "_codec", lambda *_args, **_kwargs: None)
+
+    result = relay_llm.execute(
+        {"model": "test-model", "messages": []},
+        lambda _request: {"content": "done"},
+        session_id="session-1",
+        name="custom",
+        model_name="test-model",
+        metadata={"api_mode": "chat_completions"},
+    )
+
+    assert result == {"content": "done"}
+    assert observed_names == ["openai.chat_completions"]
+
+
+@pytest.mark.asyncio
+async def test_async_execution_uses_canonical_relay_operation_name(
+    relay_turn, monkeypatch
+):
+    relay, _turn = relay_turn
+    observed_names = []
+    original_execute = relay.llm.execute
+
+    async def capture_name(name, *args, **kwargs):
+        observed_names.append(name)
+        return await original_execute(name, *args, **kwargs)
+
+    async def provider(_request):
+        return {"content": "done"}
+
+    monkeypatch.setattr(relay.llm, "execute", capture_name)
+    monkeypatch.setattr(relay_llm, "_codec", lambda *_args, **_kwargs: None)
+
+    result = await relay_llm.execute_async(
+        {"model": "test-model", "input": "hello"},
+        provider,
+        session_id="session-1",
+        name="custom",
+        model_name="test-model",
+        metadata={"api_mode": "codex_responses"},
+    )
+
+    assert result == {"content": "done"}
+    assert observed_names == ["openai.responses"]
+
+
+def test_stream_execution_uses_canonical_relay_operation_name(relay_turn, monkeypatch):
+    relay, _turn = relay_turn
+    observed_names = []
+    original_stream_execute = relay.llm.stream_execute
+
+    async def capture_name(name, *args, **kwargs):
+        observed_names.append(name)
+        return await original_stream_execute(name, *args, **kwargs)
+
+    monkeypatch.setattr(relay.llm, "stream_execute", capture_name)
+    monkeypatch.setattr(relay_llm, "_codec", lambda *_args, **_kwargs: None)
+
+    stream = relay_llm.stream(
+        {"model": "test-model", "messages": []},
+        lambda _request: iter([{"delta": "done"}]),
+        session_id="session-1",
+        name="custom",
+        model_name="test-model",
+        finalizer=lambda: {"content": "done"},
+        metadata={"api_mode": "anthropic_messages"},
+    )
+
+    try:
+        assert list(stream) == [{"delta": "done"}]
+    finally:
+        stream.close()
+    assert observed_names == ["anthropic.messages"]
+
+
+def test_unknown_api_mode_preserves_provider_name():
+    assert (
+        relay_llm._relay_operation_name("custom-provider", {"api_mode": "future_api"})
+        == "custom-provider"
+    )
+
+
 def test_stream_uses_rewritten_request_and_post_intercept_chunks(relay_turn):
     relay, turn = relay_turn
     captured_requests = []

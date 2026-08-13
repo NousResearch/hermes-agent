@@ -249,6 +249,12 @@ _LONG_HANDLERS = frozenset(
         # reloads via _mcp_reload_lock.
         "reload.mcp",
         "process.list",
+        # profiles.list runs list_profiles() (recursive skill-tree walk per
+        # profile) and opens each profile's state.db for the last-session
+        # preview; profiles.create copies skill bundles. Both are seconds-
+        # scale on cold disks — keep them off the WS reader thread.
+        "profiles.create",
+        "profiles.list",
         "projects.discover_repos",
         "projects.record_repos",
         "projects.for_cwd",
@@ -14428,6 +14434,7 @@ def _browser_disconnect(rid) -> dict:
 from . import (  # noqa: E402
     methods_complete as _methods_complete,
     methods_config as _methods_config,
+    methods_profiles as _methods_profiles,
     methods_prompt as _methods_prompt,
     methods_session as _methods_session,
     methods_tools as _methods_tools,
@@ -14439,6 +14446,7 @@ for _m in (
     _methods_config,
     _methods_complete,
     _methods_tools,
+    _methods_profiles,
 ):
     _m.register(sys.modules[__name__])
 del _m

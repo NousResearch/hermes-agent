@@ -2689,6 +2689,63 @@ def _query_osc11_background() -> str | None:
             pass
 
 
+def _heal_cooked_mode_drift(fd: int) -> bool:
+    """Detect and heal cooked-mode termios drift on *fd* while prompt_toolkit
+    expects raw mode.
+
+    prompt_toolkit's ``run_in_terminal`` / ``in_terminal`` wraps every
+    "print above the prompt" in a ``cooked_mode()`` context: it flips the
+    tty back to cooked (ICANON/ECHO/ISIG), runs the function, then restores
+    raw mode.  Hermes schedules those windows cross-thread constantly — the
+    background self-review's ``💾`` summary, background process notification
+    drains, curses pickers — and if a restore is ever lost (coroutine
+    cancelled mid-window, racing chains, an external writer touching the
+    shared tty), the terminal is left in cooked mode while the Application
+    still believes it owns raw mode.  The kernel line-buffers every
+    keystroke and the CLI appears to "stop taking input" even though the
+    process is perfectly healthy (observed live: pts in ``icanon echo``
+    while the event loop idled normally in ``ep_poll``).
+
+    This helper is the last line of defense for that whole class: when the
+    lflag has drifted back to cooked, re-apply prompt_toolkit's own raw-mode
+    flag surgery (mirrors ``prompt_toolkit.input.vt100.raw_mode``) in place.
+    Returns True when drift was detected and healed, False when the tty was
+    already raw (or could not be inspected).
+
+    POSIX-only by construction — callers must not invoke this on Windows
+    (no termios; prompt_toolkit uses the win32 console API there instead).
+    """
+    try:
+        import termios
+        attrs = termios.tcgetattr(fd)
+    except Exception:
+        return False
+    lflag = attrs[3]
+    if not (lflag & (termios.ICANON | termios.ECHO)):
+        return False  # still raw — nothing to do
+    # Same surgery as prompt_toolkit.input.vt100.raw_mode._patch_lflag /
+    # _patch_iflag, applied to the *current* attrs so any user settings
+    # (speed, size-independent flags) are preserved.
+    attrs[3] = lflag & ~(
+        termios.ECHO | termios.ICANON | termios.IEXTEN | termios.ISIG
+    )
+    attrs[0] = attrs[0] & ~(
+        termios.IXON
+        | termios.IXOFF
+        | termios.ICRNL
+        | termios.INLCR
+        | termios.IGNCR
+    )
+    # VMIN=1 so reads return per-byte (Solaris-derived systems default to 4;
+    # prompt_toolkit sets this explicitly in raw_mode.__enter__).
+    attrs[6][termios.VMIN] = 1
+    try:
+        termios.tcsetattr(fd, termios.TCSANOW, attrs)
+    except Exception:
+        return False
+    return True
+
+
 def _detect_light_mode() -> bool:
     global _LIGHT_MODE_CACHE
     if _LIGHT_MODE_CACHE is not None:
@@ -4421,6 +4478,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         self._pending_edit_snapshots = {}
         self._last_input_mode_recovery = 0.0
         self._input_mode_recovery_notice_shown = False
+        self._last_termios_drift_check = 0.0
+        self._termios_drift_notice_shown = False
         
         # Configuration - priority: CLI args > env vars > config file
         # Model comes from: CLI arg or config.yaml (single source of truth).
@@ -7980,6 +8039,57 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 f"  {_DIM}Recovered terminal input modes after leaked mouse reports. "
                 f"If this repeats, run /new or restart this tab.{_RST}"
             )
+
+    def _check_termios_drift(self) -> None:
+        """Watchdog: heal the tty if it drifted back to cooked mode.
+
+        See ``_heal_cooked_mode_drift`` for the failure class (a lost
+        ``run_in_terminal`` cooked→raw restore leaves the terminal
+        line-buffering keystrokes while the prompt_toolkit app believes it
+        owns raw mode — the CLI looks dead but the process is healthy).
+
+        Called from ``process_loop``'s idle branch, so a drifted terminal
+        self-heals within ~a second of the agent going idle instead of
+        requiring an external ``stty`` rescue.  Skipped while a
+        ``run_in_terminal`` window is legitimately holding cooked mode
+        (``app._running_in_terminal``), while the agent is running (approval
+        prompts and sudo prompts legitimately manipulate the tty), and on
+        Windows (no termios).
+        """
+        if os.name == "nt":
+            return
+        app = getattr(self, "_app", None)
+        if app is None or not getattr(app, "_is_running", False):
+            return
+        # A run_in_terminal window is *supposed* to be cooked — don't fight it.
+        if getattr(app, "_running_in_terminal", False):
+            return
+        now = time.monotonic()
+        if now - self._last_termios_drift_check < 1.0:
+            return
+        self._last_termios_drift_check = now
+        try:
+            if not sys.stdin.isatty():
+                return
+            fd = sys.stdin.fileno()
+        except Exception:
+            return
+        if _heal_cooked_mode_drift(fd):
+            logger.warning(
+                "Healed cooked-mode termios drift on stdin — a "
+                "run_in_terminal cooked→raw restore was lost."
+            )
+            # Redraw so the prompt is visibly alive again.
+            try:
+                self._invalidate()
+            except Exception:
+                pass
+            if not self._termios_drift_notice_shown:
+                self._termios_drift_notice_shown = True
+                _cprint(
+                    f"  {_DIM}Recovered terminal from cooked-mode drift "
+                    f"(input should respond normally again).{_RST}"
+                )
 
 
 
@@ -17919,6 +18029,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         # Periodic config watcher — auto-reload MCP on mcp_servers change
                         if not self._agent_running:
                             self._check_config_mcp_changes()
+                            # Heal cooked-mode termios drift (lost
+                            # run_in_terminal restore) before draining
+                            # notifications — a drifted tty makes the CLI
+                            # look dead even though the loop is healthy.
+                            try:
+                                self._check_termios_drift()
+                            except Exception:
+                                pass
                             # Check for background process notifications (completions
                             # and watch pattern matches) while agent is idle.
                             try:

@@ -343,10 +343,14 @@ def _resolve_chat_argv(
         _log.warning("Failed to apply terminal config bridge for dashboard chat", exc_info=True)
     _apply_tui_python_env(env)
     env.setdefault("NODE_ENV", "production")
-    # Mouse tracking would swallow wheel events the browser needs for
-    # transcript scrolling; disable it for the dashboard PTY only.
+    # Browser-embedded chat routes the wheel into the inner TUI's transcript
+    # ScrollBox (Shift+Up/Down key sequences). That requires a bounded viewport,
+    # which AlternateScreen provides via height={rows}; HERMES_TUI_INLINE must
+    # stay unset here — inline mode leaves ScrollBox unbounded and scroll dead.
+    #
+    # Disable native terminal mouse tracking so plain click-drag keeps selecting
+    # text in xterm.js; wheel is handled in ChatPage, not via SGR mouse reports.
     env.setdefault("HERMES_TUI_DISABLE_MOUSE", "1")
-    env.setdefault("HERMES_TUI_INLINE", "1")
     # chalk in the child picks its color depth from the SERVER env; hosted
     # deploys have no COLORTERM, so hex colors would snap to the 256 palette.
     env.setdefault("COLORTERM", "truecolor")

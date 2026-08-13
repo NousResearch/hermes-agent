@@ -137,7 +137,16 @@ class TestVacuumUsesPassive:
     """Manual vacuum paths must checkpoint PASSIVE, never TRUNCATE."""
 
     def test_vacuum_uses_passive_before_vacuum(self, db):
-        """SessionDB.vacuum() checkpoints PASSIVE before running VACUUM."""
+        """SessionDB.vacuum() checkpoints PASSIVE before VACUUM.
+
+        A TRUNCATE checkpoint AFTER the VACUUM is expected: VACUUM rewrites
+        every page through the WAL, so without it a 3 GB database leaves a
+        3 GB state.db-wal behind and `sessions optimize` becomes a net disk
+        LOSS. The #45383 tearing concern is about truncating while another
+        writer is mid-transaction — the pre-VACUUM checkpoint stays PASSIVE
+        for that reason; the post-VACUUM truncate runs under the same
+        exclusive-lock window the VACUUM itself required.
+        """
         real_conn = db._conn
         tracking_conn = TrackingConnection(real_conn)
         db._conn = tracking_conn
@@ -152,12 +161,13 @@ class TestVacuumUsesPassive:
         vacuum_calls = [
             c for c in tracking_conn.execute_calls if c.strip().upper() == "VACUUM"
         ]
-        assert truncate_calls == []
         assert passive_calls == ["PRAGMA wal_checkpoint(PASSIVE)"]
         assert vacuum_calls == ["VACUUM"]
-        assert tracking_conn.execute_calls.index(
-            passive_calls[0]
-        ) < tracking_conn.execute_calls.index(vacuum_calls[0])
+        assert truncate_calls == ["PRAGMA wal_checkpoint(TRUNCATE)"]
+        vacuum_index = tracking_conn.execute_calls.index(vacuum_calls[0])
+        assert tracking_conn.execute_calls.index(passive_calls[0]) < vacuum_index
+        # TRUNCATE must come only AFTER the VACUUM (never before it).
+        assert tracking_conn.execute_calls.index(truncate_calls[0]) > vacuum_index
 
     def test_optimize_storage_uses_passive_after_vacuum(self, db):
         """optimize_fts_storage() checkpoints PASSIVE after its VACUUM."""

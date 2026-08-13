@@ -70,6 +70,31 @@ interface SidebarSessionRowProps extends React.ComponentProps<'div'> {
 
 const AGE_KEY = { day: 'ageDay', hour: 'ageHour', minute: 'ageMin' } as const
 
+// Hover marquee (card title): measure the actual overflow on pointerenter and
+// arm the CSS animation only when there is some — CSS can't detect overflow on
+// its own, and animating a non-overflowing title would wiggle for nothing.
+// Distance-proportional duration keeps the scroll speed constant across short
+// and long overflows. State lives in DOM attributes, not React state: hover
+// must not re-render a memoized row.
+const MARQUEE_PX_PER_SECOND = 80
+
+function armMarquee(event: React.PointerEvent<HTMLElement>) {
+  const el = event.currentTarget
+  const distance = el.scrollWidth - el.clientWidth
+
+  if (distance > 2) {
+    // The keyframes spend 65% of the cycle travelling (10%→75%); scale the
+    // duration so the travel segment itself moves at the target speed.
+    el.style.setProperty('--marquee-d', `${distance}px`)
+    el.style.setProperty('--marquee-t', `${Math.max(1, distance / MARQUEE_PX_PER_SECOND / 0.65)}s`)
+    el.dataset.marquee = 'true'
+  }
+}
+
+function disarmMarquee(event: React.PointerEvent<HTMLElement>) {
+  delete event.currentTarget.dataset.marquee
+}
+
 // The last thing in the trailing slot hands its place to the ⋯ button on hover,
 // and is never narrower than the button that has to cover it. A PR chip is the
 // exception while the pointer is on it: it's a link, and the kebab sits
@@ -374,34 +399,87 @@ function SidebarSessionRowImpl({
             onResume()
           }}
         >
-          {reorderable ? (
-            <SidebarRowGrab ariaLabel={handleLabel} dragging={dragging} dragHandleProps={dragHandleProps}>
-              {lead ?? (
-                <SessionStatusDot
-                  branchStem={branchStem}
-                  className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
-                  session={session}
-                  storedSessionId={session.id}
-                />
-              )}
-            </SidebarRowGrab>
-          ) : (
-            <SidebarRowLead className="overflow-hidden">
-              {lead ?? <SessionStatusDot branchStem={branchStem} session={session} storedSessionId={session.id} />}
-            </SidebarRowLead>
-          )}
-          {handoffSource && handoffLabel ? (
-            <Tip label={r.handoffOrigin(handoffLabel)}>
-              <PlatformAvatar
-                className="size-4 rounded-[4px] text-[0.5rem] [&_svg]:size-2.5"
-                platformId={handoffSource}
-                platformName={handoffLabel}
-              />
-            </Tip>
-          ) : null}
-          <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
-            {title}
-          </SidebarRowLabel>
+          {(() => {
+            const leadNode = reorderable ? (
+              <SidebarRowGrab ariaLabel={handleLabel} dragging={dragging} dragHandleProps={dragHandleProps}>
+                {lead ?? (
+                  <SessionStatusDot
+                    branchStem={branchStem}
+                    className="transition-opacity group-hover/handle:opacity-0 group-focus-within/handle:opacity-0"
+                    session={session}
+                    storedSessionId={session.id}
+                  />
+                )}
+              </SidebarRowGrab>
+            ) : (
+              <SidebarRowLead className="overflow-hidden">
+                {lead ?? <SessionStatusDot branchStem={branchStem} session={session} storedSessionId={session.id} />}
+              </SidebarRowLead>
+            )
+
+            const handoffBadge =
+              handoffSource && handoffLabel ? (
+                <Tip label={r.handoffOrigin(handoffLabel)}>
+                  <PlatformAvatar
+                    className="-mt-px size-4 shrink-0 rounded-[4px] text-[0.5rem] [&_svg]:size-2.5"
+                    platformId={handoffSource}
+                    platformName={handoffLabel}
+                  />
+                </Tip>
+              ) : null
+
+            if (!card) {
+              return (
+                <>
+                  {leadNode}
+                  {handoffBadge}
+                  <SidebarRowLabel className="flex-1 font-normal group-hover:text-foreground group-data-[working=true]:text-foreground/90">
+                    {title}
+                  </SidebarRowLabel>
+                </>
+              )
+            }
+
+            return (
+              <>
+                {/* Header row — ONE div: dot, context, then the age/kebab
+                    cluster in flow at its right edge. Keeping the cluster
+                    inside this line (instead of the shell's full-height side
+                    column) means title/preview/meta below span the card's
+                    entire width — nothing truncates against the kebab. */}
+                <div className="flex min-w-0 items-center gap-1.5">
+                  {leadNode}
+                  <span className="min-w-0 flex-1 truncate text-[0.6875rem] leading-none text-(--ui-text-tertiary)">
+                    {context}
+                  </span>
+                  {handoffBadge}
+                  {actionsNode}
+                </div>
+                {/* Title + preview: ONE grouped cell with its own tight
+                    internal gap — it does not inherit the card's rhythm. */}
+                <div className="-mt-[0.2em] flex min-w-0 flex-col gap-[0.3rem]">
+                  <SidebarRowLabel
+                    className="hover-marquee text-[0.8125rem] leading-none font-medium text-(--ui-text-primary) group-data-[working=true]:text-foreground"
+                    onPointerEnter={armMarquee}
+                    onPointerLeave={disarmMarquee}
+                  >
+                    <span className="hover-marquee-inner">{title}</span>
+                  </SidebarRowLabel>
+                  {session.preview && rowMeta.includes('preview') ? (
+                    <span className="min-w-0 truncate text-[0.625rem] leading-none text-(--ui-text-quaternary)">
+                      {session.preview}
+                    </span>
+                  ) : null}
+                </div>
+                {model || size ? (
+                  <span className="flex min-w-0 items-baseline gap-2 text-[0.625rem] leading-none text-(--ui-text-tertiary)">
+                    {model ? <span className="min-w-0 truncate">{model}</span> : null}
+                    {size ? <span className="shrink-0 tabular-nums">{size}</span> : null}
+                  </span>
+                ) : null}
+              </>
+            )
+          })()}
         </SidebarRowBody>
       </SidebarRowShell>
     </SessionContextMenu>

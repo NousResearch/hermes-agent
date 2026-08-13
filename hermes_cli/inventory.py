@@ -108,6 +108,121 @@ def load_picker_context() -> ConfigContext:
     )
 
 
+def attach_provider_enabled_flags(payload: dict, cfg: dict) -> dict:
+    """Annotate each provider row in ``payload["providers"]`` with an
+    ``enabled`` flag so the desktop Provider Manager can show + toggle
+    activation without a second endpoint.
+
+    Enablement is read from the **canonical keyed ``providers:`` schema** —
+    ``providers.<name>.enabled`` — via :func:`is_provider_enabled`, the same
+    source the runtime resolver and model picker honour
+    (``hermes_cli/config.py::is_provider_enabled``; consumed by
+    ``model_switch.list_authenticated_providers``). A catalog row sourced from
+    ``providers.<name>`` carries ``slug == <name>``, so we match rows to their
+    config block by slug. Rows without a matching ``providers`` entry (built-in
+    providers) default to enabled.
+
+    Note: ``list_authenticated_providers`` already *drops* ``enabled: false``
+    custom endpoints from the picker catalog, so in practice a custom row that
+    reaches this function is enabled; this annotation keeps the flag explicit
+    and authoritative for any surface that does not pre-filter. The desktop
+    Provider Manager sources disabled custom endpoints from the
+    ``/api/providers/custom-endpoints`` REST surface (which does not filter),
+    not from this catalog.
+
+    Returns ``payload`` for call-site convenience.
+    """
+    from hermes_cli.config import is_provider_enabled
+
+    providers_cfg = cfg.get("providers")
+    providers_map: dict = providers_cfg if isinstance(providers_cfg, dict) else {}
+
+    for row in payload.get("providers", []):
+        slug = str(row.get("slug", ""))
+        entry = providers_map.get(slug)
+        if isinstance(entry, dict):
+            row["enabled"] = is_provider_enabled(entry)
+        else:
+            # Built-in provider (or a row with no ``providers`` block): the
+            # canonical schema has no per-built-in disable control, so it is
+            # enabled by default.
+            row["enabled"] = True
+    return payload
+
+
+class ModelDiscoveryError(Exception):
+    """Raised when a custom provider's model list cannot be retrieved."""
+
+
+def discover_provider_models(
+    base_url: str,
+    api_key: str | None = None,
+    api_mode: str = "chat_completions",
+    timeout: float = 15.0,
+) -> list[dict]:
+    """Query a provider's standard models endpoint and return its model list.
+
+    Uses the OpenAI-compatible ``{base_url}/models`` path. Anthropic's
+    ``GET /v1/models`` returns the same ``data[].id`` shape, so the same code
+    path covers both ``chat_completions`` and ``anthropic_messages`` modes.
+
+    Returns a list of ``{"id": str, "name": str}`` dicts (name defaults to id).
+    Raises ``ModelDiscoveryError`` on any network / HTTP / parse failure so the
+    caller can surface a clear message to the user.
+    """
+    if not base_url or not str(base_url).strip():
+        raise ModelDiscoveryError("base_url is required for model discovery")
+
+    base = str(base_url).strip().rstrip("/")
+    url = f"{base}/models"
+
+    try:
+        import httpx
+    except ImportError as exc:  # pragma: no cover - httpx is a hard dependency
+        raise ModelDiscoveryError("httpx is required for model discovery") from exc
+
+    headers = {"Accept": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    try:
+        with httpx.Client(timeout=timeout, headers=headers, follow_redirects=True) as client:
+            resp = client.get(url)
+    except Exception as exc:  # network / timeout / DNS
+        raise ModelDiscoveryError(f"Failed to reach {url}: {exc}") from exc
+
+    if resp.status_code != 200:
+        raise ModelDiscoveryError(f"Model discovery at {url} returned HTTP {resp.status_code}")
+
+    try:
+        payload = resp.json()
+    except Exception as exc:
+        raise ModelDiscoveryError(f"Invalid JSON from {url}: {exc}") from exc
+
+    data = payload.get("data") if isinstance(payload, dict) else None
+
+    if not isinstance(data, list):
+        raise ModelDiscoveryError(f"Model list at {url} is missing a 'data' array")
+
+    models: list[dict] = []
+    seen: set[str] = set()
+
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+
+        mid = str(item.get("id") or "").strip()
+
+        if not mid or mid in seen:
+            continue
+
+        seen.add(mid)
+        name = str(item.get("name") or mid).strip() or mid
+        models.append({"id": mid, "name": name})
+
+    return models
+
+
 # ─── Public: payload builder ────────────────────────────────────────────
 
 
@@ -273,11 +388,52 @@ def build_models_payload(
     if featured:
         _apply_featured(rows)
 
-    return {
+    payload = {
         "providers": rows,
         "model": ctx.current_model,
         "provider": ctx.current_provider,
     }
+    attach_custom_model_display_names(payload, ctx)
+    return payload
+
+
+def attach_custom_model_display_names(payload: dict, ctx: ConfigContext) -> dict:
+    """Attach a ``model_display_names`` map (id -> friendly name) to each
+    custom provider row, sourced from the user's ``custom_providers`` config
+    ``models`` dict ``name`` field. Built-in providers are untouched. Returns
+    ``payload`` for call-site convenience.
+    """
+    name_map: dict[str, dict[str, str]] = {}
+
+    for cp in ctx.custom_providers or []:
+        if not isinstance(cp, dict) or not cp.get("name"):
+            continue
+
+        norm = str(cp["name"]).strip().lower().replace(" ", "-")
+        models = cp.get("models") or {}
+
+        if not isinstance(models, dict):
+            continue
+
+        display: dict[str, str] = {}
+
+        for mid, meta in models.items():
+            if isinstance(meta, dict) and meta.get("name"):
+                display[str(mid)] = str(meta["name"])
+
+        if display:
+            name_map[norm] = display
+
+    for row in payload.get("providers", []):
+        slug = str(row.get("slug", ""))
+
+        if slug.startswith("custom:"):
+            norm = slug[len("custom:"):].strip().lower().replace(" ", "-")
+
+            if norm in name_map:
+                row["model_display_names"] = name_map[norm]
+
+    return payload
 
 
 def build_model_options_payload(
@@ -286,6 +442,7 @@ def build_model_options_payload(
     explicit_only: bool = False,
     include_unconfigured: bool = False,
     refresh: bool = False,
+    include_pricing: bool = True,
 ) -> dict:
     """Build the shared API-server/dashboard/TUI model-options payload.
 
@@ -296,6 +453,13 @@ def build_model_options_payload(
       endpoints do not block the picker
     - explicit refresh: probe every custom provider while busting the model
       cache so live catalogs repopulate fully
+
+    ``include_pricing`` (default True) gates the per-provider live pricing +
+    Nous free-tier enrichment. Pricing fetches are sequential network calls
+    (8s timeout each) and dominate cold-load latency; surfaces that never
+    render pricing (e.g. the desktop Model settings page) pass False to skip
+    them entirely. Capabilities stay on regardless — they are cheap CPU
+    lookups against the cached models.dev registry.
     """
     refresh = bool(refresh)
     return build_models_payload(
@@ -304,7 +468,7 @@ def build_model_options_payload(
         include_unconfigured=bool(include_unconfigured),
         picker_hints=True,
         canonical_order=True,
-        pricing=True,
+        pricing=bool(include_pricing),
         capabilities=True,
         featured=True,
         refresh=refresh,

@@ -160,6 +160,8 @@ export interface CustomEndpoint {
   base_url: string
   context_length?: null | number
   discover_models: boolean
+  /** Canonical activation flag from `providers.<id>.enabled` (default true). */
+  enabled?: boolean
   has_api_key: boolean
   id: string
   is_current?: boolean
@@ -182,12 +184,15 @@ export interface CustomEndpointsResponse {
 
 export interface CustomEndpointUpdate {
   api_key?: string
+  /** Wire protocol (chat_completions | anthropic_messages) → backend `transport`. */
+  api_mode?: string
   base_url: string
   context_length?: number
   discover_models?: boolean
   id?: string
   make_default?: boolean
-  model: string
+  /** Optional: empty until the endpoint's models are discovered. */
+  model?: string
   models?: string[]
   name: string
 }
@@ -404,6 +409,17 @@ export interface ModelOptionProvider {
   key_env?: string
   /** True for providers defined via the user's `providers:` config block. */
   is_user_defined?: boolean
+  /** Activation state for the Provider Manager. Built-in providers are
+   *  disabled via `model.disabled_providers`; custom providers via an
+   *  `enabled: false` flag on the config entry. Defaults to true when absent.
+   *  The backend attaches this to every row; the manager uses it to show and
+   *  toggle provider-level activation (disabled providers still appear so the
+   *  user can re-enable them). */
+  enabled?: boolean
+  /** Per-model display name for custom providers, keyed by model id. Surfaced
+   *  from the user's `custom_providers[].models` `name` field so the manager
+   *  can show a friendly label instead of the raw model id. */
+  model_display_names?: Record<string, string>
   /** OpenAI-compatible endpoint for a user-defined provider. The backend
    *  exposes this as `api_url`; model assignments send it back as `base_url`
    *  so switching providers does not discard the selected local endpoint. */

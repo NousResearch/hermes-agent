@@ -299,6 +299,34 @@ class TestProfileScopedModel:
 
 
 
+    def test_model_options_include_pricing_flag(self, client, monkeypatch):
+        """Pricing enrichment is opt-out: default keeps it ON (pickers), and
+        ?include_pricing=0 skips the sequential per-provider pricing fetches
+        for surfaces (the desktop Model settings page) that never render it."""
+        calls = []
+
+        monkeypatch.setattr(
+            "hermes_cli.inventory.load_picker_context",
+            lambda: object(),
+        )
+
+        def _fake_build_models_payload(_ctx, **kwargs):
+            calls.append(kwargs)
+            return {"providers": [], "model": "", "provider": ""}
+
+        monkeypatch.setattr(
+            "hermes_cli.inventory.build_models_payload",
+            _fake_build_models_payload,
+        )
+
+        resp = client.get("/api/model/options")
+        assert resp.status_code == 200
+        assert calls[-1]["pricing"] is True
+
+        resp = client.get("/api/model/options", params={"include_pricing": "0"})
+        assert resp.status_code == 200
+        assert calls[-1]["pricing"] is False
+
     def test_model_info_unknown_profile_404(self, client, isolated_profiles):
         """Regression: the broad except used to convert the 404 into a 200
         with empty model info ("no model set" — silently wrong)."""

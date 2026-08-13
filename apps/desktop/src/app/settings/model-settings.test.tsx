@@ -29,7 +29,7 @@ let profileSwitchHandler: (() => void) | null = null
 
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: () => getGlobalModelInfo(),
-  getGlobalModelOptions: () => getGlobalModelOptions(),
+  getGlobalModelOptions: (opts?: unknown) => getGlobalModelOptions(opts),
   getAuxiliaryModels: () => getAuxiliaryModels(),
   getApiRequestProfile: () => 'default',
   getMoaModels: () => getMoaModels(),
@@ -114,6 +114,16 @@ describe('ModelSettings', () => {
     // "Nous" shows in both the trigger and the open list.
     expect((await screen.findAllByText('Nous')).length).toBeGreaterThan(0)
     expect(screen.queryByText(/DeepSeek/)).toBeNull()
+  })
+
+  it('opts out of pricing on mount (page never renders pricing)', async () => {
+    await renderModelSettings()
+
+    await waitFor(() =>
+      expect(getGlobalModelOptions).toHaveBeenCalledWith(
+        expect.objectContaining({ includePricing: false })
+      )
+    )
   })
 
   it.each(['custom', 'local', 'custom:lab'])(

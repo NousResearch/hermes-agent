@@ -950,6 +950,17 @@ export function deleteCustomEndpoint(id: string): Promise<CustomEndpointsRespons
   })
 }
 
+export function setCustomEndpointEnabled(
+  id: string,
+  enabled: boolean
+): Promise<CustomEndpointsResponse & { enabled?: boolean }> {
+  return window.hermesDesktop.api<CustomEndpointsResponse & { enabled?: boolean }>({
+    path: `/api/providers/custom-endpoints/${encodeURIComponent(id)}/enable`,
+    method: 'POST',
+    body: { enabled }
+  })
+}
+
 export function deleteEnvVar(key: string): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
     ...profileScoped(),
@@ -1598,6 +1609,11 @@ export function getGlobalModelOptions(opts?: {
   refresh?: boolean
   includeUnconfigured?: boolean
   explicitOnly?: boolean
+  /** Skip per-provider live pricing + Nous free-tier enrichment. Pricing
+   *  fetches are sequential network calls (8s timeout each) that dominate
+   *  cold-load latency; surfaces that never render pricing (e.g. the Model
+   *  settings page) pass false. Defaults to pricing ON for pickers. */
+  includePricing?: boolean
 }): Promise<ModelOptionsResponse> {
   const params = new URLSearchParams()
 
@@ -1613,10 +1629,51 @@ export function getGlobalModelOptions(opts?: {
     params.set('explicit_only', '1')
   }
 
+  // Only encode the opt-out; the backend defaults pricing to ON, so a missing
+  // param keeps every existing caller's request URL (and behavior) unchanged.
+  if (opts?.includePricing === false) {
+    params.set('include_pricing', '0')
+  }
+
   return window.hermesDesktop.api<ModelOptionsResponse>({
     ...profileScoped(),
     path: params.size > 0 ? `/api/model/options?${params.toString()}` : '/api/model/options',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+  })
+}
+
+export interface DiscoveredModel {
+  id: string
+  name: string
+}
+
+export interface DiscoverModelsResponse {
+  models: DiscoveredModel[]
+}
+
+/**
+ * Query a custom provider's standard `/models` endpoint and return its model
+ * list. Backed by `POST /api/model/discover` (and the `model.discover`
+ * JSON-RPC parity method). Discovery failures surface as a rejected promise
+ * carrying the backend's error message.
+ */
+export function discoverProviderModels(input: {
+  baseUrl: string
+  apiKey?: string
+  apiMode?: string
+  timeoutMs?: number
+}): Promise<DiscoverModelsResponse> {
+  return window.hermesDesktop.api<DiscoverModelsResponse>({
+    ...profileScoped(),
+    path: '/api/model/discover',
+    method: 'POST',
+    body: {
+      base_url: input.baseUrl,
+      api_key: input.apiKey ?? '',
+      api_mode: input.apiMode ?? 'chat_completions',
+      timeout: (input.timeoutMs ?? 20000) / 1000
+    },
+    timeoutMs: input.timeoutMs ?? 20000
   })
 }
 
@@ -1625,6 +1682,39 @@ export interface RecommendedDefaultModel {
   model: string
   /** True/false for Nous (free vs paid tier); null for other providers. */
   free_tier: boolean | null
+}
+
+/** Result of a custom-provider connection test (mirrors the web-UI
+ *  `testConnection` endpoint). `ok` is false on auth/timeout/network failure. */
+export interface ProviderConnectionTest {
+  ok: boolean
+  latency_ms?: number
+  error?: string
+}
+
+/**
+ * Test a custom provider's connectivity by hitting its /v1/models endpoint
+ * with the supplied credentials. Returns a structured result rather than
+ * throwing on a failed connection so the UI can show latency/error inline.
+ */
+export function testCustomProviderConnection(input: {
+  baseUrl: string
+  apiKey?: string
+  apiMode?: string
+  timeoutMs?: number
+}): Promise<ProviderConnectionTest> {
+  return window.hermesDesktop.api<ProviderConnectionTest>({
+    ...profileScoped(),
+    path: '/api/model/test-connection',
+    method: 'POST',
+    body: {
+      base_url: input.baseUrl,
+      api_key: input.apiKey ?? '',
+      api_mode: input.apiMode ?? 'chat_completions',
+      timeout: (input.timeoutMs ?? 8000) / 1000
+    },
+    timeoutMs: input.timeoutMs ?? 8000
+  })
 }
 
 // Recommended default model for a freshly-authenticated provider. Mirrors the

@@ -182,6 +182,29 @@ export function effectiveVisibleKeys(
   return next
 }
 
+/**
+ * Compute active/total model counts for every provider from the stored
+ * visibility set. Used by the Provider Manager nav to show `active/total`
+ * badges. A disabled provider (enabled === false) reports total only (the
+ * caller renders a "Disabled" pill instead). Returns a map keyed by slug.
+ */
+export function providerActiveCounts(
+  stored: Set<string> | null,
+  providers: readonly ModelOptionProvider[]
+): Record<string, { active: number; total: number }> {
+  const effective = effectiveVisibleKeys(stored, providers)
+  const out: Record<string, { active: number; total: number }> = {}
+
+  for (const provider of providers) {
+    const total = provider.models?.length ?? 0
+    const prefix = `${provider.slug}::`
+    const active = [...effective].filter(key => key.startsWith(prefix) && !isProviderSentinel(key)).length
+    out[provider.slug] = { active, total }
+  }
+
+  return out
+}
+
 /** Compute the next persisted visibility set when one model row is toggled.
  *  Seeds from `resolveVisibleKeys` (NOT `effectiveVisibleKeys`) so other
  *  providers' hide-all sentinels survive the persist. When the last visible

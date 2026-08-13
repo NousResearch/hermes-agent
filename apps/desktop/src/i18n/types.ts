@@ -303,6 +303,7 @@ export interface Translations {
       about: string
       billing: string
       notifications: string
+      providersManager: string,
       plugins: string
     }
     plugins: {
@@ -2067,6 +2068,86 @@ export interface Translations {
     search: string
     noAuthenticatedProviders: string
     addProvider: string
+  }
+
+  providerManager: {
+    title: string
+    description: string
+    filters: string
+    providerListHeading: string
+    modelsHeading: string
+    searchPlaceholder: string
+    noProviders: string
+    noModels: string
+    activeCount: (n: number) => string
+    allHidden: string
+    addProvider: string
+    selectProviderHint: string
+    editProvider: string
+    providerName: string
+    providerNamePlaceholder: string
+    providerId: string
+    baseUrl: string
+    baseUrlPlaceholder: string
+    apiKey: string
+    apiKeyPlaceholder: string
+    editProviderCredentials: string
+    baseUrlOverride: string
+    baseUrlOverridePlaceholder: string
+    apiKeyDescription: string
+    configureProvider: string
+    configureDescription: string
+    saveAndDiscover: string
+    apiKeyRequired: string
+    configuring: string
+    apiMode: string
+    apiModeChat: string
+    apiModeAnthropic: string
+    models: string
+    modelsPlaceholder: string
+    confirmDelete: string
+    nameExists: string
+    invalidUrl: string
+    enableProvider: string
+    disableProvider: string
+    discoverModels: string
+    updateList: string
+    addModel: string
+    discoveryFailed: string
+    discoveryEmpty: string
+    listRefreshed: string
+    discoverySuccess: (n: number) => string
+    manualModelTitle: string
+    manualModelDescription: string
+    modelId: string
+    modelIdPlaceholder: string
+    modelName: string
+    modelNamePlaceholder: string
+    advancedParameters: string
+    advancedParametersEmpty: string
+    modelIdRequired: string
+    modelExists: string
+    groupLocal: string
+    groupConfigured: string
+    groupUnconfigured: string
+    searchProviders: string
+    noProvidersMatch: string
+    filterVision: string
+    filterMultimodal: string
+    filterReasoning: string
+    filterFast: string
+    sortActiveFirst: string
+    sortAz: string
+    sortZa: string
+    groupByLetter: string
+    activeOnly: string
+    activateAll: string
+    deactivateAll: string
+    testConnection: string
+    testOk: (ms: number) => string
+    testFailed: string
+    unavailable: string
+    activeOfTotal: (active: number, total: number) => string
   }
 
   shell: {

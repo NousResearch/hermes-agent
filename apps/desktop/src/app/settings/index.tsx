@@ -10,6 +10,7 @@ import {
   Archive,
   BarChart3,
   Bell,
+  Box,
   Download,
   Globe,
   Info,
@@ -40,6 +41,7 @@ import { KeybindSettings } from './keybind-settings'
 import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
 import { NotificationsSettings } from './notifications-settings'
 import { PluginsSettings } from './plugins-settings'
+import { ProviderModelManager } from './provider-model-manager'
 import { PROVIDER_VIEWS, ProvidersSettings, type ProviderView } from './providers-settings'
 import { SessionsSettings } from './sessions-settings'
 import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
@@ -47,6 +49,7 @@ import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
   'providers',
+  'providermanager',
   'gateway',
   'keybinds',
   'keys',
@@ -200,6 +203,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         onSelect: () => setActiveView('providers')
       },
       {
+        active: activeView === 'providermanager',
+        icon: Box,
+        id: 'providermanager',
+        label: t.settings.nav.providersManager,
+        onSelect: () => setActiveView('providermanager')
+      },
+      {
         active: activeView === 'gateway',
         icon: Globe,
         id: 'gateway',
@@ -294,7 +304,7 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
   )
 
   return (
-    <OverlayView closeLabel={t.settings.closeSettings} onClose={onClose}>
+    <OverlayView closeLabel={t.settings.closeSettings} onClose={onClose} rootClassName="mx-auto max-w-[92rem]">
       <OverlaySplitLayout>
         <OverlayNav footer={navFooter} groups={navGroups} />
 
@@ -328,6 +338,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             <NotificationsSettings />
           ) : activeView === 'billing' ? (
             <BillingSettings />
+          ) : activeView === 'providermanager' ? (
+            <ProviderModelManager />
           ) : activeView === 'plugins' ? (
             <PluginsSettings />
           ) : (

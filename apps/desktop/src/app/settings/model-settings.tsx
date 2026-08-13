@@ -232,7 +232,9 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
     try {
       const [modelInfo, modelOptions, auxiliaryModels, moaModels] = await Promise.all([
         getGlobalModelInfo(),
-        getGlobalModelOptions(),
+        // This page never renders pricing/free-tier — skip the sequential
+        // per-provider pricing fetches that otherwise dominate cold-load time.
+        getGlobalModelOptions({ includePricing: false }),
         getAuxiliaryModels(),
         getMoaModels().catch(() => null)
       ])
@@ -567,7 +569,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         nextModel = ''
       }
 
-      const options = await getGlobalModelOptions()
+      const options = await getGlobalModelOptions({ includePricing: false })
 
       if (profileEpoch.current !== epoch) {
         return

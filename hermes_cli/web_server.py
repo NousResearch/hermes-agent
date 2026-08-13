@@ -63,10 +63,12 @@ from hermes_cli.config import (
     DEFAULT_CONFIG,
     OPTIONAL_ENV_VARS,
     clear_model_endpoint_credentials,
+    get_compatible_custom_providers,
     get_config_path,
     get_env_path,
     get_hermes_home,
     get_process_hermes_home,
+    is_provider_enabled,
     load_config,
     load_env,
     read_raw_config,
@@ -1343,6 +1345,7 @@ from hermes_cli.web_models import (  # noqa: F401
     MemoryProviderConfigUpdate,
     MemoryProviderSetupRequest,
     CustomEndpointUpdate,
+    CustomEndpointEnable,
     MessagingPlatformUpdate,
     TelegramOnboardingStart,
     TelegramOnboardingApply,
@@ -6372,6 +6375,7 @@ async def get_model_options(
     refresh: bool = False,
     include_unconfigured: bool = False,
     explicit_only: bool = False,
+    include_pricing: bool = True,
 ):
     """Return authenticated providers + their curated model lists.
 
@@ -6387,21 +6391,37 @@ async def get_model_options(
     ``refresh`` busts the per-provider model-id disk cache so every row
     re-fetches its live catalog — used by the picker's explicit "Refresh
     Models" control. Normal opens leave it false to stay on the 1h cache.
+
+    ``include_pricing`` (default true) gates the per-provider live pricing +
+    Nous free-tier enrichment. Pricing fetches are sequential network calls
+    (8s timeout each) that dominate cold-load latency; surfaces that never
+    render pricing (e.g. the desktop Model settings page) pass false to skip
+    them. Picker/onboarding consumers leave it true.
     """
     try:
-        from hermes_cli.inventory import build_model_options_payload, load_picker_context
+        from hermes_cli.inventory import (
+            attach_provider_enabled_flags,
+            build_model_options_payload,
+            load_picker_context,
+        )
 
         def _build_payload_scoped() -> dict:
             # Keep the profile override inside the worker thread so the full
             # sync picker build (config load, pricing, refresh probes) runs
             # off the event loop under the requested profile.
             with _profile_scope(profile):
-                return build_model_options_payload(
+                payload = build_model_options_payload(
                     load_picker_context(),
                     explicit_only=bool(explicit_only),
                     include_unconfigured=bool(include_unconfigured),
                     refresh=bool(refresh),
+                    include_pricing=bool(include_pricing),
                 )
+                # Annotate each row with the authoritative enablement flag from
+                # the canonical ``providers.<name>.enabled`` config, so the
+                # desktop Provider Manager reads ONE enablement state through
+                # this REST catalog (mirrors the TUI ``model.options`` handler).
+                return attach_provider_enabled_flags(payload, load_config())
 
         return await run_in_threadpool(_build_payload_scoped)
     except HTTPException:
@@ -6409,6 +6429,36 @@ async def get_model_options(
     except Exception:
         _log.exception("GET /api/model/options failed")
         raise HTTPException(status_code=500, detail="Failed to list model options")
+
+
+class ModelDiscoverRequest(BaseModel):
+    base_url: str
+    api_key: Optional[str] = None
+    api_mode: str = "chat_completions"
+
+
+@app.post("/api/model/discover")
+def post_model_discover(body: ModelDiscoverRequest, profile: Optional[str] = None):
+    """Discover models from a provider's standard ``/models`` endpoint.
+
+    Profile-scoped so the call runs against the same HERMES_HOME the desktop
+    UI is managing. Returns ``{"models": [{"id", "name"}, ...]}``. A failed
+    discovery (non-200 / network / parse) maps to 502 with the underlying
+    message so the UI can surface it.
+    """
+    try:
+        from hermes_cli.inventory import ModelDiscoveryError, discover_provider_models
+
+        with _profile_scope(profile):
+            models = discover_provider_models(body.base_url, body.api_key, body.api_mode)
+        return {"models": models}
+    except ModelDiscoveryError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/model/discover failed")
+        raise HTTPException(status_code=500, detail="Model discovery failed")
 
 
 @app.get("/api/model/recommended-default")
@@ -7372,8 +7422,48 @@ def _custom_endpoint_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 "has_api_key": has_api_key,
                 "api_key_preview": api_key_preview,
                 "is_current": endpoint_id == current_provider,
+                # Canonical activation flag (providers.<id>.enabled) so the
+                # desktop Provider Manager reads one authoritative enablement
+                # state from this REST surface, including disabled endpoints.
+                "enabled": is_provider_enabled(raw_entry),
                 "source": "providers",
             })
+
+    # Compatibility view: also surface legacy `custom_providers` entries that
+    # have no corresponding `providers.<id>` block. The model-options catalog
+    # (get_compatible_custom_providers) still lists these with a `custom:<name>`
+    # slug, so the desktop Provider Manager — which sources its custom providers
+    # from THIS endpoint — must see them too, or edit / test-connection / enable
+    # fail with "Unknown custom provider". The keyed `providers:` row wins on id
+    # collision (deduped below).
+    seen_ids = {e["id"] for e in endpoints}
+    for legacy in get_compatible_custom_providers(cfg):
+        if not isinstance(legacy, dict):
+            continue
+        legacy_id = _custom_endpoint_id(legacy.get("name") or legacy.get("provider_key") or "")
+        if not legacy_id or legacy_id in seen_ids:
+            continue
+        legacy_base_url = str(legacy.get("base_url") or "").strip()
+        if not legacy_base_url:
+            continue
+        legacy_models = _models_from_custom_endpoint_entry(legacy)
+        legacy_model = str(legacy.get("model") or legacy.get("default_model") or (legacy_models[0] if legacy_models else ""))
+        has_api_key, api_key_preview = _api_key_display(legacy)
+        seen_ids.add(legacy_id)
+        endpoints.append({
+            "id": legacy_id,
+            "name": str(legacy.get("name") or legacy_id),
+            "base_url": legacy_base_url,
+            "model": legacy_model,
+            "models": legacy_models,
+            "context_length": legacy.get("context_length"),
+            "discover_models": bool(legacy.get("discover_models", True)),
+            "has_api_key": has_api_key,
+            "api_key_preview": api_key_preview,
+            "is_current": legacy_id == current_provider,
+            "enabled": is_provider_enabled(legacy),
+            "source": "custom_providers",
+        })
 
     if current_provider.lower() == "custom" and current_base_url and not any(e["id"] == "custom" for e in endpoints):
         has_api_key, api_key_preview = _api_key_display(model_cfg)
@@ -7437,8 +7527,9 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     parsed = urllib.parse.urlparse(base_url)
     if not parsed.scheme or not parsed.netloc:
         raise HTTPException(status_code=400, detail="base_url must include scheme and host")
-    if not model:
-        raise HTTPException(status_code=400, detail="model required")
+    # ``model`` is optional: the desktop Provider Manager creates the endpoint
+    # first, then discovers its models. An empty model just means "no default
+    # selected yet" — the endpoint is still valid and listable.
 
     providers = cfg.get("providers")
     if not isinstance(providers, dict):
@@ -7458,9 +7549,14 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     entry.update({
         "name": name,
         "base_url": base_url,
-        "model": model,
         "discover_models": bool(body.discover_models),
     })
+    if model:
+        entry["model"] = model
+    # Carry the wire protocol onto the canonical ``transport`` key the runtime
+    # resolver reads (``api_mode`` is the desktop/legacy field name).
+    if body.api_mode:
+        entry["transport"] = str(body.api_mode).strip()
     # Same for the model map: merge rather than replace, so existing models
     # keep their context lengths. ``body.models`` is the catalogue the panel's
     # Test button already discovered — without it only the one hand-typed
@@ -7478,7 +7574,8 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     entry["models"] = models_map
     if body.context_length and body.context_length > 0:
         entry["context_length"] = int(body.context_length)
-        entry["models"][model]["context_length"] = int(body.context_length)
+        if model and model in entry["models"]:
+            entry["models"][model]["context_length"] = int(body.context_length)
 
     # API keys never belong in config.yaml (#69449). Write to .env and
     # reference it via ``key_env`` — the same indirection built-in providers
@@ -7612,6 +7709,43 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
     except Exception:
         _log.exception("DELETE /api/providers/custom-endpoints/%s failed", endpoint_id)
         raise HTTPException(status_code=500, detail="Failed to delete custom endpoint")
+
+
+@app.post("/api/providers/custom-endpoints/{endpoint_id}/enable")
+def set_custom_endpoint_enabled(endpoint_id: str, body: CustomEndpointEnable):
+    """Toggle a custom endpoint's activation via ``providers.<id>.enabled``.
+
+    This is the canonical enablement control the runtime resolver and model
+    picker honour (``is_provider_enabled``). ``enabled: true`` removes the key
+    (absence == enabled, keeping config clean); ``false`` sets it so the
+    endpoint is hidden from the picker and reported ``enabled: false`` by the
+    model-options catalog. The desktop Provider Manager drives this to
+    activate/deactivate a custom provider.
+    """
+    try:
+        cfg = load_config()
+        provider_key = _custom_endpoint_id(endpoint_id)
+        providers = cfg.get("providers")
+        entry = providers.get(provider_key) if isinstance(providers, dict) else None
+        if not isinstance(entry, dict):
+            raise HTTPException(status_code=404, detail="custom endpoint not found")
+        if body.enabled:
+            entry.pop("enabled", None)
+        else:
+            entry["enabled"] = False
+        providers[provider_key] = entry
+        cfg["providers"] = providers
+        save_config(cfg)
+        response = _custom_endpoint_response(cfg)
+        response["ok"] = True
+        response["id"] = provider_key
+        response["enabled"] = bool(body.enabled)
+        return response
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/providers/custom-endpoints/%s/enable failed", endpoint_id)
+        raise HTTPException(status_code=500, detail="Failed to toggle custom endpoint")
 
 
 @app.post("/api/providers/custom-endpoints/validate")

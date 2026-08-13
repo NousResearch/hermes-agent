@@ -464,4 +464,34 @@ describe('Hermes REST helpers', () => {
       })
     )
   })
+
+  it('keeps pricing on by default (no include_pricing param)', async () => {
+    await getGlobalModelOptions()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/model/options?explicit_only=1'
+      })
+    )
+  })
+
+  it('encodes the pricing opt-out when includePricing is false', async () => {
+    await getGlobalModelOptions({ includePricing: false })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/model/options?explicit_only=1&include_pricing=0'
+      })
+    )
+  })
+
+  it('does not encode include_pricing when explicitly true', async () => {
+    await getGlobalModelOptions({ includePricing: true })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/model/options?explicit_only=1'
+      })
+    )
+  })
 })

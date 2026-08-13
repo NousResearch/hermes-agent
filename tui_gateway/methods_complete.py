@@ -426,9 +426,42 @@ def _(rid, params: dict) -> dict:
             include_unconfigured=bool(params.get("include_unconfigured")),
             refresh=bool(params.get("refresh")),
         )
+        # Attach an `enabled` flag to every provider row so the desktop
+        # Provider Manager can display + toggle activation without a second
+        # endpoint. Built-in providers are disabled via `model.disabled_providers`;
+        # custom providers via an `enabled: false` flag on the config entry.
+        # We do NOT drop disabled rows here — the manager must still show them
+        # so the user can re-enable them.
+        from hermes_cli.config import load_config as _load_cfg
+        from hermes_cli.inventory import attach_provider_enabled_flags
+
+        payload = attach_provider_enabled_flags(payload, _load_cfg())
+
         return _ok(rid, payload)
     except Exception as e:
         return _err(rid, 5033, str(e))
+
+
+@method("model.discover")
+def _(rid, params: dict) -> dict:
+    try:
+        from hermes_cli.inventory import (
+            discover_provider_models,
+            ModelDiscoveryError,
+        )
+
+        models = discover_provider_models(
+            base_url=str(params.get("base_url", "")),
+            api_key=str(params.get("api_key", "")) or None,
+            api_mode=str(params.get("api_mode", "chat_completions")),
+            timeout=float(params.get("timeout", 20)),
+        )
+        return _ok(rid, {"models": models})
+    except ModelDiscoveryError as e:
+        # Mirrors the REST surface (POST /api/model/discover -> 502).
+        return _err(rid, 5020, str(e))
+    except Exception as e:
+        return _err(rid, 5021, str(e))
 
 
 @method("model.save_key")

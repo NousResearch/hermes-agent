@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import os
 import re
-from typing import Any, List, Tuple
+from typing import Any, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -247,3 +247,38 @@ def _split_chat_id(chat_id: str) -> Tuple[str, str]:
         kind, _, target = chat_id.partition(":")
         return kind, target
     return "private", chat_id
+
+
+# ── 权限分级 ───────────────────────────────────────────────────────────
+def classify_user_role(user_id: str, admin_users: set) -> str:
+    """按 user_id 判定角色：'admin' | 'member'。
+
+    管理员集合为空时视为无管理员（安全侧：全员 member）；空 user_id
+    一律 member。群内非管理员成员 = member（受限），私聊 member 直接拒。
+    """
+    if not user_id:
+        return "member"
+    return "admin" if user_id in (admin_users or set()) else "member"
+
+
+# 普通用户会话出站回复的敏感意图关键词（软限制兜底审计用，非硬拦截）
+SENSITIVE_PATTERNS = [
+    r"删(除|掉|了)\b|rm\s+-rf|dd\s+if=",
+    r"执行|运行|命令|终端|shell|sh\s+-c|bash\s+-c",
+    r"重启|关机|关闭服务|systemctl|kill\b|reboot",
+    r"打开.*灯|关灯|空调|窗帘|插座|摄像头|门锁|热水器",   # Home Assistant 设备控制
+    r"发送到微信|发微信|发到QQ群|发邮件|发短信",          # 跨平台消息
+    r"cron|定时任务|计划任务",
+    r"改(配置|文件|设置)|编辑\s*/etc|写入|覆盖.*文件",
+]
+
+
+def scan_sensitive(text: str) -> Optional[str]:
+    """命中敏感操作关键词返回首个匹配片段，否则 None。"""
+    if not text:
+        return None
+    for pat in SENSITIVE_PATTERNS:
+        m = re.search(pat, text)
+        if m:
+            return m.group(0)
+    return None

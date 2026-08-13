@@ -188,6 +188,16 @@ class OneBotAdapter(BasePlatformAdapter):
     # attribute to split long responses into multiple messages.
     MAX_MESSAGE_LENGTH: int = MAX_MESSAGE_LENGTH
 
+    @property
+    def enforces_own_access_policy(self) -> bool:
+        """本 adapter 在入站自行执行访问策略（dm/group allowlist + 角色分级）。
+
+        gateway authz 在 effective policy 为 allowlist 时信任 adapter 的
+        名单决策（按群号放行群成员、私聊仅管理员），不再用 env 白名单
+        二次拦截放行的群消息。
+        """
+        return True
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform("onebot"))
         extra = config.extra or {}
@@ -223,9 +233,19 @@ class OneBotAdapter(BasePlatformAdapter):
         self._allow_from = {str(v) for v in (extra.get("allow_from") or [])}
         self._group_allow_from = {str(v) for v in (extra.get("group_allow_from") or [])}
 
+        # 权限分级：管理员集合（extra.admin_users 显式 > 回退 ONEBOT_ALLOWED_USERS）
+        self._admin_users = {str(v) for v in (extra.get("admin_users") or [])}
+        if not self._admin_users:
+            self._admin_users = {
+                u.strip()
+                for u in os.environ.get("ONEBOT_ALLOWED_USERS", "").split(",")
+                if u.strip()
+            }
+
         # Runtime state
         self._ws: Optional[Any] = None  # live OneBot connection (read/write)
         self._self_id: Optional[str] = None  # bot's own QQ, learned from events
+        self._member_chats: set = set()  # 普通用户受限会话（出站敏感审计用）
         self._nicknames: Dict[str, str] = {}  # chat_id -> last known user nickname
         self._pending_actions: Dict[str, asyncio.Future] = {}
         self._runner: Optional[Any] = None  # reverse-mode web runner
@@ -499,6 +519,14 @@ class OneBotAdapter(BasePlatformAdapter):
             else:
                 return
 
+            # ── 权限分级（2026-08-13）────────────────────────────────
+            # admin（extra.admin_users / ONEBOT_ALLOWED_USERS）：全权限
+            # member（群内其他成员）：受限——注入标记 + 禁斜杠命令；私聊直接拒
+            role = _load_onebot_utils().classify_user_role(user_id, self._admin_users)
+            if chat_type == "dm" and role != "admin":
+                logger.info("[onebot] dm from non-admin user %s rejected", user_id)
+                return
+
             # 记录最近发言者昵称（文字图顶栏 "To XXX" 用）
             if nickname:
                 self._nicknames[chat_id] = nickname
@@ -517,6 +545,28 @@ class OneBotAdapter(BasePlatformAdapter):
                 rm = _load_onebot_utils()._CQ_REPLY_RE.search(raw)
                 if rm:
                     reply_id = rm.group(1)
+
+            # 普通用户斜杠命令拦截（/new /model /help /reset 等全禁）
+            # 复用 get_command 同款规则：首词 /xxx 且命令名不含 /（排除路径误判）
+            # @提及会拼在文本前（如 "@2512172957/help"），先剥离开头 at 再判
+            if role == "member" and text:
+                _probe = re.sub(r"^@\d+\s*", "", text.lstrip())
+                if _probe.startswith("/"):
+                    cmd = _probe.split(maxsplit=1)[0][1:].lower()
+                    if cmd and "/" not in cmd:
+                        logger.info(
+                            "[onebot] restricted user %s slash-command blocked: /%s",
+                            user_id, cmd,
+                        )
+                        return  # 事件不构造，基类/run.py 无从分发
+
+            # 普通用户会话记录到出站敏感审计集合
+            if role == "member":
+                self._member_chats.add(chat_id)
+
+            # 群聊普通用户：注入受限标记（agent 侧软限制依据）
+            if role == "member" and chat_type == "group" and text:
+                text = f"[受限用户:仅问答]\n{text}"
 
             # 用户引用了一条消息时, 从原消息取图片和文本（引用就是给 agent 看的）
             if reply_id:
@@ -577,7 +627,8 @@ class OneBotAdapter(BasePlatformAdapter):
             return False
         if policy == "allowlist":
             return user_id in self._allow_from
-        return True
+        # open / pairing 策略下也仅管理员可用私聊（普通用户私聊拒绝）
+        return user_id in self._admin_users
 
     def _group_allowed(self, group_id: str) -> bool:
         policy = self._group_policy
@@ -978,6 +1029,14 @@ class OneBotAdapter(BasePlatformAdapter):
                 retryable=True,
             )
         kind, target = _split_chat_id(chat_id)
+        # 普通用户会话出站敏感意图审计（软限制兜底观测，非硬拦截）
+        if chat_id in getattr(self, "_member_chats", set()):
+            hit = _load_onebot_utils().scan_sensitive(content or "")
+            if hit:
+                logger.warning(
+                    "[onebot] restricted-user chat %s reply contains sensitive intent: %r",
+                    chat_id, hit,
+                )
         try:
             params: Dict[str, Any] = {}
             if kind == "group":
@@ -1463,6 +1522,12 @@ def register(ctx) -> None:
         emoji="🐧",
         platform_hint=(
             "You are chatting via QQ (OneBot). Plain text only — no markdown. "
-            "Group chats: users @you or reply to you. Keep replies concise."
+            "Group chats: users @you or reply to you. Keep replies concise. "
+            "Group messages from restricted users carry a [受限用户:仅问答] prefix: "
+            "only answer quick questions / public info / image analysis / group "
+            "summaries for them. NEVER execute file operations, terminal commands, "
+            "config changes, service restarts, Home Assistant device control, "
+            "cross-platform sends, or cron operations for restricted users — "
+            "politely refuse and explain no permission."
         ),
     )

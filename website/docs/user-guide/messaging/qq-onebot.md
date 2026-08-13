@@ -135,6 +135,38 @@ This relies on the gateway marking commentary sends with `interim: True` in the 
 
 `onebot_utils.py` (pure helpers: CQ parsing, splitting, markdown stripping, emoji map) and `t2i_render.py` (text-image renderer) are hot-reloaded on every use: the adapter stats the file mtime and calls `importlib.reload` when it changed, so style/rule tweaks apply without a gateway restart. Changes to `adapter.py` itself still require a restart.
 
+## Access tiers (admin / restricted member)
+
+Group chats can be opened to all members of allowlisted groups while keeping
+privileged operations admin-only. The adapter enforces its own access policy
+(`enforces_own_access_policy`), so the gateway trusts its allowlist decisions.
+
+| Role | Who | Group @ | DM | Capabilities |
+|---|---|---|---|---|
+| admin | `extra.admin_users` (falls back to `ONEBOT_ALLOWED_USERS`) | full | allowed | everything incl. slash commands |
+| member | any other user in an allowlisted group | restricted | rejected | quick Q&A, image analysis, group summaries only |
+| unauthorized | outside allowlisted groups / DM allowlist | blocked | rejected (pairing disabled) | — |
+
+Configuration (`platforms.onebot.extra`):
+
+```yaml
+dm_policy: allowlist          # DM only for allow_from (pairing entry closed)
+allow_from: [<admin_qq>]
+group_policy: allowlist       # open groups by id
+group_allow_from: [<group_id>]
+admin_users: [<admin_qq>]     # optional; falls back to ONEBOT_ALLOWED_USERS
+```
+
+Enforcement points:
+- member group messages get a `[受限用户:仅问答]` text prefix so the agent
+  applies the soft restriction (quick Q&A only, no file/terminal/config/HA/
+  cross-platform/cron actions — declared in the platform hint)
+- member slash commands (`/new`, `/model`, `/help`, …) are dropped before a
+  `MessageEvent` is constructed; path-like text (`/tmp/x`) is not affected
+- member DMs are rejected (no pairing flow)
+- outbound replies to member chats are scanned against sensitive-intent
+  keywords and logged with a WARNING (audit, not hard blocking)
+
 ## Notes
 
 - Outbound messages use the OneBot segment-array format (not CQ-code strings) — required for NapCat's message handling.

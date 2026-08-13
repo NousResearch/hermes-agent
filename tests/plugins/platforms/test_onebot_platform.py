@@ -413,7 +413,7 @@ async def test_reverse_ws_round_trip(monkeypatch) -> None:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
 
-    adapter = _make_adapter(host="127.0.0.1", port=port)
+    adapter = _make_adapter(host="127.0.0.1", port=port, admin_users=[10001])
     assert await adapter.connect()
     try:
         received = []
@@ -496,7 +496,7 @@ async def test_reverse_ws_round_trip(monkeypatch) -> None:
                 await asyncio.sleep(0.15)
                 assert len(received) == before + 1
                 ev = received[-1]
-                assert ev.text == "@2512172957 在吗"
+                assert ev.text.endswith("@2512172957 在吗")
                 assert ev.source.chat_id == "group:888888"
                 assert ev.source.chat_type == "group"
                 assert ev.source.user_name == "卡"  # group card preferred
@@ -625,3 +625,179 @@ def test_loop_merge_single_interim_does_not_merge(monkeypatch) -> None:
     actions = [p["action"] for p in ws.sent]
     assert "send_forward_msg" not in actions
     assert "delete_msg" not in actions
+
+
+# ---------------------------------------------------------------------------
+# 权限分级（role classification + sensitive scan）
+# ---------------------------------------------------------------------------
+
+
+def test_classify_user_role():
+    from plugins.platforms.onebot.onebot_utils import classify_user_role
+
+    assert classify_user_role("841859784", {"841859784"}) == "admin"
+    assert classify_user_role("12345", {"841859784"}) == "member"
+    assert classify_user_role("12345", set()) == "member"   # 空=全员 member（安全侧）
+    assert classify_user_role("", {"841859784"}) == "member"  # 空 id 安全侧
+
+
+def test_scan_sensitive():
+    from plugins.platforms.onebot.onebot_utils import scan_sensitive
+
+    assert scan_sensitive("帮我删除 /tmp/x 文件") is not None   # 删除文件
+    assert scan_sensitive("执行 rm -rf /") is not None          # 终端命令
+    assert scan_sensitive("帮我重启 hermes-gateway") is not None  # 重启服务
+    assert scan_sensitive("打开客厅灯") is not None              # HA 控制
+    assert scan_sensitive("发送到微信告诉 M") is not None        # 跨平台
+    assert scan_sensitive("今天天气怎么样") is None               # 正常问答
+    assert scan_sensitive("") is None
+    assert scan_sensitive(None) is None
+
+
+def test_member_group_message_gets_restricted_prefix(monkeypatch) -> None:
+    """群聊普通用户消息注入 [受限用户] 前缀（软限制依据）。"""
+    adapter = _make_adapter(admin_users=[841859784])
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    captured: list = []
+
+    async def fake_handle_message(ev):
+        captured.append(ev)
+
+    adapter.handle_message = fake_handle_message  # type: ignore[method-assign]
+
+    async def run():
+        await adapter._process_message(
+            {
+                "message_type": "group",
+                "group_id": 492373722,
+                "user_id": 99999999,          # 非管理员
+                "message": [
+                    {"type": "at", "data": {"qq": adapter._self_id or "2512172957"}},
+                    {"type": "text", "data": {"text": "今天天气怎么样"}},
+                ],
+                "self_id": 2512172957,
+            }
+        )
+
+    asyncio.run(run())
+    assert captured, "member group message should be dispatched"
+    assert captured[0].text.startswith("[受限用户:仅问答]")
+
+
+def test_member_dm_rejected(monkeypatch) -> None:
+    """普通用户私聊直接丢弃（pairing 入口已关，事件不构造）。"""
+    adapter = _make_adapter(admin_users=[841859784])
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    captured: list = []
+
+    async def fake_handle_message(ev):
+        captured.append(ev)
+
+    adapter.handle_message = fake_handle_message  # type: ignore[method-assign]
+
+    async def run():
+        await adapter._process_message(
+            {
+                "message_type": "private",
+                "user_id": 99999999,
+                "message": [{"type": "text", "data": {"text": "你好"}}],
+                "self_id": 2512172957,
+            }
+        )
+
+    asyncio.run(run())
+    assert not captured, "non-admin DM must be dropped"
+
+
+def test_member_slash_command_blocked(monkeypatch) -> None:
+    """普通用户斜杠命令（/help /new 等）直接丢弃。"""
+    adapter = _make_adapter(admin_users=[841859784])
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    captured: list = []
+
+    async def fake_handle_message(ev):
+        captured.append(ev)
+
+    adapter.handle_message = fake_handle_message  # type: ignore[method-assign]
+
+    async def run():
+        await adapter._process_message(
+            {
+                "message_type": "group",
+                "group_id": 492373722,
+                "user_id": 99999999,
+                "message": [
+                    {"type": "at", "data": {"qq": "2512172957"}},
+                    {"type": "text", "data": {"text": "/help"}},
+                ],
+                "self_id": 2512172957,
+            }
+        )
+
+    asyncio.run(run())
+    assert not captured, "member slash command must be dropped"
+
+
+def test_member_path_text_not_blocked(monkeypatch) -> None:
+    """普通用户含路径的文本（/tmp/x 等）不误伤（命令名含 / 即非命令）。"""
+    adapter = _make_adapter(admin_users=[841859784])
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    captured: list = []
+
+    async def fake_handle_message(ev):
+        captured.append(ev)
+
+    adapter.handle_message = fake_handle_message  # type: ignore[method-assign]
+
+    async def run():
+        await adapter._process_message(
+            {
+                "message_type": "group",
+                "group_id": 492373722,
+                "user_id": 99999999,
+                "message": [
+                    {"type": "at", "data": {"qq": "2512172957"}},
+                    {"type": "text", "data": {"text": "看看 /tmp/x 里的内容"}},
+                ],
+                "self_id": 2512172957,
+            }
+        )
+
+    asyncio.run(run())
+    assert captured, "path text is not a slash command, must pass through"
+    assert captured[0].text.startswith("[受限用户:仅问答]")
+
+
+def test_admin_group_message_no_prefix(monkeypatch) -> None:
+    """管理员群聊消息不注入受限标记，斜杠命令放行。"""
+    adapter = _make_adapter(admin_users=[841859784])
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    captured: list = []
+
+    async def fake_handle_message(ev):
+        captured.append(ev)
+
+    adapter.handle_message = fake_handle_message  # type: ignore[method-assign]
+
+    async def run():
+        await adapter._process_message(
+            {
+                "message_type": "group",
+                "group_id": 492373722,
+                "user_id": 841859784,
+                "message": [
+                    {"type": "at", "data": {"qq": "2512172957"}},
+                    {"type": "text", "data": {"text": "/new"}},
+                ],
+                "self_id": 2512172957,
+            }
+        )
+
+    asyncio.run(run())
+    assert captured, "admin slash command must be dispatched"
+    assert not captured[0].text.startswith("[受限用户")

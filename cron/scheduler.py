@@ -3138,6 +3138,13 @@ def _guard_job_credential_exfil(job: dict) -> None:
 BLOCKED_CONFIG_MARKER = "[blocked_config]"
 BLOCKED_CONFIG_SILENT_MARKER = "[blocked_config:silent]"
 
+# Marker prefix for a #44585 drift-guard skip. Same alert-once contract as
+# blocked_config: run_one_job keys off it to record last_status and the
+# ``:silent`` variant means "already alerted on a previous tick — do not
+# deliver again" (the drift_alerted bit on the job record, #73506 shape).
+DRIFT_SKIP_MARKER = "[drift_skip]"
+DRIFT_SKIP_SILENT_MARKER = "[drift_skip:silent]"
+
 
 def _cron_preflight_enabled(cfg: dict) -> bool:
     """Whether cron pre-dispatch configuration validation is enabled.
@@ -4194,13 +4201,30 @@ def run_job(
                     _changes,
                     job_id,
                 )
+                # Alert-once (#73506 shape): persist the drift_alerted bit so
+                # only the FIRST drifted tick delivers; run_one_job suppresses
+                # delivery on the silent marker. mark_job_run clears the bit
+                # when a run succeeds (drift healed), re-arming the alert.
+                _drift_already_alerted = False
+                try:
+                    from cron.jobs import mark_drift_alerted
+
+                    _drift_already_alerted = mark_drift_alerted(job_id)
+                except Exception:
+                    pass  # fail open: better a duplicate alert than none
+                _drift_marker = (
+                    DRIFT_SKIP_SILENT_MARKER if _drift_already_alerted
+                    else DRIFT_SKIP_MARKER
+                )
                 raise RuntimeError(
-                    f"Skipped to prevent unintended spend: global inference config "
-                    f"drifted since this job was created ({_changes}), and this job "
-                    f"is unpinned. No inference call was made. To run on the new "
-                    f"config, pin it explicitly: `cronjob action=update "
-                    f"job_id={job_id} provider=<provider> model=<model>` "
-                    f"(or pin the original values to keep them). See #44585."
+                    f"{_drift_marker} Skipped to prevent unintended spend: global "
+                    f"inference config drifted since this job was created "
+                    f"({_changes}), and this job is unpinned. No inference call "
+                    f"was made. To run on the new config, pin it explicitly: "
+                    f"`cronjob action=update job_id={job_id} provider=<provider> "
+                    f"model=<model>` (or pin the original values to keep them). "
+                    f"This alert is sent once; the job stays skipped until the "
+                    f"config is pinned or restored. See #44585."
                 )
 
         fallback_model = get_fallback_chain(_cfg) or None
@@ -4828,6 +4852,15 @@ def run_one_job(
             blocked_config = blocked_config_silent or (
                 bool(error) and BLOCKED_CONFIG_MARKER in str(error)
             )
+            # Drift-guard skip (#44585): same alert-once contract as
+            # blocked_config — the silent marker means the operator already
+            # got the alert on a previous tick.
+            drift_skip_silent = (
+                bool(error) and DRIFT_SKIP_SILENT_MARKER in str(error)
+            )
+            drift_skip = drift_skip_silent or (
+                bool(error) and DRIFT_SKIP_MARKER in str(error)
+            )
             if blocked_config and not success:
                 # Blocked-config alert: bypass the generic failure summarizer
                 # (whose auth/timeout heuristics would mislabel this as a
@@ -4845,11 +4878,18 @@ def run_one_job(
                 )
             else:
                 deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+                if drift_skip and not success:
+                    # Drift-skip alert: strip the internal marker from the
+                    # user-facing text (the summarizer passes the message
+                    # through its generic tail).
+                    deliver_content = re.sub(
+                        r"\[drift_skip[^\]]*\]\s*", "", deliver_content
+                    ).strip()
             # Treat whitespace-only final responses the same as empty
             # responses: do not deliver a blank message, and let the
             # empty-response guard below mark the run as a soft failure.
             should_deliver = bool(deliver_content.strip())
-            if blocked_config_silent:
+            if blocked_config_silent or drift_skip_silent:
                 should_deliver = False
             unresolved_origin = False
             # Cron silence suppression — see _is_cron_silence_response.  Replaces the

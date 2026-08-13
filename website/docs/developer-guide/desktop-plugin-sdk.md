@@ -54,11 +54,15 @@ plugin, and fail to resolve in a disk plugin). Capability comes in tiers:
 | Mode | Where | Who | Build step |
 |------|-------|-----|------------|
 | **Disk** (recommended) | `$HERMES_HOME/desktop-plugins/<id>/plugin.js` | users, agents | none — plain ESM, loaded uncompiled |
+| **Unified package** | `$HERMES_HOME/plugins/<id>/desktop/plugin.js` | plugins that also ship agent-side code | none — same disk pipeline |
 | **Bundled** | `apps/desktop/src/plugins/<id>/plugin.tsx` | in-tree, shipped with the app | the app's own Vite build |
 
-Both take the same `HermesPlugin` contract, appear in **Settings → Plugins**, and
-enable/disable live. Everything on this page is written against the disk door
-(what you and the agent write); [Bundled plugins](#bundled-plugins) notes the two
+All three take the same `HermesPlugin` contract, appear in **Settings → Plugins**,
+and enable/disable live. A unified package is just the disk door scanning inside
+your agent plugin's folder — see
+[One package, both SDKs](#one-package-both-sdks). Everything on this page is
+written against the disk door (what you and the agent write);
+[Bundled plugins](#bundled-plugins) notes the two
 differences. No desktop plugins ship in the core tree today — reference demos
 live in the companion
 [`hermes-example-plugins`](https://github.com/NousResearch/hermes-example-plugins)
@@ -473,6 +477,42 @@ plugin reskin automatically with every theme.
 If your plugin needs server-side work, ship a Python `plugin_api.py` and reach it
 through `ctx.rest` / `ctx.socket` — a namespace scoped to your plugin **by
 construction**.
+
+### One package, both SDKs {#one-package-both-sdks}
+
+A feature that needs a desktop UI **and** agent-side code (a Python plugin, its
+backend routes, skills) doesn't have to ship as two co-dependent installs. The
+desktop app also scans `$HERMES_HOME/plugins/<id>/` — the regular agent-plugin
+root — for a `desktop/plugin.js`, and loads it through the exact same pipeline
+as the standalone disk door (hot reload included):
+
+```
+~/.hermes/plugins/<id>/           # ONE installable folder
+├── plugin.yaml                   # the agent half: tools, hooks, commands
+├── skills/…
+├── dashboard/
+│   ├── manifest.json             # { "name": "<id>", "api": "plugin_api.py" }
+│   └── plugin_api.py             # backend routes → /api/plugins/<id>/
+└── desktop/
+    └── plugin.js                 # the desktop half: panes, commands, ctx.rest
+```
+
+The `desktop/plugin.js` half is an ordinary disk plugin — same contract, same
+imports, same `ctx.rest('/…')` reaching the `plugin_api.py` sitting beside it.
+Installing, sharing, or removing the feature is one folder.
+
+Two enable switches still apply, on purpose: the desktop half toggles in
+**Settings → Plugins** (renderer-side), while the Python half must be in
+`plugins.enabled` in `config.yaml` (the security boundary below). The desktop
+half degrades gracefully when the backend half is off — `ctx.rest` returns
+errors, not crashes.
+
+:::note
+The scan is local to the machine the desktop app runs on. Against a remote
+backend, the remote box's `~/.hermes/plugins` is not reachable as a filesystem —
+only locally installed packages contribute a desktop half (same rule as the
+standalone door).
+:::
 
 ### The Python side
 

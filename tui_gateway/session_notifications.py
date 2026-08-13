@@ -259,10 +259,17 @@ def _kb_timed_out(task, payload: dict, title: str) -> str:
     return " timed out (max_runtime=0s); will retry"
 
 
+def _kb_blocked(task, payload: dict, title: str) -> str:
+    from gateway.kanban_notifications import bound_actionable_text
+
+    reason = payload.get("reason")
+    return " blocked" + (f": {bound_actionable_text(reason)}" if reason else "")
+
+
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.
 _KANBAN_EVENT_FORMATTERS = {
     "completed": ("✔", _kb_completed),
-    "blocked": ("⏸", lambda t, p, title: " blocked" + (f": {str(p.get('reason'))[:160]}" if p.get("reason") else "")),
+    "blocked": ("⏸", _kb_blocked),
     "gave_up": ("✖", lambda t, p, title: " gave up after repeated spawn failures"
                 + (f"\n{str(p.get('error'))[:200]}" if p.get("error") else "")),
     "crashed": ("✖", lambda t, p, title: " worker crashed (pid gone); dispatcher will retry"),

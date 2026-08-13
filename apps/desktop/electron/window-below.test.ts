@@ -125,4 +125,22 @@ describe('enumerationFailureNote', () => {
       expect(note.length).toBeGreaterThan(0)
     }
   })
+
+  // COSMIC (cosmic-comp) has no native window IPC, so the only working path is
+  // XWayland via desktop.ozone_platform_hint: x11 (issue #84011). A native
+  // COSMIC user must be pointed there, not at the generic "log into X11" fix.
+  it('points a COSMIC user at ozone_platform_hint, not at an X11 session', () => {
+    const note = enumerationFailureNote('linux', { XDG_CURRENT_DESKTOP: 'COSMIC', XDG_SESSION_TYPE: 'wayland' })
+
+    expect(note).toMatch(/ozone_platform_hint/)
+    expect(note).toMatch(/84011/)
+    expect(note).not.toMatch(/X11\/Xorg/)
+  })
+
+  it('does not mislabel a non-COSMIC Wayland session as COSMIC', () => {
+    const note = enumerationFailureNote('linux', { XDG_SESSION_TYPE: 'wayland' })
+
+    expect(note).toMatch(/Wayland/)
+    expect(note).not.toMatch(/ozone_platform_hint/)
+  })
 })

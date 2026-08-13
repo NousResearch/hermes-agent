@@ -13,6 +13,7 @@
 // granted and never trigger the prompt for it.
 
 import { readHyprlandWindows } from './hyprland'
+import { readCosmicWindows } from './cosmic'
 
 export interface EnumeratedWindow {
   app: string
@@ -65,6 +66,24 @@ export function enumerationFailureNote(platform: string, env: NodeJS.ProcessEnv)
       'Could not enumerate windows: Hyprland did not answer on its IPC socket. ' +
       'Check that `hyprctl clients` works from the same session Hermes is ' +
       'running in.'
+    )
+  }
+
+  // COSMIC (cosmic-comp) exposes no native window-enumeration IPC, so Hermes
+  // can only read other windows when it runs under XWayland. Reaching here on
+  // a native-Wayland COSMIC session means that hasn't been enabled yet — point
+  // at the opt-in rather than the generic "log into X11" advice, which COSMIC
+  // barely supports. (See issue #84011 / PR #84013.)
+  const isCosmic =
+    (env.XDG_CURRENT_DESKTOP ?? '').toLowerCase().includes('cosmic') ||
+    (env.XDG_SESSION_DESKTOP ?? '').toLowerCase().includes('cosmic')
+
+  if (isCosmic) {
+    return (
+      'Could not enumerate windows: COSMIC does not expose other apps\u2019 windows ' +
+      'to Hermes over native Wayland. Enable XWayland so the window-under awareness ' +
+      'works — in Hermes config.yaml set `desktop: { ozone_platform_hint: x11 }` ' +
+      '(or launch with ELECTRON_OZONE_PLATFORM_HINT=x11 hermes desktop). See issue #84011.'
     )
   }
 
@@ -186,7 +205,16 @@ export async function readWindowBelow(
   // Hyprland first, and only ever on Hyprland — its own IPC sees native Wayland
   // windows, which the X11 enumerator below cannot, and it answers null
   // everywhere else so the established path stays the default.
-  const windows = (await readHyprlandWindows(selfPid)) ?? (await enumerateViaGetWindows(titlesAvailable))
+  //
+  // COSMIC next (only on COSMIC): it has no native window IPC, so its only
+  // viable enumeration is the X11 one, which works once Hermes runs under
+  // XWayland (desktop.ozone_platform_hint: x11, issue #84011). On a
+  // native-Wayland COSMIC session readCosmicWindows returns null and the
+  // tailored COSMIC note in enumerationFailureNote takes over.
+  const windows =
+    (await readHyprlandWindows(selfPid)) ??
+    (await readCosmicWindows(selfPid, titlesAvailable, process.env, enumerateViaGetWindows)) ??
+    (await enumerateViaGetWindows(titlesAvailable))
 
   if (!windows) {
     return {

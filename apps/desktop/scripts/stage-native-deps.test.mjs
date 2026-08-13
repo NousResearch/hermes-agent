@@ -519,3 +519,26 @@ test('darwin staging ships the Swift helper executable and the rewritten windows
     fs.rmSync(tmp, { recursive: true, force: true })
   }
 })
+
+// ─── stageCosmicToplevelList tests ────────────────────────────────────
+// This stage builds a first-party Rust binary via cargo. We don't run cargo
+// in CI, so we only assert the platform/source guards that keep it from
+// bricking a non-Linux or unconfigured build.
+
+import { stageCosmicToplevelList } from '../scripts/stage-native-deps.mjs'
+
+test('stageCosmicToplevelList is a no-op on non-linux platforms', () => {
+  // On macOS/Windows there is no COSMIC compositor to enumerate; the stage
+  // must skip cleanly and never attempt a cargo build.
+  const result = stageCosmicToplevelList({ platform: 'darwin' })
+  assert.equal(result, null)
+})
+
+test('stageCosmicToplevelList builds and stages the binary on linux', () => {
+  // With the first-party source present, the stage must compile via cargo
+  // and copy the executable into dist/node_modules so a stock `hermes
+  // desktop` build ships it (resolving the COSMIC native-Wayland path).
+  const result = stageCosmicToplevelList({ platform: 'linux' })
+  assert.ok(typeof result === 'string', 'expected a staged binary path')
+  assert.ok(existsSync(result), 'staged binary should exist on disk')
+})

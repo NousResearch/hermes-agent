@@ -7002,23 +7002,33 @@ def _desktop_linux_sandbox_fixup(packaged_executable: Path) -> bool:
     return True
 
 
-def _desktop_launch_options() -> tuple[list[str], str]:
+def _desktop_launch_options() -> tuple[list[str], str, str]:
     """Read `desktop.*` launch options from config.yaml.
 
-    Returns ``(electron_flags, disable_gpu)`` where ``electron_flags`` is a list
-    of extra Electron CLI flags and ``disable_gpu`` is one of "auto"/"1"/"0"
-    (normalized for the HERMES_DESKTOP_DISABLE_GPU env var the Electron app
-    reads). Best-effort: any config error yields the safe defaults
-    ``([], "auto")`` so a malformed config never blocks the launch.
+    Returns ``(electron_flags, disable_gpu, ozone_hint)`` where:
+
+    - ``electron_flags`` is a list of extra Electron CLI flags.
+    - ``disable_gpu`` is one of "auto"/"1"/"0" (normalized for the
+      ``HERMES_DESKTOP_DISABLE_GPU`` env var the Electron app reads).
+    - ``ozone_hint`` is one of "auto"/"x11"/"wayland" (normalized for the
+      ``ELECTRON_OZONE_PLATFORM_HINT`` env var). On Wayland compositors that do
+      not honor Electron's ``setAlwaysOnTop`` / window enumeration (e.g. COSMIC /
+      ``cosmic-comp``), forcing ``x11`` runs Hermes Desktop under XWayland, which
+      restores HUD always-on-top and ``read_window_below`` enumeration. See
+      issue #84011.
+
+    Best-effort: any config error yields the safe defaults
+    ``([], "auto", "auto")`` so a malformed config never blocks the launch.
     """
     flags: list[str] = []
     disable_gpu = "auto"
+    ozone_hint = "auto"
     try:
         from hermes_cli.config import load_config
 
         desktop_cfg = (load_config() or {}).get("desktop") or {}
     except Exception:
-        return flags, disable_gpu
+        return flags, disable_gpu, ozone_hint
 
     raw_flags = desktop_cfg.get("electron_flags")
     if isinstance(raw_flags, str):
@@ -7037,7 +7047,15 @@ def _desktop_launch_options() -> tuple[list[str], str]:
             disable_gpu = "0"
         else:
             disable_gpu = "auto"
-    return flags, disable_gpu
+
+    raw_ozone = desktop_cfg.get("ozone_platform_hint", "auto")
+    if isinstance(raw_ozone, str):
+        low = raw_ozone.strip().lower()
+        if low in ("x11", "wayland"):
+            ozone_hint = low
+        else:
+            ozone_hint = "auto"
+    return flags, disable_gpu, ozone_hint
 
 
 def _register_linux_desktop_entry() -> None:
@@ -7088,12 +7106,16 @@ def cmd_gui(args: argparse.Namespace):
         env["HERMES_DESKTOP_CWD"] = os.getcwd()
 
     # Desktop launch options from config.yaml (`desktop.electron_flags`,
-    # `desktop.disable_gpu`). The GPU policy is bridged to the env var the
-    # Electron app already reads; an explicit env var still wins over config so
-    # `HERMES_DESKTOP_DISABLE_GPU=... hermes desktop` keeps working.
-    config_electron_flags, config_disable_gpu = _desktop_launch_options()
+    # `desktop.disable_gpu`, `desktop.ozone_platform_hint`). The GPU policy and
+    # Ozone platform hint are bridged to the env vars the Electron app already
+    # reads; an explicit env var still wins over config so
+    # `HERMES_DESKTOP_DISABLE_GPU=... hermes desktop` and
+    # `ELECTRON_OZONE_PLATFORM_HINT=... hermes desktop` keep working.
+    config_electron_flags, config_disable_gpu, config_ozone_hint = _desktop_launch_options()
     if config_disable_gpu != "auto" and "HERMES_DESKTOP_DISABLE_GPU" not in os.environ:
         env["HERMES_DESKTOP_DISABLE_GPU"] = config_disable_gpu
+    if config_ozone_hint != "auto" and "ELECTRON_OZONE_PLATFORM_HINT" not in os.environ:
+        env["ELECTRON_OZONE_PLATFORM_HINT"] = config_ozone_hint
 
     source_mode = getattr(args, "source", False)
     skip_build = getattr(args, "skip_build", False)

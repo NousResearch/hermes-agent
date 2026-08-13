@@ -203,6 +203,10 @@
       {
         "from": "assets/icon.ico",
         "to": "icon.ico"
+      },
+      {
+        "from": "dist/node_modules/cosmic-toplevel-list",
+        "to": "cosmic-toplevel-list"
       }
     ],
     "asar": true,

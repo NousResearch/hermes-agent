@@ -60,7 +60,7 @@
 import { existsSync, rmSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import { Arch } from 'electron-builder'
-import { stageNodePty, stageGetWindows } from './stage-native-deps.mjs'
+import { stageNodePty, stageGetWindows, stageCosmicToplevelList } from './stage-native-deps.mjs'
 
 export function cleanStaleAppOutDir(appOutDir) {
   if (!appOutDir || typeof appOutDir !== 'string') {
@@ -149,6 +149,12 @@ export default async function beforePack(context) {
       // it re-stages for the universal target too.
       stageGetWindows({ platform })
       console.log(`[before-pack] re-staged get-windows for target ${platform}`)
+      // cosmic-toplevel-list: first-party Rust binary, built from source.
+      // Only meaningful on Linux; a no-op elsewhere. Cargo cross-compilation
+      // for a non-host target isn't supported, so this only builds when the
+      // pack host matches the target (the guard inside also skips non-linux).
+      stageCosmicToplevelList({ platform })
+      console.log(`[before-pack] staged cosmic-toplevel-list for target ${platform}`)
     }
   } catch (err) {
     // This one SHOULD fail the build — a missing/wrong native binary for the

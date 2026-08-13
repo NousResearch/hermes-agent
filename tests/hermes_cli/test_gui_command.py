@@ -116,6 +116,79 @@ def test_gui_installs_packages_and_launches_desktop_app(tmp_path, monkeypatch):
     assert mock_run.call_args_list[1].kwargs["cwd"] == desktop_dir
 
 
+def test_desktop_launch_options_ozone_hint_parsing():
+    """``desktop.ozone_platform_hint`` normalizes to x11/wayland/auto.
+
+    Mirrors the existing ``disable_gpu`` handling: only the two real Ozone
+    platform hints pass through, anything else (and the default) collapses to
+    ``"auto"`` so existing launches are unchanged.
+    """
+    with patch("hermes_cli.config.load_config", return_value={"desktop": {"ozone_platform_hint": "x11"}}):
+        assert cli_main._desktop_launch_options() == ([], "auto", "x11")
+    with patch("hermes_cli.config.load_config", return_value={"desktop": {"ozone_platform_hint": "WAYLAND"}}):
+        assert cli_main._desktop_launch_options() == ([], "auto", "wayland")
+    with patch("hermes_cli.config.load_config", return_value={"desktop": {"ozone_platform_hint": "bogus"}}):
+        assert cli_main._desktop_launch_options() == ([], "auto", "auto")
+    with patch("hermes_cli.config.load_config", return_value={}):
+        assert cli_main._desktop_launch_options() == ([], "auto", "auto")
+
+
+def test_gui_bridges_ozone_hint_to_launch_env(tmp_path, monkeypatch):
+    """Regression (COSMIC HUD): ``desktop.ozone_platform_hint: x11`` sets
+    ``ELECTRON_OZONE_PLATFORM_HINT`` on the launched Electron process, so the HUD
+    runs under XWayland where the compositor honors ``setAlwaysOnTop`` and window
+    enumeration. An explicit env var still wins over config (same contract as
+    ``HERMES_DESKTOP_DISABLE_GPU``).
+    """
+    import os
+
+    from unittest.mock import patch as _patch
+
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    monkeypatch.setattr(cli_main, "PROJECT_ROOT", root)
+    _make_packaged_executable(root, monkeypatch)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes-home"))
+
+    install_ok = subprocess.CompletedProcess(["npm", "ci"], 0)
+    pack_ok = subprocess.CompletedProcess(["npm", "run", "pack"], 0)
+    launch_ok = subprocess.CompletedProcess(["hermes"], 0)
+
+    # Case 1: config asks for x11, no pre-set env var -> hint is bridged.
+    with _patch("hermes_cli.config.load_config", return_value={"desktop": {"ozone_platform_hint": "x11"}}), \
+         _patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+         _patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         _patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         _patch("hermes_cli.main._write_desktop_build_stamp"), \
+         _patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         _patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         _patch("hermes_cli.main._register_linux_desktop_entry"), \
+         _patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns(skip_build=False))
+
+    launch_call = mock_run.call_args_list[1]
+    launch_env = launch_call.kwargs.get("env") or {}
+    assert launch_env.get("ELECTRON_OZONE_PLATFORM_HINT") == "x11"
+
+    # Case 2: a pre-set env var is NOT overwritten by config.
+    monkeypatch.setenv("ELECTRON_OZONE_PLATFORM_HINT", "wayland")
+    with _patch("hermes_cli.config.load_config", return_value={"desktop": {"ozone_platform_hint": "x11"}}), \
+         _patch("hermes_cli.main._resolve_node_runtime_npm", return_value="/usr/bin/npm"), \
+         _patch("hermes_cli.main._run_npm_install_deterministic", return_value=install_ok), \
+         _patch("hermes_cli.main._desktop_build_needed", return_value=True), \
+         _patch("hermes_cli.main._write_desktop_build_stamp"), \
+         _patch("hermes_cli.main._desktop_macos_relaunchable_fixup"), \
+         _patch("hermes_cli.main._desktop_linux_sandbox_fixup", return_value=True), \
+         _patch("hermes_cli.main._register_linux_desktop_entry"), \
+         _patch("hermes_cli.main.subprocess.run", side_effect=[pack_ok, launch_ok]) as mock_run, \
+         pytest.raises(SystemExit):
+        cli_main.cmd_gui(_ns(skip_build=False))
+
+    launch_env = mock_run.call_args_list[1].kwargs.get("env") or {}
+    assert launch_env.get("ELECTRON_OZONE_PLATFORM_HINT") == "wayland"
+
+
 def test_gui_install_env_prepends_managed_node_on_bare_path(tmp_path, monkeypatch):
     """Regression: npm's child scripts (electron-winstaller's select-7z-arch.js)
     shell out to bare ``node``. When Desktop is launched from the updater chain

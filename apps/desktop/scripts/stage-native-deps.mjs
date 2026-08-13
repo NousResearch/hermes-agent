@@ -547,9 +547,69 @@ export function stageGetWindows({ platform = process.platform } = {}) {
   return stageGetWindowsInto(srcRoot, destRoot, { platform, rebuild })
 }
 
+// ─── cosmic-toplevel-list (COSMIC native-Wayland window enumeration) ─────
+//
+// Unlike node-pty / get-windows, this is a first-party Rust binary that we
+// build from source during the desktop pack. It only matters on Linux (COSMIC
+// is a Linux-only desktop), so on non-Linux targets we are a deliberate
+// no-op — there is nothing to build and nothing to ship.
+//
+// The binary must exist for the COSMIC native-Wayland path to run from a
+// repo-produced build; otherwise `cosmic.ts` falls back to the X11 enumerator
+// (which itself returns null under native Wayland) and the user lands back on
+// the ozone_platform_hint note. Building + shipping it here closes that gap.
+
+const COSMIC_TOPLEVEL_LIST_DIR = resolve(projectRoot, 'cosmic-toplevel-list')
+
+export function stageCosmicToplevelList({ platform = process.platform } = {}) {
+  // Only COSMIC-on-Linux needs this binary; skip everywhere else.
+  if (platform !== 'linux') {
+    console.log('[stage-native-deps] cosmic-toplevel-list: skipping (not linux)')
+    return null
+  }
+  if (!existsSync(COSMIC_TOPLEVEL_LIST_DIR)) {
+    console.warn(
+      '[stage-native-deps] cosmic-toplevel-list: source dir missing, skipping. ' +
+        'COSMIC native-Wayland enumeration will fall back to XWayland.'
+    )
+    return null
+  }
+
+  console.log('[stage-native-deps] cosmic-toplevel-list: cargo build --release ...')
+  const build = spawnSync('cargo', ['build', '--release'], {
+    cwd: COSMIC_TOPLEVEL_LIST_DIR,
+    stdio: 'inherit',
+    shell: process.platform === 'win32'
+  })
+  if (build.status !== 0) {
+    // Fail soft: a missing cargo toolchain should not brick the whole desktop
+    // build. The COSMIC path falls back to XWayland, which still works.
+    console.warn(
+      `[stage-native-deps] cosmic-toplevel-list: cargo build failed (exit ${build.status}); ` +
+        'COSMIC native-Wayland enumeration will fall back to XWayland.'
+    )
+    return null
+  }
+
+  const built = join(COSMIC_TOPLEVEL_LIST_DIR, 'target', 'release', 'cosmic-toplevel-list')
+  if (!existsSync(built)) {
+    console.warn('[stage-native-deps] cosmic-toplevel-list: built binary not found, skipping.')
+    return null
+  }
+
+  const destDir = resolve(projectRoot, 'dist', 'node_modules', 'cosmic-toplevel-list')
+  mkdirSync(destDir, { recursive: true })
+  const destFile = join(destDir, 'cosmic-toplevel-list')
+  cpSync(built, destFile)
+  makeExecutable(destFile)
+  console.log(`[stage-native-deps] staged cosmic-toplevel-list -> ${destFile}`)
+  return destFile
+}
+
 // Allow direct CLI invocation: node scripts/stage-native-deps.mjs [platform] [arch]
 if (isMain(import.meta.url)) {
   const [platform, arch] = process.argv.slice(2)
   stageNodePty({ platform, arch })
   stageGetWindows({ platform })
+  stageCosmicToplevelList({ platform })
 }

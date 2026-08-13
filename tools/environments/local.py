@@ -1541,41 +1541,23 @@ def _strip_hermes_owned_pythonpath_and_runtime_markers(env: dict) -> None:
 def _strip_hermes_owned_pythonpath(env: dict) -> None:
     """Remove Hermes-owned PYTHONPATH entries from subprocess environments.
 
-    The Desktop Electron process (and other Hermes launchers) prepend the
-    Hermes repo root and the Hermes venv's ``site-packages`` to ``PYTHONPATH``
-    so the backend can ``import tools`` / ``import hermes_cli``.  When that
-    ``PYTHONPATH`` leaks into subprocesses, a child Python of a DIFFERENT
-    version (e.g. 3.13 vs the backend's 3.11) picks up the 3.11 C extensions
-    from ``sys.path`` ahead of its own and crashes with ``ImportError``
-    (``PIL._imaging``, ``cryptography``, ``numpy._core._multiarray_umath``,
-    etc.).
+    Launchers prepend the Hermes repo root and the Hermes venv's
+    site-packages so the backend can ``import tools``; leaking those into a
+    child Python of a DIFFERENT version makes it load the backend's C
+    extensions and crash (``numpy._core._multiarray_umath``, ``PIL._imaging``,
+    ``cryptography``).  Blanket-removing PYTHONPATH would discard legitimate
+    user entries, so only entries proven Hermes-owned are removed:
 
-    Rather than stripping ``PYTHONPATH`` entirely - which would discard
-    legitimate user entries (Nix uses ``PYTHONPATH`` for plugin discovery,
-    users set it for custom library paths) - this function surgically
-    removes only the entries Hermes itself owns:
+    1. The exact repo root (never direct children -- no launcher injects
+       one, and user paths under the repo must survive).
+    2. The exact runtime site-packages dirs (running interpreter's venv or
+       a validated Windows base-Python runtime venv; descendants are user
+       paths).
 
-    1. **Hermes repo root** - the path the Electron app prepends so the
-       backend can ``import tools``.  Subprocesses don't need it and it can
-       shadow local packages of the same name.  Only the exact root is
-       stripped; direct children (``<repo>/tools`` etc.) are never injected
-       by any launcher and are treated as user paths.
-
-    2. **Hermes venv site-packages** - the exact directories owned by the
-       running interpreter's venv, or by a separately validated Windows
-       base-Python gateway runtime venv.  Redundant for
-       subprocesses (they get their packages via ``sys.path``, not an
-       inherited env var) and a common leak vector.  Descendants are not
-       producer-owned entries and are preserved.
-
-    User ``PYTHONPATH`` entries (``/opt/my-lib``, Nix plugin paths, a
-    ``/custom/lib/python3.13/site-packages`` intended for a child Python 3.13)
-    are always preserved.  In particular we deliberately do NOT apply a
-    cross-version heuristic here: the subprocess env builder cannot know
-    which Python version the child will ultimately run, so judging a user
-    path against the BACKEND's interpreter version would delete legitimate
-    user entries meant for a different child Python (#74817 follow-up).
-    Hermes-owned entries are identified by path ownership, not by version.
+    Everything else -- user libs, Nix plugin paths, a pythonX.Y/site-packages
+    entry meant for a DIFFERENT child version -- is preserved byte-for-byte:
+    ownership is decided by path provenance, never by a cross-version
+    heuristic (#74817 follow-up).
     """
     pp = env.get("PYTHONPATH")
     if not pp:

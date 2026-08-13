@@ -2087,7 +2087,12 @@ def _spill_summary_to_file(task_index: int, summary: str) -> Optional[str]:
         cache_dir.mkdir(parents=True, exist_ok=True)
         ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         path = cache_dir / f"subagent-summary-{task_index}-{ts}.txt"
-        path.write_text(summary, encoding="utf-8")
+        from tools.spill_safety import write_text_exclusive
+
+        # Exclusive symlink-refusing create; not private because
+        # cache/delegation is bind-mounted read-only into remote backends
+        # whose container UID must be able to read it.
+        write_text_exclusive(path, summary, private=False)
         return str(path)
     except Exception as exc:
         logger.debug("Failed to spill subagent summary to file: %s", exc)

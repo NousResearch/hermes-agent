@@ -506,7 +506,14 @@ def _store_full_text(url: str, content: str) -> Optional[str]:
                 + f"\n\n[... stored copy truncated at {MAX_STORED_TEXT_CHARS:,} chars "
                 f"of {len(content):,}; re-extract a more specific URL for the rest ...]"
             )
-        path.write_text(content, encoding="utf-8")
+        from tools.spill_safety import write_text_exclusive
+
+        # Deterministic filename in a well-known dir: refuse symlinks via
+        # lstat-unlink + exclusive create. Re-extraction of the same URL
+        # legitimately overwrites (same slug-digest name). Not private:
+        # cache/web is bind-mounted into remote backends whose container UID
+        # must be able to read it, and content is fetched public text.
+        write_text_exclusive(path, content, private=False, overwrite=True)
         return str(path)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to store full web_extract text for %s: %s", url, exc)

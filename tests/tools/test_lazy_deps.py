@@ -744,40 +744,33 @@ class TestVenvPipInstall:
         assert result.success is True
         assert result.stdout == "ok"
 
-    def test_uv_fail_falls_back_to_pip(self, monkeypatch):
+    def test_uv_fail_is_authoritative_no_pip_fallback(self, monkeypatch):
         from types import SimpleNamespace
 
-        calls = []
-
         def fake_run(cmd, **kw):
-            calls.append(list(cmd))
             if cmd[0] == "/fake/uv":
                 return SimpleNamespace(returncode=1, stdout="", stderr="uv fail")
-            if "--version" in cmd:
-                return SimpleNamespace(returncode=0, stdout="pip 24.0", stderr="")
-            return SimpleNamespace(returncode=0, stdout="pip ok", stderr="")
+            pytest.fail(f"pip must not run after a uv resolver failure: {cmd}")
 
         monkeypatch.setattr("shutil.which", lambda name: "/fake/uv")
         monkeypatch.setattr("subprocess.run", fake_run)
         result = ld._venv_pip_install(("pkg==1.0",))
-        assert result.success is True
-        assert result.stdout == "pip ok"
+        assert result.success is False
+        assert "uv fail" in result.stderr
 
-    def test_uv_timeout_falls_back_to_pip(self, monkeypatch):
+    def test_uv_timeout_is_authoritative_no_pip_fallback(self, monkeypatch):
         import subprocess
-        from types import SimpleNamespace
 
         def fake_run(cmd, **kw):
             if cmd[0] == "/fake/uv":
                 raise subprocess.TimeoutExpired(cmd=cmd, timeout=300)
-            if "--version" in cmd:
-                return SimpleNamespace(returncode=0, stdout="pip 24.0", stderr="")
-            return SimpleNamespace(returncode=0, stdout="pip ok", stderr="")
+            pytest.fail(f"pip must not run after a uv timeout: {cmd}")
 
         monkeypatch.setattr("shutil.which", lambda name: "/fake/uv")
         monkeypatch.setattr("subprocess.run", fake_run)
         result = ld._venv_pip_install(("pkg==1.0",))
-        assert result.success is True
+        assert result.success is False
+        assert "timed out" in result.stderr
 
     def test_uv_not_found_uses_pip(self, monkeypatch):
         from types import SimpleNamespace

@@ -85,40 +85,12 @@ def test_build_welcome_banner_non_moa_unchanged(tmp_path, monkeypatch):
     assert "MoA:" not in out
 
 
-def test_build_welcome_banner_places_behind_status_after_command_summary():
-    """The fork divergence stays on the summary line, not in the title."""
-    mcp_status = [{"connected": True, "name": "wiki", "transport": "stdio", "tools": 1}]
-    with (
-        patch.object(banner, "get_available_skills", return_value={"core": ["a", "b"]}),
-        patch.object(banner, "get_update_result", return_value=None),
-        patch.object(tools.mcp_tool, "get_mcp_status", return_value=mcp_status),
-        patch.object(banner, "get_git_banner_state", return_value={
-            "upstream": "b2f477a3", "local": "af8aad31", "ahead": 3, "behind": 5,
-        }),
-    ):
-        console = Console(record=True, force_terminal=False, color_system=None, width=160)
-        banner.build_welcome_banner(
-            console=console,
-            model="model",
-            cwd="/tmp/project",
-            tools=[{"function": {"name": "read_file"}}],
-            enabled_toolsets=[],
-            get_toolset_for_tool=lambda _name: "file",
-        )
-
-    lines = [line.strip() for line in console.export_text().splitlines() if line.strip()]
-    summary_index = next(i for i, line in enumerate(lines) if "/help for commands" in line)
-    assert "5 commits behind" in lines[summary_index]
-    assert any("upstream b2f477a3" in line for line in lines)
-
-
-def test_build_welcome_banner_shows_unknown_update_notice():
+def test_build_welcome_banner_explains_unknown_update_count():
     with (
         patch.object(model_tools, "check_tool_availability", return_value=([], [])),
         patch.object(banner, "get_available_skills", return_value={}),
         patch.object(banner, "get_update_result", return_value=banner.UPDATE_AVAILABLE_NO_COUNT),
         patch.object(tools.mcp_tool, "get_mcp_status", return_value=[]),
-        patch.object(banner, "get_git_banner_state", return_value=None),
         patch("hermes_cli.config.get_managed_update_command", return_value=None),
     ):
         console = Console(record=True, force_terminal=False, color_system=None, width=160)
@@ -131,4 +103,4 @@ def test_build_welcome_banner_shows_unknown_update_notice():
             provider="openrouter",
         )
 
-    assert "update available" in console.export_text()
+    assert "commit count unavailable" in console.export_text()

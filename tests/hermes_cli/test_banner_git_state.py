@@ -17,7 +17,7 @@ def test_format_banner_version_label_on_upstream_main():
     assert "local" not in value
 
 
-def test_format_banner_version_label_keeps_behind_count_off_title():
+def test_format_banner_version_label_shows_behind_count():
     from hermes_cli import banner
 
     with patch.object(
@@ -28,7 +28,7 @@ def test_format_banner_version_label_keeps_behind_count_off_title():
         value = banner.format_banner_version_label()
 
     assert "(+3 carried commits)" in value
-    assert "behind" not in value
+    assert "(-5 upstream commits)" in value
 
 
 def test_get_git_banner_state_reads_nous_upstream_and_head(tmp_path):

@@ -186,6 +186,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'composer.voice': requestVoiceToggle,
 
     'nav.commandPalette': toggleCommandPalette,
+    'nav.controlRoom': deps.toggleCommandCenter,
     'nav.commandCenter': deps.toggleCommandCenter,
     'nav.settings': () => navigate(SETTINGS_ROUTE),
     'nav.profiles': () => navigate(PROFILES_ROUTE),

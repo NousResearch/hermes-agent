@@ -58,4 +58,3 @@ def default_judge(model="deepseek-v4-flash"):
         )
     base, key = creds
     return LLMJudge(base_url=base, api_key=key, model=model)
-

@@ -93,6 +93,29 @@ The plugin remains opt-in even though the runtime dependency is installed by
 default. Enabling this plugin controls rich observability and adaptive
 behavior; it does not control Hermes shared client metrics.
 
+## Session-Span Segmentation (Continuous Sessions)
+
+Relay export is close-driven: a span exports when its scope pops. Continuous
+gateway sessions keep the session scope open indefinitely, so the session root
+span and session-level marks stay unexported until `/new` or idle-end, and a
+crash loses the open segment. Opt-in segmentation rotates the session scope at
+turn boundaries via `config.yaml`:
+
+```yaml
+gateway:
+  telemetry:
+    session_segments:
+      on_compaction: false   # rotate when the session compacts
+      max_turns: 0           # 0 = unlimited; N = rotate after N turns
+```
+
+Both defaults are off (no rotation — identical to previous behavior). Rotated
+segments share the `session_id` attribute and carry
+`hermes.session.segment` / `hermes.session.segment_reason`
+(`compaction` | `max_turns`) metadata. Rotation only happens at turn
+boundaries, never mid-turn. See the built-in plugins page on the docs site for
+the full behavior table.
+
 ## Export Configuration
 
 The plugin can configure exporters directly from `HERMES_NEMO_RELAY_*`

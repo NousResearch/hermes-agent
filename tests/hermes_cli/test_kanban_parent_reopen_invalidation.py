@@ -172,7 +172,7 @@ def test_dashboard_and_db_paths_produce_identical_outcomes(tmp_path, monkeypatch
     sys.modules[spec.name] = mod
     spec.loader.exec_module(mod)
     app = fastapi.FastAPI()
-    app.include_router(mod.router, prefix="/api/plugins/kanban")
+    app.include_router(mod._dashboard_router, prefix="/api/plugins/kanban")
     client = TestClient(app)
 
     def build_graph(tag: str):

@@ -453,7 +453,7 @@ Payload fields below are the exact event-specific fields supplied by each call s
 | `on_stream_delta` | Observer | Dispatched per normalized streaming text delta via the bounded observer queue; a stalled callback drops only its own oldest events; return ignored. | `delta`, `kind` (`text` or `reasoning`), `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Delta text is raw model output; reasoning deltas require the `plugins.stream_reasoning_deltas` opt-in. |
 | `on_stream_end` | Observer | Dispatched when a streaming response finishes or errors, after the stream closes; return ignored. | `final_text`, `finished`, `error`, `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Full assembled response text; error text may include provider data. |
 | `on_interim_message` | Observer | Dispatched when a mid-loop assistant message is surfaced before the final answer (streaming or non-streaming); return ignored. | `text`, `already_streamed`, `turn_id`, `iteration`, `session_id`, `model`, `provider`, `surface` | Full interim assistant text. |
-| `classify_api_error` | Directive/control | On each failed provider attempt, at the top of the built-in classifier; all callbacks run, then the first dict with a valid `reason` wins (run-all-then-pick-first). Python plugins only. | `provider`, `model`, `status_code`, `error_type`, `error_code`, `error_message`, `error_body`, `error`, `approx_tokens`, `context_length`, `num_messages` | `error_message` and `error_body` may contain raw provider/user data. |
+| `transform_api_error_classification` | Transform | On each failed provider attempt, at the top of the built-in classifier; all callbacks run, then the first dict with a valid `reason` wins (run-all-then-pick-first), and skipped valid results log a runtime warning. Python plugins only. | `provider`, `model`, `status_code`, `error_type`, `error_code`, `error_message`, `error_body`, `error`, `approx_tokens`, `context_length`, `num_messages` | `error_message` and `error_body` may contain raw provider/user data. |
 | `on_session_start` | Observer | First turn of a new session; return ignored. | `session_id`, `model`, `platform` | Identifiers and routing metadata only. |
 | `on_session_end` | Observer | Canonically at each turn finalization; CLI/TUI exits have additional reduced legacy shapes. Return ignored. | Canonical: `session_id`, `task_id`, `turn_id`, `completed`, `failed`, `interrupted`, `turn_exit_reason`, `model`, `platform`; exit paths may add `reason`/`api_request_id` and omit fields. | IDs, model/platform, and outcome; canonical payload has no message body. |
 | `on_session_finalize` | Observer | CLI/TUI/gateway teardown through `finalize_session`; gateway shutdown or expiry may finalize without a reset. Return ignored. | Surface-dependent `session_id`, `platform`, optionally `reason`, `old_session_id`, `new_session_id` | Session and routing identifiers. |
@@ -847,11 +847,11 @@ For standing guidance that should shape the built-in missing-evidence nudge, use
 
 ---
 
-### `classify_api_error`
+### `transform_api_error_classification`
 
 Fires **once per failed API call**, at the top of `agent/error_classifier.classify_api_error()` — BEFORE the built-in classification pipeline. Cold path: it never fires on a successful call. Provider plugins use it to own their provider's error quirks (a vendor-specific 404 that should fast-fallback, a misleading status code) without core patches.
 
-This hook is **behavior-changing**: the returned classification drives retry, compression, credential-rotation, and fallback routing for the failed call.
+This hook is **behavior-changing** (transform family): the returned classification drives retry, compression, credential-rotation, and fallback routing for the failed call.
 
 **Callback signature:**
 
@@ -889,7 +889,7 @@ return {
 }
 ```
 
-Return `None` (or nothing) to decline and defer to the built-in pipeline. Dispatch is **run-all-then-pick-first**: every registered callback runs on each failed call (an earlier answer never stops later callbacks), each callback's failure is isolated, and the first valid result **in registration order** wins — if two plugins can both answer, the first-registered one is the tie-break. Invalid dicts and unknown reasons are skipped, so a broken plugin can never break error classification.
+Return `None` (or nothing) to decline and defer to the built-in pipeline. Dispatch is **run-all-then-pick-first**: every registered callback runs on each failed call (an earlier answer never stops later callbacks), each callback's failure is isolated, and the first valid result **in registration order** wins — if two plugins can both answer, the first-registered one is the tie-break, and every valid-but-losing result is reported with a runtime warning so a shadowed provider plugin is visible in logs. Invalid dicts and unknown reasons are skipped, so a broken plugin can never break error classification.
 
 **Privacy:** `error_message` and `error_body` may carry an unredacted provider error dump. Do not log or forward them from a callback without redaction.
 

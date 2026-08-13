@@ -1,4 +1,4 @@
-"""Tests for the ``classify_api_error`` plugin hook.
+"""Tests for the ``transform_api_error_classification`` plugin hook.
 
 Covers the seam in ``agent.error_classifier.classify_api_error`` (step 0,
 consulted before the built-in pipeline) and the sanitization contract of
@@ -15,6 +15,7 @@ consuming module, because the import happens at call time.
 """
 
 import importlib.util
+import logging
 
 import hermes_cli.plugins as plugins_mod
 from agent.error_classifier import FailoverReason, classify_api_error
@@ -154,6 +155,38 @@ def test_first_valid_result_wins(monkeypatch):
     assert result.reason == FailoverReason.billing
 
 
+def test_skipped_valid_results_log_runtime_warning(monkeypatch, caplog):
+    # The #64714 skipped-transform rule: a valid-but-losing classification
+    # must surface in logs, never be silently shadowed. Invalid results
+    # (here "bogus") are not "skipped valid" and must not count.
+    monkeypatch.setattr(
+        plugins_mod, "invoke_hook",
+        lambda name, **kw: [
+            {"reason": "bogus"},
+            {"reason": "billing"},
+            {"reason": "rate_limit"},
+        ],
+    )
+
+    with caplog.at_level(logging.WARNING, logger=plugins_mod.logger.name):
+        result = _classify_unclaimed_error()
+    assert result.reason == FailoverReason.billing
+    warnings = [r.getMessage() for r in caplog.records if "skipped" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "skipped 1 valid" in warnings[0]
+
+    # A lone winner is not a conflict: no warning.
+    caplog.clear()
+    monkeypatch.setattr(
+        plugins_mod, "invoke_hook",
+        lambda name, **kw: [{"reason": "billing"}],
+    )
+    with caplog.at_level(logging.WARNING, logger=plugins_mod.logger.name):
+        result = _classify_unclaimed_error()
+    assert result.reason == FailoverReason.billing
+    assert not [r for r in caplog.records if "skipped" in r.getMessage()]
+
+
 def test_helper_exception_never_breaks_classification(monkeypatch):
     def _boom(**kwargs):
         raise RuntimeError("plugin infrastructure exploded")
@@ -179,7 +212,7 @@ def test_hook_receives_parsed_error_context(monkeypatch):
 
     _classify_unclaimed_error(approx_tokens=1234, num_messages=7)
 
-    assert seen["hook_name"] == "classify_api_error"
+    assert seen["hook_name"] == "transform_api_error_classification"
     assert seen["provider"] == "acmecloud"
     assert seen["model"] == "acme/large-1"
     assert seen["status_code"] is None
@@ -219,7 +252,7 @@ def classify(provider=None, error_message=None, **kwargs):
 
 
 def register(ctx):
-    ctx.register_hook("classify_api_error", classify)
+    ctx.register_hook("transform_api_error_classification", classify)
 '''
 
 

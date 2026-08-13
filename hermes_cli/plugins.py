@@ -198,14 +198,16 @@ VALID_HOOKS: Set[str] = {
     # Dispatch is run-all-then-pick-first: every registered callback runs
     # with its failures isolated (an early answer never stops later
     # callbacks), then the first valid result in registration order wins —
-    # on conflict the first-registered plugin is the tie-break. Invalid
-    # dicts and unknown reasons are skipped; a broken plugin can never
-    # break error classification. Cold path: fires only on API failure.
+    # on conflict the first-registered plugin is the tie-break, and every
+    # additional valid-but-losing result is reported with a runtime warning
+    # (the #64714 skipped-transform rule). Invalid dicts and unknown
+    # reasons are skipped; a broken plugin can never break error
+    # classification. Cold path: fires only on API failure.
     # Privacy: error_message/error_body may carry an unredacted provider
     # error dump.
-    # Contract: the first-valid-wins mutating shape in
+    # Contract: the transform-family first-valid-wins shape in
     # docs/plugins/hook-taxonomy.md.
-    "classify_api_error",
+    "transform_api_error_classification",
     "on_session_start",
     "on_session_end",
     "on_session_finalize",
@@ -385,7 +387,7 @@ VALID_HOOKS: Set[str] = {
 # have its output silently ignored — registration is refused loudly instead.
 # Support for a shell response shape can lift an event out of this set.
 SHELL_UNSUPPORTED_HOOKS: Set[str] = {
-    "classify_api_error",
+    "transform_api_error_classification",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -5814,7 +5816,7 @@ def get_plugin_error_classification(
     context_length: int = 0,
     num_messages: int = 0,
 ) -> Optional[Dict[str, Any]]:
-    """Check ``classify_api_error`` hooks for a classification directive.
+    """Check ``transform_api_error_classification`` hooks for a directive.
 
     Consulted by :func:`agent.error_classifier.classify_api_error` BEFORE
     its built-in pipeline, so a provider plugin can both add classifications
@@ -5828,13 +5830,17 @@ def get_plugin_error_classification(
     wins in registration order — mirroring
     :func:`get_pre_tool_call_block_message`, invalid or irrelevant returns
     are silently ignored so a misbehaving plugin degrades to a no-op.
+    When more than one callback returns a valid classification, the losing
+    results are skipped with a runtime warning (the #64714
+    skipped-transform rule) so conflicting provider plugins are visible in
+    logs instead of silently shadowed.
 
     Privacy: ``error_message`` and ``error_body`` may carry an unredacted
     provider error dump; callbacks must not log or forward them without
     redaction.
 
     Cold path: fires only on API failure, never on the request hot path.
-    Contract: the first-valid-wins mutating shape in
+    Contract: the transform-family first-valid-wins shape in
     ``docs/plugins/hook-taxonomy.md``.
 
     Returns a sanitized dict (``reason`` coerced to ``FailoverReason``, hint
@@ -5843,7 +5849,7 @@ def get_plugin_error_classification(
     from agent.error_classifier import FailoverReason
 
     hook_results = invoke_hook(
-        "classify_api_error",
+        "transform_api_error_classification",
         provider=provider,
         model=model,
         status_code=status_code,
@@ -5857,6 +5863,8 @@ def get_plugin_error_classification(
         num_messages=num_messages,
     )
 
+    winner: Optional[Dict[str, Any]] = None
+    skipped_valid = 0
     for result in hook_results:
         if not isinstance(result, dict):
             continue
@@ -5869,6 +5877,10 @@ def get_plugin_error_classification(
             except ValueError:
                 continue
         else:
+            continue
+
+        if winner is not None:
+            skipped_valid += 1
             continue
 
         out: Dict[str, Any] = {"reason": reason}
@@ -5886,9 +5898,16 @@ def get_plugin_error_classification(
         error_context = result.get("error_context")
         if isinstance(error_context, dict):
             out["error_context"] = error_context
-        return out
+        winner = out
 
-    return None
+    if winner is not None and skipped_valid:
+        logger.warning(
+            "transform_api_error_classification: skipped %d valid "
+            "classification(s) after the first result in registration order "
+            "won (run-all-then-pick-first)",
+            skipped_valid,
+        )
+    return winner
 
 
 def _ensure_plugins_discovered(force: bool = False) -> PluginManager:

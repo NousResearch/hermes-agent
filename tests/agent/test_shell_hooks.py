@@ -271,11 +271,11 @@ class TestParseHooksBlock:
 
 
     def test_python_only_event_refused(self, caplog):
-        # classify_api_error returns a classification directive that
+        # transform_api_error_classification returns a classification directive that
         # _parse_response has no channel for — a shell registration would
         # be silently ignored, so it must be refused with a warning.
         specs = shell_hooks._parse_hooks_block({
-            "classify_api_error": [
+            "transform_api_error_classification": [
                 {"command": "/tmp/hook.sh"},
             ],
         })

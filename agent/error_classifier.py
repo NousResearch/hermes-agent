@@ -648,7 +648,7 @@ def classify_api_error(
     """Classify an API error into a structured recovery recommendation.
 
     Priority-ordered pipeline:
-      0. Plugin ``classify_api_error`` hooks (first valid result wins)
+      0. Plugin ``transform_api_error_classification`` hooks (first valid result wins)
       1. Special-case provider-specific patterns (thinking sigs, tier gates)
       2. HTTP status code + message-aware refinement
       3. Error code classification (from body)
@@ -736,7 +736,7 @@ def classify_api_error(
     #
     # Consulted BEFORE the built-in pipeline so a provider plugin can both
     # add classifications the core patterns miss and correct ones they get
-    # wrong for its provider (see the ``classify_api_error`` entry in
+    # wrong for its provider (see the ``transform_api_error_classification`` entry in
     # hermes_cli.plugins.VALID_HOOKS for the callback contract). Callback
     # exceptions are isolated inside invoke_hook and malformed returns are
     # dropped by the helper, so a broken plugin can never break

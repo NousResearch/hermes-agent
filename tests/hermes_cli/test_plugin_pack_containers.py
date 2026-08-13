@@ -1,6 +1,7 @@
 """Plugin-pack tuple and alias regressions from #85057, after #118838."""
 
 import json
+from datetime import date
 from textwrap import indent
 
 import pytest
@@ -83,3 +84,20 @@ def test_export_omits_cycles_without_losing_shared_acyclic_values(container):
     # Sanitizing must not mutate either the caller's cycle or its shared data.
     assert (node["loop"] if isinstance(node, dict) else node[1]) is node
     assert shared == {"voice": "nova"}
+
+
+@pytest.mark.parametrize("unsupported", [{"set"}, date(2026, 8, 13), b"bytes", object()],
+                         ids=["set", "date", "bytes", "object"])
+def test_export_retains_the_unsupported_leaf_filter(unsupported):
+    # Retain the original PR's follow-up contract when adding tuple traversal.
+    assert _strip_forbidden_keys({
+        "scalars": ["kept", 7, 1.5, True, None],
+        "mapping": {"kept": "yes", "unsupported": unsupported},
+        "sequence": ["first", unsupported, {"kept": "last"}],
+        "tuple": ("first", unsupported, "last"),
+    }) == {
+        "scalars": ["kept", 7, 1.5, True, None],
+        "mapping": {"kept": "yes"},
+        "sequence": ["first", {"kept": "last"}],
+        "tuple": ["first", "last"],
+    }

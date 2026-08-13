@@ -2639,11 +2639,13 @@ def get_model_context_length(
             logger.debug("MoA aggregator context-length resolution failed", exc_info=True)
         # Fall through to the generic default if aggregator resolution failed.
 
-    # 0b. model_overrides config — per-provider+model context_window override.
-    # This is the supported self-unblock path for models with wrong or missing
-    # context in models.dev (#84482) and for custom/local models not in the
-    # catalog (#8731). Checked before custom_providers (step 0c) and before any
-    # network probe so it never blocks.
+    # 0b. model_overrides config — EXPLICIT per-provider+model context_window
+    # override only (fill-gap _default entries are applied later, inside
+    # lookup_models_dev_context at step 5f, once the catalog has actually
+    # missed — so a _default can never preempt custom_providers or live
+    # probes). This is the supported self-unblock path for models with
+    # wrong context in models.dev (#84482) and for custom/local models
+    # (#8731). Config-read only; never blocks on the network.
     if provider and model:
         try:
             from agent.models_dev import _override_context_window

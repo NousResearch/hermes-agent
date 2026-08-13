@@ -9,8 +9,10 @@ import pytest
 from agent.models_dev import (
     PROVIDER_TO_MODELS_DEV,
     _extract_context,
+    _default_model_override,
+    _explicit_model_override,
     _override_context_window,
-    _resolve_model_override,
+    _override_for,
     fetch_models_dev,
     get_model_capabilities,
     get_model_info,
@@ -407,7 +409,7 @@ class TestModelOverrides:
         import agent.models_dev as md
         return patch.object(md, "_load_model_overrides", return_value=overrides_dict)
 
-    # --- _resolve_model_override ---
+    # --- override resolution ---
 
     def test_per_provider_model_override(self):
         """Per-provider+model override is found first."""
@@ -417,39 +419,90 @@ class TestModelOverrides:
             },
         }
         with self._setup_overrides(overrides):
-            result = _resolve_model_override("upstage", "solar-pro4")
+            result = _explicit_model_override("upstage", "solar-pro4")
         assert result is not None
         assert result["context_window"] == 524288
 
-    def test_per_provider_default_fallback(self):
-        """Per-provider _default is used when model not found."""
+    def test_explicit_override_case_insensitive_model(self):
+        """Model ids match case-insensitively, mirroring catalog lookup."""
+        overrides = {
+            "upstage": {
+                "Solar-Pro4": {"context_window": 524288},
+            },
+        }
+        with self._setup_overrides(overrides):
+            result = _explicit_model_override("upstage", "solar-pro4")
+        assert result is not None
+        assert result["context_window"] == 524288
+
+    def test_provider_key_accepts_either_id_space(self):
+        """Override keyed by Hermes id resolves for models.dev id and back."""
+        overrides = {
+            "copilot": {
+                "my-model": {"context_window": 111111},
+            },
+        }
+        with self._setup_overrides(overrides):
+            # Caller passes the models.dev id; config keyed by Hermes id.
+            result = _explicit_model_override("github-copilot", "my-model")
+        assert result is not None
+        assert result["context_window"] == 111111
+
+        overrides = {
+            "github-copilot": {
+                "my-model": {"context_window": 222222},
+            },
+        }
+        with self._setup_overrides(overrides):
+            # Caller passes the Hermes id; config keyed by models.dev id.
+            result = _explicit_model_override("copilot", "my-model")
+        assert result is not None
+        assert result["context_window"] == 222222
+
+    def test_default_fills_gap_for_unknown_model(self):
+        """_default applies to models the catalog does not know."""
         overrides = {
             "upstage": {
                 "_default": {"context_window": 128000},
             },
         }
         with self._setup_overrides(overrides):
-            result = _resolve_model_override("upstage", "unknown-model")
+            result = _override_for("upstage", "unknown-model", catalog_hit=False)
         assert result is not None
         assert result["context_window"] == 128000
 
+    def test_default_does_not_clamp_catalog_known_model(self):
+        """FILL-GAP semantics: _default never displaces catalog data.
+
+        A `_default: {context_window: 128000}` must not clamp every
+        catalog-known model of the provider — it only fills catalog misses.
+        """
+        overrides = {
+            "upstage": {
+                "_default": {"context_window": 128000},
+            },
+            "_default": {"context_window": 65536},
+        }
+        with self._setup_overrides(overrides):
+            result = _override_for("upstage", "known-model", catalog_hit=True)
+        assert result is None
+
     def test_global_default_fallback(self):
-        """Global _default is used when provider not found."""
+        """Global _default is used when provider has no section."""
         overrides = {
             "_default": {"context_window": 65536},
         }
         with self._setup_overrides(overrides):
-            result = _resolve_model_override("unknown-provider", "unknown-model")
+            result = _default_model_override("unknown-provider")
         assert result is not None
         assert result["context_window"] == 65536
 
     def test_no_override_returns_none(self):
-        """No override found returns None."""
         with self._setup_overrides({}):
-            result = _resolve_model_override("anthropic", "claude-sonnet-4")
-        assert result is None
+            assert _explicit_model_override("anthropic", "claude-sonnet-4") is None
+            assert _default_model_override("anthropic") is None
 
-    def test_per_provider_model_beats_default(self):
+    def test_explicit_beats_default(self):
         """Per-provider+model wins over per-provider _default."""
         overrides = {
             "upstage": {
@@ -458,12 +511,11 @@ class TestModelOverrides:
             },
         }
         with self._setup_overrides(overrides):
-            result = _resolve_model_override("upstage", "solar-pro4")
+            result = _override_for("upstage", "solar-pro4", catalog_hit=False)
         assert result is not None
         assert result["context_window"] == 524288
 
     def test_per_provider_default_beats_global(self):
-        """Per-provider _default wins over global _default."""
         overrides = {
             "upstage": {
                 "_default": {"context_window": 128000},
@@ -471,11 +523,11 @@ class TestModelOverrides:
             "_default": {"context_window": 65536},
         }
         with self._setup_overrides(overrides):
-            result = _resolve_model_override("upstage", "unknown-model")
+            result = _default_model_override("upstage")
         assert result is not None
         assert result["context_window"] == 128000
 
-    # --- _override_context_window ---
+    # --- _override_context_window (explicit-only, early-chain) ---
 
     def test_override_context_window_returns_value(self):
         overrides = {
@@ -502,6 +554,35 @@ class TestModelOverrides:
             ctx = _override_context_window("upstage", "bad-model")
         assert ctx is None
 
+    def test_override_context_window_ignores_default(self):
+        """Early-chain lookup is explicit-only: a _default must not preempt
+        more specific sources (custom_providers, live probes)."""
+        overrides = {
+            "upstage": {
+                "_default": {"context_window": 128000},
+            },
+        }
+        with self._setup_overrides(overrides):
+            ctx = _override_context_window("upstage", "syn-pro")
+        assert ctx is None
+
+    def test_malformed_context_window_warns_once(self, caplog):
+        """Garbage values are rejected with a one-shot warning, not silence."""
+        import logging
+
+        import agent.models_dev as md
+        md._OVERRIDE_WARNED_KEYS.clear()
+        overrides = {
+            "upstage": {
+                "bad-model": {"context_window": "512k"},
+            },
+        }
+        with self._setup_overrides(overrides), caplog.at_level(logging.WARNING):
+            assert _override_context_window("upstage", "bad-model") is None
+            assert _override_context_window("upstage", "bad-model") is None
+        warnings = [r for r in caplog.records if "model_overrides" in r.message]
+        assert len(warnings) == 1
+
     # --- get_model_capabilities with overrides ---
 
     def test_caps_override_unknown_model(self):
@@ -526,7 +607,7 @@ class TestModelOverrides:
         assert caps.supports_tools is True
 
     def test_caps_override_patches_existing_catalog_entry(self):
-        """Override patches specific fields on a known catalog entry (#84482)."""
+        """Explicit override patches specific fields on a known entry (#84482)."""
         overrides = {
             "anthropic": {
                 "claude-sonnet-4": {
@@ -544,8 +625,20 @@ class TestModelOverrides:
         assert caps.supports_vision is True
         assert caps.supports_tools is True
 
+    def test_caps_default_does_not_clamp_catalog_model(self):
+        """A _default must not displace catalog data for known models."""
+        overrides = {
+            "anthropic": {
+                "_default": {"context_window": 1000},
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
+            caps = get_model_capabilities("anthropic", "claude-sonnet-4")
+        assert caps is not None
+        assert caps.context_window != 1000
+
     def test_caps_no_override_no_catalog_returns_none(self):
-        """No override and no catalog entry → None."""
         with self._setup_overrides({}), \
              patch("agent.models_dev.fetch_models_dev", return_value={}):
             caps = get_model_capabilities("anthropic", "unknown-model")
@@ -571,7 +664,6 @@ class TestModelOverrides:
     # --- lookup_models_dev_context with overrides ---
 
     def test_context_lookup_override_wins_over_catalog(self):
-        """Override context_window wins over models.dev catalog value."""
         overrides = {
             "anthropic": {
                 "claude-opus-4-6": {"context_window": 500000},
@@ -583,7 +675,6 @@ class TestModelOverrides:
         assert ctx == 500000
 
     def test_context_lookup_override_for_unknown_provider(self):
-        """Override works for providers not in PROVIDER_TO_MODELS_DEV."""
         overrides = {
             "upstage": {
                 "solar-pro4": {"context_window": 524288},
@@ -594,18 +685,46 @@ class TestModelOverrides:
             ctx = lookup_models_dev_context("upstage", "solar-pro4")
         assert ctx == 524288
 
-    # --- get_model_info with overrides ---
+    def test_context_lookup_default_fills_catalog_miss(self):
+        """_default supplies context for a model the catalog lacks."""
+        overrides = {
+            "anthropic": {
+                "_default": {"context_window": 77777},
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
+            ctx = lookup_models_dev_context("anthropic", "model-not-in-catalog")
+        assert ctx == 77777
+
+    def test_context_lookup_default_does_not_clamp_catalog(self):
+        """_default must not beat a catalog-known model's real context."""
+        overrides = {
+            "anthropic": {
+                "_default": {"context_window": 1000},
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
+            ctx = lookup_models_dev_context("anthropic", "claude-opus-4-6")
+        assert ctx == 1000000  # catalog value, not the _default
+
+    # --- get_model_info with overrides (canonical schema) ---
 
     def test_model_info_override_for_unknown_model(self):
-        """Override provides full metadata for a model not in the catalog."""
+        """Canonical-schema override provides metadata for an unknown model.
+
+        Same key space as every other consumer — context_window,
+        max_output_tokens, supports_* — NOT the internal catalog shape.
+        """
         overrides = {
             "custom:my-vllm": {
                 "my-llava-model": {
-                    "name": "My LLaVA Model",
-                    "family": "llava",
-                    "reasoning": False,
-                    "tool_call": True,
-                    "limit": {"context": 8192, "output": 4096},
+                    "model_family": "llava",
+                    "supports_reasoning": False,
+                    "supports_tools": True,
+                    "context_window": 8192,
+                    "max_output_tokens": 4096,
                 },
             },
         }
@@ -613,7 +732,6 @@ class TestModelOverrides:
              patch("agent.models_dev.fetch_models_dev", return_value={}):
             info = get_model_info("custom:my-vllm", "my-llava-model")
         assert info is not None
-        assert info.name == "My LLaVA Model"
         assert info.family == "llava"
         assert info.context_window == 8192
         assert info.max_output == 4096
@@ -621,11 +739,15 @@ class TestModelOverrides:
         assert info.reasoning is False
 
     def test_model_info_override_merges_with_catalog(self):
-        """Override patches specific fields on a known catalog entry."""
+        """Override patches context without clobbering the catalog's output.
+
+        The limit sub-dict is MERGED: an override setting only
+        context_window preserves the catalog's limit.output.
+        """
         overrides = {
             "anthropic": {
                 "claude-sonnet-4-6": {
-                    "limit": {"context": 500000, "output": 64000},
+                    "context_window": 500000,
                 },
             },
         }
@@ -633,8 +755,79 @@ class TestModelOverrides:
              patch("agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
             info = get_model_info("anthropic", "claude-sonnet-4-6")
         assert info is not None
-        # Override wins
+        # Override wins for the field it sets
         assert info.context_window == 500000
+        # Sub-dict merge: catalog's limit.output survives
+        assert info.max_output == 64000
         # Non-overridden fields preserved from catalog
         assert info.name == "claude-sonnet-4-6"
 
+    def test_model_info_default_does_not_clamp_catalog(self):
+        """_default fills gaps only — known models keep catalog metadata."""
+        overrides = {
+            "anthropic": {
+                "_default": {"context_window": 1000},
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
+            info = get_model_info("anthropic", "claude-sonnet-4-6")
+        assert info is not None
+        assert info.context_window == 1000000
+
+    # --- e2e config plumbing (real config.yaml, no _load_model_overrides mock) ---
+
+    def test_e2e_overrides_load_from_real_config_yaml(self, tmp_path, monkeypatch):
+        """The real config path works end-to-end: config.yaml on disk ->
+        load_config_readonly -> cfg_get -> override applied.
+
+        Every other test mocks _load_model_overrides; this one exercises
+        the actual wiring (key name, cfg accessor, cache invalidation).
+        """
+        import importlib
+
+        import agent.models_dev as md
+        import hermes_cli.config as hc
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "model_overrides:\n"
+            "  upstage:\n"
+            "    solar-pro4:\n"
+            "      context_window: 524288\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(home))
+
+        # Reset caches that memoize config identity/paths.
+        monkeypatch.setattr(md, "_OVERRIDE_CACHE", None)
+        monkeypatch.setattr(md, "_OVERRIDE_CACHE_CFG_ID", 0)
+        hc_cache = getattr(hc, "_LOAD_CONFIG_CACHE", None)
+        if isinstance(hc_cache, dict):
+            hc_cache.clear()
+        raw_cache = getattr(hc, "_RAW_CONFIG_CACHE", None)
+        if isinstance(raw_cache, dict):
+            raw_cache.clear()
+        importlib.reload  # no-op guard: modules stay loaded, caches cleared
+
+        with patch("agent.models_dev.fetch_models_dev", return_value={}):
+            ctx = lookup_models_dev_context("upstage", "solar-pro4")
+        assert ctx == 524288
+
+    def test_model_info_vision_override_sets_input_modality(self):
+        """supports_vision: true surfaces as an image input modality."""
+        overrides = {
+            "custom:my-vllm": {
+                "my-model": {
+                    "supports_vision": True,
+                    "context_window": 8192,
+                },
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            info = get_model_info("custom:my-vllm", "my-model")
+        assert info is not None
+        assert "image" in info.input_modalities
+        assert info.attachment is True

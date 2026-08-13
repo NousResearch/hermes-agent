@@ -2540,18 +2540,33 @@ DEFAULT_CONFIG = {
     },
 
     # Per-model metadata overrides — manually declare context_window,
-    # max_output_tokens, capabilities, or cost for any provider+model.
-    # Overrides win over models.dev, OpenRouter, and hardcoded defaults.
+    # max_output_tokens, capabilities, or model family for any
+    # provider+model. Recognized fields: context_window,
+    # max_output_tokens, supports_tools, supports_vision,
+    # supports_reasoning, model_family.
     #
-    # Two scopes:
-    #   1. Per-provider+model: model_overrides.<provider>.<model_id>
-    #   2. Per-provider default: model_overrides.<provider>._default
-    #   3. Global default:      model_overrides._default
+    # Semantics:
+    #   1. Explicit (model_overrides.<provider>.<model_id>): wins over
+    #      models.dev, OpenRouter, and hardcoded defaults for the fields
+    #      it sets. NOTE: an explicit model.context_length (global) and a
+    #      custom_providers per-model context_length are user settings at
+    #      other layers and are consulted in the resolution chain order
+    #      documented in agent/model_metadata.py.
+    #   2. Fill-gap defaults (model_overrides.<provider>._default and
+    #      model_overrides._default): apply ONLY to models the catalog
+    #      does not know. They never displace catalog data for known
+    #      models, so a _default cannot accidentally clamp every model
+    #      of a provider.
     #
-    # An unknown model id (not in models.dev) inherits base metadata from
-    # its family/dated-snapshot entry before patching, so overriding a
-    # model the catalog doesn't know yet is the supported self-unblock
-    # path (#84482).
+    # An unknown model id (not in models.dev) starts from safe defaults
+    # (200K context, tools on, vision/reasoning off) and the override
+    # patches the fields it sets — overriding a model the catalog
+    # doesn't know yet is the supported self-unblock path (#84482,
+    # #8731).
+    #
+    # Provider keys accept the Hermes provider id (as used elsewhere in
+    # this file) or the models.dev provider id; model ids match
+    # case-insensitively.
     #
     # Example:
     #   model_overrides:
@@ -2566,7 +2581,7 @@ DEFAULT_CONFIG = {
     #         supports_vision: true
     #         supports_reasoning: false
     #         supports_tools: true
-    #     _default:
+    #     _default:            # fill-gap only: models not in the catalog
     #       context_window: 128000
     "model_overrides": {},
 

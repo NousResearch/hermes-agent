@@ -17,6 +17,7 @@ import {
   $worktreeRefreshToken,
   ALL_PROJECTS,
   beginSessionMutation,
+  captureSessionTombstoneGenerations,
   createProject,
   endSessionMutation,
   enterProject,
@@ -31,8 +32,10 @@ import {
   refreshWorktrees,
   resolveNewSessionCwd,
   scanAndRecordRepos,
+  sessionTombstoneLifecycleChanged,
   startWorkInRepo,
-  tombstoneSessions
+  tombstoneSessions,
+  untombstoneSessions
 } from './projects'
 
 vi.mock('@/i18n', () => ({
@@ -866,6 +869,22 @@ describe('tombstone pruning', () => {
   beforeEach(() => {
     $removedSessionIds.set(new Set())
     $sessionMutationsInFlight.set(new Set())
+  })
+
+  it('tracks add and remove generations per target without invalidating unrelated ids', () => {
+    const beforeAdd = captureSessionTombstoneGenerations()
+
+    tombstoneSessions(['sess-1'])
+
+    expect(sessionTombstoneLifecycleChanged(beforeAdd, ['sess-1'])).toBe(true)
+    expect(sessionTombstoneLifecycleChanged(beforeAdd, ['sess-2'])).toBe(false)
+
+    const afterAdd = captureSessionTombstoneGenerations()
+    tombstoneSessions(['sess-1'])
+    expect(sessionTombstoneLifecycleChanged(afterAdd, ['sess-1'])).toBe(false)
+
+    untombstoneSessions(['sess-1'])
+    expect(sessionTombstoneLifecycleChanged(afterAdd, ['sess-1'])).toBe(true)
   })
 
   it('keeps an in-flight delete tombstone even when the backend snapshot omits it', async () => {

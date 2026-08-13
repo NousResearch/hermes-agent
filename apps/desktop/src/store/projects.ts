@@ -72,9 +72,69 @@ function projectsStaleBackendError(): Error {
 // refresh once the server snapshot has caught up.
 export const $removedSessionIds = atom<Set<string>>(new Set())
 
+/**
+ * Per-id tombstone lifecycle generations. Membership alone cannot distinguish
+ * "unchanged" from an add -> remove ABA cycle while a by-id request is in
+ * flight. Keep immutable snapshots so async publishers can reject any response
+ * whose target changed, without blocking unrelated sessions or a later explicit
+ * resume that starts after the lifecycle has settled.
+ */
+export type SessionTombstoneGenerationSnapshot = ReadonlyMap<string, number>
+let sessionTombstoneGenerations: SessionTombstoneGenerationSnapshot = new Map()
+
+function setRemovedSessionIds(next: Set<string>): void {
+  const current = $removedSessionIds.get()
+  const changed = new Set<string>()
+
+  for (const id of current) {
+    if (!next.has(id)) {
+      changed.add(id)
+    }
+  }
+
+  for (const id of next) {
+    if (!current.has(id)) {
+      changed.add(id)
+    }
+  }
+
+  if (!changed.size) {
+    return
+  }
+
+  const generations = new Map(sessionTombstoneGenerations)
+
+  for (const id of changed) {
+    generations.set(id, (generations.get(id) ?? 0) + 1)
+  }
+
+  // Publish the generation first: a subscriber reacting to membership must
+  // already observe the lifecycle change when it starts a by-id lookup.
+  sessionTombstoneGenerations = generations
+  $removedSessionIds.set(next)
+}
+
+export function captureSessionTombstoneGenerations(): SessionTombstoneGenerationSnapshot {
+  return sessionTombstoneGenerations
+}
+
+export function sessionTombstoneLifecycleChanged(
+  snapshot: SessionTombstoneGenerationSnapshot,
+  ids: Array<null | string | undefined>
+): boolean {
+  return ids.some(id => {
+    const target = id?.trim()
+
+    if (!target) {
+      return false
+    }
+
+    return snapshot.get(target) !== sessionTombstoneGenerations.get(target)
+  })
+}
+
 export function tombstoneSessions(ids: Array<null | string | undefined>): void {
   const next = new Set($removedSessionIds.get())
-  const before = next.size
 
   for (const id of ids) {
     const trimmed = id?.trim()
@@ -84,9 +144,7 @@ export function tombstoneSessions(ids: Array<null | string | undefined>): void {
     }
   }
 
-  if (next.size !== before) {
-    $removedSessionIds.set(next)
-  }
+  setRemovedSessionIds(next)
 }
 
 export function untombstoneSessions(ids: Array<null | string | undefined>): void {
@@ -106,9 +164,7 @@ export function untombstoneSessions(ids: Array<null | string | undefined>): void
     }
   }
 
-  if (next.size !== current.size) {
-    $removedSessionIds.set(next)
-  }
+  setRemovedSessionIds(next)
 }
 
 // Ids whose delete/archive RPC is still in flight. Their tombstones are pinned
@@ -465,7 +521,7 @@ function applyProjectTreePayload(res: ProjectTreePayload): void {
     const pending = new Set([...tombstones].filter(id => scoped.has(id) || inFlight.has(id)))
 
     if (pending.size !== tombstones.size) {
-      $removedSessionIds.set(pending)
+      setRemovedSessionIds(pending)
     }
   }
 }

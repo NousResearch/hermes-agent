@@ -188,6 +188,7 @@ gateway:
   reasoning:
     level_default:             "medium (par défaut)"
     level_disabled:            "none (désactivé)"
+    busy_mid_turn:             "⏳ L'agent utilise actuellement le niveau de raisonnement **{level}** — `/reasoning` ne peut pas le modifier en cours de tour. Pour le changer, attendez la réponse actuelle ou utilisez d'abord `/stop`."
     scope_session:             "remplacement de session"
     scope_global:              "configuration globale"
     status:                    "🧠 **Paramètres de raisonnement**\n\n**Effort :** `{level}`\n**Portée :** {scope}\n**Affichage :** {display}\n\n_Usage :_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"

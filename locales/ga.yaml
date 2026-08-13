@@ -192,6 +192,7 @@ gateway:
   reasoning:
     level_default:             "medium (réamhshocraithe)"
     level_disabled:            "none (díchumasaithe)"
+    busy_mid_turn:             "⏳ Tá an gníomhaire ag rith le réasúnaíocht **{level}** — ní féidir le `/reasoning` an leibhéal a athrú i lár seal. Chun é a athrú, fan leis an bhfreagra reatha nó úsáid `/stop` ar dtús."
     scope_session:             "sárú seisiúin"
     scope_global:              "cumraíocht dhomhanda"
     status:                    "🧠 **Socruithe Réasúnaíochta**\n\n**Iarracht:** `{level}`\n**Scóip:** {scope}\n**Taispeáint:** {display}\n\n_Úsáid:_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"

@@ -188,6 +188,7 @@ gateway:
   reasoning:
     level_default:             "medium（默认）"
     level_disabled:            "none（已禁用）"
+    busy_mid_turn:             "⏳ 代理当前正以 **{level}** 推理级别运行 — `/reasoning` 无法在回合进行中更改级别。若要更改，请等待当前回复，或先使用 `/stop`。"
     scope_session:             "会话覆盖"
     scope_global:              "全局配置"
     status:                    "🧠 **推理设置**\n\n**强度：** `{level}`\n**作用域：** {scope}\n**显示：** {display}\n\n_用法：_ `/reasoning <none|minimal|low|medium|high|xhigh|max|ultra|reset|show|hide> [--global]`"

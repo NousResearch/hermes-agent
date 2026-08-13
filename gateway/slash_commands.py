@@ -3421,6 +3421,17 @@ class GatewaySlashCommandsMixin:
         self._evict_cached_agent(session_key)
         return t("gateway.reasoning.set_session", effort=value)
 
+    @staticmethod
+    def _reasoning_level_label(reasoning_config: Optional[dict]) -> tuple[str, str]:
+        """Return the display label and picker value for a reasoning config."""
+        if reasoning_config is None:
+            return t("gateway.reasoning.level_default"), "medium"
+        if reasoning_config.get("enabled") is False:
+            return t("gateway.reasoning.level_disabled"), "none"
+        level = str(reasoning_config.get("effort") or "medium")
+        return level, level
+
+
     def _reasoning_picker_choices(self, current_effort: str) -> list:
         """Build the choice list for the interactive /reasoning picker."""
         from hermes_constants import VALID_REASONING_EFFORTS
@@ -3487,8 +3498,14 @@ class GatewaySlashCommandsMixin:
             logger.warning("send_choice_picker failed, falling back to text: %s", e)
             return False
 
-    async def _handle_reasoning_command(self, event: MessageEvent) -> Optional[str]:
-        """Handle /reasoning command — manage reasoning effort and display toggle.
+    async def _handle_reasoning_command(
+        self,
+        event: MessageEvent,
+        *,
+        running_agent=None,
+        session_key: Optional[str] = None,
+    ) -> Optional[str]:
+        """Handle /reasoning status, mutations, and active-turn constraints.
 
         Usage:
             /reasoning                       Show current effort level and display state
@@ -3498,10 +3515,44 @@ class GatewaySlashCommandsMixin:
             /reasoning show|on               Show model reasoning in responses
             /reasoning hide|off              Hide model reasoning from responses
         """
-        from gateway.run import _platform_config_key
+        from gateway.run import _AGENT_PENDING_SENTINEL, _platform_config_key
 
         raw_args = event.get_command_args().strip()
         args, persist_global = self._parse_reasoning_command_args(raw_args)
+        if running_agent is not None:
+            if not session_key:
+                session_key = self._session_key_for_source(event.source)
+            if args in {"show", "on", "hide", "off"}:
+                return self._apply_reasoning_selection(
+                    session_key,
+                    _platform_config_key(event.source.platform),
+                    args,
+                    persist_global=persist_global,
+                )
+
+            if running_agent is _AGENT_PENDING_SENTINEL:
+                session_model = str(
+                    (
+                        (getattr(self, "_session_model_overrides", {}) or {}).get(
+                            session_key
+                        )
+                        or {}
+                    ).get("model")
+                    or ""
+                )
+                active_reasoning = self._resolve_session_reasoning_config(
+                    source=event.source,
+                    session_key=session_key,
+                    model=session_model,
+                )
+            else:
+                # A real agent's explicit None means provider-default reasoning.
+                # Never replace it with runner-global state from another session.
+                active_reasoning = getattr(running_agent, "reasoning_config", None)
+
+            level, _ = self._reasoning_level_label(active_reasoning)
+            return t("gateway.reasoning.busy_mid_turn", level=level)
+
         # Normalize the source (Telegram DM topic recovery) before deriving
         # the override key so storage matches the key the next message turn
         # reads — same fix as /model (#30479).
@@ -3521,16 +3572,9 @@ class GatewaySlashCommandsMixin:
 
         if not raw_args:
             # Show current state
-            rc = self._reasoning_config
-            if rc is None:
-                level = t("gateway.reasoning.level_default")
-                current_effort = "medium"
-            elif rc.get("enabled") is False:
-                level = t("gateway.reasoning.level_disabled")
-                current_effort = "none"
-            else:
-                level = rc.get("effort", "medium")
-                current_effort = level
+            level, current_effort = self._reasoning_level_label(
+                self._reasoning_config
+            )
             display_state = (
                 t("gateway.reasoning.display_on")
                 if self._show_reasoning

@@ -1985,6 +1985,7 @@ export const en: Translations = {
       renameDesc: 'Leave empty to clear.',
       untitledPlaceholder: 'Untitled session',
       untitledChat: id => `Chat ${id}`,
+      messageCount: count => `${count} ${count === 1 ? 'message' : 'messages'}`,
       ageNow: 'now',
       ageDay: 'd',
       ageHour: 'h',

@@ -2176,6 +2176,7 @@ export const zh: Translations = {
       renameDesc: '留空则清除。',
       untitledPlaceholder: '无标题会话',
       untitledChat: id => `会话 ${id}`,
+      messageCount: count => `${count} 条消息`,
       ageNow: '刚刚',
       ageDay: '天',
       ageHour: '时',

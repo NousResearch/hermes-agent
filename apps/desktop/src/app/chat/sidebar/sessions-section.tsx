@@ -163,6 +163,11 @@ interface SidebarSessionsSectionProps {
   // pinned, messaging groups, and the project overview, where the order isn't
   // strictly by recency so a bucket would be misleading.
   grouping?: 'date' | 'none' | 'status'
+  // Inbox style: render every flat session row as a three-line card (project ·
+  // age / title / model · size). A render variant that composes with whichever
+  // grouping is active — the flat recents list opts in; dense tree surfaces
+  // (pinned, projects, messaging) keep the one-line row.
+  card?: boolean
 }
 
 export function SidebarSessionsSection({
@@ -204,7 +209,8 @@ export function SidebarSessionsSection({
   projectBackRow,
   dndSensors,
   showProfileTags = false,
-  grouping = 'none'
+  grouping = 'none',
+  card = false
 }: SidebarSessionsSectionProps) {
   const { t } = useI18n()
   const dividerLabels = t.sidebar.dateDivider
@@ -243,6 +249,7 @@ export function SidebarSessionsSection({
     (session: SessionInfo, draggable: boolean, branchStem?: string) => {
       const rowProps = {
         branchStem,
+        card,
         isPinned: pinned,
         isSelected: session.id === activeSessionId,
         onArchive: () => onArchiveSession(session.id),
@@ -263,6 +270,7 @@ export function SidebarSessionsSection({
     },
     [
       activeSessionId,
+      card,
       onArchiveSession,
       onBranchSession,
       onDeleteSession,
@@ -444,6 +452,7 @@ export function SidebarSessionsSection({
     const virtual = (
       <VirtualSessionList
         activeSessionId={activeSessionId}
+        card={card}
         className={contentClassName}
         dividerAction={dividerAction}
         onArchiveSession={onArchiveSession}

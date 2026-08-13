@@ -36,6 +36,7 @@ import {
   $dismissedAutoProjectIds,
   $panesFlipped,
   $pinnedSessionIds,
+  $sidebarCardRows,
   $sidebarCronOpen,
   $sidebarFiltersActive,
   $sidebarGrouping,
@@ -334,6 +335,7 @@ export function ChatSidebar({
   const pullRequests = useStore($pullRequestsByBranch)
   const filtersActive = useStore($sidebarFiltersActive)
   const showArchived = useStore($sidebarShowArchived)
+  const cardRows = useStore($sidebarCardRows)
   const archivedSessions = useStore($archivedSessions)
   const dotStates = useStore($sessionDotStateById)
   // The active sort key as an id order. The flat list applies it within its
@@ -1598,6 +1600,10 @@ export function ChatSidebar({
                 // list does — only the flat list can swap its dividers for
                 // WORKING / DONE.
                 grouping={showArchived || rankedGlobally ? 'none' : grouping === 'status' ? 'status' : 'date'}
+                // Inbox style is a render variant, not a grouping: only the
+                // flat recents list opts in, and only outside the project tree
+                // (whose rows already carry workspace context).
+                card={cardRows && !agentsGrouped}
                 groups={displayAgentGroups}
                 headerAction={
                   inProject && enteredProject ? (

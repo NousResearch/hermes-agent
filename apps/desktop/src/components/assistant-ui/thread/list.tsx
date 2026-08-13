@@ -17,6 +17,7 @@ import {
 } from 'react'
 import { type GetTargetScrollTop, useStickToBottom } from 'use-stick-to-bottom'
 
+import { usePaneLifecycle } from '@/components/pane-shell/pane-visibility'
 import { useI18n } from '@/i18n'
 import { messagePaintWeight } from '@/lib/render-weight'
 import { cn } from '@/lib/utils'
@@ -96,6 +97,15 @@ const MIN_VISIBLE_GROUPS = 8
 // interruptibly, so the only thing a smaller budget changes is how much work
 // blocks the click-to-paint path.
 const FIRST_PAINT_BUDGET = 20
+// A hot-hidden transcript is retained for instant tab return, but keeping its
+// full scrollback mounted defeats the bounded pane cache. Preserve only the
+// live tail while hidden; revealing it resumes stepped backfill.
+export const HIDDEN_TRANSCRIPT_RENDER_BUDGET = 40
+
+export const transcriptPaneBudget = (mountedPanes: number, hidden: boolean): number =>
+  hidden
+    ? HIDDEN_TRANSCRIPT_RENDER_BUDGET
+    : Math.max(Math.ceil(RENDER_BUDGET / Math.max(1, mountedPanes)), RENDER_BUDGET / 4)
 // Units the backfill adds per committed step (see the backfill effect). ~8-15
 // ordinary turns or 1-2 tool-heavy ones per frame — big enough to fill a page
 // in ~10 frames, small enough that no single commit approaches a frame budget.
@@ -354,8 +364,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   }, [])
 
   const mountedPanes = useStore($mountedTranscriptPanes)
-  // This pane's share of the render budget — see $mountedTranscriptPanes.
-  const paneBudget = Math.max(Math.ceil(RENDER_BUDGET / Math.max(1, mountedPanes)), RENDER_BUDGET / 4)
+  const paneLifecycle = usePaneLifecycle()
+  // Hidden panes retain only a live-tail budget. Visible panes share the normal
+  // screen budget; a reveal backfills older rows in bounded transition steps.
+  const paneBudget = transcriptPaneBudget(mountedPanes, paneLifecycle === 'hot-hidden')
 
   const [renderBudget, setRenderBudget] = useState(FIRST_PAINT_BUDGET)
 
@@ -379,6 +391,10 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     setBudgetSessionKey(sessionKey)
     setHadGroups(hasGroups)
     setRenderBudget(FIRST_PAINT_BUDGET)
+  } else if (renderBudget > paneBudget) {
+    // Apply the hidden budget during render so React never first commits the
+    // stale full transcript after this pane moves to the background.
+    setRenderBudget(paneBudget)
   } else if (hadGroups !== hasGroups) {
     setHadGroups(hasGroups)
 

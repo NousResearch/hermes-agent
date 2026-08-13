@@ -38,6 +38,11 @@ import { createBackendConnectionState } from './backend-connection-state'
 import { buildDesktopBackendEnv, hermesManagedNodePathEntries, normalizeHermesHomeRoot } from './backend-env'
 import { isReauthRequiredError, waitForHermesReady } from './backend-health'
 import {
+  backendCommandMatches,
+  createBackendOwnership,
+  createBackendShutdownCoordinator
+} from './backend-ownership'
+import {
   canImportHermesCli,
   execProbeSync,
   PROBE_TIMEOUT_MS,
@@ -467,7 +472,7 @@ if (IS_WINDOWS) {
 
     try {
       app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
-      app.exit(0)
+      void exitAfterBackendShutdown(0)
     } catch (error) {
       console.error(`[hermes] --no-sandbox relaunch failed: ${error?.message || error}`)
     }
@@ -655,6 +660,7 @@ const DESKTOP_CONNECTION_CONFIG_PATH = path.join(app.getPath('userData'), 'conne
 const DESKTOP_INSTALLATION_PATH = path.join(app.getPath('userData'), 'desktop-installation.json')
 const DESKTOP_UPDATE_CONFIG_PATH = path.join(app.getPath('userData'), 'updates.json')
 const DESKTOP_WINDOW_STATE_PATH = path.join(app.getPath('userData'), 'window-state.json')
+const DESKTOP_BACKEND_OWNERSHIP_PATH = path.join(app.getPath('userData'), 'backend-ownership.json')
 // active-profile.json records which Hermes profile the desktop launches its
 // local backend as. When set, startHermes() passes `hermes --profile <name>
 // dashboard …`, which deterministically pins HERMES_HOME (see
@@ -1122,6 +1128,7 @@ const POOL_IDLE_MS = Math.max(60_000, Number(process.env.HERMES_DESKTOP_POOL_IDL
 // killing one to honor the soft cap would abort a running agent.
 const POOL_KEEPALIVE_FRESH_MS = 90_000
 let poolIdleReaper = null
+let backendOrphanReapPromise = null
 // Auto-reload budget for renderer crashes, shared by EVERY window (primary,
 // secondary session, instance) so a crash loop anywhere is suppressed after
 // the same budget instead of reloading per-window forever. A deterministic
@@ -2883,6 +2890,226 @@ function forceKillProcessTree(pid) {
     // Already gone, or no permission — best effort; the unlock wait below is
     // the real gate.
   }
+}
+
+function writeBackendOwnership(contents) {
+  fs.mkdirSync(path.dirname(DESKTOP_BACKEND_OWNERSHIP_PATH), { recursive: true })
+  const tempPath = `${DESKTOP_BACKEND_OWNERSHIP_PATH}.${process.pid}.tmp`
+
+  try {
+    fs.writeFileSync(tempPath, contents, { encoding: 'utf8', mode: 0o600 })
+    fs.renameSync(tempPath, DESKTOP_BACKEND_OWNERSHIP_PATH)
+  } finally {
+    try {
+      fs.rmSync(tempPath, { force: true })
+    } catch {
+      void 0
+    }
+  }
+}
+
+function execText(command, args) {
+  return new Promise<string>((resolve, reject) => {
+    execFile(command, args, hiddenWindowsChildOptions({ encoding: 'utf8', timeout: 3000 }), (error, stdout) => {
+      if (error) {
+        reject(error)
+      } else {
+        resolve(String(stdout || '').trim())
+      }
+    })
+  })
+}
+
+async function processStartMarker(pid) {
+  if (process.platform === 'linux') {
+    const stat = await fs.promises.readFile(`/proc/${pid}/stat`, 'utf8')
+    const fields = stat.slice(stat.lastIndexOf(')') + 1).trim().split(/\s+/)
+
+    if (!/^\d+$/.test(fields[19] || '')) {
+      throw new Error(`Invalid /proc start marker for PID ${pid}`)
+    }
+
+    return `linux:${fields[19]}`
+  }
+
+  if (IS_WINDOWS) {
+    const ticks = await execText('powershell.exe', [
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      `$p = Get-Process -Id ${pid} -ErrorAction Stop; $p.StartTime.ToUniversalTime().Ticks`
+    ])
+
+    if (!/^\d+$/.test(ticks)) {
+      throw new Error(`Invalid Windows start marker for PID ${pid}`)
+    }
+
+    return `win:${ticks}`
+  }
+
+  const started = await execText('ps', ['-p', String(pid), '-o', 'lstart='])
+
+  if (!started) {
+    throw new Error(`Missing process start marker for PID ${pid}`)
+  }
+
+  return `ps:${started}`
+}
+
+async function backendCommandForPid(pid) {
+  try {
+    const command = IS_WINDOWS ? 'powershell.exe' : 'ps'
+
+    const args = IS_WINDOWS
+      ? ['-NoProfile', '-NonInteractive', '-Command', `(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}').CommandLine`]
+      : ['-p', String(pid), '-o', 'command=']
+
+    return (await execText(command, args)) || null
+  } catch {
+    return null
+  }
+}
+
+async function processIdentityMatches(identity) {
+  try {
+    return (await processStartMarker(identity.pid)) === identity.startMarker
+  } catch (error) {
+    return error?.code === 'ENOENT' || error?.code === 'ESRCH' ? false : undefined
+  }
+}
+
+async function backendIdentityMatches(identity) {
+  const processMatches = await processIdentityMatches(identity)
+
+  if (processMatches !== true) {
+    return processMatches
+  }
+
+  const command = await backendCommandForPid(identity.pid)
+
+  return command === null ? undefined : backendCommandMatches(command)
+}
+
+async function stopOwnedBackend(identity) {
+  if ((await processIdentityMatches(identity)) !== true) {
+    return
+  }
+
+  if (IS_WINDOWS) {
+    forceKillProcessTree(identity.pid)
+  } else {
+    try {
+      process.kill(-identity.pid, 'SIGTERM')
+    } catch {
+      try {
+        process.kill(identity.pid, 'SIGTERM')
+      } catch {
+        return
+      }
+    }
+
+    const deadline = Date.now() + 1500
+
+    while (Date.now() < deadline) {
+      if ((await processIdentityMatches(identity)) !== true) {
+        return
+      }
+
+      await new Promise(resolve => setTimeout(resolve, 50))
+    }
+
+    // Revalidate immediately before escalation so PID reuse cannot target a
+    // replacement process.
+    if ((await processIdentityMatches(identity)) === true) {
+      try {
+        process.kill(-identity.pid, 'SIGKILL')
+      } catch {
+        process.kill(identity.pid, 'SIGKILL')
+      }
+    }
+  }
+
+  await new Promise(resolve => setTimeout(resolve, 50))
+  const remaining = await processIdentityMatches(identity)
+
+  if (remaining !== false) {
+    throw new Error(`Backend PID ${identity.pid} did not stop cleanly.`)
+  }
+}
+
+const backendOwnership = createBackendOwnership({
+  matchesIdentity: backendIdentityMatches,
+  stop: stopOwnedBackend,
+  store: {
+    read: () => {
+      try {
+        return fs.readFileSync(DESKTOP_BACKEND_OWNERSHIP_PATH, 'utf8')
+      } catch {
+        return null
+      }
+    },
+    write: writeBackendOwnership
+  }
+})
+
+let desktopParentStartMarkerPromise = null
+
+function desktopParentStartMarker() {
+  desktopParentStartMarkerPromise ??= processStartMarker(process.pid)
+
+  return desktopParentStartMarkerPromise
+}
+
+async function claimBackendChild(child, command, profile, nonce) {
+  try {
+    const identity = await backendOwnership.claim({
+      command,
+      nonce,
+      pid: child.pid,
+      profile,
+      startMarker: await processStartMarker(child.pid)
+    })
+
+    child.hermesBackendIdentity = identity
+
+    return identity
+  } catch (error) {
+    stopBackendChild(child)
+    await waitForBackendExit(child)
+    throw new Error(`Could not persist ownership for the Hermes backend: ${error.message}`)
+  }
+}
+
+function releaseBackendChild(child) {
+  const identity = child?.hermesBackendIdentity
+
+  if (!identity) {
+    return
+  }
+
+  try {
+    backendOwnership.release(identity)
+  } catch (error) {
+    rememberLog(`Could not release backend ownership for PID ${identity.pid}: ${error.message}`)
+  }
+}
+
+function reapOrphanedBackendsOnce() {
+  if (!backendOrphanReapPromise) {
+    backendOrphanReapPromise = backendOwnership
+      .reapOrphans()
+      .then(pids => {
+        if (pids.length) {
+          rememberLog(`Reaped orphaned desktop backend PID(s): ${pids.join(', ')}`)
+        }
+      })
+      .catch(error => {
+        backendOrphanReapPromise = null
+        throw error
+      })
+  }
+
+  return backendOrphanReapPromise
 }
 
 // Before handing off the update on Windows, the desktop MUST stop every backend
@@ -7350,6 +7577,7 @@ const desktopInstallationId = loadOrCreateInstallationId(DESKTOP_INSTALLATION_PA
 const sshBootstrapCoordinator = createBootstrapCoordinator()
 
 let sshQuitTeardownDone = false
+let backendQuitTeardownDone = false
 
 function sshScopeKey(profile) {
   return connectionScopeKey(profile) || ''
@@ -8050,42 +8278,52 @@ function sendConnectionApplied() {
 }
 
 async function waitForBackendExit(child, timeoutMs = 5000) {
-  if (!child) {
+  if (!child || child.exitCode !== null || child.signalCode !== null) {
     return
   }
 
-  if (child.exitCode !== null || child.signalCode !== null) {
-    return
-  }
+  const exited = () => child.exitCode !== null || child.signalCode !== null
 
-  await new Promise<void>(resolve => {
-    const timer = setTimeout(() => {
-      try {
-        if (IS_WINDOWS && Number.isInteger(child.pid)) {
-          forceKillProcessTree(child.pid)
-        } else if (Number.isInteger(child.pid)) {
-          // POSIX: SIGKILL the whole group (pgid==pid, start_new_session) so
-          // MCP grandchildren die with the backend. Fall back to the child.
-          try {
-            process.kill(-child.pid, 'SIGKILL')
-          } catch {
-            child.kill('SIGKILL')
-          }
-        } else {
-          child.kill('SIGKILL')
-        }
-      } catch {
-        // Already gone.
+  const wait = delay =>
+    new Promise<void>(resolve => {
+      if (exited()) {
+        resolve()
+
+        return
       }
 
-      resolve()
-    }, timeoutMs)
-
-    child.once('exit', () => {
-      clearTimeout(timer)
-      resolve()
+      const timer = setTimeout(resolve, delay)
+      child.once('exit', () => {
+        clearTimeout(timer)
+        resolve()
+      })
     })
-  })
+
+  await wait(timeoutMs)
+
+  if (exited()) {
+    return
+  }
+
+  try {
+    if (IS_WINDOWS && Number.isInteger(child.pid)) {
+      forceKillProcessTree(child.pid)
+    } else if (Number.isInteger(child.pid)) {
+      try {
+        process.kill(-child.pid, 'SIGKILL')
+      } catch {
+        child.kill('SIGKILL')
+      }
+    } else {
+      child.kill('SIGKILL')
+    }
+  } catch {
+    return
+  }
+
+  // Await the escalation as well; do not let shutdown or failed adoption race
+  // a still-running backend.
+  await wait(1000)
 }
 
 // The profile the primary (window) backend runs as. readActiveDesktopProfile()
@@ -8142,8 +8380,13 @@ async function ensureBackend(profile) {
     remoteBaseUrl: null
   }
 
-  entry.connectionPromise = spawnPoolBackend(key, entry).catch(error => {
-    backendPool.delete(key)
+  entry.connectionPromise = spawnPoolBackend(key, entry).catch(async error => {
+    if (backendPool.get(key) === entry) {
+      backendPool.delete(key)
+    }
+
+    stopBackendChild(entry.process)
+    await waitForBackendExit(entry.process)
     throw error
   })
   backendPool.set(key, entry)
@@ -8227,6 +8470,7 @@ function startPoolIdleReaper() {
 // local-spawn portion of startHermes() but without the boot-progress UI,
 // bootstrap, or remote handling (those belong to the primary backend only).
 async function spawnPoolBackend(profile, entry) {
+  await reapOrphanedBackendsOnce()
   // A profile may point at its OWN remote backend (connection.json
   // `profiles[name]`), or inherit the app-wide remote (env / global settings).
   // In either case there is no local child to spawn — we just verify the
@@ -8285,6 +8529,9 @@ async function spawnPoolBackend(profile, entry) {
 
   rememberLog(`Starting Hermes backend for profile "${profile}" via ${backend.label}`)
 
+  const parentStartMarker = await desktopParentStartMarker()
+  const backendNonce = crypto.randomBytes(16).toString('hex')
+
   const child = spawn(
     backend.command,
     backend.args,
@@ -8302,11 +8549,11 @@ async function spawnPoolBackend(profile, entry) {
         // Marks this dashboard backend as desktop-spawned so it runs the cron
         // scheduler tick loop (the gateway isn't running under the app).
         HERMES_DESKTOP: '1',
-        // Our PID so the backend's parent-death watchdog self-exits if we die
-        // uncleanly (crash / SIGKILL / update handoff) instead of leaking a
-        // serving backend + its MCP child subtree. See web_server.py
-        // _start_parent_death_watchdog.
+        // Exact parent identity lets the backend self-exit after an unclean
+        // Desktop death without mistaking a reused PID for its owner.
         HERMES_PARENT_PID: String(process.pid),
+        HERMES_PARENT_START_MARKER: parentStartMarker,
+        HERMES_PARENT_NONCE: backendNonce,
         HERMES_WEB_DIST: webDist,
         ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
       },
@@ -8317,6 +8564,7 @@ async function spawnPoolBackend(profile, entry) {
 
   entry.process = child
   entry.token = token
+  await claimBackendChild(child, `${backend.command} ${backend.args.join(' ')}`, profile, backendNonce)
 
   child.stdout.on('data', rememberLog)
   child.stderr.on('data', rememberLog)
@@ -8330,11 +8578,13 @@ async function spawnPoolBackend(profile, entry) {
 
   child.once('error', error => {
     rememberLog(`Hermes backend for profile "${profile}" failed to start: ${error.message}`)
+    releaseBackendChild(child)
     backendPool.delete(profile)
     rejectStart?.(error)
   })
   child.once('exit', (code, signal) => {
     rememberLog(`Hermes backend for profile "${profile}" exited (${signal || code})`)
+    releaseBackendChild(child)
     backendPool.delete(profile)
 
     if (!ready) {
@@ -8420,6 +8670,26 @@ function stopAllPoolBackends() {
   }
 }
 
+const backendShutdown = createBackendShutdownCoordinator(async () => {
+  const primary = backendConnectionState.invalidate()
+  const pooled = [...backendPool.values()].map(entry => entry.process).filter(Boolean)
+
+  stopBackendChild(primary)
+  stopAllPoolBackends()
+
+  if (poolIdleReaper) {
+    clearInterval(poolIdleReaper)
+    poolIdleReaper = null
+  }
+
+  await Promise.all([waitForBackendExit(primary), ...pooled.map(child => waitForBackendExit(child))])
+})
+
+async function exitAfterBackendShutdown(code) {
+  await backendShutdown.run()
+  app.exit(code)
+}
+
 // Returns the profile name whose backend was torn down, or null when the
 // request is not a profile-delete.  The caller uses this to skip ensureBackend
 // for the just-torn-down profile — otherwise ensureBackend respawns a pool
@@ -8455,6 +8725,8 @@ async function prepareProfileDeleteRequest(request) {
 }
 
 async function startHermes() {
+  await reapOrphanedBackendsOnce()
+
   // Latched-failure short-circuit: once bootstrap has failed in this
   // process, every subsequent startHermes() call re-throws the same error
   // without re-running install.ps1. This prevents the renderer's
@@ -8578,6 +8850,10 @@ async function startHermes() {
     await advanceBootProgress('backend.spawn', `Starting Hermes backend via ${backend.label}`, 84)
     rememberLog(`Starting Hermes backend via ${backend.label}`)
 
+    const profile = primaryProfileKey()
+    const parentStartMarker = await desktopParentStartMarker()
+    const backendNonce = crypto.randomBytes(16).toString('hex')
+
     const hermesProcess = spawn(
       backend.command,
       backend.args,
@@ -8600,11 +8876,11 @@ async function startHermes() {
           // Marks this dashboard backend as desktop-spawned so it runs the cron
           // scheduler tick loop (the gateway isn't running under the app).
           HERMES_DESKTOP: '1',
-          // Our PID so the backend's parent-death watchdog self-exits if we die
-          // uncleanly (crash / SIGKILL / update handoff) instead of leaking a
-          // serving backend + its MCP child subtree. See web_server.py
-          // _start_parent_death_watchdog.
+          // Exact parent identity lets the backend self-exit after an unclean
+          // Desktop death without mistaking a reused PID for its owner.
           HERMES_PARENT_PID: String(process.pid),
+          HERMES_PARENT_START_MARKER: parentStartMarker,
+          HERMES_PARENT_NONCE: backendNonce,
           HERMES_WEB_DIST: webDist,
           ...(readyFile ? { HERMES_DESKTOP_READY_FILE: readyFile } : {})
         },
@@ -8613,10 +8889,13 @@ async function startHermes() {
       })
     )
 
+    await claimBackendChild(hermesProcess, `${backend.command} ${backend.args.join(' ')}`, profile, backendNonce)
     const processOwner = backendConnectionState.attachProcess(connectionAttempt, hermesProcess)
 
     if (!processOwner) {
       stopBackendChild(hermesProcess)
+      await waitForBackendExit(hermesProcess)
+      releaseBackendChild(hermesProcess)
       throw new Error('Hermes backend start was superseded by a newer connection attempt.')
     }
 
@@ -8630,6 +8909,8 @@ async function startHermes() {
     })
 
     hermesProcess.once('error', error => {
+      releaseBackendChild(hermesProcess)
+
       if (!backendConnectionState.clearForCurrentProcess(processOwner)) {
         rememberLog(`Ignoring stale Hermes backend error: ${error.message}`)
         rejectBackendStart?.(new Error('Hermes backend start was superseded by a newer connection attempt.'))
@@ -8651,6 +8932,8 @@ async function startHermes() {
       rejectBackendStart?.(error)
     })
     hermesProcess.once('exit', (code, signal) => {
+      releaseBackendChild(hermesProcess)
+
       if (!backendConnectionState.clearForCurrentProcess(processOwner)) {
         rememberLog(`Ignoring stale Hermes backend exit (${signal || code})`)
 
@@ -8741,10 +9024,14 @@ async function startHermes() {
       logs: hermesLog.slice(-80),
       ...getWindowState()
     }
-  })().catch(error => {
+  })().catch(async error => {
     if (!backendConnectionState.clearPromiseForAttempt(connectionAttempt)) {
       throw error
     }
+
+    const failedProcess = backendConnectionState.invalidate()
+    stopBackendChild(failedProcess)
+    await waitForBackendExit(failedProcess)
 
     if (error instanceof FirstRunSetupResetError) {
       throw error
@@ -9992,7 +10279,7 @@ function createWindow() {
 
         try {
           app.relaunch({ args: buildNoSandboxRelaunchArgs(process.argv.slice(1)) })
-          app.exit(0)
+          void exitAfterBackendShutdown(0)
         } catch (err) {
           rememberLog(`[renderer] --no-sandbox relaunch failed: ${err?.message || err}`)
         }
@@ -12750,6 +13037,14 @@ app.on('before-quit', event => {
     return
   }
 
+  if (!backendQuitTeardownDone) {
+    event.preventDefault()
+    void backendShutdown.run().finally(() => {
+      backendQuitTeardownDone = true
+      app.quit()
+    })
+  }
+
   if ((sshConnections.size > 0 || sshBootstrapCoordinator.promises().length > 0) && !sshQuitTeardownDone) {
     event.preventDefault()
     sshBootstrapCoordinator.cancelAll()
@@ -12824,8 +13119,7 @@ app.on('before-quit', event => {
     disposeTerminalSession(id)
   }
 
-  stopBackendChild(backendConnectionState.getProcess())
-  stopAllPoolBackends()
+  void backendShutdown.run()
 })
 
 app.on('window-all-closed', () => {

@@ -137,6 +137,94 @@ except ImportError:
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
 _log = logging.getLogger(__name__)
 
+
+def _process_start_marker(pid: int) -> str:
+    """Return a cross-runtime marker for the current incarnation of ``pid``.
+
+    ``ProcessLookupError`` means the process is absent. Other failures are left
+    distinct so callers can fail safe rather than killing a healthy backend.
+    """
+    if sys.platform == "linux":
+        try:
+            stat_line = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise ProcessLookupError(pid) from exc
+
+        # The command in field 2 may contain spaces or parentheses. Splitting
+        # after its final ')' leaves field 3 at index zero and field 22 at 19.
+        fields = stat_line.rsplit(")", 1)[1].strip().split()
+        if len(fields) < 20 or not fields[19].isdigit():
+            raise OSError(f"invalid /proc stat data for PID {pid}")
+        return f"linux:{fields[19]}"
+
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        process_query_limited_information = 0x1000
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.GetProcessTimes.argtypes = [
+            wintypes.HANDLE,
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+            ctypes.POINTER(wintypes.FILETIME),
+        ]
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+        if not handle:
+            error = ctypes.get_last_error()
+            if error in (87, 1168):  # invalid parameter / not found
+                raise ProcessLookupError(pid)
+            raise OSError(error, f"OpenProcess failed for PID {pid}")
+
+        creation = wintypes.FILETIME()
+        exit_time = wintypes.FILETIME()
+        kernel = wintypes.FILETIME()
+        user = wintypes.FILETIME()
+        try:
+            if not kernel32.GetProcessTimes(
+                handle,
+                ctypes.byref(creation),
+                ctypes.byref(exit_time),
+                ctypes.byref(kernel),
+                ctypes.byref(user),
+            ):
+                error = ctypes.get_last_error()
+                raise OSError(error, f"GetProcessTimes failed for PID {pid}")
+        finally:
+            kernel32.CloseHandle(handle)
+
+        filetime = (creation.dwHighDateTime << 32) | creation.dwLowDateTime
+        return f"win:{filetime + 504911232000000000}"
+
+    result = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "lstart="],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    marker = result.stdout.strip()
+    if result.returncode == 0 and marker:
+        return f"ps:{marker}"
+    if result.returncode == 1 and not marker:
+        raise ProcessLookupError(pid)
+    raise OSError(f"ps could not inspect PID {pid}: {result.stderr.strip()}")
+
+
+def _valid_parent_start_marker(marker: str) -> bool:
+    prefix, separator, value = marker.partition(":")
+    if not separator or not value or value != value.strip():
+        return False
+    if prefix in ("linux", "win"):
+        return value.isdigit()
+    return prefix == "ps"
+
+
 # ---------------------------------------------------------------------------
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
@@ -17901,53 +17989,80 @@ def _maybe_open_browser(
     threading.Thread(target=_open, daemon=True).start()
 
 
-def _is_serve_orphaned(desktop_pid: int, pid_exists=None) -> bool:
-    """True when the Desktop process that owns this serve backend is gone.
+def _is_serve_orphaned(
+    desktop_pid: int,
+    expected_start_marker: Optional[str] = None,
+    *,
+    pid_exists=None,
+    process_start_marker=None,
+) -> bool:
+    """True when the exact Desktop process that owns this backend is gone.
 
     ``HERMES_PARENT_PID`` is the Electron Desktop PID, not necessarily this
     Python process's immediate PPID. On Windows the venv ``hermes.exe`` launcher
     introduces one or more shim processes, so comparing ``os.getppid()`` to the
     Electron PID incorrectly treats a healthy backend as orphaned and exits 0.
-    Probe the recorded Desktop PID directly instead.
 
-    Any liveness-probe failure is fail-safe: keep serving rather than killing a
-    backend whose owner could not be conclusively shown to be dead.
+    New Desktop versions also provide the owner's process-start marker. This
+    prevents a recycled PID from keeping an orphan alive. Older versions remain
+    compatible through the PID-only probe. Any inconclusive probe failure is
+    fail-safe: keep serving rather than killing a backend whose owner could not
+    be conclusively shown to be dead.
     """
     try:
+        if expected_start_marker is not None:
+            probe = process_start_marker or _process_start_marker
+            return probe(int(desktop_pid)) != expected_start_marker
+
         if pid_exists is None:
             from gateway.status import _pid_exists
 
             pid_exists = _pid_exists
         return not bool(pid_exists(int(desktop_pid)))
+    except ProcessLookupError:
+        return True
     except Exception:
         return False
 
 
 def _start_parent_death_watchdog() -> None:
-    """Exit when the desktop parent that spawned this backend dies.
+    """Exit when the exact desktop parent that spawned this backend dies.
 
-    The desktop passes its own PID via HERMES_PARENT_PID. When that process
-    vanishes (crash, SIGKILL, update handoff exiting before it reaps us) this
-    orphaned backend would otherwise keep serving forever and leak its MCP
-    child subtree. os._exit propagates to the MCP watchdogs parented here.
-
-    No-op for standalone `hermes serve` (env unset). Poll interval tunable via
-    HERMES_SERVE_WATCHDOG_POLL_S.
+    The desktop passes its PID and, in newer versions, its process-start marker
+    plus a per-spawn nonce. The marker distinguishes a live owner from PID reuse;
+    the nonce makes partial/mixed-version identity plumbing fail safe. Legacy
+    Desktop versions that provide only ``HERMES_PARENT_PID`` retain PID-only
+    tracking.
     """
-    raw = os.environ.get("HERMES_PARENT_PID")
-    if not raw:
-        return
+    raw_pid = os.environ.get("HERMES_PARENT_PID")
+    start_marker = os.environ.get("HERMES_PARENT_START_MARKER")
+    nonce = os.environ.get("HERMES_PARENT_NONCE")
+
     try:
-        desktop_pid = int(raw)
+        desktop_pid = int(raw_pid or "")
     except (TypeError, ValueError):
         return
+    if desktop_pid <= 0:
+        return
+
+    has_marker = start_marker is not None
+    has_nonce = nonce is not None
+    if has_marker != has_nonce:
+        return
+    if has_marker and (
+        not _valid_parent_start_marker(start_marker or "")
+        or not nonce
+        or nonce != nonce.strip()
+    ):
+        return
+
     try:
         poll = max(0.5, float(os.environ.get("HERMES_SERVE_WATCHDOG_POLL_S", "2.0")))
     except (TypeError, ValueError):
         poll = 2.0
 
     def _loop() -> None:
-        while not _is_serve_orphaned(desktop_pid):
+        while not _is_serve_orphaned(desktop_pid, start_marker):
             time.sleep(poll)
         os._exit(0)
 

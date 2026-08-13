@@ -3,17 +3,27 @@ import { describe, expect, it } from 'vitest'
 import {
   buildGroups,
   firstVisibleGroupIndex,
+  HIDDEN_TRANSCRIPT_RENDER_BUDGET,
   LIVE_TAIL_MIN_GROUPS,
   LIVE_TAIL_PARTS,
   liveTailStart,
   type MessageGroup,
-  resolveThreadScrollTarget
+  resolveThreadScrollTarget,
+  transcriptPaneBudget
 } from './list'
 
 // Signature rows are `${index}:${id}:${role}:${weight}` (see the useAuiState
 // selector in list.tsx).
 const signature = (rows: [string, string, number][]) =>
   rows.map(([id, role, weight], index) => `${index}:${id}:${role}:${weight}`).join('\n')
+
+describe('transcriptPaneBudget', () => {
+  it('uses a fixed live-tail budget while hidden instead of charging every mounted transcript', () => {
+    expect(transcriptPaneBudget(1, true)).toBe(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
+    expect(transcriptPaneBudget(4, true)).toBe(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
+    expect(transcriptPaneBudget(1, false)).toBeGreaterThan(HIDDEN_TRANSCRIPT_RENDER_BUDGET)
+  })
+})
 
 describe('buildGroups', () => {
   it('returns no groups for an empty signature', () => {

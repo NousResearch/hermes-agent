@@ -10016,12 +10016,14 @@ function wireCommonWindowHandlers(win, { zoom = true }: { zoom?: boolean } = {})
   installPreviewShortcut(win)
   installDevToolsShortcut(win)
   // Claim Ctrl/Cmd+F in the main process — on Pop!_OS / GNOME-based Linux
-  // distros the GTK compositor grabs Ctrl+F at the windowing layer before
-  // the renderer's keydown listener fires (#81727). Routing it through
-  // `before-input-event` strictly precedes that compositor shortcut, and
-  // the renderer's find-in-page pipeline still owns the FindBar UI and the
-  // search itself.
-  installFindShortcut(win)
+  // distros the Ctrl+F keydown does not reach the renderer's `view.findInPage`
+  // binding (#81727). Routing it through `before-input-event` forwards the
+  // intent at the earliest observable point. macOS / Windows keep the
+  // renderer's own rebindable keybind, so the hook is Linux-only: installing
+  // it elsewhere would make Ctrl/Cmd+F un-rebindable and double-open.
+  if (process.platform === 'linux') {
+    installFindShortcut(win)
+  }
 
   if (zoom) {
     installZoomShortcuts(win)

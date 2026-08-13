@@ -123,17 +123,23 @@ export function installFoundInPageForwarder(webContents: Electron.WebContents | 
  * Install a main-process before-input-event hook that claims Ctrl/Cmd+F and
  * forwards an "open the find bar" intent to the renderer.
  *
- * On Pop!_OS / GNOME-based Linux distros, the GTK compositor intercepts
- * Ctrl+F at the windowing layer (GNOME Files owns it) before the renderer
- * ever sees a keydown — so the renderer's own `view.findInPage` keybind is
- * silently dead even though the binding is registered (#81727). Claiming
- * the chord in the main process via `before-input-event` runs strictly
- * before the GTK shortcut can grab it on these distros.
+ * Linux only (#81727): on Pop!_OS / GNOME-based distros the Ctrl+F keydown
+ * does not reach the renderer's `view.findInPage` binding, so the find bar
+ * stays closed. Routing the chord through `before-input-event` (which Chromium
+ * dispatches before the DOM keydown) lets us forward the intent directly.
+ * The exact interception layer varies by distro/desktop (COSMIC shortcut,
+ * webview focus split, etc.); this sidesteps it regardless of cause by acting
+ * at the earliest point the keystroke is observable.
+ *
+ * On macOS / Windows the renderer's own rebindable `view.findInPage` keybind
+ * (`mod+f`, clearable/rebindable via the keybind registry) owns Ctrl/Cmd+F, so
+ * the main-process hook is NOT installed there — installing it would make the
+ * chord un-rebindable and double-open on a rebound binding.
  *
  * The renderer's existing find-in-page pipeline still does the actual work
  * (it owns the FindBar UI, the store, the `hermes:find-in-page` IPC to drive
  * `webContents.findInPage`). This helper just guarantees that a Ctrl/Cmd+F
- * press reaches that pipeline.
+ * press reaches that pipeline on Linux.
  *
  * `isMac` is injectable so the macOS-modifier branch can be exercised by
  * unit tests without rebooting the process under a different platform.

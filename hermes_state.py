@@ -702,6 +702,10 @@ _wal_fallback_warned_lock = threading.Lock()
 _wal_reset_bug_warned_paths: set[str] = set()
 _wal_reset_bug_warned_lock = threading.Lock()
 
+# Dedup ERROR for the "configured delete overridden by on-disk WAL" warning.
+_delete_overridden_warned_paths: set[str] = set()
+_delete_overridden_warned_lock = threading.Lock()
+
 def _set_last_init_error(msg: Optional[str]) -> None:
     """Record (or clear) the most recent state.db init failure.
 
@@ -1145,6 +1149,10 @@ def apply_wal_with_fallback(
     # Skipping the set-pragma prevents WAL-init from unlinking files other connections hold open.
     current_mode = _on_disk_journal_mode(conn)
     if current_mode == "wal":
+        if configured == "delete":
+            # Never-live-downgrade keeps this WAL; tell the operator their
+            # configured delete did not apply (see _log_configured_delete_overridden_once).
+            _log_configured_delete_overridden_once(db_label)
         _apply_wal_size_limit(conn)
         _apply_macos_checkpoint_barrier(conn)
         _enforce_macos_synchronous_full(conn)
@@ -1312,9 +1320,15 @@ def _apply_delete_for_wal_reset_bug(
     current = _on_disk_journal_mode(conn)
 
     if current == "wal":
-        # Do not TRUNCATE / journal_mode=DELETE while other processes may
-        # still hold this WAL DB open — same safety rule as the NFS path.
         _log_wal_reset_bug_once(db_label, kept_wal=True)
+        if require_delete:
+            # The vulnerability warning above suggests upgrading SQLite, which
+            # does not help on a WAL-incompatible filesystem; surface that the
+            # configured delete is not in effect (see _log_configured_delete_overridden_once).
+            # Emitted last so the actionable message is the final one in the log.
+            _log_configured_delete_overridden_once(db_label)
+        # Do not TRUNCATE / journal_mode=DELETE while other processes may
+        # still hold this WAL DB open; same safety rule as the NFS path.
         _apply_wal_size_limit(conn)
         _apply_macos_checkpoint_barrier(conn)
         _enforce_macos_synchronous_full(conn)
@@ -1451,6 +1465,37 @@ def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
         "fires once per process per database.",
         db_label,
         exc,
+    )
+
+
+def _log_configured_delete_overridden_once(db_label: str) -> None:
+    """Log a single ERROR per (process, db_label) when the operator configured
+    ``journal_mode=delete`` but the on-disk DB is already WAL, so the configured
+    mode is not in effect.
+
+    Counterpart to :func:`_log_wal_fallback_once` for the opposite direction:
+    there WAL was refused by the filesystem and we silently fell back to DELETE;
+    here the operator asked for DELETE but an inherited on-disk WAL header means
+    we keep WAL (the never-live-downgrade rule prevents a live downgrade, which
+    causes mixed-mode corruption). The signal matters because otherwise the
+    operator has no indication that ``database.journal_mode: delete`` had no
+    effect and the DB still requires a one-time offline ``PRAGMA
+    journal_mode=DELETE`` (with no open connections) to apply.
+
+    Fires once per process per database.
+    """
+    with _delete_overridden_warned_lock:
+        if db_label in _delete_overridden_warned_paths:
+            return
+        _delete_overridden_warned_paths.add(db_label)
+    logger.error(
+        "%s: database.journal_mode=delete is configured but the on-disk "
+        "database is already WAL; keeping WAL (a live downgrade under open "
+        "connections can corrupt the DB). To apply journal_mode=DELETE, stop "
+        "all connections to this DB and run a one-time offline "
+        "'PRAGMA journal_mode=DELETE' on the file. This message fires once "
+        "per process per database.",
+        db_label,
     )
 
 

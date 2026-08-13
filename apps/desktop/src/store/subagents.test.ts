@@ -251,6 +251,13 @@ describe('subagent store', () => {
     expect(listFor('s1')).toHaveLength(0)
   })
 
+  it('falls back to a placeholder when timeout duration is missing', () => {
+    upsertSubagent('s1', { goal: 'scan files', status: 'running', subagent_id: 't2', task_index: 0 })
+    upsertSubagent('s1', { status: 'timeout', subagent_id: 't2', task_index: 0 }, false, 'subagent.complete')
+
+    expect(listFor('s1')[0]?.summary).toBe('Timed out after ?s')
+  })
+
   // Fail-closed guard: subagent.complete is terminal by definition, so an
   // unrecognized status on it must not resurrect a row as 'running'. Live
   // events keep the lenient fallback (a status we don't know is still active).

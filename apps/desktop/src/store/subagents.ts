@@ -203,7 +203,7 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
     filesRead: filesRead.length ? filesRead : (prev?.filesRead ?? []),
     filesWritten: filesWritten.length ? filesWritten : (prev?.filesWritten ?? []),
     stream,
-    summary: str(payload.summary) || prev?.summary || timeoutSummary(payload) || undefined,
+    summary: str(payload.summary) || timeoutSummary(payload) || prev?.summary || undefined,
     currentTool: TERMINAL.has(status) ? undefined : tool || prev?.currentTool
   }
 }

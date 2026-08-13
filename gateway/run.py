@@ -2250,6 +2250,59 @@ def _profile_runtime_scope(profile_home: "Path"):
         reset_hermes_home_override(home_token)
 
 
+# Process-global MCP registry is keyed by server name (first-writer-wins).
+# Gateway startup discovers under the default home only; multiplexed inbound
+# turns lazily register each additional profile's mcp_servers once.
+_mcp_discovered_profile_homes: set = set()
+_mcp_discovered_profile_homes_lock = threading.Lock()
+
+
+def _profile_mcp_cache_key(profile_home: "Path") -> str:
+    try:
+        return str(Path(profile_home).resolve())
+    except OSError:
+        return str(Path(profile_home))
+
+
+def _clear_profile_mcp_discovery_cache() -> None:
+    """Drop per-home discovery flags so the next turn re-reads mcp_servers.
+
+    Used after ``/reload-mcp`` shuts down the process-global registry.
+    Distinct server names are the operator's responsibility — discovery
+    never clobbers an already-registered name.
+    """
+    with _mcp_discovered_profile_homes_lock:
+        _mcp_discovered_profile_homes.clear()
+
+
+async def _ensure_profile_mcp_tools(profile_home: "Path") -> None:
+    """Register this profile's MCP servers into the process-global registry.
+
+    Mirrors cron ``run_job``: ``discover_mcp_tools()`` is idempotent for
+    already-connected servers and must run inside ``_profile_runtime_scope``
+    so ``_load_mcp_config()`` reads this profile's ``config.yaml``. Cached
+    per home so a multiplexed gateway does not pay config-load + connect-lock
+    on every message. Failures are non-fatal and not cached, so the next
+    turn retries.
+    """
+    key = _profile_mcp_cache_key(profile_home)
+    with _mcp_discovered_profile_homes_lock:
+        if key in _mcp_discovered_profile_homes:
+            return
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+        await asyncio.to_thread(discover_mcp_tools)
+    except Exception:
+        logger.debug(
+            "MCP discovery for profile home %s failed (non-fatal)",
+            key,
+            exc_info=True,
+        )
+        return
+    with _mcp_discovered_profile_homes_lock:
+        _mcp_discovered_profile_homes.add(key)
+
+
 def load_gateway_config_for_runner() -> "GatewayConfig":
     """Load gateway config for the process-level GatewayRunner.
 
@@ -22390,6 +22443,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         profile_home = self._resolve_profile_home_for_source(source)
         with _profile_runtime_scope(profile_home):
+            await _ensure_profile_mcp_tools(profile_home)
             return await self._run_background_task_inner(
                 prompt, source, task_id, event_message_id, media_urls, media_types,
             )
@@ -23343,6 +23397,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # Read new config before shutting down, so we know what will be added/removed
             # Shutdown existing connections
             await loop.run_in_executor(None, shutdown_mcp_servers)
+            _clear_profile_mcp_discovery_cache()
 
             # Reconnect by discovering tools (reads config.yaml fresh)
             new_tools = await loop.run_in_executor(None, discover_mcp_tools)
@@ -27906,6 +27961,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         profile_home = self._resolve_profile_home_for_source(source)
         with _profile_runtime_scope(profile_home):
+            await _ensure_profile_mcp_tools(profile_home)
             return await self._run_agent_inner(
                 message, context_prompt, history, source, session_id,
                 session_key=session_key, run_generation=run_generation,

@@ -208,6 +208,20 @@ home). `hermes status` reports the multiplexer and the profiles it serves;
 own `runtime_status.json` under its own home, so existing per-profile readers
 keep working.
 
+#### 6. MCP servers register lazily per profile
+
+Gateway startup discovers MCP servers under the **default** profile's home.
+The first inbound turn that routes to another profile re-runs discovery inside
+that profile's scope (the same pattern the cron scheduler already uses) and
+merges any new servers into the process-global registry. Discovery is cached
+per profile home so it does not run on every message.
+
+The registry is keyed by server **name** and is first-writer-wins: a later
+profile cannot replace an already-connected server of the same name. Give each
+profile distinct `mcp_servers` names (for example `kb-customer` vs
+`kb-writer`). `/reload-mcp` tears down the registry and clears the per-home
+cache so the next turn for each profile rediscovers.
+
 #### What does **not** change
 
 Per-profile `.env` credential isolation is preserved and, if anything,

@@ -15,6 +15,7 @@ import { clearClarifyRequest } from '@/store/clarify'
 import {
   $composerAttachments,
   type ComposerAttachment,
+  patchMainComposerAttachmentOccurrence,
   setComposerAttachmentUploadState,
   updateComposerAttachment
 } from '@/store/composer'
@@ -387,7 +388,19 @@ export function usePromptActions({
 
           // Update-only: never resurrect a chip the user removed mid-upload.
           if (updateComposerAttachments) {
-            updateComposerAttachment(nextAttachment)
+            if (original.occurrenceId) {
+              // Preserve a preview that may have completed after staging began,
+              // while still refusing a remove + re-add of the same path.
+              patchMainComposerAttachmentOccurrence(original, {
+                attachedSessionId: nextAttachment.attachedSessionId,
+                label: nextAttachment.label,
+                path: nextAttachment.path,
+                refText: nextAttachment.refText,
+                uploadState: nextAttachment.uploadState
+              })
+            } else {
+              updateComposerAttachment(nextAttachment)
+            }
           }
 
           synced.push(nextAttachment)
@@ -408,11 +421,11 @@ export function usePromptActions({
   // stalling the send. The card shows a spinner via `uploadState`; on success
   // the chip carries its gateway-side ref so submit skips re-uploading.
   //
-  // Images are intentionally NOT eager-uploaded: attachImagePath adds the chip
-  // and then fills in `previewUrl` (the base64 thumbnail) on a second tick, so
-  // an eager upload would race that write — clobbering the thumbnail and
-  // swapping `path` to a gateway path the local preview can't read. Images are
-  // small and still byte-upload at submit via image.attach_bytes.
+  // Images are intentionally NOT eager-uploaded: thumbnail preparation already
+  // performs a bounded full-file read/decode, and an eager upload would perform
+  // another full-file read/IPC transfer immediately for every image in a batch.
+  // Original bytes are still uploaded sequentially at submit via
+  // image.attach_bytes.
   const eagerlyUploadAttachment = useCallback(
     async (sessionId: string, attachment: ComposerAttachment) => {
       const remote = $connection.get()?.mode === 'remote'

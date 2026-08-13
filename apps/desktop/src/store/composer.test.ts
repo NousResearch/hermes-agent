@@ -85,11 +85,9 @@ describe('updateComposerAttachment', () => {
     scope.remove(first.id)
     scope.add(replacement)
 
-    expect(scope.updateIfCurrent(first, { ...first, thumbnailUrl: 'data:image/png;base64,stale' })).toBe(false)
+    expect(scope.updateIfCurrent(first, { thumbnailUrl: 'data:image/png;base64,stale' })).toBe(false)
     expect(scope.$attachments.get()).toEqual([replacement])
-    expect(scope.updateIfCurrent(replacement, { ...replacement, thumbnailUrl: 'data:image/png;base64,current' })).toBe(
-      true
-    )
+    expect(scope.updateIfCurrent(replacement, { thumbnailUrl: 'data:image/png;base64,current' })).toBe(true)
     expect(scope.$attachments.get()[0]?.thumbnailUrl).toBe('data:image/png;base64,current')
   })
 
@@ -108,9 +106,36 @@ describe('updateComposerAttachment', () => {
     scope.add(restored)
 
     expect(restored).not.toBe(original)
-    expect(scope.updateIfCurrent(original, { ...original, thumbnailUrl: 'data:image/png;base64,current' })).toBe(true)
+    expect(scope.updateIfCurrent(original, { thumbnailUrl: 'data:image/png;base64,current' })).toBe(true)
     expect(scope.$attachments.get()[0]?.thumbnailUrl).toBe('data:image/png;base64,current')
     clearSessionDraft('session-a')
+  })
+
+  it('merges concurrent staging fields without discarding an existing thumbnail', () => {
+    const scope = createComposerAttachmentScope()
+
+    const original = attachment({
+      id: 'image:staging',
+      kind: 'image',
+      occurrenceId: createComposerAttachmentOccurrenceId(),
+      path: 'C:\\Users\\alice\\Pictures\\photo.png'
+    })
+
+    scope.add(original)
+    expect(scope.updateIfCurrent(original, { thumbnailUrl: 'data:image/png;base64,current' })).toBe(true)
+    expect(
+      scope.updateIfCurrent(original, {
+        attachedSessionId: 'session-1',
+        path: '/root/.hermes/attachments/photo.png',
+        uploadState: undefined
+      })
+    ).toBe(true)
+
+    expect(scope.$attachments.get()[0]).toMatchObject({
+      attachedSessionId: 'session-1',
+      path: '/root/.hermes/attachments/photo.png',
+      thumbnailUrl: 'data:image/png;base64,current'
+    })
   })
 })
 

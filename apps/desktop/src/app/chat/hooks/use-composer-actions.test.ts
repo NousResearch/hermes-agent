@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { $composerAttachments, type ComposerAttachment } from '@/store/composer'
+import { $composerAttachments, type ComposerAttachment, updateComposerAttachment } from '@/store/composer'
 import { $connection } from '@/store/session'
 
 import {
@@ -466,6 +466,73 @@ describe('attachImagePath thumbnail separation', () => {
 
     expect(afterRemovedOccurrenceResolved?.thumbnailUrl).toBeUndefined()
     expect($composerAttachments.get()[0]?.previewUrl).toBe('data:text/plain;base64,c2Vjb25k')
+  })
+
+  it('merges a delayed thumbnail into the latest staged state of the same occurrence', async () => {
+    const readFileDataUrl = vi.fn(async () => FULL_RES)
+
+    ;(
+      window as unknown as {
+        hermesDesktop: { readFileDataUrl: typeof readFileDataUrl }
+      }
+    ).hermesDesktop = { readFileDataUrl }
+
+    let resolveBitmap!: (bitmap: { close: () => void; height: number; width: number }) => void
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ blob: async () => new Blob([new Uint8Array([0])], { type: 'image/png' }) }))
+    )
+    vi.stubGlobal(
+      'createImageBitmap',
+      vi.fn(
+        () =>
+          new Promise<{ close: () => void; height: number; width: number }>(resolve => {
+            resolveBitmap = resolve
+          })
+      )
+    )
+
+    class MockOffscreenCanvas {
+      getContext = () => ({ drawImage: vi.fn() })
+      convertToBlob = vi.fn(async () => new Blob(['thumbnail'], { type: 'image/png' }))
+      constructor(_width: number, _height: number) {}
+    }
+
+    vi.stubGlobal('OffscreenCanvas', MockOffscreenCanvas)
+
+    const { result } = renderHook(() =>
+      useComposerActions({ activeSessionId: null, currentCwd: '', requestGateway: vi.fn() })
+    )
+
+    let pending!: Promise<boolean>
+
+    act(() => {
+      pending = result.current.attachImagePath('C:\\Users\\alice\\Pictures\\photo.png')
+    })
+
+    await waitFor(() => expect(createImageBitmap).toHaveBeenCalledOnce())
+
+    const original = $composerAttachments.get()[0]!
+    updateComposerAttachment({
+      ...original,
+      attachedSessionId: 'session-1',
+      label: 'photo.png',
+      path: '/root/.hermes/attachments/photo.png',
+      uploadState: undefined
+    })
+
+    resolveBitmap({ close: vi.fn(), height: 3000, width: 4000 })
+
+    await act(async () => {
+      await pending
+    })
+
+    expect($composerAttachments.get()[0]).toMatchObject({
+      attachedSessionId: 'session-1',
+      path: '/root/.hermes/attachments/photo.png',
+      thumbnailUrl: expect.stringMatching(/^data:image\/png;base64,/)
+    })
   })
 
   it('retains only the bounded thumbnail after creating a composer image preview', async () => {

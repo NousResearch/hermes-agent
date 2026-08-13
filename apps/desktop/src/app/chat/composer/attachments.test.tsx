@@ -177,6 +177,65 @@ describe('AttachmentList', () => {
     expect((await screen.findByRole('dialog')).querySelector<HTMLImageElement>('img')?.src).toBe(DATA_URL)
   })
 
+  it('does not let an old occurrence open a replacement lightbox after a deferred read', async () => {
+    let resolveOldRead!: (value: string) => void
+
+    const oldRead = new Promise<string>(resolve => {
+      resolveOldRead = resolve
+    })
+
+    const readFileDataUrl = vi.fn((path: string) =>
+      path === '/tmp/old.png' ? oldRead : Promise.resolve('data:image/png;base64,replacement')
+    )
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+
+    const oldOccurrence: ComposerAttachment = {
+      id: 'image:same-path',
+      kind: 'image',
+      label: 'same.png',
+      occurrenceId: 'occurrence-old',
+      path: '/tmp/old.png',
+      thumbnailUrl: THUMBNAIL_URL
+    }
+
+    const replacement: ComposerAttachment = {
+      ...oldOccurrence,
+      occurrenceId: 'occurrence-replacement',
+      path: '/tmp/replacement.png'
+    }
+
+    const { rerender } = await renderWithI18n(<AttachmentList attachments={[oldOccurrence]} />)
+
+    fireEvent.click(screen.getByRole('button', { name: /same\.png/ }))
+    expect(readFileDataUrl).toHaveBeenCalledWith('/tmp/old.png')
+
+    rerender(
+      <I18nProvider configClient={{ getConfig: async () => ({}), saveConfig: async () => ({ ok: true }) }}>
+        <AttachmentList attachments={[replacement]} />
+      </I18nProvider>
+    )
+
+    await act(async () => {
+      resolveOldRead(DATA_URL)
+      await oldRead
+    })
+
+    expect(screen.queryByRole('dialog')).toBeNull()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /same\.png/ }))
+    })
+
+    expect(readFileDataUrl).toHaveBeenCalledWith('/tmp/replacement.png')
+    expect((await screen.findByRole('dialog')).querySelector<HTMLImageElement>('img')?.src).toBe(
+      'data:image/png;base64,replacement'
+    )
+  })
+
   it('still routes a non-image attachment to the preview rail', async () => {
     $previewTabs.set([])
 

@@ -25,7 +25,11 @@ export function AttachmentList({
   return (
     <div className="flex max-w-full flex-wrap gap-1.5 px-1 pt-1" data-slot="composer-attachments">
       {attachments.filter(Boolean).map(attachment => (
-        <AttachmentPill attachment={attachment} key={attachment.id} onRemove={onRemove} />
+        <AttachmentPill
+          attachment={attachment}
+          key={attachment.occurrenceId ? `occ:${attachment.occurrenceId}` : attachment.id}
+          onRemove={onRemove}
+        />
       ))}
     </div>
   )

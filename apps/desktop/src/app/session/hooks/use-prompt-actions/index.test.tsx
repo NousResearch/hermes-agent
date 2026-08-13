@@ -2675,6 +2675,56 @@ describe('usePromptActions file attachment sync', () => {
     expect(uploaded.path).toBe('/root/tmp/photo.jpg')
   })
 
+  it('merges image staging into the current occurrence without dropping its thumbnail', async () => {
+    $connection.set({ mode: 'local' } as never)
+    $currentCwd.set('/root')
+
+    const hostPath = 'C:\\Users\\alice\\Pictures\\photo.jpg'
+    const thumbnailUrl = 'data:image/jpeg;base64,dGh1bWJuYWls'
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:image/jpeg;base64,aGVsbG8=') }
+    })
+
+    $composerAttachments.set([
+      {
+        detail: hostPath,
+        id: 'image:photo.jpg',
+        kind: 'image',
+        label: 'photo.jpg',
+        occurrenceId: 'occurrence-photo',
+        path: hostPath,
+        thumbnailUrl
+      }
+    ])
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach_bytes') {
+        return { attached: true, path: '/root/tmp/photo.jpg' } as never
+      }
+
+      if (method === 'prompt.submit') {
+        throw new Error('submit failed after staging')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    expect(await handle!.submitText('describe this')).toBe(false)
+    expect($composerAttachments.get()[0]).toMatchObject({
+      attachedSessionId: RUNTIME_SESSION_ID,
+      occurrenceId: 'occurrence-photo',
+      path: '/root/tmp/photo.jpg',
+      thumbnailUrl
+    })
+  })
+
   it('uploads file bytes when the terminal backend is a container (docker)', async () => {
     // Container backends have their own filesystem: the host drop path would
     // dangle inside the sandbox, so the bytes must cross via file.attach's

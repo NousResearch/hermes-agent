@@ -26,6 +26,8 @@ export interface ComposerAttachment {
   uploadState?: 'uploading' | 'error'
 }
 
+export type ComposerAttachmentPatch = Partial<Omit<ComposerAttachment, 'id' | 'occurrenceId'>>
+
 export const $composerDraft = atom('')
 export const $composerAttachments = atom<ComposerAttachment[]>([])
 export const $composerTerminalSelections = atom<Record<string, string>>({})
@@ -64,7 +66,15 @@ export interface ComposerAttachmentScope {
   remove(id: string): ComposerAttachment | null
   setUploadState(id: string, uploadState?: ComposerAttachment['uploadState']): void
   update(attachment: ComposerAttachment): boolean
-  updateIfCurrent(expected: ComposerAttachment, attachment: ComposerAttachment): boolean
+  updateIfCurrent(expected: ComposerAttachment, patch: ComposerAttachmentPatch): boolean
+}
+
+function attachmentOccurrenceIndex(attachments: ComposerAttachment[], expected: ComposerAttachment): number {
+  return attachments.findIndex(item =>
+    expected.occurrenceId === undefined
+      ? item === expected
+      : item.id === expected.id && item.occurrenceId === expected.occurrenceId
+  )
 }
 
 export function createComposerAttachmentScope($attachments = atom<ComposerAttachment[]>([])): ComposerAttachmentScope {
@@ -115,21 +125,16 @@ export function createComposerAttachmentScope($attachments = atom<ComposerAttach
 
       return true
     },
-    updateIfCurrent(expected, attachment) {
+    updateIfCurrent(expected, patch) {
       const current = $attachments.get()
-
-      const index = current.findIndex(item =>
-        expected.occurrenceId === undefined
-          ? item === expected
-          : item.id === expected.id && item.occurrenceId === expected.occurrenceId
-      )
+      const index = attachmentOccurrenceIndex(current, expected)
 
       if (index < 0) {
         return false
       }
 
       const next = [...current]
-      next[index] = attachment
+      next[index] = { ...next[index]!, ...patch }
       $attachments.set(next)
 
       return true
@@ -180,6 +185,35 @@ function loadPersistedDraftTexts(): [string, SessionDraft][] {
 }
 
 const draftsBySession = new Map<string, SessionDraft>(loadPersistedDraftTexts())
+
+/**
+ * Patch one asynchronous attachment occurrence wherever the main composer owns
+ * it. During a session switch the occurrence moves from the live atom into the
+ * per-session in-memory draft stash; a preview may finish on either side of
+ * that handoff. Updating both stores is safe because occurrence ids are unique,
+ * and merging into the latest object preserves concurrent staging metadata.
+ */
+export function patchMainComposerAttachmentOccurrence(
+  expected: ComposerAttachment,
+  patch: ComposerAttachmentPatch
+): boolean {
+  let updated = mainComposerScope.updateIfCurrent(expected, patch)
+
+  for (const [key, draft] of draftsBySession) {
+    const index = attachmentOccurrenceIndex(draft.attachments, expected)
+
+    if (index < 0) {
+      continue
+    }
+
+    const attachments = [...draft.attachments]
+    attachments[index] = { ...attachments[index]!, ...patch }
+    draftsBySession.set(key, { ...draft, attachments })
+    updated = true
+  }
+
+  return updated
+}
 
 /**
  * What each unsent draft would be called, keyed the same way its text is.

@@ -92,7 +92,7 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     expect(snapshots[0]).toEqual([])
   })
 
-  it('applies a delayed image preview after its attachment survives an A → B → A draft round-trip', async () => {
+  it('applies a delayed image preview when it resolves while its attachment draft is inactive', async () => {
     const fullResolution =
       'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+GkZcAAAAASUVORK5CYII='
 
@@ -153,16 +153,18 @@ describe('useComposerDraft — attachment scope stays coherent with the committe
     await waitFor(() => expect(createImageBitmap).toHaveBeenCalledOnce())
 
     act(() => rerender(<PreviewHarness activeQueueSessionKey="session-B" />))
-    act(() => rerender(<PreviewHarness activeQueueSessionKey="session-A" />))
-
-    expect(mainComposerScope.$attachments.get()).toHaveLength(1)
-    expect(mainComposerScope.$attachments.get()[0]?.thumbnailUrl).toBeUndefined()
+    expect(mainComposerScope.$attachments.get()).toEqual([])
 
     resolveBitmap({ close: vi.fn(), height: 3000, width: 4000 })
 
     await act(async () => {
       await pending
     })
+
+    // The late completion belongs to A and must not leak into active session B.
+    expect(mainComposerScope.$attachments.get()).toEqual([])
+
+    act(() => rerender(<PreviewHarness activeQueueSessionKey="session-A" />))
 
     expect(mainComposerScope.$attachments.get()[0]?.thumbnailUrl).toMatch(/^data:image\/png;base64,/)
   })

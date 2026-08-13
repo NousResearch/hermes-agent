@@ -12,8 +12,9 @@ import { normalize } from '@/lib/text'
 import {
   addComposerAttachment,
   type ComposerAttachment,
+  type ComposerAttachmentPatch,
   createComposerAttachmentOccurrenceId,
-  mainComposerScope,
+  patchMainComposerAttachmentOccurrence,
   removeComposerAttachment,
   setComposerTerminalSelection,
   updateComposerAttachment
@@ -274,7 +275,7 @@ interface ComposerActionsScope {
   add: (attachment: ComposerAttachment) => void
   remove: (id: string) => ComposerAttachment | null
   update: (attachment: ComposerAttachment) => boolean
-  updateIfCurrent: (expected: ComposerAttachment, attachment: ComposerAttachment) => boolean
+  updateIfCurrent: (expected: ComposerAttachment, patch: ComposerAttachmentPatch) => boolean
   target: string
 }
 
@@ -282,7 +283,7 @@ const MAIN_ACTIONS_SCOPE: ComposerActionsScope = {
   add: addComposerAttachment,
   remove: removeComposerAttachment,
   update: updateComposerAttachment,
-  updateIfCurrent: (expected, attachment) => mainComposerScope.updateIfCurrent(expected, attachment),
+  updateIfCurrent: patchMainComposerAttachmentOccurrence,
   target: 'main'
 }
 
@@ -491,10 +492,7 @@ export function useComposerActions({
           // Object identity is insufficient because a session draft round-trip
           // clones attachments; id alone is insufficient because remove +
           // reattach of the same path reuses it.
-          scope.updateIfCurrent(
-            baseAttachment,
-            thumbnailUrl ? { ...baseAttachment, thumbnailUrl } : { ...baseAttachment, previewUrl }
-          )
+          scope.updateIfCurrent(baseAttachment, thumbnailUrl ? { thumbnailUrl } : { previewUrl })
         }
 
         return true

@@ -598,3 +598,69 @@ class TestModelSwitchMarkerNotTitleable:
         assert apply_instant_title(db, "sess-1", "南京市秦淮区 小时级天气预报") == (
             "南京市秦淮区 小时级天气预报"
         )
+
+
+class TestSpeechInterruptNoteNotTitleSource:
+    """Regression: the speech-barge-in note must never become the session title.
+
+    The CLI/TUI submit paths prepend SPEECH_INTERRUPTED_NOTE to the model-bound
+    user message when the user interrupts a spoken reply. The turn prologue
+    titles from that same message, so without a guard an interrupted opening
+    turn got named "[Note: the user interrupted your previous spoken reply
+    before it finished.]" instead of the request the user actually typed.
+
+    Unlike a model-switch marker (which is a standalone machine row) the note
+    WRAPS a real message, so we strip it and title from the real words rather
+    than skipping the session's titling opportunity.
+    """
+
+    NOTE = "[Note: the user interrupted your previous spoken reply before it finished.]"
+
+    def test_prefix_matches_tts_constant(self):
+        """The guard must stay in sync with tools.tts_streaming."""
+        from tools.tts_streaming import SPEECH_INTERRUPTED_NOTE
+        from agent.title_generator import _SPEECH_INTERRUPTED_PREFIX
+
+        assert _SPEECH_INTERRUPTED_PREFIX == SPEECH_INTERRUPTED_NOTE
+
+    def test_note_only_is_not_titleable(self):
+        from agent.title_generator import is_titleable_user_message
+
+        assert is_titleable_user_message(self.NOTE) is False
+
+    def test_note_wrapping_real_message_titles_from_real_words(self):
+        from agent.title_generator import is_titleable_user_message, derive_title
+
+        msg = f"{self.NOTE}\n\n南京天气怎么样"
+        assert is_titleable_user_message(msg) is True
+        assert derive_title(msg) == "南京天气怎么样"
+
+    def test_instant_title_strips_note_uses_real_message(self):
+        from agent.title_generator import apply_instant_title
+
+        db = MagicMock()
+        db.get_session_title_source.return_value = None
+
+        assert apply_instant_title(db, "sess-1", self.NOTE) is None
+        assert apply_instant_title(db, "sess-1", f"{self.NOTE}\n\n修复登录按钮") == (
+            "修复登录按钮"
+        )
+
+    def test_model_upgrade_sees_clean_text(self):
+        """The LLM upgrade must receive the real message, not the note."""
+        from agent.title_generator import generate_title
+
+        captured = {}
+
+        def mock_call_llm(**kwargs):
+            captured["user"] = kwargs["messages"][1]["content"]
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Fix login button"
+            return resp
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            title = generate_title(f"{self.NOTE}\n\nfix login button")
+        assert title == "Fix login button"
+        assert captured["user"] == "fix login button"
+        assert "interrupted" not in captured["user"]

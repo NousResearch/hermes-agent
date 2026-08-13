@@ -319,6 +319,23 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
     if origin_platform and origin_chat_id:
         thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
+        # Slack thread-per-message session keying (native parity: thread_ts =
+        # event.thread_ts or ts) stamps every TOP-LEVEL message's own id as
+        # the session thread. That stamp is a per-message session KEY, not a
+        # durable conversation location — persisting it as origin routing
+        # pins every future delivery inside the ephemeral thread spawned
+        # around the creation message. Recognize it at the source: a Slack
+        # thread id equal to the triggering message's own id is synthetic.
+        # A genuine in-thread creation (thread == the parent's id != this
+        # message's id) keeps its thread.
+        if thread_id and origin_platform == "slack":
+            message_id = get_session_env("HERMES_SESSION_MESSAGE_ID") or None
+            if message_id and str(thread_id) == str(message_id):
+                logger.debug(
+                    "Cron origin: dropping synthetic per-message Slack "
+                    "thread_id=%s (== creation message id)", thread_id,
+                )
+                thread_id = None
         if thread_id:
             logger.debug(
                 "Cron origin captured thread_id=%s for %s:%s",

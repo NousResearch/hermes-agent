@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import importlib
 import io
 import json
 import logging
@@ -40,6 +41,7 @@ import mimetypes
 import os
 import re
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -76,96 +78,83 @@ RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 MAX_RECONNECT_ATTEMPTS = 100
 IMAGE_MAX_BYTES = 8 * 1024 * 1024  # skip absurdly large CQ image downloads
 MEDIA_MAX_BYTES = 20 * 1024 * 1024  # voice/video/file base64 cap (NapCat upload)
-_FORWARD_RE = re.compile(r"\[\[qq_forward\]\](.*?)\[\[/qq_forward\]\]", re.S)
 MAX_MESSAGE_LENGTH = 4000  # QQ per-message cap (UTF-16-ish, keep safe)
-
-_CQ_AT_RE = re.compile(r"\[CQ:at,qq=(\d+|all)\]")
-
-
-def _cq_unescape(s: str) -> str:
-    """反转义 CQ 码中的 HTML 实体（& → &amp;，[ → &#91; 等）。
-
-    CQ 码字符串里 url 等参数值会被转义，下载前必须还原，
-    否则 URL 里带 &amp; 会导致请求失败（图片获取失败根因）。
-    """
-    return (
-        s.replace("&amp;", "&")
-        .replace("&#91;", "[")
-        .replace("&#93;", "]")
-        .replace("&#44;", ",")
-    )
-
-
-_CQ_IMAGE_RE = re.compile(r"\[CQ:image,[^\]]*?url=([^,\]]+)\]")
-_CQ_IMAGE_ALL_RE = re.compile(r"\[CQ:image,([^\]]*)\]")
-_CQ_IMAGE_NOURL_RE = re.compile(r"\[CQ:image(?:,[^\]]*)?\]")
-_CQ_RECORD_RE = re.compile(r"\[CQ:record,[^\]]*?url=([^,\]]+)\]")
-_CQ_RECORD_NOURL_RE = re.compile(r"\[CQ:record(?:,[^\]]*)?\]")
-_CQ_REPLY_RE = re.compile(r"\[CQ:reply,id=(\d+)\]")
-_CQ_FACE_RE = re.compile(r"\[CQ:face,id=(\d+)\]")
-_CQ_ANY_RE = re.compile(r"\[CQ:[^\]]*\]")
 
 # Max bytes for a downloaded voice clip (silk/amr from QQ).
 AUDIO_MAX_BYTES = 15 * 1024 * 1024
-
-# Reply splitting: messages longer than this are sent as multiple messages,
-# breaking at sentence boundaries (。！？!?；;\n) instead of mid-sentence.
-DEFAULT_SPLIT_LENGTH = 100
-_SENTENCE_BOUNDS = "。！？!?；;\n"
 
 # Content longer than this is rendered as a text image instead of being
 # sent as text (0 / negative disables the image path).
 DEFAULT_TEXT_IMAGE_THRESHOLD = 150
 
-# Primary font, followed by a fallback chain: Noto Sans CJK (primary) →
-# WenQuanYi (CJK backup) → GNU Unifont (covers essentially the whole
-# Unicode BMP + upper planes).
-_TEXT_IMAGE_FALLBACK_FONTS = [
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
-    "/usr/share/fonts/opentype/unifont/unifont.otf",
-    "/usr/share/fonts/opentype/unifont/unifont_upper.otf",
-]
-_TEXT_IMAGE_WIDTH = 720
-_TEXT_IMAGE_FONT_SIZE = 26
-_TEXT_IMAGE_MARGIN = 28
+_UTILS_MTIME: float = 0.0
+_utils_lock = threading.Lock()
 
 
-def _ttc_sc_index(path: str) -> int:
-    """Find the Simplified-Chinese face index inside a .ttc collection."""
-    from fontTools.ttLib import TTFont
+def _load_onebot_utils():
+    """加载 onebot_utils 模块；检测文件 mtime 变化时自动 importlib.reload。
 
-    for i in range(64):
-        try:
-            tt = TTFont(path, fontNumber=i, lazy=True)
-        except Exception:
-            break
-        fam = tt["name"].getDebugName(16) or tt["name"].getDebugName(1) or ""
-        if "SC" in fam:
-            return i
-    return 0
+    热加载语义：onebot_utils.py 每次修改后（保存即生效），下一次调用
+    自动使用新逻辑，无需重启 gateway。覆盖 CQ 解析、Markdown 剥离、
+    长消息分段、表情映射等纯规则。
+    """
+    global _UTILS_MTIME
+    try:
+        from . import onebot_utils as mod
+    except ImportError:  # 插件以裸模块方式加载时
+        import onebot_utils as mod
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "onebot_utils.py")
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        mtime = 0.0
+
+    if mtime and mtime != _UTILS_MTIME:
+        with _utils_lock:
+            if mtime != _UTILS_MTIME:
+                try:
+                    importlib.reload(mod)
+                    logger.info("onebot_utils.py 热加载生效 (mtime=%s)", mtime)
+                except Exception:
+                    logger.exception("onebot_utils.py 热加载失败，沿用旧模块")
+                _UTILS_MTIME = mtime
+    return mod
 
 
-def _build_font_chain(size: int):
-    """Return [(PIL font, cmap codepoint set)] ordered by preference."""
-    from fontTools.ttLib import TTFont
-    from PIL import ImageFont
+_T2I_MTIME: float = 0.0
+_t2i_lock = threading.Lock()
 
-    chain = []
-    seen = set()
-    for path in _TEXT_IMAGE_FALLBACK_FONTS:
-        if path in seen or not os.path.exists(path):
-            continue
-        seen.add(path)
-        try:
-            index = _ttc_sc_index(path) if path.endswith(".ttc") else 0
-            pil_font = ImageFont.truetype(path, size, index=index)
-            tt = TTFont(path, fontNumber=index, lazy=True)
-            cmap = set(tt.getBestCmap().keys())
-            chain.append((pil_font, cmap))
-        except Exception as e:
-            logger.warning("[onebot] font load failed %s: %s", path, e)
-    return chain
+
+def _load_t2i_render():
+    """加载 t2i_render 模块；检测文件 mtime 变化时自动 importlib.reload。
+
+    热加载语义：t2i_render.py 每次修改后（保存即生效），下一次渲染
+    自动使用新样式，无需重启 gateway。reload 后模块级缓存
+    （_FONT_CACHE / _EMOJI_BITMAP_CACHE 等）随之重建，不会用旧字号。
+    """
+    global _T2I_MTIME
+    try:
+        from . import t2i_render as mod
+    except ImportError:  # 插件以裸模块方式加载时
+        import t2i_render as mod
+
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "t2i_render.py")
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        mtime = 0.0
+
+    if mtime and mtime != _T2I_MTIME:
+        with _t2i_lock:
+            if mtime != _T2I_MTIME:
+                try:
+                    importlib.reload(mod)
+                    logger.info("t2i_render.py 热加载生效 (mtime=%s)", mtime)
+                except Exception:
+                    logger.exception("t2i_render.py 热加载失败，沿用旧模块")
+                _T2I_MTIME = mtime
+    return mod
 
 
 def render_text_image(text: str, title: Optional[str] = None) -> bytes:
@@ -174,164 +163,22 @@ def render_text_image(text: str, title: Optional[str] = None) -> bytes:
     See t2i_render.py for the element-based Markdown renderer (bold/italic/
     headers/quotes/lists/code/table support) with glyph-level font fallback.
     ``title`` (e.g. "To 昵称") is drawn as a top bar on the card.
+
+    热加载：每次调用检测 t2i_render.py 的 mtime，文件变化自动 reload，
+    改样式无需重启 gateway。
     """
-    try:
-        from .t2i_render import render_text_image as _render
-    except ImportError:  # 插件以裸模块方式加载时
-        from t2i_render import render_text_image as _render
-
-    return _render(text, title)
-
-
-def _split_reply(content: str, limit: int = DEFAULT_SPLIT_LENGTH) -> List[str]:
-    """Split long content into ≤limit-char chunks at sentence boundaries.
-
-    Prefers the nearest sentence-ending punctuation inside the window;
-    falls back to a hard cut at the limit only when a chunk has no
-    boundary at all (keeps progress guaranteed).
-    """
-    if not content:
-        return []
-    if len(content) <= limit:
-        return [content]
-    parts: List[str] = []
-    start = 0
-    n = len(content)
-    while start < n:
-        end = min(start + limit, n)
-        if end >= n:
-            parts.append(content[start:])
-            break
-        window = content[start:end]
-        cut = -1
-        for i in range(len(window) - 1, -1, -1):
-            if window[i] in _SENTENCE_BOUNDS:
-                cut = i
-                break
-        if cut == -1:
-            # No sentence boundary in the window — hard cut to stay bounded.
-            cut = limit - 1
-        parts.append(content[start : start + cut + 1])
-        start = start + cut + 1
-    # Trim stray spaces but keep sentence-boundary newlines intact.
-    return [p.rstrip(" \t") for p in parts if p.strip(" \t")]
-
-# A few common QQ faces → emoji; anything else collapses to [表情].
-_FACE_EMOJI = {
-    "0": "😊", "1": "😄", "2": "😁", "3": "😆", "4": "😅", "5": "🤣",
-    "14": "😏", "21": "😳", "74": "😪", "107": "🐶", "108": "🐱",
-    "110": "👍", "111": "👎", "116": "🎉", "171": "🍺", "173": "👌",
-}
-
-
-def _inline_markdown(text: str) -> str:
-    """Strip inline Markdown from a single line (QQ shows raw syntax)."""
-    text = re.sub(r"`([^`\n]+)`", r"\1", text)
-    text = re.sub(r"\*{3}(.+?)\*{3}", r"\1", text)
-    text = re.sub(r"_{3}(.+?)_{3}", r"\1", text)
-    text = re.sub(r"\*{2}(.+?)\*{2}", r"\1", text)
-    text = re.sub(r"_{2}(.+?)_{2}", r"\1", text)
-    text = re.sub(r"\*(.+?)\*", r"\1", text)
-    text = re.sub(r"(?<!\w)_(.+?)_(?!\w)", r"\1", text)
-    text = re.sub(r"~~(.+?)~~", r"\1", text)
-    text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r"\1（\2）", text)
-    text = re.sub(r"!\[([^\]]*)\]\([^)]+\)", r"[\1]", text)
-    text = re.sub(r"\[([^\]]+)\]\[[^\]]*\]", r"\1", text)
-    return text
-
-
-def strip_markdown(text: str) -> str:
-    """Convert Markdown to clean QQ-friendly plain text.
-
-    QQ does not render Markdown — raw ``**bold**`` / ``## heading`` would
-    appear as literal characters. Common constructs are converted to
-    readable Unicode equivalents; fenced code blocks keep their contents.
-    """
-    lines = text.splitlines()
-    out: List[str] = []
-    in_code = False
-    code_lang = ""
-    code_lines: List[str] = []
-
-    for line in lines:
-        fence = re.match(r"^(`{3,}|~{3,})(.*)", line.strip())
-        if fence:
-            if not in_code:
-                in_code = True
-                code_lang = fence.group(2).strip()
-                code_lines = []
-            else:
-                in_code = False
-                label = f"[{code_lang}]" if code_lang else "[代码]"
-                out.append(f"┌─{label}─")
-                out.extend("│ " + cl for cl in code_lines)
-                out.append("└──────")
-                code_lines = []
-            continue
-        if in_code:
-            code_lines.append(line)
-            continue
-
-        h = re.match(r"^(#{1,6})\s+(.*)", line)
-        if h:
-            level, title = len(h.group(1)), h.group(2).strip()
-            title = _inline_markdown(title)
-            out.append(f"【{title}】" if level <= 2 else f"▌ {title}")
-            continue
-
-        if re.match(r"^\s*[-*_]{3,}\s*$", line):
-            out.append("────────────────")
-            continue
-
-        bq = re.match(r"^>\s?(.*)", line)
-        if bq:
-            out.append("「" + _inline_markdown(bq.group(1)) + "」")
-            continue
-
-        ul = re.match(r"^(\s*)[-*+]\s+(.*)", line)
-        if ul:
-            indent = len(ul.group(1)) // 2
-            out.append("  " * indent + "• " + _inline_markdown(ul.group(2)))
-            continue
-
-        ol = re.match(r"^(\s*)(\d+)[.)]\s+(.*)", line)
-        if ol:
-            indent = len(ol.group(1)) // 2
-            out.append("  " * indent + ol.group(2) + ". " + _inline_markdown(ol.group(3)))
-            continue
-
-        if re.match(r"^\s*\|", line):
-            if re.match(r"^\s*\|[\s\-:|]+\|\s*$", line):
-                continue
-            cells = [c.strip() for c in line.strip().strip("|").split("|")]
-            out.append("  ".join(_inline_markdown(c) for c in cells if c))
-            continue
-
-        out.append(_inline_markdown(line))
-
-    # Flush an unclosed fenced code block (LLM output truncated mid-block).
-    if in_code:
-        label = f"[{code_lang}]" if code_lang else "[代码]"
-        out.append(f"┌─{label}─")
-        out.extend("│ " + cl for cl in code_lines)
-        out.append("└──────")
-
-    return "\n".join(out).strip()
+    mod = _load_t2i_render()
+    return mod.render_text_image(text, title)
 
 
 def _build_chat_id(message_type: str, id_: Any) -> str:
     """Canonical chat_id used by the session store and outbound sends."""
-    prefix = "group" if message_type == "group" else "private"
-    return f"{prefix}:{id_}"
+    return _load_onebot_utils()._build_chat_id(message_type, id_)
 
 
 def _split_chat_id(chat_id: str) -> Tuple[str, str]:
     """Return (kind, target) — kind is 'private' or 'group'."""
-    if ":" in chat_id:
-        kind, target = chat_id.split(":", 1)
-        return kind, target
-    # Bare numeric id → treat as private (user) chat.
-    return "private", chat_id
+    return _load_onebot_utils()._split_chat_id(chat_id)
 
 
 class OneBotAdapter(BasePlatformAdapter):
@@ -353,12 +200,13 @@ class OneBotAdapter(BasePlatformAdapter):
         self._url = str(extra.get("url", "ws://127.0.0.1:3001"))
         self._access_token = str(extra.get("access_token", "") or "").strip()
         self._bot_qq = str(extra.get("bot_qq", "") or "").strip()
+        _default_split = _load_onebot_utils().DEFAULT_SPLIT_LENGTH
         try:
-            self._split_length = int(extra.get("split_length", DEFAULT_SPLIT_LENGTH))
+            self._split_length = int(extra.get("split_length", _default_split))
         except (TypeError, ValueError):
-            self._split_length = DEFAULT_SPLIT_LENGTH
+            self._split_length = _default_split
         if self._split_length <= 0:
-            self._split_length = DEFAULT_SPLIT_LENGTH
+            self._split_length = _default_split
         try:
             self._text_image_threshold = int(
                 extra.get("text_image_threshold", DEFAULT_TEXT_IMAGE_THRESHOLD)
@@ -387,6 +235,10 @@ class OneBotAdapter(BasePlatformAdapter):
         self._reconnect_task: Optional[asyncio.Task] = None
         self._stopping = False
         self._last_event_ts = 0.0
+        # 一次回复周期内的中间消息缓冲: chat_id -> [(message_id, text), ...]
+        # 收到最终回复（t2i 图片等）时合并为一条 QQ 转发并撤回原消息。
+        self._loop_buffer: Dict[str, List[Tuple[str, str]]] = {}
+        self._loop_buffer_ts: Dict[str, float] = {}
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -633,11 +485,41 @@ class OneBotAdapter(BasePlatformAdapter):
             if nickname:
                 self._nicknames[chat_id] = nickname
 
+            # 新一轮用户消息: 清理上一轮残留的 loop 缓冲（防止跨轮合并）
+            self._loop_buffer.pop(chat_id, None)
+            self._loop_buffer_ts.pop(chat_id, None)
+
             message = data.get("message")
+            reply_id: Optional[str] = None
             if isinstance(message, list) and message:
-                text, media_urls, media_types = await self._parse_message_array(message)
+                text, media_urls, media_types, reply_id = await self._parse_message_array(message)
             else:
                 text, media_urls, media_types = await self._parse_content(raw)
+                # CQ 字符串路径: 提取 [CQ:reply,id=xxx]
+                rm = _load_onebot_utils()._CQ_REPLY_RE.search(raw)
+                if rm:
+                    reply_id = rm.group(1)
+
+            # 用户引用了一条消息时, 从原消息取图片和文本（引用就是给 agent 看的）
+            if reply_id:
+                try:
+                    orig = await self._call_action(
+                        "get_msg", {"message_id": int(reply_id)}, timeout=10.0
+                    )
+                    orig_msg = orig.get("message")
+                    if isinstance(orig_msg, list):
+                        om_text, om_urls, om_types, _ = await self._parse_message_array(orig_msg)
+                    elif orig_msg:
+                        om_text, om_urls, om_types = await self._parse_content(str(orig_msg))
+                    else:
+                        om_text, om_urls, om_types = "", [], []
+                    if om_text:
+                        text = f"[引用]{om_text}\n{text}".strip()
+                    if om_urls:
+                        media_urls.extend(om_urls)
+                        media_types.extend(om_types)
+                except Exception as e:
+                    logger.info("[onebot] get_msg failed for reply id=%s: %s", reply_id, e)
 
             has_voice = any(t.startswith("audio/") for t in media_types)
             if not text and not media_urls:
@@ -721,17 +603,17 @@ class OneBotAdapter(BasePlatformAdapter):
         to 16 kHz mono WAV so the gateway's STT pipeline can transcribe
         them. Replies/at are normalized to plain text.
         """
-        image_urls = _CQ_IMAGE_RE.findall(raw)
-        record_urls = _CQ_RECORD_RE.findall(raw)
+        image_urls = _load_onebot_utils()._CQ_IMAGE_RE.findall(raw)
+        record_urls = _load_onebot_utils()._CQ_RECORD_RE.findall(raw)
         media_urls: List[str] = []
         media_types: List[str] = []
         # 完整解析每个 CQ:image 的 url/file 属性（url 可能为空，需 get_image 换取）
-        for m in _CQ_IMAGE_ALL_RE.finditer(raw):
+        for m in _load_onebot_utils()._CQ_IMAGE_ALL_RE.finditer(raw):
             attrs = {}
             for kv in m.group(1).split(","):
                 if "=" in kv:
                     k, _, v = kv.partition("=")
-                    attrs[k.strip()] = _cq_unescape(v)
+                    attrs[k.strip()] = _load_onebot_utils()._cq_unescape(v)
             logger.info("[onebot] CQ:image attrs: %s", attrs)
             try:
                 path = await self._resolve_image(attrs.get("url", ""), attrs.get("file", ""))
@@ -742,39 +624,42 @@ class OneBotAdapter(BasePlatformAdapter):
                 logger.debug("[onebot] image download failed: %s", e)
         for url in record_urls:
             try:
-                path = await self._download_audio(_cq_unescape(url))
+                path = await self._download_audio(_load_onebot_utils()._cq_unescape(url))
                 if path:
                     media_urls.append(path)
                     media_types.append("audio/wav")
             except Exception as e:
                 logger.debug("[onebot] voice download failed: %s", e)
 
-        text = _CQ_IMAGE_RE.sub(lambda m: "[图片]", raw)
-        text = _CQ_IMAGE_NOURL_RE.sub("[图片]", text)
-        text = _CQ_RECORD_RE.sub(lambda m: "[语音]", text)
-        text = _CQ_RECORD_NOURL_RE.sub("[语音]", text)
-        text = _CQ_AT_RE.sub(
+        u = _load_onebot_utils()
+        text = u._CQ_IMAGE_RE.sub(lambda m: "[图片]", raw)
+        text = u._CQ_IMAGE_NOURL_RE.sub("[图片]", text)
+        text = u._CQ_RECORD_RE.sub(lambda m: "[语音]", text)
+        text = u._CQ_RECORD_NOURL_RE.sub("[语音]", text)
+        text = u._CQ_AT_RE.sub(
             lambda m: "@" + ("全体成员" if m.group(1) == "all" else m.group(1)), text
         )
-        text = _CQ_REPLY_RE.sub(lambda m: "", text)
-        text = _CQ_FACE_RE.sub(lambda m: _FACE_EMOJI.get(m.group(1), "[表情]"), text)
-        text = _CQ_ANY_RE.sub("", text)
+        text = u._CQ_REPLY_RE.sub(lambda m: "", text)
+        text = u._CQ_FACE_RE.sub(lambda m: u._FACE_EMOJI.get(m.group(1), "[表情]"), text)
+        text = u._CQ_ANY_RE.sub("", text)
         text = re.sub(r"[ \t]+", " ", text).strip()
-        text = _cq_unescape(text)
+        text = u._cq_unescape(text)
         return text, media_urls, media_types
 
     async def _parse_message_array(
         self, segments: List[dict]
-    ) -> Tuple[str, List[str], List[str]]:
-        """从 OneBot 段数组解析 (text, media_urls, media_types)。
+    ) -> Tuple[str, List[str], List[str], Optional[str]]:
+        """从 OneBot 段数组解析 (text, media_urls, media_types, reply_id)。
 
         OneBot 11 事件的 message 字段是段数组
         [{"type": "image", "data": {"file": ..., "url": ...}}, ...]。
         结构化解析比 CQ 字符串正则更可靠（图片 url/file 天然可取）。
+        第四项为被引用消息的 message_id（reply 段），供调 get_msg 取原图。
         """
         text_parts: List[str] = []
         media_urls: List[str] = []
         media_types: List[str] = []
+        reply_id: Optional[str] = None
         for seg in segments or []:
             if not isinstance(seg, dict):
                 continue
@@ -805,16 +690,26 @@ class OneBotAdapter(BasePlatformAdapter):
                     logger.debug("[onebot] voice download failed: %s", e)
                 text_parts.append("[语音]")
             elif seg_type == "video":
+                try:
+                    path = await self._download_media(
+                        data.get("url", "") or data.get("file", ""), "video"
+                    )
+                    if path:
+                        media_urls.append(path)
+                        media_types.append("video/mp4")
+                except Exception as e:
+                    logger.debug("[onebot] video download failed: %s", e)
                 text_parts.append("[视频]")
             elif seg_type == "file":
                 text_parts.append(f"[文件:{data.get('name', '')}]")
             elif seg_type == "face":
-                text_parts.append(_FACE_EMOJI.get(str(data.get("id", "")), "[表情]"))
+                text_parts.append(_load_onebot_utils()._FACE_EMOJI.get(str(data.get("id", "")), "[表情]"))
             elif seg_type == "at":
                 qq = str(data.get("qq", ""))
                 text_parts.append("@" + ("全体成员" if qq == "all" else qq))
             elif seg_type == "reply":
-                pass  # 用户偏好不显示引用
+                reply_id = str(data.get("id", "") or "")
+                # 用户偏好不显示引用文本，仅记录 id 供取原图
             elif seg_type == "json":
                 text_parts.append("[卡片]")
             elif seg_type == "poke":
@@ -822,7 +717,7 @@ class OneBotAdapter(BasePlatformAdapter):
             # 未知段类型: 忽略
         text = "".join(text_parts)
         text = re.sub(r"[ \t]+", " ", text).strip()
-        return text, media_urls, media_types
+        return text, media_urls, media_types, reply_id
 
     async def _resolve_image(self, url: str, file: str) -> Optional[str]:
         """把 CQ:image 的 url/file 解析为可读的本地图片路径。
@@ -888,6 +783,41 @@ class OneBotAdapter(BasePlatformAdapter):
         # photos make vision calls slow or time out entirely.
         shrunk = await asyncio.to_thread(self._shrink_image, path)
         return shrunk or str(path)
+
+    async def _download_media(self, url: str, kind: str) -> Optional[str]:
+        """通用媒体下载（video/audio/file），带大小上限。
+
+        url 支持 http(s):// 与 base64://；返回本地文件路径。
+        kind 仅用于文件名前缀与大小上限选择。
+        """
+        if not url:
+            return None
+        max_bytes = MEDIA_MAX_BYTES
+        resp = None
+        if url.lower().startswith("base64://"):
+            try:
+                data = base64.b64decode(url[len("base64://"):])
+            except Exception:
+                return None
+        else:
+            headers = {"User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"}
+            timeout = aiohttp.ClientTimeout(total=30.0)
+            async with aiohttp.ClientSession(headers=headers, timeout=timeout) as session:
+                async with session.get(url) as resp:
+                    if resp.status != 200:
+                        return None
+                    data = await resp.read()
+        if len(data) > max_bytes:
+            logger.debug("[onebot] %s too large, skipping (%d bytes)", kind, len(data))
+            return None
+        ext = mimetypes.guess_extension(resp.headers.get("Content-Type", "")) if resp else ""
+        if not ext or ext == ".jpe":
+            ext = ".mp4" if kind == "video" else ".bin"
+        tmp = Path(tempfile.gettempdir()) / "hermes_onebot"
+        tmp.mkdir(exist_ok=True)
+        path = tmp / f"{kind}_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}{ext}"
+        path.write_bytes(data)
+        return str(path)
 
     def _shrink_image(self, path: Path) -> Optional[str]:
         """Downscale an image to ≤ `image_max_size` px on its long edge.
@@ -1014,10 +944,33 @@ class OneBotAdapter(BasePlatformAdapter):
             else:
                 params["user_id"] = int(target)
 
+            # ── loop 消息合并 ──────────────────────────────────────────
+            # gateway 会在一次回复中多次调 send()：中间评论（interim，
+            # metadata 带 expect_edits）先发；最终回复（final，带 notify）
+            # 后发。为省空间：interim 文本缓冲起来，final 时先合并转发
+            # 并撤回那些单独消息，再发最终内容（含 t2i 图片）。
+            meta = metadata or {}
+            # interim: gateway 中间评论（_send_commentary 现在带 interim=True）
+            # final: 流式最终回复带 notify=True；非流式最终回复无标记——
+            # 无标记即视为最终（interim 都有标记，无标记=回复周期收尾）
+            is_interim = bool(meta.get("interim")) or bool(meta.get("expect_edits"))
+            is_final = bool(meta.get("notify")) or not is_interim
+            logger.info(
+                "[onebot] send: chat=%s len=%d final=%s interim=%s meta_keys=%s buf=%d",
+                chat_id, len(content or ""), is_final, is_interim,
+                sorted(meta.keys()), len(self._loop_buffer.get(chat_id, [])),
+            )
+            # 最终消息：先结算缓冲（合并转发 + 撤回）
+            if is_final:
+                await self._settle_loop_buffer(chat_id, params, kind)
+            # 消息发送成功后, interim 纯文本进缓冲（图片/语音等中间媒体不进）
+            _buf_sent_ids: List[Tuple[str, str]] = []
+            _buf_sent_flag = is_interim and not (metadata or {}).get("media_files")
+
             # QQ 合并转发指令: [[qq_forward]]名字\n内容\n---\n名字\n内容[[/qq_forward]]
             # 仅群聊支持 send_forward_msg; 私聊忽略该标记走普通文本。
             raw_content = content or ""
-            fwd_match = _FORWARD_RE.search(raw_content)
+            fwd_match = _load_onebot_utils()._FORWARD_RE.search(raw_content)
             if fwd_match and kind == "group":
                 nodes = self._parse_forward_blocks(fwd_match.group(1))
                 if nodes:
@@ -1029,7 +982,7 @@ class OneBotAdapter(BasePlatformAdapter):
                         )
                     except Exception as e:
                         logger.warning("[onebot] send_forward_msg failed: %s", e)
-                raw_content = _FORWARD_RE.sub("", raw_content).strip()
+                raw_content = _load_onebot_utils()._FORWARD_RE.sub("", raw_content).strip()
             content = raw_content
 
             # No [CQ:reply] prefix — user prefers plain replies without a
@@ -1047,9 +1000,9 @@ class OneBotAdapter(BasePlatformAdapter):
             # QQ doesn't render Markdown — convert common syntax to readable
             # plain text BEFORE splitting so text chunks are clean.
             raw_content = content or ""
-            content = strip_markdown(raw_content)
+            content = _load_onebot_utils().strip_markdown(raw_content)
 
-            parts = _split_reply(content or "", self._split_length)
+            parts = _load_onebot_utils()._split_reply(content or "", self._split_length)
 
             # Long content → single text-image message instead of text.
             # Text-image path receives the RAW markdown so the AstrBot-style
@@ -1073,6 +1026,8 @@ class OneBotAdapter(BasePlatformAdapter):
                     ] + media_segments
                     data = await self._call_action("send_msg", image_params)
                     mid = data.get("message_id")
+                    if _buf_sent_flag and mid is not None:
+                        _buf_sent_ids.append((str(mid), raw_content))
                     return SendResult(
                         success=True, message_id=str(mid) if mid is not None else None
                     )
@@ -1098,6 +1053,13 @@ class OneBotAdapter(BasePlatformAdapter):
                 mid = data.get("message_id")
                 if mid is not None:
                     last_message_id = str(mid)
+                    if _buf_sent_flag:
+                        _buf_sent_ids.append((last_message_id, part))
+
+            # interim 文本消息记入缓冲, 等 final 到达后合并转发
+            if _buf_sent_ids:
+                self._loop_buffer.setdefault(chat_id, []).extend(_buf_sent_ids)
+                self._loop_buffer_ts[chat_id] = time.time()
 
             return SendResult(success=True, message_id=last_message_id)
         except asyncio.CancelledError:
@@ -1105,6 +1067,53 @@ class OneBotAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.warning("[onebot] send failed: %s", e)
             return SendResult(success=False, error=str(e), retryable=True)
+
+    async def _settle_loop_buffer(
+        self, chat_id: str, params: Dict[str, Any], kind: str
+    ) -> None:
+        """把一次回复周期内缓冲的 interim 消息合并为一条 QQ 转发并撤回原消息。
+
+        - 仅当缓冲 ≥2 条时才合并（单条不值得；转发本身也占空间）
+        - 合并转发成功后逐个撤回原消息；失败则保留原消息（不丢内容）
+        - 群聊用 send_forward_msg(group_id)，私聊用 send_private_forward_msg(user_id)
+        """
+        buf = self._loop_buffer.pop(chat_id, None)
+        self._loop_buffer_ts.pop(chat_id, None)
+        if not buf or len(buf) < 2:
+            return
+        try:
+            uin = str(self._self_id or self._bot_qq or "0")
+            nodes = []
+            for mid, text in buf:
+                content = _load_onebot_utils().strip_markdown(text)[:500]
+                if not content.strip():
+                    content = "(中间消息)"
+                nodes.append(
+                    {
+                        "type": "node",
+                        "data": {
+                            "uin": uin,
+                            "name": "Hermes",
+                            "content": [{"type": "text", "data": {"text": content}}],
+                        },
+                    }
+                )
+            if not nodes:
+                return
+            action = "send_forward_msg" if kind == "group" else "send_private_forward_msg"
+            fwd_params = dict(params)
+            fwd_params["messages"] = nodes
+            await self._call_action(action, fwd_params, timeout=30.0)
+            # 转发成功后才撤回原消息
+            for mid, _ in buf:
+                try:
+                    await self._call_action(
+                        "delete_msg", {"message_id": mid}, timeout=10.0
+                    )
+                except Exception as e:
+                    logger.debug("[onebot] delete_msg failed for %s: %s", mid, e)
+        except Exception as e:
+            logger.info("[onebot] loop merge failed, keeping original messages: %s", e)
 
     async def _file_to_base64(self, path: str, max_bytes: int = IMAGE_MAX_BYTES) -> Optional[str]:
         try:

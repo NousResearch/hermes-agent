@@ -111,6 +111,30 @@ The adapter implements the gateway's native media senders as OneBot segments, so
 
 Each `---`-separated block becomes one forwarded node (name + text, 500-char cap per node). In private chats the marker is ignored and the block degrades to plain text.
 
+## Replying to a message (quote)
+
+When the user replies to (quotes) a previous message, the adapter calls the OneBot `get_msg` API to fetch the original message and:
+
+- prefixes the original text with `[引用]` so the agent sees what was quoted
+- attaches any image / voice / video from the original message as media (voice goes through the STT pipeline, video is downloaded for frame extraction)
+
+This works for both segment-array and CQ-string payloads. If `get_msg` fails the current message is delivered unchanged.
+
+## Loop-message merge (interim commentary folding)
+
+During a multi-tool turn the gateway sends interim commentary messages ("Using tool X…") followed by the final response. To save chat space the adapter buffers interim text messages per chat and, when the final message arrives, merges them into a single QQ forwarded-message and retracts the originals:
+
+- group chats use `send_forward_msg`, private chats use `send_private_forward_msg`
+- merge happens only when ≥2 interim messages are buffered
+- originals are retracted (`delete_msg`) only after the forward succeeds; on failure they are kept
+- the buffer is cleared on any new inbound user message
+
+This relies on the gateway marking commentary sends with `interim: True` in the stream-consumer metadata (see `gateway/stream_consumer.py`).
+
+## Hot reload
+
+`onebot_utils.py` (pure helpers: CQ parsing, splitting, markdown stripping, emoji map) and `t2i_render.py` (text-image renderer) are hot-reloaded on every use: the adapter stats the file mtime and calls `importlib.reload` when it changed, so style/rule tweaks apply without a gateway restart. Changes to `adapter.py` itself still require a restart.
+
 ## Notes
 
 - Outbound messages use the OneBot segment-array format (not CQ-code strings) — required for NapCat's message handling.

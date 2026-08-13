@@ -14,11 +14,13 @@ import pytest
 
 from gateway.config import Platform, PlatformConfig
 from plugins.platforms.onebot.adapter import (
-    DEFAULT_SPLIT_LENGTH,
     MAX_MESSAGE_LENGTH,
     OneBotAdapter,
-    _split_reply,
     render_text_image,
+)
+from plugins.platforms.onebot.onebot_utils import (
+    DEFAULT_SPLIT_LENGTH,
+    _split_reply,
 )
 
 
@@ -73,13 +75,13 @@ def test_render_text_image_produces_png(monkeypatch) -> None:
     from PIL import Image
     import io
 
-    import plugins.platforms.onebot.adapter as ob
+    import plugins.platforms.onebot.onebot_utils as ou
 
-    monkeypatch.setattr(ob, "_TEXT_IMAGE_FALLBACK_FONTS", [_DEJAVU])
+    monkeypatch.setattr(ou, "_TEXT_IMAGE_FALLBACK_FONTS", [_DEJAVU])
     png = render_text_image("Hello world! " * 20)
     assert png[:8] == b"\x89PNG\r\n\x1a\n"
     img = Image.open(io.BytesIO(png))
-    assert img.size[0] == ob._TEXT_IMAGE_WIDTH
+    assert img.size[0] == ou._TEXT_IMAGE_WIDTH
     assert img.size[1] > 0
 
 
@@ -88,11 +90,11 @@ def test_render_text_image_preserves_newlines(monkeypatch) -> None:
 
     from PIL import Image
 
-    import plugins.platforms.onebot.adapter as ob
+    import plugins.platforms.onebot.onebot_utils as ou
 
     if not __import__("os").path.exists(_DEJAVU):
         pytest.skip("DejaVu font not available")
-    monkeypatch.setattr(ob, "_TEXT_IMAGE_FALLBACK_FONTS", [_DEJAVU])
+    monkeypatch.setattr(ou, "_TEXT_IMAGE_FALLBACK_FONTS", [_DEJAVU])
     single = render_text_image("line1\nline2\nline3")
     joined = render_text_image("line1line2line3")
     img1 = Image.open(io.BytesIO(single))
@@ -218,7 +220,7 @@ def test_group_policy_allowlist() -> None:
 
 
 def test_strip_markdown_inline() -> None:
-    from plugins.platforms.onebot.adapter import strip_markdown
+    from plugins.platforms.onebot.onebot_utils import strip_markdown
 
     assert strip_markdown("**加粗** 和 *斜体* 和 `代码`") == "加粗 和 斜体 和 代码"
     assert strip_markdown("[链接](https://example.com)") == "链接（https://example.com）"
@@ -226,7 +228,7 @@ def test_strip_markdown_inline() -> None:
 
 
 def test_strip_markdown_blocks() -> None:
-    from plugins.platforms.onebot.adapter import strip_markdown
+    from plugins.platforms.onebot.onebot_utils import strip_markdown
 
     text = "## 标题\n\n- 项目一\n- 项目二\n\n1. 第一\n2. 第二\n\n> 引用"
     out = strip_markdown(text)
@@ -237,7 +239,7 @@ def test_strip_markdown_blocks() -> None:
 
 
 def test_strip_markdown_code_block() -> None:
-    from plugins.platforms.onebot.adapter import strip_markdown
+    from plugins.platforms.onebot.onebot_utils import strip_markdown
 
     text = "```python\nprint('hi')\n```\n结尾"
     out = strip_markdown(text)
@@ -320,7 +322,7 @@ def test_send_long_content_uses_text_image(monkeypatch) -> None:
     ws = _FakeWS(adapter)
     adapter._ws = ws
 
-    def fake_render(text: str) -> bytes:
+    def fake_render(text: str, title: str = None) -> bytes:
         return b"\x89PNG\r\n\x1a\n" + b"0" * 64
 
     monkeypatch.setattr(
@@ -504,3 +506,122 @@ async def test_reverse_ws_round_trip(monkeypatch) -> None:
 
 async def _noop() -> None:
     return None
+
+
+# ---------------------------------------------------------------------------
+# Reply quoting (get_msg -> text + media) and loop-message merge+retract
+# ---------------------------------------------------------------------------
+
+
+def test_quote_reply_fetches_original_text_and_image(monkeypatch) -> None:
+    """引用消息时通过 get_msg 取回原文文本 + 图片（reply 段路径）。"""
+    adapter = _make_adapter()
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    captured: list = []
+
+    async def fake_handle_message(ev):
+        captured.append(ev)
+
+    adapter.handle_message = fake_handle_message  # type: ignore[method-assign]
+
+    async def fake_get_msg(action, params, timeout=30.0):
+        assert action == "get_msg"
+        assert params["message_id"] == 12345
+        return {
+            "message": [
+                {"type": "text", "data": {"text": "被引用的卡片内容"}},
+                {
+                    "type": "image",
+                    "data": {"url": "https://fake.cdn/img.png", "file": "x.png"},
+                },
+            ]
+        }
+
+    monkeypatch.setattr(adapter, "_call_action", fake_get_msg)
+
+    async def run():
+        await adapter._process_message(
+            {
+                "message_type": "private",
+                "user_id": 841859784,
+                "message": [
+                    {"type": "reply", "data": {"id": 12345}},
+                    {"type": "text", "data": {"text": "你看看这个"}},
+                ],
+                "self_id": 2512172957,
+            }
+        )
+
+    asyncio.run(run())
+    assert captured, "no event captured"
+    ev = captured[0]
+    # 文本拼了 [引用] 前缀 + 原消息文本
+    assert "[引用]" in ev.text
+    assert "被引用的卡片内容" in ev.text
+    # 图片在文本里以 [图片] 占位（下载失败时降级保留占位，不阻塞消息）
+    assert "[图片]" in ev.text
+
+
+def test_loop_merge_buffers_interim_then_forwards_and_retracts(monkeypatch) -> None:
+    """interim 消息缓冲，final 到达时合并转发 + 撤回（群聊）。"""
+    adapter = _make_adapter()
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    adapter._self_id = "2512172957"
+    chat = "group:492373722"
+
+    async def run():
+        # 2 条 interim 中间评论
+        await adapter.send(chat, "中间评论一", metadata={"interim": True})
+        await adapter.send(chat, "中间评论二", metadata={"interim": True})
+        assert len(adapter._loop_buffer.get(chat, [])) == 2
+        # final 消息触发结算
+        await adapter.send(chat, "最终回复内容", metadata={"notify": True})
+
+    asyncio.run(run())
+    actions = [p["action"] for p in ws.sent]
+    assert actions.count("send_forward_msg") == 1
+    assert actions.count("delete_msg") == 2
+    fwd = next(p for p in ws.sent if p["action"] == "send_forward_msg")
+    assert fwd["params"]["group_id"] == 492373722
+    assert len(fwd["params"]["messages"]) == 2
+    assert adapter._loop_buffer.get(chat) is None
+
+
+def test_loop_merge_private_uses_send_private_forward_msg(monkeypatch) -> None:
+    """私聊场景用 send_private_forward_msg。"""
+    adapter = _make_adapter()
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    adapter._self_id = "2512172957"
+    chat = "private:841859784"
+
+    async def run():
+        await adapter.send(chat, "中间一", metadata={"interim": True})
+        await adapter.send(chat, "中间二", metadata={"interim": True})
+        await adapter.send(chat, "最终", metadata={"notify": True})
+
+    asyncio.run(run())
+    actions = [p["action"] for p in ws.sent]
+    assert actions.count("send_private_forward_msg") == 1
+    fwd = next(p for p in ws.sent if p["action"] == "send_private_forward_msg")
+    assert fwd["params"]["user_id"] == 841859784
+
+
+def test_loop_merge_single_interim_does_not_merge(monkeypatch) -> None:
+    """缓冲不足 2 条不合并（单条不值得）。"""
+    adapter = _make_adapter()
+    ws = _FakeWS(adapter)
+    adapter._ws = ws
+    adapter._self_id = "2512172957"
+    chat = "group:1"
+
+    async def run():
+        await adapter.send(chat, "只有一条", metadata={"interim": True})
+        await adapter.send(chat, "最终", metadata={"notify": True})
+
+    asyncio.run(run())
+    actions = [p["action"] for p in ws.sent]
+    assert "send_forward_msg" not in actions
+    assert "delete_msg" not in actions

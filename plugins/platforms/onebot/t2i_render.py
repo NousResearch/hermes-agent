@@ -31,6 +31,94 @@ _FONT_FALLBACK_PATHS = [
 _FONT_CACHE: dict = {}
 _CMAP_CACHE: dict = {}
 
+# ── 彩色 emoji 渲染（NotoColorEmoji CBDT 位图）─────────────────────────
+# 该字体是 CBDT/CBLC 彩色位图格式，PIL 不支持 embedded_color，所以直接
+# 用 fontTools 从 CBDT 表提取 PNG 位图，缩放到目标字号后按图片绘制。
+_EMOJI_FONT_PATH = "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf"
+_EMOJI_TTFONT = None
+_EMOJI_STRIKE = None
+_EMOJI_CMAP = None
+_EMOJI_BITMAP_CACHE: dict = {}  # (ch, target_h) -> (img, w, h) | None
+
+
+def _load_emoji_font():
+    global _EMOJI_TTFONT, _EMOJI_STRIKE, _EMOJI_CMAP
+    if _EMOJI_TTFONT is not None:
+        return
+    try:
+        from fontTools.ttLib import TTFont
+
+        _EMOJI_TTFONT = TTFont(_EMOJI_FONT_PATH, lazy=True)
+        _EMOJI_CMAP = _EMOJI_TTFONT.getBestCmap()
+        _EMOJI_STRIKE = _EMOJI_TTFONT["CBDT"].strikeData[0]
+    except Exception:
+        _EMOJI_TTFONT = False  # 禁用标记
+
+
+def _is_emoji(ch: str) -> bool:
+    """判断字符是否按彩色 emoji 渲染（带 emoji 表现的码点）。"""
+    if not ch:
+        return False
+    cp = ord(ch)
+    if cp in (0xFE0F, 0x200D):  # 变体选择符 / ZWJ：零宽
+        return True
+    if 0x1F000 <= cp <= 0x1FAFF or 0x2600 <= cp <= 0x27BF or 0x2B00 <= cp <= 0x2BFF:
+        return True
+    if cp in (0x00A9, 0x00AE, 0x2122):  # © ® ™
+        return True
+    _load_emoji_font()
+    return bool(_EMOJI_CMAP) and cp >= 0xA0 and cp in _EMOJI_CMAP
+
+
+def _emoji_bitmap(ch: str, target_h: int):
+    """提取单个 emoji 的彩色位图，缩放到 target_h 高。
+
+    返回 (RGBA Image, 宽, 高)；失败或字体不可用返回 None（调用方回退普通字体）。
+    """
+    key = (ch, target_h)
+    if key in _EMOJI_BITMAP_CACHE:
+        return _EMOJI_BITMAP_CACHE[key]
+    result = None
+    try:
+        _load_emoji_font()
+        if not _EMOJI_TTFONT:
+            return None
+        cp = ord(ch)
+        glyph = _EMOJI_CMAP.get(cp)
+        if not glyph:
+            return None
+        data = _EMOJI_STRIKE.get(glyph)
+        if data is None:
+            return None
+        raw = data.data
+        idx = raw.find(b"\x89PNG\r\n\x1a\n")
+        if idx < 0:
+            return None
+        from io import BytesIO
+
+        img = Image.open(BytesIO(raw[idx:])).convert("RGBA")
+        w, h = img.size
+        if h <= 0:
+            return None
+        nw = max(1, int(round(w * target_h / h)))
+        resized = img.resize((nw, target_h), Image.LANCZOS)
+        result = (resized, nw, target_h)
+    except Exception:
+        result = None
+    _EMOJI_BITMAP_CACHE[key] = result
+    return result
+
+
+def _char_width(ch: str, chain) -> float:
+    """统一字符宽度：emoji 用位图宽，其余用字体度量。"""
+    if _is_emoji(ch):
+        bm = _emoji_bitmap(ch, chain[0][0].size)
+        if bm:
+            return bm[1]
+        if ord(ch) in (0xFE0F, 0x200D):
+            return 0.0
+    return _resolve_font(ch, chain).getlength(ch)
+
 
 def _ttc_sc_index(path: str) -> int:
     """在 ttc 集合里找简体中文（CJK SC）变体的字体索引。
@@ -87,7 +175,7 @@ def _text_width(text: str, chain) -> float:
     """按字形回退逐字符测量文本宽度。"""
     w = 0.0
     for ch in text:
-        w += _resolve_font(ch, chain).getlength(ch)
+        w += _char_width(ch, chain)
     return w
 
 
@@ -110,28 +198,59 @@ def _seg_width(cls, content: str, chain, font_size: int = 26) -> float:
 # ── 测量工具 ──────────────────────────────────────────────────────────
 class TextMeasurer:
     @staticmethod
-    def split_to_fit(text: str, chain, max_width: int) -> List[str]:
-        """按宽度贪心拆行（逐字符，保留完整字符）。"""
+    def split_to_fit(text: str, chain, max_width: int, width_fn=None) -> List[str]:
+        """按宽度贪心拆行（优先在空格处断开，无空格才逐字符硬切）。
+
+        width_fn: 可选单字符宽度函数 (ch, chain) -> float；默认 _char_width。
+        InlineCode 段必须传代码字体宽度函数，否则等宽字体比普通字体宽，
+        测量偏窄会导致长代码不拆行、绘制溢出。
+        """
+        if width_fn is None:
+            width_fn = _char_width
         if not text:
             return []
         lines = []
         cur = ""
         cur_w = 0.0
+        last_space = -1  # cur 内最后一个空格的位置（相对）
         for ch in text:
-            w = _resolve_font(ch, chain).getlength(ch)
+            w = width_fn(ch, chain)
             if cur and cur_w + w > max_width:
-                # 行首禁则: 后置标点（，。：；！？、）」等）不落行首，
-                # 强制并入上一行（标点宽度小，轻微超宽可接受）
+                # 行首禁则: 后置标点不落行首。
+                # 若并入会超宽，把标点连同前一个字符（宿主）下移——
+                # 上一行少一个字、下一行以"字。"开头，既不落行首也不出界。
                 if ch in _HEAD_BANNED:
+                    prev = cur[-1]
+                    if prev not in _HEAD_BANNED and prev != " ":
+                        lines.append(cur[:-1])
+                        cur = prev + ch
+                        cur_w = width_fn(prev, chain) + w
+                        last_space = -1
+                        continue
+                    # 连续标点/空格结尾: 并入（轻微超宽可接受）
                     cur += ch
                     cur_w += w
                     continue
+                # 优先回退到行内最近空格断开（保留完整单词，长代码胶囊不硬切）
+                if last_space > 0:
+                    head, tail = cur[:last_space], cur[last_space + 1 :]
+                    new_w = sum(width_fn(c, chain) for c in tail) + w
+                    if head and new_w <= max_width:
+                        lines.append(head)
+                        cur = tail + ch
+                        cur_w = new_w
+                        last_space = cur.rfind(" ")  # 新行内重扫最后一个空格
+                        continue
+                    # 回退无效（head 为空或回退后仍超宽）→ 继续走硬切
                 lines.append(cur)
                 cur = ch
                 cur_w = w
+                last_space = -1
             else:
                 cur += ch
                 cur_w += w
+                if ch == " ":
+                    last_space = len(cur) - 1
         if cur:
             lines.append(cur)
         return lines
@@ -166,26 +285,49 @@ class TextElement(MarkdownElement):
     def calculate_height(self, image_width, font_size, chain):
         if not self.content.strip():
             return 10
-        return len(self._line_parts(image_width, chain)) * (font_size + 8)
+        return len(self._line_parts(image_width, chain)) * (font_size + 12)
 
     def render(self, image, draw, x, y, image_width, font_size, chain):
         if not self.content.strip():
             return y + 10
         for parts in self._line_parts(image_width, chain):
             render_inline_parts(image, draw, x, y, parts, chain, font_size=font_size)
-            y += font_size + 8
+            y += font_size + 12
         return y
 
 
-def _draw_runs(draw, xy, text, chain, fill):
-    """按字体分组绘制一行文本，保证回退字形正确混排。"""
+def _draw_runs(draw, xy, text, chain, fill, skip_emoji=False):
+    """按字体分组绘制一行文本，保证回退字形正确混排；emoji 走彩色位图。
+
+    skip_emoji=True 时 emoji 仍正常绘制（宽高一致），供粗体第二遍
+    双画时避免位图 1px 偏移产生重影。
+    """
     x, y = xy
     i = 0
     while i < len(text):
         ch = text[i]
+        if _is_emoji(ch):
+            if skip_emoji:
+                # 粗体第二遍：跳过位图（避免 1px 重影），但宽度仍占位
+                bm = _emoji_bitmap(ch, chain[0][0].size)
+                x += bm[1] if bm else 0.0
+                i += 1
+                continue
+            bm = _emoji_bitmap(ch, chain[0][0].size)
+            if bm:
+                img, nw, nh = bm
+                draw._image.paste(img, (int(round(x)), int(round(y))), img)
+                x += nw
+                i += 1
+                continue
+            if ord(ch) in (0xFE0F, 0x200D):
+                i += 1  # 零宽字符
+                continue
         font = _resolve_font(ch, chain)
         j = i + 1
         while j < len(text):
+            if _is_emoji(text[j]):
+                break
             if _resolve_font(text[j], chain) is not font:
                 break
             j += 1
@@ -200,14 +342,14 @@ class BoldTextElement(MarkdownElement):
 
     def calculate_height(self, image_width, font_size, chain):
         lines = TextMeasurer.split_to_fit(self.content, chain, image_width - 20)
-        return len(lines) * (font_size + 8)
+        return len(lines) * (font_size + 12)
 
     def render(self, image, draw, x, y, image_width, font_size, chain):
         lines = TextMeasurer.split_to_fit(self.content, chain, image_width - 20)
         for line in lines:
             _draw_runs(draw, (x, y), line, chain, fill=(0, 0, 0))
-            _draw_runs(draw, (x + 1, y), line, chain, fill=(0, 0, 0))
-            y += font_size + 8
+            _draw_runs(draw, (x + 1, y), line, chain, fill=(0, 0, 0), skip_emoji=True)
+            y += font_size + 12
         return y
 
 
@@ -216,13 +358,13 @@ class ItalicTextElement(MarkdownElement):
 
     def calculate_height(self, image_width, font_size, chain):
         lines = TextMeasurer.split_to_fit(self.content, chain, image_width - 20)
-        return len(lines) * (font_size + 8)
+        return len(lines) * (font_size + 12)
 
     def render(self, image, draw, x, y, image_width, font_size, chain):
         lines = TextMeasurer.split_to_fit(self.content, chain, image_width - 20)
         for line in lines:
             w = _text_width(line, chain)
-            h = font_size + 8
+            h = font_size + 12
             tmp = Image.new("RGBA", (int(w) + 20, h + 6), (0, 0, 0, 0))
             td = ImageDraw.Draw(tmp)
             _draw_runs(td, (2, 2), line, chain, fill=(0, 0, 0, 255))
@@ -233,14 +375,14 @@ class ItalicTextElement(MarkdownElement):
                 Image.Resampling.BICUBIC,
             )
             image.paste(italic, (x, y), italic)
-            y += font_size + 8
+            y += font_size + 12
         return y
 
 
 class UnderlineTextElement(MarkdownElement):
     def calculate_height(self, image_width, font_size, chain):
         lines = TextMeasurer.split_to_fit(self.content, chain, image_width - 20)
-        return len(lines) * (font_size + 8)
+        return len(lines) * (font_size + 12)
 
     def render(self, image, draw, x, y, image_width, font_size, chain):
         lines = TextMeasurer.split_to_fit(self.content, chain, image_width - 20)
@@ -248,14 +390,14 @@ class UnderlineTextElement(MarkdownElement):
             _draw_runs(draw, (x, y), line, chain, fill=(0, 0, 0))
             w = _text_width(line, chain)
             draw.line((x, y + font_size + 2, x + w, y + font_size + 2), fill=(0, 0, 0), width=1)
-            y += font_size + 8
+            y += font_size + 12
         return y
 
 
 class StrikethroughTextElement(MarkdownElement):
     def calculate_height(self, image_width, font_size, chain):
         lines = TextMeasurer.split_to_fit(self.content, chain, image_width - 20)
-        return len(lines) * (font_size + 8)
+        return len(lines) * (font_size + 12)
 
     def render(self, image, draw, x, y, image_width, font_size, chain):
         lines = TextMeasurer.split_to_fit(self.content, chain, image_width - 20)
@@ -263,7 +405,7 @@ class StrikethroughTextElement(MarkdownElement):
             _draw_runs(draw, (x, y), line, chain, fill=(0, 0, 0))
             w = _text_width(line, chain)
             draw.line((x, y + font_size // 2, x + w, y + font_size // 2), fill=(0, 0, 0), width=1)
-            y += font_size + 8
+            y += font_size + 12
         return y
 
 
@@ -280,8 +422,12 @@ class HeaderElement(MarkdownElement):
 
     def calculate_height(self, image_width, font_size, chain):
         header_font_size = 42 - (self.level - 1) * 4
-        lines = TextMeasurer.split_to_fit(self.content, chain, image_width - 20)
-        return len(lines) * header_font_size + 30
+        hchain = build_font_chain(header_font_size)
+        parts = split_inline_lines(
+            parse_inline(self.content), hchain, image_width - 20,
+            font_size=header_font_size,
+        )
+        return max(1, len(parts)) * header_font_size + 30
 
     def render(self, image, draw, x, y, image_width, font_size, chain):
         header_font_size = 42 - (self.level - 1) * 4
@@ -293,7 +439,7 @@ class HeaderElement(MarkdownElement):
         )
         if parts:
             render_inline_parts(image, draw, x, y, parts[0], hchain, font_size=header_font_size)
-            y += header_font_size + 8
+            y += header_font_size + 12
         draw.line((x, y, image_width - 10, y), fill=(230, 230, 230), width=3)
         return y + 10
 
@@ -305,12 +451,12 @@ class QuoteElement(MarkdownElement):
         super().__init__(content.lstrip(">").strip())
 
     def calculate_height(self, image_width, font_size, chain):
-        parts = split_inline_lines(parse_inline(self.content), chain, image_width - 30)
-        return len(parts) * (font_size + 6) + 12
+        parts = split_inline_lines(parse_inline(self.content), chain, image_width - 35)
+        return len(parts) * (font_size + 10) + 12
 
     def render(self, image, draw, x, y, image_width, font_size, chain):
-        parts = split_inline_lines(parse_inline(self.content), chain, image_width - 30)
-        total_height = len(parts) * (font_size + 6)
+        parts = split_inline_lines(parse_inline(self.content), chain, image_width - 35)
+        total_height = len(parts) * (font_size + 10)
         draw.line(
             (x + 3, y + 6, x + 3, y + total_height + 6), fill=(180, 180, 180), width=5
         )
@@ -318,7 +464,7 @@ class QuoteElement(MarkdownElement):
         for line_parts in parts:
             render_inline_parts(image, draw, x + 15, ty, line_parts, chain,
                                 fill=(180, 180, 180), font_size=font_size)
-            ty += font_size + 6
+            ty += font_size + 10
         return y + total_height + 12
 
 
@@ -326,17 +472,17 @@ class ListItemElement(MarkdownElement):
     """无序列表项。"""
 
     def calculate_height(self, image_width, font_size, chain):
-        parts = split_inline_lines(parse_inline(self.content), chain, image_width - 30)
-        return len(parts) * (font_size + 6) + 16
+        parts = split_inline_lines(parse_inline(self.content), chain, image_width - 45)
+        return len(parts) * (font_size + 10) + 16
 
     def render(self, image, draw, x, y, image_width, font_size, chain):
-        parts = split_inline_lines(parse_inline(self.content), chain, image_width - 30)
+        parts = split_inline_lines(parse_inline(self.content), chain, image_width - 45)
         y += 8
         draw.text((x + 5, y), "•", font=chain[0][0], fill=(0, 0, 0))
         ty = y
         for line_parts in parts:
             render_inline_parts(image, draw, x + 25, ty, line_parts, chain, font_size=font_size)
-            ty += font_size + 6
+            ty += font_size + 10
         return ty + 8
 
 
@@ -348,17 +494,17 @@ class OrderedListItemElement(MarkdownElement):
         self.number = number
 
     def calculate_height(self, image_width, font_size, chain):
-        parts = split_inline_lines(parse_inline(self.content), chain, image_width - 30)
-        return len(parts) * (font_size + 6) + 16
+        parts = split_inline_lines(parse_inline(self.content), chain, image_width - 55)
+        return len(parts) * (font_size + 10) + 16
 
     def render(self, image, draw, x, y, image_width, font_size, chain):
-        parts = split_inline_lines(parse_inline(self.content), chain, image_width - 30)
+        parts = split_inline_lines(parse_inline(self.content), chain, image_width - 55)
         y += 8
         draw.text((x + 5, y), f"{self.number}.", font=chain[0][0], fill=(0, 0, 0))
         ty = y
         for line_parts in parts:
             render_inline_parts(image, draw, x + 35, ty, line_parts, chain, font_size=font_size)
-            ty += font_size + 6
+            ty += font_size + 10
         return ty + 8
 
 
@@ -428,7 +574,8 @@ class TableElement(MarkdownElement):
             n_cols = 1
         pad_x = 10
         col_gap = _TABLE_COL_GAP  # 列间间隔, 防止胶囊右缘贴相邻列
-        max_content_w = image_width - 20 - col_gap * (n_cols - 1) - pad_x * 2 * n_cols
+        # 表格绘制起点 = x+10（x=10 → 20），右缘上限 790 → 可用宽 image_width-30
+        max_content_w = image_width - 30 - col_gap * (n_cols - 1) - pad_x * 2 * n_cols
 
         def _split_cells(col_w_list: List[int]) -> List[List[List]]:
             out: List[List[List]] = []
@@ -457,8 +604,8 @@ class TableElement(MarkdownElement):
             col_widths.append(int(max_cw) + pad_x * 2)
         # 总宽超限时等比压缩, 再按最终列宽重新换行（防止压缩后文字溢出相邻列重叠）
         total = sum(col_widths) + col_gap * (n_cols - 1)
-        if total > image_width - 20:
-            ratio = (image_width - 20 - col_gap * (n_cols - 1)) / sum(col_widths)
+        if total > image_width - 30:
+            ratio = (image_width - 30 - col_gap * (n_cols - 1)) / sum(col_widths)
             col_widths = [max(30, int(cw * ratio)) for cw in col_widths]
             cell_lines = _split_cells(col_widths)
             # 重算列宽（换行后更窄, 不二次压缩）
@@ -471,6 +618,13 @@ class TableElement(MarkdownElement):
                         max_cw = max(max_cw, w)
                 new_widths.append(int(max_cw) + pad_x * 2)
             col_widths = new_widths
+        # 拉伸列宽占满卡片可用宽度（消除右侧浪费空间）
+        avail = image_width - 30 - col_gap * (n_cols - 1)
+        cur = sum(col_widths)
+        if cur < avail:
+            extra = avail - cur
+            col_widths = [cw + extra // n_cols for cw in col_widths]
+            col_widths[-1] += extra - (extra // n_cols) * n_cols  # 余数给最后一列
         row_h = [font_size + 12] * len(cell_lines)
         return col_widths, row_h, cell_lines, n_cols
 
@@ -480,7 +634,7 @@ class TableElement(MarkdownElement):
         total = 0
         for ri in range(len(cell_lines)):
             max_lines = max((len(l) for l in cell_lines[ri]), default=1)
-            total += max_lines * (font_size + 10) + 12
+            total += max_lines * (font_size + 14) + 12
         return total + 20
 
     def render(self, image, draw, x, y, image_width, font_size, chain):
@@ -491,7 +645,7 @@ class TableElement(MarkdownElement):
         cy = y + 10
         # 表头
         header_lines = cell_lines[0]
-        header_h = max((len(l) for l in header_lines), default=1) * (font_size + 10) + 12
+        header_h = max((len(l) for l in header_lines), default=1) * (font_size + 14) + 12
         draw.rectangle(
             (table_x, cy, table_x + table_w, cy + header_h), fill=(240, 240, 240)
         )
@@ -502,13 +656,13 @@ class TableElement(MarkdownElement):
                 line_w = sum(_seg_width(cls, seg, chain, font_size) for cls, seg in line_parts)
                 cx = hx + (col_widths[ci] - line_w) / 2
                 render_inline_parts(image, draw, cx, ty, line_parts, chain, font_size=font_size)
-                ty += font_size + 10
+                ty += font_size + 14
             hx += col_widths[ci] + col_gap
         cy += header_h
         # 数据行
         for ri in range(1, len(cell_lines)):
             max_lines = max((len(l) for l in cell_lines[ri]), default=1)
-            row_h = max_lines * (font_size + 10) + 12
+            row_h = max_lines * (font_size + 14) + 12
             # 交替行底色
             if ri % 2 == 0:
                 draw.rectangle(
@@ -521,7 +675,7 @@ class TableElement(MarkdownElement):
                     line_w = sum(_seg_width(cls, seg, chain, font_size) for cls, seg in line_parts)
                     cx = hx + (col_widths[ci] - line_w) / 2
                     render_inline_parts(image, draw, cx, ty, line_parts, chain, font_size=font_size)
-                    ty += font_size + 10
+                    ty += font_size + 14
                 hx += col_widths[ci] + col_gap
             cy += row_h
         # 网格线
@@ -529,7 +683,8 @@ class TableElement(MarkdownElement):
         for cw in col_widths:
             draw.line((hx, y + 10, hx, cy), fill=(210, 210, 210), width=1)
             hx += cw + col_gap
-        draw.line((hx, y + 10, hx, cy), fill=(210, 210, 210), width=1)
+        # 右边界线: 表格实际右缘 table_x + table_w（勿再加 col_gap）
+        draw.line((table_x + table_w, y + 10, table_x + table_w, cy), fill=(210, 210, 210), width=1)
         draw.line((table_x, cy, table_x + table_w, cy), fill=(210, 210, 210), width=1)
         return cy + 10
 
@@ -605,34 +760,85 @@ def _get_mono_font(size: int):
     return None
 
 
+def _code_font_size(chain) -> int:
+    """代码场景 CJK 字号：等比缩小（等宽英文 x-height 小，同号中文视觉偏大）。
+
+    26px → 22px（0.85 倍），使中文视觉高度与等宽英文协调。
+    """
+    full = chain[0][0].size if chain else 26
+    return max(12, int(full * 0.85))
+
+
 def _code_font_for(ch: str, chain, mono) -> ImageFont.FreeTypeFont:
-    """代码字体分配: Latin/数字/常见符号用等宽, CJK 回退字形链。"""
+    """代码字体分配: Latin/数字/常见符号用等宽, CJK 回退字形链（缩小一号）。"""
     if mono and ord(ch) < 0x2E80:
         return mono
+    small_chain = build_font_chain(_code_font_size(chain))
+    if small_chain:
+        return _resolve_font(ch, small_chain)
     return _resolve_font(ch, chain)
 
 
 def _code_width(text: str, chain, mono) -> float:
-    return sum(_code_font_for(ch, chain, mono).getlength(ch) for ch in text)
+    w = 0.0
+    code_size = _code_font_size(chain)
+    for ch in text:
+        if _is_emoji(ch):
+            bm = _emoji_bitmap(ch, code_size)
+            w += bm[1] if bm else 0.0
+        else:
+            w += _code_font_for(ch, chain, mono).getlength(ch)
+    return w
+
+
+def _code_char_width(ch: str, chain) -> float:
+    """单字符代码宽度：等宽/CJK缩小/emoji 与 _code_width 一致。"""
+    code_size = _code_font_size(chain)
+    if _is_emoji(ch):
+        bm = _emoji_bitmap(ch, code_size)
+        return bm[1] if bm else 0.0
+    if ord(ch) in (0xFE0F, 0x200D):
+        return 0.0
+    mono = _get_mono_font(chain[0][0].size if chain else 26)
+    return _code_font_for(ch, chain, mono).getlength(ch)
 
 
 def _draw_code_text(draw, x, y, text, chain, mono, fill):
     """按字体分组绘制代码文本（等宽 + CJK 回退混排）。
 
     mono 字形在 em 框内视觉中心低于 CJK 字形（x-height 偏上），
-    下移 2px 使中英文视觉基线对齐。
+    下移 2px 使中英文视觉基线对齐。CJK 缩小字号后需垂直居中。
     """
+    code_size = _code_font_size(chain)
+    full_size = chain[0][0].size if chain else code_size
+    cjk_dy = (full_size - code_size) // 2  # 缩小后的 CJK 向下居中
     i = 0
     while i < len(text):
         ch = text[i]
+        if _is_emoji(ch):
+            bm = _emoji_bitmap(ch, code_size)
+            if bm:
+                img, nw, nh = bm
+                draw._image.paste(img, (int(round(x)), int(round(y)) + cjk_dy), img)
+                x += nw
+                i += 1
+                continue
+            if ord(ch) in (0xFE0F, 0x200D):
+                i += 1  # 零宽字符
+                continue
         font = _code_font_for(ch, chain, mono)
         j = i + 1
         while j < len(text):
+            if _is_emoji(text[j]):
+                break
             if _code_font_for(text[j], chain, mono) is not font:
                 break
             j += 1
         run = text[i:j]
-        dy = 1 if font is mono else 0
+        if font is mono:
+            dy = 1
+        else:
+            dy = cjk_dy if font.size == code_size else 0
         draw.text((x, y + dy), run, font=font, fill=fill)
         x += font.getlength(run)
         i = j
@@ -657,13 +863,27 @@ def split_inline_lines(parts, chain, max_width, font_size: int = 26):
             - (14 if cls is InlineCodeElement else 0)  # 预留胶囊 padding
             - (8 if cls is ItalicTextElement else 0)   # 预留斜体右倾
             - (1 if cls is BoldTextElement else 0),    # 预留粗体双画
+            width_fn=_code_char_width if cls is InlineCodeElement else None,
         ):
             w = _seg_width(cls, seg, chain, font_size)
             if lines[-1] and cur_w + w > max_width:
-                # 跨元素行首禁则: 标点片段强制吸附到上一行末尾
-                if seg[0] in _HEAD_BANNED:
-                    lines[-1].append((cls, seg))
-                    cur_w += w
+                # 跨元素行首禁则: 后置标点不落行首。
+                # 纯文本段: 剥离开头标点前缀吸附到上一行尾（轻微超宽），
+                # 正文换新行——避免整段吸附导致大幅超宽。
+                # 样式段（inline code 等）: 标点是内容的一部分，整段换行。
+                if cls is None and seg and seg[0] in _HEAD_BANNED:
+                    i = 0
+                    while i < len(seg) and seg[i] in _HEAD_BANNED:
+                        i += 1
+                    punct, rest = seg[:i], seg[i:]
+                    if punct:
+                        lines[-1].append((cls, punct))
+                        cur_w += _seg_width(cls, punct, chain, font_size)
+                    if rest:
+                        lines.append([])
+                        cur_w = 0.0
+                        lines[-1].append((cls, rest))
+                        cur_w += _seg_width(cls, rest, chain, font_size)
                     continue
                 lines.append([])
                 cur_w = 0.0
@@ -701,7 +921,7 @@ def render_inline_parts(image, draw, x, y, parts, chain, fill=(0, 0, 0), font_si
             x += _text_width(content, chain) + 1
         elif cls is ItalicTextElement:
             w = _text_width(content, chain)
-            tmp = Image.new("RGBA", (int(w) + 24, font_size + 6), (0, 0, 0, 0))
+            tmp = Image.new("RGBA", (int(w) + 24, font_size + 10), (0, 0, 0, 0))
             td = ImageDraw.Draw(tmp)
             _draw_runs(td, (2, 2), content, chain, fill=(0, 0, 0, 255))
             italic = tmp.transform(
@@ -720,10 +940,10 @@ def render_inline_parts(image, draw, x, y, parts, chain, fill=(0, 0, 0), font_si
             mono = _get_mono_font(font_size)
             w = _code_width(content, chain, mono)
             h = font_size
-            pad_x, pad_y = 6, 2
-            # 浅蓝灰底 + 细边框 + 圆角胶囊（总高 = h + 2*pad_y + 2 ≤ 行高 font_size+8）
+            pad_x, pad_y = 6, 5
+            # 浅蓝灰底 + 细边框 + 圆角胶囊（内部高 = h + 2*pad_y = 36px ≤ 行高 font_size+12）
             draw.rounded_rectangle(
-                (x, y + 2, x + w + pad_x * 2, y + h + pad_y * 2 + 2), radius=6,
+                (x, y + 1, x + w + pad_x * 2, y + h + pad_y * 2 + 1), radius=6,
                 fill=(238, 241, 248), outline=(206, 215, 235), width=1,
             )
             _draw_code_text(

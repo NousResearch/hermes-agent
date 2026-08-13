@@ -38,6 +38,48 @@ export interface HermesReadyOptions {
 export const REMOTE_SESSION_EXPIRED_MESSAGE =
   'Your remote gateway session has expired. Open Settings → Gateway and click "Sign in" again.'
 
+/**
+ * True for HTTP 502/503/504 from the backend — a server-side fault, not a
+ * connectivity or auth issue. These keep polling in the readiness loop but,
+ * when they exhaust the budget, the user needs to know it is the remote
+ * server that is down, not their local config.
+ */
+export function isServerSideHttpError(error: unknown): {
+  statusCode: number
+  detail: string
+} | null {
+  const message = error instanceof Error ? error.message : String(error ?? '')
+  const match = /^(\\d{3}):/.exec(message)
+
+  if (!match) {
+    return null
+  }
+
+  const code = parseInt(match[1], 10)
+
+  if (code === 502 || code === 503 || code === 504) {
+    return { statusCode: code, detail: message }
+  }
+
+  return null
+}
+
+/**
+ * True when the backend URL points at a Nous-managed Hermes Cloud instance
+ * (e.g. ares-3009.agents.nousresearch.com). These are Fly.io-hosted machines
+ * the user cannot restart themselves — a 503 from one means the server is down
+ * and the recovery path is Portal/Discord/wait.
+ */
+export function isNousCloudAgentUrl(baseUrl: string): boolean {
+  try {
+    const host = new URL(baseUrl).hostname
+
+    return host.endsWith('.agents.nousresearch.com')
+  } catch {
+    return false
+  }
+}
+
 export function isMissingHealthEndpointError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? '')
 
@@ -165,5 +207,30 @@ export async function waitForHermesReady(baseUrl: string, options: HermesReadyOp
   }
 
   const detail = lastError instanceof Error ? lastError.message : 'timeout'
+
+  // When a Nous-managed cloud agent returns a server-side HTTP error
+  // (502/503/504), the backend server itself is down — the user cannot
+  // restart it and the generic "did not become ready" message is opaque.
+  // Surface an actionable error instead (#85335).
+  if (isNousCloudAgentUrl(baseUrl)) {
+    const serverError = isServerSideHttpError(lastError)
+
+    if (serverError !== null) {
+      const error = new Error(
+        `Nous Cloud agent ${new URL(baseUrl).hostname} is down ` +
+        `(HTTP ${serverError.statusCode}: server-side fault). ` +
+        'Check https://portal.nousresearch.com for backend status, ' +
+        'or switch to Local mode in Settings → Gateway. ' +
+        'You can also reach out on Discord at discord.gg/NousResearch ' +
+        'for immediate assistance. ' +
+        `Original detail: ${detail}`
+      ) as any
+
+      error.isCloudBackendDown = true
+      error.statusCode = serverError.statusCode
+      throw error
+    }
+  }
+
   throw new Error(`Hermes backend did not become ready: ${detail}`)
 }

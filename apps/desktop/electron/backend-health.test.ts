@@ -7,7 +7,9 @@ import {
   isAuthRejectionError,
   isGatedMissingHealthError,
   isMissingHealthEndpointError,
+  isNousCloudAgentUrl,
   isReauthRequiredError,
+  isServerSideHttpError,
   waitForHermesReady
 } from './backend-health'
 
@@ -337,4 +339,104 @@ test('error-shape predicates', () => {
 
   // A gated 401 must NOT be conflated with a missing route by the 404 predicate.
   assert.equal(isMissingHealthEndpointError(new Error(GATE_401)), false)
+})
+
+test('isServerSideHttpError detects 502/503/504', () => {
+  // 503 — server-side fault
+  const result503 = isServerSideHttpError(new Error('503: Service Unavailable'))
+  assert.ok(result503, 'should detect 503')
+  assert.equal(result503?.statusCode, 503)
+  assert.equal(result503?.detail, '503: Service Unavailable')
+
+  // 502
+  const result502 = isServerSideHttpError(new Error('502: Bad Gateway'))
+  assert.ok(result502, 'should detect 502')
+  assert.equal(result502?.statusCode, 502)
+
+  // 504
+  const result504 = isServerSideHttpError(new Error('504: Gateway Timeout'))
+  assert.ok(result504, 'should detect 504')
+  assert.equal(result504?.statusCode, 504)
+
+  // 500 is NOT a server-side HTTP error per our definition (keeps polling)
+  const result500 = isServerSideHttpError(new Error('500: Internal Server Error'))
+  assert.equal(result500, null)
+
+  // 401/403/404/429 are not server-side faults
+  assert.equal(isServerSideHttpError(new Error('401: Unauthorized')), null)
+  assert.equal(isServerSideHttpError(new Error('403: Forbidden')), null)
+  assert.equal(isServerSideHttpError(new Error('404: Not Found')), null)
+  assert.equal(isServerSideHttpError(new Error('429: Too Many Requests')), null)
+
+  // Non-HTTP errors (timeouts, network failures) don't match the pattern
+  assert.equal(isServerSideHttpError(new Error('connect ECONNREFUSED')), null)
+  assert.equal(isServerSideHttpError(null), null)
+  assert.equal(isServerSideHttpError('503: something'), null)  // not an Error
+})
+
+test('isNousCloudAgentUrl detects cloud agent hosts', () => {
+  // Positive cases
+  assert.equal(isNousCloudAgentUrl('https://ares-3009.agents.nousresearch.com'), true)
+  assert.equal(isNousCloudAgentUrl('https://ares-3009.agents.nousresearch.com/api/health'), true)
+  assert.equal(isNousCloudAgentUrl('http://test.agents.nousresearch.com'), true)
+
+  // Negative cases
+  assert.equal(isNousCloudAgentUrl('http://127.0.0.1:9000'), false)
+  assert.equal(isNousCloudAgentUrl('https://gateway.example.com'), false)
+  assert.equal(isNousCloudAgentUrl('https://nousresearch.com'), false)
+  assert.equal(isNousCloudAgentUrl('not-a-url'), false)
+})
+
+test('waitForHermesReady surfaces actionable error for cloud agent 503', async () => {
+  let attempts = 0
+  const currentTime = { value: 0 }
+
+  try {
+    await waitForHermesReady('https://ares-3009.agents.nousresearch.com', {
+      fetchPublicJson: async () => {
+        attempts++
+        // Always return 503
+        throw new Error('503: Service Unavailable')
+      },
+      fetchJson: async () => {
+        throw new Error('503: Service Unavailable')
+      },
+      sleep: async () => {},
+      now: () => currentTime.value,
+      timeoutMs: 100,
+      pollMs: 1
+    })
+    assert.fail('should have thrown')
+  } catch (error: any) {
+    assert.ok(error.message.includes('Nous Cloud agent'), `unexpected message: ${error.message}`)
+    assert.ok(error.message.includes('503'), `should mention status code: ${error.message}`)
+    assert.ok(error.message.includes('portal.nousresearch.com'), `should mention portal: ${error.message}`)
+    assert.ok(error.message.includes('discord.gg/NousResearch'), `should mention Discord: ${error.message}`)
+    assert.equal(error.isCloudBackendDown, true)
+    assert.equal(error.statusCode, 503)
+    assert.ok(attempts > 1, 'should have retried before failing')
+  }
+})
+
+test('waitForHermesReady does not cloud-wrap non-cloud 503 errors', async () => {
+  const currentTime = { value: 0 }
+  try {
+    await waitForHermesReady('http://127.0.0.1:9000', {
+      fetchPublicJson: async () => {
+        throw new Error('503: Service Unavailable')
+      },
+      fetchJson: async () => {
+        throw new Error('503: Service Unavailable')
+      },
+      sleep: async () => {},
+      now: () => currentTime.value,
+      timeoutMs: 100,
+      pollMs: 1
+    })
+    assert.fail('should have thrown')
+  } catch (error: any) {
+    // Non-cloud URLs get the generic message
+    assert.ok(error.message.includes('did not become ready'), `unexpected message: ${error.message}`)
+    assert.equal(error.isCloudBackendDown, undefined)
+  }
 })

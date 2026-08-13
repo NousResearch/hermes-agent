@@ -265,6 +265,8 @@ By default (`cron.wrap_response: true`), cron deliveries are wrapped with:
 - A header identifying the cron job name and task
 - A footer noting the agent cannot see the delivered message in conversation
 
+`_should_wrap_cron_response(job, user_cfg)` decides this per delivery: a `no_agent` job is always delivered unwrapped (its stdout is contractually verbatim, and the footer implies an agent conversation it doesn't have), so `cron.wrap_response` applies only to agent-driven jobs.
+
 The `[SILENT]` prefix in a cron response suppresses delivery entirely — useful for jobs that only need to write to files or perform side effects.
 
 ### Session Isolation

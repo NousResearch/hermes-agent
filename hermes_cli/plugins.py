@@ -4139,7 +4139,7 @@ class PluginManager:
             # register() may have subscribed before raising. Remove those
             # owner-tagged entries so a failed/unloaded plugin cannot leave a
             # callable reachable from later event dispatch.
-            self._remove_plugin_subscriptions(_plugin_id)
+            self._remove_plugin_subscriptions(plugin_key)
             logger.warning(
                 "Failed to load plugin '%s': %s",
                 manifest.name, exc, exc_info=_PLUGINS_DEBUG,

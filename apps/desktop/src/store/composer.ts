@@ -5,6 +5,10 @@ import { triggerHaptic } from '@/lib/haptics'
 
 export interface ComposerAttachment {
   id: string
+  /** Renderer-lifetime identity for one attachment occurrence. Unlike `id`,
+   * which is content/path-derived, this survives draft cloning but changes
+   * when the user removes and re-adds the same attachment. */
+  occurrenceId?: string
   kind: 'file' | 'folder' | 'image' | 'review' | 'terminal' | 'url'
   label: string
   detail?: string
@@ -31,6 +35,7 @@ export const $composerTerminalSelections = atom<Record<string, string>>({})
 export const $voiceConversationStartRequest = atom(0)
 let nextVoiceStartRequest = 0
 let handledVoiceStartRequest = 0
+export const createComposerAttachmentOccurrenceId = (): string => crypto.randomUUID()
 
 export const requestVoiceConversationStart = (): void => $voiceConversationStartRequest.set(++nextVoiceStartRequest)
 
@@ -112,7 +117,12 @@ export function createComposerAttachmentScope($attachments = atom<ComposerAttach
     },
     updateIfCurrent(expected, attachment) {
       const current = $attachments.get()
-      const index = current.findIndex(item => item === expected)
+
+      const index = current.findIndex(item =>
+        expected.occurrenceId === undefined
+          ? item === expected
+          : item.id === expected.id && item.occurrenceId === expected.occurrenceId
+      )
 
       if (index < 0) {
         return false

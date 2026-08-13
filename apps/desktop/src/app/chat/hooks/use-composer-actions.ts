@@ -12,6 +12,7 @@ import { normalize } from '@/lib/text'
 import {
   addComposerAttachment,
   type ComposerAttachment,
+  createComposerAttachmentOccurrenceId,
   mainComposerScope,
   removeComposerAttachment,
   setComposerTerminalSelection,
@@ -470,6 +471,7 @@ export function useComposerActions({
 
       const baseAttachment: ComposerAttachment = {
         id: attachmentId('image', filePath),
+        occurrenceId: createComposerAttachmentOccurrenceId(),
         kind: 'image',
         label: pathLabel(filePath),
         detail: filePath,
@@ -485,10 +487,10 @@ export function useComposerActions({
           // Keep only the bounded thumbnail in composer state. The full source
           // is read on demand for lightbox/download and separately at submit
           // for the model, so retaining 72 multi-MB data URLs serves no purpose.
-          // Bind the late preview to this exact attachment occurrence. The id is
-          // path-derived, so remove + reattach can create a replacement with the
-          // same id while this decode is still pending; updating by id alone would
-          // apply stale pixels to the replacement.
+          // Bind the late preview to this attachment occurrence's stable token.
+          // Object identity is insufficient because a session draft round-trip
+          // clones attachments; id alone is insufficient because remove +
+          // reattach of the same path reuses it.
           scope.updateIfCurrent(
             baseAttachment,
             thumbnailUrl ? { ...baseAttachment, thumbnailUrl } : { ...baseAttachment, previewUrl }

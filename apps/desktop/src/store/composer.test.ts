@@ -6,6 +6,7 @@ import {
   addComposerAttachment,
   clearSessionDraft,
   type ComposerAttachment,
+  createComposerAttachmentOccurrenceId,
   createComposerAttachmentScope,
   migrateSessionDraft,
   removeComposerAttachment,
@@ -65,8 +66,20 @@ describe('updateComposerAttachment', () => {
 
   it('updates only the exact attachment occurrence captured before an async operation', () => {
     const scope = createComposerAttachmentScope()
-    const first = attachment({ id: 'image:a', kind: 'image', path: '/tmp/a.png' })
-    const replacement = attachment({ id: 'image:a', kind: 'image', path: '/tmp/a.png' })
+
+    const first = attachment({
+      id: 'image:a',
+      kind: 'image',
+      occurrenceId: createComposerAttachmentOccurrenceId(),
+      path: '/tmp/a.png'
+    })
+
+    const replacement = attachment({
+      id: 'image:a',
+      kind: 'image',
+      occurrenceId: createComposerAttachmentOccurrenceId(),
+      path: '/tmp/a.png'
+    })
 
     scope.add(first)
     scope.remove(first.id)
@@ -78,6 +91,26 @@ describe('updateComposerAttachment', () => {
       true
     )
     expect(scope.$attachments.get()[0]?.thumbnailUrl).toBe('data:image/png;base64,current')
+  })
+
+  it('recognizes the same attachment occurrence after a session-draft clone', () => {
+    const scope = createComposerAttachmentScope()
+
+    const original = attachment({
+      id: 'image:draft',
+      kind: 'image',
+      occurrenceId: createComposerAttachmentOccurrenceId(),
+      path: '/tmp/draft.png'
+    })
+
+    stashSessionDraft('session-a', '', [original])
+    const restored = takeSessionDraft('session-a').attachments[0]!
+    scope.add(restored)
+
+    expect(restored).not.toBe(original)
+    expect(scope.updateIfCurrent(original, { ...original, thumbnailUrl: 'data:image/png;base64,current' })).toBe(true)
+    expect(scope.$attachments.get()[0]?.thumbnailUrl).toBe('data:image/png;base64,current')
+    clearSessionDraft('session-a')
   })
 })
 

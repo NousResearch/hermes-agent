@@ -3748,6 +3748,38 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
 _BARE_BILLING_PROVIDERS = {"auto", "openrouter", "custom"}
 
 
+def _provider_identity_routable(provider: str) -> bool:
+    """Return whether a stored provider identity can still be resolved today.
+
+    ``session.resume`` restores the model/provider a chat actually used, but
+    only while that identity still exists. A ``custom:<name>`` slug whose
+    ``providers:`` / ``custom_providers:`` entry was deleted (e.g. a dead
+    HuggingFace endpoint — GH #75128) would otherwise fail agent init with
+    "Unknown provider '<name>'" even though the CLI resumes the same session
+    fine with the configured default. Bare ``custom`` only reaches this check
+    with a base_url (see the heal in _stored_session_runtime_overrides), where
+    the direct-alias path is routable. Built-ins go through the normal
+    registry check. Lookup failures never drop a session identity (return
+    True) — a config parse hiccup must not silently rewrite routing.
+    """
+    p = str(provider or "").strip().lower()
+    if not p or p in {"auto", "openrouter", "custom", "moa"}:
+        return True
+    if p.startswith("custom:"):
+        try:
+            from hermes_cli.runtime_provider import has_named_custom_provider
+
+            return has_named_custom_provider(p)
+        except Exception:
+            return True
+    try:
+        from hermes_cli.auth import is_runtime_provider_routable
+
+        return is_runtime_provider_routable(p)
+    except Exception:
+        return True
+
+
 def _stored_session_runtime_overrides(row: dict | None) -> dict:
     """Return runtime fields persisted with a stored session.
 
@@ -3815,6 +3847,27 @@ def _stored_session_runtime_overrides(row: dict | None) -> dict:
                 "custom provider identity recovery failed", exc_info=True
             )
         provider = healed or ("" if not base_url else provider)
+
+    # A stored provider identity can outlive its config entry: a custom
+    # endpoint deleted from ``providers:`` / ``custom_providers:`` (or a
+    # built-in removed from the registry) leaves ``custom:<name>`` in the
+    # session row, and restoring it fails agent init with "Unknown provider
+    # '<name>'" — the Desktop/CLI divergence of GH #75128. When the identity
+    # is no longer routable, drop the model/provider overrides so resume
+    # falls back to the configured default, matching the working CLI path.
+    # The session row keeps the original identity (nothing is rewritten in
+    # place) and self-heals on the next persist.
+    if provider and not _provider_identity_routable(provider):
+        logger.warning(
+            "Stored provider %r for a resumed session is no longer "
+            "configured; falling back to the configured default model and "
+            "provider.",
+            provider,
+        )
+        model = ""
+        provider = ""
+        base_url = ""
+        api_mode = ""
 
     if model:
         # Use the same dict-shaped override that live /model switches use so a
@@ -6510,6 +6563,52 @@ def _resolve_runtime_with_fallback(
         raise
 
 
+def _resolve_runtime_or_default(
+    resolve_kwargs: dict,
+    requested_provider: str | None,
+) -> _RuntimeFallbackResolution:
+    """Resolve an override runtime, degrading to the configured default when
+    the requested provider no longer exists.
+
+    Session/composer overrides carry the provider a chat was created with. A
+    ``custom:<name>`` endpoint deleted from config — GH #75128 — or a provider
+    removed from the registry makes that override unresolvable, and failing
+    the whole agent build on a stale identity is worse than the CLI's
+    behavior, which simply uses the configured default. Only the
+    ``invalid_provider`` AuthError triggers the fallback (the requested
+    provider is gone); credential/availability failures keep their existing
+    propagation so real auth problems stay loud. ``used_fallback`` is set so
+    the caller's stale base_url/api_mode/api_key overrides cannot leak into
+    the default runtime.
+    """
+    from hermes_cli.auth import AuthError
+
+    try:
+        return _resolve_runtime_with_fallback(resolve_kwargs)
+    except AuthError as exc:
+        if getattr(exc, "code", "") != "invalid_provider" or not requested_provider:
+            raise
+        logger.warning(
+            "Override provider %r is no longer configured (%s); falling back "
+            "to the configured default model and provider.",
+            requested_provider,
+            exc,
+        )
+        default_model, default_provider = _resolve_startup_runtime()
+        try:
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            runtime = resolve_runtime_provider(
+                requested=default_provider or None,
+                target_model=default_model or None,
+            )
+        except Exception:
+            # The configured default is broken too — surface the original,
+            # more actionable unknown-provider error.
+            raise exc
+        return _RuntimeFallbackResolution(runtime, default_model, True)
+
+
 def _make_agent(
     sid: str,
     key: str,
@@ -6617,7 +6716,7 @@ def _make_agent(
                 resolve_kwargs["explicit_base_url"] = override_base_url
         resolve_kwargs["requested"] = requested_provider
         resolve_kwargs["target_model"] = model or None
-        resolution = _resolve_runtime_with_fallback(resolve_kwargs)
+        resolution = _resolve_runtime_or_default(resolve_kwargs, requested_provider)
         runtime = resolution.runtime
         if resolution.used_fallback:
             if not resolution.selected_model:
@@ -6639,10 +6738,13 @@ def _make_agent(
             model = model_override
         if provider_override:
             requested_provider = provider_override
-        resolution = _resolve_runtime_with_fallback({
-            "requested": requested_provider,
-            "target_model": model or None,
-        })
+        resolution = _resolve_runtime_or_default(
+            {
+                "requested": requested_provider,
+                "target_model": model or None,
+            },
+            requested_provider,
+        )
         runtime = resolution.runtime
         if resolution.used_fallback:
             if not resolution.selected_model:

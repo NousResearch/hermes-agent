@@ -3106,12 +3106,12 @@ def test_session_cwd_set_profile_session_updates_profile_db(monkeypatch, tmp_pat
     assert "launch_update" not in captured
 
 
-def test_stored_session_runtime_overrides_skips_bare_billing_provider():
+def test_stored_session_runtime_overrides_skips_bare_billing_provider(monkeypatch):
     """A bare billing bucket ("custom"/"auto"/"openrouter") must not be restored as the
     provider identity on resume. A custom endpoint that never used `/model` persists only
     `billing_provider="custom"`; restoring that broke `session.resume` with "No LLM provider
     configured" (agent_init treats it as non-routable). A real provider, or an explicit
-    `model_config.provider`, is still restored.
+    `model_config.provider` that still resolves in config, is still restored.
     """
     # Bare "custom" bucket, no explicit model_config.provider: no provider override restored.
     ov = server._stored_session_runtime_overrides({"model": "my-model", "billing_provider": "custom"})
@@ -3127,7 +3127,32 @@ def test_stored_session_runtime_overrides_skips_bare_billing_provider():
     assert ov["provider_override"] == "anthropic"
     assert ov["model_override"]["provider"] == "anthropic"
 
-    # An explicit routable provider in model_config wins over the bare billing bucket.
+    # An explicit provider in model_config wins over the bare billing bucket —
+    # but only while it still resolves in config. A `custom:<name>` slug whose
+    # entry was deleted (dead endpoint — GH #75128) must be dropped so resume
+    # falls back to the configured default instead of failing agent init with
+    # "Unknown provider '<name>'".
+    import hermes_cli.runtime_provider as rp
+
+    monkeypatch.setattr(rp, "load_config", lambda: {"custom_providers": []})
+    ov = server._stored_session_runtime_overrides(
+        {"model": "m", "billing_provider": "custom", "model_config": {"provider": "custom:myendpoint"}}
+    )
+    assert "provider_override" not in ov
+    # The stale model goes with it — a model without its provider would
+    # mismatch the configured default provider.
+    assert "model_override" not in ov
+
+    # The same explicit provider IS restored when the config entry still exists.
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "custom_providers": [
+                {"name": "myendpoint", "base_url": "https://myendpoint.example/v1"}
+            ]
+        },
+    )
     ov = server._stored_session_runtime_overrides(
         {"model": "m", "billing_provider": "custom", "model_config": {"provider": "custom:myendpoint"}}
     )

@@ -4976,6 +4976,7 @@ def _provider_field_entry(field: ProviderField) -> Dict[str, Any]:
         "placeholder": field.placeholder,
         "inline": field.inline,
         "group": field.group,
+        "when": dict(field.when),
         "options": [
             {"value": opt.value, "label": opt.label, "description": opt.description}
             for opt in field.options

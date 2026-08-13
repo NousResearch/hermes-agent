@@ -20,6 +20,10 @@ function seedValues(config: MemoryProviderConfig): Record<string, string> {
   )
 }
 
+function fieldVisible(field: MemoryProviderField, values: Record<string, string>): boolean {
+  return Object.entries(field.when ?? {}).every(([key, expected]) => expected.split('|').includes(values[key] ?? ''))
+}
+
 export function ProviderConfigPanel({ provider }: { provider: string }) {
   const [config, setConfig] = useState<MemoryProviderConfig | null>(null)
   const [loadError, setLoadError] = useState<null | string>(null)
@@ -99,8 +103,8 @@ export function ProviderConfigPanel({ provider }: { provider: string }) {
     return <PageLoader className="min-h-24" label="Loading memory provider settings..." />
   }
 
-  const inlineFields = config.fields.filter(field => field.inline)
-  const secretFields = config.fields.filter(field => field.kind === 'secret')
+  const inlineFields = config.fields.filter(field => field.inline && fieldVisible(field, values))
+  const secretFields = config.fields.filter(field => field.kind === 'secret' && fieldVisible(field, values))
   const hasFullConfig = config.fields.some(field => !field.inline)
 
   return (

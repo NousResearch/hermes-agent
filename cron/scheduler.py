@@ -122,7 +122,11 @@ def _fallback_chain_phrase() -> str:
         return "Fallback chain was exhausted or unavailable."
     if chain:
         return "Fallback chain was exhausted or unavailable."
-    return "No fallback chain configured."
+    return (
+        "No fallback chain configured — add one with `hermes fallback add`, "
+        "or set a cron fleet default via `cron.model` + `cron.model_provider` "
+        "in config.yaml."
+    )
 
 
 def _summarize_cron_failure_for_delivery(job: dict, error: str | None) -> str:

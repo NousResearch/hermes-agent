@@ -45,7 +45,7 @@ def test_genuine_provider_timeout_with_no_fallback_configured(monkeypatch):
     error = "Request timed out."
     msg = _summarize_cron_failure_for_delivery(job, error)
     assert "provider timeout" in msg
-    assert "No fallback chain configured." in msg
+    assert "No fallback chain configured" in msg
     assert "exhausted or unavailable" not in msg
 
 
@@ -94,4 +94,4 @@ def test_rate_limit_classification_still_takes_priority_over_inactivity_text(mon
     error = "HTTP 429: weekly usage limit exceeded"
     msg = _summarize_cron_failure_for_delivery(job, error)
     assert "weekly usage limit" in msg
-    assert "No fallback chain configured." in msg
+    assert "No fallback chain configured" in msg

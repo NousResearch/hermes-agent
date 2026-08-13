@@ -34,6 +34,7 @@ import {
   type PetChangeMeta,
   setChangeEventsAvailable
 } from '@/store/live-sync'
+import { setMcpSetupRequest } from '@/store/mcp-setup'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding, requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
@@ -961,6 +962,33 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
           dispatchNativeNotification({
             body: question,
+            kind: 'input',
+            sessionId,
+            title: translateNow('notifications.native.inputTitle')
+          })
+        }
+      } else if (event.type === 'mcp.setup.request') {
+        // setup_mcp tool (desktop GUI): the agent proposed an MCP server and
+        // the Python side is blocked on mcp.setup.respond. Park the request
+        // per-session (like clarify) and upsert a stable pending tool row so
+        // the inline consent card has somewhere to render even when the
+        // tool.start event was missed (stream reconnect / hydration race).
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+        const server = typeof payload?.server === 'string' ? payload.server : ''
+        const rawAction = typeof payload?.action === 'string' ? payload.action : 'install'
+        const action = rawAction === 'enable' || rawAction === 'authorize' ? rawAction : 'install'
+        const reason = typeof payload?.reason === 'string' ? payload.reason : ''
+
+        if (requestId && server) {
+          setMcpSetupRequest({ action, reason, requestId, server, sessionId: sessionId ?? null })
+
+          if (sessionId) {
+            upsertToolCall(sessionId, { args: { action, reason, server }, name: 'setup_mcp', tool_id: requestId }, 'running')
+            updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+          }
+
+          dispatchNativeNotification({
+            body: reason || server,
             kind: 'input',
             sessionId,
             title: translateNow('notifications.native.inputTitle')

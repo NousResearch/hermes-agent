@@ -407,12 +407,20 @@ export function openWindowsSync() {
 `
 
 function resolveGetWindowsRoot() {
-  // get-windows' exports map doesn't expose ./package.json; resolve the entry
-  // (index.js sits at the package root) and take its directory.
-  const entryPath = require.resolve('get-windows', {
-    paths: [projectRoot]
-  })
-  return dirname(entryPath)
+  // get-windows is an optionalDependency (its node-pre-gyp install script has
+  // no Linux prebuilt and the node-gyp fallback needs `gyp` in the active
+  // Python, so `npm ci` may skip it entirely on Linux). Return null when it is
+  // absent; the caller decides whether that is fatal per platform.
+  try {
+    // get-windows' exports map doesn't expose ./package.json; resolve the entry
+    // (index.js sits at the package root) and take its directory.
+    const entryPath = require.resolve('get-windows', {
+      paths: [projectRoot]
+    })
+    return dirname(entryPath)
+  } catch {
+    return null
+  }
 }
 
 /**
@@ -537,9 +545,32 @@ function rebuildGetWindowsViaNpm() {
   }
 }
 
-export function stageGetWindows({ platform = process.platform } = {}) {
-  const srcRoot = resolveGetWindowsRoot()
+export function stageGetWindows(
+  { platform = process.platform, resolveRoot = resolveGetWindowsRoot } = {}
+) {
+  const srcRoot = resolveRoot()
   const destRoot = resolve(projectRoot, 'dist/node_modules/get-windows')
+
+  if (!srcRoot) {
+    // get-windows is an optionalDependency: `npm ci` on Linux skips it when the
+    // install script fails (no Linux prebuilt, node-gyp needs `gyp` in the
+    // active Python), so absence here is a normal state, not a broken checkout.
+    // On Linux it only backs read_window_below over X11 (lib/linux.js shells
+    // out to xprop); skipping it degrades that tool to Hyprland IPC or an
+    // "unavailable" note instead of failing the whole desktop build. On
+    // darwin/win32 the native payload is required, so fail loudly.
+    if (platform === 'linux') {
+      console.warn(
+        '[stage-native-deps] get-windows not installed (optional dep skipped on ' +
+          'Linux); read_window_below will be unavailable in this build'
+      )
+      return undefined
+    }
+    throw new Error(
+      `[stage-native-deps] get-windows is not installed; cannot stage its ${platform} native payload`
+    )
+  }
+
   // Only a win32 host can produce the win32 binding, so a cross-platform pack
   // has nothing to gain from the rebuild.
   const rebuild =

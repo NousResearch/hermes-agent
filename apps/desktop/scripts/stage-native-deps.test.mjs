@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url'
 import { test } from 'vitest'
 
 import {
+  stageGetWindows,
   stageGetWindowsInto,
   stageNodePtyInto,
   classifyNativeBinary
@@ -518,4 +519,30 @@ test('darwin staging ships the Swift helper executable and the rewritten windows
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
   }
+})
+
+// ─── stageGetWindows (optionalDependency gate) ──────────────────────
+//
+// get-windows is an optionalDependency: on Linux its node-pre-gyp install
+// script fails (no Linux prebuilt; the node-gyp fallback needs `gyp` in the
+// active Python), so npm skips the package and `npm ci` must still succeed.
+// The staging step mirrors that: absent package on Linux is a skip, on
+// darwin/win32 it is a hard failure because the native payload is required.
+
+test('linux staging skips when get-windows is absent (optional dep skipped by npm)', () => {
+  assert.equal(stageGetWindows({ platform: 'linux', resolveRoot: () => null }), undefined)
+})
+
+test('darwin staging fails when get-windows is absent', () => {
+  assert.throws(
+    () => stageGetWindows({ platform: 'darwin', resolveRoot: () => null }),
+    /get-windows is not installed/
+  )
+})
+
+test('win32 staging fails when get-windows is absent', () => {
+  assert.throws(
+    () => stageGetWindows({ platform: 'win32', resolveRoot: () => null }),
+    /get-windows is not installed/
+  )
 })

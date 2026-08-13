@@ -69,6 +69,81 @@ class PackError(Exception):
     """Pack parse/validation/fetch failure (CLI exits non-zero)."""
 
 
+_CYCLIC_CONFIG = object()
+
+
+def _apply_config_key_policy(
+    value: Any,
+    *,
+    plugin_id: Optional[str] = None,
+    _active: Optional[set[int]] = None,
+) -> Any:
+    """Recursively validate or sanitize plugin config values.
+
+    Passing ``plugin_id`` validates an imported seed and raises on forbidden
+    keys. Omitting it produces an export-safe copy with those keys removed.
+    """
+    if not isinstance(value, (dict, list, tuple)):
+        return value
+
+    active = _active if _active is not None else set()
+    value_id = id(value)
+    if value_id in active:
+        if plugin_id is not None:
+            raise PackError(
+                f"Pack config for plugin '{plugin_id}' contains a cyclic YAML alias. "
+                "Pack config must be acyclic."
+            )
+        return _CYCLIC_CONFIG
+
+    active.add(value_id)
+    try:
+        if isinstance(value, (list, tuple)):
+            out_list = []
+            for item in value:
+                sanitized = _apply_config_key_policy(
+                    item, plugin_id=plugin_id, _active=active
+                )
+                if sanitized is _CYCLIC_CONFIG:
+                    return _CYCLIC_CONFIG
+                out_list.append(sanitized)
+            return out_list
+
+        out: dict[str, Any] = {}
+        for key, child in value.items():
+            if not isinstance(key, str) or not key.strip():
+                if plugin_id is not None:
+                    raise PackError(
+                        f"Pack config for plugin '{plugin_id}' has an invalid key: {key!r}."
+                    )
+                continue
+            if key in _RESERVED_ENTRY_KEYS or key.startswith("allow_"):
+                if plugin_id is not None:
+                    raise PackError(
+                        f"Pack config for plugin '{plugin_id}' sets reserved key "
+                        f"'{key}': packs cannot pre-grant capabilities or trust gates. "
+                        "Capability consent happens interactively at install time."
+                    )
+                continue
+            if _SECRET_KEY_RE.search(key):
+                if plugin_id is not None:
+                    raise PackError(
+                        f"Pack config for plugin '{plugin_id}' sets secret-shaped key "
+                        f"'{key}': secrets never travel in packs. Declare the secret in "
+                        "the plugin's requires_env instead — it is prompted at install."
+                    )
+                continue
+            sanitized = _apply_config_key_policy(
+                child, plugin_id=plugin_id, _active=active
+            )
+            if sanitized is _CYCLIC_CONFIG:
+                continue
+            out[key] = sanitized
+        return out
+    finally:
+        active.remove(value_id)
+
+
 @dataclass
 class PackPluginEntry:
     """One pinned plugin in a pack."""
@@ -157,24 +232,7 @@ def validate_config_seed(plugin_id: str, seed: Any) -> dict[str, Any]:
             f"Pack config for plugin '{plugin_id}' must be a mapping of "
             f"plugins.entries.{plugin_id} keys."
         )
-    for key in seed:
-        if not isinstance(key, str) or not key.strip():
-            raise PackError(
-                f"Pack config for plugin '{plugin_id}' has an invalid key: {key!r}."
-            )
-        if key in _RESERVED_ENTRY_KEYS or key.startswith("allow_"):
-            raise PackError(
-                f"Pack config for plugin '{plugin_id}' sets reserved key "
-                f"'{key}': packs cannot pre-grant capabilities or trust gates. "
-                "Capability consent happens interactively at install time."
-            )
-        if _SECRET_KEY_RE.search(key):
-            raise PackError(
-                f"Pack config for plugin '{plugin_id}' sets secret-shaped key "
-                f"'{key}': secrets never travel in packs. Declare the secret in "
-                "the plugin's requires_env instead — it is prompted at install."
-            )
-    return dict(seed)
+    return _apply_config_key_policy(seed, plugin_id=plugin_id)
 
 
 def parse_pack(text: str, *, source: str = "<pack>") -> PluginPack:
@@ -554,7 +612,7 @@ def _source_to_repo_subdir(source: str) -> tuple[Optional[str], Optional[str]]:
 
 
 def _sanitized_entry_config(plugin_id: str) -> dict[str, Any]:
-    """Exportable plugins.entries.<id> keys: scalars only, secrets stripped."""
+    """Return an export-safe copy of ``plugins.entries.<id>`` config."""
     try:
         from hermes_cli.config import load_config
 
@@ -565,19 +623,8 @@ def _sanitized_entry_config(plugin_id: str) -> dict[str, Any]:
     entry = entries.get(plugin_id)
     if not isinstance(entry, dict):
         return {}
-    out: dict[str, Any] = {}
-    for key, value in entry.items():
-        if not isinstance(key, str):
-            continue
-        if key in _RESERVED_ENTRY_KEYS or key.startswith("allow_"):
-            continue
-        if _SECRET_KEY_RE.search(key):
-            continue
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            out[key] = value
-        elif isinstance(value, (list, dict)):
-            out[key] = value
-    return out
+    sanitized = _apply_config_key_policy(entry)
+    return sanitized if isinstance(sanitized, dict) else {}
 
 
 def export_pack(*, enabled_only: bool = False, pack_name: str = "my-hermes-pack") -> tuple[str, List[str]]:

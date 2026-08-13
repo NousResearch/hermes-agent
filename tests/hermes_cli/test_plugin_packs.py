@@ -150,12 +150,72 @@ def test_config_seed_rejects_capability_and_trust_gate_keys():
         assert "reserved" in str(exc.value)
 
 
+@pytest.mark.parametrize(
+    "nested,fragment",
+    [
+        ({"provider": {"api_key": "secret"}}, "secret"),
+        ({"profiles": [{"capabilities_consent": {"hash": "forged"}}]}, "reserved"),
+        ({"profiles": [{"settings": {"allow_shell": True}}]}, "reserved"),
+    ],
+)
+def test_config_seed_rejects_forbidden_keys_nested_in_dicts_and_lists(
+    nested, fragment
+):
+    with pytest.raises(PackError) as exc:
+        validate_config_seed("p", nested)
+    assert fragment in str(exc.value).lower()
+
+
 def test_parse_pack_validates_config_section():
     text = _pack_yaml(config={"tts-plugin": {"granted_capabilities": ["tools"]}})
     with pytest.raises(PackError):
         parse_pack(text)
     ok = parse_pack(_pack_yaml(config={"tts-plugin": {"voice": "nova"}}))
     assert ok.config["tts-plugin"] == {"voice": "nova"}
+
+
+@pytest.mark.parametrize(
+    "cyclic_yaml",
+    [
+        "node: &node\n      voice: nova\n      loop: *node",
+        "node: &node\n      - voice: nova\n      - *node",
+    ],
+)
+def test_parse_pack_rejects_cyclic_config_aliases(cyclic_yaml):
+    text = f"""
+name: cyclic-config
+plugins:
+  - repo: owner/tts-plugin
+    ref: {SHA_A}
+config:
+  tts-plugin:
+    {cyclic_yaml}
+"""
+
+    with pytest.raises(PackError) as exc:
+        parse_pack(text)
+    message = str(exc.value).lower()
+    assert "cyclic" in message
+    assert "tts-plugin" in message
+
+
+@pytest.mark.parametrize("tag", ["pairs", "omap"])
+def test_parse_pack_rejects_secret_keys_nested_in_yaml_pair_tuples(tag):
+    text = f"""
+name: pair-config
+plugins:
+  - repo: owner/tts-plugin
+    ref: {SHA_A}
+config:
+  tts-plugin:
+    profiles: !!{tag}
+      - primary:
+          voice: nova
+          api_key: secret
+"""
+
+    with pytest.raises(PackError, match="secret"):
+        parse_pack(text)
 
 
 def test_parse_pack_collects_skills_as_declared_seam():
@@ -519,6 +579,174 @@ def test_export_strips_secret_and_capability_config_keys(tmp_path, monkeypatch):
     assert "granted_capabilities" not in text
     assert "allow_tool_override" not in text
     assert "voice: nova" in text
+
+
+def test_export_recursively_strips_forbidden_keys_and_preserves_nested_structure(
+    tmp_path, monkeypatch
+):
+    metadata = {
+        "tts": {
+            "pinned": True,
+            "revision": SHA_A,
+            "source": "https://github.com/owner/tts.git",
+        }
+    }
+    _seed_install_state(
+        tmp_path, monkeypatch, metadata=metadata, plugins=("tts",)
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugin_packs._sanitized_entry_config",
+        real_sanitized_entry_config,
+    )
+    fake_cfg = {
+        "plugins": {
+            "entries": {
+                "tts": {
+                    "profiles": [
+                        {
+                            "name": "primary",
+                            "provider": {"model": "nova", "api_token": "secret"},
+                            "allow_shell": True,
+                        },
+                        {
+                            "name": "backup",
+                            "capabilities_consent": {"hash": "forged"},
+                        },
+                    ],
+                    "routing": {
+                        "fallbacks": ["local", {"name": "remote", "auth": "secret"}],
+                        "enabled": True,
+                    },
+                }
+            }
+        }
+    }
+    with mock.patch("hermes_cli.config.load_config", return_value=fake_cfg):
+        text, _warnings = export_pack()
+
+    exported = yaml.safe_load(text)["config"]["tts"]
+    assert exported == {
+        "profiles": [
+            {"name": "primary", "provider": {"model": "nova"}},
+            {"name": "backup"},
+        ],
+        "routing": {
+            "fallbacks": ["local", {"name": "remote"}],
+            "enabled": True,
+        },
+    }
+
+
+def test_export_sanitizes_dicts_in_tuples_and_emits_yaml_safe_lists(
+    tmp_path, monkeypatch
+):
+    metadata = {
+        "tts": {
+            "pinned": True,
+            "revision": SHA_A,
+            "source": "https://github.com/owner/tts.git",
+        }
+    }
+    _seed_install_state(
+        tmp_path, monkeypatch, metadata=metadata, plugins=("tts",)
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugin_packs._sanitized_entry_config",
+        real_sanitized_entry_config,
+    )
+    fake_cfg = {
+        "plugins": {
+            "entries": {
+                "tts": {
+                    "profiles": (
+                        {"name": "primary", "voice": "nova", "api_key": "secret"},
+                        {"name": "backup", "voice": "alloy"},
+                    )
+                }
+            }
+        }
+    }
+    with mock.patch("hermes_cli.config.load_config", return_value=fake_cfg):
+        text, _warnings = export_pack()
+
+    exported = yaml.safe_load(text)["config"]["tts"]
+    assert exported == {
+        "profiles": [
+            {"name": "primary", "voice": "nova"},
+            {"name": "backup", "voice": "alloy"},
+        ]
+    }
+
+
+@pytest.mark.parametrize("cycle_kind", ["dict", "list"])
+def test_export_omits_cyclic_config_branches_without_leaking_secrets(
+    tmp_path, monkeypatch, cycle_kind
+):
+    metadata = {
+        "tts": {
+            "pinned": True,
+            "revision": SHA_A,
+            "source": "https://github.com/owner/tts.git",
+        }
+    }
+    _seed_install_state(
+        tmp_path, monkeypatch, metadata=metadata, plugins=("tts",)
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugin_packs._sanitized_entry_config",
+        real_sanitized_entry_config,
+    )
+    if cycle_kind == "dict":
+        cyclic = {}
+        cyclic.update({"voice": "nova", "api_key": "do-not-export", "loop": cyclic})
+    else:
+        cyclic = []
+        cyclic.extend([{"voice": "nova", "api_key": "do-not-export"}, cyclic])
+    fake_cfg = {
+        "plugins": {
+            "entries": {"tts": {"safe": "kept", "cyclic": cyclic}}
+        }
+    }
+
+    with mock.patch("hermes_cli.config.load_config", return_value=fake_cfg):
+        text, _warnings = export_pack()
+
+    exported = yaml.safe_load(text)["config"]["tts"]
+    assert exported["safe"] == "kept"
+    assert "do-not-export" not in text
+    assert "api_key" not in text
+    assert "loop" not in text
+
+
+def test_export_preserves_shared_acyclic_config_references(tmp_path, monkeypatch):
+    metadata = {
+        "tts": {
+            "pinned": True,
+            "revision": SHA_A,
+            "source": "https://github.com/owner/tts.git",
+        }
+    }
+    _seed_install_state(
+        tmp_path, monkeypatch, metadata=metadata, plugins=("tts",)
+    )
+    monkeypatch.setattr(
+        "hermes_cli.plugin_packs._sanitized_entry_config",
+        real_sanitized_entry_config,
+    )
+    shared = {"voice": "nova"}
+    fake_cfg = {
+        "plugins": {
+            "entries": {"tts": {"primary": shared, "backup": shared}}
+        }
+    }
+
+    with mock.patch("hermes_cli.config.load_config", return_value=fake_cfg):
+        text, _warnings = export_pack()
+
+    assert yaml.safe_load(text)["config"]["tts"] == {
+        "primary": {"voice": "nova"},
+        "backup": {"voice": "nova"},
+    }
 
 
 def test_export_enabled_only_filters(tmp_path, monkeypatch):

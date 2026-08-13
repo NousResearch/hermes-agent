@@ -1,4 +1,4 @@
-"""Browser controller registration / result routing (Phase 4 Cloud).
+"""Browser controller registration and result routing for the dashboard.
 
 The dashboard's browser controller (the extension that physically drives a
 browser) registers itself over the authenticated ``/api/ws`` JSON-RPC
@@ -19,9 +19,9 @@ when the request arrives on the same transport that owns the session, and
 only for the exact attached scope — the broker's exact-scope ``complete`` is
 the last line of defense against cross-tenant completion.
 
-Phase 4 is deliberately minimal: the only capability a controller may hold is
-``controller.noop``, exercised end-to-end by
-``tests/gateway/test_browser_control_cloud.py``.
+Both dashboard and local API transports use the broker's shared, explicit
+capability allowlist. Raw CDP, script evaluation, console access, uploads, and
+other privileged surfaces are not controller capabilities.
 
 Note on handler globals: ``HandlerRegistry.install`` (method_ctx.py) rebinds
 each handler's ``__globals__`` onto server.py's namespace, so handler bodies
@@ -36,17 +36,18 @@ from __future__ import annotations
 import hashlib
 import logging
 
+from gateway.browser_control_broker import (
+    BROWSER_CONTROL_PROTOCOL_VERSION,
+    browser_control_protocol_supported,
+    filter_browser_control_capabilities,
+)
+
 from .method_ctx import HandlerRegistry
 
 logger = logging.getLogger(__name__)
 
 _registry = HandlerRegistry()
 method = _registry.method
-
-#: Capabilities a Cloud/dashboard controller may register in Phase 4. Any
-#: capability outside this set is silently filtered out (fail closed: an
-#: empty intersection rejects the registration).
-_CONTROLLER_CAPABILITIES = frozenset({"controller.noop"})
 
 #: Transport family stamped into every scope attached from this gateway. The
 #: broker's exact-match contract treats it as an identity field, so an API
@@ -131,7 +132,9 @@ def _(
     rid,
     params: dict,
     _family=_CLOUD_TRANSPORT_FAMILY,
-    _caps=_CONTROLLER_CAPABILITIES,
+    _protocol_version=BROWSER_CONTROL_PROTOCOL_VERSION,
+    _protocol_supported=browser_control_protocol_supported,
+    _filter_capabilities=filter_browser_control_capabilities,
     _forbidden=_ERR_FORBIDDEN,
     _identity_ok=_is_authenticated_identity,
     _digest=_principal_digest,
@@ -146,8 +149,7 @@ def _(
       identity (``WSTransport.auth_identity`` — never the RPC params);
     * the named session exists in the live session registry and its
       ``transport`` is exactly the calling transport;
-    * at least one requested capability survives the filter to
-      ``controller.noop``.
+    * at least one requested capability survives the shared allowlist.
 
     The returned ``scope`` names a server-derived ``principal_id``, the
     ``cloud-ticket-ws`` transport family, and the filtered capability set.
@@ -159,6 +161,13 @@ def _(
             rid,
             _forbidden,
             "browser.extension_control.enabled is not set",
+        )
+
+    if not _protocol_supported(params.get("protocol_version")):
+        return _err(
+            rid,
+            _forbidden,
+            f"unsupported browser-control protocol version; expected {_protocol_version}",
         )
 
     transport = current_transport()
@@ -191,8 +200,7 @@ def _(
             "controller_id, browser_profile_id, and server session profile are required",
         )
 
-    requested = params.get("capabilities") or []
-    capabilities = frozenset(cap for cap in requested if cap in _caps)
+    capabilities = _filter_capabilities(params.get("capabilities"))
     if not capabilities:
         return _err(
             rid,
@@ -285,8 +293,7 @@ def _(
     # Defense in depth: the exact-scope complete below already rejects any
     # foreign scope, but the owner check makes the "same transport" rule
     # explicit at this layer too.
-    controller = broker.select(scope, "controller.noop")
-    if controller is None or controller.owner is not transport:
+    if not broker.is_owner(scope, transport):
         return _err(
             rid,
             _forbidden,
@@ -333,8 +340,7 @@ def _(
     )
     if scope is None:
         return _err(rid, _forbidden, "no controller registered for this session")
-    controller = broker.select(scope, "controller.noop")
-    if controller is None or controller.owner is not transport:
+    if not broker.is_owner(scope, transport):
         return _err(rid, _forbidden, "controller is not owned by this transport")
     return _ok(rid, {"ok": True})
 

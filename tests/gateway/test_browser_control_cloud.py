@@ -3,7 +3,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from gateway.browser_control_broker import ControllerRejected, get_browser_control_broker
+from gateway.browser_control_broker import (
+    BROWSER_CONTROL_CAPABILITIES,
+    ControllerRejected,
+    get_browser_control_broker,
+)
 from hermes_cli import web_server
 from hermes_cli.dashboard_auth.ws_tickets import _reset_for_tests, mint_ticket
 from tui_gateway import server
@@ -173,7 +177,60 @@ def test_cloud_controller_registration_rejects_missing_or_internal_identity(monk
         server._sessions.pop("session-fixture", None)
 
 
-def test_cloud_gateway_noop_round_trip_is_bound_to_ticket_identity_and_session_transport(monkeypatch):
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"protocol_version": 2, "capabilities": ["browser_navigate"]},
+        {"protocol_version": True, "capabilities": ["browser_navigate"]},
+        {
+            "protocol_version": 1,
+            "capabilities": ["browser_cdp", "arbitrary.capability"],
+        },
+    ],
+)
+def test_cloud_registration_rejects_unsupported_protocol_or_empty_capabilities(
+    monkeypatch, params
+):
+    monkeypatch.setattr(
+        "gateway.browser_control_broker.browser_control_enabled", lambda: True
+    )
+
+    class Transport:
+        auth_identity = {
+            "user_id": "user-fixture",
+            "provider": "provider-fixture",
+        }
+
+        def write(self, _frame):
+            return True
+
+    transport = Transport()
+    server._sessions["registration-session-fixture"] = {
+        "transport": transport,
+        "session_key": "stored-registration-session",
+        "profile": "default",
+    }
+    try:
+        response = server.dispatch(
+            {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "browser.controller.register",
+                "params": {
+                    "session_id": "registration-session-fixture",
+                    "controller_id": "controller-fixture",
+                    "browser_profile_id": "browser-profile-fixture",
+                    **params,
+                },
+            },
+            transport,
+        )
+        assert response["error"]["code"] == 4403
+    finally:
+        server._sessions.pop("registration-session-fixture", None)
+
+
+def test_cloud_gateway_real_action_round_trip_is_bound_to_identity_and_transport(monkeypatch):
     monkeypatch.setattr(
         "gateway.browser_control_broker.browser_control_enabled", lambda: True
     )
@@ -211,7 +268,7 @@ def test_cloud_gateway_noop_round_trip_is_bound_to_ticket_identity_and_session_t
                     "session_id": "session-fixture",
                     "controller_id": "controller-fixture",
                     "browser_profile_id": "browser-profile-fixture",
-                    "capabilities": ["controller.noop", "browser_navigate"],
+                    "capabilities": ["browser_navigate", "browser_cdp"],
                     "principal_id": "spoofed-client-principal",
                 },
             },
@@ -220,7 +277,8 @@ def test_cloud_gateway_noop_round_trip_is_bound_to_ticket_identity_and_session_t
         scope_payload = registration["result"]["scope"]
         assert scope_payload["principal_id"] != "spoofed-client-principal"
         assert scope_payload["transport_family"] == "cloud-ticket-ws"
-        assert scope_payload["capabilities"] == ["controller.noop"]
+        assert scope_payload["capabilities"] == ["browser_navigate"]
+        assert "browser_cdp" not in BROWSER_CONTROL_CAPABILITIES
 
         missing_identity = server.dispatch(
             {
@@ -268,15 +326,15 @@ def test_cloud_gateway_noop_round_trip_is_bound_to_ticket_identity_and_session_t
         assert foreign_heartbeat["error"]["code"] == 4403
         outcome = {}
 
-        def dispatch_noop():
+        def dispatch_navigate():
             outcome["result"] = broker.dispatch(
                 scope,
-                action="controller.noop",
-                arguments={"echo": "cloud"},
+                action="browser_navigate",
+                arguments={"url": "https://example.test"},
                 tool_call_id="tool-call-cloud",
             )
 
-        thread = threading.Thread(target=dispatch_noop)
+        thread = threading.Thread(target=dispatch_navigate)
         thread.start()
         assert ready.wait(timeout=1.0)
         command_event = frames[-1]
@@ -309,8 +367,8 @@ def test_cloud_gateway_noop_round_trip_is_bound_to_ticket_identity_and_session_t
             try:
                 rejected_outcome["result"] = broker.dispatch(
                     scope,
-                    action="controller.noop",
-                    arguments={"echo": "reject"},
+                    action="browser_navigate",
+                    arguments={"url": "https://reject.example.test"},
                     tool_call_id="tool-call-cloud-rejected",
                 )
             except Exception as exc:  # asserted below

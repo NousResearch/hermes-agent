@@ -1,4 +1,4 @@
-"""Phase 4 registry-level browser extension router.
+"""Registry-level browser extension router.
 
 This module is the *agent-side* half of the browser-extension-control
 feature: it decides, for one registry ``browser_*`` handler invocation,
@@ -40,10 +40,53 @@ config change is honored without restart.
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def extension_controller_available(action: str) -> bool:
+    """Whether this request owns one exact controller capable of ``action``.
+
+    Tool-schema assembly runs inside the API request's session context, before
+    a model can call a browser tool. The legacy browser backend's availability
+    probe cannot decide whether the extension route is usable, so routeable
+    tools consult the process-local broker directly. Missing server-bound
+    identity, ambiguous scope, a detached controller, or a capability mismatch
+    all fail closed.
+    """
+    try:
+        from gateway.browser_control_broker import (
+            browser_control_enabled,
+            get_browser_control_broker,
+        )
+        from gateway.session_context import get_session_env
+
+        if not browser_control_enabled():
+            return False
+        session_id = get_session_env("HERMES_SESSION_ID", "") or None
+        principal_id = get_session_env("HERMES_BROWSER_CONTROL_PRINCIPAL", "") or None
+        transport_family = get_session_env(
+            "HERMES_BROWSER_CONTROL_TRANSPORT_FAMILY", ""
+        ) or None
+        if not session_id or not principal_id or not transport_family:
+            return False
+        broker = get_browser_control_broker()
+        scope = broker.scope_for_session(
+            session_id=session_id,
+            principal_id=principal_id,
+            transport_family=transport_family,
+        )
+        return scope is not None and broker.select(scope, action) is not None
+    except Exception:
+        logger.debug(
+            "browser extension availability check failed for %s",
+            action,
+            exc_info=True,
+        )
+        return False
 
 
 def route_browser_tool(
@@ -114,10 +157,16 @@ def route_browser_tool(
         return fallback()
 
     # A controller was selected: it is authoritative. Never retry through the
-    # existing backend, whatever happens here.
-    return broker.dispatch(
+    # existing backend, whatever happens here. Registry handlers must return a
+    # string (or the dedicated multimodal envelope), while controller transports
+    # naturally complete with decoded JSON values. Preserve existing string
+    # results byte-for-byte and serialize decoded values at this boundary.
+    result = broker.dispatch(
         scope, action=action, arguments=args, tool_call_id=tool_call_id
     )
+    if isinstance(result, str):
+        return result
+    return json.dumps(result, ensure_ascii=False)
 
 
 def current_tool_call_id() -> str:
@@ -149,7 +198,7 @@ def routed_browser_handler(
 ) -> Any:
     """Lazy registry-handler route wrapper for ``browser_*`` tools.
 
-    Resolves the Phase 4 feature flag and process-local broker lazily so the
+    Resolves the feature flag and process-local broker lazily so the
     default (feature off) path costs one cached config read and an immediate
     fallback, and so importing ``tools.browser_tool`` never imports the
     gateway. When the gateway cannot be imported or the feature is off, the

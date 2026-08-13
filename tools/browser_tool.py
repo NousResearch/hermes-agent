@@ -5390,7 +5390,10 @@ if __name__ == "__main__":
 # Registry
 # ---------------------------------------------------------------------------
 from tools.registry import registry, tool_error
-from tools.browser_extension_router import routed_browser_handler
+from tools.browser_extension_router import (
+    extension_controller_available,
+    routed_browser_handler,
+)
 
 _BROWSER_SCHEMA_MAP = {s["name"]: s for s in BROWSER_TOOL_SCHEMAS}
 
@@ -5403,6 +5406,39 @@ def _browser_router_kw(kw: dict) -> dict:
     }
 
 
+def check_browser_routed_requirements(action: str = "browser_snapshot") -> bool:
+    """Availability gate for tools that can use either browser backend."""
+    return check_browser_requirements() or extension_controller_available(action)
+
+
+def check_browser_navigate_requirements() -> bool:
+    return check_browser_routed_requirements("browser_navigate")
+
+
+def check_browser_snapshot_requirements() -> bool:
+    return check_browser_routed_requirements("browser_snapshot")
+
+
+def check_browser_click_requirements() -> bool:
+    return check_browser_routed_requirements("browser_click")
+
+
+def check_browser_type_requirements() -> bool:
+    return check_browser_routed_requirements("browser_type")
+
+
+def check_browser_scroll_requirements() -> bool:
+    return check_browser_routed_requirements("browser_scroll")
+
+
+def check_browser_back_requirements() -> bool:
+    return check_browser_routed_requirements("browser_back")
+
+
+def check_browser_press_requirements() -> bool:
+    return check_browser_routed_requirements("browser_press")
+
+
 registry.register(
     name="browser_navigate",
     toolset="browser",
@@ -5413,7 +5449,7 @@ registry.register(
         fallback=lambda: browser_navigate(url=args.get("url", ""), task_id=kw.get("task_id")),
         **_browser_router_kw(kw),
     ),
-    check_fn=check_browser_requirements,
+    check_fn=check_browser_navigate_requirements,
     emoji="🌐",
 )
 registry.register(
@@ -5427,7 +5463,7 @@ registry.register(
             full=args.get("full", False), task_id=kw.get("task_id"), user_task=kw.get("user_task")),
         **_browser_router_kw(kw),
     ),
-    check_fn=check_browser_requirements,
+    check_fn=check_browser_snapshot_requirements,
     emoji="📸",
 )
 registry.register(
@@ -5440,7 +5476,7 @@ registry.register(
         fallback=lambda: browser_click(ref=args.get("ref", ""), task_id=kw.get("task_id")),
         **_browser_router_kw(kw),
     ),
-    check_fn=check_browser_requirements,
+    check_fn=check_browser_click_requirements,
     emoji="👆",
 )
 registry.register(
@@ -5453,7 +5489,7 @@ registry.register(
         fallback=lambda: browser_type(ref=args.get("ref", ""), text=args.get("text", ""), task_id=kw.get("task_id")),
         **_browser_router_kw(kw),
     ),
-    check_fn=check_browser_requirements,
+    check_fn=check_browser_type_requirements,
     emoji="⌨️",
 )
 registry.register(
@@ -5466,7 +5502,7 @@ registry.register(
         fallback=lambda: browser_scroll(direction=args.get("direction", "down"), task_id=kw.get("task_id")),
         **_browser_router_kw(kw),
     ),
-    check_fn=check_browser_requirements,
+    check_fn=check_browser_scroll_requirements,
     emoji="📜",
 )
 registry.register(
@@ -5479,7 +5515,7 @@ registry.register(
         fallback=lambda: browser_back(task_id=kw.get("task_id")),
         **_browser_router_kw(kw),
     ),
-    check_fn=check_browser_requirements,
+    check_fn=check_browser_back_requirements,
     emoji="◀️",
 )
 registry.register(
@@ -5492,7 +5528,7 @@ registry.register(
         fallback=lambda: browser_press(key=args.get("key", ""), task_id=kw.get("task_id")),
         **_browser_router_kw(kw),
     ),
-    check_fn=check_browser_requirements,
+    check_fn=check_browser_press_requirements,
     emoji="⌨️",
 )
 

@@ -77,24 +77,10 @@ _api_request_browser_control_transport_family: ContextVar[str] = ContextVar(
     "api_server_browser_control_transport_family", default=""
 )
 
-#: Phase 4 browser-extension control protocol version (advertised in
-#: /v1/capabilities and echoed in registration responses).
+#: Browser-extension control protocol version advertised in capabilities and
+#: echoed in registration responses. Strict validation is centralized in the
+#: broker's ``browser_control_protocol_supported`` helper.
 _BROWSER_CONTROL_PROTOCOL_VERSION = 1
-#: Exact Phase 6 browser-extension action allowlist. Any requested capability
-#: outside this set is filtered out rather than advertised or dispatched.
-_BROWSER_CONTROL_CAPABILITIES = frozenset({
-    "controller.noop",
-    "browser_back",
-    "browser_click",
-    "browser_navigate",
-    "browser_press",
-    "browser_screenshot",
-    "browser_scroll",
-    "browser_snapshot",
-    "browser_tab_activate",
-    "browser_tabs",
-    "browser_type",
-})
 _BROWSER_CONTROL_WS_PROTOCOL = "hermes-browser-control-v1"
 _BROWSER_CONTROL_TICKET_PROTOCOL_PREFIX = "hermes-browser-control-ticket."
 
@@ -123,8 +109,11 @@ from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
 from gateway.readiness import collect_runtime_readiness
 from gateway.browser_control_broker import (
+    BROWSER_CONTROL_CAPABILITIES,
     ControllerScope,
     TicketInvalid,
+    browser_control_protocol_supported,
+    filter_browser_control_capabilities,
     get_browser_control_broker,
 )
 
@@ -1526,9 +1515,8 @@ class APIServerAdapter(BasePlatformAdapter):
         # Shutdown counts this reservation so the request cannot slip through
         # the drain between its first await and _run_agent()/task registration.
         self._pending_agent_requests: int = 0
-        # Phase 4 browser-control broker core: transport-neutral ticket /
-        # controller / command lifecycle shared with the dashboard Gateway
-        # transport. This adapter only maps HTTP registration and the
+        # Browser-control broker core: transport-neutral ticket, controller,
+        # and command lifecycle shared with the dashboard Gateway transport. This adapter only maps HTTP registration and the
         # controller WebSocket onto the broker; it owns no broker state.
         self._browser_control_broker = get_browser_control_broker()
 
@@ -2130,7 +2118,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ("GET", "/v1/models", self._handle_models),
             ("GET", "/api/model/options", self._handle_model_options),
             ("GET", "/v1/capabilities", self._handle_capabilities),
-            # Phase 4 authenticated browser-control surface: POST registration
+            # Authenticated browser-control surface: POST registration
             # mints a short-lived ticket; the controller then opens the WS with
             # that ticket. Both are gated on browser.extension_control.enabled
             # and API-key auth (see the handlers for the exact status ladder).
@@ -3273,7 +3261,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "browser_extension_control": {
                     "enabled": self._browser_control_enabled(),
                     "protocol_version": _BROWSER_CONTROL_PROTOCOL_VERSION,
-                    "capabilities": list(_BROWSER_CONTROL_CAPABILITIES),
+                    "capabilities": sorted(BROWSER_CONTROL_CAPABILITIES),
                     "real_browser_actions": True,
                     "transports": {
                         "local_vps": "websocket-subprotocol-ticket",
@@ -3312,7 +3300,7 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     # ------------------------------------------------------------------
-    # Phase 4 browser-extension control (authenticated local/VPS API)
+    # Browser-extension control (authenticated local/VPS API)
     # ------------------------------------------------------------------
 
     async def _handle_browser_control_register(self, request: "web.Request") -> "web.Response":
@@ -3323,7 +3311,7 @@ class APIServerAdapter(BasePlatformAdapter):
         single-use ticket to open the controller WebSocket. Identity is NOT
         taken from the request body: the scope principal is derived
         server-side from the authenticated key/profile as a non-reversible
-        digest, and the capability set is filtered to the exact Phase 6
+        digest, and the capability set is filtered to the shared browser
         action allowlist, so a spoofed
         ``principal_id`` or inflated capability list in the payload is
         ignored rather than honored. The named session must already exist in
@@ -3369,6 +3357,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 _openai_error("Request body must be a JSON object."), status=400
             )
 
+        if not browser_control_protocol_supported(payload.get("protocol_version")):
+            return web.json_response(
+                _openai_error(
+                    "Unsupported browser-control protocol version.",
+                    code="browser_control_protocol_unsupported",
+                ),
+                status=400,
+            )
+
         controller_id = str(payload.get("controller_id") or "").strip()
         browser_profile_id = str(payload.get("browser_profile_id") or "").strip()
         session_id = str(payload.get("session_id") or "").strip()
@@ -3402,12 +3399,17 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         profile = _api_request_profile.get() or "default"
-        capabilities = frozenset(
-            capability
-            for capability in payload.get("capabilities") or []
-            if isinstance(capability, str)
-            and capability in _BROWSER_CONTROL_CAPABILITIES
+        capabilities = filter_browser_control_capabilities(
+            payload.get("capabilities")
         )
+        if not capabilities:
+            return web.json_response(
+                _openai_error(
+                    "At least one permitted browser-control capability is required.",
+                    code="browser_control_no_capabilities",
+                ),
+                status=400,
+            )
         scope = ControllerScope(
             principal_id=self._derive_browser_control_principal(profile),
             profile_id=profile,
@@ -3571,7 +3573,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 self._browser_control_broker.cancel(scope, tool_call_id=tool_call_id)
 
     def _browser_control_enabled(self) -> bool:
-        """Phase 4 feature flag; False unless explicitly enabled.
+        """Feature flag; False unless explicitly enabled.
 
         Reads ``browser.extension_control.enabled`` from the global config
         (defaults to False). Tests monkeypatch this method directly to force

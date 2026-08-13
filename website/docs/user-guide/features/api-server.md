@@ -259,6 +259,75 @@ Returns a machine-readable description of the API server's stable surface for ex
 
 Use this endpoint when integrating dashboards, browser UIs, or control planes so they can discover whether the running Hermes version supports runs, streaming, cancellation, and session continuity without depending on private Python internals.
 
+## Browser-extension control
+
+Hermes can route browser tools through an authenticated extension that controls
+the browser session associated with the current Hermes session. The feature is
+disabled by default; set `browser.extension_control.enabled` to `true` to opt in:
+
+```yaml
+browser:
+  extension_control:
+    enabled: true
+```
+
+The local API path also requires the API server bearer key. A controller may
+register only for an existing server session. Hermes derives the controller
+principal from authenticated server state; a client-supplied `principal_id` is
+ignored.
+
+Discover the live contract through `GET /v1/capabilities`. The
+`browser_extension_control` object reports whether the feature is enabled, the
+protocol version, transport names, and the exact capability allowlist:
+
+```text
+controller.noop
+browser_back
+browser_click
+browser_navigate
+browser_press
+browser_screenshot
+browser_scroll
+browser_snapshot
+browser_tab_activate
+browser_tabs
+browser_type
+```
+
+Requested capabilities outside that list are filtered out. Raw CDP, arbitrary
+script evaluation, console access, uploads, image extraction, and vision are not
+part of the controller protocol.
+
+### Local API registration
+
+1. Send an authenticated `POST /v1/browser-control/register` with
+   `protocol_version`, `session_id`, `controller_id`, `browser_profile_id`, and
+   the requested `capabilities`.
+2. Hermes returns a single-use ticket with a 30-second TTL and the filtered,
+   server-bound controller scope.
+3. Open `GET /v1/browser-control/ws` with both WebSocket subprotocols:
+   `hermes-browser-control-v1` and
+   `hermes-browser-control-ticket.<ticket>`.
+
+The ticket is never accepted in the query string. Unknown, expired, reused, or
+malformed tickets fail before WebSocket upgrade.
+
+### Controller frames
+
+Hermes sends `browser.controller.command` frames containing `command_id`,
+`action`, immutable `arguments`, browser/controller ids, and the originating
+`tool_call_id`. The controller replies with `browser.controller.result`, the
+same `command_id`, an exact boolean `ok`, and either `result` or `error`.
+Cancellation and timeout emit `browser.controller.cancel`; late results are
+ignored.
+
+The authenticated dashboard transport exposes the same registration, result,
+heartbeat, capability, and ownership semantics over its Gateway RPC/event
+channel. In both transports, selection requires one unambiguous exact match on
+principal, profile, session, controller, browser profile, transport family, and
+capability. Once selected, a controller failure is authoritative and is never
+retried through a different browser backend.
+
 ## Per-request model selection
 
 Authenticated clients can override Hermes' default model selection per request

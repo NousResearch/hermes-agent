@@ -8,6 +8,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from gateway.browser_control_broker import ControllerRejected, ControllerScope
 from gateway.config import PlatformConfig
 from gateway.platforms.api_server import APIServerAdapter
+from tools.browser_extension_router import route_browser_tool
 
 
 API_KEY = "-".join(("fixture", "neutral", "api", "key", "123"))
@@ -83,7 +84,7 @@ def _registration_body(**overrides):
 
 
 @pytest.mark.asyncio
-async def test_phase6_registration_grants_only_the_exact_real_action_allowlist(monkeypatch):
+async def test_registration_grants_only_the_exact_real_action_allowlist(monkeypatch):
     adapter = _adapter()
     monkeypatch.setattr(adapter, "_browser_control_enabled", lambda: True)
     requested = [
@@ -107,6 +108,36 @@ async def test_phase6_registration_grants_only_the_exact_real_action_allowlist(m
         "controller.noop",
         *REAL_BROWSER_CAPABILITIES,
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("overrides", "code"),
+    [
+        ({"protocol_version": 2}, "browser_control_protocol_unsupported"),
+        ({"protocol_version": True}, "browser_control_protocol_unsupported"),
+        ({"capabilities": []}, "browser_control_no_capabilities"),
+        (
+            {"capabilities": ["browser_cdp", "arbitrary.capability"]},
+            "browser_control_no_capabilities",
+        ),
+    ],
+)
+async def test_registration_rejects_unsupported_protocol_or_empty_capability_intersection(
+    monkeypatch, overrides, code
+):
+    adapter = _adapter()
+    monkeypatch.setattr(adapter, "_browser_control_enabled", lambda: True)
+    async with TestClient(TestServer(_app(adapter))) as client:
+        response = await client.post(
+            "/v1/browser-control/register",
+            json=_registration_body(**overrides),
+            headers={"Authorization": f"Bearer {API_KEY}"},
+        )
+        body = await response.json()
+
+    assert response.status == 400
+    assert body["error"]["code"] == code
 
 
 def test_route_table_advertises_registration_and_controller_ws_without_replacing_existing_routes():
@@ -381,6 +412,64 @@ async def test_local_api_ticket_ws_noop_round_trip_filters_spoofed_identity_and_
                 protocols=[CONTROL_PROTOCOL, _ticket_protocol(registration["ticket"])],
             )
         assert replay.value.status == 401
+
+
+@pytest.mark.asyncio
+async def test_real_browser_action_routes_through_controller_without_legacy_fallback(monkeypatch):
+    adapter = _adapter()
+    monkeypatch.setattr(adapter, "_browser_control_enabled", lambda: True)
+    async with TestClient(TestServer(_app(adapter))) as client:
+        response = await client.post(
+            "/v1/browser-control/register",
+            json=_registration_body(capabilities=["browser_snapshot"]),
+            headers={"Authorization": f"Bearer {API_KEY}"},
+        )
+        assert response.status == 201
+        registration = await response.json()
+        ws = await client.ws_connect(
+            "/v1/browser-control/ws",
+            protocols=[CONTROL_PROTOCOL, _ticket_protocol(registration["ticket"])],
+        )
+
+        legacy_calls = []
+        pending = asyncio.create_task(
+            asyncio.to_thread(
+                route_browser_tool,
+                "browser_snapshot",
+                {"include": "accessibility"},
+                fallback=lambda: legacy_calls.append(True) or "legacy-result",
+                broker=adapter._browser_control_broker,
+                enabled=True,
+                session_id="session-fixture",
+                principal_id=registration["scope"]["principal_id"],
+                transport_family="local-api",
+                tool_call_id="tool-call-real-action",
+            )
+        )
+        command = await ws.receive_json(timeout=2.0)
+        assert command["method"] == "browser.controller.command"
+        assert command["params"]["action"] == "browser_snapshot"
+        assert command["params"]["arguments"] == {"include": "accessibility"}
+        await ws.send_json(
+            {
+                "method": "browser.controller.result",
+                "params": {
+                    "command_id": command["params"]["command_id"],
+                    "ok": True,
+                    "result": {
+                        "title": "Example Domain",
+                        "url": "https://example.test/",
+                        "refs": [],
+                    },
+                },
+            }
+        )
+
+        assert await asyncio.wait_for(pending, timeout=2.0) == (
+            '{"title": "Example Domain", "url": "https://example.test/", "refs": []}'
+        )
+        assert legacy_calls == []
+        await ws.close()
 
 
 @pytest.mark.asyncio

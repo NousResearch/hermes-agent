@@ -1,4 +1,4 @@
-"""Transport-neutral browser-control broker core (Phase 4).
+"""Transport-neutral browser-control broker core.
 
 This module is the in-process heart of the browser-control feature: it binds
 an *identity-scoped controller* (the party that physically drives a browser)
@@ -70,6 +70,50 @@ _OWNER_UNSET = object()
 DEFAULT_TICKET_TTL = 30.0
 #: Default wall time a dispatch waits for the controller to complete.
 DEFAULT_COMMAND_TIMEOUT = 30.0
+
+#: Current wire protocol version. Registration requires this exact integer;
+#: booleans are rejected even though ``bool`` subclasses ``int`` in Python.
+BROWSER_CONTROL_PROTOCOL_VERSION = 1
+
+#: Exact controller capability contract shared by every transport. The broker
+#: never accepts arbitrary browser methods: raw CDP, script evaluation, console
+#: access, uploads, and other privileged surfaces remain outside this allowlist.
+BROWSER_CONTROL_CAPABILITIES = frozenset(
+    {
+        "controller.noop",
+        "browser_back",
+        "browser_click",
+        "browser_navigate",
+        "browser_press",
+        "browser_screenshot",
+        "browser_scroll",
+        "browser_snapshot",
+        "browser_tab_activate",
+        "browser_tabs",
+        "browser_type",
+    }
+)
+
+
+def browser_control_protocol_supported(value: Any) -> bool:
+    """Return whether ``value`` names the exact supported wire version."""
+    return type(value) is int and value == BROWSER_CONTROL_PROTOCOL_VERSION
+
+
+def filter_browser_control_capabilities(value: Any) -> frozenset:
+    """Return the permitted subset of a JSON/RPC capability list.
+
+    A malformed non-list value has no capabilities. Unknown or non-string
+    entries are ignored; registration rejects an empty returned set.
+    """
+    if not isinstance(value, list):
+        return frozenset()
+    return frozenset(
+        capability
+        for capability in value
+        if isinstance(capability, str)
+        and capability in BROWSER_CONTROL_CAPABILITIES
+    )
 
 #: Wire method names for controller frames. Transport-neutral by contract:
 #: transports carry these envelopes verbatim.
@@ -292,6 +336,17 @@ class BrowserControlBroker:
             if capability not in controller.scope.capabilities:
                 return None
             return controller
+
+    def is_owner(self, scope: ControllerScope, owner: Any) -> bool:
+        """Return whether ``owner`` is the exact transport attached to ``scope``.
+
+        Ownership is independent of capabilities. Transport handlers use this
+        for heartbeat and result admission so a least-privilege controller does
+        not need to request ``controller.noop`` merely to complete a real action.
+        """
+        with self._lock:
+            controller = self._controllers.get(scope)
+            return controller is not None and controller.owner is owner
 
     def detach(
         self,
@@ -600,7 +655,7 @@ def get_browser_control_broker() -> BrowserControlBroker:
 
 
 def browser_control_enabled(config: Optional[dict] = None) -> bool:
-    """Return the explicit Phase 4 feature flag (disabled by default)."""
+    """Return the explicit browser-control feature flag (disabled by default)."""
     if config is None:
         try:
             from hermes_cli.config import load_config

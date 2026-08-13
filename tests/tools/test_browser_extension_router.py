@@ -115,6 +115,27 @@ def test_selected_controller_receives_immutable_arguments_and_context():
     ]
 
 
+def test_selected_controller_dict_result_is_serialized_for_registry_contract():
+    broker = FakeBroker(
+        scope="scope-fixture",
+        selected="connection-fixture",
+        result={"ok": True, "title": "Example Domain", "refs": []},
+    )
+
+    result = route_browser_tool(
+        "browser_snapshot",
+        {},
+        fallback=lambda: pytest.fail("selected controller must not call fallback"),
+        broker=broker,
+        enabled=True,
+        session_id="session-fixture",
+        principal_id="principal-fixture",
+        transport_family="local-api",
+    )
+
+    assert result == '{"ok": true, "title": "Example Domain", "refs": []}'
+
+
 def test_selected_controller_failure_never_retries_through_existing_backend():
     broker = FakeBroker(
         scope="scope-fixture",
@@ -196,3 +217,105 @@ def test_routed_handler_reads_server_bound_identity_from_session_context(monkeyp
             "transport_family": "cloud-ticket-ws",
         },
     )
+
+
+def test_routeable_browser_tools_are_available_for_bound_extension_controller(monkeypatch):
+    """The extension route must not be stripped by legacy Browser Use checks."""
+    from tools import browser_tool
+
+    monkeypatch.setattr(browser_tool, "check_browser_requirements", lambda: False)
+    monkeypatch.setattr(
+        browser_tool,
+        "extension_controller_available",
+        lambda action: action == "browser_snapshot",
+    )
+
+    assert browser_tool.check_browser_snapshot_requirements() is True
+    assert browser_tool.check_browser_click_requirements() is False
+
+
+def test_extension_availability_requires_exact_scope_and_capability(monkeypatch):
+    from gateway import browser_control_broker
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import browser_extension_router
+
+    broker = FakeBroker(scope="scope-fixture", selected="connection-fixture")
+    monkeypatch.setattr(browser_control_broker, "browser_control_enabled", lambda: True)
+    monkeypatch.setattr(
+        browser_control_broker, "get_browser_control_broker", lambda: broker
+    )
+    tokens = set_session_vars(
+        session_id="session-fixture",
+        browser_control_principal="principal-fixture",
+        browser_control_transport_family="local-api",
+    )
+    try:
+        assert browser_extension_router.extension_controller_available("browser_snapshot") is True
+    finally:
+        clear_session_vars(tokens)
+
+    assert broker.calls == [
+        (
+            "scope",
+            {
+                "session_id": "session-fixture",
+                "principal_id": "principal-fixture",
+                "transport_family": "local-api",
+            },
+        ),
+        ("select", "scope-fixture", "browser_snapshot"),
+    ]
+
+
+def test_routeable_browser_tools_preserve_legacy_gate_without_bound_identity(monkeypatch):
+    """A feature flag alone must not advertise tools outside a bound request."""
+    from gateway import browser_control_broker
+    from tools import browser_tool
+
+    monkeypatch.setattr(browser_control_broker, "browser_control_enabled", lambda: True)
+    monkeypatch.setattr(browser_tool, "check_browser_requirements", lambda: False)
+
+    assert browser_tool.check_browser_snapshot_requirements() is False
+
+
+def test_bound_browser_request_bypasses_availability_caches():
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools.registry import CHECK_FN_CACHE_BYPASS, check_fn_cache_scope
+
+    tokens = set_session_vars(
+        session_id="session-fixture",
+        browser_control_principal="principal-fixture",
+        browser_control_transport_family="local-api",
+    )
+    try:
+        assert check_fn_cache_scope() == CHECK_FN_CACHE_BYPASS
+    finally:
+        clear_session_vars(tokens)
+
+
+def test_registry_advertises_snapshot_through_extension_when_legacy_backend_is_down(
+    monkeypatch,
+):
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import browser_tool
+    from tools.registry import registry
+
+    monkeypatch.setattr(browser_tool, "check_browser_requirements", lambda: False)
+    monkeypatch.setattr(
+        browser_tool,
+        "extension_controller_available",
+        lambda action: action == "browser_snapshot",
+    )
+    tokens = set_session_vars(
+        session_id="session-fixture",
+        browser_control_principal="principal-fixture",
+        browser_control_transport_family="local-api",
+    )
+    try:
+        definitions = registry.get_definitions({"browser_snapshot", "browser_click"}, quiet=True)
+    finally:
+        clear_session_vars(tokens)
+
+    assert [definition["function"]["name"] for definition in definitions] == [
+        "browser_snapshot"
+    ]

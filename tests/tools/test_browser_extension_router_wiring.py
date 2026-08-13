@@ -1,4 +1,4 @@
-"""Wiring regression tests for the Phase 4 browser extension router.
+"""Wiring regression tests for the browser extension router.
 
 These guard the *registry wiring* — that every ``browser_*`` handler routes
 through :func:`tools.browser_extension_router.routed_browser_handler` with

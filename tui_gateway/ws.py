@@ -463,7 +463,7 @@ async def handle_ws(
             server.unregister_live_transport(transport)
 
             # Owner-safely detach browser controllers this transport
-            # registered (Phase 4 Cloud). The socket itself is closing, so no
+            # registered. The socket itself is closing, so no
             # peer cancel write is attempted; every server-side pending command
             # is still failed closed immediately.
             try:

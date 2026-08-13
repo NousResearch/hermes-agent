@@ -1,5 +1,5 @@
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
-import { afterEach, describe, expect, it } from 'vitest'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n/context'
 import type { ComposerAttachment } from '@/store/composer'
@@ -30,6 +30,8 @@ async function renderWithI18n(ui: React.ReactNode) {
 describe('AttachmentList', () => {
   afterEach(() => {
     cleanup()
+    Reflect.deleteProperty(window, 'hermesDesktop')
+    vi.restoreAllMocks()
   })
 
   it('renders valid attachments', async () => {
@@ -96,6 +98,45 @@ describe('AttachmentList', () => {
 
     expect(lightbox.querySelector<HTMLImageElement>('img')?.src).toBe(DATA_URL)
     expect($previewTabs.get()).toHaveLength(0)
+  })
+
+  it('loads a path-backed full image only when opened and releases it when closed', async () => {
+    const readFileDataUrl = vi.fn(async () => DATA_URL)
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+
+    const image: ComposerAttachment = {
+      id: 'img-on-demand',
+      kind: 'image',
+      label: 'shot.png',
+      path: '/tmp/shot.png',
+      thumbnailUrl: THUMBNAIL_URL
+    }
+
+    const { container } = await renderWithI18n(<AttachmentList attachments={[image]} />)
+
+    expect(readFileDataUrl).not.toHaveBeenCalled()
+    expect(screen.getByAltText<HTMLImageElement>('shot.png').getAttribute('src')).toBe(THUMBNAIL_URL)
+    expect(container.querySelector(`img[src="${DATA_URL}"]`)).toBeNull()
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /shot\.png/ }))
+    })
+
+    expect(readFileDataUrl).toHaveBeenCalledOnce()
+    const lightboxImage = (await screen.findByRole('dialog')).querySelector<HTMLImageElement>('img')
+
+    expect(lightboxImage?.getAttribute('src')).toBe(DATA_URL)
+
+    await act(async () => {
+      fireEvent.click(lightboxImage!)
+    })
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(container.querySelector(`img[src="${DATA_URL}"]`)).toBeNull()
   })
 
   it('still routes a non-image attachment to the preview rail', async () => {

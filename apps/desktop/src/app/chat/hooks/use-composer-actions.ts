@@ -5,7 +5,7 @@ import { droppedFileInlineRef } from '@/app/chat/composer/inline-refs'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { useI18n } from '@/i18n'
 import { attachmentId, contextPath, pathLabel } from '@/lib/chat-runtime'
-import { readDesktopFileDataUrl, selectDesktopPaths } from '@/lib/desktop-fs'
+import { readDesktopFileDataUrlLocalFirst, selectDesktopPaths } from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
 import { downscaleDataUrlForPreview } from '@/lib/image-resize'
 import { normalize } from '@/lib/text'
@@ -53,22 +53,25 @@ export function isImagePath(filePath: string): boolean {
  * In local mode the facade IS the local bridge, so this stays a single read.
  */
 export async function attachmentPreviewDataUrl(filePath: string): Promise<string> {
-  let dataUrl: string
+  return readDesktopFileDataUrlLocalFirst(filePath)
+}
 
-  try {
-    const local = await window.hermesDesktop?.readFileDataUrl?.(filePath)
+let attachmentPreviewQueue = Promise.resolve()
 
-    if (local) {
-      dataUrl = local
-    } else {
-      dataUrl = await readDesktopFileDataUrl(filePath)
-    }
-  } catch {
-    // Not on this machine (or unreadable locally) — try the gateway.
-    dataUrl = await readDesktopFileDataUrl(filePath)
-  }
+async function queuedAttachmentPreview(filePath: string): Promise<{ previewUrl: string; thumbnailUrl?: string }> {
+  const task = attachmentPreviewQueue.then(async () => {
+    const previewUrl = await attachmentPreviewDataUrl(filePath)
+    const thumbnailUrl = previewUrl.startsWith('data:image/') ? await downscaleDataUrlForPreview(previewUrl) : undefined
 
-  return dataUrl
+    return { previewUrl, thumbnailUrl }
+  })
+
+  attachmentPreviewQueue = task.then(
+    () => undefined,
+    () => undefined
+  )
+
+  return task
 }
 
 export interface DroppedFile {
@@ -473,20 +476,15 @@ export function useComposerActions({
       attachToMain(baseAttachment)
 
       try {
-        const previewUrl = await attachmentPreviewDataUrl(filePath)
+        const { previewUrl, thumbnailUrl } = await queuedAttachmentPreview(filePath)
 
         if (previewUrl) {
-          // Downscale only the pill thumbnail. `previewUrl` must keep the
-          // full-resolution bytes: current main feeds it to ImageLightbox and
-          // useImageDownload (attachments.tsx), and the attached-image
-          // pipeline uploads the on-disk original to the model. The helper
-          // never rejects — on failure it returns a 1×1 placeholder so the
-          // pill never renders the multi-MB original.
-          const thumbnailUrl = previewUrl.startsWith('data:image/')
-            ? await downscaleDataUrlForPreview(previewUrl)
-            : undefined
-
-          scope.add({ ...baseAttachment, previewUrl, thumbnailUrl })
+          // Keep only the bounded thumbnail in composer state. The full source
+          // is read on demand for lightbox/download and separately at submit
+          // for the model, so retaining 72 multi-MB data URLs serves no purpose.
+          // The user may remove the optimistic chip while an expensive image is
+          // still decoding. A late result updates in place but never resurrects it.
+          scope.update(thumbnailUrl ? { ...baseAttachment, thumbnailUrl } : { ...baseAttachment, previewUrl })
         }
 
         return true

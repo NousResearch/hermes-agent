@@ -109,6 +109,25 @@ export async function readDesktopFileDataUrl(path: string): Promise<string> {
   return typeof result === 'string' ? result : result.dataUrl || ''
 }
 
+/**
+ * Read a composer image local-shell first, even when the active agent is
+ * remote. Picker, clipboard, and OS-drop paths belong to this machine; in-app
+ * project-tree paths may belong only to the gateway and fall back there.
+ */
+export async function readDesktopFileDataUrlLocalFirst(path: string): Promise<string> {
+  try {
+    const local = await window.hermesDesktop?.readFileDataUrl?.(path)
+
+    if (local) {
+      return local
+    }
+  } catch {
+    // Not on this machine (or unreadable locally) — try the active gateway.
+  }
+
+  return readDesktopFileDataUrl(path)
+}
+
 export async function desktopGitRoot(path: string): Promise<string | null> {
   const desktop = bridge()
 

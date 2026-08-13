@@ -134,8 +134,8 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       // Refs are recomputed after sync (file.attach rewrites @file: refs to
       // workspace-relative paths the remote gateway can resolve). Seed the
       // optimistic message with the pre-sync refs, then rewrite once synced.
-      // Images use their base64 preview so the thumbnail renders inline without
-      // a (remote-mode 403-prone) /api/media fetch — see optimisticAttachmentRef.
+      // Images use their bounded base64 thumbnail so the optimistic bubble
+      // renders inline without embedding the full source — see optimisticAttachmentRef.
       let attachmentRefs = attachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
 
       const buildContextText = (atts: ComposerAttachment[]): string => {
@@ -646,7 +646,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
 
         // Rewrite the optimistic message + prompt text with the synced refs so
         // the gateway receives @file: paths that resolve in its workspace.
-        // (Images keep their inline base64 preview — see optimisticAttachmentRef.)
+        // Images keep their inline bounded thumbnail — see optimisticAttachmentRef.
         attachmentRefs = syncedAttachments.map(optimisticAttachmentRef).filter((r): r is string => Boolean(r))
         rewriteOptimistic(liveSessionId)
         const text = buildContextText(syncedAttachments)

@@ -18,15 +18,15 @@ describe('downscaleDataUrlForPreview', () => {
   })
 
   describe('without createImageBitmap (jsdom default)', () => {
-    it('returns the original when createImageBitmap is unavailable', async () => {
-      await expect(downscaleDataUrlForPreview(TINY_PNG_DATA_URL)).resolves.toBe(TINY_PNG_DATA_URL)
+    it('fails closed when createImageBitmap is unavailable', async () => {
+      await expect(downscaleDataUrlForPreview('data:image/png;base64,ZmFrZQ==')).resolves.toBe(FALLBACK_PLACEHOLDER)
     })
 
-    it('returns the original for a non-data-URL string', async () => {
+    it('preserves an external source when resize APIs are unavailable', async () => {
       await expect(downscaleDataUrlForPreview('not-a-data-url')).resolves.toBe('not-a-data-url')
     })
 
-    it('returns the original for a data URL without a comma', async () => {
+    it('preserves a non-image data URL when resize APIs are unavailable', async () => {
       await expect(downscaleDataUrlForPreview('data:text/plain')).resolves.toBe('data:text/plain')
     })
   })
@@ -37,7 +37,13 @@ describe('downscaleDataUrlForPreview', () => {
      * Mocks a bitmap of the given dimensions so the downscaling logic is exercised.
      */
     function setupMocks(bitmapWidth: number, bitmapHeight: number) {
-      const close = vi.fn()
+      let activeBitmaps = 0
+      let maxActiveBitmaps = 0
+
+      const close = vi.fn(() => {
+        activeBitmaps -= 1
+      })
+
       const drawImage = vi.fn()
       const convertToBlob = vi.fn(async () => new Blob(['x'], { type: 'image/png' }))
       const canvasSizes: [number, number][] = []
@@ -62,11 +68,16 @@ describe('downscaleDataUrlForPreview', () => {
       )
       vi.stubGlobal(
         'createImageBitmap',
-        vi.fn(async () => bitmap)
+        vi.fn(async () => {
+          activeBitmaps += 1
+          maxActiveBitmaps = Math.max(maxActiveBitmaps, activeBitmaps)
+
+          return bitmap
+        })
       )
       vi.stubGlobal('OffscreenCanvas', MockOffscreenCanvas)
 
-      return { bitmap, close, drawImage, convertToBlob, ctx, canvasSizes }
+      return { bitmap, close, drawImage, convertToBlob, ctx, canvasSizes, maxActiveBitmaps: () => maxActiveBitmaps }
     }
 
     it('returns the original when image is smaller than maxLongEdge', async () => {
@@ -98,13 +109,14 @@ describe('downscaleDataUrlForPreview', () => {
     })
 
     it('keeps every thumbnail bounded for a 72-image composer prompt', async () => {
-      const { canvasSizes, drawImage } = setupMocks(6000, 6000)
+      const { canvasSizes, drawImage, maxActiveBitmaps } = setupMocks(6000, 6000)
 
       await Promise.all(Array.from({ length: 72 }, () => downscaleDataUrlForPreview(TINY_PNG_DATA_URL)))
 
       expect(canvasSizes).toHaveLength(72)
       expect(canvasSizes.every(([width, height]) => width === 512 && height === 512)).toBe(true)
       expect(drawImage).toHaveBeenCalledTimes(72)
+      expect(maxActiveBitmaps()).toBe(1)
     })
 
     it('returns placeholder when createImageBitmap throws', async () => {

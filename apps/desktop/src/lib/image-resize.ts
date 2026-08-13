@@ -1,54 +1,35 @@
 /**
  * Downscale a data URL for preview rendering.
  *
- * Large images (Retina screenshots, 6000×4000+) cause the Chromium main thread
- * to block during <img> decode because macOS ImageIO/vImage decodes synchronously.
- * This utility uses createImageBitmap + OffscreenCanvas to resize *before* the
- * data URL is assigned to an <img> element, keeping the preview fast.
+ * Large images (Retina screenshots, 6000×4000+) cause Chromium to build very
+ * large paint operations when the original is assigned to an <img>. This
+ * utility uses createImageBitmap + OffscreenCanvas to resize before display.
  *
- * Full-resolution bytes are still saved to disk for the model — only the preview
- * thumbnail is downscaled.
+ * Calls share a one-at-a-time queue. Multi-image attach flows must not keep
+ * dozens of decoded full-resolution bitmaps alive concurrently while their
+ * 512px thumbnails are produced.
  *
  * @param dataUrl  The full-resolution data URL (data:image/...;base64,...)
  * @param maxLongEdge  Maximum pixel dimension on the longest side (default 512)
- * @returns  A downscaled data URL (PNG), the original if already small enough,
- *           or a 1×1 transparent PNG placeholder if downscaling fails.
+ * @returns A downscaled PNG data URL, the original if already small enough, or
+ *          a 1×1 transparent PNG placeholder if downscaling fails.
  */
 
-/** 1×1 transparent PNG — used when downscaling fails so the UI never receives a multi-MB data URL. */
+/** 1×1 transparent PNG — fail closed so the pill never receives the original. */
 const FALLBACK_PLACEHOLDER =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+GkZcAAAAASUVORK5CYII='
 
 // Composer pills render at 32 CSS pixels. A 512px source stays sharp on
-// high-density displays while keeping a square RGBA decode to 1 MiB. The old
-// 2048px default could decode to 16 MiB per thumbnail, so a large multi-image
-// prompt still put substantial pressure on Chromium's renderer.
+// high-density displays while keeping a square RGBA decode to 1 MiB. A 2048px
+// thumbnail can decode to 16 MiB and reproduce Chromium's paint-op pressure.
 const DEFAULT_MAX_LONG_EDGE = 512
 
-export async function downscaleDataUrlForPreview(
-  dataUrl: string,
-  maxLongEdge = DEFAULT_MAX_LONG_EDGE
-): Promise<string> {
-  // Guard: createImageBitmap and OffscreenCanvas are not available in jsdom
-  // (test environment) or very old Chromium builds. Return the original if missing.
-  if (typeof createImageBitmap !== 'function' || typeof OffscreenCanvas !== 'function') {
-    return dataUrl
-  }
+let resizeQueue = Promise.resolve()
 
-  const commaIndex = dataUrl.indexOf(',')
-
-  if (commaIndex === -1) {
-    return dataUrl
-  }
-
+async function downscaleDataUrl(dataUrl: string, maxLongEdge: number): Promise<string> {
   try {
-    // fetch(dataUrl) decodes base64 natively in C++ — avoids the O(n) atob()
-    // + charCodeAt loop that creates main-thread jank for multi-MB images.
-    const blob = await fetch(dataUrl).then(r => r.blob())
-
-    // createImageBitmap decodes off the main thread in Chromium, but the
-    // operation may still be costly for >5 MB retina screenshots; we then
-    // resize quickly with OffscreenCanvas.
+    // fetch(data:) decodes base64 natively in C++ and avoids an O(n) atob loop.
+    const blob = await fetch(dataUrl).then(response => response.blob())
     const bitmap = await createImageBitmap(blob)
 
     try {
@@ -60,9 +41,8 @@ export async function downscaleDataUrlForPreview(
       }
 
       const scale = maxLongEdge / longEdge
-      const newWidth = Math.round(width * scale)
-      const newHeight = Math.round(height * scale)
-
+      const newWidth = Math.max(1, Math.round(width * scale))
+      const newHeight = Math.max(1, Math.round(height * scale))
       const canvas = new OffscreenCanvas(newWidth, newHeight)
       const ctx = canvas.getContext('2d')
 
@@ -75,15 +55,9 @@ export async function downscaleDataUrlForPreview(
       const resultBlob = await canvas.convertToBlob({ type: 'image/png' })
       const reader = new FileReader()
 
-      return new Promise<string>(resolve => {
-        reader.onloadend = () => {
-          if (typeof reader.result === 'string') {
-            resolve(reader.result)
-          } else {
-            resolve(FALLBACK_PLACEHOLDER)
-          }
-        }
-
+      return await new Promise<string>(resolve => {
+        reader.onloadend = () => resolve(typeof reader.result === 'string' ? reader.result : FALLBACK_PLACEHOLDER)
+        reader.onabort = () => resolve(FALLBACK_PLACEHOLDER)
         reader.onerror = () => resolve(FALLBACK_PLACEHOLDER)
         reader.readAsDataURL(resultBlob)
       })
@@ -91,9 +65,31 @@ export async function downscaleDataUrlForPreview(
       bitmap.close()
     }
   } catch {
-    // Downscaling failed (unsupported format, OOM, etc.) — return a tiny
-    // placeholder rather than the original multi-MB data URL, which would
-    // re-introduce the main-thread decode freeze this function exists to prevent.
     return FALLBACK_PLACEHOLDER
   }
+}
+
+export async function downscaleDataUrlForPreview(
+  dataUrl: string,
+  maxLongEdge = DEFAULT_MAX_LONG_EDGE
+): Promise<string> {
+  if (!dataUrl.startsWith('data:image/') || dataUrl.indexOf(',') === -1) {
+    return dataUrl
+  }
+
+  // Never hand a full-resolution image to the pill if resize support is absent.
+  // A tiny placeholder is preferable to recreating the renderer failure this
+  // helper exists to prevent.
+  if (typeof createImageBitmap !== 'function' || typeof OffscreenCanvas !== 'function') {
+    return FALLBACK_PLACEHOLDER
+  }
+
+  const task = resizeQueue.then(() => downscaleDataUrl(dataUrl, maxLongEdge))
+
+  resizeQueue = task.then(
+    () => undefined,
+    () => undefined
+  )
+
+  return task
 }

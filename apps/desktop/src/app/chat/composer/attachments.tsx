@@ -7,6 +7,7 @@ import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
 import { useImageDownload } from '@/hooks/use-image-download'
 import { useI18n } from '@/i18n'
+import { readDesktopFileDataUrlLocalFirst } from '@/lib/desktop-fs'
 import { AlertCircle, FileText, FolderOpen, ImageIcon, Link, Loader2, MessageCode, Terminal } from '@/lib/icons'
 import { normalizeOrLocalPreviewTarget } from '@/lib/local-preview'
 import { cn } from '@/lib/utils'
@@ -59,11 +60,10 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
       ? attachment.detail
       : undefined
 
-  // An attached image already holds its full bytes as a data URL, so it belongs
-  // in the same lightbox the thread uses. The rail is for files you read or
-  // edit — not a picture you just want to look at. Images that never resolved a
-  // thumbnail still fall through to the rail rather than dead-clicking.
-  const lightboxSrc = attachment.kind === 'image' && !isUploading ? attachment.previewUrl : undefined
+  // Keep full image bytes out of composer state. New chips read their path only
+  // when clicked; previewUrl remains a compatibility fallback for older drafts.
+  const [loadedImageSrc, setLoadedImageSrc] = useState<string>()
+  const lightboxSrc = attachment.kind === 'image' && !isUploading ? attachment.previewUrl || loadedImageSrc : undefined
   const [lightboxOpen, setLightboxOpen] = useState(false)
   const { download, saving } = useImageDownload(lightboxSrc)
 
@@ -72,8 +72,19 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
       return
     }
 
-    if (lightboxSrc) {
-      setLightboxOpen(true)
+    if (attachment.kind === 'image') {
+      try {
+        const source = lightboxSrc || (attachment.path ? await readDesktopFileDataUrlLocalFirst(attachment.path) : '')
+
+        if (!source) {
+          throw new Error(c.couldNotPreview(attachment.label))
+        }
+
+        setLoadedImageSrc(source)
+        setLightboxOpen(true)
+      } catch (error) {
+        notifyError(error, c.previewUnavailable)
+      }
 
       return
     }
@@ -122,7 +133,7 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
             type="button"
           >
             <span className="relative grid size-8 shrink-0 place-items-center overflow-hidden rounded-lg border border-border/55 bg-muted/35 text-muted-foreground">
-              {attachment.previewUrl && attachment.kind === 'image' ? (
+              {(attachment.thumbnailUrl || attachment.previewUrl) && attachment.kind === 'image' ? (
                 <img
                   alt={attachment.label}
                   className="size-full object-cover"
@@ -176,7 +187,13 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
           alt={attachment.label}
           copy={t.desktop}
           onClick={download}
-          onOpenChange={setLightboxOpen}
+          onOpenChange={open => {
+            setLightboxOpen(open)
+
+            if (!open && !attachment.previewUrl) {
+              setLoadedImageSrc(undefined)
+            }
+          }}
           open={lightboxOpen}
           saving={saving}
           src={lightboxSrc}

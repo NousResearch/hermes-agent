@@ -241,14 +241,11 @@ export function attachmentDisplayText(attachment: ComposerAttachment): string | 
 /**
  * Display ref for the optimistic (in-flight) user bubble.
  *
- * Images prefer their in-hand base64 preview (a `data:` URL) over a file path.
- * `DirectiveContent` runs `extractEmbeddedImages` first, so a raw `data:` URL
- * renders as an inline thumbnail with zero network. An `@image:<localpath>` ref
- * would instead route through `/api/media`, which in remote mode 403s ("Path
- * outside media roots") on a local path the gateway can't read yet — flashing a
- * fallback chip until submit uploads the bytes. The preview also survives the
- * post-sync rewrite (bytes go to the agent via the attached-image pipeline, not
- * this display ref), so the thumbnail stays stable instead of remounting.
+ * Images prefer their bounded base64 thumbnail over a file path. A raw `data:`
+ * URL renders inline with zero network, while an `@image:<localpath>` ref would
+ * route through `/api/media` and can 403 in remote mode. Full-resolution bytes
+ * are loaded separately for the model and on-demand lightbox, not retained in
+ * the optimistic message.
  *
  * Everything else (files, folders, terminals, post-sync `@file:` refs) falls
  * through to `attachmentDisplayText`.
@@ -258,11 +255,24 @@ export function optimisticAttachmentRef(attachment: ComposerAttachment): string 
     return null
   }
 
-  if (attachment.kind === 'image' && attachment.previewUrl?.startsWith('data:')) {
-    // The pill and the in-flight bubble render the downscaled thumbnail; the
-    // full-resolution `previewUrl` stays for lightbox/download, and the model
-    // receives bytes via the attached-image upload pipeline, not this ref.
-    return attachment.thumbnailUrl ?? attachment.previewUrl
+  if (attachment.kind === 'image') {
+    if (attachment.thumbnailUrl?.startsWith('data:')) {
+      // The pill and the in-flight bubble render the bounded thumbnail. Full
+      // bytes are read separately for lightbox/download and model upload.
+      return attachment.thumbnailUrl
+    }
+
+    if (attachment.previewUrl?.startsWith('data:')) {
+      // Backward compatibility for drafts created by older shells without a
+      // separate thumbnail.
+      return attachment.previewUrl
+    }
+
+    // A newly attached image has no thumbnail while its queued resize is still
+    // pending. Do not fall through to @image:<path>: the optimistic bubble would
+    // fetch and paint the full source, recreating the freeze if Send wins the
+    // race. The model upload remains path/byte based and is unaffected.
+    return null
   }
 
   return attachmentDisplayText(attachment)

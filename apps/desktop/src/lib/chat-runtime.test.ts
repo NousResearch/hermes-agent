@@ -33,21 +33,20 @@ describe('optimisticAttachmentRef', () => {
       attachment({ kind: 'image', detail: '/tmp/shot.png', previewUrl: DATA_URL, thumbnailUrl: THUMB_URL })
     )
 
-    // The bubble is a display-only thumbnail; full-res previewUrl stays for
-    // lightbox/download and the model gets bytes via the upload pipeline.
+    // The bubble is display-only; full bytes are read on demand and for upload.
     expect(ref).toBe(THUMB_URL)
   })
 
-  it('falls back to an @image: path ref when no preview is available', () => {
-    expect(optimisticAttachmentRef(attachment({ kind: 'image', detail: '/tmp/shot.png' }))).toBe('@image:/tmp/shot.png')
+  it('does not render a full path-backed image while its bounded thumbnail is pending', () => {
+    expect(optimisticAttachmentRef(attachment({ kind: 'image', detail: '/tmp/shot.png' }))).toBeNull()
   })
 
-  it('ignores a non-data preview url and uses the path ref', () => {
+  it('does not use a path fallback for a non-data preview url', () => {
     const ref = optimisticAttachmentRef(
       attachment({ kind: 'image', detail: '/tmp/shot.png', previewUrl: 'https://example.com/x.png' })
     )
 
-    expect(ref).toBe('@image:/tmp/shot.png')
+    expect(ref).toBeNull()
   })
 
   it('passes non-image attachments straight through to attachmentDisplayText', () => {

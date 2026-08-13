@@ -9,9 +9,10 @@ export interface ComposerAttachment {
   label: string
   detail?: string
   refText?: string
+  /** Legacy/on-demand full source. New local image chips omit this and read
+   * `path` only when the lightbox opens, avoiding retained multi-MB base64. */
   previewUrl?: string
-  /** Downscaled data URL for the attachment card's <img> pill only. Keeps the
-   * full-resolution `previewUrl` for lightbox/download/model bytes. */
+  /** Downscaled data URL for the attachment card and optimistic bubble only. */
   thumbnailUrl?: string
   path?: string
   attachedSessionId?: string

@@ -34,7 +34,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path, PureWindowsPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Dict, List, Optional
 
 import yaml
@@ -42,7 +42,6 @@ import yaml
 from hermes_constants import (
     get_hermes_home,
     get_optional_mcps_dir,
-    venv_python_path,
 )
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.colors import Colors, color
@@ -406,8 +405,19 @@ def _runtime_python_executable() -> str:
 
 
 def _venv_python_path(install_dir: Path, *, os_name: str) -> str:
-    path = venv_python_path(install_dir / ".venv", windows=os_name == "nt")
-    return str(PureWindowsPath(str(path))) if os_name == "nt" else str(path)
+    if os_name == "nt":
+        return str(PureWindowsPath(str(install_dir)) / ".venv" / "Scripts" / "python.exe")
+    return str(PurePosixPath(str(install_dir).replace("\\", "/")) / ".venv" / "bin" / "python")
+
+
+def _install_dir_value(install_dir: Path) -> str:
+    """Render install paths for manifest args without host-OS separators.
+
+    Transport arguments are raw argv values and accept forward slashes on every
+    supported host. Keeping them POSIX-shaped also lets path-expansion tests
+    simulate another runtime OS from Windows or POSIX hosts.
+    """
+    return str(PurePosixPath(str(install_dir).replace("\\", "/")))
 
 
 def _shell_quote(value: str, *, os_name: str) -> str:
@@ -445,7 +455,7 @@ def _expand_catalog_vars(
         _PYTHON_VAR: python_executable or _runtime_python_executable(),
     }
     if install_dir is not None:
-        replacements[_INSTALL_DIR_VAR] = str(install_dir)
+        replacements[_INSTALL_DIR_VAR] = _install_dir_value(install_dir)
         replacements[_VENV_PYTHON_VAR] = _venv_python_path(
             install_dir, os_name=resolved_os
         )

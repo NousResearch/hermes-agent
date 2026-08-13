@@ -266,16 +266,41 @@ def prune_pre_checkpoint_items(
     return checkpoint_run + list(reversed(retained_reversed)) + post
 
 
-def is_native_compaction_rejection(error: Any) -> bool:
-    """True when a provider error names the context_management field.
+def is_native_compaction_rejection(error: Any, status_code: Any = None) -> bool:
+    """True when a provider error is a STRUCTURED rejection of the
+    context_management field.
 
     Used by the conversation loop's one-shot recovery: strip the field,
     disable native compaction for the rest of the session, retry. Matching
-    is deliberately narrow — generic 4xx/5xx/timeouts must NOT permanently
-    downgrade native compaction, they take the normal retry path.
+    is deliberately narrow — a transient 5xx/timeout whose body merely
+    ECHOES the request (and therefore contains the field name) must NOT
+    permanently downgrade native compaction for the session (#82777).
+
+    Two conditions, both required when a status is known:
+
+    * ``status_code`` is 400 (or unknown/None — some transports surface
+      only a message string; field-name matching alone is then the best
+      available signal, preserving pre-#82777 behavior for them), and
+    * the error text names ``context_management`` / ``compact_threshold``
+      alongside rejection language ("unknown", "unsupported", "invalid",
+      "unexpected", "not permitted"...). A bare field-name echo without
+      rejection language does not match.
     """
     text = str(error or "").lower()
-    return "context_management" in text or "compact_threshold" in text
+    if "context_management" not in text and "compact_threshold" not in text:
+        return False
+    if status_code is not None:
+        try:
+            if int(status_code) != 400:
+                return False
+        except (TypeError, ValueError):
+            pass
+    rejection_markers = (
+        "unknown", "unsupported", "invalid", "unexpected", "not permitted",
+        "not allowed", "unrecognized", "extra field", "no such", "bad request",
+        "not supported",
+    )
+    return any(marker in text for marker in rejection_markers)
 
 
 def merge_interim_reasoning_items(

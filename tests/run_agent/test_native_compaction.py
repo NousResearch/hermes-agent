@@ -183,6 +183,50 @@ class TestRejectionMatcher:
         ):
             assert not is_native_compaction_rejection(err)
 
+    def test_field_echo_without_rejection_language_does_not_match(self):
+        # A transient failure body that merely echoes the request (and so
+        # contains the field name) must not downgrade the session (#82777).
+        assert not is_native_compaction_rejection(
+            "upstream timeout while processing request with "
+            "context_management=[{...}]"
+        )
+        assert not is_native_compaction_rejection(
+            "connection reset; last request included compact_threshold=200000"
+        )
+
+    def test_non_400_status_does_not_match(self):
+        msg = "Unknown parameter: 'context_management'"
+        assert not is_native_compaction_rejection(msg, 500)
+        assert not is_native_compaction_rejection(msg, 503)
+        assert not is_native_compaction_rejection(msg, 429)
+
+    def test_400_status_with_rejection_language_matches(self):
+        msg = "Unknown parameter: 'context_management'"
+        assert is_native_compaction_rejection(msg, 400)
+
+    def test_unknown_status_preserves_message_only_matching(self):
+        # Transports that surface only a string keep working.
+        assert is_native_compaction_rejection(
+            "Error code: 400 - Unknown parameter: 'context_management'", None
+        )
+        assert is_native_compaction_rejection(
+            "unsupported field compact_threshold", "not-a-number"
+        )
+
+
+class TestConfigCoercion:
+    def test_false_like_strings_stay_disabled(self, monkeypatch):
+        from utils import is_truthy_value
+
+        for raw in ("false", "off", "no", "0", "", "FALSE", " Off "):
+            assert not is_truthy_value(raw, False), raw
+
+    def test_true_like_strings_enable(self):
+        from utils import is_truthy_value
+
+        for raw in ("true", "1", "yes", "on", "TRUE"):
+            assert is_truthy_value(raw, False), raw
+
 
 class TestWirePlumbing:
     """context_management flows through build_kwargs and both preflights."""

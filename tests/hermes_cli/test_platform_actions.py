@@ -39,6 +39,37 @@ def _runner_with(adapters: dict):
     return patch("gateway.run._gateway_runner_ref", lambda: runner)
 
 
+class _MultiplexRunner:
+    """Minimal stand-in for GatewayRunner's real multiplex adapter split —
+    mirrors GatewayAuthorizationMixin._authorization_adapter's fail-closed
+    contract (default profile -> self.adapters; secondary profile -> its own
+    entry in self._profile_adapters, never falling back to another
+    profile's adapter of the same platform)."""
+
+    def __init__(self, adapters: dict, profile_adapters: dict, active_profile: str = "default"):
+        self.adapters = adapters
+        self._profile_adapters = profile_adapters
+        self._active_profile = active_profile
+
+    def _active_profile_name(self):
+        return self._active_profile
+
+    def _authorization_adapter(self, platform, profile=None):
+        profile_name = (profile or "").strip() or None
+        if profile_name and profile_name != "default":
+            if profile_name == self._active_profile:
+                return self.adapters.get(platform)
+            if profile_name in self._profile_adapters:
+                return self._profile_adapters[profile_name].get(platform)
+            return None
+        return self.adapters.get(platform)
+
+
+def _multiplex_runner_with(*, default: dict, profiles: dict, active_profile: str = "default"):
+    runner = _MultiplexRunner(default, profiles, active_profile)
+    return patch("gateway.run._gateway_runner_ref", lambda: runner)
+
+
 def _telegram_adapter(connected=True):
     a = MagicMock()
     a.platform = Platform.TELEGRAM
@@ -262,6 +293,106 @@ class TestVerbRouting:
                 actions.add_reaction("discord", "not-a-number", "456", "x")
             )
         assert result["error"] == "invalid_argument"
+
+
+class TestMultiplexProfileRouting:
+    """A plugin scoped to a secondary profile must act through THAT
+    profile's adapter, never the default profile's — the same invariant
+    gateway/authz_mixin.py's _authorization_adapter enforces for every
+    other adapter-resolution path in this codebase."""
+
+    def test_secondary_profile_routes_to_its_own_adapter_not_default(self):
+        actions = PlatformActions("p")
+        default_adapter = _telegram_adapter()
+        team_b_adapter = _telegram_adapter()
+        with (
+            _grant(True),
+            _multiplex_runner_with(
+                default={Platform.TELEGRAM: default_adapter},
+                profiles={"team-b": {Platform.TELEGRAM: team_b_adapter}},
+                active_profile="default",
+            ),
+            patch(
+                "hermes_cli.profiles.get_active_profile_name",
+                return_value="team-b",
+            ),
+        ):
+            result = asyncio.run(
+                actions.add_reaction("telegram", "1", "2", "x")
+            )
+        assert result["ok"] is True
+        team_b_adapter._set_reaction.assert_awaited_once()
+        default_adapter._set_reaction.assert_not_awaited()
+
+    def test_secondary_profile_with_no_registry_entry_fails_closed(self):
+        """A stamped secondary profile whose adapter isn't registered must
+        refuse — never silently fall back to the default profile's bot."""
+        actions = PlatformActions("p")
+        default_adapter = _telegram_adapter()
+        with (
+            _grant(True),
+            _multiplex_runner_with(
+                default={Platform.TELEGRAM: default_adapter},
+                profiles={},
+                active_profile="default",
+            ),
+            patch(
+                "hermes_cli.profiles.get_active_profile_name",
+                return_value="team-b",
+            ),
+        ):
+            result = asyncio.run(
+                actions.add_reaction("telegram", "1", "2", "x")
+            )
+        assert result["error"] == "adapter_not_registered"
+        default_adapter._set_reaction.assert_not_awaited()
+
+    def test_default_profile_still_routes_to_default_adapter(self):
+        """Healthy path unchanged: the default profile keeps using
+        runner.adapters via the same _authorization_adapter call."""
+        actions = PlatformActions("p")
+        default_adapter = _telegram_adapter()
+        with (
+            _grant(True),
+            _multiplex_runner_with(
+                default={Platform.TELEGRAM: default_adapter},
+                profiles={},
+                active_profile="default",
+            ),
+            patch(
+                "hermes_cli.profiles.get_active_profile_name",
+                return_value="default",
+            ),
+        ):
+            result = asyncio.run(
+                actions.add_reaction("telegram", "1", "2", "x")
+            )
+        assert result["ok"] is True
+        default_adapter._set_reaction.assert_awaited_once()
+
+    def test_active_profile_matching_secondary_name_uses_default_adapters(self):
+        """A profile that IS the process's own active profile resolves via
+        runner.adapters (not _profile_adapters), mirroring
+        _authorization_adapter's active-profile shortcut."""
+        actions = PlatformActions("p")
+        default_adapter = _telegram_adapter()
+        with (
+            _grant(True),
+            _multiplex_runner_with(
+                default={Platform.TELEGRAM: default_adapter},
+                profiles={},
+                active_profile="team-b",
+            ),
+            patch(
+                "hermes_cli.profiles.get_active_profile_name",
+                return_value="team-b",
+            ),
+        ):
+            result = asyncio.run(
+                actions.add_reaction("telegram", "1", "2", "x")
+            )
+        assert result["ok"] is True
+        default_adapter._set_reaction.assert_awaited_once()
 
 
 class TestPluginContextWiring:

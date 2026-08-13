@@ -468,6 +468,7 @@ def _compute_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]
         return None
 
     ahead = 0
+    behind = 0
     try:
         result = subprocess.run(
             ["git", "rev-list", "--count", f"{target_ref}..HEAD"],
@@ -483,7 +484,22 @@ def _compute_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]
     except Exception:
         ahead = 0
 
-    return {"upstream": upstream, "local": local, "ahead": max(ahead, 0)}
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", "--count", f"HEAD..{target_ref}"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            behind = int((result.stdout or "0").strip() or "0")
+    except Exception:
+        behind = 0
+
+    return {"upstream": upstream, "local": local, "ahead": max(ahead, 0), "behind": max(behind, 0)}
 
 
 _RELEASE_URL_BASE = "https://github.com/NousResearch/hermes-agent/releases/tag"
@@ -544,12 +560,23 @@ def format_banner_version_label() -> str:
     upstream = state["upstream"]
     local = state["local"]
     ahead = int(state.get("ahead") or 0)
+    behind = int(state.get("behind") or 0)
 
-    if ahead <= 0 or upstream == local:
+    if (ahead <= 0 and behind <= 0) or upstream == local:
         return f"{base} · upstream {upstream}"
 
-    carried_word = "commit" if ahead == 1 else "commits"
-    return f"{base} · upstream {upstream} · local {local} (+{ahead} carried {carried_word})"
+    parts = [f"{base} · upstream {upstream}"]
+    if ahead > 0:
+        carried_word = "commit" if ahead == 1 else "commits"
+        parts.append(f"local {local} (+{ahead} carried {carried_word})")
+    else:
+        parts.append(f"local {local}")
+
+    if behind > 0:
+        behind_word = "commit" if behind == 1 else "commits"
+        parts.append(f"(-{behind} upstream {behind_word})")
+
+    return " · ".join(parts)
 
 
 # =========================================================================

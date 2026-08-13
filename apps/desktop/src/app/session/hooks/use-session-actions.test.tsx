@@ -42,12 +42,12 @@ import {
 } from '@/store/session'
 import { $sessionTiles } from '@/store/session-states'
 
+import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 import { sessionRoute } from '../../routes'
 import type { ClientSessionState } from '../../types'
 
 import { useSessionActions } from './use-session-actions'
 import { useSessionStateCache } from './use-session-state-cache'
-import sessionResumeActiveTurn from '../../../../../../tests/fixtures/session-resume-active-turn.json'
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),

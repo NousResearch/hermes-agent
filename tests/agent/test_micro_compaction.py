@@ -18,7 +18,7 @@ The invariants that matter:
   times and then skipped, so a poison exchange can't stall every turn.
 """
 
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -760,6 +760,71 @@ class TestMicroCompaction:
         assert not unstamped, (
             "splice must not strip _db_persisted from surviving messages"
         )
+
+    def test_failed_db_sync_keeps_pre_splice_transcript(self):
+        """A raised archive_and_compact must not publish the spliced list (#84723)."""
+        cc = _compressor()
+        cc._session_id = "sess-84723"
+
+        class _FailingDB:
+            def archive_and_compact(self, *_a, **_k):
+                raise RuntimeError("disk full")
+
+        cc._session_db = _FailingDB()
+        messages = _conversation(exchanges=8)
+        original = list(messages)
+        prev_summary = cc._micro_compact_rolling_summary
+        result = cc._micro_compact(messages)
+        assert result is messages
+        assert [m.get("content") for m in result] == [m.get("content") for m in original]
+        assert not _summary_markers(result)
+        # Resolve may scan-advance the cursor; absorb must not keep the
+        # new rolling summary when persist failed.
+        assert cc._micro_compact_rolling_summary == prev_summary
+
+    def test_generated_micro_summary_is_redacted_before_publish(self):
+        """Summarizer output is redacted before cursor/summary/list publish (#84723)."""
+        secret = "sk-proj-" + ("a" * 40)
+        cc = _compressor(summary=f"Summary leaked {secret}")
+        result = cc._micro_compact(_conversation(exchanges=8))
+        markers = _summary_markers(result)
+        assert markers
+        blob = str(result)
+        assert secret not in blob
+        assert secret not in cc._micro_compact_rolling_summary
+        assert secret not in markers[0]["content"]
+
+    def test_rehydrated_secret_is_redacted_before_summarizer_prompt(self):
+        """A legacy marker secret must not re-enter the aux prompt (#84723)."""
+        secret = "sk-proj-" + ("a" * 40)
+        cc = _compressor()
+        cc._micro_compact_rolling_summary = ""
+        cc._micro_compact_cursor = 0
+        del cc._micro_summarize_one
+        messages = _conversation(exchanges=8)
+        messages.insert(
+            1,
+            {
+                "role": "assistant",
+                "content": f"Old summary leaked {secret}",
+                COMPRESSED_SUMMARY_METADATA_KEY: True,
+            },
+        )
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "clean updated summary"
+
+        with patch(
+            "agent.auxiliary_client.call_llm",
+            return_value=mock_response,
+        ) as mock_call:
+            result = cc._micro_compact(messages)
+
+        assert mock_call.called
+        prompt = mock_call.call_args.kwargs["messages"][1]["content"]
+        assert secret not in prompt
+        assert secret not in cc._micro_compact_rolling_summary
+        assert secret not in str(result)
 
 
 class TestDefragFlushCursorInvalidation:

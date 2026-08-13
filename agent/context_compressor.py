@@ -6152,7 +6152,9 @@ This compaction should PRIORITISE preserving all information related to the focu
                     messages[last_summary_idx].get("content")
                 )
                 if recovered:
-                    self._micro_compact_rolling_summary = recovered
+                    self._micro_compact_rolling_summary = _redact_compaction_text(
+                        recovered
+                    )
                     # Rehydration is containment proof: this marker's text now
                     # lives inside the rolling summary, so it becomes
                     # supersede/defrag-eligible. This also covers a BATCH
@@ -6563,6 +6565,9 @@ This compaction should PRIORITISE preserving all information related to the focu
             )
             return messages
 
+        updated_summary = _redact_compaction_text(updated_summary)
+        prev_summary = self._micro_compact_rolling_summary
+        prev_cursor = self._micro_compact_cursor
         self._micro_compact_rolling_summary = updated_summary
         self._micro_compact_cursor = exchange_end
         self._micro_compact_consecutive_failures = 0
@@ -6571,8 +6576,20 @@ This compaction should PRIORITISE preserving all information related to the focu
         result = self._splice_micro_compact_result(
             messages, exchange_start, exchange_end, supersede=_cumulative,
         )
+        if not self._sync_micro_compact_to_db(result):
+            self._micro_compact_rolling_summary = prev_summary
+            self._micro_compact_cursor = prev_cursor
+            self._emit_micro_compaction_telemetry(
+                outcome="persist_failed",
+                messages_before=_messages_before,
+                messages_after=len(messages),
+                tokens_before=_tokens_before,
+                tokens_after=_tokens_before,
+                exchange_tokens=_exchange_tokens,
+                duration_ms=_elapsed_ms(),
+            )
+            return messages
         self._micro_compact_cursor = self._cursor_after_splice(result, exchange_start + 1)
-        self._sync_micro_compact_to_db(result)
         self._emit_micro_compaction_telemetry(
             outcome="absorbed",
             messages_before=_messages_before,
@@ -6701,8 +6718,12 @@ This compaction should PRIORITISE preserving all information related to the focu
     def _sync_micro_compact_to_db(
         self,
         compacted_messages: List[Dict[str, Any]],
-    ) -> None:
+    ) -> bool:
         """Persist the micro-compacted message set to the session DB.
+
+        Returns True when persist succeeded or there is no DB binding
+        (in-memory-only). Returns False when the write raised so the
+        caller can refuse to publish the spliced list (#84723).
 
         Soft-archives every currently-active message row (``active = 0``)
         and inserts *compacted_messages* as fresh active rows — atomically,
@@ -6718,17 +6739,19 @@ This compaction should PRIORITISE preserving all information related to the focu
         session_db = getattr(self, "_session_db", None)
         session_id = getattr(self, "_session_id", "")
         if not session_db or not session_id:
-            return
+            return True
         try:
             session_db.archive_and_compact(session_id, compacted_messages)
             for msg in compacted_messages:
                 if isinstance(msg, dict):
                     msg[_DB_PERSISTED_MARKER] = True
+            return True
         except Exception:
             logger.info(
-                "Micro-compaction DB sync failed — resume will double-load "
-                "compacted messages until the next batch compression"
+                "Micro-compaction DB sync failed — keeping the pre-splice "
+                "transcript rather than publishing an unsynced list"
             )
+            return False
 
     def _splice_micro_compact_result(
         self,

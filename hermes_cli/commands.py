@@ -170,6 +170,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[focus instructions]"),
     CommandDef("moa", "Run one prompt through the default Mixture of Agents preset, then restore your model", "Session",
                args_hint="<prompt>", busy_policy="reject", busy_handler="moa"),
+    CommandDef("council", "Convene a model council: reference models answer independently, a chair synthesizes consensus and disagreements", "Session",
+               args_hint="<question>", busy_policy="reject"),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
                args_hint="[text | remove N | clear]", busy_policy="dispatch"),
     CommandDef("status", "Show session, model, token, and context info", "Session",
@@ -1277,7 +1279,7 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     native slash.
 #   - pause: global emergency stop; reached via /hermes pause [off] on
 #     Slack. Added at the 50-cap — a native slot would clamp /platform.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause"})
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "council", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

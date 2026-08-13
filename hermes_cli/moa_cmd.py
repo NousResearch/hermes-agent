@@ -89,6 +89,9 @@ def _print_config(config: dict[str, Any]) -> None:
             print(f"    {idx}. {_format_slot(slot)}")
         agg = preset["aggregator"]
         print(f"  Aggregator: {_format_slot(agg)}")
+        style = str(preset.get("synthesis_style") or "guidance")
+        if style != "guidance":
+            print(f"  Synthesis style: {style}")
 
 
 def cmd_moa(args) -> None:

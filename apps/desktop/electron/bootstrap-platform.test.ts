@@ -6,7 +6,8 @@ import {
   bundledRuntimeImportCheck,
   detectRemoteDisplay,
   isWindowsBinaryPathInWsl,
-  isWslEnvironment
+  isWslEnvironment,
+  resolveLinuxPasswordStore
 } from './bootstrap-platform'
 
 test('isWslEnvironment detects WSL2 env vars on linux', () => {
@@ -83,4 +84,42 @@ test('detectRemoteDisplay honors the HERMES_DESKTOP_DISABLE_GPU override both wa
     }),
     null
   )
+})
+
+test('resolveLinuxPasswordStore applies known backends on linux', () => {
+  for (const store of ['gnome-libsecret', 'kwallet', 'kwallet5', 'kwallet6', 'basic']) {
+    assert.deepEqual(
+      resolveLinuxPasswordStore({ env: { HERMES_DESKTOP_PASSWORD_STORE: store }, platform: 'linux' }),
+      { store, warning: null }
+    )
+  }
+})
+
+test('resolveLinuxPasswordStore is a no-op when the env var is unset', () => {
+  assert.deepEqual(resolveLinuxPasswordStore({ env: {}, platform: 'linux' }), { store: null, warning: null })
+  assert.deepEqual(
+    resolveLinuxPasswordStore({ env: { HERMES_DESKTOP_PASSWORD_STORE: '  ' }, platform: 'linux' }),
+    { store: null, warning: null }
+  )
+})
+
+test('resolveLinuxPasswordStore ignores the env var off linux', () => {
+  assert.deepEqual(
+    resolveLinuxPasswordStore({ env: { HERMES_DESKTOP_PASSWORD_STORE: 'gnome-libsecret' }, platform: 'darwin' }),
+    { store: null, warning: null }
+  )
+  assert.deepEqual(
+    resolveLinuxPasswordStore({ env: { HERMES_DESKTOP_PASSWORD_STORE: 'kwallet6' }, platform: 'win32' }),
+    { store: null, warning: null }
+  )
+})
+
+test('resolveLinuxPasswordStore warns on unknown values instead of applying them', () => {
+  const result = resolveLinuxPasswordStore({
+    env: { HERMES_DESKTOP_PASSWORD_STORE: 'keychain-of-wonders' },
+    platform: 'linux'
+  })
+
+  assert.equal(result.store, null)
+  assert.match(String(result.warning), /keychain-of-wonders/)
 })

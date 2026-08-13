@@ -186,7 +186,9 @@ function toSuggestion(match: McpMatch, sessionId: string | null): ComposerSugges
     doneLabel: copy('added', name),
     doneTip: copy('addedTip'),
     id: match.server,
-    invoke: context => connect(match.server, sessionId, context.cancelled),
+    // The pill's session wins over the one captured at sample time: the reload
+    // has to reach the session the user is actually looking at.
+    invoke: context => connect(match.server, context.sessionId ?? sessionId, context.cancelled),
     label: copy('label', name),
     provider: 'mcp',
     tip: copy('tip', match.keyword),

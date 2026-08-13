@@ -7028,6 +7028,21 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 "fully quit & relaunch once."
             )
 
+        # ── macOS TCC anchor (issue #85345) ────────────────────────────
+        # uv-managed interpreters move on every patch bump, orphaning macOS
+        # TCC grants and re-triggering the permission-prompt storm.  Pin a
+        # real-file copy of the interpreter inside the venv so the TCC client
+        # path stays stable across updates.  Best-effort only; the doctor
+        # check re-applies it if this runs from pre-fix code.
+        try:
+            from hermes_cli.macos_tcc_anchor import ensure_tcc_anchor
+
+            tcc_anchored = ensure_tcc_anchor(_m().PROJECT_ROOT)
+            if tcc_anchored is not None:
+                print(f"  ✓ macOS TCC anchor: interpreter pinned at {tcc_anchored}")
+        except Exception as _tcc_exc:
+            logger.debug("macOS TCC anchor refresh failed: %s", _tcc_exc)
+
         # ── Post-update state.db integrity guard (#68474) ─────────────────
         # Verify that state.db survived the update intact.  If the live file
         # is now corrupted (zeroed, missing header, integrity failure),

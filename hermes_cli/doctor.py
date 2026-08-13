@@ -1154,6 +1154,54 @@ def _macos_desktop_dr(app: Path) -> str | None:
     return (proc.stdout or "") + (proc.stderr or "")
 
 
+def check_macos_tcc_anchor(should_fix: bool = False) -> None:
+    """macOS TCC anchor check (issue #85345).
+
+    TCC keys permission grants to the interpreter's resolved path; uv-managed
+    interpreters move on every patch bump, orphaning grants and re-triggering
+    the permission-prompt storm after each update.  A stable real-file copy of
+    the interpreter inside the venv keeps the TCC client path constant.
+    Silent on non-macOS; informational when the interpreter already has a
+    stable path.
+    """
+    try:
+        from hermes_cli.macos_tcc_anchor import ensure_tcc_anchor, tcc_anchor_state
+
+        status, detail = tcc_anchor_state()
+        if status == "skip":
+            if detail == "interpreter not uv-managed (stable path)":
+                check_ok("Python interpreter path is stable", "(not uv-managed)")
+            return
+        if status == "active":
+            check_ok(
+                "macOS TCC anchor active",
+                f"(interpreter pinned at {detail}; grants survive updates)",
+            )
+            return
+        label = "stale" if status == "stale" else "missing"
+        if should_fix:
+            anchored = ensure_tcc_anchor()
+            if anchored is not None:
+                check_ok(
+                    "macOS TCC anchor installed",
+                    f"(interpreter pinned at {anchored}; grants survive updates)",
+                )
+                return
+            check_warn(
+                "macOS TCC anchor could not be installed",
+                "macOS will re-prompt for permissions after each Python update",
+            )
+            return
+        check_warn(
+            f"macOS TCC anchor {label}",
+            "the uv-managed interpreter path changes on every Python patch "
+            "bump, so macOS will re-prompt for permissions after each update. "
+            "Run `hermes doctor --fix` to pin the interpreter at a stable path.",
+        )
+    except Exception as e:  # diagnostics must never crash
+        check_warn(f"macOS TCC anchor check failed: {e}")
+
+
 def run_doctor(args):
     """Run diagnostic checks."""
     should_fix = getattr(args, 'fix', False)
@@ -1323,6 +1371,10 @@ def run_doctor(args):
         check_ok("Virtual environment active")
     else:
         check_warn("Not in virtual environment", "(recommended)")
+
+    # macOS TCC anchor (issue #85345): uv-managed interpreter paths move on
+    # every patch bump and orphan TCC grants. Silent on non-macOS.
+    check_macos_tcc_anchor(should_fix)
 
     # Detect drift between pyproject.toml and hermes_cli/__init__.py versions
     # (a git conflict resolution can silently revert one but not the other).

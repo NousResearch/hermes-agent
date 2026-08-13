@@ -83,6 +83,10 @@ def _completed_subscription(**sub_kwargs):
             assignee="worker",
             session_id="origin-session",
         )
+        # Push-adapter wake injection is gated on the subscription's
+        # delivery_mode ("notify+wake"/"wake") on current main; the plain
+        # "notify" default would never reach the wake path under test.
+        sub_kwargs.setdefault("delivery_mode", "notify+wake")
         kb.add_notify_sub(conn, task_id=tid, **sub_kwargs)
         kb.complete_task(conn, tid, summary="done")
         return tid

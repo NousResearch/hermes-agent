@@ -564,7 +564,7 @@ class TestToolHandler:
             call = mock_session.call_tool.call_args
             assert call.args == ("greet",)
             assert call.kwargs["arguments"] == {"name": "world"}
-            assert str(uuid.UUID(call.kwargs["meta"]["merovingian.ai/toolAttemptId"])) == call.kwargs["meta"]["merovingian.ai/toolAttemptId"]
+            assert str(uuid.UUID(call.kwargs["meta"]["ai.merovingian/toolAttemptId"])) == call.kwargs["meta"]["ai.merovingian/toolAttemptId"]
         finally:
             _servers.pop("test_srv", None)
 
@@ -598,7 +598,7 @@ class TestToolHandler:
             call = mock_session.call_tool.call_args
             assert call.args == ("greet",)
             assert call.kwargs["arguments"] == {"name": "world"}
-            assert str(uuid.UUID(call.kwargs["meta"]["merovingian.ai/toolAttemptId"])) == call.kwargs["meta"]["merovingian.ai/toolAttemptId"]
+            assert str(uuid.UUID(call.kwargs["meta"]["ai.merovingian/toolAttemptId"])) == call.kwargs["meta"]["ai.merovingian/toolAttemptId"]
         finally:
             _servers.pop("test_srv", None)
 

@@ -1184,7 +1184,14 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // change happens silently. Surface it as a persistent system message
         // in the transcript so the user is always informed — it must not be a
         // transient toast that can be missed.
-        const text = coerceGatewayText(payload?.text).trim()
+        //
+        // Typed here with the `review:` marker (same convention as `steer:` /
+        // `slash:`) so SystemMessage can paint it as the memory-write row it
+        // is instead of sniffing the backend's prose. The leading 💾 goes with
+        // it — the row draws its own glyph.
+        const text = coerceGatewayText(payload?.text)
+          .trim()
+          .replace(/^[^\p{L}\p{N}]+/u, '')
 
         if (text && sessionId) {
           flushQueuedDeltas(sessionId)
@@ -1195,7 +1202,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
               {
                 id: `review-summary-${Date.now()}`,
                 role: 'system',
-                parts: [textPart(text)],
+                parts: [textPart(`review:${text}`)],
                 timestamp: Math.floor(Date.now() / 1000)
               }
             ]

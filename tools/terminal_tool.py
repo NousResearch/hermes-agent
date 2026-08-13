@@ -1086,6 +1086,26 @@ Working directory: use 'workdir' for per-command cwd. When a command changes the
 PTY: set pty=true for interactive CLIs (they hang without it). Pipe git output to cat if it might page.
 """
 
+_TERMINAL_PWSH_TOOL_DESCRIPTION = """Execute PowerShell commands in the native Windows local environment. The current working directory and environment variables persist between foreground calls.
+
+Do NOT use Bash/POSIX syntax or commands such as export, source, cat/head/tail, grep/rg/find/ls, sed/awk, or heredocs. Use PowerShell syntax and cmdlets; use read_file, search_files, patch, and write_file instead of shell commands for file inspection and editing.
+
+Foreground execution is supported. Background and PTY execution are not implemented for pwsh in this increment and fail closed; do not request background=true or pty=true.
+Working directory: use 'workdir' for an absolute Windows path. When a command changes directory with Set-Location, the result includes the persisted cwd.
+"""
+
+
+def _registered_terminal_shell() -> str:
+    """Resolve the shell identity frozen into this process's tool schema."""
+    try:
+        from tools.environments.shell_selection import get_active_shell_name
+
+        return get_active_shell_name()
+    except Exception:
+        # Invalid configuration is diagnosed by prompt/environment creation;
+        # importing the registry must remain possible so Hermes can report it.
+        return "bash"
+
 # Global state for environment lifecycle management
 _active_environments: Dict[str, Any] = {}
 _last_activity: Dict[str, float] = {}
@@ -2590,6 +2610,24 @@ def terminal_tool(
         config = _get_env_config()
         env_type = config["env_type"]
 
+        # PowerShell background and PTY lifecycle support is intentionally not
+        # part of this increment. Reject both at the public tool boundary before
+        # approval, environment creation, or command execution; ProcessRegistry
+        # retains its own guard as defense in depth for direct callers.
+        if env_type == "local" and (background or pty):
+            from tools.environments.shell_selection import (
+                SHELL_PWSH,
+                get_active_shell_name,
+            )
+
+            if get_active_shell_name() == SHELL_PWSH:
+                unsupported_mode = "background" if background else "PTY"
+                return tool_error(
+                    f"PowerShell {unsupported_mode} execution is not supported "
+                    "in this increment and fails closed. Run the command in "
+                    "synchronous foreground mode instead."
+                )
+
         # Use task_id for environment isolation. By default all subagent
         # task_ids collapse back to "default" so the top-level agent and
         # every delegate_task child share one container; only task_ids with
@@ -3004,6 +3042,7 @@ def terminal_tool(
                         session_key=session_key,
                         env_vars=env.env if hasattr(env, 'env') else None,
                         use_pty=effective_pty,
+                        shell_name=getattr(env, "shell_name", None),
                     )
                 else:
                     proc_session = process_registry.spawn_via_env(
@@ -3740,49 +3779,120 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 from tools.registry import registry
 
-TERMINAL_SCHEMA = {
-    "name": "terminal",
-    "description": TERMINAL_TOOL_DESCRIPTION,
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "command": {
-                "type": "string",
-                "description": "The command to execute on the VM"
+
+def _terminal_schema_for_shell(shell_name: str) -> dict:
+    """Build one internally consistent schema for a frozen shell identity."""
+    is_pwsh = shell_name == "pwsh"
+    if is_pwsh:
+        background_description = (
+            "Background execution is not supported when terminal.shell is pwsh "
+            "in this increment; background=true fails closed."
+        )
+        timeout_description = (
+            f"Max seconds to wait (default: 180, foreground max: "
+            f"{FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when the command "
+            "finishes. PowerShell background execution is not implemented, so "
+            "foreground timeout cannot be bypassed with background mode."
+        )
+        pty_description = (
+            "PTY execution is not supported when terminal.shell is pwsh in this "
+            "increment; pty=true fails closed."
+        )
+        notify_description = (
+            "Completion notifications require background execution and are "
+            "unavailable when terminal.shell is pwsh in this increment."
+        )
+        watch_description = (
+            "Background output watches are unavailable when terminal.shell is "
+            "pwsh in this increment."
+        )
+    else:
+        background_description = (
+            "Run in the background, returning a session_id. Pair with "
+            "notify_on_complete=true for anything with a defined end (tests, "
+            "builds, deploys) — without it the process runs silently. Only "
+            "servers/watchers/daemons that never exit should stay silent. Short "
+            "commands: prefer foreground with a generous timeout."
+        )
+        timeout_description = (
+            f"Max seconds to wait (default: 180, foreground max: "
+            f"{FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes "
+            f"— set high for long tasks, you won't wait unnecessarily. Foreground "
+            f"timeout above {FOREGROUND_MAX_TIMEOUT}s is rejected; use "
+            "background=true for longer commands."
+        )
+        pty_description = (
+            "Run in pseudo-terminal (PTY) mode for interactive CLI tools like "
+            "Codex, Claude Code, or Python REPL. Only works with local and SSH "
+            "backends. Default: false."
+        )
+        notify_description = (
+            "With background=true: get exactly one notification when the process "
+            "exits. The right choice for nearly every bounded long task — set it "
+            "and keep working. MUTUALLY EXCLUSIVE with watch_patterns "
+            "(watch_patterns is dropped when both are set)."
+        )
+        watch_description = (
+            "Strings to watch for in background output. ONLY for rare one-shot "
+            "mid-process signals on processes that never exit (e.g. ['Application "
+            "startup complete']). NOT for end-of-run markers (use "
+            "notify_on_complete) and NOT for per-iteration patterns like 'ERROR' "
+            "in loops — rate-limited to 1 notification/15s; repeated over-firing "
+            "auto-disables it and falls back to notify-on-exit. When in doubt, use "
+            "notify_on_complete. MUTUALLY EXCLUSIVE with notify_on_complete."
+        )
+
+    return {
+        "name": "terminal",
+        "description": (
+            _TERMINAL_PWSH_TOOL_DESCRIPTION if is_pwsh else TERMINAL_TOOL_DESCRIPTION
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "command": {
+                    "type": "string",
+                    "description": "The command to execute on the VM",
+                },
+                "background": {
+                    "type": "boolean",
+                    "description": background_description,
+                    "default": False,
+                },
+                "timeout": {
+                    "type": "integer",
+                    "description": timeout_description,
+                    "minimum": 1,
+                },
+                "workdir": {
+                    "type": "string",
+                    "description": "Working directory for this command (absolute path). Defaults to the session working directory.",
+                },
+                "pty": {
+                    "type": "boolean",
+                    "description": pty_description,
+                    "default": False,
+                },
+                "notify_on_complete": {
+                    "type": "boolean",
+                    "description": notify_description,
+                    "default": False,
+                },
+                "watch_patterns": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": watch_description,
+                },
             },
-            "background": {
-                "type": "boolean",
-                "description": "Run in the background, returning a session_id. Pair with notify_on_complete=true for anything with a defined end (tests, builds, deploys) — without it the process runs silently. Only servers/watchers/daemons that never exit should stay silent. Short commands: prefer foreground with a generous timeout.",
-                "default": False
-            },
-            "timeout": {
-                "type": "integer",
-                "description": f"Max seconds to wait (default: 180, foreground max: {FOREGROUND_MAX_TIMEOUT}). Returns INSTANTLY when command finishes — set high for long tasks, you won't wait unnecessarily. Foreground timeout above {FOREGROUND_MAX_TIMEOUT}s is rejected; use background=true for longer commands.",
-                "minimum": 1
-            },
-            "workdir": {
-                "type": "string",
-                "description": "Working directory for this command (absolute path). Defaults to the session working directory."
-            },
-            "pty": {
-                "type": "boolean",
-                "description": "Run in pseudo-terminal (PTY) mode for interactive CLI tools like Codex, Claude Code, or Python REPL. Only works with local and SSH backends. Default: false.",
-                "default": False
-            },
-            "notify_on_complete": {
-                "type": "boolean",
-                "description": "With background=true: get exactly one notification when the process exits. The right choice for nearly every bounded long task — set it and keep working. MUTUALLY EXCLUSIVE with watch_patterns (watch_patterns is dropped when both are set).",
-                "default": False
-            },
-            "watch_patterns": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Strings to watch for in background output. ONLY for rare one-shot mid-process signals on processes that never exit (e.g. ['Application startup complete'] on a server). NOT for end-of-run markers (use notify_on_complete) and NOT for per-iteration patterns like 'ERROR' in loops — rate-limited to 1 notification/15s; repeated over-firing auto-disables it and falls back to notify-on-exit. When in doubt, use notify_on_complete. MUTUALLY EXCLUSIVE with notify_on_complete."
-            }
+            "required": ["command"],
         },
-        "required": ["command"]
     }
-}
+
+
+# Config is projected before this module is imported. The resulting schema and
+# active environment keep one shell identity for the life of the process;
+# changing terminal.shell takes effect in a new Hermes session/process.
+TERMINAL_SCHEMA = _terminal_schema_for_shell(_registered_terminal_shell())
 
 
 def _handle_terminal(args, **kw):

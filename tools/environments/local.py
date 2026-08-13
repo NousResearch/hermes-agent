@@ -1,6 +1,7 @@
 """Local execution environment — spawn-per-call with session snapshot."""
 
 import logging
+import json
 import ntpath
 import os
 import platform
@@ -11,10 +12,15 @@ import subprocess
 import sys
 import tempfile
 import time
+import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
 from tools.environments.base import BaseEnvironment, _pipe_stdin
+from tools.environments.shell_selection import (
+    SHELL_BASH,
+    get_active_shell_name,
+)
 from hermes_cli._subprocess_compat import windows_hide_flags
 
 _IS_WINDOWS = platform.system() == "Windows"
@@ -1414,17 +1420,307 @@ def _prepend_shell_init(cmd_string: str, files: list[str]) -> str:
 class LocalEnvironment(BaseEnvironment):
     """Run commands directly on the host machine.
 
-    Spawn-per-call: every execute() spawns a fresh bash process.
-    Session snapshot preserves env vars across calls.
-    CWD persists via file-based read after each command.
+    Spawn-per-call: every execute() spawns a fresh shell process. Bash keeps
+    its existing shell snapshot; native Windows PowerShell persists exported
+    environment variables and cwd through a private JSON state file.
     """
 
     _profile_scoped_passthrough = True
 
     def __init__(self, cwd: str = "", timeout: int = 60, env: dict = None):
+        self.shell_name = get_active_shell_name()
         cwd = _resolve_local_initial_cwd(cwd)
         super().__init__(cwd=cwd, timeout=timeout, env=env)
-        self.init_session()
+        if self.shell_name == SHELL_BASH:
+            self.init_session()
+        else:
+            self._pwsh_env = _make_run_env(self.env)
+            self._pwsh_removed_env: set[str] = set()
+
+    @staticmethod
+    def _pwsh_single_quote(value: str) -> str:
+        """Quote a Python string as a literal PowerShell single-quoted string."""
+        return "'" + value.replace("'", "''") + "'"
+
+    def _pwsh_state_env(self, raw_env: object) -> dict[str, str]:
+        """Filter persisted PowerShell env state like the bash snapshot path."""
+        if not isinstance(raw_env, dict):
+            return self._pwsh_env
+        excluded = {name.upper() for name in self._snapshot_excluded_passthrough_names()}
+        state: dict[str, str] = {}
+        for raw_name, raw_value in raw_env.items():
+            name = str(raw_name)
+            upper = name.upper()
+            if (
+                upper in excluded
+                or upper in {"AI_AGENT", "HERMES_AGENT", "HERMES_UI_SESSION_ID"}
+                or upper.startswith("HERMES_SESSION_")
+                or upper.startswith("HERMES_CRON_AUTO_DELIVER_")
+            ):
+                continue
+            state[name] = "" if raw_value is None else str(raw_value)
+        return state
+
+    def _pwsh_persistable_env_names(self, env: dict[str, str]) -> set[str]:
+        """Return canonical names eligible for session tombstone tracking."""
+        return {name.upper() for name in self._pwsh_state_env(env)}
+
+    def _run_pwsh(
+        self,
+        command: str,
+        *,
+        cwd: str,
+        stdin_data: str | None,
+    ) -> tuple[subprocess.Popen, tuple[str, ...], str]:
+        """Spawn one native PowerShell foreground process.
+
+        The user command is written to a private UTF-8 payload script so it
+        does not cross another command-line quoting layer. A two-line status
+        trailer freezes ``$?``/``$LASTEXITCODE`` immediately after the payload;
+        the wrapper reads those values without replacing them first.
+        """
+        pwsh = shutil.which("pwsh") or shutil.which("pwsh.exe")
+        if not pwsh:
+            raise FileNotFoundError(
+                "terminal.shell is 'pwsh', but pwsh.exe was not found on PATH"
+            )
+
+        safe_cwd = _resolve_safe_cwd(cwd)
+        temp_dir = self.get_temp_dir()
+        script_fd, script_path = tempfile.mkstemp(
+            prefix="hermes-pwsh-", suffix=".ps1", dir=temp_dir, text=True
+        )
+        command_fd, command_path = tempfile.mkstemp(
+            prefix="hermes-pwsh-command-", suffix=".ps1", dir=temp_dir, text=True
+        )
+        payload_fd, payload_path = tempfile.mkstemp(
+            prefix="hermes-pwsh-payload-", suffix=".ps1", dir=temp_dir, text=True
+        )
+        command_state_fd, command_state_path = tempfile.mkstemp(
+            prefix="hermes-pwsh-command-state-", suffix=".json", dir=temp_dir, text=True
+        )
+        os.close(command_state_fd)
+        # The path is random/private, but existence is the completion marker.
+        # Remove mkstemp's empty placeholder so an explicit ``exit`` that skips
+        # the payload trailer cannot be mistaken for a completed sidecar.
+        os.unlink(command_state_path)
+        state_fd, state_path = tempfile.mkstemp(
+            prefix="hermes-pwsh-state-", suffix=".json", dir=temp_dir, text=True
+        )
+        os.close(state_fd)
+        state_literal = self._pwsh_single_quote(state_path)
+        command_literal = self._pwsh_single_quote(command_path)
+        payload_literal = self._pwsh_single_quote(payload_path)
+        command_state_literal = self._pwsh_single_quote(command_state_path)
+        nonce = uuid.uuid4().hex
+        ok_var = f"__hermesPayloadSucceeded_{nonce}"
+        native_var = f"__hermesPayloadNativeExit_{nonce}"
+        payload_state_var = f"__hermesPayloadState_{nonce}"
+        payload_json_var = f"__hermesPayloadJson_{nonce}"
+        script = (
+            "$__hermesUtf8 = [Text.UTF8Encoding]::new($false)\n"
+            "[Console]::InputEncoding = $__hermesUtf8\n"
+            "[Console]::OutputEncoding = $__hermesUtf8\n"
+            "$OutputEncoding = $__hermesUtf8\n"
+            "$__hermesExit = 1\n"
+            "$__hermesCommandSucceeded = $null\n"
+            "$__hermesCommandNativeExit = $null\n"
+            "try {\n"
+            "  $__hermesTokens = $null\n"
+            "  $__hermesParseErrors = $null\n"
+            f"  [void][Management.Automation.Language.Parser]::ParseFile({payload_literal}, "
+            "[ref]$__hermesTokens, [ref]$__hermesParseErrors)\n"
+            "  if ($__hermesParseErrors.Count -gt 0) {\n"
+            "    foreach ($__hermesParseError in $__hermesParseErrors) { "
+            "[Console]::Error.WriteLine($__hermesParseError.Message) }\n"
+            "    $__hermesCommandSucceeded = $false\n"
+            "  } else {\n"
+            f"    & {command_literal}\n"
+            "    $__hermesInvokeSucceeded = $?\n"
+            "    $__hermesInvokeNativeExit = $LASTEXITCODE\n"
+            f"    if ([IO.File]::Exists({command_state_literal})) {{\n"
+            f"      $__hermesCommandStateJson = [IO.File]::ReadAllText({command_state_literal}, $__hermesUtf8)\n"
+            "      $__hermesCommandState = $__hermesCommandStateJson | "
+            "Microsoft.PowerShell.Utility\\ConvertFrom-Json\n"
+            "    $__hermesCommandSucceeded = [bool]$__hermesCommandState.succeeded\n"
+            "    $__hermesCommandNativeExit = $__hermesCommandState.native_exit\n"
+            "    } else {\n"
+            "      $__hermesCommandNativeExit = $__hermesInvokeNativeExit\n"
+            "      $__hermesCommandSucceeded = $__hermesInvokeSucceeded\n"
+            "      if ($null -ne $__hermesInvokeNativeExit -and "
+            "[int]$__hermesInvokeNativeExit -ne 0) { "
+            "$__hermesCommandSucceeded = $false }\n"
+            "    }\n"
+            "  }\n"
+            "  if ($__hermesCommandSucceeded) { $__hermesExit = 0 }\n"
+            "  elseif ($null -ne $__hermesCommandNativeExit -and "
+            "[int]$__hermesCommandNativeExit -ne 0) { "
+            "$__hermesExit = [int]$__hermesCommandNativeExit }\n"
+            "  else { $__hermesExit = 1 }\n"
+            "} catch {\n"
+            "  [Console]::Error.WriteLine($_.ToString())\n"
+            "  $__hermesExit = 1\n"
+            "} finally {\n"
+            "  $__hermesEnv = [ordered]@{}\n"
+            "  foreach ($__hermesEntry in [Environment]::GetEnvironmentVariables('Process').GetEnumerator()) { "
+            "$__hermesEnv[[string]$__hermesEntry.Key] = [string]$__hermesEntry.Value }\n"
+            "  $__hermesState = [ordered]@{ "
+            "cwd = $ExecutionContext.SessionState.Path.CurrentLocation.ProviderPath; env = $__hermesEnv }\n"
+            "  $__hermesJson = $__hermesState | "
+            "Microsoft.PowerShell.Utility\\ConvertTo-Json -Depth 3 -Compress\n"
+            f"  [IO.File]::WriteAllText({state_literal}, $__hermesJson, $__hermesUtf8)\n"
+            "}\n"
+            "exit $__hermesExit\n"
+        )
+        try:
+            with os.fdopen(payload_fd, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(command)
+            with os.fdopen(command_fd, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(command)
+                handle.write(f"\n\n${ok_var} = $?\n")
+                handle.write(f"${native_var} = $LASTEXITCODE\n")
+                handle.write(f"${payload_state_var} = [ordered]@{{ ")
+                handle.write(f"succeeded = ${ok_var}; ")
+                handle.write(f"native_exit = ${native_var} }}\n")
+                handle.write(
+                    f"${payload_json_var} = ${payload_state_var} | "
+                    "Microsoft.PowerShell.Utility\\ConvertTo-Json -Compress\n"
+                )
+                handle.write(
+                    f"[IO.File]::WriteAllText({command_state_literal}, "
+                    f"${payload_json_var}, [Text.UTF8Encoding]::new($false))\n"
+                )
+            with os.fdopen(script_fd, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(script)
+        except Exception:
+            for path in (
+                script_path,
+                command_path,
+                payload_path,
+                command_state_path,
+                state_path,
+            ):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            raise
+
+        run_env = _make_run_env(self._pwsh_env)
+        if self._pwsh_removed_env:
+            for name in tuple(run_env):
+                if name.upper() in self._pwsh_removed_env:
+                    run_env.pop(name, None)
+        proc = None
+        try:
+            proc = subprocess.Popen(
+                [pwsh, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", script_path],
+                text=True,
+                env=run_env,
+                encoding="utf-8",
+                errors="replace",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+                start_new_session=True,
+                cwd=safe_cwd,
+                creationflags=windows_hide_flags(),
+            )
+            if stdin_data is not None:
+                _pipe_stdin(proc, stdin_data)
+        except Exception:
+            if proc is not None:
+                try:
+                    self._kill_process(proc)
+                    proc.wait(timeout=5)
+                except Exception:
+                    pass
+            for path in (
+                script_path,
+                command_path,
+                payload_path,
+                command_state_path,
+                state_path,
+            ):
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+            raise
+        return proc, (
+            script_path,
+            command_path,
+            payload_path,
+            command_state_path,
+        ), state_path
+
+    def _consume_pwsh_state(self, state_path: str) -> None:
+        """Adopt a completed PowerShell command's cwd and environment state."""
+        try:
+            with open(state_path, encoding="utf-8") as handle:
+                state = json.load(handle)
+        except (OSError, ValueError, TypeError):
+            return
+        if not isinstance(state, dict):
+            return
+        previous_names = self._pwsh_persistable_env_names(self._pwsh_env)
+        next_env = self._pwsh_state_env(state.get("env"))
+        next_names = {name.upper() for name in next_env}
+        self._pwsh_removed_env.update(previous_names - next_names)
+        self._pwsh_removed_env.difference_update(next_names)
+        self._pwsh_env = next_env
+        raw_cwd = state.get("cwd")
+        if isinstance(raw_cwd, str):
+            normalized = _msys_to_windows_path(raw_cwd)
+            if normalized and os.path.isdir(normalized):
+                self.cwd = normalized
+
+    def execute(
+        self,
+        command: str,
+        cwd: str = "",
+        *,
+        timeout: int | None = None,
+        stdin_data: str | None = None,
+        rewrite_compound_background: bool = True,
+        bounded_capture: bool = False,
+    ) -> dict:
+        if self.shell_name == SHELL_BASH:
+            return super().execute(
+                command,
+                cwd,
+                timeout=timeout,
+                stdin_data=stdin_data,
+                rewrite_compound_background=rewrite_compound_background,
+                bounded_capture=bounded_capture,
+            )
+
+        self._before_execute()
+        effective_timeout = timeout or self.timeout
+        effective_cwd = cwd or self.cwd
+        proc = None
+        script_paths: tuple[str, ...] = ()
+        state_path = ""
+        try:
+            proc, script_paths, state_path = self._run_pwsh(
+                command,
+                cwd=effective_cwd,
+                stdin_data=stdin_data,
+            )
+            result = self._wait_for_process(
+                proc,
+                timeout=effective_timeout,
+                bounded_capture=bounded_capture,
+            )
+            self._consume_pwsh_state(state_path)
+            return result
+        finally:
+            for path in (*script_paths, state_path):
+                if path:
+                    try:
+                        os.unlink(path)
+                    except OSError:
+                        pass
 
     def get_temp_dir(self) -> str:
         """Return a shell-safe writable temp dir for local execution.
@@ -1486,6 +1782,8 @@ class LocalEnvironment(BaseEnvironment):
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
                   stdin_data: str | None = None) -> subprocess.Popen:
+        if self.shell_name != SHELL_BASH:
+            raise RuntimeError("PowerShell commands must use the foreground adapter")
         bash = _find_bash()
         # For login-shell invocations (used by init_session to build the
         # environment snapshot), prepend sources for the user's bashrc /

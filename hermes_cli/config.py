@@ -3231,6 +3231,7 @@ def write_platform_config_field(
 
 TERMINAL_CONFIG_ENV_MAP = {
     "backend": "TERMINAL_ENV",
+    "shell": "TERMINAL_SHELL",
     "modal_mode": "TERMINAL_MODAL_MODE",
     "degraded_mode": "TERMINAL_DEGRADED_MODE",
     "cwd": "TERMINAL_CWD",

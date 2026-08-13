@@ -1147,6 +1147,20 @@ _WINDOWS_BASH_SHELL_HINT = (
     "device flow polled with curl), prefer it over driving prompts."
 )
 
+_WINDOWS_PWSH_SHELL_HINT = (
+    "Shell: on this Windows host the local `terminal` shell is configured as "
+    "PowerShell (pwsh). Use PowerShell syntax for foreground terminal calls. "
+    "Background and terminal-tool PTY execution are not implemented for pwsh "
+    "and fail closed instead of silently running through bash."
+)
+
+
+def _windows_shell_hint(shell_name: str) -> str:
+    """Return Windows-local shell guidance from an already-resolved identity."""
+    if shell_name == "pwsh":
+        return _WINDOWS_PWSH_SHELL_HINT
+    return _WINDOWS_BASH_SHELL_HINT
+
 
 def _probe_remote_backend(env_type: str) -> str | None:
     """Run a tiny introspection command inside the active terminal backend.
@@ -1305,6 +1319,12 @@ def build_environment_hints() -> str:
     backend = (os.getenv("TERMINAL_ENV") or "local").strip().lower()
     is_remote_backend = backend in _REMOTE_TERMINAL_BACKENDS
 
+    # Prompt and execution paths share one dialect resolver so an invalid
+    # host/backend combination cannot emit a misleading shell hint.
+    from tools.environments.shell_selection import get_active_shell_name
+
+    selected_shell = get_active_shell_name()
+
     if not is_remote_backend:
         # --- Host info block (local backend: host == where tools run) ---
         host_lines: list[str] = []
@@ -1333,10 +1353,10 @@ def build_environment_hints() -> str:
             )
         hints.append("\n".join(host_lines))
 
-        # Windows-local terminal runs bash, not PowerShell — the model must
-        # know this or it will issue PowerShell syntax and fail.
+        # Preserve the historical bash hint exactly for the default while
+        # making an explicit pwsh selection visible to the model.
         if sys.platform == "win32" and not is_wsl():
-            hints.append(_WINDOWS_BASH_SHELL_HINT)
+            hints.append(_windows_shell_hint(selected_shell))
     else:
         # --- Remote backend block (host info suppressed) ---
         probe = _probe_remote_backend(backend)

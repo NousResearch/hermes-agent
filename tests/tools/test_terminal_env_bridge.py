@@ -23,6 +23,7 @@ def _reset_bridge_state(monkeypatch):
         "TERMINAL_CWD",
         "TERMINAL_DOCKER_IMAGE",
         "TERMINAL_SSH_HOST",
+        "TERMINAL_SHELL",
     ):
         monkeypatch.delenv(name, raising=False)
     yield
@@ -152,3 +153,36 @@ def test_bridge_config_failure_does_not_crash(monkeypatch):
 
     assert config["env_type"] == "ssh"
     assert config["ssh_host"] == "example.test"
+
+
+def test_shell_backfills_bash_default_when_unset(monkeypatch):
+    """Omitted ``terminal.shell`` must project the bash default through the
+    shared bridge — the resolver consumes TERMINAL_SHELL, so an unconfigured
+    user must always see the bash value, not an empty/unset one."""
+    _write_config("{}\n")
+
+    terminal_tool._get_env_config()
+
+    assert os.environ["TERMINAL_SHELL"] == "bash"
+
+
+def test_explicit_shell_overrides_stale_env_value(monkeypatch):
+    """``terminal.shell`` in config.yaml is authoritative over a stale env
+    value, same explicit-keys-wins semantics as the other terminal keys."""
+    _write_config("terminal:\n  shell: pwsh\n")
+    monkeypatch.setenv("TERMINAL_SHELL", "bash")
+
+    terminal_tool._get_env_config()
+
+    assert os.environ["TERMINAL_SHELL"] == "pwsh"
+
+
+def test_no_terminal_section_preserves_env_shell_value(monkeypatch):
+    """A config without a terminal section must not clobber an existing
+    TERMINAL_SHELL value (explicit-keys-only override semantics)."""
+    _write_config("agent:\n  max_turns: 100\n")
+    monkeypatch.setenv("TERMINAL_SHELL", "bash")
+
+    terminal_tool._get_env_config()
+
+    assert os.environ["TERMINAL_SHELL"] == "bash"

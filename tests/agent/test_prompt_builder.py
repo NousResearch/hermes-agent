@@ -860,6 +860,91 @@ class TestEnvironmentHints:
             )
 
 
+class TestWindowsShellHintSelection:
+    """The Windows-local shell hint must consume the single shell selection.
+
+    The bash hint text is pinned byte-for-byte (unconfigured users keep the
+    exact existing prompt), while a valid ``pwsh`` selection must describe
+    the PowerShell dialect instead.  Invalid ``pwsh`` combinations (WSL,
+    remote backend) fail closed at prompt build time.
+    """
+
+    @staticmethod
+    def _native_windows_local(monkeypatch):
+        import agent.prompt_builder as _pb
+        from tools.environments.shell_selection import _clear_active_shell_name_cache
+
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.delenv("TERMINAL_SHELL", raising=False)
+        _clear_active_shell_name_cache()
+        _pb._clear_backend_probe_cache()
+        return _pb
+
+    def test_bash_hint_selection_is_pure_and_byte_identical(self):
+        import agent.prompt_builder as _pb
+
+        assert _pb._windows_shell_hint("bash") == _pb._WINDOWS_BASH_SHELL_HINT
+
+    def test_pwsh_hint_selection_is_pure(self):
+        import agent.prompt_builder as _pb
+
+        assert _pb._windows_shell_hint("pwsh") == _pb._WINDOWS_PWSH_SHELL_HINT
+
+    @pytest.mark.windows_only
+    def test_windows_bash_hint_byte_identical_when_shell_unset(self, monkeypatch):
+        _pb = self._native_windows_local(monkeypatch)
+        result = _pb.build_environment_hints()
+        # The unconfigured default must keep the existing bash wording.
+        assert _pb._WINDOWS_BASH_SHELL_HINT in result
+        assert "PowerShell (pwsh)" not in result
+
+    @pytest.mark.windows_only
+    def test_windows_bash_hint_when_explicit_bash(self, monkeypatch):
+        _pb = self._native_windows_local(monkeypatch)
+        monkeypatch.setenv("TERMINAL_SHELL", "bash")
+        result = _pb.build_environment_hints()
+        assert _pb._WINDOWS_BASH_SHELL_HINT in result
+
+    @pytest.mark.windows_only
+    def test_windows_pwsh_hint_when_pwsh_selected(self, monkeypatch):
+        _pb = self._native_windows_local(monkeypatch)
+        monkeypatch.setenv("TERMINAL_SHELL", "pwsh")
+        result = _pb.build_environment_hints()
+        assert _pb._WINDOWS_PWSH_SHELL_HINT in result
+        # The bash hint must not leak into a pwsh session.
+        assert _pb._WINDOWS_BASH_SHELL_HINT not in result
+
+    @pytest.mark.windows_only
+    def test_windows_shell_hint_ignores_process_env_drift(self, monkeypatch):
+        _pb = self._native_windows_local(monkeypatch)
+        monkeypatch.setenv("TERMINAL_SHELL", "pwsh")
+        first = _pb.build_environment_hints()
+        monkeypatch.setenv("TERMINAL_SHELL", "bash")
+        second = _pb.build_environment_hints()
+
+        assert _pb._WINDOWS_PWSH_SHELL_HINT in first
+        assert _pb._WINDOWS_PWSH_SHELL_HINT in second
+
+    @pytest.mark.windows_only
+    def test_pwsh_on_remote_backend_fails_closed_at_prompt_build(self, monkeypatch):
+        from tools.environments.shell_selection import ShellSelectionError
+
+        _pb = self._native_windows_local(monkeypatch)
+        monkeypatch.setenv("TERMINAL_SHELL", "pwsh")
+        monkeypatch.setenv("TERMINAL_ENV", "docker")
+        with pytest.raises(ShellSelectionError):
+            _pb.build_environment_hints()
+
+    @pytest.mark.windows_only
+    def test_invalid_shell_value_fails_closed_at_prompt_build(self, monkeypatch):
+        from tools.environments.shell_selection import ShellSelectionError
+
+        _pb = self._native_windows_local(monkeypatch)
+        monkeypatch.setenv("TERMINAL_SHELL", "fish")
+        with pytest.raises(ShellSelectionError):
+            _pb.build_environment_hints()
+
+
 # =========================================================================
 # Conditional skill activation
 # =========================================================================

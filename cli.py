@@ -646,6 +646,7 @@ def load_cli_config() -> Dict[str, Any]:
     
     env_mappings = {
         "env_type": "TERMINAL_ENV",
+        "shell": "TERMINAL_SHELL",
         "degraded_mode": "TERMINAL_DEGRADED_MODE",
         "cwd": "TERMINAL_CWD",
         "timeout": "TERMINAL_TIMEOUT",

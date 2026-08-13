@@ -286,6 +286,15 @@ DEFAULT_CONFIG = {
 
     "terminal": {
         "backend": "local",
+        # Shell dialect for terminal execution.  "bash" (default) keeps the
+        # existing behavior everywhere.  "pwsh" is opt-in and valid only for
+        # the native Windows local backend. Synchronous foreground execution is
+        # supported; background and PTY paths fail closed instead of silently
+        # running bash. The selection is frozen when the Hermes process starts;
+        # changing it requires restarting Hermes so prompt/tool schema and
+        # execution identity are rebuilt together. Validation lives in
+        # tools/environments/shell_selection.py (single resolver).
+        "shell": "bash",
         "modal_mode": "auto",
         # Remote-backend graceful degradation: when a connection-class
         # infrastructure failure occurs (SSH host unreachable, Docker daemon

@@ -971,6 +971,7 @@ class ProcessRegistry:
         session_key: str = "",
         env_vars: dict = None,
         use_pty: bool = False,
+        shell_name: str | None = None,
     ) -> ProcessSession:
         """
         Spawn a background process locally.
@@ -982,6 +983,19 @@ class ProcessRegistry:
                      CLI tools (Codex, Claude Code, Python REPL). Falls back to
                      subprocess.Popen if ptyprocess is not installed.
         """
+        # Resolve the same shell selection used by foreground execution before
+        # creating a session or process. PowerShell argv/wrapper support lands
+        # later; for now an explicit pwsh selection must fail closed.
+        from tools.environments.shell_selection import reject_unimplemented_shell
+
+        shell_env = None
+        if shell_name:
+            shell_env = {
+                "TERMINAL_SHELL": shell_name,
+                "TERMINAL_ENV": "local",
+            }
+        reject_unimplemented_shell(env=shell_env)
+
         # Guard against the `A && B &` subshell-wait trap (issue #68915).
         # Bash parses ``A && B &`` as ``(A && B) &`` — a subshell that holds
         # the stdout pipe open forever when B is a long-running server.

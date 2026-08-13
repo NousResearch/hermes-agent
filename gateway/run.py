@@ -2144,6 +2144,7 @@ if _config_path.exists():
             ).strip().lower()
             _terminal_env_map = {
                 "backend": "TERMINAL_ENV",
+                "shell": "TERMINAL_SHELL",
                 "degraded_mode": "TERMINAL_DEGRADED_MODE",
                 "cwd": "TERMINAL_CWD",
                 "timeout": "TERMINAL_TIMEOUT",

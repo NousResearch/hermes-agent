@@ -1653,6 +1653,14 @@ def _(rid, params: dict) -> dict:
                         name=jid,
                         schedule=params.get("schedule", ""),
                         prompt=params.get("prompt", ""),
+                        # Optional repeat cap ("run N times"); None keeps the
+                        # schedule-kind default (once for one-shot, forever
+                        # for recurring).
+                        repeat=(
+                            int(params["repeat"])
+                            if str(params.get("repeat", "")).strip().isdigit()
+                            else None
+                        ),
                     )
                 ),
             )

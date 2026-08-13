@@ -749,7 +749,7 @@ def main(argv: list[str]) -> int:
         return 0
 
     if args.all:
-        # Scan main Python packages + scripts
+        # Scan all Python packages, scripts, evals, providers, skills, and top-level modules
         roots = [
             REPO_ROOT / "hermes_cli",
             REPO_ROOT / "gateway",
@@ -759,7 +759,13 @@ def main(argv: list[str]) -> int:
             REPO_ROOT / "plugins",
             REPO_ROOT / "scripts",
             REPO_ROOT / "acp_adapter",
+            REPO_ROOT / "evals",
+            REPO_ROOT / "website",
+            REPO_ROOT / "providers",
+            REPO_ROOT / "skills",
         ]
+        # Include top-level Python files (e.g. cli.py, run_agent.py, hermes_state.py)
+        roots.extend(sorted(REPO_ROOT.glob("*.py")))
         roots = [r for r in roots if r.exists()]
     elif args.diff:
         roots = get_diff_files(args.diff)

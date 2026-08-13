@@ -264,9 +264,24 @@ def generate_title(
         response = call_llm(
             task="title_generation",
             messages=[{"role": "system", "content": prompt}, {"role": "user", "content": user_snippet}],
-            # A title is a handful of tokens; a larger ceiling let chatty models burn seconds.
-            max_tokens=64, temperature=0.3, timeout=timeout, main_runtime=main_runtime,
-            extra_body={"response_format": _TITLE_RESPONSE_FORMAT},
+            # A title is a handful of tokens. The old 500-token ceiling let a
+            # chatty model burn seconds generating prose we then threw away.
+            # 64 is too small for reasoning-capable models (Qwen3.x etc.):
+            # their chain-of-thought alone can exceed 64 tokens, so every
+            # token goes to `reasoning_content` and `content` comes back empty
+            # -> the title silently fails. 2048 gives reasoning models room to
+            # finish thinking AND emit the tiny JSON title; non-reasoning
+            # models just stop after the short answer.
+            max_tokens=2048,
+            temperature=0.3,
+            timeout=timeout,
+            main_runtime=main_runtime,
+            # LM Studio's Qwen3.x (MLX) returns EMPTY `content` under strict
+            # json_schema response_format (it aborts instead of emitting the
+            # constrained object — observed with qwen3.6-27b). Use free-text
+            # and let _extract_title_text's JSON scan + prose fallback handle
+            # the shape, which it already does for non-compliant providers.
+            extra_body={"response_format": {"type": "text"}},
         )
         title = _clean_title(_extract_title_text(response.choices[0].message.content or ""))
         # Answer-shaped output guard: titling is a 3-7 word task, so a title with many words is a model that

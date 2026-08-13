@@ -10678,31 +10678,6 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             self._pending_moa_disable_after_turn = True
             self._pending_agent_seed = payload
             _cprint(f"  MoA one-shot queued with preset {preset}; previous model will be restored after this turn.")
-        elif canonical == "council":
-            # /council <question> — one-shot Model Council (inspired by
-            # Perplexity Computer's Model Council, Aug 2026): the default MoA
-            # preset's reference models answer the question independently, the
-            # preset's aggregator chairs the deliberation, and the council
-            # report (consensus / disagreements / unique contributions /
-            # recommendation with confidence) is handed to the current session
-            # model to present. The session model is never switched.
-            from hermes_cli.moa_config import build_moa_turn_prompt
-
-            parts = cmd_original.split(None, 1)
-            payload = parts[1].strip() if len(parts) > 1 else ""
-            if not payload:
-                _cprint("  Usage: /council <question>  (runs the default MoA preset's models as an independent council and reports consensus vs disagreement)")
-                return True
-            try:
-                moa_cfg = self.config.get("moa") if isinstance(self.config, dict) else {}
-                encoded = build_moa_turn_prompt(
-                    payload, moa_cfg, synthesis_style="council"
-                )
-            except Exception as exc:
-                _cprint(f"  Council setup failed: {exc}")
-                return True
-            self._pending_input.put(encoded)
-            _cprint("  ⚖ Council convened — reference models are deliberating.")
         elif canonical == "subgoal":
             self._handle_subgoal_command(cmd_original)
         elif canonical == "skin":

@@ -230,65 +230,6 @@ moa:
 
 Omit `reasoning_effort` to use the provider/Hermes default for that slot.
 
-## Council mode
-
-*Inspired by Perplexity Computer's Model Council (Aug 2026).*
-
-By default, MoA advisor perspectives are **private context** — the acting model
-consumes them silently and answers normally. Council mode flips that: the
-reference models become an explicit **board of independent models**, and the
-acting model becomes the council **chair**, producing a user-facing
-deliberation report that surfaces:
-
-1. **Consensus** — where the models agree (consensus supports acting with
-   confidence).
-2. **Disagreements** — where they diverge, attributed per model, with the
-   differing starting assumptions behind each divergence.
-3. **Unique contributions** — what each model surfaced that the others missed.
-4. **Chair's recommendation** — a synthesized position with an explicit
-   confidence level and what evidence would change it.
-
-Council mode is built for ambiguous questions: judgment calls, trade-offs,
-risk assessments — situations where there is no single right answer and
-disagreement between frontier models is itself the signal.
-
-### One-shot: `/council`
-
-```
-/council should we launch this feature in Q4 or Q1?
-```
-
-Runs the default MoA preset's reference models independently against your
-question, chairs the deliberation, and reports back — then your session
-continues on your normal model. Works on the CLI, TUI, and every messaging
-platform (on Slack: `/hermes council …`).
-
-### Persistent: `synthesis_style: council`
-
-Set it per preset to make every turn of a MoA session deliberate as a council:
-
-```yaml
-moa:
-  presets:
-    board:
-      reference_models:
-        - provider: openrouter
-          model: openai/gpt-5.5
-        - provider: openrouter
-          model: google/gemini-3.1-pro
-      aggregator:
-        provider: openrouter
-        model: anthropic/claude-opus-4.8
-      synthesis_style: council   # default: guidance
-```
-
-`guidance` (the default) is the classic MoA shape — advisor output stays
-private. Unknown values degrade to `guidance`.
-
-Tips (they sharpen council output noticeably): ask for decisions rather than
-summaries ("what would you bet on and why"), include numbers/timelines/budget,
-and ask each model to state the assumptions behind its conclusion.
-
 ## Terminal preset management
 
 ```bash

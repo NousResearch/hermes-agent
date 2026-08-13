@@ -71,26 +71,6 @@ def _coerce_degraded_reference_policy(value: Any) -> str:
     return policy if policy in {"loud", "silent"} else "loud"
 
 
-def coerce_synthesis_style(value: Any) -> str:
-    """Normalize the MoA synthesis style; unknown values degrade to 'guidance'.
-
-    - ``'guidance'`` (default): the classic MoA shape — advisor responses are
-      synthesized into PRIVATE context for the acting model, which then
-      answers the user normally. Advisor perspectives never surface as a
-      deliverable.
-    - ``'council'``: multi-model deliberation shape (inspired by Perplexity
-      Computer's Model Council, Aug 2026): each reference model weighs in
-      independently and the acting model becomes the council *chair*,
-      producing a USER-FACING report that explicitly surfaces where the
-      models agree, where they disagree (and why — differing starting
-      assumptions), what each uniquely contributes, and a recommended
-      position with confidence. Built for ambiguous judgment calls where
-      disagreement between frontier models is itself the signal.
-    """
-    style = str(value or "guidance").strip().lower()
-    return style if style in {"guidance", "council"} else "guidance"
-
-
 def _coerce_int(value: Any, default: int) -> int:
     if value is None or value == "":
         return default
@@ -326,7 +306,6 @@ def _default_preset() -> dict[str, Any]:
         "max_tokens": 4096,
         "reference_max_tokens": None,
         "fanout": "user_turn",
-        "synthesis_style": "guidance",
         "enabled": True,
     }
 
@@ -387,11 +366,6 @@ def _normalize_preset(raw: Any) -> dict[str, Any]:
         # last advisor run. Also accepts the mapping form
         # {mode: every_n, n: N}, normalized to the canonical string.
         "fanout": _coerce_fanout(raw.get("fanout")),
-        # How advisor output is synthesized for the acting model. "guidance"
-        # (default) keeps advisor perspectives as private context; "council"
-        # turns the acting model into a council chair producing a user-facing
-        # agree/disagree report (see coerce_synthesis_style).
-        "synthesis_style": coerce_synthesis_style(raw.get("synthesis_style")),
     }
 
 
@@ -441,7 +415,6 @@ def normalize_moa_config(raw: Any) -> dict[str, Any]:
         "max_tokens": active["max_tokens"],
         "reference_max_tokens": active.get("reference_max_tokens"),
         "fanout": active.get("fanout", "user_turn"),
-        "synthesis_style": active.get("synthesis_style", "guidance"),
         "enabled": active["enabled"],
         # MoA-level (not per-preset) toggles ride at the top level alongside
         # save_traces. privacy_filter: '' (off, default) | 'display' | 'full'
@@ -502,24 +475,11 @@ def set_active_moa_preset(config: Any, name: str | None) -> dict[str, Any]:
     return cfg
 
 
-def encode_moa_turn(
-    prompt: str,
-    config: Any = None,
-    preset: str | None = None,
-    synthesis_style: str | None = None,
-) -> str:
-    """Encode a /moa one-shot turn for frontends that can only send text.
-
-    ``synthesis_style``, when given, overrides the resolved preset's style for
-    this one turn (used by ``/council`` to force a council deliberation over
-    the default preset without touching config).
-    """
-    turn_config = resolve_moa_preset(config or {}, preset)
-    if synthesis_style is not None:
-        turn_config["synthesis_style"] = coerce_synthesis_style(synthesis_style)
+def encode_moa_turn(prompt: str, config: Any = None, preset: str | None = None) -> str:
+    """Encode a /moa one-shot turn for frontends that can only send text."""
     payload = {
         "prompt": str(prompt or ""),
-        "config": turn_config,
+        "config": resolve_moa_preset(config or {}, preset),
     }
     encoded = base64.urlsafe_b64encode(
         json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
@@ -540,16 +500,9 @@ def decode_moa_turn(message: Any) -> tuple[str, dict[str, Any] | None]:
     return prompt, _normalize_preset(payload.get("config") or {})
 
 
-def build_moa_turn_prompt(
-    user_prompt: str,
-    config: Any = None,
-    preset: str | None = None,
-    synthesis_style: str | None = None,
-) -> str:
+def build_moa_turn_prompt(user_prompt: str, config: Any = None, preset: str | None = None) -> str:
     """Build the hidden one-shot payload used by TUI/gateway routing."""
-    return encode_moa_turn(
-        user_prompt, config, preset=preset, synthesis_style=synthesis_style
-    )
+    return encode_moa_turn(user_prompt, config, preset=preset)
 
 
 def moa_usage() -> str:

@@ -16132,35 +16132,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if canonical == "refine":
             return await self._handle_refine_command(event)
 
-        if canonical == "council":
-            # /council <question> — one-shot Model Council (inspired by
-            # Perplexity Computer's Model Council, Aug 2026). Encodes the
-            # question as a hidden MoA one-shot marker with the council
-            # synthesis style forced on; run_conversation decodes it, the
-            # default preset's reference models answer independently, and
-            # the chair's consensus/disagreement report reaches the session
-            # model as context. No model switch, no agent eviction.
-            from hermes_cli.moa_config import build_moa_turn_prompt
-            from hermes_cli.config import load_config
-
-            council_payload = event.get_command_args().strip()
-            if not council_payload:
-                return (
-                    "Usage: /council <question>  (runs the default MoA preset's "
-                    "models as an independent council and reports consensus vs "
-                    "disagreement)"
-                )
-            try:
-                cfg = load_config()
-                event.text = build_moa_turn_prompt(
-                    council_payload,
-                    cfg.get("moa") if isinstance(cfg, dict) else {},
-                    synthesis_style="council",
-                )
-            except Exception:
-                return "Failed to prepare council turn."
-            # Fall through to _handle_message_with_agent with the rewritten text.
-
         if canonical == "moa":
             # /moa is one-shot sugar only: run a single prompt through the
             # default MoA preset, then restore the prior model. To *switch* to a

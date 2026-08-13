@@ -255,8 +255,35 @@ class GatewayKanbanWatchersMixin:
         # Initial delay so the gateway can finish wiring adapters.
         await asyncio.sleep(5)
 
+        # Stale done-sub GC cadence. Subscriptions survive ``done`` (it is
+        # reversible), so boards that never archive would otherwise
+        # accumulate rows scanned on every 5s tick forever. The sweep is a
+        # single DELETE per board, gated to once per watcher startup and at
+        # most once per hour thereafter — cheap relative to the tick's own
+        # per-sub claims. Retention is kanban.done_sub_retention_days in
+        # config.yaml (default 30; 0 disables), re-read at each sweep so a
+        # config change applies without a restart.
+        _GC_INTERVAL_SECONDS = 3600.0
+        _gc_next_at = 0.0  # 0 → sweep on the first tick after startup
+
         while self._running:
             try:
+                _gc_due = time.monotonic() >= _gc_next_at
+                _gc_retention_days = 30
+                if _gc_due:
+                    _gc_next_at = time.monotonic() + _GC_INTERVAL_SECONDS
+                    try:
+                        from hermes_cli.config import load_config as _load_cfg
+
+                        _kanban_cfg = (_load_cfg() or {}).get("kanban") or {}
+                        _gc_retention_days = int(
+                            _kanban_cfg.get("done_sub_retention_days", 30)
+                        )
+                    except Exception:
+                        # Fail safe on the shipped default; the sweep itself
+                        # treats <= 0 as disabled.
+                        _gc_retention_days = 30
+
                 def _collect():
                     deliveries: list[dict] = []
                     include_unowned = self._owns_kanban_dispatcher_lock()
@@ -346,6 +373,28 @@ class GatewayKanbanWatchersMixin:
                             logger.debug("kanban notifier: cannot open board %s: %s", slug, exc)
                             continue
                         try:
+                            if _gc_due:
+                                # Hourly (plus once at startup) stale-sub GC:
+                                # drop subscriptions for tasks that have been
+                                # ``done`` untouched past the retention
+                                # window. Best-effort — a failed sweep never
+                                # blocks delivery; the next hourly gate
+                                # retries it.
+                                try:
+                                    _purged = _kb.purge_stale_done_notify_subs(
+                                        conn,
+                                        max_age_days=_gc_retention_days,
+                                    )
+                                    if _purged:
+                                        logger.info(
+                                            "kanban notifier: purged %d stale done-task subscription(s) on board %s (retention %dd)",
+                                            _purged, slug, _gc_retention_days,
+                                        )
+                                except Exception as _gc_exc:
+                                    logger.debug(
+                                        "kanban notifier: stale-sub GC failed for board %s: %s",
+                                        slug, _gc_exc,
+                                    )
                             # `connect()` runs the schema + idempotent migration
                             # on first open per process, so an explicit
                             # `init_db()` here would be redundant. Worse:

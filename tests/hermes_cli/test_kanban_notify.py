@@ -1011,3 +1011,122 @@ def test_create_with_parents_inherits_delivery_metadata(kanban_home):
     finally:
         conn.close()
     _assert_full_inherited_sub(subs)
+
+
+# ---------------------------------------------------------------------------
+# Stale done-subscription GC (purge_stale_done_notify_subs)
+# ---------------------------------------------------------------------------
+
+def _make_done_task_with_sub(kb, conn, *, title, chat_id):
+    tid = kb.create_task(conn, title=title, assignee="worker1")
+    kb.add_notify_sub(
+        conn, task_id=tid, platform="telegram", chat_id=chat_id,
+        notifier_profile="default",
+    )
+    assert kb.complete_task(conn, tid, summary="done")
+    return tid
+
+
+def _backdate_task(kb, conn, tid, *, days):
+    """Push a task's entire event history + completion into the past."""
+    past = int(__import__("time").time()) - days * 86400
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE task_events SET created_at = ? WHERE task_id = ?",
+            (past, tid),
+        )
+        conn.execute(
+            "UPDATE tasks SET completed_at = ?, created_at = ? WHERE id = ?",
+            (past, past, tid),
+        )
+
+
+def test_gc_purges_stale_done_sub_keeps_fresh_one(kanban_home):
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        stale = _make_done_task_with_sub(kb, conn, title="old done", chat_id="c-stale")
+        fresh = _make_done_task_with_sub(kb, conn, title="new done", chat_id="c-fresh")
+        _backdate_task(kb, conn, stale, days=45)
+
+        purged = kb.purge_stale_done_notify_subs(conn, max_age_days=30)
+
+        assert purged == 1
+        assert kb.list_notify_subs(conn, stale) == []
+        # A done task inside the retention window keeps its subscription —
+        # it may still be reopened for review corrections.
+        assert len(kb.list_notify_subs(conn, fresh)) == 1
+    finally:
+        conn.close()
+
+
+def test_gc_honors_configured_retention_days(kanban_home):
+    import hermes_cli.kanban_db as kb
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    # The watcher reads kanban.done_sub_retention_days from config; the
+    # shipped default must exist and drive the sweep when passed through.
+    default_days = DEFAULT_CONFIG["kanban"]["done_sub_retention_days"]
+    assert isinstance(default_days, int) and default_days > 0
+
+    conn = kb.connect()
+    try:
+        tid = _make_done_task_with_sub(kb, conn, title="ten days old", chat_id="c-10d")
+        _backdate_task(kb, conn, tid, days=10)
+
+        # Under the shipped default (>= 30d) a 10-day-old done task is fresh.
+        assert kb.purge_stale_done_notify_subs(conn, max_age_days=default_days) == 0
+        assert len(kb.list_notify_subs(conn, tid)) == 1
+
+        # A tighter user-configured retention purges the same row.
+        assert kb.purge_stale_done_notify_subs(conn, max_age_days=7) == 1
+        assert kb.list_notify_subs(conn, tid) == []
+
+        # Zero (and below) disables the sweep entirely.
+        tid2 = _make_done_task_with_sub(kb, conn, title="ancient", chat_id="c-anc")
+        _backdate_task(kb, conn, tid2, days=3650)
+        assert kb.purge_stale_done_notify_subs(conn, max_age_days=0) == 0
+        assert len(kb.list_notify_subs(conn, tid2)) == 1
+    finally:
+        conn.close()
+
+
+def test_gc_spares_reopened_task_even_when_old(kanban_home):
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        tid = _make_done_task_with_sub(kb, conn, title="reopened", chat_id="c-reopen")
+        _backdate_task(kb, conn, tid, days=90)
+        # Reopen: the task leaves ``done``, so even with an ancient event
+        # history the GC must not touch its subscription.
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status = 'ready' WHERE id = ?", (tid,))
+            kb._append_event(conn, tid, "status", {"status": "ready"})
+        # Backdate the reopen event too — status alone must protect it.
+        _backdate_task(kb, conn, tid, days=90)
+
+        assert kb.purge_stale_done_notify_subs(conn, max_age_days=30) == 0
+        assert len(kb.list_notify_subs(conn, tid)) == 1
+    finally:
+        conn.close()
+
+
+def test_gc_archived_rows_already_removed_by_unsub(kanban_home):
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        tid = _make_done_task_with_sub(kb, conn, title="archived", chat_id="c-arch")
+        assert kb.archive_task(conn, tid)
+        # The notifier removes the sub at archive time; the GC targets only
+        # ``done`` tasks, so an archived task contributes nothing to purge.
+        kb.remove_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="c-arch",
+        )
+        _backdate_task(kb, conn, tid, days=365)
+        assert kb.purge_stale_done_notify_subs(conn, max_age_days=30) == 0
+        assert kb.list_notify_subs(conn, tid) == []
+    finally:
+        conn.close()

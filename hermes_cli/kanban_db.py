@@ -11247,6 +11247,51 @@ def remove_notify_sub(
     return cur.rowcount > 0
 
 
+def purge_stale_done_notify_subs(
+    conn: sqlite3.Connection,
+    *,
+    max_age_days: int = 30,
+) -> int:
+    """Delete notify subscriptions whose task has sat in ``done`` untouched
+    for longer than ``max_age_days``.
+
+    The notifier keeps subscriptions alive through ``done`` because a
+    completed task can be reopened (review corrections, continuation) and
+    the reopened cycle must still notify its origin session. On boards
+    that never archive, that retention would otherwise accumulate
+    subscription rows forever — each one scanned every notifier tick.
+    This GC bounds that: a task that has been ``done`` with no new events
+    for the retention window is treated as settled and its subscriptions
+    are purged. Age is measured from the task's most recent event
+    (falling back to ``completed_at`` then ``created_at``), so ANY
+    activity — including a reopen, which also moves the task off
+    ``done`` — resets or exempts it.
+
+    ``max_age_days <= 0`` disables the sweep entirely. Returns the number
+    of subscription rows deleted.
+    """
+    try:
+        days = int(max_age_days)
+    except (TypeError, ValueError):
+        days = 30
+    if days <= 0:
+        return 0
+    cutoff = int(time.time()) - days * 86400
+    with write_txn(conn):
+        cur = conn.execute(
+            "DELETE FROM kanban_notify_subs WHERE task_id IN ("
+            " SELECT t.id FROM tasks t"
+            " WHERE t.status = 'done'"
+            " AND COALESCE("
+            "  (SELECT MAX(e.created_at) FROM task_events e"
+            "   WHERE e.task_id = t.id),"
+            "  t.completed_at, t.created_at, 0"
+            " ) < ?)",
+            (cutoff,),
+        )
+    return int(cur.rowcount or 0)
+
+
 def unseen_events_for_sub(
     conn: sqlite3.Connection,
     *,

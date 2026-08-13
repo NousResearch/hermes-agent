@@ -2436,6 +2436,14 @@ DEFAULT_CONFIG = {
         # to the TTL/crash/stale recovery paths. Set false to keep orphans
         # frozen for manual forensics.
         "reconcile_orphans": True,
+        # Notify subscriptions survive a task reaching ``done`` (completion
+        # is reversible — controllers reopen done work for review
+        # corrections), and are normally removed on archive. On boards that
+        # never archive, the notifier GC purges subscriptions for tasks
+        # that have been ``done`` with no new activity for this many days,
+        # so stale rows don't accumulate and get scanned on every notifier
+        # tick forever. Set 0 to disable the sweep.
+        "done_sub_retention_days": 30,
     },
 
     # execute_code settings — controls the tool used for programmatic tool calls.

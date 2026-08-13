@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { HermesReadDirResult } from '@/global'
 import type * as HermesModule from '@/hermes'
 
+import { $pluginRecords, setPluginEnabled } from './plugins-store'
 import { discoverRuntimePlugins, watchRuntimePlugins } from './runtime-loader'
 
 // getStatus would supply the connected backend's hermes_home — a REMOTE path in
@@ -98,6 +99,65 @@ describe('scanDiskPlugins (#66899)', () => {
 
     expect(readDir).toHaveBeenCalledWith('/local/.hermes/desktop-plugins')
     expect(readDir).toHaveBeenCalledTimes(1)
+  })
+
+  it('loads a unified desktop half OPT-IN: inventoried but not activated by default', async () => {
+    desktopPluginsRoot.mockResolvedValue('/local/.hermes/desktop-plugins')
+    agentPluginsRoot.mockResolvedValue('/local/.hermes/plugins')
+    readDir.mockImplementation(async dir =>
+      dir === '/local/.hermes/plugins'
+        ? { entries: [{ isDirectory: true, name: 'uni', path: '/local/.hermes/plugins/uni' }] }
+        : { entries: [] }
+    )
+
+    const register = vi.fn()
+
+    ;(globalThis as unknown as { __uniRegister: unknown }).__uniRegister = register
+    readFileText.mockResolvedValue({
+      text: 'export default { id: "uni", register: globalThis.__uniRegister }'
+    })
+    watchPreviewFile.mockResolvedValue({ id: 'w-uni' })
+
+    // The loader evaluates plugins via blob-URL import(), which vite's module
+    // runner can't resolve in tests — reroute to a data: URL, which node's
+    // native ESM loader handles.
+    const createObjectURL = vi
+      .spyOn(URL, 'createObjectURL')
+      .mockImplementation(
+        blob =>
+          `data:text/javascript;base64,${Buffer.from((blob as unknown as { parts: string[] }).parts.join('')).toString('base64')}`
+      )
+
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    const RealBlob = globalThis.Blob
+    vi.stubGlobal(
+      'Blob',
+      class {
+        parts: string[]
+        constructor(parts: string[]) {
+          this.parts = parts
+        }
+      }
+    )
+
+    try {
+      await discoverRuntimePlugins()
+
+      // Inventoried for Settings → Plugins, but the root's opt-in posture wins:
+      // ~/.hermes/plugins stays installed-but-inert until the user toggles it.
+      expect($pluginRecords.get().uni).toMatchObject({ kind: 'disk', status: 'disabled' })
+      expect(register).not.toHaveBeenCalled()
+
+      // The user's explicit enable still activates it.
+      await setPluginEnabled('uni', true)
+      expect(register).toHaveBeenCalledTimes(1)
+      expect($pluginRecords.get().uni.status).toBe('loaded')
+    } finally {
+      createObjectURL.mockRestore()
+      revokeObjectURL.mockRestore()
+      vi.stubGlobal('Blob', RealBlob)
+      delete (globalThis as unknown as { __uniRegister?: unknown }).__uniRegister
+    }
   })
 })
 

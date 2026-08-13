@@ -35,6 +35,11 @@ import { createPluginContext, type HermesPlugin } from './plugin'
 import { dropPlugin, pluginActive, type PluginKind, publishPlugin } from './plugins-store'
 
 interface LoadOptions {
+  /** Root-level default-enable CAP: `false` ships the plugin opt-in (inventory
+   *  row, off until the user toggles) even if the plugin says otherwise. The
+   *  unified agent-plugin root sets this so `~/.hermes/plugins` keeps its
+   *  installed-but-inert posture (GHSA-mcfc-hp25-cjv7) on the desktop side too. */
+  defaultEnabled?: boolean
   /** Absolute plugin.js path (disk plugins) — recorded for reveal/inventory. */
   file?: string
   /** `sha256-<base64>` — verified against the source before evaluation. */
@@ -157,8 +162,10 @@ export async function loadRuntimePlugin(
     publishPlugin({ ...record, status: 'disabled' }, { activate, deactivate: () => unloadRuntimePlugin(plugin.id) })
 
     // A disabled plugin still inventories (settings shows it, toggle
-    // reactivates via the handle above) — it just never registers.
-    if (pluginActive(plugin.id, plugin.defaultEnabled ?? true)) {
+    // reactivates via the handle above) — it just never registers. A root-level
+    // `defaultEnabled: false` caps the plugin's own default: the user's explicit
+    // enable still wins, a plugin can't self-enable past its root's posture.
+    if (pluginActive(plugin.id, (plugin.defaultEnabled ?? true) && (options.defaultEnabled ?? true))) {
       activate()
     }
 
@@ -201,6 +208,8 @@ export async function loadRuntimePlugin(
 const DISK_POLL_MS = 5_000
 
 interface DiskRoot {
+  /** Root-level enable posture, forwarded to the loader (see LoadOptions). */
+  defaultEnabled?: boolean
   dir: string
   /** Resolve a scanned folder to its candidate plugin entry file. */
   entry: (folderPath: string) => string
@@ -226,13 +235,19 @@ async function diskRoots(): Promise<DiskRoot[]> {
   const unified = await desktop.agentPluginsRoot?.()
 
   if (unified) {
-    roots.push({ dir: unified, entry: folder => `${folder}/desktop/plugin.js` })
+    // Opt-in by default: `~/.hermes/plugins` is installed-but-inert until the
+    // user allowlists the Python half (plugins.enabled), so the desktop half
+    // matches that posture — inventoried in Settings → Plugins, off until
+    // toggled. The standalone desktop-plugins door keeps its default-on trust.
+    roots.push({ defaultEnabled: false, dir: unified, entry: folder => `${folder}/desktop/plugin.js` })
   }
 
   return roots
 }
 
 interface DiskPlugin {
+  /** Root posture, forwarded on every (re)load of this entry. */
+  defaultEnabled?: boolean
   file: string
   /** Loaded plugin id (null while broken — kept so a fixing save reloads). */
   id: null | string
@@ -247,13 +262,30 @@ const disk = new Map<string, DiskPlugin>()
 let watching = false
 let scanning = false
 
+/** Drop a folder-named error record — unless that name is the live plugin id
+ *  of ANOTHER disk entry (two roots can carry same-named folders; a broken one
+ *  must not clobber its healthy namesake's inventory row). */
+function dropOriginRecord(origin: string, except: DiskPlugin): void {
+  for (const other of disk.values()) {
+    if (other !== except && other.id === origin) {
+      return
+    }
+  }
+
+  dropPlugin(origin)
+}
+
 async function loadDiskPlugin(entry: DiskPlugin): Promise<void> {
   const desktop = window.hermesDesktop!
   const prevId = entry.id
 
   try {
     const { text } = await desktop.readFileText(entry.file)
-    const id = await loadRuntimePlugin(text, entry.origin, { file: entry.file })
+
+    const id = await loadRuntimePlugin(text, entry.origin, {
+      defaultEnabled: entry.defaultEnabled,
+      file: entry.file
+    })
 
     // A hot-edit that changes `plugin.id`: loadRuntimePlugin only disposes the
     // NEW id, so unload the previous incarnation here or its contributions +
@@ -268,7 +300,7 @@ async function loadDiskPlugin(entry: DiskPlugin): Promise<void> {
     // A fixing save under a different plugin id — drop the folder-named
     // error record so the inventory shows one row, not a ghost.
     if (id && id !== entry.origin) {
-      dropPlugin(entry.origin)
+      dropOriginRecord(entry.origin, entry)
     }
   } catch {
     // File vanished mid-read — the next scan reconciles.
@@ -318,7 +350,14 @@ async function scanDiskPlugins(): Promise<void> {
           continue // No entry file (yet) — not a plugin folder for this root.
         }
 
-        const record: DiskPlugin = { file, id: null, origin: dir.name, watchId: null }
+        const record: DiskPlugin = {
+          defaultEnabled: root.defaultEnabled,
+          file,
+          id: null,
+          origin: dir.name,
+          watchId: null
+        }
+
         disk.set(file, record)
         await loadDiskPlugin(record)
 
@@ -342,7 +381,7 @@ async function scanDiskPlugins(): Promise<void> {
         dropPlugin(record.id)
       }
 
-      dropPlugin(record.origin)
+      dropOriginRecord(record.origin, record)
 
       if (record.watchId) {
         void desktop.stopPreviewFileWatch(record.watchId)

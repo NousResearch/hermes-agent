@@ -16,9 +16,10 @@ Usage:
 """
 
 import json
+import os
 import random
 from pathlib import Path
-from typing import List, Dict, Any, Tuple
+from typing import Dict, Iterator, List, Any, Tuple
 import fire
 
 # Load environment variables
@@ -36,42 +37,51 @@ DEFAULT_DATASETS = [
 ]
 
 
-def load_dataset_from_hf(dataset_name: str) -> List[Dict[str, Any]]:
-    """
-    Load a dataset from HuggingFace.
-    
-    Args:
-        dataset_name: HuggingFace dataset name (e.g., "NousResearch/dataset-name")
-        
-    Returns:
-        List of trajectory entries
-    """
+def _entry_from_hf_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    if "conversations" in item:
+        return {"conversations": item["conversations"]}
+    if "messages" in item:
+        return {"conversations": item["messages"]}
+    return dict(item)
+
+
+def iter_dataset_entries(dataset_name: str) -> Iterator[Dict[str, Any]]:
+    """Yield HuggingFace rows one at a time (streaming when the hub supports it)."""
     from datasets import load_dataset
-    
+
     print(f"   Loading {dataset_name}...")
-    
+
     try:
-        # Try loading with default config
-        ds = load_dataset(dataset_name, split="train")
-    except Exception as e:
-        print(f"   ⚠️  Error loading {dataset_name}: {e}")
-        return []
-    
-    # Convert to list of dicts
-    entries = []
-    for item in ds:
-        # Handle different possible formats
-        if "conversations" in item:
-            entries.append({"conversations": item["conversations"]})
-        elif "messages" in item:
-            # Convert messages format to conversations format if needed
-            entries.append({"conversations": item["messages"]})
-        else:
-            # Assume the whole item is the entry
-            entries.append(dict(item))
-    
-    print(f"   ✅ Loaded {len(entries):,} entries from {dataset_name}")
-    return entries
+        try:
+            dataset = load_dataset(dataset_name, split="train", streaming=True)
+        except TypeError:
+            dataset = load_dataset(dataset_name, split="train")
+    except Exception as exc:
+        print(f"   ⚠️  Error loading {dataset_name}: {exc}")
+        return
+
+    count = 0
+    for item in dataset:
+        yield _entry_from_hf_item(item)
+        count += 1
+    print(f"   ✅ Streamed {count:,} entries from {dataset_name}")
+
+
+def load_dataset_from_hf(dataset_name: str) -> List[Dict[str, Any]]:
+    """Load a dataset from HuggingFace into a list (compat wrapper)."""
+    return list(iter_dataset_entries(dataset_name))
+
+
+def reservoir_add(reservoir: List[Any], item: Any, seen: int, k: int, rng: random.Random) -> None:
+    """Algorithm R: keep a uniform k-sample from a stream of `seen` items so far."""
+    if k <= 0:
+        return
+    if len(reservoir) < k:
+        reservoir.append(item)
+        return
+    index = rng.randrange(seen)
+    if index < k:
+        reservoir[index] = item
 
 
 # Global tokenizer for multiprocessing (set in worker init)
@@ -123,7 +133,7 @@ def sample_from_datasets(
     num_proc: int = 8
 ) -> List[Dict[str, Any]]:
     """
-    Load all datasets, filter by token count, then randomly sample from combined pool.
+    Stream datasets, filter by token count, and reservoir-sample the combined pool.
     
     Args:
         datasets: List of HuggingFace dataset names
@@ -137,86 +147,78 @@ def sample_from_datasets(
         List of sampled trajectory entries
     """
     from multiprocessing import Pool
-    
-    random.seed(seed)
-    
+
+    rng = random.Random(seed)
+
     print(f"\n📥 Loading {len(datasets)} datasets...")
     print(f"   Minimum tokens: {min_tokens:,} (filtering smaller trajectories)")
     print(f"   Parallel workers: {num_proc}")
     print()
-    
-    # Load ALL entries from all datasets into one pool
-    all_entries = []
-    
-    for dataset_name in datasets:
-        entries = load_dataset_from_hf(dataset_name)
-        
-        if not entries:
-            print(f"   ⚠️  Skipping {dataset_name} (no entries loaded)")
-            continue
-        
-        # Add source metadata to each entry
-        for entry in entries:
-            entry["_source_dataset"] = dataset_name
-        
-        all_entries.extend(entries)
-    
-    print(f"\n📊 Total entries loaded: {len(all_entries):,}")
-    
-    # Filter by token count using parallel processing
-    print(f"\n🔍 Filtering trajectories with >= {min_tokens:,} tokens (using {num_proc} workers)...")
-    
-    filtered_entries = []
-    token_counts = []
-    
-    # Use multiprocessing for token counting
+
+    def _iter_all_entries() -> Iterator[Dict[str, Any]]:
+        for dataset_name in datasets:
+            yielded = 0
+            for entry in iter_dataset_entries(dataset_name):
+                entry["_source_dataset"] = dataset_name
+                yielded += 1
+                yield entry
+            if yielded == 0:
+                print(f"   ⚠️  Skipping {dataset_name} (no entries loaded)")
+
+    print("\n🔍 Filtering + reservoir-sampling in one streaming pass...")
+
+    sampled: List[Dict[str, Any]] = []
+    seen_qualifying = 0
+    processed = 0
+    min_seen = None
+    max_seen = None
+    sum_seen = 0
+
     with Pool(
         processes=num_proc,
         initializer=_init_tokenizer_worker,
-        initargs=(tokenizer_name,)
+        initargs=(tokenizer_name,),
     ) as pool:
-        # Process in chunks and show progress
-        chunk_size = 1000
-        processed = 0
-        
-        for result in pool.imap_unordered(_count_tokens_for_entry, all_entries, chunksize=100):
-            entry, token_count = result
+        for entry, token_count in pool.imap_unordered(
+            _count_tokens_for_entry, _iter_all_entries(), chunksize=100
+        ):
             processed += 1
-            
-            if processed % chunk_size == 0:
-                print(f"   Processed {processed:,}/{len(all_entries):,}...", end="\r")
-            
-            if token_count >= min_tokens:
-                entry["_original_tokens"] = token_count
-                filtered_entries.append(entry)
-                token_counts.append(token_count)
-    
-    print(f"\n   ✅ Found {len(filtered_entries):,} trajectories >= {min_tokens:,} tokens")
-    
-    if token_counts:
-        avg_tokens = sum(token_counts) / len(token_counts)
-        print(f"   📈 Token stats: min={min(token_counts):,}, max={max(token_counts):,}, avg={avg_tokens:,.0f}")
-    
-    # Random sample from the filtered pool
-    if len(filtered_entries) <= total_samples:
-        print(f"\n⚠️  Only {len(filtered_entries):,} trajectories available, using all of them")
-        sampled = filtered_entries
+            if processed % 1000 == 0:
+                print(f"   Processed {processed:,}...", end="\r")
+            if token_count < min_tokens:
+                continue
+            seen_qualifying += 1
+            entry["_original_tokens"] = token_count
+            reservoir_add(sampled, entry, seen_qualifying, total_samples, rng)
+            min_seen = token_count if min_seen is None else min(min_seen, token_count)
+            max_seen = token_count if max_seen is None else max(max_seen, token_count)
+            sum_seen += token_count
+
+    print(f"\n   ✅ Found {seen_qualifying:,} trajectories >= {min_tokens:,} tokens")
+
+    if seen_qualifying:
+        avg_tokens = sum_seen / seen_qualifying
+        print(
+            f"   📈 Token stats: min={min_seen:,}, max={max_seen:,}, avg={avg_tokens:,.0f}"
+        )
+
+    if seen_qualifying <= total_samples:
+        print(f"\n⚠️  Only {seen_qualifying:,} trajectories available, using all of them")
     else:
-        sampled = random.sample(filtered_entries, total_samples)
-        print(f"\n✅ Randomly sampled {len(sampled):,} trajectories from pool of {len(filtered_entries):,}")
-    
-    # Show source distribution
+        print(
+            f"\n✅ Reservoir-sampled {len(sampled):,} trajectories from pool of {seen_qualifying:,}"
+        )
+
     source_counts = {}
     for entry in sampled:
         source = entry.get("_source_dataset", "unknown").split("/")[-1]
         source_counts[source] = source_counts.get(source, 0) + 1
-    
+
     print("\n📌 Sample distribution by source:")
     for source, count in sorted(source_counts.items()):
         print(f"      {source}: {count:,}")
-    
-    # Shuffle
-    random.shuffle(sampled)
+
+    rng.shuffle(sampled)
     
     return sampled
 
@@ -293,23 +295,30 @@ def merge_output_to_single_jsonl(input_dir: Path, output_file: Path):
         output_file: Output JSONL file path
     """
     print(f"\n📦 Merging output files into {output_file.name}...")
-    
-    all_entries = []
-    for jsonl_file in sorted(input_dir.glob("*.jsonl")):
-        if jsonl_file.name == output_file.name:
-            continue
-        with open(jsonl_file, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    all_entries.append(json.loads(line))
-    
-    # Write merged file
-    with open(output_file, 'w', encoding='utf-8') as f:
-        for entry in all_entries:
-            f.write(json.dumps(entry, ensure_ascii=False) + '\n')
-    
-    print(f"   ✅ Merged {len(all_entries):,} entries into {output_file.name}")
+
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = output_file.with_name(output_file.name + ".tmp")
+    count = 0
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as out:
+            for jsonl_file in sorted(input_dir.glob("*.jsonl")):
+                if jsonl_file.name in {output_file.name, tmp_path.name}:
+                    continue
+                with open(jsonl_file, "r", encoding="utf-8") as handle:
+                    for line in handle:
+                        if not line.strip():
+                            continue
+                        out.write(line if line.endswith("\n") else line + "\n")
+                        count += 1
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(tmp_path, output_file)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+
+    print(f"   ✅ Merged {count:,} entries into {output_file.name}")
     return output_file
 
 

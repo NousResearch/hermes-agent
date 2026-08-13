@@ -148,6 +148,46 @@ def test_persist_model_switch_writes_model_and_both_route_shapes():
     assert patch["provider"] == "custom:opencode-zen"
     assert patch["base_url"] == "https://oz/v1"
     assert "api_mode" not in patch["gateway_runtime"]  # empty values dropped
+    # Absent top-level values are explicit None so the merge DELETES stale
+    # keys from a previous switch (merge only deletes on None).
+    assert patch["api_mode"] is None
+
+
+def test_persist_model_switch_clears_stale_route_keys(tmp_path, monkeypatch):
+    """A later switch must not inherit the previous switch's api_mode/base_url.
+
+    patch_session_model_config merges key-level and only deletes on explicit
+    None — dropping falsy values from the patch left the FIRST switch's
+    api_mode (e.g. anthropic_messages) alive under the SECOND switch's
+    provider, corrupting the wire protocol on TUI/desktop resume.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="stale1", source="cli", model="m0")
+    stub = _make_stub(_session_db=db, session_id="stale1")
+
+    class _First:
+        new_model = "claude-x"
+        target_provider = "custom:feather"
+        base_url = "https://feather/v1"
+        api_mode = "anthropic_messages"
+
+    class _Second:
+        new_model = "gpt-5.4"
+        target_provider = "openrouter"
+        base_url = "https://openrouter.ai/api/v1"
+        api_mode = ""  # openrouter default — must ERASE the anthropic mode
+
+    stub._persist_model_switch_to_session(_First())
+    stub._persist_model_switch_to_session(_Second())
+
+    meta = db.get_session("stale1")
+    config = json.loads(meta["model_config"])
+    assert config["provider"] == "openrouter"
+    assert "api_mode" not in config, config  # stale anthropic_messages deleted
+    runtime = SessionDB.session_gateway_runtime(meta)
+    assert runtime["provider"] == "openrouter"
+    assert "api_mode" not in runtime
 
 
 def test_persist_model_switch_noop_without_db_or_session():
@@ -188,12 +228,13 @@ def test_persist_model_switch_heals_bare_custom(monkeypatch):
     stub._persist_model_switch_to_session(_BareResult())
     assert written["patch"]["provider"] == "custom:myendpoint"
 
-    # Healing fails -> provider dropped entirely, not persisted bare.
+    # Healing fails -> provider dropped (explicit None deletes any stale
+    # persisted provider), never persisted bare.
     monkeypatch.setattr(rp, "canonical_custom_identity",
                         lambda base_url=None, model=None: None)
     written.clear()
     stub._persist_model_switch_to_session(_BareResult())
-    assert "provider" not in written["patch"]
+    assert written["patch"]["provider"] is None
     assert "provider" not in written["patch"]["gateway_runtime"]
 
 

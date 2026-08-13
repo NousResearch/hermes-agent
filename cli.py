@@ -7734,8 +7734,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         try:
             db.update_session_model(sid, result.new_model)
             # Both shapes: nested for the CLI reader, top-level for the
-            # TUI gateway's resume path.
-            db.patch_session_model_config(sid, {"gateway_runtime": route, **route})
+            # TUI gateway's resume path. Top-level keys are written as
+            # explicit None when absent — _merge_model_config_json only
+            # deletes on None, so omitting them would let a PREVIOUS
+            # switch's provider/api_mode survive this one (stale wire
+            # protocol / frankenroute on resume).
+            db.patch_session_model_config(sid, {
+                "gateway_runtime": route,
+                "provider": provider or None,
+                "base_url": result.base_url or None,
+                "api_mode": result.api_mode or None,
+            })
         except Exception:
             logger.debug(
                 "Failed to persist model switch to session DB", exc_info=True
@@ -7782,8 +7791,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         # Heal bare "custom" persisted by older builds / gateway turns: it's
         # the resolved billing class, not a routable identity. Recover the
         # durable custom:<name> menu key from the endpoint, else drop the
-        # provider so resume keeps the ambient default (matches the TUI
-        # gateway's _stored_session_runtime_overrides recovery).
+        # provider so resume keeps the ambient default. (Stricter than the
+        # TUI gateway's recovery, which keeps bare "custom" when a base_url
+        # exists — the CLI's resolve path would hard-fail on it, #14676.)
         if str(stored_provider or "").strip().lower() == "custom":
             try:
                 from hermes_cli.runtime_provider import canonical_custom_identity

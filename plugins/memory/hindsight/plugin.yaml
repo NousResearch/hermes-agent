@@ -1,6 +1,9 @@
 name: hindsight
 version: 1.0.0
 description: "Hindsight — long-term memory with knowledge graph, entity resolution, and multi-strategy retrieval."
+# Keep the bundled dependency lightweight for cloud/local_external users.
+# post_setup installs the full `hindsight-all` runtime only when local_embedded
+# is selected; the provider emits an actionable diagnostic if it is absent.
 pip_dependencies:
   - "hindsight-client>=0.6.1"
 requires_env: []

@@ -26,6 +26,10 @@ function seedAll(config: MemoryProviderConfig): Record<string, string> {
   return Object.fromEntries(config.fields.map(field => [field.key, field.kind === 'secret' ? '' : field.value]))
 }
 
+function fieldVisible(field: MemoryProviderField, values: Record<string, string>): boolean {
+  return Object.entries(field.when ?? {}).every(([key, expected]) => expected.split('|').includes(values[key] ?? ''))
+}
+
 // Group fields in declared order, preserving first-seen group sequence.
 function groupFields(fields: MemoryProviderField[]): [string, MemoryProviderField[]][] {
   const groups: [string, MemoryProviderField[]][] = []
@@ -116,7 +120,7 @@ export function ProviderConfigModal({
         </DialogHeader>
 
         <div className="min-w-0">
-          {groupFields(config.fields).map(([group, fields]) => (
+          {groupFields(config.fields.filter(field => fieldVisible(field, values))).map(([group, fields]) => (
             <section className="mt-6 first:mt-2" key={group}>
               <h3 className="border-b border-(--ui-accent-secondary)/30 pb-1.5 font-mono text-[0.68rem] uppercase tracking-wide text-(--ui-accent-secondary)">
                 {group}

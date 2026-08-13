@@ -146,6 +146,7 @@ export interface MemoryProviderField {
   options: MemoryProviderFieldOption[]
   placeholder: string
   value: string
+  when?: Record<string, string>
 }
 
 export interface MemoryProviderConfig {

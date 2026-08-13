@@ -143,6 +143,7 @@ class PluginLlmCompleteResult:
     agent_id: str
     usage: PluginLlmUsage = field(default_factory=PluginLlmUsage)
     audit: Dict[str, Any] = field(default_factory=dict)
+    tool_calls: List[Dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -651,6 +652,39 @@ def _extract_text(response: Any) -> str:
     return ""
 
 
+def _extract_tool_calls(response: Any) -> List[Dict[str, Any]]:
+    """Normalize OpenAI-shaped assistant tool calls into plain dictionaries."""
+    try:
+        raw_calls = response.choices[0].message.tool_calls or []
+    except (AttributeError, IndexError, TypeError):
+        return []
+
+    normalized: List[Dict[str, Any]] = []
+    for call in raw_calls:
+        if isinstance(call, dict):
+            call_id = call.get("id")
+            call_type = call.get("type") or "function"
+            function = call.get("function") or {}
+            name = function.get("name") if isinstance(function, dict) else None
+            arguments = function.get("arguments") if isinstance(function, dict) else None
+        else:
+            call_id = getattr(call, "id", None)
+            call_type = getattr(call, "type", None) or "function"
+            function = getattr(call, "function", None)
+            name = getattr(function, "name", None)
+            arguments = getattr(function, "arguments", None)
+        if not call_id or not name:
+            continue
+        if not isinstance(arguments, str):
+            arguments = json.dumps(arguments or {}, ensure_ascii=False)
+        normalized.append({
+            "id": str(call_id),
+            "type": str(call_type),
+            "function": {"name": str(name), "arguments": arguments},
+        })
+    return normalized
+
+
 def _resolve_attribution(
     *,
     provider_override: Optional[str],
@@ -746,6 +780,8 @@ class PluginLlm:
         temperature: Optional[float] = None,
         max_tokens: Optional[int] = None,
         timeout: Optional[float] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        tool_choice: Optional[Any] = None,
         agent_id: Optional[str] = None,
         profile: Optional[str] = None,
         purpose: Optional[str] = None,
@@ -775,6 +811,7 @@ class PluginLlm:
             requested_agent_id=agent_id,
             requested_profile=profile,
         )
+        tool_extra_body = {"tool_choice": tool_choice} if tool_choice is not None else None
         real_provider, real_model, response = self._invoke_sync(
             messages=messages,
             provider_override=eff_provider,
@@ -784,6 +821,8 @@ class PluginLlm:
             max_tokens=max_tokens,
             timeout=timeout,
             task=eff_task,
+            extra_body=tool_extra_body,
+            tools=tools,
         )
         text = _extract_text(response)
         usage = _extract_usage(response)
@@ -793,6 +832,7 @@ class PluginLlm:
             model=real_model,
             agent_id=eff_agent or "default",
             usage=usage,
+            tool_calls=_extract_tool_calls(response),
             audit={
                 "plugin_id": self._plugin_id,
                 "purpose": purpose or "",
@@ -1085,6 +1125,7 @@ class PluginLlm:
         timeout: Optional[float],
         extra_body: Optional[Dict[str, Any]] = None,
         task: Optional[str] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
     ) -> tuple[str, str, Any]:
         """Invoke the host's ``call_llm``. Lazy-imports
         ``agent.auxiliary_client`` to avoid circular deps at plugin
@@ -1104,6 +1145,7 @@ class PluginLlm:
                 timeout=timeout,
                 extra_body=extra_body,
                 task=task,
+                tools=tools,
             )
         from agent.auxiliary_client import call_llm
         merged_extra = dict(extra_body or {})
@@ -1118,6 +1160,7 @@ class PluginLlm:
             temperature=temperature,
             max_tokens=max_tokens,
             timeout=timeout,
+            tools=tools or [],
             extra_body=merged_extra or None,
             route_info=route_info,
         )

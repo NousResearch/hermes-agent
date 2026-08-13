@@ -194,6 +194,14 @@ it's just enforced inside the one process now).
 
 #### 4. Session keys are namespaced by profile
 
+Slash commands (`/new`, `/reset`) and adapter text-batch keys use the same
+routed namespace. If `source.profile` is unset (reconnect, internal source,
+slash-confirm callback), the gateway stamps it from `profile_routes` before
+minting or resetting a key — it does **not** fall back to the process-default
+`agent:main:` session. An owner-routed DM `/new` therefore touches only
+`agent:owner:…`. The first-turn `/sethome` home-channel notice is evaluated
+under that profile's runtime scope, not the multiplexer's default config.
+
 Each profile's sessions live under an `agent:<profile>:…` namespace so two
 profiles on the same platform/chat never collide in the shared session store.
 The **default** profile keeps the historical `agent:main:…` namespace

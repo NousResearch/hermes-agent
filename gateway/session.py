@@ -1874,8 +1874,12 @@ class SessionStore:
         When ``multiplex_profiles`` is disabled (default), returns ``None`` so
         keys stay in the legacy ``agent:main`` namespace — byte-identical to
         before. When enabled, prefers the profile the inbound source was routed
-        to (``source.profile`` — set by the /p/<profile>/ URL prefix or
-        per-credential adapter), falling back to the active profile name.
+        to (``source.profile`` — set by the /p/<profile>/ URL prefix, a
+        per-credential adapter, or ``GatewayRunner._ensure_source_profile``
+        before key resolution). Falls back to the process active profile
+        name only when the stamp is still unset after that (no matching
+        route). Callers that can re-run routing must stamp first — this
+        store has no runner and cannot.
         """
         if not getattr(self.config, "multiplex_profiles", False):
             return None

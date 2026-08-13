@@ -144,7 +144,12 @@ class GatewaySlashCommandsMixin:
     async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
-        
+        # Stamp the routed profile before any session-key lookup. Busy-path
+        # /new and slash-confirm callbacks can reach this handler without
+        # going through the _handle_message ingress stamp; an unset
+        # source.profile would otherwise key agent:main: under multiplex.
+        self._ensure_source_profile(source)
+
         # Get existing session key
         session_key = self._session_key_for_source(source)
         self._invalidate_session_run_generation(session_key, reason="session_reset")

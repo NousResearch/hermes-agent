@@ -21,6 +21,7 @@ def mock_runner():
     # Bind the actual methods to the mock
     runner._profile_name_for_source = GatewayRunner._profile_name_for_source.__get__(runner)
     runner._resolve_profile_home_for_source = GatewayRunner._resolve_profile_home_for_source.__get__(runner)
+    runner._ensure_source_profile = GatewayRunner._ensure_source_profile.__get__(runner)
     return runner
 
 

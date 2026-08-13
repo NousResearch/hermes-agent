@@ -3,8 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { downscaleDataUrlForPreview } from './image-resize'
 
 // A minimal valid 1x1 red PNG (67 bytes) for testing
-const TINY_PNG_B64 =
-  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+GkZcAAAAASUVORK5CYII='
+const TINY_PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+GkZcAAAAASUVORK5CYII='
+
 const TINY_PNG_DATA_URL = `data:image/png;base64,${TINY_PNG_B64}`
 
 // A 1×1 transparent PNG used as the fallback placeholder
@@ -19,21 +19,15 @@ describe('downscaleDataUrlForPreview', () => {
 
   describe('without createImageBitmap (jsdom default)', () => {
     it('returns the original when createImageBitmap is unavailable', async () => {
-      await expect(downscaleDataUrlForPreview(TINY_PNG_DATA_URL)).resolves.toBe(
-        TINY_PNG_DATA_URL
-      )
+      await expect(downscaleDataUrlForPreview(TINY_PNG_DATA_URL)).resolves.toBe(TINY_PNG_DATA_URL)
     })
 
     it('returns the original for a non-data-URL string', async () => {
-      await expect(downscaleDataUrlForPreview('not-a-data-url')).resolves.toBe(
-        'not-a-data-url'
-      )
+      await expect(downscaleDataUrlForPreview('not-a-data-url')).resolves.toBe('not-a-data-url')
     })
 
     it('returns the original for a data URL without a comma', async () => {
-      await expect(downscaleDataUrlForPreview('data:text/plain')).resolves.toBe(
-        'data:text/plain'
-      )
+      await expect(downscaleDataUrlForPreview('data:text/plain')).resolves.toBe('data:text/plain')
     })
   })
 
@@ -46,6 +40,7 @@ describe('downscaleDataUrlForPreview', () => {
       const close = vi.fn()
       const drawImage = vi.fn()
       const convertToBlob = vi.fn(async () => new Blob(['x'], { type: 'image/png' }))
+      const canvasSizes: [number, number][] = []
 
       const bitmap = { width: bitmapWidth, height: bitmapHeight, close }
       const ctx = { drawImage }
@@ -53,7 +48,9 @@ describe('downscaleDataUrlForPreview', () => {
       class MockOffscreenCanvas {
         getContext = vi.fn(() => ctx)
         convertToBlob = convertToBlob
-        constructor(_w: number, _h: number) {}
+        constructor(width: number, height: number) {
+          canvasSizes.push([width, height])
+        }
       }
 
       // Mock fetch to return a Blob from the data URL
@@ -63,10 +60,13 @@ describe('downscaleDataUrlForPreview', () => {
           blob: async () => new Blob([new Uint8Array([0])], { type: 'image/png' })
         }))
       )
-      vi.stubGlobal('createImageBitmap', vi.fn(async () => bitmap))
+      vi.stubGlobal(
+        'createImageBitmap',
+        vi.fn(async () => bitmap)
+      )
       vi.stubGlobal('OffscreenCanvas', MockOffscreenCanvas)
 
-      return { bitmap, close, drawImage, convertToBlob, ctx }
+      return { bitmap, close, drawImage, convertToBlob, ctx, canvasSizes }
     }
 
     it('returns the original when image is smaller than maxLongEdge', async () => {
@@ -76,17 +76,17 @@ describe('downscaleDataUrlForPreview', () => {
       expect(result).toBe(TINY_PNG_DATA_URL)
     })
 
-    it('downscales when image exceeds maxLongEdge', async () => {
+    it('downscales when image exceeds the default preview edge', async () => {
       const { drawImage, close } = setupMocks(4000, 3000)
 
       // In jsdom, FileReader.readAsDataURL won't actually produce a data URL,
       // so the function falls through to the fallback placeholder. But the
       // important thing is that drawImage was called with scaled dimensions
       // and the bitmap was closed.
-      const result = await downscaleDataUrlForPreview(TINY_PNG_DATA_URL, 2048)
+      const result = await downscaleDataUrlForPreview(TINY_PNG_DATA_URL)
 
-      // scale = 2048 / 4000 = 0.512 → width=2048, height=1536
-      expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 0, 2048, 1536)
+      // scale = 512 / 4000 = 0.128 → width=512, height=384
+      expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 0, 512, 384)
       expect(close).toHaveBeenCalled()
 
       // Result should be the downscaled data URL (from our mocked blob),
@@ -95,6 +95,16 @@ describe('downscaleDataUrlForPreview', () => {
       // The drawImage was called with correct dimensions and bitmap was cleaned up
       expect(drawImage).toHaveBeenCalled()
       expect(close).toHaveBeenCalled()
+    })
+
+    it('keeps every thumbnail bounded for a 72-image composer prompt', async () => {
+      const { canvasSizes, drawImage } = setupMocks(6000, 6000)
+
+      await Promise.all(Array.from({ length: 72 }, () => downscaleDataUrlForPreview(TINY_PNG_DATA_URL)))
+
+      expect(canvasSizes).toHaveLength(72)
+      expect(canvasSizes.every(([width, height]) => width === 512 && height === 512)).toBe(true)
+      expect(drawImage).toHaveBeenCalledTimes(72)
     })
 
     it('returns placeholder when createImageBitmap throws', async () => {
@@ -110,7 +120,10 @@ describe('downscaleDataUrlForPreview', () => {
           throw new Error('decode failed')
         })
       )
-      vi.stubGlobal('OffscreenCanvas', vi.fn(() => ({})))
+      vi.stubGlobal(
+        'OffscreenCanvas',
+        vi.fn(() => ({}))
+      )
 
       const result = await downscaleDataUrlForPreview(TINY_PNG_DATA_URL, 2048)
       expect(result).toBe(FALLBACK_PLACEHOLDER)
@@ -131,7 +144,10 @@ describe('downscaleDataUrlForPreview', () => {
           blob: async () => new Blob([new Uint8Array([0])], { type: 'image/png' })
         }))
       )
-      vi.stubGlobal('createImageBitmap', vi.fn(async () => bitmap))
+      vi.stubGlobal(
+        'createImageBitmap',
+        vi.fn(async () => bitmap)
+      )
       vi.stubGlobal('OffscreenCanvas', NullCanvas)
 
       const result = await downscaleDataUrlForPreview(TINY_PNG_DATA_URL, 2048)
@@ -157,7 +173,10 @@ describe('downscaleDataUrlForPreview', () => {
           blob: async () => new Blob([new Uint8Array([0])], { type: 'image/png' })
         }))
       )
-      vi.stubGlobal('createImageBitmap', vi.fn(async () => bitmap))
+      vi.stubGlobal(
+        'createImageBitmap',
+        vi.fn(async () => bitmap)
+      )
       vi.stubGlobal('OffscreenCanvas', BrokenCanvas)
 
       const result = await downscaleDataUrlForPreview(TINY_PNG_DATA_URL, 2048)

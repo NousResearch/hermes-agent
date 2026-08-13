@@ -8,6 +8,7 @@ import { $previewTabs } from '@/store/preview'
 import { AttachmentList } from './attachments'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
+const THUMBNAIL_URL = 'data:image/png;base64,dGh1bWJuYWls'
 
 function makeAttachment(id: string, label = 'test.pdf'): ComposerAttachment {
   return { id, kind: 'file', label }
@@ -70,7 +71,7 @@ describe('AttachmentList', () => {
     expect(screen.getByText('valid.txt')).toBeDefined()
   })
 
-  it('opens an attached image in the lightbox, not the preview rail', async () => {
+  it('renders the thumbnail in the pill but opens the full-resolution image in the lightbox', async () => {
     $previewTabs.set([])
 
     const image: ComposerAttachment = {
@@ -78,10 +79,13 @@ describe('AttachmentList', () => {
       kind: 'image',
       label: 'shot.png',
       path: '/tmp/shot.png',
-      previewUrl: DATA_URL
+      previewUrl: DATA_URL,
+      thumbnailUrl: THUMBNAIL_URL
     }
 
     await renderWithI18n(<AttachmentList attachments={[image]} />)
+
+    expect(screen.getByAltText<HTMLImageElement>('shot.png').getAttribute('src')).toBe(THUMBNAIL_URL)
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: /shot\.png/ }))

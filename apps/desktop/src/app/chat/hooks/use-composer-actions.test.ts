@@ -324,7 +324,8 @@ describe('attachImagePath thumbnail separation', () => {
   // Full-resolution data URL the local bridge returns for a pasted screenshot.
   // Content is irrelevant — the mock bitmap below reports 4000×3000 so the
   // real downscale path runs (the data URL itself is never decoded in jsdom).
-  const FULL_RES = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+GkZcAAAAASUVORK5CYII='
+  const FULL_RES =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+GkZcAAAAASUVORK5CYII='
 
   afterEach(() => {
     vi.unstubAllGlobals()
@@ -339,7 +340,7 @@ describe('attachImagePath thumbnail separation', () => {
       readFileDataUrl
     }
 
-    // Exercise the real downscale path: 4000×3000 bitmap → 2048×1536 canvas.
+    // Exercise the real downscale path: 4000×3000 bitmap → 512×384 canvas.
     const drawImage = vi.fn()
     const close = vi.fn()
 
@@ -349,7 +350,10 @@ describe('attachImagePath thumbnail separation', () => {
         blob: async () => new Blob([new Uint8Array([0])], { type: 'image/png' })
       }))
     )
-    vi.stubGlobal('createImageBitmap', vi.fn(async () => ({ width: 4000, height: 3000, close })))
+    vi.stubGlobal(
+      'createImageBitmap',
+      vi.fn(async () => ({ width: 4000, height: 3000, close }))
+    )
 
     class MockOffscreenCanvas {
       getContext = () => ({ drawImage })
@@ -377,7 +381,7 @@ describe('attachImagePath thumbnail separation', () => {
     // original (which would re-introduce the main-thread decode freeze).
     expect(attachment?.thumbnailUrl).toBeDefined()
     expect(attachment?.thumbnailUrl).not.toBe(FULL_RES)
-    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 0, 2048, 1536)
+    expect(drawImage).toHaveBeenCalledWith(expect.anything(), 0, 0, 512, 384)
     expect(close).toHaveBeenCalled()
   })
 

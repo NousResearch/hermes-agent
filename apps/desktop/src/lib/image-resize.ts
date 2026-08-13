@@ -10,7 +10,7 @@
  * thumbnail is downscaled.
  *
  * @param dataUrl  The full-resolution data URL (data:image/...;base64,...)
- * @param maxLongEdge  Maximum pixel dimension on the longest side (default 2048)
+ * @param maxLongEdge  Maximum pixel dimension on the longest side (default 512)
  * @returns  A downscaled data URL (PNG), the original if already small enough,
  *           or a 1×1 transparent PNG placeholder if downscaling fails.
  */
@@ -19,9 +19,15 @@
 const FALLBACK_PLACEHOLDER =
   'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+GkZcAAAAASUVORK5CYII='
 
+// Composer pills render at 32 CSS pixels. A 512px source stays sharp on
+// high-density displays while keeping a square RGBA decode to 1 MiB. The old
+// 2048px default could decode to 16 MiB per thumbnail, so a large multi-image
+// prompt still put substantial pressure on Chromium's renderer.
+const DEFAULT_MAX_LONG_EDGE = 512
+
 export async function downscaleDataUrlForPreview(
   dataUrl: string,
-  maxLongEdge = 2048
+  maxLongEdge = DEFAULT_MAX_LONG_EDGE
 ): Promise<string> {
   // Guard: createImageBitmap and OffscreenCanvas are not available in jsdom
   // (test environment) or very old Chromium builds. Return the original if missing.
@@ -77,6 +83,7 @@ export async function downscaleDataUrlForPreview(
             resolve(FALLBACK_PLACEHOLDER)
           }
         }
+
         reader.onerror = () => resolve(FALLBACK_PLACEHOLDER)
         reader.readAsDataURL(resultBlob)
       })

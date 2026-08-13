@@ -7103,8 +7103,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         chains, archive the whole logical conversation. Desktop lists compression
         roots projected forward to their latest continuation; updating only the
         displayed tip lets the still-unarchived root resurrect it on refresh.
-        Returns True when at least one row was updated.
+
+        When archiving, ``archived_at`` is stamped with the current epoch so
+        Done/KPI surfaces can credit the calendar day the user actually
+        archived (not when the conversation last had activity). Unarchive
+        clears ``archived_at``. Returns True when at least one row was updated.
         """
+        archived_flag = 1 if archived else 0
+        archived_at = time.time() if archived else None
+
         def _do(conn):
             cursor = conn.execute(
                 """
@@ -7133,10 +7140,11 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     SELECT id FROM descendants
                   )
                 UPDATE sessions
-                SET archived = ?
+                SET archived = ?,
+                    archived_at = ?
                 WHERE id IN (SELECT id FROM lineage)
                 """,
-                (session_id, session_id, 1 if archived else 0),
+                (session_id, session_id, archived_flag, archived_at),
             )
             rowcount = cursor.rowcount
             if rowcount is None or rowcount < 0:
@@ -7599,6 +7607,15 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             # level instead of fetching every row and sorting in Python, while
             # still surfacing old compression roots whose live tip is fresh.
             #
+            # Archived-only lists order by archive flip time (COALESCE
+            # archived_at, activity) so Done/KPI paging lands recently-archived
+            # old conversations on early pages instead of burying them by
+            # stale last_active.
+            order_expr = (
+                "COALESCE(s.archived_at, _effective_last_active)"
+                if archived_only
+                else "_effective_last_active"
+            )
             # The CTE seeds from rows the outer WHERE admits (roots + branch
             # children), then recursively joins forward through robust
             # compression-continuation edges. Do NOT require
@@ -7688,7 +7705,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 LEFT JOIN chain_max cm ON cm.root_id = s.id
                 {prompt_join}
                 {outer_where}
-                ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
+                ORDER BY {order_expr} DESC, s.started_at DESC, s.id DESC
                 LIMIT ? OFFSET ?
             """
             # WHERE params apply twice (CTE seed + outer select); the id filter
@@ -7806,6 +7823,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     "id", "ended_at", "end_reason", "message_count",
                     "tool_call_count", "title", "last_active", "preview",
                     "model", "system_prompt", "cwd", "git_branch", "git_repo_root",
+                    "archived", "archived_at",
                 ):
                     if key in tip_row:
                         merged[key] = tip_row[key]

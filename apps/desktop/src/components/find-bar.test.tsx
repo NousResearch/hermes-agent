@@ -440,6 +440,47 @@ describe('find-in-page store', () => {
     expect($findInPage.get().matchCount).toBe(1)
   })
 
+  it('re-targets the scope after a keep-alive tab flip while the bar stays open', () => {
+    // Regression (#81726): the bar only closes on a ROUTE change; a keep-
+    // alive tab flip hides the captured surface without changing the
+    // pathname, so a typed query used to resolve no scope and report 0/0
+    // while the viewed surface contains the text. The scope must re-resolve
+    // to the now-foreground surface.
+    const surfaceA = plantSurface('a')
+    const surfaceB = document.createElement('div')
+
+    surfaceB.setAttribute('data-chat-surface', '')
+    surfaceB.id = 'b'
+    document.body.appendChild(surfaceB)
+
+    surfaceA.textContent = 'needle in A'
+    surfaceB.textContent = 'needle in B needle'
+
+    openFindBar()
+    setFindQuery('needle')
+
+    // Surface A is foreground; only its match is wrapped.
+    expect(surfaceA.querySelectorAll('mark.find-hit').length).toBe(1)
+    expect(surfaceB.querySelectorAll('mark.find-hit').length).toBe(0)
+    expect($findInPage.get().matchCount).toBe(1)
+
+    // Tab flip while the bar stays open: A's pane layer hides, B is now the
+    // foreground surface the user is reading.
+    surfaceA.setAttribute('data-pane-hidden', '')
+
+    setFindQuery('needle')
+
+    // The scope re-targeted to B — its matches are wrapped, and A's stale
+    // highlights are cleared rather than left to resurface on its next visit.
+    expect(surfaceB.querySelectorAll('mark.find-hit').length).toBe(2)
+    expect(surfaceA.querySelectorAll('mark.find-hit').length).toBe(0)
+    expect($findInPage.get().matchCount).toBe(2)
+
+    // Stepping still works on the re-targeted surface.
+    findNext()
+    expect($findInPage.get().matchOrdinal).toBe(2)
+  })
+
   it('a no-match query leaves the count at zero and the DOM untouched', () => {
     const surface = plantSurface()
     surface.textContent = 'hello world'

@@ -14,7 +14,11 @@
  * Strategy. At bar-open time, capture the active chat surface element and
  * remember it for the lifetime of the find bar. Subsequent queries highlight
  * only text nodes inside that subtree. ⌘G / ⌘⇧G step between highlights
- * inside the same subtree. Closing the bar unwraps the highlights.
+ * inside the same subtree. Closing the bar unwraps the highlights. If a
+ * keep-alive tab flip hides the captured surface while the bar stays open
+ * (the route didn't change, so the FindBar's pathname cleanup never ran),
+ * the scope re-resolves to the new foreground surface — "find wherever the
+ * user is reading" holds across a flip, not just at open time (#81726).
  *
  * "Current view" is the foreground `[data-chat-surface]` element after
  * filtering out inactive keep-alive tabs. That is the same policy every
@@ -114,7 +118,15 @@ function resetScopeState(): void {
   scheduled = false
 }
 
-/** The scope captured by the open bar, or null if none is active. */
+/**
+ * The scope captured by the open bar, or null if none is active.
+ *
+ * When the captured surface was hidden by a keep-alive tab flip (the bar only
+ * closes on a ROUTE change, so a flip keeps it open over a now-inactive pane),
+ * re-resolves to the foreground surface instead of going dead — otherwise
+ * every query reports 0/0 and ⌘G becomes a no-op on the surface the user is
+ * actually reading (#81726).
+ */
 export function currentFindScope(): HTMLElement | null {
   const roots = document.querySelectorAll<HTMLElement>(`[${ROOT_ATTR}]`)
 
@@ -124,7 +136,50 @@ export function currentFindScope(): HTMLElement | null {
     }
   }
 
-  return null
+  if (roots.length === 0) {
+    // No captured scope — the bar was never opened, or releaseFindScope
+    // already tore it down. Nothing to re-target to.
+    return null
+  }
+
+  // Every marked root is hidden — the captured surface lost a tab flip while
+  // the bar stayed open. Move the scope to the now-foreground surface.
+  return retargetFindScope(roots)
+}
+
+/**
+ * Move the find scope to the foreground chat surface after a keep-alive tab
+ * flip hid the captured one. Clears the old surface's highlights and marker
+ * (they'd otherwise resurface as stray marks when its tab is revisited), then
+ * stamps `data-find-root` on the new surface so the walker keeps searching
+ * where the user is now reading. Returns the new scope, or null when no chat
+ * surface is visible (the user flipped to a non-chat pane — nothing on screen
+ * qualifies as a view).
+ */
+function retargetFindScope(roots: NodeListOf<HTMLElement>): HTMLElement | null {
+  const foreground = resolveCurrentFindScope()
+
+  if (!foreground) {
+    return null
+  }
+
+  for (const root of roots) {
+    if (root === foreground) {
+      continue
+    }
+
+    clearHighlights(root)
+    root.removeAttribute(ROOT_ATTR)
+  }
+
+  // The re-render watcher is still observing the OLD root; detach it so the
+  // next performScopedFind re-attaches to the new scope (ensureObserver only
+  // trusts an observer whose root matches scopeRoot).
+  stopObserver()
+  scopeRoot = foreground
+  foreground.setAttribute(ROOT_ATTR, '')
+
+  return foreground
 }
 
 /** Same predicate pane-visibility exposes, kept local so this module is

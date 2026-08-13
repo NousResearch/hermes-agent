@@ -319,6 +319,48 @@ describe('scope lifecycle', () => {
     const result = performScopedFind(foreground, 'needle', { forward: true, findNext: false })
     expect(result.count).toBe(1)
   })
+
+  it('re-targets the scope to the foreground surface after a keep-alive flip hides the captured one', () => {
+    // Regression (#81726): the bar stays open across a tab flip (the route
+    // doesn't change, so the FindBar's pathname cleanup never runs). The
+    // captured surface's pane layer goes `data-pane-hidden` and the flipped-
+    // to surface is left unmarked — currentFindScope must re-resolve to the
+    // new foreground surface instead of going dead (0/0 forever).
+    const a = plantSurface('a', '<p>needle in A</p>')
+    const b = plantSurface('b', '<p>needle in B</p>')
+
+    captureFindScope()
+    expect(currentFindScope()).toBe(a)
+    expect(a.hasAttribute('data-find-root')).toBe(true)
+
+    // Keep-alive tab flip: A's pane layer hides, B becomes the foreground.
+    a.setAttribute('data-pane-hidden', '')
+
+    const scope = currentFindScope()
+
+    // The scope re-targeted to B and the marker moved with it.
+    expect(scope).toBe(b)
+    expect(b.hasAttribute('data-find-root')).toBe(true)
+    expect(a.hasAttribute('data-find-root')).toBe(false)
+
+    // The walker searches the new surface — and the old one is left clean.
+    const result = performScopedFind(scope!, 'needle', { forward: true, findNext: false })
+    expect(result.count).toBe(1)
+    expect(b.querySelectorAll('mark.find-hit').length).toBe(1)
+    expect(a.querySelectorAll('mark.find-hit').length).toBe(0)
+  })
+
+  it('re-targeting to a non-chat pane resolves to no scope (nothing on screen is a view)', () => {
+    // The user flipped to a pane that isn't a chat surface — nothing to
+    // search, matching the existing "no chat surface" contract. A later flip
+    // back to a visible surface re-targets again.
+    const a = plantSurface('a', 'needle')
+    captureFindScope()
+
+    a.setAttribute('data-pane-hidden', '')
+
+    expect(currentFindScope()).toBeNull()
+  })
 })
 
 describe('scoped find survives React re-render', () => {

@@ -255,6 +255,8 @@ _LONG_HANDLERS = frozenset(
         # scale on cold disks — keep them off the WS reader thread.
         "profiles.create",
         "profiles.list",
+        # image.generate is a multi-second remote API round-trip.
+        "image.generate",
         "projects.discover_repos",
         "projects.record_repos",
         "projects.for_cwd",
@@ -14434,6 +14436,7 @@ def _browser_disconnect(rid) -> dict:
 from . import (  # noqa: E402
     methods_complete as _methods_complete,
     methods_config as _methods_config,
+    methods_images as _methods_images,
     methods_profiles as _methods_profiles,
     methods_prompt as _methods_prompt,
     methods_session as _methods_session,
@@ -14447,6 +14450,7 @@ for _m in (
     _methods_complete,
     _methods_tools,
     _methods_profiles,
+    _methods_images,
 ):
     _m.register(sys.modules[__name__])
 del _m

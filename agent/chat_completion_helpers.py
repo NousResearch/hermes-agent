@@ -987,6 +987,35 @@ def _resolve_direct_stale_timeout(agent, api_kwargs: dict) -> float:
     return float(value)
 
 
+def _inline_nonstream_hard_timeout(stale_timeout: float):
+    """Socket-level backstop for inline non-streaming calls (#85252).
+
+    The keepalive httpx client uses ``read=None`` so SSE streams can idle
+    during reasoning. That same client serves cron/subagent non-streaming
+    calls. Combined with a stranger-thread abort that must not ``close()``
+    the FD (#29507), a hung provider then waits until TCP dies — observed
+    5–11× past the stale threshold.
+
+    Returns an ``httpx.Timeout`` whose read budget equals the stale
+    watchdog, a float if httpx is unavailable, or ``None`` when the
+    watchdog is disarmed (local endpoint / non-finite budget).
+    """
+    if not math.isfinite(stale_timeout) or stale_timeout <= 0:
+        return None
+    conn_cap = min(stale_timeout, 60.0)
+    try:
+        import httpx as _httpx
+
+        return _httpx.Timeout(
+            connect=conn_cap,
+            read=stale_timeout,
+            write=conn_cap,
+            pool=conn_cap,
+        )
+    except Exception:
+        return stale_timeout
+
+
 def direct_api_call(agent, api_kwargs: dict):
     """Run a non-streaming LLM call inline on the conversation thread.
 
@@ -1002,14 +1031,16 @@ def direct_api_call(agent, api_kwargs: dict):
     450s — surfacing as ``Operation interrupted: waiting for model response``.
 
     A stale-call watchdog bounds the request the same way the interrupt
-    worker's poll loop does (#80759). The httpx read timeout alone is not a
-    usable bound: it defaults to 1800s and a provider that accepts the request
-    and then goes silent (connection held open, zero bytes, no error) never
-    trips it, so a cron run hangs until something external kills it — which
-    also orphans the execution row. The watchdog aborts the in-flight sockets
-    through the already-registered abort hook and surfaces a retryable
-    ``TimeoutError`` so the outer retry loop reconnects with backoff /
-    credential rotation / provider fallback.
+    worker's poll loop does (#80759). The keepalive httpx client uses
+    ``read=None`` (SSE), so the socket itself is not a usable bound: a
+    provider that accepts the request and then goes silent never trips a
+    read timeout, and a stranger-thread abort cannot ``close()`` the FD
+    (#29507). The watchdog aborts in-flight sockets through the already-
+    registered abort hook; a per-call ``timeout`` matching the stale budget
+    is the hard backstop when that abort finds nothing to shut down
+    (#85252). Either path surfaces a retryable ``TimeoutError`` so the
+    outer retry loop reconnects with backoff / credential rotation /
+    provider fallback.
     """
     _check_stale_giveup(agent)
     agent._touch_activity("waiting for non-streaming API response")
@@ -1122,6 +1153,14 @@ def direct_api_call(agent, api_kwargs: dict):
     # stalls from the stall monitor.
     call_start = time.time()
     stale_timeout = _resolve_direct_stale_timeout(agent, api_kwargs)
+    # Do not override an explicit per-call timeout (provider config /
+    # transport already set one). Otherwise pin read=stale_timeout so a
+    # no-op stranger-thread abort cannot leave the keepalive client's
+    # read=None socket hanging until TCP dies (#85252).
+    hard_timeout = _inline_nonstream_hard_timeout(stale_timeout)
+    if hard_timeout is not None and "timeout" not in api_kwargs:
+        api_kwargs = dict(api_kwargs)
+        api_kwargs["timeout"] = hard_timeout
     activity_hb.start()
 
     def _on_stale() -> None:

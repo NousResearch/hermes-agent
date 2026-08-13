@@ -3860,7 +3860,9 @@ def _iter_pool_sockets(client: Any):
     traversal defensive because these are private transport internals and
     vary across httpx/httpcore releases.
 
-    Also walks ``httpx`` mount transports — see ``_iter_httpx_pool_objects``.
+    Also walks ``httpx`` mount transports — see ``_iter_httpx_pool_objects``
+    — and in-flight httpcore ``PoolRequest.connection`` objects, which stay
+    reachable even when ``_connections`` is empty during checkout (#85252).
     """
     try:
         http_client = getattr(client, "_client", None)
@@ -3877,12 +3879,18 @@ def _iter_pool_sockets(client: Any):
 
     seen: set[int] = set()
     for pool in pools:
-        connections = (
-            getattr(pool, "_connections", None)
-            or getattr(pool, "_pool", None)
-            or []
-        )
-        for conn in list(connections):
+        # Empty-list is falsy: use ``is None`` so an empty ``_connections``
+        # still lets us walk in-flight ``_requests`` rather than skipping
+        # the pool entirely.
+        raw_conns = getattr(pool, "_connections", None)
+        if raw_conns is None:
+            raw_conns = getattr(pool, "_pool", None)
+        connections = list(raw_conns or [])
+        for pool_req in list(getattr(pool, "_requests", None) or []):
+            conn = getattr(pool_req, "connection", None)
+            if conn is not None:
+                connections.append(conn)
+        for conn in connections:
             for candidate in _connection_candidates(conn):
                 stream = (
                     getattr(candidate, "_network_stream", None)
@@ -4157,6 +4165,16 @@ def force_close_tcp_sockets(client: Any) -> int:
     try:
         for sock in _iter_pool_sockets(client):
             try:
+                # Clear a blocking timeout first so a hung SSL_read on the
+                # owner thread notices the shutdown. Some stacks ignore
+                # SHUT_RDWR alone while recv is blocked with timeout=None
+                # (#85252). Still no close() — that is the #29507 race.
+                settimeout = getattr(sock, "settimeout", None)
+                if callable(settimeout):
+                    try:
+                        settimeout(0)
+                    except OSError:
+                        pass
                 sock.shutdown(_socket.SHUT_RDWR)
             except OSError:
                 # Already shut down / not connected / FD invalid — all benign.

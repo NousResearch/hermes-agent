@@ -822,6 +822,44 @@ def test_stream_current_primes_lazy_completed_response(relay_turn, monkeypatch):
     assert result is completed
 
 
+def test_stream_current_preserves_real_relay_interceptor_chunks(relay_turn):
+    """Priming a real managed pipeline must retain its transformed first chunk."""
+    relay, _turn = relay_turn
+
+    def rewrite_stream(request, next_call):
+        async def generate():
+            upstream = await next_call(request)
+            async for chunk in upstream:
+                yield {**chunk, "delta": chunk["delta"].upper()}
+
+        return generate()
+
+    relay.intercepts.register_llm_stream_execution(
+        "hermes-test-prime-stream",
+        1,
+        rewrite_stream,
+    )
+    try:
+        result = relay_llm.stream_current(
+            {"model": "test-model", "messages": [], "stream": True},
+            lambda _request: iter([{"delta": "a"}, {"delta": "b"}]),
+            name="test-provider",
+            model_name="test-model",
+            finalizer=lambda: {"content": "AB"},
+            completed_response_predicate=_choices_predicate,
+        )
+
+        assert list(result) == [
+            SimpleNamespace(delta="A"),
+            SimpleNamespace(delta="B"),
+        ]
+        assert result.output_modified is True
+    finally:
+        relay.intercepts.deregister_llm_stream_execution(
+            "hermes-test-prime-stream"
+        )
+
+
 def _completed_response(content: str = "done") -> SimpleNamespace:
     return SimpleNamespace(
         model="test-model",

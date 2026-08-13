@@ -407,12 +407,29 @@ function Show-ProgressWindow {
         $form.Controls.Add($bar)
         $form.Controls.Add($title)
         $form.Controls.Add($sub)
+        # `cmd start /min` minimizes the whole PowerShell process; conhost
+        # on some systems ignores the STARTUPINFO show state and stays
+        # full-size on screen. Tuck the console away FIRST — MainWindowHandle
+        # is unambiguous only while this process owns just its console (once
+        # the card exists it may resolve to the card). SW_MINIMIZE = 6.
+        try {
+            if ($script:Win32) {
+                $consoleHwnd = (Get-Process -Id $PID).MainWindowHandle
+                if ($consoleHwnd -ne [System.IntPtr]::Zero) {
+                    [HermesHandoff.Win32]::ShowWindow($consoleHwnd, 6) | Out-Null
+                }
+            }
+        } catch {}
         $form.Show()
         # `cmd start /min` spawned us backgrounded, so the card comes up
         # behind everything without one explicit activation. Claim it ONCE
         # (so the user knows the update started), then never again — the
         # window is decoration and competes with nothing (no TopMost).
+        # NOTE: /min minimized the whole PowerShell process, so the WinForms
+        # window inherits the minimized state and Activate() is a no-op.
+        # SW_RESTORE (9) un-minimizes before claiming foreground.
         try {
+            if ($script:Win32) { [HermesHandoff.Win32]::ShowWindow($form.Handle, 9) | Out-Null }  # SW_RESTORE
             $form.Activate()
             if ($script:Win32) { [HermesHandoff.Win32]::SetForegroundWindow($form.Handle) | Out-Null }
         } catch {}

@@ -2334,6 +2334,31 @@ def anthropic_prompt_cache_policy(
         # Third-party Anthropic-compatible gateway.
         return True, True
 
+    # LiteLLM fronting a Claude model on the OpenAI-compatible wire.
+    # The branch above only matches LiteLLM in Anthropic proxy mode
+    # (api_mode == "anthropic_messages"). A LiteLLM deployment that
+    # exposes /v1/chat/completions instead (api_mode == "chat_completions",
+    # /v1/messages returns 404) matches no grant branch above and falls
+    # through to (False, False): no cache_control is injected, the system
+    # prompt goes on the wire as a plain string, and the provider serves
+    # zero cache hits — the entire prompt is re-billed at full price every
+    # turn. Same failure class already documented above for Qwen/DashScope.
+    # The endpoint supports Anthropic-style cache_control fine; only the
+    # provider detection missed it.
+    #
+    # Gated on the Claude family only: a Gemini/GPT/Qwen route through the
+    # same proxy must not receive markers. Matches on the provider string
+    # OR the base_url host, because provider naming varies per install
+    # (`litellm`, `custom:litellm`, or a bare `custom` alias pointed at a
+    # LiteLLM host). Emits the native inner-block layout so the wire shape
+    # matches the anthropic_messages branch for the same gateway.
+    _is_litellm_endpoint = (
+        "litellm" in provider_lower
+        or "litellm" in base_url_hostname(eff_base_url).lower()
+    )
+    if _is_litellm_endpoint and is_claude and not is_anthropic_wire:
+        return True, True
+
     # MiniMax on its Anthropic-compatible endpoint serves its own
     # model family (MiniMax-M2.7, M2.5, M2.1, M2) with documented
     # cache_control support (0.1× read pricing, 5-minute TTL).  The

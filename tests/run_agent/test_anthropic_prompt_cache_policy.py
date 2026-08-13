@@ -550,6 +550,92 @@ class TestDeepSeekOpenCode:
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
 
+class TestLiteLLMOpenAIWire:
+    """LiteLLM fronting a Claude model on the OpenAI-compatible wire (#84506).
+
+    A LiteLLM proxy exposing /v1/chat/completions (api_mode ==
+    "chat_completions", /v1/messages returns 404) previously matched no
+    grant branch and fell through to (False, False): zero cache hits, the
+    full prompt re-billed every turn. The endpoint accepts Anthropic-style
+    cache_control fine — only the provider detection missed it. Claude gets
+    the grant with the native inner-block layout; non-Claude models routed
+    through the same proxy get nothing (they may not tolerate the marker
+    block format).
+    """
+
+    @pytest.mark.parametrize(
+        "provider,base_url",
+        [
+            # Provider-string signal: names vary per install.
+            ("litellm", "https://my-litellm-host.example.com/v1"),
+            ("custom:litellm", "https://my-litellm-host.example.com/v1"),
+            # Host signal: bare `custom` alias pointed at a LiteLLM host.
+            ("custom", "https://litellm.internal.example.com/v1"),
+        ],
+    )
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "claude-opus-4.8",
+            "anthropic/claude-sonnet-4.6",
+            "claude-3-7-sonnet",
+        ],
+    )
+    def test_claude_on_litellm_openai_wire_caches_with_native_layout(
+        self, provider, base_url, model
+    ):
+        agent = _make_agent(
+            provider=provider,
+            base_url=base_url,
+            api_mode="chat_completions",
+            model=model,
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "openai/gpt-5.4",
+            "gemini-2.5-pro",
+            "qwen3.6-plus",
+            "deepseek-v4-pro",
+        ],
+    )
+    def test_non_claude_on_litellm_openai_wire_does_not_cache(self, model):
+        # No over-reach: a Gemini/GPT/Qwen/DeepSeek route through the same
+        # LiteLLM proxy must not receive Anthropic cache_control markers.
+        agent = _make_agent(
+            provider="litellm",
+            base_url="https://litellm.internal.example.com/v1",
+            api_mode="chat_completions",
+            model=model,
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_litellm_claude_operator_disable_still_wins(self):
+        # prompt_caching.cache_ttl: false — the _cache_disabled early return
+        # must survive the new branch.
+        agent = _make_agent(
+            provider="litellm",
+            base_url="https://litellm.internal.example.com/v1",
+            api_mode="chat_completions",
+            model="claude-opus-4.8",
+        )
+        agent._cache_disabled = True
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_litellm_in_anthropic_proxy_mode_still_uses_native_layout(self):
+        # Adjacent behavior: LiteLLM reached over the native Anthropic wire
+        # keeps hitting the pre-existing is_anthropic_wire branch (True, True).
+        agent = _make_agent(
+            provider="litellm",
+            base_url="https://litellm.internal.example.com",
+            api_mode="anthropic_messages",
+            model="claude-opus-4.8",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, True)
+
+
 class TestNousPortalAnthropicWire:
     def test_portal_claude_on_the_messages_wire_uses_the_native_layout(self):
         agent = _make_agent(

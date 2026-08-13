@@ -140,6 +140,52 @@ class TestStreamingAccumulator:
 
     @patch("run_agent.AIAgent._create_request_openai_client")
     @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_sparse_tool_delta_allows_missing_nested_fields(
+        self, mock_close, mock_create
+    ):
+        """A partial tool delta may contain arguments before its other fields."""
+        from run_agent import AIAgent
+
+        sparse_tool_delta = SimpleNamespace(
+            index=0,
+            function=SimpleNamespace(arguments='{"city":"Paris"}'),
+        )
+        chunks = [
+            SimpleNamespace(
+                choices=[
+                    SimpleNamespace(
+                        index=0,
+                        delta=SimpleNamespace(tool_calls=[sparse_tool_delta]),
+                    )
+                ],
+                model="test-model",
+                usage=None,
+            ),
+            _make_stream_chunk(finish_reason="tool_calls", model="test-model"),
+        ]
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        tool_call = response.choices[0].message.tool_calls[0]
+        assert tool_call.function.name == ""
+        assert tool_call.function.arguments == '{"city":"Paris"}'
+        assert response.choices[0].finish_reason == "tool_calls"
+
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
     def test_chat_stream_closes_original_provider_resource(
         self,
         mock_close,

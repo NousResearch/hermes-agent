@@ -7705,10 +7705,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         sid = getattr(self, "session_id", None)
         if not db or not sid:
             return
+        provider = result.target_provider
+        # Bare "custom" is the resolved billing class, not a routable
+        # identity — persisting it verbatim makes a later resume hard-fail
+        # when the config default has moved off the custom endpoint
+        # (resolve_runtime_provider only trusts config base_url for bare
+        # custom while the config provider is still custom-ish). Heal to
+        # the durable custom:<name> menu key, else drop the provider —
+        # same recovery the TUI gateway applies on its read path.
+        if str(provider or "").strip().lower() == "custom":
+            try:
+                from hermes_cli.runtime_provider import canonical_custom_identity
+                provider = canonical_custom_identity(
+                    base_url=result.base_url or None,
+                    model=result.new_model or None,
+                ) or None
+            except Exception:
+                provider = None
         route = {
             k: v
             for k, v in {
-                "provider": result.target_provider,
+                "provider": provider,
                 "base_url": result.base_url,
                 "api_mode": result.api_mode,
             }.items()
@@ -7762,6 +7779,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         stored_provider = _stored_runtime.get("provider") or None
         stored_base_url = _stored_runtime.get("base_url") or None
         stored_api_mode = _stored_runtime.get("api_mode") or None
+        # Heal bare "custom" persisted by older builds / gateway turns: it's
+        # the resolved billing class, not a routable identity. Recover the
+        # durable custom:<name> menu key from the endpoint, else drop the
+        # provider so resume keeps the ambient default (matches the TUI
+        # gateway's _stored_session_runtime_overrides recovery).
+        if str(stored_provider or "").strip().lower() == "custom":
+            try:
+                from hermes_cli.runtime_provider import canonical_custom_identity
+                stored_provider = canonical_custom_identity(
+                    base_url=stored_base_url or None,
+                    model=stored_model or None,
+                ) or None
+            except Exception:
+                stored_provider = None
         model_changed = stored_model != self.model
         provider_changed = bool(stored_provider) and stored_provider != self.provider
         if not model_changed and not provider_changed:
@@ -7790,11 +7821,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 resolved = resolve_runtime_provider(requested=stored_provider)
                 if resolved.get("api_key"):
                     self.api_key = resolved["api_key"]
+                    self._credential_pool = resolved.get("credential_pool")
                 if not stored_base_url and resolved.get("base_url"):
                     self.base_url = resolved["base_url"]
                 if not stored_api_mode and resolved.get("api_mode"):
                     self.api_mode = resolved["api_mode"]
-                self._credential_pool = resolved.get("credential_pool")
             except Exception:
                 logger.debug(
                     "Credential re-resolution for resumed session provider "
@@ -9698,10 +9729,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         else:
             _cprint("    (session only — add --global to persist)")
 
-        # Persist session-scoped switches so --resume / session.resume
-        # restore them; --global switches live in config.yaml instead.
-        if not persist_global:
-            HermesCLI._persist_model_switch_to_session(self, result)
+        # Persist the switch to this session's row so --resume /
+        # session.resume restore it. --global also updates config.yaml
+        # (future sessions), but the row still records what THIS session
+        # actually runs — otherwise a later resume would restore the stale
+        # creation-time model over the user's new global choice.
+        HermesCLI._persist_model_switch_to_session(self, result)
 
     def _handle_model_picker_selection(self, persist_global: bool = False) -> None:
         state = self._model_picker_state
@@ -10054,10 +10087,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         else:
             _cprint("    (session only — add --global to persist)")
 
-        # Persist session-scoped switches so --resume / session.resume
-        # restore them; --global lives in config.yaml, --once is ephemeral
-        # (restored after one turn).
-        if not persist_global and not one_turn:
+        # Persist the switch to this session's row so --resume /
+        # session.resume restore it (--global also updates config.yaml but
+        # the row still records what THIS session runs; --once is ephemeral
+        # and restored after one turn, so it must not touch the row).
+        if not one_turn:
             HermesCLI._persist_model_switch_to_session(self, result)
 
     def _handle_codex_runtime(self, cmd_original: str) -> None:

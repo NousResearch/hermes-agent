@@ -164,6 +164,53 @@ def test_persist_model_switch_swallows_db_errors():
     stub._persist_model_switch_to_session(_Result())  # must not raise
 
 
+def test_persist_model_switch_heals_bare_custom(monkeypatch):
+    """Bare 'custom' is not routable — heal to custom:<name> or drop (C1)."""
+    written = {}
+
+    class _DB:
+        def update_session_model(self, sid, model):
+            written["model"] = model
+
+        def patch_session_model_config(self, sid, patch):
+            written["patch"] = patch
+
+    class _BareResult:
+        new_model = "qwen3.6-plus"
+        target_provider = "custom"
+        base_url = "https://my-endpoint/v1"
+        api_mode = ""
+
+    import hermes_cli.runtime_provider as rp
+    monkeypatch.setattr(rp, "canonical_custom_identity",
+                        lambda base_url=None, model=None: "custom:myendpoint")
+    stub = _make_stub(_session_db=_DB(), session_id="s1")
+    stub._persist_model_switch_to_session(_BareResult())
+    assert written["patch"]["provider"] == "custom:myendpoint"
+
+    # Healing fails -> provider dropped entirely, not persisted bare.
+    monkeypatch.setattr(rp, "canonical_custom_identity",
+                        lambda base_url=None, model=None: None)
+    written.clear()
+    stub._persist_model_switch_to_session(_BareResult())
+    assert "provider" not in written["patch"]
+    assert "provider" not in written["patch"]["gateway_runtime"]
+
+
+def test_restore_session_model_heals_bare_custom_stored_rows(monkeypatch):
+    """Rows persisted by older builds may carry bare 'custom' — heal or drop."""
+    import hermes_cli.runtime_provider as rp
+    monkeypatch.setattr(rp, "canonical_custom_identity",
+                        lambda base_url=None, model=None: None)
+    stub = _make_stub()
+    stub._restore_session_model(_row(model_config={
+        "gateway_runtime": {"provider": "custom"},
+    }))
+    # Provider dropped -> model restored but provider stays ambient.
+    assert stub.model == "glm-4.7"
+    assert stub.provider == "openrouter"
+
+
 # ── round trip: persist → get_session shape → restore ───────────────
 
 

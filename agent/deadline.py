@@ -523,7 +523,7 @@ def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
             # pid leads its own group: one syscall covers the whole group.
             # (The == check guards against signalling the caller's own group
             # when pid is not a leader.)
-            os.killpg(pgid, sig)
+            os.killpg(pgid, sig)  # windows-footgun: ok — POSIX-only branch (win32 returns above)
         else:
             os.kill(pid, sig)
         signalled = True

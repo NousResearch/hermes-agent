@@ -2986,54 +2986,103 @@ function Install-NodeDeps {
         }
     }
 
-    # Helper: run "npm install" in a given directory and surface the real
-    # error when it fails.  Returns $true on success.
+    # Wall-clock ceiling for each npm / Playwright invocation in this stage.
+    # scripts/install.sh has time-boxed the same work with
+    # ``run_with_timeout "$NODE_DEPS_TIMEOUT"`` (600s default) since #39219;
+    # Windows never got the guard, so a stalled registry fetch or a wedged
+    # Chromium extraction (#76222, #84614) froze the installer forever -- one
+    # user left it running 12+ hours overnight.  Same env override as bash
+    # for very slow links.
+    $nodeDepsTimeoutSec = 600
+    if ($env:NODE_DEPS_TIMEOUT -match '^\d+$') {
+        $nodeDepsTimeoutSec = [int]$env:NODE_DEPS_TIMEOUT
+    }
+
+    # Helper: run a native command with a hard wall-clock timeout while
+    # still streaming its output live.  Returns the exit code, or 124 on
+    # timeout (the same convention as coreutils ``timeout`` and bash's
+    # run_with_timeout).
     #
-    # Implementation note: ``Start-Process -FilePath npm.cmd`` fails with
+    # Launcher notes: ``Start-Process -FilePath npm.cmd`` fails with
     # ``%1 is not a valid Win32 application`` on some PowerShell versions
     # because Start-Process bypasses cmd.exe / PATHEXT and expects a real
-    # PE file.  The invocation-operator ``& $npmExe`` routes through the
-    # PowerShell command pipeline which DOES honour .cmd batch shims, so
-    # it works uniformly for npm.cmd, npx.cmd, and bare .exe files.
+    # PE file -- so route through cmd.exe, which IS a real PE, honours .cmd
+    # batch shims, and performs the stdout+stderr merge into the log file
+    # natively.  The parent then tails the log into the console each poll
+    # tick, preserving the live progress that makes a 3-minute download
+    # distinguishable from a hang (the whole reason _Run-NpmInstall streams
+    # output in the first place).  ``Wait-Job -Timeout`` was rejected: jobs
+    # swallow live output, and Stop-Job leaves the npm child running.
+    # taskkill /T kills the real process tree.  Works on Windows PowerShell
+    # 5.1 -- no pwsh-only primitives.
+    function _Invoke-NativeWithTimeout(
+        [string]$exePath, [string]$argLine, [string]$workDir,
+        [string]$logPath, [int]$timeoutSec
+    ) {
+        $cmdLine = "/d /s /c "" ""$exePath"" $argLine > ""$logPath"" 2>&1 """
+        $proc = Start-Process -FilePath $env:ComSpec -ArgumentList $cmdLine `
+            -WorkingDirectory $workDir -NoNewWindow -PassThru
+        $deadline = [DateTime]::UtcNow.AddSeconds($timeoutSec)
+        $shown = 0
+        function _Drain-NewLines([string]$path, [ref]$count) {
+            $lines = @(Get-Content $path -ErrorAction SilentlyContinue)
+            if ($lines.Count -gt $count.Value) {
+                $lines[$count.Value..($lines.Count - 1)] | ForEach-Object {
+                    Write-Host "    $_" -ForegroundColor DarkGray
+                }
+                $count.Value = $lines.Count
+            }
+        }
+        while (-not $proc.HasExited) {
+            if ([DateTime]::UtcNow -gt $deadline) {
+                & taskkill /T /F /PID $proc.Id 2>&1 | Out-Null
+                return 124
+            }
+            Start-Sleep -Milliseconds 750
+            _Drain-NewLines $logPath ([ref]$shown)
+        }
+        _Drain-NewLines $logPath ([ref]$shown)
+        return $proc.ExitCode
+    }
+
+    # Helper: run "npm install" in a given directory and surface the real
+    # error when it fails.  Returns $true on success.
     function _Run-NpmInstall([string]$label, [string]$installDir, [string]$logPath, [string]$npmPath) {
         Push-Location $installDir
         # Capture EAP outside the try block so the catch's restore call always
         # has a meaningful value (see Install-Uv for the full rationale).
         $prevEAP = $ErrorActionPreference
         try {
-            # Stream npm's output to BOTH the console and the log file via
-            # Tee-Object.  Previously this called ``& npm install --silent
-            # *> $logPath`` which redirected every stream to disk and left
-            # the user staring at a frozen "Installing..." line for the
-            # duration of the install.  On a fresh VM that's 1-3 minutes
-            # of total silence, indistinguishable from a hang.
+            # The helper streams npm's output to BOTH the console and the log
+            # file, so the user watches real progress instead of a frozen
+            # "Installing..." line (on a fresh VM the install is 1-3 minutes;
+            # total silence is indistinguishable from a hang) -- and the
+            # wall-clock ceiling turns a genuinely stalled install (#76222
+            # class) into a diagnosable failure instead of an overnight freeze.
             #
-            # Tee writes the live output to stdout AND $logPath; we still
-            # capture the exit code afterwards and surface diagnostics
-            # on failure.  Note: 2>&1 merges npm's stderr into the success
-            # stream first because Tee-Object only sees the success
-            # stream of the pipeline.  ForEach-Object { "$_" } coerces
-            # each item to a string so PowerShell's NativeCommandError
-            # formatter doesn't wrap stderr lines as alarming red blocks
-            # (cosmetic polish; the underlying text is unchanged).
-            #
-            # Relax EAP around the npm invocation: with EAP=Stop (set at
-            # the top of this script), PowerShell wraps stderr lines from
-            # native commands captured via 2>&1 as ErrorRecord objects and
-            # throws on the first one -- even though npm exited 0.  This
-            # is the same issue Test-Python and Install-Uv work around
-            # for uv's stderr-emitting installer.  Check success via
-            # $LASTEXITCODE, which is reliable regardless of stderr noise.
+            # Relax EAP around the invocation: with EAP=Stop (set at the top
+            # of this script), PowerShell can wrap stray stderr from the
+            # launcher plumbing as ErrorRecord objects and throw even though
+            # npm exited 0.  This is the same issue Test-Python and Install-Uv
+            # work around for uv's stderr-emitting installer.  Check success
+            # via the returned exit code, which is reliable regardless of
+            # stderr noise.
             $ErrorActionPreference = "Continue"
-            & $npmPath install --silent 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $logPath
-            $code = $LASTEXITCODE
+            $code = _Invoke-NativeWithTimeout $npmPath "install --silent" `
+                $installDir $logPath $nodeDepsTimeoutSec
             $ErrorActionPreference = $prevEAP
             if ($code -eq 0) {
                 Write-Success "$label dependencies installed"
                 Remove-Item -Force $logPath -ErrorAction SilentlyContinue
                 return $true
             }
-            Write-Warn "$label npm install failed -- exit code $code"
+            if ($code -eq 124) {
+                Write-Warn "$label npm install timed out after $([math]::Round($nodeDepsTimeoutSec / 60)) minutes -- a stalled download, wedged extraction, or file lock is the usual cause."
+                Write-Info "  Re-run the installer to retry (completed stages are skipped)."
+                Write-Info "  Slow connection? Raise the ceiling: set NODE_DEPS_TIMEOUT to seconds (default 600)."
+            } else {
+                Write-Warn "$label npm install failed -- exit code $code"
+            }
             if (Test-Path $logPath) {
                 $errText = (Get-Content $logPath -Raw -ErrorAction SilentlyContinue)
                 if ($errText) {
@@ -3113,27 +3162,32 @@ function Install-NodeDeps {
                     #
                     # Relax EAP around the playwright invocation: playwright
                     # emits a "Chromium downloaded to ..." success banner to
-                    # stderr after a successful install.  Under EAP=Stop, the
-                    # 2>&1 merge wraps those stderr lines as ErrorRecord
-                    # objects and throws -- causing this catch block to fire
-                    # with a mangled banner as the error message even though
-                    # the install actually succeeded.  Check $LASTEXITCODE
-                    # instead, which is the reliable signal.
+                    # stderr after a successful install.  The launcher merges
+                    # stderr into the log natively, but keep EAP relaxed so
+                    # stray plumbing stderr can't fire the catch block with a
+                    # mangled banner even though the install succeeded.  Check
+                    # the returned exit code instead, which is the reliable
+                    # signal.
                     #
-                    # The ForEach-Object { "$_" } coercion BEFORE Tee-Object
-                    # is a cosmetic polish: with bare 2>&1, PowerShell still
-                    # renders stderr lines through its NativeCommandError
-                    # formatter (the red "npx.cmd : ..." block).  Coercing
-                    # each pipeline item to a string strips that wrapper so
-                    # the user sees clean playwright output instead of the
-                    # alarming-looking error formatting.
+                    # The wall-clock ceiling is the #76222 / #84614 fix: the
+                    # Chromium download reaches 100% and the extraction wedges
+                    # (or the registry fetch stalls), and without a bound the
+                    # installer sits on this line forever.  bash has carried
+                    # the same 600s guard via run_playwright_install since
+                    # #39219.
                     $ErrorActionPreference = "Continue"
-                    & $npxExe --yes playwright install chromium 2>&1 | ForEach-Object { "$_" } | Tee-Object -FilePath $pwLog
-                    $pwCode = $LASTEXITCODE
+                    $pwCode = _Invoke-NativeWithTimeout $npxExe "--yes playwright install chromium" `
+                        $InstallDir $pwLog $nodeDepsTimeoutSec
                     $ErrorActionPreference = $prevEAP
                     if ($pwCode -eq 0) {
                         Write-Success "Playwright Chromium installed (browser tools ready)"
                         Remove-Item -Force $pwLog -ErrorAction SilentlyContinue
+                    } elseif ($pwCode -eq 124) {
+                        Write-Warn "Playwright Chromium install timed out after $([math]::Round($nodeDepsTimeoutSec / 60)) minutes."
+                        Write-Warn "This usually means a stalled download or a wedged archive extraction (a locked previous browser version can also cause it)."
+                        Write-Warn "Browser tools will not work until Chromium is installed."
+                        if (Test-Path $pwLog) { Write-Info "  Partial log: $pwLog" }
+                        Write-Info "Run manually later: cd `"$InstallDir`"; npx playwright install chromium"
                     } else {
                         Write-Warn "Playwright Chromium install failed -- exit code $pwCode"
                         Write-Warn "Browser tools will not work until Chromium is installed."

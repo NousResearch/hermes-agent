@@ -625,6 +625,20 @@ def _get_max_concurrent_children() -> int:
     return _DEFAULT_MAX_CONCURRENT_CHILDREN
 
 
+def _get_worktree_isolation() -> bool:
+    """Read delegation.worktree_isolation from config (bool, default False).
+
+    Inspired by Muse Code's ``--subagent-worktree-isolation`` (Meta, Aug
+    2026): when enabled, each delegated child gets its own git worktree
+    checked out from the parent's current commit so parallel children never
+    contend for the same working copy. Opt-in and git-only — in a non-git
+    workspace or on a non-local terminal backend the flag is ignored without
+    an error and children share the parent's workspace as before.
+    """
+    cfg = _load_config()
+    return bool(cfg.get("worktree_isolation", False))
+
+
 _LEGACY_MAX_ASYNC_WARNED = False
 
 
@@ -2255,6 +2269,24 @@ def _run_single_child(
             }
         )
 
+    # Worktree-isolation state: populated inside the try once the child's
+    # task id is known; the default no-op keeps every early error path safe.
+    _worktree_info: Optional[Dict[str, str]] = None
+
+    def _attach_worktree(entry_dict: Dict[str, Any]) -> None:
+        """Inspect + prune the child worktree, reporting into the entry."""
+        if _worktree_info is None:
+            return
+        try:
+            from tools import subagent_worktree
+
+            entry_dict["worktree"] = (
+                subagent_worktree.finalize_subagent_worktree(_worktree_info)
+            )
+        except Exception as e:
+            logger.debug("worktree finalize failed: %s", e)
+            entry_dict["worktree"] = dict(_worktree_info)
+
     try:
         _heartbeat_thread.start()
         if child_progress_cb:
@@ -2292,6 +2324,48 @@ def _run_single_child(
             register_container_alias(child_task_id, parent_task_id)
         except Exception as e:
             logger.debug("Child cwd seed failed: %s", e)
+
+        # Opt-in worktree isolation (delegation.worktree_isolation, inspired
+        # by Muse Code's --subagent-worktree-isolation): give this child its
+        # own git worktree branched from the parent repo's HEAD, and start its
+        # terminal there. Git-only and local-backend-only; any failure
+        # degrades silently to the shared-workspace behavior above.
+        if _get_worktree_isolation():
+            try:
+                from tools import subagent_worktree
+
+                if subagent_worktree.local_backend_active():
+                    _parent_cwd = None
+                    try:
+                        from tools.terminal_tool import get_session_cwd as _gsc
+
+                        _parent_cwd = _gsc(parent_task_id)
+                    except Exception:
+                        pass
+                    _worktree_info = subagent_worktree.create_subagent_worktree(
+                        _parent_cwd or _resolve_workspace_hint(parent_agent),
+                        subagent_id=_subagent_id,
+                    )
+                else:
+                    logger.debug(
+                        "worktree isolation skipped: non-local terminal backend"
+                    )
+            except Exception as e:
+                logger.debug("worktree isolation setup failed: %s", e)
+            if _worktree_info is not None:
+                try:
+                    from tools.terminal_tool import record_session_cwd as _rsc
+
+                    _rsc(child_task_id, _worktree_info["path"])
+                except Exception as e:
+                    logger.debug("worktree cwd seed failed: %s", e)
+                # The child's context is already built; carry the isolation
+                # contract on the goal message instead (same turn, no
+                # system-prompt mutation).
+                from tools.subagent_worktree import build_worktree_context_note
+
+                goal = goal + build_worktree_context_note(_worktree_info)
+
         wall_start = time.time()
         parent_reads_snapshot = (
             list(file_state.known_reads(parent_task_id)) if parent_task_id else []
@@ -2461,6 +2535,7 @@ def _run_single_child(
                     " [steer did not land before the subagent stopped: "
                     f"{_late_pending_steer}]"
                 )
+            _attach_worktree(_error_entry)
             return _error_entry
         finally:
             # Shut down executor without waiting — if the child thread
@@ -2792,6 +2867,7 @@ def _run_single_child(
             except Exception as e:
                 logger.debug("Progress callback completion failed: %s", e)
 
+        _attach_worktree(entry)
         return entry
 
     except Exception as exc:
@@ -2826,6 +2902,8 @@ def _run_single_child(
                 " [steer did not land before the subagent stopped: "
                 f"{_late_pending_steer}]"
             )
+        # _attach_worktree defaults to a no-op when isolation never engaged.
+        _attach_worktree(_error_entry)
         return _error_entry
 
     finally:

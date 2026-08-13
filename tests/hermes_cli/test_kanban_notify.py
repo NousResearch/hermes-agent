@@ -939,3 +939,75 @@ def test_migration_backfill_runs_only_on_first_add(kanban_home):
             (task_id,),
         ).fetchone()
     assert row["delivery_mode"] == "notify"
+
+
+# ---------------------------------------------------------------------------
+# Issue #73030: _inherit_notify_subs (link_tasks / decompose path) must copy
+# EVERY routing column — chat_type, user_id_alt, delivery_mode, and
+# delivery_metadata. Before the fix it copied only platform/chat/thread/user/
+# profile, so a DM-originated child completion fell back to chat_type='group'
+# and woke a fresh group-scoped session instead of the originating DM, and
+# Telegram DM-topic subs lost their persisted reply-fallback metadata.
+# ---------------------------------------------------------------------------
+
+
+def _add_full_parent_sub(kb, conn, parent):
+    kb.add_notify_sub(
+        conn, task_id=parent, platform="telegram", chat_id="chat1",
+        thread_id="topic1", user_id="user1", user_id_alt="alt-1",
+        chat_type="dm", notifier_profile="default",
+        delivery_mode="notify+wake",
+        delivery_metadata={"reply_fallback": "general", "topic_name": "ops"},
+    )
+
+
+def _assert_full_inherited_sub(subs):
+    assert len(subs) == 1
+    s = subs[0]
+    assert s["platform"] == "telegram"
+    assert s["chat_id"] == "chat1"
+    assert s["thread_id"] == "topic1"
+    assert s["user_id"] == "user1"
+    assert s["user_id_alt"] == "alt-1", "user_id_alt dropped during inheritance"
+    assert s["chat_type"] == "dm", (
+        "chat_type dropped during inheritance — wake would key to a "
+        "group-scoped session instead of the originating DM (issue #73030)"
+    )
+    assert s["delivery_mode"] == "notify+wake"
+    md = s["delivery_metadata"]
+    assert md and md.get("reply_fallback") == "general", (
+        "delivery_metadata dropped during inheritance (issue #73030)"
+    )
+
+
+def test_link_tasks_inherits_all_routing_columns(kanban_home):
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="root", assignee=None)
+        _add_full_parent_sub(kb, conn, parent)
+        # Pre-existing child, linked after the fact — exercises
+        # _inherit_notify_subs directly (not the create_task parents path).
+        child = kb.create_task(conn, title="existing child", assignee="w1")
+        kb.link_tasks(conn, parent, child)
+        subs = kb.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+    _assert_full_inherited_sub(subs)
+
+
+def test_create_with_parents_inherits_delivery_metadata(kanban_home):
+    import hermes_cli.kanban_db as kb
+
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="root", assignee=None)
+        _add_full_parent_sub(kb, conn, parent)
+        child = kb.create_task(
+            conn, title="graph child", assignee="w1", parents=[parent],
+        )
+        subs = kb.list_notify_subs(conn, child)
+    finally:
+        conn.close()
+    _assert_full_inherited_sub(subs)

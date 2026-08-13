@@ -134,8 +134,14 @@ def create_app(adapter: UpstreamAdapter) -> "web.Application":
                 code="path_not_allowed",
             )
 
+        # ``UpstreamAdapter.get_credential`` is synchronous and hard-blocking:
+        # the Nous adapter takes ``_auth_store_lock()`` (a cross-process lock
+        # with a 15s timeout), reads auth.json, and may perform a token-refresh
+        # POST, taking the lock a second time to persist a terminal error. Run
+        # it on a worker thread so a refresh or a contended lock cannot freeze
+        # every other in-flight streaming completion on this single loop.
         try:
-            cred = adapter.get_credential()
+            cred = await asyncio.to_thread(adapter.get_credential)
         except Exception as exc:
             logger.warning("proxy: credential resolution failed: %s", exc)
             return _json_error(401, str(exc), code="upstream_auth_failed")

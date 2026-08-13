@@ -1,0 +1,7 @@
+name: denji-policy-enforcer
+version: 1.0.0
+description: Enforces runtime tool-call policies and logs decisions to Denji audit ledger.
+author: denji-ledger
+provides_hooks:
+  - pre_tool_call
+kind: standalone

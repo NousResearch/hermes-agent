@@ -928,6 +928,52 @@ class TestPythonpathSelectiveStrip:
             "/home/user/my-lib",
         ]
 
+    def test_profile_rehome_keeps_junction_lexical_alias(self, tmp_path, monkeypatch):
+        """Profile re-home must not lose the launcher's lexical repo-root spelling.
+
+        The desktop/CLI spawn children with HERMES_HOME and PYTHONPATH in the
+        configured (junction) spelling, but --profile / sticky active_profile
+        re-home HERMES_HOME through resolve_profile_env() before the
+        sanitizer loads.  Regression (junction + profile re-home): the alias
+        builder must still recover the lexical root so the inherited lexical
+        repo-root entry is stripped.
+        """
+        import tools.environments.local as local
+        from hermes_cli.profiles import resolve_profile_env
+
+        physical_home = tmp_path / "physical-home"
+        physical_root = physical_home / "hermes-agent"
+        physical_root.mkdir(parents=True)
+        (physical_home / "profiles" / "coder").mkdir(parents=True)
+        configured_home = tmp_path / "configured-home"
+        try:
+            _make_directory_link(configured_home, physical_home)
+        except OSError as exc:
+            pytest.skip(f"directory link unavailable on this host: {exc}")
+
+        # Launcher contract: the configured spelling is the env and the root.
+        monkeypatch.setenv("HERMES_HOME", str(configured_home))
+        lexical_root = configured_home / "hermes-agent"
+
+        # Profile re-home keeps the configured spelling (physically identical
+        # through the link; lexically the launcher spelling is preserved).
+        assert Path(resolve_profile_env("default")) == configured_home
+        assert Path(resolve_profile_env("coder")) == configured_home / "profiles" / "coder"
+
+        # The sanitizer now runs under the re-homed (profile) HERMES_HOME.
+        aliases = local._build_hermes_repo_root_aliases(
+            physical_root.resolve(),
+            physical_root,
+            configured_home / "profiles" / "coder",
+        )
+        assert any(local._same_path(a, lexical_root) for a in aliases)
+
+        monkeypatch.setattr(local, "_hermes_repo_root_aliases", aliases)
+        env = {"PYTHONPATH": os.pathsep.join([str(lexical_root), "/home/user/my-lib"])}
+        local._strip_hermes_owned_pythonpath(env)
+        assert env["PYTHONPATH"].split(os.pathsep) == ["/home/user/my-lib"]
+
+
     def test_deep_path_under_repo_root_preserved(self):
         """A deeper path under the repo root (depth=2) is preserved.
 

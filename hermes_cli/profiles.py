@@ -2360,12 +2360,30 @@ def resolve_profile_env(profile_name: str) -> str:
 
     Called early in the CLI entry point, before any hermes modules
     are imported, to set the HERMES_HOME environment variable.
+
+    When HERMES_HOME is already set, the configured spelling IS the
+    launch root (it may be a junction/symlink alias of the platform
+    default).  Keep that spelling so profile re-home does not destroy
+    the launcher's lexical provenance -- the subprocess sanitizer needs
+    it to match Hermes-owned PYTHONPATH entries written in the same
+    spelling (#82581 junction follow-up).  Physically the paths are
+    identical (junction-transparent); only the spelling is preserved.
     """
     canon = normalize_profile_name(profile_name)
     validate_profile_name(canon)
-    profile_dir = get_profile_dir(canon)
+    env_home = os.environ.get("HERMES_HOME", "").strip()
+    if env_home:
+        env_path = Path(env_home)
+        # A profile-shaped env value means the root is the grandparent
+        # (mirrors get_default_hermes_root()).
+        root = env_path.parent.parent if env_path.parent.name == "profiles" else env_path
+    else:
+        root = _get_default_hermes_home()
+    if canon == "default":
+        return str(root)
+    profile_dir = root / "profiles" / canon
 
-    if canon != "default" and not profile_dir.is_dir():
+    if not profile_dir.is_dir():
         raise FileNotFoundError(
             f"Profile '{canon}' does not exist. "
             f"Create it with: hermes profile create {canon}"

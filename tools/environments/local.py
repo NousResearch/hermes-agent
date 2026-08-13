@@ -1380,15 +1380,28 @@ def _build_hermes_repo_root_aliases(
     add(resolved_root)
     add(lexical_root)
 
-    try:
-        resolved_home = configured_home.resolve()
-        home_key = os.path.normcase(str(resolved_home))
-        root_key = os.path.normcase(str(resolved_root))
-        if os.path.commonpath([home_key, root_key]) == home_key:
-            relative_root = os.path.relpath(str(resolved_root), str(resolved_home))
-            add(configured_home / relative_root)
-    except (OSError, ValueError):
-        pass
+    # Profile re-home: with --profile / sticky active_profile the configured
+    # home becomes <root>/profiles/<name>.  The repo root then lives beside
+    # the profiles directory (not under the profile home), so the home-
+    # relative mapping below cannot reach it.  Derive the root spelling
+    # lexically the same way get_default_hermes_root() does (parent of a
+    # "profiles" component) and run the same exact-ownership mapping against
+    # it -- this recovers the launcher's lexical root under profile re-home
+    # while still never matching arbitrary descendants of HERMES_HOME.
+    home_candidates = [configured_home]
+    if configured_home.parent.name == "profiles":
+        home_candidates.append(configured_home.parent.parent)
+
+    for home in home_candidates:
+        try:
+            resolved_home = home.resolve()
+            home_key = os.path.normcase(str(resolved_home))
+            root_key = os.path.normcase(str(resolved_root))
+            if os.path.commonpath([home_key, root_key]) == home_key:
+                relative_root = os.path.relpath(str(resolved_root), str(resolved_home))
+                add(home / relative_root)
+        except (OSError, ValueError):
+            pass
 
     return tuple(aliases)
 

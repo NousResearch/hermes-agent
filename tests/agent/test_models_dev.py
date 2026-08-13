@@ -559,6 +559,10 @@ class TestCorruptCacheRejection:
 
         assert result == {}
         assert not etag.exists()
+        # The corrupt file is quarantined (renamed), so the rejection is
+        # a one-time event instead of a re-parse + warning per call.
+        assert not cache.exists()
+        assert cache.with_suffix(".json.corrupt").exists()
 
     def test_conditional_get_skipped_without_servable_cache(self):
         """No If-None-Match header when the process holds no registry.

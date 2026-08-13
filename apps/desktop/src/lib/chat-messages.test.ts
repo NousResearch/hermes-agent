@@ -12,6 +12,7 @@ import {
   preserveLocalAssistantErrors,
   reasoningPart,
   renderMediaTags,
+  sealOpenToolParts,
   toChatMessages,
   upsertToolPart
 } from './chat-messages'
@@ -1164,5 +1165,67 @@ describe('collectUnspokenTurnSpeech', () => {
     expect(collectUnspokenTurnSpeech([], null)).toBeNull()
     expect(collectUnspokenTurnSpeech([assistant('a1', 'Done.')], 'a1')).toBeNull()
     expect(collectUnspokenTurnSpeech([user('u1', 'hello'), assistant('a1', '')], null)).toBeNull()
+  })
+})
+
+describe('sealOpenToolParts', () => {
+  const toolPart = (over: Partial<ChatMessagePart> = {}): ChatMessagePart =>
+    ({
+      type: 'tool-call',
+      toolCallId: 'call-1',
+      toolName: 'terminal',
+      args: {},
+      argsText: '{}',
+      ...over
+    }) as ChatMessagePart
+
+  const assistantWithParts = (parts: ChatMessagePart[], over: Partial<ChatMessage> = {}): ChatMessage =>
+    ({
+      id: 'a1',
+      role: 'assistant',
+      parts,
+      ...over
+    }) as ChatMessage
+
+  it('seals open tool-call parts in settled assistant messages', () => {
+    const messages = [assistantWithParts([toolPart()])]
+
+    const next = sealOpenToolParts(messages)
+
+    expect(next[0].parts[0]).toHaveProperty('result')
+  })
+
+  it('leaves already-completed tool parts untouched', () => {
+    const done = toolPart({ result: { code: 0 } })
+    const messages = [assistantWithParts([done])]
+
+    const next = sealOpenToolParts(messages)
+
+    expect(next[0].parts[0]).toBe(done)
+  })
+
+  it('leaves pending messages alone', () => {
+    const messages = [assistantWithParts([toolPart()], { pending: true })]
+
+    const next = sealOpenToolParts(messages)
+
+    expect(next[0].parts[0]).not.toHaveProperty('result')
+  })
+
+  it('leaves non-tool parts untouched', () => {
+    const text = { type: 'text', text: 'hello' } as ChatMessagePart
+    const messages = [assistantWithParts([text, toolPart()])]
+
+    const next = sealOpenToolParts(messages)
+
+    expect(next[0].parts[0]).toBe(text)
+    expect(next[0].parts[1]).toHaveProperty('result')
+  })
+
+  it('returns the same array reference when nothing needs sealing', () => {
+    const done = toolPart({ result: { code: 0 } })
+    const messages = [assistantWithParts([done])]
+
+    expect(sealOpenToolParts(messages)).toBe(messages)
   })
 })

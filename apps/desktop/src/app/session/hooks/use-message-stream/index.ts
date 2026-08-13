@@ -13,6 +13,7 @@ import {
   mergeFinalAssistantText,
   reasoningPart,
   renderMediaTags,
+  sealOpenToolParts,
   upsertToolPart
 } from '@/lib/chat-messages'
 import {
@@ -665,6 +666,12 @@ export function useMessageStream({
             nextMessages = [...prev, newAssistantFromCompletion()]
           }
         }
+
+        // Turn-settle reconciliation: a `tool.complete` event lost to a
+        // degraded websocket leaves its tool row spinning forever. The turn is
+        // provably done here — nothing can still be running — so seal any
+        // tool-call parts that never saw their completion event.
+        nextMessages = sealOpenToolParts(nextMessages)
 
         const hasInlineError = nextMessages.some(m => m.role === 'assistant' && m.error && !m.hidden)
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)

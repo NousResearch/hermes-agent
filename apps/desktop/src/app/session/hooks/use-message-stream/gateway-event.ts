@@ -12,7 +12,7 @@ import { translateNow } from '@/i18n'
 import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
-import { approvalReplaySessionId, resolveGatewayEventSessionId } from '@/lib/gateway-events'
+import { approvalReplaySessionId, resolveGatewayEventSessionId, UNSCOPED_STREAM_EVENT_TYPES } from '@/lib/gateway-events'
 import { triggerHaptic } from '@/lib/haptics'
 import { modelOptionsQueryKey } from '@/lib/model-options'
 import { isProviderSetupErrorMessage } from '@/lib/provider-setup-errors'
@@ -321,6 +321,32 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       }
 
       const sessionId = route.sessionId
+
+      // Late stragglers: an unscoped stream event attributed via the
+      // active-session fallback (no pin) to a session that has no live turn
+      // belongs to a turn that already ended elsewhere. Dropping it keeps the
+      // previous session's tail events (a delayed `thinking.delta` or
+      // `status.update`) from landing in a freshly opened chat (#43142 family:
+      // busy/streaming UI inherited when switching sessions).
+      if (
+        sessionId &&
+        !explicitSid &&
+        !route.pinned &&
+        event.type &&
+        event.type !== 'message.start' &&
+        UNSCOPED_STREAM_EVENT_TYPES.has(event.type)
+      ) {
+        const state = sessionStateByRuntimeIdRef.current.get(sessionId)
+
+        const hasLiveTurn = Boolean(
+          state && (state.awaitingResponse || state.busy || state.streamId || state.sawAssistantPayload)
+        )
+
+        if (!hasLiveTurn) {
+          return
+        }
+      }
+
       const isActiveEvent = !!sessionId && sessionId === activeSessionIdRef.current
 
       const replaySessionId = approvalReplaySessionId(event.type, activeSessionIdRef.current, sessionId)

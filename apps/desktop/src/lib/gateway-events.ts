@@ -17,7 +17,12 @@ function asRecord(payload: unknown): Record<string, unknown> {
  * Without this, ``explicitSid || activeSessionId`` reattributes live deltas to
  * the newly focused chat.
  */
-const UNSCOPED_STREAM_EVENT_TYPES = new Set([
+/** Unscoped stream events that must stay pinned to the session that received
+ * ``message.start`` after the user switches chats mid-turn (#47709 / #48281).
+ * Without this, ``explicitSid || activeSessionId`` reattributes live deltas to
+ * the newly focused chat. Exported so the event handler can tell which events
+ * are pin-eligible when deciding whether an unpinned straggler is legitimate. */
+export const UNSCOPED_STREAM_EVENT_TYPES = new Set([
   'approval.request',
   'browser.progress',
   'clarify.request',
@@ -67,6 +72,11 @@ export interface GatewayEventSessionRouteInput {
 export interface GatewayEventSessionRoute {
   drop: boolean
   nextUnscopedStreamSessionId: null | string
+  /** True when the event was attributed via the pinned stream session rather
+   *  than the active-session fallback. The caller uses this to drop late
+   *  stragglers: an unpinned stream event landing on a session that has no
+   *  live turn belongs to a turn that already ended elsewhere. */
+  pinned: boolean
   sessionId: null | string
 }
 
@@ -108,6 +118,7 @@ export function resolveGatewayEventSessionId({
     return {
       drop: false,
       nextUnscopedStreamSessionId,
+      pinned: true,
       sessionId: explicitSessionId
     }
   }
@@ -116,6 +127,7 @@ export function resolveGatewayEventSessionId({
     return {
       drop: true,
       nextUnscopedStreamSessionId: unscopedStreamSessionId,
+      pinned: false,
       sessionId: null
     }
   }
@@ -140,6 +152,7 @@ export function resolveGatewayEventSessionId({
   return {
     drop: false,
     nextUnscopedStreamSessionId,
+    pinned: streamEvent && eventType !== 'message.start' && Boolean(unscopedStreamSessionId),
     sessionId
   }
 }

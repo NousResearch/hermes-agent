@@ -711,6 +711,47 @@ export function upsertToolPart(
   return next
 }
 
+/**
+ * Turn-settle reconciliation: close every tool-call part that never received
+ * its completion event. A `tool.complete` lost to a degraded websocket
+ * (reconnect, profile swap, hidden window) leaves the part without a `result`,
+ * which renders as a permanently spinning tool row even though the turn itself
+ * completed. A settled session cannot have tools still running, so an open
+ * part at settle time is a lost event, not live work. Pending messages are
+ * left alone, and no-op calls return the input array unchanged.
+ */
+export function sealOpenToolParts(messages: ChatMessage[]): ChatMessage[] {
+  let changed = false
+
+  const next = messages.map(message => {
+    if (message.role !== 'assistant' || message.pending) {
+      return message
+    }
+
+    let partChanged = false
+
+    const parts = message.parts.map(part => {
+      if (part.type !== 'tool-call' || Object.hasOwn(part, 'result')) {
+        return part
+      }
+
+      partChanged = true
+
+      return { ...part, result: {} }
+    })
+
+    if (!partChanged) {
+      return message
+    }
+
+    changed = true
+
+    return { ...message, parts }
+  })
+
+  return changed ? next : messages
+}
+
 function recordFromUnknown(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' ? (value as Record<string, unknown>) : null
 }

@@ -25,7 +25,11 @@ implementer thought to test:
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import aiohttp
+import pytest
+
+# Optional dep: CI installs [all] extras, but local envs may lack aiohttp —
+# skip cleanly instead of crashing collection.
+aiohttp = pytest.importorskip("aiohttp")
 
 from plugins.platforms.mattermost.adapter import MattermostAdapter
 
@@ -33,6 +37,14 @@ from plugins.platforms.mattermost.adapter import MattermostAdapter
 def _make_adapter(closing: bool = False) -> MattermostAdapter:
     adapter = MattermostAdapter.__new__(MattermostAdapter)
     adapter._closing = closing
+    # The genuine-auth path now escalates via _set_fatal_error +
+    # _notify_fatal_error (OOF-156 follow-up), which touch these attributes
+    # that __init__ would normally provide.
+    from gateway.config import Platform
+
+    adapter.platform = Platform.MATTERMOST
+    adapter._running = True
+    adapter._fatal_error_handler = None
     return adapter
 
 

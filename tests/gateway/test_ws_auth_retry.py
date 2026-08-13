@@ -19,8 +19,11 @@ class TestMattermostWSAuthRetry:
     """gateway/platforms/mattermost.py — _ws_loop()"""
 
     def test_401_handshake_stops_reconnect(self):
-        """A WSServerHandshakeError with status 401 should stop the loop."""
+        """A WSServerHandshakeError with status 401 should stop the loop —
+        AND escalate through the fatal-error hook (a bare return used to
+        leave _running True: dead listener, healthy-looking adapter)."""
         import aiohttp
+        from gateway.config import Platform
 
         exc = aiohttp.WSServerHandshakeError(
             request_info=MagicMock(),
@@ -34,6 +37,14 @@ class TestMattermostWSAuthRetry:
 
         adapter = MattermostAdapter.__new__(MattermostAdapter)
         adapter._closing = False
+        adapter._running = True
+        adapter.platform = Platform.MATTERMOST
+        notified = []
+
+        async def fatal_handler(a):
+            notified.append(a)
+
+        adapter._fatal_error_handler = fatal_handler
 
         call_count = 0
 
@@ -44,10 +55,20 @@ class TestMattermostWSAuthRetry:
 
         adapter._ws_connect_and_listen = fake_connect
 
-        asyncio.run(adapter._ws_loop())
+        async def run():
+            await adapter._ws_loop()
+            # Let the detached fatal-handler task complete.
+            await asyncio.sleep(0)
+
+        asyncio.run(run())
 
         # Should have attempted once and stopped, not retried
         assert call_count == 1
+        # Escalated: fatal error recorded, _running cleared, handler notified.
+        assert adapter._fatal_error_code == "mattermost_auth_error"
+        assert adapter._fatal_error_retryable is False
+        assert adapter._running is False
+        assert notified == [adapter]
 
     def test_transient_401_substring_does_not_stop_reconnect(self):
         """A transient exception whose stringified message merely contains

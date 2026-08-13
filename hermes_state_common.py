@@ -100,12 +100,38 @@ _COMPRESSION_CHILD_SQL = (
 
 _RESET_END_REASONS = (
     "session_reset",
+    # switch_session() never creates a child row, but pre-marker DBs can hold
+    # legacy reset children whose parent later ended with 'session_switch'
+    # (resumed then switched away before reopen-time stamping existed). Also
+    # keeps this set identical to the recovery fence in
+    # find_latest_gateway_session_for_peer, which interpolates
+    # _RESET_END_REASONS_SQL so the two cannot drift.
+    "session_switch",
     "idle",
     "daily",
     "suspended",
     "resume_pending_expired",
 )
 _RESET_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RESET_END_REASONS)
+
+
+def _legacy_reset_child_sql(alias: str, reasons_sql: str) -> str:
+    """Pre-marker reset-continuation heuristic.
+
+    A child is a legacy reset continuation when it rides its parent's exact
+    non-empty routing key and the parent ended at a reset boundary. Shared by
+    the listing predicate (``_RESET_CHILD_SQL``) and ``reopen_session()``'s
+    marker-stamping UPDATE so the two sites cannot drift; ``reasons_sql`` is
+    either the literal ``_RESET_END_REASONS_SQL`` or a bound-placeholder list.
+    """
+    return (
+        f"EXISTS (SELECT 1 FROM sessions p"
+        f"            WHERE p.id = {alias}.parent_session_id"
+        f"            AND p.end_reason IN ({reasons_sql})"
+        f"            AND {alias}.session_key IS NOT NULL"
+        f"            AND {alias}.session_key != ''"
+        f"            AND {alias}.session_key = p.session_key)"
+    )
 
 
 # A reset starts a separate user-visible conversation even though gateway rows
@@ -115,12 +141,7 @@ _RESET_END_REASONS_SQL = ", ".join(f"'{reason}'" for reason in _RESET_END_REASON
 # out even when their parent is later reset.
 _RESET_CHILD_SQL = (
     "json_extract(COALESCE({a}.model_config, '{{}}'), '$._reset_from') IS NOT NULL"
-    " OR EXISTS (SELECT 1 FROM sessions p"
-    "            WHERE p.id = {a}.parent_session_id"
-    f"            AND p.end_reason IN ({_RESET_END_REASONS_SQL})"
-    "            AND {a}.session_key IS NOT NULL"
-    "            AND {a}.session_key != ''"
-    "            AND {a}.session_key = p.session_key)"
+    " OR " + _legacy_reset_child_sql("{a}", _RESET_END_REASONS_SQL)
 )
 
 

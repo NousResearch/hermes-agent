@@ -55,7 +55,9 @@ from hermes_state_common import (  # noqa: F401  (re-exported for back-compat)
     _LISTABLE_CHILD_SQL,
     _PREVIEW_RAW_SELECT,
     _RESET_END_REASONS,
+    _RESET_END_REASONS_SQL,
     _ephemeral_child_sql,
+    _legacy_reset_child_sql,
     _shape_preview,
     _sql_session_last_active,
     _sql_session_last_active_by_id,
@@ -4587,7 +4589,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             return None
         with self._lock:
             row = self._conn.execute(
-                """
+                f"""
                 SELECT s.*,
                        COALESCE(sp.prompt, s.system_prompt)
                            AS _system_prompt_resolved,
@@ -4604,9 +4606,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                       WHERE b.session_key = s.session_key
                         AND b.source = s.source
                         AND b.ended_at IS NOT NULL
-                        AND b.end_reason IN ('session_reset', 'session_switch',
-                                             'idle', 'daily', 'suspended',
-                                             'resume_pending_expired')
+                        AND b.end_reason IN ({_RESET_END_REASONS_SQL})
                         AND b.ended_at
                             > COALESCE(s.last_activity_at, s.started_at)
                   )
@@ -4625,7 +4625,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             if chat_id is None or chat_type is None:
                 return None
             row = self._conn.execute(
-                """
+                f"""
                 SELECT s.*,
                        COALESCE(sp.prompt, s.system_prompt)
                            AS _system_prompt_resolved,
@@ -4651,9 +4651,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                         AND COALESCE(b.chat_type, '') = COALESCE(s.chat_type, '')
                         AND COALESCE(b.thread_id, '') = COALESCE(s.thread_id, '')
                         AND b.ended_at IS NOT NULL
-                        AND b.end_reason IN ('session_reset', 'session_switch',
-                                             'idle', 'daily', 'suspended',
-                                             'resume_pending_expired')
+                        AND b.end_reason IN ({_RESET_END_REASONS_SQL})
                         AND b.ended_at
                             > COALESCE(s.last_activity_at, s.started_at)
                   )
@@ -5163,6 +5161,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         """
         def _do(conn):
             placeholders = ",".join("?" for _ in _RESET_END_REASONS)
+            # WHERE shape shared with _RESET_CHILD_SQL's fallback arm via
+            # _legacy_reset_child_sql so the stamping and the listing
+            # predicate cannot drift.
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
                 "COALESCE(child.model_config, '{}'), '$._reset_from', "
@@ -5170,12 +5171,7 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                 "WHERE child.parent_session_id = ? "
                 "AND json_extract(COALESCE(child.model_config, '{}'), "
                 "                 '$._reset_from') IS NULL "
-                "AND child.session_key IS NOT NULL "
-                "AND child.session_key != '' "
-                "AND EXISTS (SELECT 1 FROM sessions parent "
-                "            WHERE parent.id = child.parent_session_id "
-                f"            AND parent.end_reason IN ({placeholders}) "
-                "            AND parent.session_key = child.session_key)",
+                f"AND {_legacy_reset_child_sql('child', placeholders)}",
                 (session_id, *_RESET_END_REASONS),
             )
             conn.execute(
@@ -9017,18 +9013,23 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
 
                 # Walk to the most-recently-started child — but skip explicit
                 # branch (`_branched_from`), delegate/subagent (`_delegate_from`),
-                # and tool children. They also carry a ``parent_session_id`` yet
+                # reset-continuation (`_reset_from` or the legacy same-key
+                # heuristic — a post-reset conversation must never be reached
+                # by resuming the parent the user reset away), and tool
+                # children. They also carry a ``parent_session_id`` yet
                 # are NOT compression continuations; following them would hijack
                 # the resume target to an unrelated session (e.g. a subagent
                 # run). This mirrors the child-exclusion in ``get_compression_tip``.
                 try:
                     child_row = self._conn.execute(
-                        "SELECT id FROM sessions "
-                        "WHERE parent_session_id = ? "
-                        "  AND json_extract(COALESCE(model_config, '{}'), '$._branched_from') IS NULL "
-                        "  AND json_extract(COALESCE(model_config, '{}'), '$._delegate_from') IS NULL "
-                        "  AND COALESCE(source, '') != 'tool' "
-                        "ORDER BY started_at DESC, id DESC LIMIT 1",
+                        "SELECT id FROM sessions AS child "
+                        "WHERE child.parent_session_id = ? "
+                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL "
+                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL "
+                        "  AND json_extract(COALESCE(child.model_config, '{}'), '$._reset_from') IS NULL "
+                        f"  AND NOT {_legacy_reset_child_sql('child', _RESET_END_REASONS_SQL)} "
+                        "  AND COALESCE(child.source, '') != 'tool' "
+                        "ORDER BY child.started_at DESC, child.id DESC LIMIT 1",
                         (current,),
                     ).fetchone()
                 except Exception:

@@ -1854,6 +1854,7 @@ class TestListSessionsRich:
         "end_reason",
         [
             "session_reset",
+            "session_switch",
             "idle",
             "daily",
             "suspended",
@@ -1903,6 +1904,44 @@ class TestListSessionsRich:
         listed = [row["id"] for row in db.list_sessions_rich()]
         assert "unrelated_child" not in listed
         assert db.session_count(exclude_children=True) == 1
+
+    def test_resume_walker_does_not_cross_reset_boundary(self, db):
+        """resolve_resume_session_id must not redirect a reset parent's resume
+        into the post-reset conversation — that would restore the exact
+        context the user reset away. Covers both the durable marker and the
+        legacy markerless shape."""
+        lane_key = "agent:main:telegram:dm:lane"
+        # Marker shape (rows written by current gateway code).
+        db.create_session("walk_parent", "telegram", session_key=lane_key)
+        db.append_message("walk_parent", "user", "before reset")
+        db.end_session("walk_parent", "session_reset")
+        db.create_session(
+            "walk_child",
+            "telegram",
+            session_key=lane_key,
+            parent_session_id="walk_parent",
+            model_config={"_reset_from": "walk_parent"},
+        )
+        db.append_message("walk_child", "user", "after reset")
+        assert db.resolve_resume_session_id("walk_parent") == "walk_parent"
+
+        # Legacy markerless shape (pre-marker on-disk rows).
+        lane2 = "agent:main:telegram:dm:lane2"
+        db.create_session("legacy_parent", "telegram", session_key=lane2)
+        db.append_message("legacy_parent", "user", "before reset")
+        db.end_session("legacy_parent", "session_reset")
+        db.create_session(
+            "legacy_child",
+            "telegram",
+            session_key=lane2,
+            parent_session_id="legacy_parent",
+        )
+        db.append_message("legacy_child", "user", "after reset")
+        assert db.resolve_resume_session_id("legacy_parent") == "legacy_parent"
+
+    # Compression-tip following (the walker's original purpose) is pinned by
+    # tests/hermes_state/test_resolve_resume_session_id.py
+    # ::test_follows_compression_tip_when_parent_retains_messages.
 
     def test_session_key_predicate_can_use_session_key_index(self, db):
         plan = db._conn.execute(

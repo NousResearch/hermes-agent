@@ -287,6 +287,17 @@ VALID_HOOKS: Set[str] = {
     #   alias_used: the exact token the user typed (str), args_raw: str,
     #   session_key: str | None (gateway), platform: str | None (gateway).
     "pre_command",
+    # Render-transform hook: append an extra section to the end of the /usage
+    # command render (after the account/credits blocks). Observer-side render
+    # extension: a plugin returns a string block (or dict with "text") that is
+    # concatenated after the /usage output. Return values are appended;
+    # None/empty contributes nothing. Fail-open: any hook error is logged and
+    # skipped so a broken plugin can never abort /usage.
+    #   Kwargs: provider, base_url, api_key, session_id.
+    # Concrete consumer: rarf/hermes-quota-plugin appends a per-provider
+    # quota/rate-limit section to /usage (reads a precomputed cache, no
+    # network I/O on the hot path).
+    "transform_usage_extra",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

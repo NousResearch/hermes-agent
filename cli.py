@@ -11798,6 +11798,35 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         if self._print_nous_credits_block():
             self._print_usage_cta()
 
+        # transform_usage_extra lifecycle hook — let a plugin append an extra
+        # section after the account/credits blocks (e.g. a per-provider quota
+        # summary). Observer-only: each plugin returns a string block; we print
+        # non-empty ones. Fail-open: any exception is logged and skipped.
+        try:
+            from hermes_cli.lifecycle import has_hook as _has_usage_extra_hook
+            from hermes_cli.lifecycle import invoke_hook as _invoke_usage_extra
+            if _has_usage_extra_hook("transform_usage_extra"):
+                _provider = getattr(agent, "provider", None) if agent else None
+                _base_url = getattr(agent, "base_url", None) if agent else None
+                _api_key = getattr(agent, "api_key", None) if agent else None
+                _session_id = (
+                    getattr(agent, "session_id", None) if agent else None
+                ) or getattr(self, "session_id", None)
+                _usage_blocks = _invoke_usage_extra(
+                    "transform_usage_extra",
+                    provider=_provider,
+                    base_url=_base_url,
+                    api_key=_api_key,
+                    session_id=_session_id,
+                )
+                for _block in _usage_blocks:
+                    _text = str(_block).strip() if _block is not None else ""
+                    if _text:
+                        print()
+                        print(_text)
+        except Exception as _usage_extra_err:
+            logging.debug("transform_usage_extra hook failed: %s", _usage_extra_err)
+
         if self.verbose:
             logging.getLogger().setLevel(logging.DEBUG)
             for noisy in ('openai', 'openai._base_client', 'httpx', 'httpcore', 'asyncio', 'hpack', 'grpc', 'modal'):

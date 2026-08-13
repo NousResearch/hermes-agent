@@ -5438,7 +5438,7 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
                     result = await server.session.call_tool(
                         tool_name,
                         arguments=args,
-                        meta={"ai.merovingian/toolAttemptId": tool_attempt_id},
+                        meta={"com.nousresearch.hermes/toolAttemptId": tool_attempt_id},
                     )
                 finally:
                     server._pending_call_context = None

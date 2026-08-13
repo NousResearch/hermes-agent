@@ -155,7 +155,7 @@ def test_call_tool_handler_rebuilds_configured_server_transport(
 
     class _Session:
         async def call_tool(self, *args, **kwargs):
-            attempt_ids.append(kwargs["meta"]["ai.merovingian/toolAttemptId"])
+            attempt_ids.append(kwargs["meta"]["com.nousresearch.hermes/toolAttemptId"])
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise ClosedResourceError

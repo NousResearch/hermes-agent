@@ -8,7 +8,6 @@ from gateway.profile_routing import (
     parse_profile_routes,
     match_profile_route,
 )
-from hermes_constants import get_hermes_dir
 
 PHONE = "15551234567"
 LID = "999999999999999"
@@ -17,16 +16,23 @@ LID_JID = f"{LID}@lid"
 GROUP = "120363012345678901@g.us"
 
 
-def _write_lid_mapping(phone=PHONE, lid=LID):
-    """Mirror the JS bridge: phone→lid and lid→phone (reverse)."""
-    session_dir = get_hermes_dir("platforms/whatsapp/session", "whatsapp/session")
-    session_dir.mkdir(parents=True, exist_ok=True)
-    (session_dir / f"lid-mapping-{phone}.json").write_text(
+def _write_lid_mapping(tmp_path, monkeypatch, phone=PHONE, lid=LID):
+    """Mirror the JS bridge: phone→lid and lid→phone (reverse).
+
+    Isolates HERMES_HOME to a temp dir (same pattern as
+    tests/gateway/test_whatsapp_identity.py) so mapping files never land
+    in a real session directory.
+    """
+    tmp_home = tmp_path / "hermes-home"
+    mapping_dir = tmp_home / "platforms" / "whatsapp" / "session"
+    mapping_dir.mkdir(parents=True, exist_ok=True)
+    (mapping_dir / f"lid-mapping-{phone}.json").write_text(
         json.dumps(f"{lid}@lid"), encoding="utf-8"
     )
-    (session_dir / f"lid-mapping-{lid}_reverse.json").write_text(
+    (mapping_dir / f"lid-mapping-{lid}_reverse.json").write_text(
         json.dumps(f"{phone}@s.whatsapp.net"), encoding="utf-8"
     )
+    monkeypatch.setenv("HERMES_HOME", str(tmp_home))
 
 
 class TestProfileRoute:
@@ -143,21 +149,21 @@ class TestWhatsAppChatIdIdentityMatching:
         assert matched is not None
         assert matched.profile == "owner"
 
-    def test_number_route_matches_lid_inbound_with_mapping(self):
-        _write_lid_mapping()
+    def test_number_route_matches_lid_inbound_with_mapping(self, tmp_path, monkeypatch):
+        _write_lid_mapping(tmp_path, monkeypatch)
         r = ProfileRoute(name="owner", platform="whatsapp", profile="owner", chat_id=PHONE)
         assert r.matches("whatsapp", chat_id=LID_JID)
         matched = match_profile_route([r], "whatsapp", chat_id=LID_JID)
         assert matched is not None
         assert matched.profile == "owner"
 
-    def test_lid_route_matches_jid_inbound_with_mapping(self):
-        _write_lid_mapping()
+    def test_lid_route_matches_jid_inbound_with_mapping(self, tmp_path, monkeypatch):
+        _write_lid_mapping(tmp_path, monkeypatch)
         r = ProfileRoute(name="owner", platform="whatsapp", profile="owner", chat_id=LID_JID)
         assert r.matches("whatsapp", chat_id=JID)
 
-    def test_jid_route_matches_lid_inbound_with_mapping(self):
-        _write_lid_mapping()
+    def test_jid_route_matches_lid_inbound_with_mapping(self, tmp_path, monkeypatch):
+        _write_lid_mapping(tmp_path, monkeypatch)
         r = ProfileRoute(name="owner", platform="whatsapp", profile="owner", chat_id=JID)
         assert r.matches("whatsapp", chat_id=LID_JID)
 
@@ -177,6 +183,15 @@ class TestWhatsAppChatIdIdentityMatching:
         r = ProfileRoute(name="owner", platform="whatsapp", profile="owner", chat_id=PHONE)
         assert not r.matches("whatsapp", chat_id=LID_JID)
         assert match_profile_route([r], "whatsapp", chat_id=LID_JID) is None
+
+    def test_no_mapping_phone_lid_suffix_collapses_to_number(self):
+        # normalize_whatsapp_identifier strips @lid / @s.whatsapp.net down to
+        # the numeric core. When the inbound LID's numeric part IS the phone
+        # number (not a distinct linked-identity id), alias expansion without
+        # mapping files still intersects. Same normalize-only collapse as
+        # authz_mixin allowlists and session-key canonicalization.
+        r = ProfileRoute(name="owner", platform="whatsapp", profile="owner", chat_id=PHONE)
+        assert r.matches("whatsapp", chat_id=f"{PHONE}@lid")
 
     def test_exact_jid_still_matches(self):
         r = ProfileRoute(name="owner", platform="whatsapp", profile="owner", chat_id=JID)
@@ -215,3 +230,10 @@ class TestWhatsAppChatIdIdentityMatching:
             name="owner", platform="whatsapp_cloud", profile="owner", chat_id=PHONE
         )
         assert r.matches("whatsapp_cloud", chat_id=JID)
+
+    def test_whatsapp_cloud_number_matches_lid_inbound_with_mapping(self, tmp_path, monkeypatch):
+        _write_lid_mapping(tmp_path, monkeypatch)
+        r = ProfileRoute(
+            name="owner", platform="whatsapp_cloud", profile="owner", chat_id=PHONE
+        )
+        assert r.matches("whatsapp_cloud", chat_id=LID_JID)

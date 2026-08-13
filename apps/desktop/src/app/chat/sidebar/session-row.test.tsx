@@ -1,4 +1,4 @@
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type * as React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -224,6 +224,77 @@ describe('SidebarSessionRow', () => {
 
     const kebab = screen.getByRole('button', { name: 'Session actions' })
     expect(tipTrigger(kebab)).toBeNull()
+  })
+
+  // Full-title tooltip on hover (#83000-class ask): the label is a tooltip
+  // trigger, but the tip only opens when the title is actually truncated.
+  describe('full-title overflow tooltip', () => {
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
+    const title = 'A very long session title that the sidebar cannot possibly fit'
+
+    /** The rendered title label (tooltip trigger is the label itself). */
+    const label = () => screen.getByText(title).closest('[data-slot="tooltip-trigger"]') as HTMLElement
+
+    const setWidths = (el: HTMLElement, scrollWidth: number, clientWidth: number) => {
+      Object.defineProperty(el, 'scrollWidth', { configurable: true, value: scrollWidth })
+      Object.defineProperty(el, 'clientWidth', { configurable: true, value: clientWidth })
+    }
+
+    it('wraps the title in a tooltip trigger', () => {
+      renderRow(makeSession({ title }))
+
+      expect(label()).toBeTruthy()
+    })
+
+    it('opens with the full title after a settled hover when the title overflows', () => {
+      vi.useFakeTimers()
+      renderRow(makeSession({ title }))
+
+      const el = label()
+      setWidths(el, 300, 100)
+
+      act(() => {
+        fireEvent.pointerEnter(el)
+        vi.advanceTimersByTime(700)
+      })
+
+      expect(screen.getByRole('tooltip').textContent).toContain(title)
+    })
+
+    it('stays closed when the title fits', () => {
+      vi.useFakeTimers()
+      renderRow(makeSession({ title }))
+
+      const el = label()
+      setWidths(el, 100, 100)
+
+      act(() => {
+        fireEvent.pointerEnter(el)
+        vi.advanceTimersByTime(700)
+      })
+
+      expect(screen.queryByRole('tooltip')).toBeNull()
+    })
+
+    it('cancels a pending open when the pointer leaves before the delay', () => {
+      vi.useFakeTimers()
+      renderRow(makeSession({ title }))
+
+      const el = label()
+      setWidths(el, 300, 100)
+
+      act(() => {
+        fireEvent.pointerEnter(el)
+        vi.advanceTimersByTime(200)
+        fireEvent.pointerLeave(el)
+        vi.advanceTimersByTime(700)
+      })
+
+      expect(screen.queryByRole('tooltip')).toBeNull()
+    })
   })
 
   it('does not render a handoff avatar for a locally-started session', () => {

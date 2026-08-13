@@ -2239,24 +2239,13 @@ def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> Non
     messaging_cwd = str(env_map.get("MESSAGING_CWD") or "").strip()
     terminal_cwd_env = str(env_map.get("TERMINAL_CWD") or "").strip()
 
-    if config is None:
-        try:
-            config = load_config()
-        except Exception:
-            return
-
-    terminal_cfg = config.get("terminal", {})
-    config_cwd = terminal_cfg.get("cwd", ".") if isinstance(terminal_cfg, dict) else "."
-    # Only warn if config.yaml doesn't have an explicit path
-    config_has_explicit_cwd = config_cwd not in {".", "auto", "cwd", ""}
-
     lines: list[str] = []
     if messaging_cwd:
         lines.append(
             f"  \033[33m⚠\033[0m MESSAGING_CWD={messaging_cwd} found in .env — "
             f"this is deprecated."
         )
-    if terminal_cwd_env and not config_has_explicit_cwd:
+    if terminal_cwd_env:
         lines.append(
             f"  \033[33m⚠\033[0m TERMINAL_CWD={terminal_cwd_env} found in .env — "
             f"this is deprecated."

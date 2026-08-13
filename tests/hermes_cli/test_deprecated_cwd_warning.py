@@ -46,6 +46,17 @@ class TestDeprecatedCwdWarning:
         assert "deprecated" in captured.err.lower()
         assert "config.yaml" in captured.err
 
+    def test_dotenv_terminal_cwd_warns_with_explicit_config(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        _write_env(monkeypatch, tmp_path, "TERMINAL_CWD=/legacy/path\n")
+
+        from hermes_cli.config import warn_deprecated_cwd_env_vars
+
+        warn_deprecated_cwd_env_vars(config={"terminal": {"cwd": "/current/path"}})
+
+        assert "TERMINAL_CWD=/legacy/path" in capsys.readouterr().err
+
     def test_commented_and_empty_dotenv_values_do_not_warn(
         self, monkeypatch, tmp_path, capsys
     ):

@@ -74,7 +74,34 @@ function AttachmentPill({ attachment, onRemove }: { attachment: ComposerAttachme
 
     if (attachment.kind === 'image') {
       try {
-        const source = lightboxSrc || (attachment.path ? await readDesktopFileDataUrlLocalFirst(attachment.path) : '')
+        let source = lightboxSrc || ''
+
+        // Upload may replace `path` with a gateway-side staged path while
+        // `detail` still carries the original host path. If submit then fails,
+        // keep the surviving chip previewable across split-filesystem setups.
+        if (!source) {
+          const paths = [attachment.path, attachment.detail].filter(
+            (path, index, candidates): path is string => Boolean(path) && candidates.indexOf(path) === index
+          )
+
+          let lastError: unknown
+
+          for (const path of paths) {
+            try {
+              source = await readDesktopFileDataUrlLocalFirst(path)
+
+              if (source) {
+                break
+              }
+            } catch (error) {
+              lastError = error
+            }
+          }
+
+          if (!source && lastError) {
+            throw lastError
+          }
+        }
 
         if (!source) {
           throw new Error(c.couldNotPreview(attachment.label))

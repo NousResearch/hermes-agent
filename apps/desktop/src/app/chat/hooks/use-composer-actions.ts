@@ -12,6 +12,7 @@ import { normalize } from '@/lib/text'
 import {
   addComposerAttachment,
   type ComposerAttachment,
+  mainComposerScope,
   removeComposerAttachment,
   setComposerTerminalSelection,
   updateComposerAttachment
@@ -272,6 +273,7 @@ interface ComposerActionsScope {
   add: (attachment: ComposerAttachment) => void
   remove: (id: string) => ComposerAttachment | null
   update: (attachment: ComposerAttachment) => boolean
+  updateIfCurrent: (expected: ComposerAttachment, attachment: ComposerAttachment) => boolean
   target: string
 }
 
@@ -279,6 +281,7 @@ const MAIN_ACTIONS_SCOPE: ComposerActionsScope = {
   add: addComposerAttachment,
   remove: removeComposerAttachment,
   update: updateComposerAttachment,
+  updateIfCurrent: (expected, attachment) => mainComposerScope.updateIfCurrent(expected, attachment),
   target: 'main'
 }
 
@@ -482,9 +485,14 @@ export function useComposerActions({
           // Keep only the bounded thumbnail in composer state. The full source
           // is read on demand for lightbox/download and separately at submit
           // for the model, so retaining 72 multi-MB data URLs serves no purpose.
-          // The user may remove the optimistic chip while an expensive image is
-          // still decoding. A late result updates in place but never resurrects it.
-          scope.update(thumbnailUrl ? { ...baseAttachment, thumbnailUrl } : { ...baseAttachment, previewUrl })
+          // Bind the late preview to this exact attachment occurrence. The id is
+          // path-derived, so remove + reattach can create a replacement with the
+          // same id while this decode is still pending; updating by id alone would
+          // apply stale pixels to the replacement.
+          scope.updateIfCurrent(
+            baseAttachment,
+            thumbnailUrl ? { ...baseAttachment, thumbnailUrl } : { ...baseAttachment, previewUrl }
+          )
         }
 
         return true

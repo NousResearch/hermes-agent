@@ -6,6 +6,7 @@ import {
   addComposerAttachment,
   clearSessionDraft,
   type ComposerAttachment,
+  createComposerAttachmentScope,
   migrateSessionDraft,
   removeComposerAttachment,
   requestVoiceConversationStart,
@@ -60,6 +61,23 @@ describe('updateComposerAttachment', () => {
 
     expect(updated).toBe(false)
     expect($composerAttachments.get()).toHaveLength(0)
+  })
+
+  it('updates only the exact attachment occurrence captured before an async operation', () => {
+    const scope = createComposerAttachmentScope()
+    const first = attachment({ id: 'image:a', kind: 'image', path: '/tmp/a.png' })
+    const replacement = attachment({ id: 'image:a', kind: 'image', path: '/tmp/a.png' })
+
+    scope.add(first)
+    scope.remove(first.id)
+    scope.add(replacement)
+
+    expect(scope.updateIfCurrent(first, { ...first, thumbnailUrl: 'data:image/png;base64,stale' })).toBe(false)
+    expect(scope.$attachments.get()).toEqual([replacement])
+    expect(scope.updateIfCurrent(replacement, { ...replacement, thumbnailUrl: 'data:image/png;base64,current' })).toBe(
+      true
+    )
+    expect(scope.$attachments.get()[0]?.thumbnailUrl).toBe('data:image/png;base64,current')
   })
 })
 

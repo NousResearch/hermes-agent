@@ -139,6 +139,44 @@ describe('AttachmentList', () => {
     expect(container.querySelector(`img[src="${DATA_URL}"]`)).toBeNull()
   })
 
+  it('falls back to the original host path after an image was staged for a different filesystem', async () => {
+    const stagedPath = '/root/.hermes/attachments/photo.png'
+    const hostPath = 'C:\\Users\\alice\\Pictures\\photo.png'
+
+    const readFileDataUrl = vi.fn(async (path: string) => {
+      if (path === hostPath) {
+        return DATA_URL
+      }
+
+      throw new Error(`not readable: ${path}`)
+    })
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl }
+    })
+
+    const image: ComposerAttachment = {
+      attachedSessionId: 'session-1',
+      detail: hostPath,
+      id: 'image:photo.png',
+      kind: 'image',
+      label: 'photo.png',
+      path: stagedPath,
+      thumbnailUrl: THUMBNAIL_URL
+    }
+
+    await renderWithI18n(<AttachmentList attachments={[image]} />)
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /photo\.png/ }))
+    })
+
+    expect(readFileDataUrl).toHaveBeenCalledWith(stagedPath)
+    expect(readFileDataUrl).toHaveBeenCalledWith(hostPath)
+    expect((await screen.findByRole('dialog')).querySelector<HTMLImageElement>('img')?.src).toBe(DATA_URL)
+  })
+
   it('still routes a non-image attachment to the preview rail', async () => {
     $previewTabs.set([])
 

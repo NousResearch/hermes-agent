@@ -59,6 +59,7 @@ export interface ComposerAttachmentScope {
   remove(id: string): ComposerAttachment | null
   setUploadState(id: string, uploadState?: ComposerAttachment['uploadState']): void
   update(attachment: ComposerAttachment): boolean
+  updateIfCurrent(expected: ComposerAttachment, attachment: ComposerAttachment): boolean
 }
 
 export function createComposerAttachmentScope($attachments = atom<ComposerAttachment[]>([])): ComposerAttachmentScope {
@@ -98,6 +99,20 @@ export function createComposerAttachmentScope($attachments = atom<ComposerAttach
     update(attachment) {
       const current = $attachments.get()
       const index = current.findIndex(item => item.id === attachment.id)
+
+      if (index < 0) {
+        return false
+      }
+
+      const next = [...current]
+      next[index] = attachment
+      $attachments.set(next)
+
+      return true
+    },
+    updateIfCurrent(expected, attachment) {
+      const current = $attachments.get()
+      const index = current.findIndex(item => item === expected)
 
       if (index < 0) {
         return false

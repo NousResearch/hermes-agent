@@ -393,6 +393,81 @@ describe('attachImagePath thumbnail separation', () => {
     expect($composerAttachments.get()).toEqual([])
   })
 
+  it('does not apply a removed occurrence thumbnail to the same path when reattached', async () => {
+    let resolveSecondRead!: (value: string) => void
+
+    const secondRead = new Promise<string>(resolve => {
+      resolveSecondRead = resolve
+    })
+
+    const readFileDataUrl = vi.fn().mockResolvedValueOnce(FULL_RES).mockReturnValueOnce(secondRead)
+
+    ;(
+      window as unknown as {
+        hermesDesktop: { readFileDataUrl: typeof readFileDataUrl }
+      }
+    ).hermesDesktop = { readFileDataUrl }
+
+    let resolveBitmap!: (bitmap: { close: () => void; height: number; width: number }) => void
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({ blob: async () => new Blob([new Uint8Array([0])], { type: 'image/png' }) }))
+    )
+    vi.stubGlobal(
+      'createImageBitmap',
+      vi.fn(
+        () =>
+          new Promise<{ close: () => void; height: number; width: number }>(resolve => {
+            resolveBitmap = resolve
+          })
+      )
+    )
+
+    class MockOffscreenCanvas {
+      getContext = () => ({ drawImage: vi.fn() })
+      convertToBlob = vi.fn(async () => new Blob(['first'], { type: 'image/png' }))
+      constructor(_width: number, _height: number) {}
+    }
+
+    vi.stubGlobal('OffscreenCanvas', MockOffscreenCanvas)
+
+    const { result } = renderHook(() =>
+      useComposerActions({ activeSessionId: null, currentCwd: '', requestGateway: vi.fn() })
+    )
+
+    let first!: Promise<boolean>
+    let replacement!: Promise<boolean>
+
+    act(() => {
+      first = result.current.attachImagePath('/tmp/shot.png')
+    })
+
+    await waitFor(() => expect(createImageBitmap).toHaveBeenCalledOnce())
+
+    await act(async () => {
+      await result.current.removeAttachment('image:/tmp/shot.png')
+    })
+
+    act(() => {
+      replacement = result.current.attachImagePath('/tmp/shot.png')
+    })
+
+    resolveBitmap({ close: vi.fn(), height: 3000, width: 4000 })
+    await waitFor(() => expect(readFileDataUrl).toHaveBeenCalledTimes(2))
+
+    const afterRemovedOccurrenceResolved = $composerAttachments.get()[0]
+
+    resolveSecondRead('data:text/plain;base64,c2Vjb25k')
+
+    await act(async () => {
+      await Promise.all([first, replacement])
+    })
+
+    expect(afterRemovedOccurrenceResolved?.thumbnailUrl).toBeUndefined()
+    expect($composerAttachments.get()[0]?.previewUrl).toBe('data:text/plain;base64,c2Vjb25k')
+  })
+
   it('retains only the bounded thumbnail after creating a composer image preview', async () => {
     const readFileDataUrl = vi.fn(async () => FULL_RES)
 

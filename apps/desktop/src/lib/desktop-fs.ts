@@ -121,7 +121,11 @@ export async function readDesktopFileDataUrlLocalFirst(path: string): Promise<st
     if (local) {
       return local
     }
-  } catch {
+  } catch (error) {
+    if (!isDesktopFsRemoteMode()) {
+      throw error
+    }
+
     // Not on this machine (or unreadable locally) — try the active gateway.
   }
 

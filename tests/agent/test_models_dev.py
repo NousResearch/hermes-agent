@@ -9,8 +9,11 @@ import pytest
 from agent.models_dev import (
     PROVIDER_TO_MODELS_DEV,
     _extract_context,
+    _override_context_window,
+    _resolve_model_override,
     fetch_models_dev,
     get_model_capabilities,
+    get_model_info,
     get_provider_info,
     lookup_models_dev_context,
 )
@@ -389,4 +392,249 @@ class TestGetModelCapabilities:
             caps = get_model_capabilities("gemini", "weird-model")
         assert caps is not None
         assert caps.supports_vision is False
+
+
+# ---------------------------------------------------------------------------
+# Per-model metadata overrides (model_overrides config)
+# ---------------------------------------------------------------------------
+
+
+class TestModelOverrides:
+    """Tests for the model_overrides config system."""
+
+    def _setup_overrides(self, overrides_dict):
+        """Patch _load_model_overrides to return the given dict."""
+        import agent.models_dev as md
+        return patch.object(md, "_load_model_overrides", return_value=overrides_dict)
+
+    # --- _resolve_model_override ---
+
+    def test_per_provider_model_override(self):
+        """Per-provider+model override is found first."""
+        overrides = {
+            "upstage": {
+                "solar-pro4": {"context_window": 524288},
+            },
+        }
+        with self._setup_overrides(overrides):
+            result = _resolve_model_override("upstage", "solar-pro4")
+        assert result is not None
+        assert result["context_window"] == 524288
+
+    def test_per_provider_default_fallback(self):
+        """Per-provider _default is used when model not found."""
+        overrides = {
+            "upstage": {
+                "_default": {"context_window": 128000},
+            },
+        }
+        with self._setup_overrides(overrides):
+            result = _resolve_model_override("upstage", "unknown-model")
+        assert result is not None
+        assert result["context_window"] == 128000
+
+    def test_global_default_fallback(self):
+        """Global _default is used when provider not found."""
+        overrides = {
+            "_default": {"context_window": 65536},
+        }
+        with self._setup_overrides(overrides):
+            result = _resolve_model_override("unknown-provider", "unknown-model")
+        assert result is not None
+        assert result["context_window"] == 65536
+
+    def test_no_override_returns_none(self):
+        """No override found returns None."""
+        with self._setup_overrides({}):
+            result = _resolve_model_override("anthropic", "claude-sonnet-4")
+        assert result is None
+
+    def test_per_provider_model_beats_default(self):
+        """Per-provider+model wins over per-provider _default."""
+        overrides = {
+            "upstage": {
+                "solar-pro4": {"context_window": 524288},
+                "_default": {"context_window": 128000},
+            },
+        }
+        with self._setup_overrides(overrides):
+            result = _resolve_model_override("upstage", "solar-pro4")
+        assert result is not None
+        assert result["context_window"] == 524288
+
+    def test_per_provider_default_beats_global(self):
+        """Per-provider _default wins over global _default."""
+        overrides = {
+            "upstage": {
+                "_default": {"context_window": 128000},
+            },
+            "_default": {"context_window": 65536},
+        }
+        with self._setup_overrides(overrides):
+            result = _resolve_model_override("upstage", "unknown-model")
+        assert result is not None
+        assert result["context_window"] == 128000
+
+    # --- _override_context_window ---
+
+    def test_override_context_window_returns_value(self):
+        overrides = {
+            "upstage": {
+                "syn-pro": {"context_window": 65536},
+            },
+        }
+        with self._setup_overrides(overrides):
+            ctx = _override_context_window("upstage", "syn-pro")
+        assert ctx == 65536
+
+    def test_override_context_window_returns_none_when_missing(self):
+        with self._setup_overrides({}):
+            ctx = _override_context_window("upstage", "syn-pro")
+        assert ctx is None
+
+    def test_override_context_window_rejects_zero(self):
+        overrides = {
+            "upstage": {
+                "bad-model": {"context_window": 0},
+            },
+        }
+        with self._setup_overrides(overrides):
+            ctx = _override_context_window("upstage", "bad-model")
+        assert ctx is None
+
+    # --- get_model_capabilities with overrides ---
+
+    def test_caps_override_unknown_model(self):
+        """Override provides capabilities for a model NOT in the catalog (#8731)."""
+        overrides = {
+            "custom:my-vllm": {
+                "my-llava-model": {
+                    "context_window": 8192,
+                    "supports_vision": True,
+                    "supports_reasoning": False,
+                    "supports_tools": True,
+                },
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            caps = get_model_capabilities("custom:my-vllm", "my-llava-model")
+        assert caps is not None
+        assert caps.context_window == 8192
+        assert caps.supports_vision is True
+        assert caps.supports_reasoning is False
+        assert caps.supports_tools is True
+
+    def test_caps_override_patches_existing_catalog_entry(self):
+        """Override patches specific fields on a known catalog entry (#84482)."""
+        overrides = {
+            "anthropic": {
+                "claude-sonnet-4": {
+                    "context_window": 500000,
+                },
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value=CAPS_REGISTRY):
+            caps = get_model_capabilities("anthropic", "claude-sonnet-4")
+        assert caps is not None
+        # Override wins
+        assert caps.context_window == 500000
+        # Non-overridden fields preserved from catalog
+        assert caps.supports_vision is True
+        assert caps.supports_tools is True
+
+    def test_caps_no_override_no_catalog_returns_none(self):
+        """No override and no catalog entry → None."""
+        with self._setup_overrides({}), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            caps = get_model_capabilities("anthropic", "unknown-model")
+        assert caps is None
+
+    def test_caps_override_default_for_unknown_model(self):
+        """Per-provider _default provides capabilities for unknown models."""
+        overrides = {
+            "custom:my-vllm": {
+                "_default": {
+                    "context_window": 32768,
+                    "supports_tools": True,
+                },
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            caps = get_model_capabilities("custom:my-vllm", "some-new-model")
+        assert caps is not None
+        assert caps.context_window == 32768
+        assert caps.supports_tools is True
+
+    # --- lookup_models_dev_context with overrides ---
+
+    def test_context_lookup_override_wins_over_catalog(self):
+        """Override context_window wins over models.dev catalog value."""
+        overrides = {
+            "anthropic": {
+                "claude-opus-4-6": {"context_window": 500000},
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
+            ctx = lookup_models_dev_context("anthropic", "claude-opus-4-6")
+        assert ctx == 500000
+
+    def test_context_lookup_override_for_unknown_provider(self):
+        """Override works for providers not in PROVIDER_TO_MODELS_DEV."""
+        overrides = {
+            "upstage": {
+                "solar-pro4": {"context_window": 524288},
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            ctx = lookup_models_dev_context("upstage", "solar-pro4")
+        assert ctx == 524288
+
+    # --- get_model_info with overrides ---
+
+    def test_model_info_override_for_unknown_model(self):
+        """Override provides full metadata for a model not in the catalog."""
+        overrides = {
+            "custom:my-vllm": {
+                "my-llava-model": {
+                    "name": "My LLaVA Model",
+                    "family": "llava",
+                    "reasoning": False,
+                    "tool_call": True,
+                    "limit": {"context": 8192, "output": 4096},
+                },
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            info = get_model_info("custom:my-vllm", "my-llava-model")
+        assert info is not None
+        assert info.name == "My LLaVA Model"
+        assert info.family == "llava"
+        assert info.context_window == 8192
+        assert info.max_output == 4096
+        assert info.tool_call is True
+        assert info.reasoning is False
+
+    def test_model_info_override_merges_with_catalog(self):
+        """Override patches specific fields on a known catalog entry."""
+        overrides = {
+            "anthropic": {
+                "claude-sonnet-4-6": {
+                    "limit": {"context": 500000, "output": 64000},
+                },
+            },
+        }
+        with self._setup_overrides(overrides), \
+             patch("agent.models_dev.fetch_models_dev", return_value=SAMPLE_REGISTRY):
+            info = get_model_info("anthropic", "claude-sonnet-4-6")
+        assert info is not None
+        # Override wins
+        assert info.context_window == 500000
+        # Non-overridden fields preserved from catalog
+        assert info.name == "claude-sonnet-4-6"
 

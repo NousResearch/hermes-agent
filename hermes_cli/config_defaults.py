@@ -2539,6 +2539,37 @@ DEFAULT_CONFIG = {
         "providers": {},
     },
 
+    # Per-model metadata overrides — manually declare context_window,
+    # max_output_tokens, capabilities, or cost for any provider+model.
+    # Overrides win over models.dev, OpenRouter, and hardcoded defaults.
+    #
+    # Two scopes:
+    #   1. Per-provider+model: model_overrides.<provider>.<model_id>
+    #   2. Per-provider default: model_overrides.<provider>._default
+    #   3. Global default:      model_overrides._default
+    #
+    # An unknown model id (not in models.dev) inherits base metadata from
+    # its family/dated-snapshot entry before patching, so overriding a
+    # model the catalog doesn't know yet is the supported self-unblock
+    # path (#84482).
+    #
+    # Example:
+    #   model_overrides:
+    #     upstage:
+    #       solar-pro4:
+    #         context_window: 524288
+    #       syn-pro:
+    #         context_window: 65536
+    #     custom:my-local-vllm:
+    #       my-llava-model:
+    #         context_window: 8192
+    #         supports_vision: true
+    #         supports_reasoning: false
+    #         supports_tools: true
+    #     _default:
+    #       context_window: 128000
+    "model_overrides": {},
+
     # Network settings — workarounds for connectivity issues.
     "network": {
         # Force IPv4 connections.  On servers with broken or unreachable IPv6,

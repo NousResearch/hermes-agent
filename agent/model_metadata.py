@@ -2577,6 +2577,7 @@ def get_model_context_length(
 
     Resolution order:
     0. Explicit config override (model.context_length or custom_providers per-model)
+    0b. model_overrides config (per-provider+model context_window override)
     0c. Endpoint-scoped metadata for models validated on one multiplexed endpoint
     1. Persistent cache (previously discovered via probing).  Nous URLs,
        LM Studio, and Codex OAuth bypass the cache here so their provider
@@ -2638,7 +2639,21 @@ def get_model_context_length(
             logger.debug("MoA aggregator context-length resolution failed", exc_info=True)
         # Fall through to the generic default if aggregator resolution failed.
 
-    # 0b. custom_providers per-model override — check before any probe.
+    # 0b. model_overrides config — per-provider+model context_window override.
+    # This is the supported self-unblock path for models with wrong or missing
+    # context in models.dev (#84482) and for custom/local models not in the
+    # catalog (#8731). Checked before custom_providers (step 0c) and before any
+    # network probe so it never blocks.
+    if provider and model:
+        try:
+            from agent.models_dev import _override_context_window
+            mo_ctx = _override_context_window(provider, model)
+            if mo_ctx is not None and mo_ctx > 0:
+                return mo_ctx
+        except Exception:
+            pass  # fall through to other resolution paths
+
+    # 0c. custom_providers per-model override — check before any probe.
     # This closes the gap where /model switch and display paths used to fall
     # back to 128K despite the user having a per-model context_length set.
     # See #15779.

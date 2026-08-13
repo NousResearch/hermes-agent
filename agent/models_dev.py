@@ -499,7 +499,17 @@ def lookup_models_dev_context(provider: str, model: str) -> Optional[int]:
 
     Returns the context window in tokens, or None if not found.
     Handles case-insensitive matching and filters out context=0 entries.
+
+    A ``model_overrides`` config entry for this provider+model (or its
+    ``_default`` fallback) wins over the catalog value — this is the
+    supported self-unblock path for models with wrong or missing context
+    in models.dev (#84482).
     """
+    # Config override — checked before catalog so it always wins.
+    override_ctx = _override_context_window(provider, model)
+    if override_ctx is not None:
+        return override_ctx
+
     mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
     if not mdev_provider_id:
         return None
@@ -586,6 +596,103 @@ class ModelCapabilities:
     model_family: str = ""
 
 
+# --------------------------------------------------------------------------- #
+# Per-model metadata overrides (config.yaml → model_overrides)               #
+# --------------------------------------------------------------------------- #
+#
+# Resolution order for every query function below:
+#   1. ``model_overrides.<provider>.<model_id>`` — explicit per-provider+model
+#   2. ``model_overrides.<provider>._default``   — per-provider default
+#   3. ``model_overrides._default``              — global default
+#   4. models.dev / OpenRouter / hardcoded      — normal catalog resolution
+#
+# An override may set any subset of fields; unspecified fields fall through to
+# the catalog value. For a model id NOT in the catalog, the override is the
+# only source of metadata — this is the supported self-unblock path for new
+# or custom models (#84482, #8731).
+
+_OVERRIDE_CACHE: Optional[Dict[str, Any]] = None
+_OVERRIDE_CACHE_CFG_HASH: int = 0
+
+
+def _load_model_overrides() -> Dict[str, Any]:
+    """Load and cache the ``model_overrides`` config section.
+
+    Caches by ``id(cfg)`` so a config reload (new dict identity) invalidates
+    automatically. Returns empty dict on any failure.
+    """
+    global _OVERRIDE_CACHE, _OVERRIDE_CACHE_CFG_HASH
+    try:
+        from hermes_cli.config import cfg_get, load_config_readonly
+        cfg = load_config_readonly()
+        cfg_id = id(cfg)
+        if cfg_id == _OVERRIDE_CACHE_CFG_HASH and _OVERRIDE_CACHE is not None:
+            return _OVERRIDE_CACHE
+        raw = cfg_get(cfg, "model_overrides", default={})
+        overrides = raw if isinstance(raw, dict) else {}
+        _OVERRIDE_CACHE = overrides
+        _OVERRIDE_CACHE_CFG_HASH = cfg_id
+        return overrides
+    except Exception:
+        return {}
+
+
+def _resolve_model_override(
+    provider: str, model: str
+) -> Optional[Dict[str, Any]]:
+    """Resolve the override dict for a provider+model, or None.
+
+    Checks per-provider+model, then per-provider ``_default``, then global
+    ``_default``. Returns the first match (which may be partially populated —
+    callers only read the keys they care about).
+    """
+    overrides = _load_model_overrides()
+    if not overrides:
+        return None
+
+    provider_key = (provider or "").strip()
+    model_key = (model or "").strip()
+    if not provider_key and not model_key:
+        return None
+
+    # 1. Per-provider+model
+    provider_section = overrides.get(provider_key)
+    if isinstance(provider_section, dict) and model_key:
+        model_section = provider_section.get(model_key)
+        if isinstance(model_section, dict):
+            return model_section
+
+    # 2. Per-provider _default
+    if isinstance(provider_section, dict):
+        default = provider_section.get("_default")
+        if isinstance(default, dict):
+            return default
+
+    # 3. Global _default
+    global_default = overrides.get("_default")
+    if isinstance(global_default, dict):
+        return global_default
+
+    return None
+
+
+def _override_context_window(
+    provider: str, model: str
+) -> Optional[int]:
+    """Return the overridden context_window, or None."""
+    ov = _resolve_model_override(provider, model)
+    if ov is None:
+        return None
+    raw = ov.get("context_window")
+    if raw is None:
+        return None
+    try:
+        ctx = int(raw)
+        return ctx if ctx > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _get_provider_models(provider: str) -> Optional[Dict[str, Any]]:
     """Resolve a Hermes provider ID to its models dict from models.dev.
 
@@ -629,6 +736,15 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
     Uses the existing fetch_models_dev() and PROVIDER_TO_MODELS_DEV mapping.
     Returns None if model not found.
 
+    ``model_overrides`` config entries (per-provider+model, per-provider
+    ``_default``, or global ``_default``) win over catalog values. For a
+    model id NOT in the catalog, the override is the only source of
+    metadata — this is the supported self-unblock path for custom/local
+    models (#8731) and for models with wrong context in models.dev
+    (#84482). An override may set any subset of fields; unspecified fields
+    fall through to the catalog value (or sensible defaults when the model
+    is absent from the catalog entirely).
+
     Extracts from model entry fields:
       - reasoning  (bool)  → supports_reasoning
       - tool_call  (bool)  → supports_tools
@@ -637,42 +753,81 @@ def get_model_capabilities(provider: str, model: str) -> Optional[ModelCapabilit
       - limit.output  (int) → max_output_tokens
       - family     (str)   → model_family
     """
+    # Check config override first — it may fully replace the catalog entry
+    # or patch specific fields. For unknown models (not in catalog), the
+    # override is the sole source of metadata.
+    override = _resolve_model_override(provider, model)
+
     models = _get_provider_models(provider)
-    if models is None:
+    entry = _find_model_entry(models, model) if models is not None else None
+
+    # If no catalog entry and no override, we can't resolve capabilities.
+    if entry is None and override is None:
         return None
 
-    entry = _find_model_entry(models, model)
-    if entry is None:
-        return None
+    # Start from catalog entry (if found), else use defaults.
+    if entry is not None:
+        supports_tools = bool(entry.get("tool_call", False))
+        # Vision: prefer explicit `modalities.input` when models.dev provides it.
+        # The older `attachment` flag can be stale or too broad for image routing;
+        # fall back to it only when the input modalities are absent/invalid.
+        input_mods = entry.get("modalities", {})
+        if isinstance(input_mods, dict):
+            input_mods = input_mods.get("input")
+        else:
+            input_mods = None
+        if isinstance(input_mods, list):
+            supports_vision = "image" in input_mods
+        else:
+            supports_vision = bool(entry.get("attachment", False))
+        supports_reasoning = bool(entry.get("reasoning", False))
 
-    # Extract capability flags (default to False if missing)
-    supports_tools = bool(entry.get("tool_call", False))
-    # Vision: prefer explicit `modalities.input` when models.dev provides it.
-    # The older `attachment` flag can be stale or too broad for image routing;
-    # fall back to it only when the input modalities are absent/invalid.
-    input_mods = entry.get("modalities", {})
-    if isinstance(input_mods, dict):
-        input_mods = input_mods.get("input")
+        limit = entry.get("limit", {})
+        if not isinstance(limit, dict):
+            limit = {}
+
+        ctx = limit.get("context")
+        context_window = int(ctx) if isinstance(ctx, (int, float)) and ctx > 0 else 200000
+
+        out = limit.get("output")
+        max_output_tokens = int(out) if isinstance(out, (int, float)) and out > 0 else 8192
+
+        model_family = entry.get("family", "") or ""
     else:
-        input_mods = None
-    if isinstance(input_mods, list):
-        supports_vision = "image" in input_mods
-    else:
-        supports_vision = bool(entry.get("attachment", False))
-    supports_reasoning = bool(entry.get("reasoning", False))
+        # Unknown model — derive sensible defaults. The override will
+        # patch whichever fields it specifies; the rest stay at defaults
+        # that are safe for agentic use (tools on, vision/reasoning off).
+        supports_tools = True
+        supports_vision = False
+        supports_reasoning = False
+        context_window = 200000
+        max_output_tokens = 8192
+        model_family = ""
 
-    # Extract limits
-    limit = entry.get("limit", {})
-    if not isinstance(limit, dict):
-        limit = {}
-
-    ctx = limit.get("context")
-    context_window = int(ctx) if isinstance(ctx, (int, float)) and ctx > 0 else 200000
-
-    out = limit.get("output")
-    max_output_tokens = int(out) if isinstance(out, (int, float)) and out > 0 else 8192
-
-    model_family = entry.get("family", "") or ""
+    # Apply override patches (each field is optional in the override dict).
+    if override is not None:
+        if "supports_tools" in override:
+            supports_tools = bool(override["supports_tools"])
+        if "supports_vision" in override:
+            supports_vision = bool(override["supports_vision"])
+        if "supports_reasoning" in override:
+            supports_reasoning = bool(override["supports_reasoning"])
+        if "context_window" in override:
+            try:
+                ctx_ov = int(override["context_window"])
+                if ctx_ov > 0:
+                    context_window = ctx_ov
+            except (TypeError, ValueError):
+                pass
+        if "max_output_tokens" in override:
+            try:
+                out_ov = int(override["max_output_tokens"])
+                if out_ov > 0:
+                    max_output_tokens = out_ov
+            except (TypeError, ValueError):
+                pass
+        if "model_family" in override:
+            model_family = str(override["model_family"] or "")
 
     return ModelCapabilities(
         supports_tools=supports_tools,
@@ -884,27 +1039,51 @@ def get_model_info(
 
     Accepts Hermes or models.dev provider ID.  Tries exact match then
     case-insensitive fallback.  Returns None if not found.
+
+    ``model_overrides`` config entries (per-provider+model, per-provider
+    ``_default``, or global ``_default``) patch the catalog entry's fields
+    when present. For a model id NOT in the catalog, the override is the
+    sole source of metadata — this is the supported self-unblock path
+    for custom/local models (#8731) and for models with wrong context
+    in models.dev (#84482).
     """
+    override = _resolve_model_override(provider_id, model_id)
+
     mdev_id = PROVIDER_TO_MODELS_DEV.get(provider_id, provider_id)
 
     data = fetch_models_dev()
     pdata = data.get(mdev_id)
     if not isinstance(pdata, dict):
+        # No catalog data — return from override alone if we have one.
+        if override is not None:
+            return _parse_model_info(model_id, override, mdev_id)
         return None
 
     models = pdata.get("models", {})
     if not isinstance(models, dict):
+        if override is not None:
+            return _parse_model_info(model_id, override, mdev_id)
         return None
 
     # Exact match
     raw = models.get(model_id)
     if isinstance(raw, dict):
+        if override is not None:
+            merged = {**raw, **override}
+            return _parse_model_info(model_id, merged, mdev_id)
         return _parse_model_info(model_id, raw, mdev_id)
 
     # Case-insensitive fallback
     model_lower = model_id.lower()
     for mid, mdata in models.items():
         if mid.lower() == model_lower and isinstance(mdata, dict):
+            if override is not None:
+                merged = {**mdata, **override}
+                return _parse_model_info(mid, merged, mdev_id)
             return _parse_model_info(mid, mdata, mdev_id)
+
+    # Model not in catalog — return from override alone if we have one.
+    if override is not None:
+        return _parse_model_info(model_id, override, mdev_id)
 
     return None

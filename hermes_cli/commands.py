@@ -1286,7 +1286,15 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #     native slash.
 #   - pause: global emergency stop; reached via /hermes pause [off] on
 #     Slack. Added at the 50-cap — a native slot would clamp /platform.
-_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause"})
+#   - generate-image: interactive content-engine image wizard; reached via
+#     /hermes generate-image on Slack. Added at the 50-cap — a native slot
+#     would clamp an existing native slash (registry grew past the cap).
+#   - localgen: ComfyUI local video generation (Wan2.2); heavy/rare from
+#     Slack; reached via /hermes localgen.
+#   - platform: gateway platform pause/resume/list ops surface; reached via
+#     /hermes platform on Slack. Previously protected by demoting /pause, but
+#     the registry has since grown past the 50-cap and clamped it.
+_SLACK_VIA_HERMES_ONLY = frozenset({"topup", "moa", "debug", "egress", "init", "version", "diff", "update", "heartbeat", "refine", "pause", "generate-image", "localgen", "platform"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

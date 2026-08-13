@@ -11425,7 +11425,7 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         requeued_after = conn.execute(
             "SELECT 1 FROM task_events "
             "WHERE task_id = ? AND created_at >= ? "
-            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed') "
+            "AND kind IN ('status', 'promoted', 'unblocked', 'reclaimed', 'operator_repair') "
             "LIMIT 1",
             (task_id, completed_at),
         ).fetchone()
@@ -12343,9 +12343,19 @@ def _dispatch_once_locked(
         if stage == "council":
             if _maybe_launch_council(conn, row["id"], dry_run=dry_run):
                 continue
-        # Determine artifact directory
+        # Determine artifact directory.
+        # FIX 2026-08-13 (t_9df6f54b): the previous code used
+        # ``os.environ["HERMES_HOME"]`` here. When the dispatcher runs
+        # embedded in a PROFILE gateway (e.g. sirvir,
+        # HERMES_HOME=~/.hermes/profiles/sirvir) it looked for artifacts
+        # under the profile home, while pipeline workers write them to the
+        # SHARED root (~/.hermes/feature-artifacts/). Result: the gate
+        # failed on every tick ("Missing research-brief.md") even though
+        # the artifact existed — infinite re-claim loop on research.
+        # kanban_home() resolves the shared root across profile HERMES_HOME
+        # exactly like the kanban board paths do.
         artifact_base = os.path.join(
-            os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")),
+            str(kanban_home()),
             "feature-artifacts",
         )
         artifact_dir = os.path.join(artifact_base, row["id"])
@@ -12730,8 +12740,12 @@ def _record_council_revise(
 
 
 def _council_artifact_dir(task_id: str) -> str:
+    # FIX 2026-08-13 (t_9df6f54b): anchored to the SHARED kanban root via
+    # kanban_home(), not the dispatcher gateway's HERMES_HOME — a profile
+    # gateway (sirvir) would otherwise write/read the council verdict in
+    # its own profile home and never see the pipeline's verdict.
     base = os.path.join(
-        os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")),
+        str(kanban_home()),
         "feature-artifacts",
     )
     return os.path.join(base, task_id)
@@ -13089,11 +13103,15 @@ def _create_decompose_child_tasks(
     of spawning duplicates — see #kensei-memory-stack-duplicate-children.
     """
     try:
-        parent = conn.execute(
+        raw_parent = conn.execute(
             "SELECT id, title, tier FROM tasks WHERE id = ?", (parent_id,)
         ).fetchone()
-        if not parent:
+        if not raw_parent:
             return []
+        # The connection's row_factory is not guaranteed (dispatcher opens
+        # plain sqlite3.Row-less connections) — index by position, not key.
+        parent_title = raw_parent[1] if len(raw_parent) > 1 else parent_id
+        parent_tier = raw_parent[2] if len(raw_parent) > 2 else None
         titles = _parse_decompose_children(artifact_dir)
         new_ids = []
         for i, title in enumerate(titles):
@@ -13102,10 +13120,10 @@ def _create_decompose_child_tasks(
                 title=title,
                 body=(
                     f"## Problem\nChild task decomposed from {parent_id} "
-                    f"({parent['title']}).\n\n"
+                    f"({parent_title}).\n\n"
                     f"See full decomposition in decompose-output.md under {parent_id}."
                 ),
-                tier=parent["tier"],
+                tier=parent_tier,
                 board=None,
                 parents=[parent_id],
                 idempotency_key=f"decompose:{parent_id}:{i}",
@@ -13497,8 +13515,54 @@ def _worker_skill_visible_in_home(skill_name: str, profile_home: Path) -> bool:
     return _skill_visible_in_search_dirs(skill_name, search_dirs)
 
 
+def _worker_skill_enabled_in_home(skill_name: str, profile_home: Path) -> bool:
+    """True if ``skill_name`` is in the profile's ``skills.enabled_skills``
+    allowlist (or ``always_skills``, which is implicitly enabled).
+
+    Mirrors the child CLI's allowlist gate (``tools.skills_tool`` →
+    ``agent.skill_utils.get_enabled_skill_names``). When the profile has NO
+    ``enabled_skills`` key configured, access is unrestricted (back-compat),
+    so the skill is considered enabled. A configured-but-empty allowlist
+    denies everything except ``always_skills``. Fails OPEN on config-read
+    errors (the visibility check still guards the hard-fail path).
+    """
+    config_path = profile_home / "config.yaml"
+    if not config_path.exists():
+        return True
+    try:
+        from agent.skill_utils import yaml_load
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return True
+    if not isinstance(parsed, dict):
+        return True
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return True
+    if "enabled_skills" not in skills_cfg:
+        return True  # no allowlist configured → unrestricted
+    enabled = set()
+    for key in ("enabled_skills", "always_skills"):
+        raw = skills_cfg.get(key)
+        if isinstance(raw, str):
+            enabled.add(raw.strip())
+        elif isinstance(raw, list):
+            enabled.update(str(x).strip() for x in raw if str(x).strip())
+    return skill_name in enabled
+
+
 def _missing_worker_forced_skills(profile_name: str, skills: Optional[Iterable[Any]]) -> list[str]:
-    """Return forced skills that would make the child CLI abort at startup."""
+    """Return forced skills that would make the child CLI abort at startup.
+
+    A forced skill is "missing" if it is either (a) not visible under the
+    profile's skills tree (the child cannot find it at all) or (b) visible
+    but NOT in the profile's ``enabled_skills`` allowlist (the child's
+    allowlist gate blocks the load, which hard-fails the worker when every
+    requested skill is blocked). Both conditions make the child CLI abort
+    with ``ValueError: Unknown skill(s)`` — the pre-spawn gate must reject
+    them so the task is blocked with a ``forced_skill_rejected`` event the
+    skill-reroute cron can catch, instead of silently crash-looping.
+    """
     requested: list[str] = []
     seen: set[str] = set()
     for raw in skills or []:
@@ -13520,6 +13584,7 @@ def _missing_worker_forced_skills(profile_name: str, skills: Optional[Iterable[A
     return [
         name for name in requested
         if not _worker_skill_visible_in_home(name, profile_home)
+        or not _worker_skill_enabled_in_home(name, profile_home)
     ]
 
 

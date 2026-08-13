@@ -227,4 +227,52 @@ describe('subagent store', () => {
     pruneFinishedSessionSubagents('s1')
     expect(listFor('s1')).toHaveLength(0)
   })
+
+  // The backend completes subagents with status "timeout" (hard child timeout,
+  // delegation.child_timeout_seconds) and no summary — synthesize the reason
+  // so the failed row explains itself instead of rendering as a bare failure.
+  it('maps backend timeout status to a terminal failure with a synthesized reason', () => {
+    upsertSubagent('s1', { goal: 'scan files', status: 'running', subagent_id: 't1', task_index: 0 })
+    upsertSubagent(
+      's1',
+      { status: 'timeout', subagent_id: 't1', task_index: 0, duration_seconds: 612.3 },
+      false,
+      'subagent.complete'
+    )
+
+    const item = listFor('s1')[0]
+    expect(item?.status).toBe('failed')
+    expect(item?.durationSeconds).toBe(612.3)
+    expect(item?.summary).toBe('Timed out after 612.3s')
+
+    // A timed-out row must be pruned at the next message.start boundary like
+    // any other finished row — it must not linger as a live spinner.
+    pruneFinishedSessionSubagents('s1')
+    expect(listFor('s1')).toHaveLength(0)
+  })
+
+  // Fail-closed guard: subagent.complete is terminal by definition, so an
+  // unrecognized status on it must not resurrect a row as 'running'. Live
+  // events keep the lenient fallback (a status we don't know is still active).
+  it('fails closed on unrecognized completion statuses but stays lenient for live events', () => {
+    upsertSubagent('s1', { goal: 'scan files', status: 'running', subagent_id: 'u1', task_index: 0 })
+    upsertSubagent(
+      's1',
+      { status: 'some_future_terminal_status', subagent_id: 'u1', task_index: 0 },
+      false,
+      'subagent.complete'
+    )
+    expect(listFor('s1')[0]?.status).toBe('failed')
+    expect(activeSubagentCount(listFor('s1'))).toBe(0)
+
+    upsertSubagent('s1', { goal: 'scan files', status: 'running', subagent_id: 'u2', task_index: 1 })
+    upsertSubagent(
+      's1',
+      { status: 'some_future_live_status', subagent_id: 'u2', task_index: 1, text: 'still working' },
+      false,
+      'subagent.progress'
+    )
+    expect(listFor('s1')[1]?.status).toBe('running')
+    expect(activeSubagentCount(listFor('s1'))).toBe(1)
+  })
 })

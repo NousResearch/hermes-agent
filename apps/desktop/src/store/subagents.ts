@@ -55,10 +55,27 @@ const str = (v: unknown) => (isStr(v) ? v : '')
 const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined)
 const strList = (v: unknown) => (Array.isArray(v) ? v.filter(isStr) : [])
 
-const asStatus = (v: unknown): SubagentStatus => {
-  if (v === 'completed' || v === 'failed' || v === 'interrupted' || v === 'queued') return v
-  if (v === 'timeout' || v === 'error') return 'failed'
-  if (v === 'cancelled' || v === 'canceled') return 'interrupted'
+const asStatus = (v: unknown, terminalEvent = false): SubagentStatus => {
+  if (v === 'completed' || v === 'failed' || v === 'interrupted' || v === 'queued') {
+    return v
+  }
+
+  if (v === 'timeout' || v === 'error') {
+    return 'failed'
+  }
+
+  if (v === 'cancelled' || v === 'canceled') {
+    return 'interrupted'
+  }
+
+  // Fail closed on completion: a subagent.complete event is terminal by
+  // definition, so an unrecognized status must render as a failure rather
+  // than leave a dead row spinning as 'running' forever. Live events keep
+  // the lenient 'running' fallback.
+  if (terminalEvent) {
+    return 'failed'
+  }
+
   return 'running'
 }
 
@@ -110,6 +127,15 @@ const appendStream = (stream: SubagentStreamEntry[], entry: SubagentStreamEntry)
   return [...stream, entry].slice(-MAX_STREAM)
 }
 
+// The backend sends no summary on a hard child timeout (only a preview like
+// "Timed out after 612.3s" + duration_seconds). Synthesize it so the terminal
+// row explains why it failed instead of rendering as a bare failure.
+const timeoutSummary = (payload: SubagentPayload): string => {
+  const seconds = num(payload.duration_seconds)
+
+  return str(payload.status) === 'timeout' ? `Timed out after ${seconds ?? '?'}s` : ''
+}
+
 function streamFromPayload(
   payload: SubagentPayload,
   status: SubagentStatus,
@@ -141,7 +167,7 @@ function streamFromPayload(
     out.push({ at, kind: 'thinking', text })
   }
 
-  const summary = compact(str(payload.summary) || str(payload.text))
+  const summary = compact(str(payload.summary) || str(payload.text) || timeoutSummary(payload))
 
   if (TERMINAL.has(status) && summary) {
     out.push({ at, isError: status === 'failed', kind: 'summary', text: summary })
@@ -152,7 +178,7 @@ function streamFromPayload(
 
 function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined, eventType = ''): SubagentProgress {
   const at = Date.now()
-  const status = asStatus(payload.status)
+  const status = asStatus(payload.status, eventType === 'subagent.complete')
   const tool = str(payload.tool_name)
   const stream = streamFromPayload(payload, status, eventType, at).reduce(appendStream, prev?.stream ?? [])
   const filesRead = strList(payload.files_read)
@@ -177,7 +203,7 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
     filesRead: filesRead.length ? filesRead : (prev?.filesRead ?? []),
     filesWritten: filesWritten.length ? filesWritten : (prev?.filesWritten ?? []),
     stream,
-    summary: str(payload.summary) || prev?.summary,
+    summary: str(payload.summary) || prev?.summary || timeoutSummary(payload) || undefined,
     currentTool: TERMINAL.has(status) ? undefined : tool || prev?.currentTool
   }
 }

@@ -3,11 +3,11 @@ import { useState } from 'react'
 import { composerFloatingPill } from '@/components/chat/composer-dock'
 import { Codicon } from '@/components/ui/codicon'
 import { Tip } from '@/components/ui/tooltip'
-import { addMcpServer, authMcpServer, getMcpOAuthFlow, removeMcpServer } from '@/hermes'
+import { addMcpServer, authMcpServer, cancelMcpOAuthFlow, getMcpOAuthFlow, removeMcpServer } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { brandFor, brandGlyphStyle } from '@/lib/mcp-brands'
-import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
+import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
 import { directoryEntry } from '@/lib/mcp-directory'
 import { prettyName } from '@/lib/text'
 import { useSessionSlice } from '@/lib/use-session-slice'
@@ -70,15 +70,9 @@ export function McpSuggestionPills({ sessionId }: { sessionId: null | string }) 
         await completeMcpDesktopOAuth({
           serverName: known.name,
           start: authMcpServer,
-          status: async flowId => {
-            const flow = await getMcpOAuthFlow(flowId)
-
-            if (cancels.get(server)) {
-              throw CANCELLED
-            }
-
-            return flow
-          },
+          status: getMcpOAuthFlow,
+          cancelled: () => cancels.get(server) === true,
+          cancel: cancelMcpOAuthFlow,
           openExternal: url => window.hermesDesktop.openExternal(url)
         })
       } catch (error) {
@@ -102,7 +96,7 @@ export function McpSuggestionPills({ sessionId }: { sessionId: null | string }) 
     } catch (error) {
       setPhase(server, 'idle')
 
-      if (error !== CANCELLED) {
+      if (!(error instanceof McpOAuthCancelled)) {
         notifyError(error, copy.connectFailed(prettyName(server)))
       }
     }
@@ -146,7 +140,3 @@ export function McpSuggestionPills({ sessionId }: { sessionId: null | string }) 
     )
   })
 }
-
-// Thrown by the poll wrapper when the user cancels — the rollback has its own
-// path, so the catch must swallow this rather than toast it.
-const CANCELLED = Symbol('mcp-pill-cancelled')

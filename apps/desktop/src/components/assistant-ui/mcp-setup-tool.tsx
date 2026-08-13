@@ -13,6 +13,7 @@ import { Input } from '@/components/ui/input'
 import {
   addMcpServer,
   authMcpServer,
+  cancelMcpOAuthFlow,
   getActionStatus,
   getMcpCatalog,
   getMcpOAuthFlow,
@@ -25,7 +26,7 @@ import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { AlertCircle, CheckCircle2, Loader2 } from '@/lib/icons'
 import { brandFor, brandGlyphStyle } from '@/lib/mcp-brands'
-import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
+import { completeMcpDesktopOAuth, McpOAuthCancelled } from '@/lib/mcp-dashboard-oauth'
 import { directoryEntry } from '@/lib/mcp-directory'
 import { prettyName } from '@/lib/text'
 import { cn } from '@/lib/utils'
@@ -253,9 +254,8 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
     cancelRef.current = false
     setWorking(true)
 
-    // Poll-boundary abort for the two long flows (OAuth browser round-trip,
-    // background install). Wrapping the status fns keeps the loops themselves
-    // untouched — they throw the sentinel instead of returning stale progress.
+    // Poll-boundary abort for the background-install loop; the OAuth flows
+    // carry their own cancel via completeMcpDesktopOAuth's `cancelled`.
     const throwIfCancelled = <T,>(value: T): T => {
       if (cancelRef.current) {
         throw CANCELLED
@@ -277,7 +277,9 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
         const flow = await completeMcpDesktopOAuth({
           serverName: server,
           start: authMcpServer,
-          status: flowId => getMcpOAuthFlow(flowId).then(throwIfCancelled),
+          status: getMcpOAuthFlow,
+          cancelled: () => cancelRef.current,
+          cancel: cancelMcpOAuthFlow,
           openExternal: url => window.hermesDesktop.openExternal(url)
         })
 
@@ -322,7 +324,9 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
           flow = await completeMcpDesktopOAuth({
             serverName: known.name,
             start: authMcpServer,
-            status: flowId => getMcpOAuthFlow(flowId).then(throwIfCancelled),
+            status: getMcpOAuthFlow,
+            cancelled: () => cancelRef.current,
+            cancel: cancelMcpOAuthFlow,
             openExternal: url => window.hermesDesktop.openExternal(url)
           })
         } catch (error) {
@@ -372,7 +376,7 @@ function McpSetupPending({ args }: ToolCallMessagePartProps) {
     } catch (error) {
       // User cancel: the declined respond is already on the wire — the
       // abandoned flow just stops, nothing to report.
-      if (error === CANCELLED) {
+      if (error === CANCELLED || error instanceof McpOAuthCancelled) {
         return
       }
 

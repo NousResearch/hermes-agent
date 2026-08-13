@@ -218,6 +218,79 @@ def _accepts_var_kwargs(callback: Any) -> bool:
     return any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters)
 
 
+def _check_manifest_v2(report: "DoctorReport", manifest: Any) -> None:
+    """Manifest v2 (#64165) checks: versions, deps, pip declarations, schema."""
+    import importlib.metadata
+    import re as _re
+
+    from hermes_cli.plugins import SUPPORTED_MANIFEST_VERSION
+
+    mv = getattr(manifest, "manifest_version", 1)
+    if mv > SUPPORTED_MANIFEST_VERSION:
+        report.warning(
+            f"manifest_version {mv} is newer than this Hermes supports "
+            f"({SUPPORTED_MANIFEST_VERSION}); unknown fields are ignored"
+        )
+
+    api_version = getattr(manifest, "api_version", None)
+    if api_version is not None and api_version < 1:
+        report.warning(f"api_version {api_version} is not a valid API generation (>= 1)")
+
+    for dep in getattr(manifest, "requires_plugins", []) or []:
+        dep_id = dep.get("id") if isinstance(dep, dict) else None
+        if not dep_id:
+            report.warning(f"requires_plugins entry {dep!r} has no plugin id")
+            continue
+        vr = dep.get("version_range")
+        if vr:
+            report.warning(
+                f"requires plugin {dep_id!r} ({vr}) — version ranges are "
+                "advisory; a missing dependency logs a warning at load"
+            )
+
+    pydeps = getattr(manifest, "python_dependencies", []) or []
+    missing: list[str] = []
+    unpinned: list[str] = []
+    for req in pydeps:
+        dist = _re.split(r"[<>=!~\[;\s]", req, maxsplit=1)[0].strip()
+        if not _re.search(r"<|==|~=", req):
+            unpinned.append(req)
+        if not dist:
+            continue
+        try:
+            importlib.metadata.version(dist)
+        except importlib.metadata.PackageNotFoundError:
+            missing.append(req)
+        except Exception:
+            continue
+    for req in unpinned:
+        report.warning(
+            f"python_dependencies entry {req!r} has no upper bound — "
+            "pin an upper bound (e.g. 'pkg>=1.0,<2') per the dependency policy"
+        )
+    if missing:
+        report.warning(
+            "declared python_dependencies not installed: "
+            + ", ".join(missing)
+            + " — Hermes never auto-installs plugin dependencies; "
+            + "install manually: pip install "
+            + " ".join(f"'{m}'" for m in missing)
+        )
+
+    schema = getattr(manifest, "config_schema", {}) or {}
+    if schema:
+        from hermes_cli.plugins import _CONFIG_SCHEMA_TYPES
+
+        for skey, spec in schema.items():
+            if not isinstance(spec, dict):
+                continue
+            stype = spec.get("type")
+            if stype is not None and str(stype).lower() not in _CONFIG_SCHEMA_TYPES:
+                report.warning(
+                    f"config_schema key {skey!r} declares unknown type {stype!r}"
+                )
+
+
 def doctor_plugin(target: str | os.PathLike[str] | None = None) -> DoctorReport:
     """Validate one plugin through Hermes' real scanner and registration path."""
     try:
@@ -275,6 +348,8 @@ def doctor_plugin(target: str | os.PathLike[str] | None = None) -> DoctorReport:
                 report.warning(f"manifest declares tool {name!r} but registration did not add it")
             for name in sorted(registered_tool_names - declared_tool_names):
                 report.warning(f"registration adds tool {name!r} not listed in provides_tools")
+
+            _check_manifest_v2(report, host.manifest)
     except _DoctorLoadError as exc:
         report.error(str(exc))
     except Exception as exc:

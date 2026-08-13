@@ -253,6 +253,53 @@ config keys (`plugins.entries.<id>.allow_tool_override`, …) still work but
 are deprecated — declare capabilities instead so users get a single,
 auditable consent screen. Capabilities are consent + audit, **not a
 sandbox**: they gate host API surfaces, nothing more.
+### Manifest v2 reference
+
+`plugin.yaml` also supports an additive **v2 schema** (#64165). Every field is
+optional; a manifest without `manifest_version` is a v1 manifest and stays
+fully supported forever. Unknown fields never break loading — they are ignored
+with a warning (forward compatibility), and a `manifest_version` newer than
+this Hermes understands still loads with a warning.
+
+| Field | Type | Meaning |
+|---|---|---|
+| `manifest_version` | int | Manifest **file-format** version. Absent = `1`. Current max: `2`. Independent from `api_version`. |
+| `api_version` | int | Runtime **plugin API generation** the plugin targets (ctx surface / hook signatures). Deliberately a separate axis from `manifest_version` — an `api_version: 1` plugin can use a v2 manifest. |
+| `requires_plugins` | list | Inter-plugin dependencies: `- id: other-plugin` with optional `version_range: ">=1.0,<2"`. **Advisory**: a missing dependency logs a clear warning but the plugin still loads — probe at runtime with `ctx.has_plugin("other-plugin")`. Load **order** honors these edges: when A requires B, B's `register()` runs before A's (topological sort, alphabetical tiebreak; cycles warn and fall back to alphabetical order). |
+| `python_dependencies` | list of str | Declared pip requirements (e.g. `"requests>=2.0,<3"`). **Declaration seam only** — Hermes validates them, and `hermes plugins install` / `hermes plugins doctor` surface missing ones with a `pip install` hint, but Hermes **never auto-installs** them. Pin upper bounds. |
+| `config_schema` | mapping | JSON-schema-ish description of keys under `plugins.entries.<id>.settings`: `api_url: {type: str, default: "", description: "...", required: false}`. Validated at load; mismatches log actionable warnings naming the key and expected type — never load failures. Types: `str`, `int`, `float`, `bool`, `list`, `dict` (plus JSON-schema aliases). |
+| `license` | str | SPDX-style license id (e.g. `MIT`). |
+| `homepage` | str | Project URL. |
+| `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
+
+```yaml
+# plugin.yaml — manifest v2 example
+name: my-plugin
+version: 1.2.0
+manifest_version: 2
+api_version: 1
+license: MIT
+homepage: https://github.com/owner/my-plugin
+tags: [gateway, demo]
+requires_plugins:
+  - id: other-plugin
+    version_range: ">=1.0,<2"
+python_dependencies:
+  - "somepkg>=1.0,<2"     # surfaced, never auto-installed
+config_schema:
+  api_url: {type: str, default: "", description: "Service endpoint"}
+```
+
+:::note pip-dependency isolation is deferred
+`python_dependencies` is intentionally declare-and-surface only. Installing
+arbitrary packages into Hermes' shared venv is a conflict and supply-chain
+surface, so the install seam's isolation design (constraints-file installs
+against the host lock vs. per-plugin vendored dirs vs. conflict detection
+with refusal) is an explicitly deferred follow-up — see the round-2 review on
+[#64165](https://github.com/NousResearch/hermes-agent/issues/64165) and
+[#15220](https://github.com/NousResearch/hermes-agent/issues/15220). Plugin
+packs (#64166) build on these v2 fields.
+:::
 
 ## Step 3: Write the tool schemas
 

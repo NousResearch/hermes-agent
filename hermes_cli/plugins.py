@@ -368,6 +368,282 @@ def _display_author(value: object) -> str:
     return "" if value is None else str(value)
 
 
+# ── Manifest v2 (#64165) parsing helpers ──────────────────────────────────
+
+# Fields the current parser understands. Anything else in plugin.yaml is
+# forward-compat surface: warn (once per manifest, at debug for v1 files to
+# avoid churning existing plugins, at warning for v2+) and continue loading.
+_KNOWN_MANIFEST_FIELDS: Set[str] = {
+    # v1
+    "name", "version", "description", "author", "requires_env",
+    "provides_tools", "provides_hooks", "kind", "hooks", "label",
+    "optional_env", "platforms", "external_dependencies", "pip_dependencies",
+    "provides_browser_providers", "provides_web_providers",
+    # v2 (#64165)
+    "manifest_version", "api_version", "requires_plugins",
+    "python_dependencies", "config_schema", "license", "homepage", "tags",
+    # owned by sibling sub-issues but reserved so their manifests don't warn
+    "capabilities", "emits", "listens", "hermes", "depends",
+}
+
+# Highest manifest schema version this Hermes understands.
+SUPPORTED_MANIFEST_VERSION = 2
+
+_CONFIG_SCHEMA_TYPES: Dict[str, tuple] = {
+    "str": (str,),
+    "string": (str,),
+    "int": (int,),
+    "integer": (int,),
+    "float": (int, float),
+    "number": (int, float),
+    "bool": (bool,),
+    "boolean": (bool,),
+    "list": (list,),
+    "array": (list,),
+    "dict": (dict,),
+    "object": (dict,),
+}
+
+
+def _parse_manifest_v2_fields(data: Mapping, key: str) -> Dict[str, Any]:
+    """Validate and normalize the manifest v2 fields (#64165).
+
+    Returns kwargs for :class:`PluginManifest`. Every problem is a warning,
+    never a load failure — v2 metadata is advisory and additive.
+    """
+    out: Dict[str, Any] = {}
+
+    # manifest_version — absent means v1 (supported forever).
+    raw_mv = data.get("manifest_version", 1)
+    try:
+        mv = int(raw_mv)
+    except (TypeError, ValueError):
+        logger.warning(
+            "Plugin %s: manifest_version %r is not an integer; treating as 1",
+            key, raw_mv,
+        )
+        mv = 1
+    if mv > SUPPORTED_MANIFEST_VERSION:
+        logger.warning(
+            "Plugin %s: manifest_version %d is newer than this Hermes "
+            "supports (%d); loading anyway and ignoring unknown fields",
+            key, mv, SUPPORTED_MANIFEST_VERSION,
+        )
+    out["manifest_version"] = mv
+
+    # api_version — plugin API generation (independent of manifest_version).
+    raw_api = data.get("api_version")
+    if raw_api is None:
+        out["api_version"] = None
+    else:
+        try:
+            out["api_version"] = int(raw_api)
+        except (TypeError, ValueError):
+            logger.warning(
+                "Plugin %s: api_version %r is not an integer; ignoring", key, raw_api,
+            )
+            out["api_version"] = None
+
+    # requires_plugins — list of {id, version_range?} (str shorthand ok).
+    deps: List[Dict[str, Any]] = []
+    raw_deps = data.get("requires_plugins")
+    if raw_deps is not None and not isinstance(raw_deps, list):
+        logger.warning(
+            "Plugin %s: requires_plugins must be a list; ignoring", key,
+        )
+        raw_deps = None
+    for item in raw_deps or []:
+        if isinstance(item, str):
+            deps.append({"id": item, "version_range": None})
+        elif isinstance(item, Mapping) and isinstance(item.get("id"), str) and item["id"]:
+            vr = item.get("version_range")
+            deps.append({
+                "id": item["id"],
+                "version_range": str(vr) if vr is not None else None,
+            })
+        else:
+            logger.warning(
+                "Plugin %s: requires_plugins entry %r must be a plugin id "
+                "string or a {id, version_range} mapping; skipping", key, item,
+            )
+    out["requires_plugins"] = deps
+
+    # python_dependencies — declared pip requirement strings. Validated and
+    # surfaced ONLY; never auto-installed (isolation design deferred).
+    pydeps: List[str] = []
+    raw_pydeps = data.get("python_dependencies")
+    if raw_pydeps is not None and not isinstance(raw_pydeps, list):
+        logger.warning(
+            "Plugin %s: python_dependencies must be a list of requirement "
+            "strings; ignoring", key,
+        )
+        raw_pydeps = None
+    for item in raw_pydeps or []:
+        if isinstance(item, str) and item.strip():
+            pydeps.append(item.strip())
+        else:
+            logger.warning(
+                "Plugin %s: python_dependencies entry %r must be a non-empty "
+                "requirement string; skipping", key, item,
+            )
+    out["python_dependencies"] = pydeps
+
+    # config_schema — mapping of key -> {type?, default?, description?, required?}.
+    raw_schema = data.get("config_schema")
+    schema: Dict[str, Any] = {}
+    if raw_schema is not None and not isinstance(raw_schema, Mapping):
+        logger.warning(
+            "Plugin %s: config_schema must be a mapping; ignoring", key,
+        )
+        raw_schema = None
+    for skey, spec in (raw_schema or {}).items():
+        if not isinstance(spec, Mapping):
+            logger.warning(
+                "Plugin %s: config_schema entry %r must be a mapping "
+                "(e.g. {type: str}); skipping", key, skey,
+            )
+            continue
+        stype = spec.get("type")
+        if stype is not None and str(stype).lower() not in _CONFIG_SCHEMA_TYPES:
+            logger.warning(
+                "Plugin %s: config_schema key %r declares unknown type %r "
+                "(known: %s); type check will be skipped for it",
+                key, skey, stype, ", ".join(sorted(_CONFIG_SCHEMA_TYPES)),
+            )
+        schema[str(skey)] = dict(spec)
+    out["config_schema"] = schema
+
+    # Standard metadata.
+    out["license"] = str(data.get("license") or "")
+    out["homepage"] = str(data.get("homepage") or "")
+    raw_tags = data.get("tags")
+    if raw_tags is not None and not isinstance(raw_tags, list):
+        logger.warning("Plugin %s: tags must be a list; ignoring", key)
+        raw_tags = None
+    out["tags"] = [str(t) for t in (raw_tags or [])]
+
+    # Forward compat: unknown fields warn (never fail). Keep v1 manifests
+    # quiet at warning level — they predate the known-field census.
+    unknown = sorted(set(data.keys()) - _KNOWN_MANIFEST_FIELDS)
+    if unknown:
+        log = logger.warning if mv >= 2 else logger.debug
+        log(
+            "Plugin %s: unknown manifest field(s) ignored: %s "
+            "(newer manifest schema or typo; plugin still loads)",
+            key, ", ".join(unknown),
+        )
+
+    return out
+
+
+def validate_config_schema(
+    plugin_id: str,
+    schema: Mapping,
+    settings: Mapping,
+) -> List[str]:
+    """Validate a plugin's config entry against its declared config_schema.
+
+    Returns a list of human-actionable warning strings. Never raises;
+    schema mismatches must not block plugin load (#64165).
+    """
+    warnings: List[str] = []
+    if not isinstance(schema, Mapping) or not isinstance(settings, Mapping):
+        return warnings
+    for skey, spec in schema.items():
+        if not isinstance(spec, Mapping):
+            continue
+        present = skey in settings
+        if not present:
+            if spec.get("required") and "default" not in spec:
+                warnings.append(
+                    f"plugins.entries.{plugin_id}.settings.{skey} is required "
+                    "by the plugin's config_schema but is not set"
+                )
+            continue
+        stype = spec.get("type")
+        expected = _CONFIG_SCHEMA_TYPES.get(str(stype).lower()) if stype else None
+        if expected is not None:
+            value = settings[skey]
+            # bool is an int subclass — don't let True satisfy int/float.
+            ok = isinstance(value, expected) and not (
+                isinstance(value, bool) and bool not in expected
+            )
+            if not ok:
+                warnings.append(
+                    f"plugins.entries.{plugin_id}.settings.{skey} should be "
+                    f"{stype} (got {type(value).__name__})"
+                )
+    return warnings
+
+
+def resolve_plugin_load_order(
+    manifests: Mapping[str, "PluginManifest"],
+) -> List[str]:
+    """Return plugin keys in dependency-respecting load order (#64165).
+
+    When A requires B, B sorts before A (so B's ``register()`` runs first).
+    Ties break alphabetically for determinism. Dependency cycles are
+    detected, warned about, and the members of the cycle fall back to
+    alphabetical order after every non-cycle plugin they depend on.
+    Missing dependencies are warned about here (once, at discovery) but do
+    not remove the dependent plugin from the order — loads never hard-fail
+    on a missing advisory dependency.
+    """
+    import graphlib
+
+    keys = sorted(manifests.keys())
+    by_name: Dict[str, str] = {}
+    for k in keys:
+        name = manifests[k].name
+        if name and name not in by_name:
+            by_name[name] = k
+
+    def _resolve_dep(dep_id: str) -> Optional[str]:
+        if dep_id in manifests:
+            return dep_id
+        return by_name.get(dep_id)
+
+    edges: Dict[str, Set[str]] = {k: set() for k in keys}
+    for k in keys:
+        for dep in manifests[k].requires_plugins:
+            dep_id = dep.get("id") if isinstance(dep, Mapping) else None
+            if not dep_id:
+                continue
+            resolved = _resolve_dep(dep_id)
+            if resolved is None:
+                logger.warning(
+                    "Plugin %s requires plugin '%s' which is not enabled/"
+                    "installed; loading anyway (probe availability at runtime "
+                    "via ctx.has_plugin). Run `hermes plugins enable %s` if "
+                    "it is installed.",
+                    k, dep_id, dep_id,
+                )
+                continue
+            if resolved == k:
+                logger.warning("Plugin %s declares a dependency on itself; ignoring", k)
+                continue
+            edges[k].add(resolved)
+
+    sorter = graphlib.TopologicalSorter(edges)
+    try:
+        sorter.prepare()
+    except graphlib.CycleError as exc:
+        cycle = exc.args[1] if len(exc.args) > 1 else []
+        logger.warning(
+            "Plugin dependency cycle detected (%s); falling back to "
+            "alphabetical load order for all plugins",
+            " -> ".join(str(c) for c in cycle),
+        )
+        return keys
+
+    ordered: List[str] = []
+    while sorter.is_active():
+        ready = sorted(sorter.get_ready())
+        ordered.extend(ready)
+        sorter.done(*ready)
+    return ordered
+
+
 @dataclass
 class PluginManifest:
     """Parsed representation of a plugin.yaml manifest."""
@@ -412,6 +688,31 @@ class PluginManifest:
     # granted it (``plugins.entries.<id>.granted_capabilities``) or the
     # deprecated legacy ``allow_*`` key is set.
     capabilities: List[str] = field(default_factory=list)
+    # ── Manifest v2 fields (#64165) — all optional and additive ──────────
+    # Manifest SCHEMA version. Absent (v1) manifests are fully supported
+    # forever. This versions the *file format* only; it is deliberately
+    # independent from ``api_version`` (the runtime plugin API generation).
+    manifest_version: int = 1
+    # Runtime plugin API generation the plugin targets (ctx surface /
+    # hook signatures). ``None`` = unspecified (treated as current-compatible).
+    api_version: Optional[int] = None
+    # Inter-plugin dependencies: list of {"id": str, "version_range": str|None}.
+    # Advisory: a missing dependency logs a warning but the plugin still
+    # loads (plugins can probe availability via ``ctx.has_plugin``). Load
+    # ORDER honors these edges: if A requires B, B registers first.
+    requires_plugins: List[Dict[str, Any]] = field(default_factory=list)
+    # Declared pip dependencies. VALIDATED AND SURFACED ONLY — Hermes never
+    # auto-installs these (isolation design for the install seam is a
+    # deferred follow-up; see #64165 round-2 review and #15220).
+    python_dependencies: List[str] = field(default_factory=list)
+    # JSON-schema-ish mapping describing keys under
+    # ``plugins.entries.<id>.settings``. Validated at load; mismatches are
+    # warnings, never load failures.
+    config_schema: Dict[str, Any] = field(default_factory=dict)
+    # Formalized standard metadata.
+    license: str = ""
+    homepage: str = ""
+    tags: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -653,6 +954,20 @@ class PluginContext:
     def plugin_id(self) -> str:
         """Return the effective registry id used for this plugin's namespaces."""
         return self.manifest.key or self.manifest.name
+
+    def has_plugin(self, plugin_id: str) -> bool:
+        """Return True when another plugin is loaded and enabled (#64165).
+
+        Companion to the advisory ``requires_plugins`` manifest field: a
+        missing dependency never blocks load, so plugins probe availability
+        at runtime with this. Matches on registry key or manifest name.
+        """
+        for key, loaded in self._manager._plugins.items():
+            if not loaded.enabled:
+                continue
+            if key == plugin_id or loaded.manifest.name == plugin_id:
+                return True
+        return False
 
     # -- namespaced config and durable state --------------------------------
 
@@ -2019,6 +2334,10 @@ class PluginManager:
         winners: Dict[str, PluginManifest] = {}
         for manifest in manifests:
             winners[manifest.key or manifest.name] = manifest
+        # Standalone/user plugins that pass the gates below are collected
+        # here and loaded AFTER the sweep in dependency-respecting order
+        # (requires_plugins topological sort, #64165).
+        to_load: Dict[str, PluginManifest] = {}
         for manifest in winners.values():
             lookup_key = manifest.key or manifest.name
 
@@ -2103,6 +2422,16 @@ class PluginManager:
                     "Skipping '%s' (not in plugins.enabled)", lookup_key
                 )
                 continue
+            to_load[lookup_key] = manifest
+
+        # Load the surviving standalone plugins in dependency order:
+        # when A requires B, B's register() runs before A's (topological
+        # sort, stable alphabetical tiebreak; cycles warn and fall back to
+        # alphabetical order). Missing deps warn but never block the load.
+        for lookup_key in resolve_plugin_load_order(to_load):
+            manifest = to_load[lookup_key]
+            self._warn_python_dependencies(manifest)
+            self._validate_plugin_config_schema(manifest)
             self._load_plugin(manifest)
 
         if manifests:
@@ -2449,6 +2778,7 @@ class PluginManager:
                 "Parsed manifest: key=%s name=%s kind=%s source=%s path=%s",
                 key, name, kind, source, plugin_dir,
             )
+            v2_fields = _parse_manifest_v2_fields(data, key)
             return PluginManifest(
                 name=name,
                 version=str(data.get("version", "")),
@@ -2464,6 +2794,7 @@ class PluginManager:
                 capabilities=_parse_declared_capabilities(
                     data.get("capabilities"), name
                 ),
+                **v2_fields,
             )
         except Exception as exc:
             logger.warning(
@@ -2564,6 +2895,73 @@ class PluginManager:
                 exc_info=True,
             )
             self._load_plugin(manifest)
+
+    def _warn_python_dependencies(self, manifest: PluginManifest) -> None:
+        """Surface declared pip dependencies (#64165).
+
+        python_dependencies is a declaration seam ONLY: Hermes validates and
+        prints the requirements with an install hint but NEVER auto-installs
+        them. The isolation design (constraints installs vs. vendored dirs
+        vs. conflict-detection-and-refusal) is an explicitly deferred
+        follow-up — see the round-2 review on #64165 and #15220.
+        """
+        deps = manifest.python_dependencies
+        if not deps:
+            return
+        key = manifest.key or manifest.name
+        missing: List[str] = []
+        for req in deps:
+            # Best-effort presence probe on the distribution name.
+            dist = re.split(r"[<>=!~\[;\s]", req, maxsplit=1)[0].strip()
+            if not dist:
+                continue
+            try:
+                importlib.metadata.version(dist)
+            except importlib.metadata.PackageNotFoundError:
+                missing.append(req)
+            except Exception:
+                continue
+        if missing:
+            logger.warning(
+                "Plugin %s declares Python dependencies that are not "
+                "installed: %s. Hermes does not install plugin dependencies "
+                "automatically; install them yourself, e.g.: pip install %s",
+                key, ", ".join(missing),
+                " ".join(f"'{m}'" for m in missing),
+            )
+        else:
+            logger.debug(
+                "Plugin %s python_dependencies satisfied: %s",
+                key, ", ".join(deps),
+            )
+
+    def _validate_plugin_config_schema(self, manifest: PluginManifest) -> None:
+        """Check plugins.entries.<id> settings against config_schema (#64165).
+
+        Mismatches log actionable warnings naming the key and expected type;
+        they never block the plugin from loading.
+        """
+        if not manifest.config_schema:
+            return
+        plugin_id = manifest.key or manifest.name
+        settings: Mapping[str, Any] = {}
+        try:
+            from hermes_cli.config import load_config
+
+            cfg = load_config() or {}
+            entries = (cfg.get("plugins") or {}).get("entries") or {}
+            entry = entries.get(plugin_id) if isinstance(entries, Mapping) else None
+            raw = entry.get("settings") if isinstance(entry, Mapping) else None
+            if not isinstance(raw, Mapping):
+                # Migration fallback mirroring ctx.get_config.
+                raw = entry.get("config") if isinstance(entry, Mapping) else None
+            settings = raw if isinstance(raw, Mapping) else {}
+        except Exception:
+            settings = {}
+        for warning in validate_config_schema(
+            plugin_id, manifest.config_schema, settings
+        ):
+            logger.warning("Plugin %s config: %s", plugin_id, warning)
 
     def _load_plugin(self, manifest: PluginManifest) -> None:
         """Import a plugin module and call its ``register(ctx)`` function."""

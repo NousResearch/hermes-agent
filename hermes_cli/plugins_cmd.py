@@ -331,6 +331,32 @@ def _missing_requires_env_names(manifest: dict) -> list[str]:
     return [s["name"] for s in env_specs if s.get("name") and not get_env_value(s["name"])]
 
 
+def _print_python_dependencies(manifest: dict, console) -> None:
+    """Surface declared python_dependencies at install time (#64165).
+
+    Declaration seam ONLY — Hermes never auto-installs plugin pip
+    dependencies (isolation design deferred; see #64165 / #15220). We print
+    the declared requirements with a copy-pasteable install hint.
+    """
+    deps = manifest.get("python_dependencies") or []
+    if not isinstance(deps, list):
+        return
+    deps = [d.strip() for d in deps if isinstance(d, str) and d.strip()]
+    if not deps:
+        return
+    plugin_name = manifest.get("name", "this plugin")
+    console.print(
+        f"\n[bold]{plugin_name}[/bold] declares Python dependencies "
+        "(not installed automatically):"
+    )
+    for dep in deps:
+        console.print(f"  - {dep}")
+    console.print(
+        "[dim]Install them yourself if needed: "
+        f"pip install {' '.join(repr(d) for d in deps)}[/dim]\n"
+    )
+
+
 def _prompt_plugin_env_vars(manifest: dict, console) -> None:
     """Prompt for required environment variables declared in plugin.yaml.
 
@@ -834,6 +860,8 @@ def cmd_install(
         )
 
     _prompt_plugin_env_vars(installed_manifest, console)
+
+    _print_python_dependencies(installed_manifest, console)
 
     _display_after_install(target, identifier)
 

@@ -75,15 +75,10 @@ export const MCP_DIRECTORY: McpDirectoryEntry[] = [
     name: 'datadog',
     url: 'https://mcp.datadoghq.com/api/unstable/mcp-server/mcp'
   },
-  {
-    description: 'Repos, issues, and pull requests via GitHub’s hosted MCP.',
-    docs: 'https://docs.github.com/en/copilot/customizing-copilot/using-model-context-protocol/using-the-github-mcp-server',
-    // No hosts on purpose: github.com links are everywhere in a coding chat
-    // (commits, PRs under review, pasted diffs) and would fire constantly.
-    keywords: ['github'],
-    name: 'github',
-    url: 'https://api.githubcopilot.com/mcp/'
-  },
+  // GitHub's hosted MCP is intentionally absent. Directory entries are wired
+  // through generic Dynamic Client Registration, but GitHub requires each MCP
+  // host to provide its own OAuth app (or use a PAT). Advertising it here makes
+  // both the composer pill and setup_mcp fail at /register with HTTP 404.
   {
     description: 'Pages and databases from your Notion workspace.',
     docs: 'https://developers.notion.com/docs/mcp',

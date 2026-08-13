@@ -429,6 +429,9 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         ))
         self._reply_prefix: Optional[str] = config.extra.get("reply_prefix")
         self._dm_policy = str(config.extra.get("dm_policy") or _wenv("WHATSAPP_DM_POLICY", "pairing")).strip().lower()
+        self._whatsapp_mode = str(
+            config.extra.get("mode") or _wenv("WHATSAPP_MODE", "self-chat")
+        ).strip().lower()
         # Prefer config.extra, then the documented WHATSAPP_ALLOWED_USERS env
         # (setup wizard / pairing mirror). Select by key *presence* so an
         # explicit empty allow_from: [] stays authoritative and does not fall

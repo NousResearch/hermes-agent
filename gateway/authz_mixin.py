@@ -835,6 +835,35 @@ class GatewayAuthorizationMixin:
         if platform == Platform.EMAIL:
             return "ignore"
 
+        # Self-chat WhatsApp is the owner's personal number, not a public
+        # bot. Pairing codes sent to unknown DMs are confusing and leak that
+        # a bot is listening (#84706). Honor an explicit
+        # unauthorized_dm_behavior override above; otherwise stay silent
+        # even when WHATSAPP_DM_POLICY=pairing.
+        if platform == Platform.WHATSAPP:
+            adapter = self._authorization_adapter(platform, profile)
+            mode = getattr(adapter, "_whatsapp_mode", None) if adapter is not None else None
+            if mode is None:
+                config = getattr(self, "config", None)
+                platform_cfg = (
+                    config.platforms.get(platform)
+                    if config is not None and hasattr(config, "platforms")
+                    else None
+                )
+                extra = getattr(platform_cfg, "extra", None) if platform_cfg else None
+                if isinstance(extra, dict) and extra.get("mode"):
+                    mode = extra.get("mode")
+                else:
+                    from agent.secret_scope import UnscopedSecretError, get_secret
+                    try:
+                        mode = get_secret("WHATSAPP_MODE")
+                    except UnscopedSecretError:
+                        mode = os.getenv("WHATSAPP_MODE")
+                    except Exception:
+                        mode = os.getenv("WHATSAPP_MODE")
+            if str(mode or "self-chat").strip().lower() == "self-chat":
+                return "ignore"
+
         # Check for an explicit global config override.
         if config and hasattr(config, "unauthorized_dm_behavior"):
             if config.unauthorized_dm_behavior != "pair":  # non-default → explicit override

@@ -35,6 +35,7 @@ const SIDEBAR_SESSION_ORDER_STORAGE_KEY = 'hermes.desktop.sessionOrder'
 const SIDEBAR_SESSION_ORDER_MANUAL_STORAGE_KEY = 'hermes.desktop.sessionOrder.manual'
 const SIDEBAR_GROUPING_STORAGE_KEY = 'hermes.desktop.sidebarGrouping'
 const SIDEBAR_ALL_PROFILES_GROUPING_STORAGE_KEY = 'hermes.desktop.sidebarGrouping.allProfiles'
+const SIDEBAR_ALL_PROFILES_AGENTS_GROUPED_STORAGE_KEY = 'hermes.desktop.sidebarAgentsGrouped.allProfiles'
 const SIDEBAR_SORT_KEY_STORAGE_KEY = 'hermes.desktop.sidebarSortKey'
 const SIDEBAR_ROW_META_STORAGE_KEY = 'hermes.desktop.sidebarRowMeta'
 const SIDEBAR_CARD_ROWS_STORAGE_KEY = 'hermes.desktop.sidebarCardRows'
@@ -202,7 +203,25 @@ export const $sidebarMessagingOpenIds = persistentAtom(
   [] as string[],
   Codecs.stringArray
 )
-export const $sidebarAgentsGrouped = persistentAtom(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, false, Codecs.bool)
+// The Project-grouping flag, per scope like the grouping atoms below it: one
+// global bool here meant picking Project inside a workspace also flipped the
+// all-profiles view into the project tree (and leaving it there wiped the
+// workspace's choice) — the "sidebar forgets my grouping every time I switch
+// workspaces" bug. The flat key keeps its historical name so an existing
+// choice survives the update.
+const $sidebarFlatAgentsGrouped = persistentAtom(SIDEBAR_AGENTS_GROUPED_STORAGE_KEY, false, Codecs.bool)
+const $sidebarAllProfilesAgentsGrouped = persistentAtom(
+  SIDEBAR_ALL_PROFILES_AGENTS_GROUPED_STORAGE_KEY,
+  false,
+  Codecs.bool
+)
+
+/** Whether the CURRENT scope shows the project tree (reads the scope's own
+ *  flag, so each workspace and the all-profiles view remember it separately). */
+export const $sidebarAgentsGrouped: ReadableAtom<boolean> = computed(
+  [$showAllProfiles, $sidebarFlatAgentsGrouped, $sidebarAllProfilesAgentsGrouped],
+  (showAll, flat, allProfiles) => (showAll ? allProfiles : flat)
+)
 
 /** How the recents list is divided. `date` is the sidebar's long-standing
  *  default (Today / Yesterday / Last week dividers). `profile` only means
@@ -544,23 +563,26 @@ export function toggleSidebarMessagingOpen(sourceId: string) {
 }
 
 export function setSidebarAgentsGrouped(grouped: boolean) {
-  $sidebarAgentsGrouped.set(grouped)
+  // Write the flag the current scope reads — see $sidebarAgentsGrouped.
+  ;($showAllProfiles.get() ? $sidebarAllProfilesAgentsGrouped : $sidebarFlatAgentsGrouped).set(grouped)
 }
 
 export function setSidebarGrouping(grouping: SidebarGrouping) {
-  setSidebarAgentsGrouped(grouping === 'project')
+  // Grouping by owner is a request to see every owner, so it turns the
+  // all-profiles view on rather than drawing one group around one profile —
+  // and every write that follows must target that scope, not the one we were
+  // in when the click landed. (The flat scope's atom can't hold 'profile'.)
+  if (grouping === 'profile') {
+    setShowAllProfiles(true)
+    $sidebarAllProfilesAgentsGrouped.set(false)
+    $sidebarAllProfilesGrouping.set(grouping)
 
-  if (grouping === 'project') {
     return
   }
 
-  // Grouping by owner is a request to see every owner, so it turns the
-  // all-profiles view on rather than drawing one group around one profile.
-  // (The flat scope's atom can't hold 'profile' at all.)
-  if (grouping === 'profile') {
-    setShowAllProfiles(true)
-    $sidebarAllProfilesGrouping.set(grouping)
+  setSidebarAgentsGrouped(grouping === 'project')
 
+  if (grouping === 'project') {
     return
   }
 
@@ -629,10 +651,13 @@ function clearSidebarFilters() {
  *  goes through its setter so a hand-dragged sequence is dropped along with it. */
 export function resetSidebarView() {
   setSidebarGrouping(SIDEBAR_DEFAULT_GROUPING)
-  // Both scopes, not just the one on screen: each keeps its own grouping, so a
-  // reset that left the other customized would hand it back on the next flip.
+  // Both scopes, not just the one on screen: each keeps its own grouping (and
+  // its own Project flag), so a reset that left the other customized would
+  // hand it back on the next flip.
   $sidebarFlatGrouping.set(SIDEBAR_DEFAULT_GROUPING)
   $sidebarAllProfilesGrouping.set(SIDEBAR_DEFAULT_GROUPING)
+  $sidebarFlatAgentsGrouped.set(false)
+  $sidebarAllProfilesAgentsGrouped.set(false)
   setSidebarOrdering(SIDEBAR_DEFAULT_ORDERING)
   $sidebarRowMeta.set(SIDEBAR_DEFAULT_ROW_META)
   $sidebarCardRows.set(false)

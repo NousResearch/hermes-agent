@@ -130,12 +130,16 @@ def migrate_webhook_routes(
             if resolved != value:
                 raise WebhookSecretMigrationError("Secret backend verification failed")
             receipt["verified"] = True
-        except Exception as exc:
+        except WebhookSecretMigrationError:
+            raise
+        except Exception:
+            # Do NOT chain the backend exception: its message/traceback may
+            # contain the secret value. Raise a value-free error instead.
             raise WebhookSecretMigrationError(
                 f"Secure persistence failed for route {name!r}; source left untouched",
                 receipt=receipt,
                 source=str(path),
-            ) from exc
+            ) from None
         staged[name].pop("secret", None)
         staged[name].pop("secret_value", None)
         staged[name]["secret_ref"] = ref
@@ -145,12 +149,12 @@ def migrate_webhook_routes(
     if migrated:
         try:
             _write_json_atomic(path, staged)
-        except Exception as exc:
+        except Exception:
             raise WebhookSecretMigrationError(
                 "Atomic route switch failed; source remains available for rollback",
                 receipt={"migrated_routes": migrated},
                 source=str(path),
-            ) from exc
+            ) from None
 
     # scrub legacy secret-bearing backups only after the switched route record is
     # live and verified. Scrubbing is best-effort but never replaces a verified
@@ -177,12 +181,12 @@ def migrate_webhook_routes(
                 if changed:
                     _write_json_atomic(backup, backup_routes)
                     scrubbed.append(str(backup))
-        except Exception as exc:
+        except Exception:
             raise WebhookSecretMigrationError(
                 "Route switched but backup scrub failed; rollback receipt retained",
                 receipt={"migrated_routes": migrated, "scrubbed_backups": scrubbed},
                 source=str(path),
-            ) from exc
+            ) from None
 
     return {
         "migrated_routes": migrated,
@@ -223,14 +227,16 @@ def migrate_webhook_config(
         extra = {}
         webhook["extra"] = extra
     candidates: list[tuple[str, str, str]] = []
-    global_secret = extra.get("secret") or webhook.get("secret")
+    global_secret = extra.get("secret") or extra.get("secret_value") or webhook.get("secret") or webhook.get("secret_value")
     if isinstance(global_secret, str) and global_secret:
         candidates.append(("WEBHOOK_SECRET", global_secret, "global"))
     routes = extra.get("routes")
     if isinstance(routes, dict):
         for name, route in routes.items():
-            if isinstance(route, dict) and isinstance(route.get("secret"), str) and route["secret"]:
-                candidates.append((_reference(str(name), route), route["secret"], str(name)))
+            if isinstance(route, dict):
+                route_secret = route.get("secret") or route.get("secret_value")
+                if isinstance(route_secret, str) and route_secret:
+                    candidates.append((_reference(str(name), route), route_secret, str(name)))
     receipts = []
     for ref, value, label in candidates:
         receipt = {"route": label, "reference": ref, "stored": False, "verified": False}
@@ -241,30 +247,36 @@ def migrate_webhook_config(
             if lookup(ref) != value:
                 raise WebhookSecretMigrationError("Secret backend verification failed")
             receipt["verified"] = True
-        except Exception as exc:
+        except WebhookSecretMigrationError:
+            raise
+        except Exception:
+            # Do NOT chain the backend exception (may contain the secret).
             raise WebhookSecretMigrationError(
                 f"Secure persistence failed for webhook secret {label!r}; source left untouched",
                 receipt=receipt,
                 source=str(path),
-            ) from exc
+            ) from None
     if candidates:
         extra.pop("secret", None)
+        extra.pop("secret_value", None)
         extra["secret_ref"] = "WEBHOOK_SECRET" if global_secret else extra.get("secret_ref")
         webhook.pop("secret", None)
+        webhook.pop("secret_value", None)
         if isinstance(routes, dict):
             for name, route in routes.items():
-                if isinstance(route, dict) and route.get("secret"):
+                if isinstance(route, dict) and (route.get("secret") or route.get("secret_value")):
                     route["secret_ref"] = _reference(str(name), route)
                     route.pop("secret", None)
+                    route.pop("secret_value", None)
         from utils import atomic_yaml_write
         try:
             atomic_yaml_write(path, staged, sort_keys=False)
-        except Exception as exc:
+        except Exception:
             raise WebhookSecretMigrationError(
                 "Atomic config switch failed; source remains available for rollback",
                 receipt={"migrated": bool(candidates)},
                 source=str(path),
-            ) from exc
+            ) from None
     return {"migrated": bool(candidates), "receipts": receipts, "rollback": {"source": str(path), "source_preserved_on_pre_switch_failure": True}}
 
 

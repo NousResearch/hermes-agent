@@ -5354,7 +5354,14 @@ def get_config_value(key: str, *, as_json: bool = False):
         sys.exit(1)
 
     if _is_webhook_secret_config_key(key) or key.upper() in {"WEBHOOK_SECRET"} or key.upper().startswith("WEBHOOK_ROUTE_"):
-        value = redact_config_value(value)
+        if isinstance(value, str) and value:
+            # Scalar webhook secret keys (e.g. `WEBHOOK_SECRET` read from .env)
+            # are masked directly — redact_config_value only masks dict keys
+            # and would pass a scalar through unchanged, leaking the secret.
+            from agent.redact import mask_secret
+            value = mask_secret(value)
+        else:
+            value = redact_config_value(value)
     print(_format_config_get_value(value, as_json=as_json))
 
 

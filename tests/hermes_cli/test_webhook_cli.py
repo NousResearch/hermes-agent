@@ -10,6 +10,7 @@ from hermes_cli.webhook import (
     webhook_command,
     _get_webhook_base_url,
     _load_subscriptions,
+    _resolve_route_secret,
     _save_subscriptions,
     _subscriptions_path,
 )
@@ -57,12 +58,20 @@ class TestSubscribe:
         webhook_command(_make_args(
             webhook_action="subscribe", name="s", secret="my-secret"
         ))
-        assert _load_subscriptions()["s"]["secret"] == "my-secret"
+        route = _load_subscriptions()["s"]
+        # Secrets are persisted by reference; the plaintext lives in the
+        # profile resolver, not the route JSON.
+        assert "secret" not in route
+        assert "secret_ref" in route
+        assert _resolve_route_secret(route) == "my-secret"
 
 
     def test_auto_secret(self):
         webhook_command(_make_args(webhook_action="subscribe", name="s"))
-        secret = _load_subscriptions()["s"]["secret"]
+        route = _load_subscriptions()["s"]
+        assert "secret" not in route
+        assert "secret_ref" in route
+        secret = _resolve_route_secret(route)
         assert len(secret) > 20
 
 

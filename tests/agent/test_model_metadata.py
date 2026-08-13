@@ -1145,6 +1145,33 @@ class TestParseContextLimitFromError:
 class TestContextLengthCache:
 
 
+    def test_non_positive_lengths_never_persisted(self, tmp_path):
+        """save_context_length must refuse 0/negative values — a persisted 0
+        short-circuits step 1 (``0 is not None``) and poisons the whole
+        resolution chain downstream (#25812)."""
+        cache_file = tmp_path / "cache.yaml"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            save_context_length("test/model", "http://x", 0)
+            save_context_length("test/model", "http://x", -1)
+            assert get_cached_context_length("test/model", "http://x") is None
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    def test_non_positive_cached_entry_dropped_and_reresolved(self, mock_fetch, tmp_path):
+        """A pre-existing 0 entry (corrupted cache / manual edit) must be
+        invalidated at step 1 and re-resolved instead of returned."""
+        mock_fetch.return_value = {}
+        cache_file = tmp_path / "cache.yaml"
+        with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
+            # Write the poison entry directly — save_context_length now refuses it.
+            cache_file.write_text(
+                "context_lengths:\n  test/model@http://x: 0\n", encoding="utf-8"
+            )
+            assert get_cached_context_length("test/model", "http://x") == 0
+            result = get_model_context_length("test/model", base_url="http://x")
+            assert result > 0
+            assert get_cached_context_length("test/model", "http://x") != 0
+
+
     def test_null_context_lengths_key_returns_empty(self, tmp_path):
         """``context_lengths:`` with no value parses as None — must behave
         like an empty cache instead of crashing every caller (#47135)."""

@@ -18,13 +18,11 @@ def transport():
 
 
 class TestChatCompletionsBasic:
-
-
-    def test_normalize_response_allows_missing_optional_tool_calls(self, transport):
+    def test_normalize_response_allows_missing_optional_message_fields(self, transport):
         response = SimpleNamespace(
             choices=[
                 SimpleNamespace(
-                    message=SimpleNamespace(content="done"),
+                    message=SimpleNamespace(),
                     finish_reason="stop",
                 )
             ],
@@ -33,10 +31,8 @@ class TestChatCompletionsBasic:
 
         normalized = transport.normalize_response(response)
 
-        assert normalized.content == "done"
+        assert normalized.content is None
         assert normalized.tool_calls is None
-
-
 
     @pytest.mark.parametrize("provider", ["nous", "openrouter"])
     def test_gpt56_ultra_uses_max_wire_effort(self, transport, provider):

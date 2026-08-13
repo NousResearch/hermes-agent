@@ -2284,6 +2284,7 @@ export const zh: Translations = {
     editingQueuedInComposer: '正在输入框中编辑排队回合',
     queueEdit: '编辑',
     queueSendNext: '下一个',
+    queueSteer: '引导 — 立即修正当前回合',
     queueSend: '发送',
     queueDelete: '删除',
     queueResume: '继续',

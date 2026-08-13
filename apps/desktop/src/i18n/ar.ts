@@ -1730,6 +1730,7 @@ export const ar = defineLocale({
     editingQueuedInComposer: 'جار تحرير رسالة في الطابور',
     queueEdit: 'تحرير الرسالة المجدولة',
     queueSendNext: 'إرسالها تاليا',
+    queueSteer: 'توجيه — تصحيح الدور الجاري فورا',
     queueSend: 'إرسالها الآن',
     queueDelete: 'حذف من الطابور',
     queueStuckTitle: 'لم تُرسل الرسالة في قائمة الانتظار',

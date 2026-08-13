@@ -2093,6 +2093,7 @@ export const en: Translations = {
     editingQueuedInComposer: 'Editing queued turn in composer',
     queueEdit: 'Edit',
     queueSendNext: 'Next',
+    queueSteer: 'Steer — redirect the live turn now',
     queueSend: 'Send',
     queueDelete: 'Delete',
     queueResume: 'Resume',

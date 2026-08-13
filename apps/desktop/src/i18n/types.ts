@@ -1751,6 +1751,7 @@ export interface Translations {
     queueEdit: string
     queueSendNext: string
     queueSend: string
+    queueSteer: string
     queueDelete: string
     queueResume: string
     queueResumeTip: string

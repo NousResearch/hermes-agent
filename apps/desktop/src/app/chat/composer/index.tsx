@@ -279,6 +279,7 @@ export function ChatBar({
     queueParked,
     queuedPrompts,
     sendQueuedNow,
+    steerQueuedNow,
     stepQueuedEdit
   } = useComposerQueue({
     activeQueueSessionKey,
@@ -289,6 +290,7 @@ export function ChatBar({
     focusInput,
     loadIntoComposer,
     onCancel,
+    onSteer,
     onSubmit,
     queueEditRef,
     queueSessionKey,
@@ -1132,6 +1134,7 @@ export function ChatBar({
                     }
                   }}
                   onSendNow={id => void sendQueuedNow(id)}
+                  onSteerNow={id => void steerQueuedNow(id)}
                   parked={queueParked}
                 />
               ) : null

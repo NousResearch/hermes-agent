@@ -277,10 +277,13 @@ class ChatCompletionsTransport(ProviderTransport):
                 # message carrying ``tool_calls: []`` (empty array) with
                 # HTTP 400 "Empty tool_calls is not supported in message."
                 # The pre-API sanitizer in agent_runtime_helpers drops these,
-                # but only on the conversation_loop path — auxiliary / custom
-                # provider routes can reach the wire without it. Normalize here
-                # so any empty/invalid tool_calls array is stripped at the
-                # transport layer on every call. (#58755 follow-up)
+                # but only on the conversation_loop path — other routes can
+                # reach the wire without it. For every request that
+                # serializes through this transport (conversation loop and
+                # any caller using it), this is the last boundary, so
+                # normalize here. Requests built by fully separate payload
+                # paths (e.g. some auxiliary clients) never pass through
+                # this layer and are out of scope for it. (#58755 follow-up)
                 if (
                     msg.get("role") == "assistant"
                     and "tool_calls" in msg

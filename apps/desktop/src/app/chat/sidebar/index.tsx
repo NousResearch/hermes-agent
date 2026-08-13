@@ -1311,8 +1311,17 @@ export function ChatSidebar({
     [agentProjectTree]
   )
 
+  // Mirror the section's own virtualization inputs (the props it receives),
+  // not the raw tree cache: agentProjectTree persists after leaving Project
+  // grouping, and keying on it here while the section keys on projectOverview
+  // (which is nulled the moment grouping changes) left the two disagreeing —
+  // wrapper classes built for a virtualized list around a non-virtual one.
+  // Entered-project content is the third prop that suppresses virtualization.
   const recentsVirtualizes =
-    !displayAgentGroups?.length && !agentProjectTree?.length && displayAgentSessions.length >= VIRTUALIZE_THRESHOLD
+    !displayAgentGroups?.length &&
+    !projectOverview?.length &&
+    !(inProject && enteredProjectContent) &&
+    displayAgentSessions.length >= VIRTUALIZE_THRESHOLD
 
   // Keep the persisted parent + worktree orders reconciled with what's on screen:
   // freshly-seen repos/worktrees surface at the top, vanished ones drop out of
@@ -1552,17 +1561,21 @@ export function ChatSidebar({
               <SidebarSessionsSection
                 activeProjectId={activeProjectId}
                 activeSessionId={activeSidebarSessionId}
-                // Inbox style is a render variant, not a grouping: only the
-                // flat recents list opts in, and only outside the project tree
-                // (whose rows already carry workspace context).
-                card={cardRows && !agentsGrouped}
+                // Inbox style is a render variant, not a grouping — it rides
+                // whichever view is active: flat recents, project lanes, and
+                // the overview previews all render the same card.
+                card={cardRows}
                 collapsible={!inProject}
                 contentClassName={cn(
                   'flex min-h-0 flex-1 flex-col gap-px pb-1.75',
-                  // The virtualized long list owns its own scroller — giving
-                  // this wrapper one too doubled the scrollbar gutter and
-                  // shaved every row 4px short of the sidebar's right edge.
-                  !recentsVirtualizes && SCROLL_Y,
+                  // The section is the ONE authority on whether the virtual
+                  // list owns scrolling: it neutralizes this wrapper scroller
+                  // itself (overflow-visible) when it virtualizes. Gating
+                  // SCROLL_Y here on index's own parallel guess desynced the
+                  // two — a cached project tree flipped this side but not the
+                  // section's, leaving the list with no scroller at all and
+                  // the recents pane rendering blank under Updated grouping.
+                  SCROLL_Y,
                   // Flatten into the single scroll when compact — unless this is the
                   // virtualized long list, which must keep its own scroller.
                   !recentsVirtualizes && COMPACT_FLAT

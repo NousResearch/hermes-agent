@@ -55,12 +55,15 @@ class TestClampTimeout:
         assert clamp_timeout(10**18) == MAX_SAFE_TIMEOUT_S
 
     def test_clamped_value_safe_for_threading_primitives(self):
-        # Regression proof for #83220: the clamped value must be accepted by
-        # the exact primitives that used to overflow.
+        # Regression proof for #83220: the clamped value itself must be
+        # accepted by the exact primitive that used to overflow. Acquiring an
+        # uncontended lock returns immediately regardless of timeout, so
+        # passing the full clamped value is safe and actually exercises the
+        # time_t conversion.
         big = clamp_timeout(float(10**15))
         assert big is not None
         lock = threading.Lock()
-        assert lock.acquire(timeout=min(big, 0.001))
+        assert lock.acquire(timeout=big)
         lock.release()
 
     def test_nan_and_junk_treated_as_unbounded(self):
@@ -112,6 +115,18 @@ class TestResolveTimeout:
         monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {})
         monkeypatch.setenv("HERMES_TEST_DEADLINE_X", "banana")
         assert resolve_timeout("a.b", default=42.0, env_var="HERMES_TEST_DEADLINE_X") == 42.0
+
+    def test_bool_config_value_rejected(self, monkeypatch):
+        # YAML `true` must not silently become a 1-second deadline.
+        monkeypatch.setattr("agent.deadline._timeouts_section", lambda: {"a": {"b": True}})
+        assert resolve_timeout("a.b", default=42.0) == 42.0
+
+    def test_nan_config_value_falls_through(self, monkeypatch):
+        # NaN must fall through to the next source, not resolve as unbounded.
+        monkeypatch.setattr(
+            "agent.deadline._timeouts_section", lambda: {"a": {"b": float("nan")}}
+        )
+        assert resolve_timeout("a.b", default=42.0) == 42.0
 
     def test_broken_config_read_never_breaks_the_protected_path(self, monkeypatch):
         # _timeouts_section swallows config-load failures internally; prove
@@ -302,6 +317,33 @@ class TestRunBoundedAsync:
         result = asyncio.run(scenario())
         assert result.timed_out is False and result.value == "made it"
 
+    def test_external_cancellation_cancels_inner_task(self):
+        # If the CALLER cancels run_bounded_async, the inner task must not be
+        # leaked running unobserved.
+        async def scenario():
+            started = asyncio.Event()
+            inner_cancelled = asyncio.Event()
+
+            async def op():
+                started.set()
+                try:
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    inner_cancelled.set()
+                    raise
+
+            outer = asyncio.ensure_future(
+                run_bounded_async(op(), 25.0, label="t")
+            )
+            await started.wait()
+            outer.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await outer
+            await asyncio.wait_for(inner_cancelled.wait(), timeout=5.0)
+            return True
+
+        assert asyncio.run(scenario()) is True
+
 
 # ---------------------------------------------------------------------------
 # kill_process_tree
@@ -343,10 +385,45 @@ class TestKillProcessTree:
         time.sleep(1.5)
         assert not marker.exists()
 
+    def test_kills_descendant_in_its_own_session(self, tmp_path):
+        """A descendant that setsid'd out of the parent's group must die too.
+
+        killpg on the parent's group cannot reach it; the psutil descendant
+        sweep must (tools/environments/base.py documents user commands doing
+        exactly this).
+        """
+        started = tmp_path / "setsid_grandchild_started"
+        marker = tmp_path / "setsid_grandchild_alive"
+        grandchild_py = tmp_path / "grandchild.py"
+        grandchild_py.write_text(
+            "import pathlib, time\n"
+            f"pathlib.Path({str(started)!r}).write_text('x')\n"
+            "time.sleep(10)\n"
+            f"pathlib.Path({str(marker)!r}).write_text('x')\n"
+        )
+        parent_py = tmp_path / "parent.py"
+        parent_py.write_text(
+            "import subprocess, sys, time\n"
+            # grandchild leaves the parent's session/group entirely
+            f"subprocess.Popen([sys.executable, {str(grandchild_py)!r}], start_new_session=True)\n"
+            "time.sleep(10)\n"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, str(parent_py)], start_new_session=True
+        )
+        deadline = time.monotonic() + 10
+        while not started.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert started.exists(), "grandchild never spawned — test harness broken"
+        assert kill_process_tree(proc.pid) is True
+        proc.wait(timeout=5)
+        time.sleep(1.5)
+        assert not marker.exists()
+
     def test_already_dead_pid_returns_false(self):
-        proc = subprocess.Popen([sys.executable, "-c", "pass"])
-        proc.wait(timeout=10)
-        assert kill_process_tree(proc.pid) in (False, True)  # reaped or zombie-signalable
+        proc = subprocess.Popen([sys.executable, "-c", "pass"], start_new_session=True)
+        proc.wait(timeout=10)  # reaped: PID is gone from the process table
+        assert kill_process_tree(proc.pid) is False
 
     def test_non_group_leader_falls_back_to_single_kill(self):
         # Child in OUR process group: killpg would signal the test runner.

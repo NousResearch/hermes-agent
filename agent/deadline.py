@@ -29,7 +29,10 @@ migrate onto in later phases:
   process is silently disabled.  This helper drives the deadline from a
   daemon ``threading.Timer`` (generalizing the proven telegram-adapter
   primitive) and abandons cancellation-shielded tasks instead of waiting for
-  cancellation to complete.
+  cancellation to complete.  The telegram adapter's private copy
+  (``plugins/platforms/telegram/adapter.py:_await_with_thread_deadline``)
+  migrates onto this in Phase 2 of #85125 — do not let the two drift in the
+  meantime; fix bugs here first.
 
 * :func:`run_bounded_sync` — the same contract for synchronous callables
   bounded from a synchronous context (daemon worker thread, abandoned on
@@ -37,7 +40,10 @@ migrate onto in later phases:
 
 * :func:`kill_process_tree` — portable whole-tree termination so
   kill-on-timeout stops orphaning descendants (#71148, #59549, #84967,
-  #68139 class).
+  #68139 class).  Existing site-local tree-kills that migrate onto this in
+  Phase 4 of #85125: ``gateway/status.py`` (taskkill wrapper + psutil
+  snapshot/reap pair) and ``tools/code_execution_tool.py`` (psutil
+  recursive children kill).
 
 Design invariants:
 
@@ -110,7 +116,7 @@ class DeadlineExpired(TimeoutError):
         self.timeout_s = timeout_s
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class BoundedResult:
     """Outcome of a bounded operation.
 
@@ -215,10 +221,19 @@ def resolve_timeout(
     """
     raw = _lookup_dotted(_timeouts_section(), key)
     if raw is not None:
-        try:
-            return clamp_timeout(float(raw))
-        except (TypeError, ValueError):
-            logger.warning("timeouts.%s: invalid value %r in config.yaml; ignoring", key, raw)
+        # Explicit float() (clamp_timeout would also convert) so that invalid
+        # config values FALL THROUGH to the env var / default instead of
+        # resolving as unbounded — do not "simplify" this away. bool is
+        # rejected because YAML `true` would silently become a 1-second
+        # deadline; NaN is rejected for the same fall-through reason.
+        if not isinstance(raw, bool):
+            try:
+                value = float(raw)
+                if value == value:  # not NaN
+                    return clamp_timeout(value)
+            except (TypeError, ValueError):
+                pass
+        logger.warning("timeouts.%s: invalid value %r in config.yaml; ignoring", key, raw)
 
     if env_var:
         env_raw = os.getenv(env_var, "").strip()
@@ -302,7 +317,7 @@ async def run_bounded_async(
     start = time.monotonic()
     if timeout_s is None:
         value = await awaitable
-        return BoundedResult(False, value, time.monotonic() - start, None, label)
+        return BoundedResult(timed_out=False, value=value, elapsed_s=time.monotonic() - start, timeout_s=None, label=label)
 
     task = asyncio.ensure_future(awaitable)
     loop = asyncio.get_running_loop()
@@ -332,14 +347,23 @@ async def run_bounded_async(
         watchdog.daemon = True
         watchdog.start()
     try:
-        done, _ = await asyncio.wait(
-            {task, deadline}, return_when=asyncio.FIRST_COMPLETED
-        )
+        try:
+            done, _ = await asyncio.wait(
+                {task, deadline}, return_when=asyncio.FIRST_COMPLETED
+            )
+        except asyncio.CancelledError:
+            # The CALLER cancelled us. Without this, `task` would keep running
+            # unobserved (and later log "exception was never retrieved") —
+            # a leak the telegram original also had. Cancel + abandon it, then
+            # let the cancellation propagate.
+            task.cancel()
+            task.add_done_callback(_consume_abandoned)
+            raise
         if task in done:
             if not deadline.done():
                 deadline.cancel()
             value = await task
-            return BoundedResult(False, value, time.monotonic() - start, timeout_s, label)
+            return BoundedResult(timed_out=False, value=value, elapsed_s=time.monotonic() - start, timeout_s=timeout_s, label=label)
 
         task.cancel()
         task.add_done_callback(_consume_abandoned)
@@ -347,7 +371,7 @@ async def run_bounded_async(
             cleanup = asyncio.ensure_future(_run_abandon_cleanup(on_abandon))
             cleanup.add_done_callback(_consume_abandoned)
         logger.warning("[deadline] %r timed out after %.1fs; task abandoned", label, timeout_s)
-        return BoundedResult(True, None, time.monotonic() - start, timeout_s, label)
+        return BoundedResult(timed_out=True, value=None, elapsed_s=time.monotonic() - start, timeout_s=timeout_s, label=label)
     finally:
         timer.cancel()
         if watchdog is not None:
@@ -377,12 +401,17 @@ def run_bounded_sync(
     caller's thread — e.g. to mark a backend suspect or kill a subprocess —
     and ``BoundedResult(timed_out=True)`` is returned.
 
+    Intended for infrequent, seconds-scale blocking backend calls. Do NOT
+    use per-item in hot loops: each call spawns a thread, and every timeout
+    permanently leaks an abandoned daemon thread — a wedged backend called
+    in a retry loop would accumulate them.
+
     ``timeout=None`` (or non-positive) blocks until ``fn`` returns.
     """
     timeout_s = clamp_timeout(timeout)
     start = time.monotonic()
     if timeout_s is None:
-        return BoundedResult(False, fn(), time.monotonic() - start, None, label)
+        return BoundedResult(timed_out=False, value=fn(), elapsed_s=time.monotonic() - start, timeout_s=None, label=label)
 
     box: dict[str, Any] = {}
     done = threading.Event()
@@ -406,11 +435,11 @@ def run_bounded_sync(
                 on_timeout()
             except Exception:
                 logger.debug("deadline on_timeout callback failed", exc_info=True)
-        return BoundedResult(True, None, time.monotonic() - start, timeout_s, label)
+        return BoundedResult(timed_out=True, value=None, elapsed_s=time.monotonic() - start, timeout_s=timeout_s, label=label)
 
     if "exc" in box:
         raise box["exc"]
-    return BoundedResult(False, box.get("value"), time.monotonic() - start, timeout_s, label)
+    return BoundedResult(timed_out=False, value=box.get("value"), elapsed_s=time.monotonic() - start, timeout_s=timeout_s, label=label)
 
 
 # ---------------------------------------------------------------------------
@@ -423,26 +452,43 @@ def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
     Kill-on-timeout that signals only the direct child orphans process trees
     (cron scripts, in-container shells, browser daemons — #71148 class).
 
-    * POSIX: signals the process group when ``pid`` leads one (callers that
-      spawn with ``start_new_session=True`` / ``preexec_fn=os.setsid`` get
-      full-tree kill), falling back to the single process otherwise.
-      ``sig`` defaults to ``SIGKILL``.
-    * Windows: ``taskkill /F /T`` terminates the tree without requiring
-      psutil.  ``sig`` is ignored (Windows has no equivalent).
+    * Windows: ``taskkill /F /T`` terminates the tree (``sig`` ignored;
+      Windows has no equivalent). Console-window flash is suppressed via
+      ``windows_hide_flags`` and the exit code is checked, so a dead or
+      inaccessible PID reports ``False`` like the POSIX path.
+    * POSIX: the descendant set is snapshotted via psutil (a hard
+      dependency) BEFORE any signal — once the parent dies its children are
+      reparented and can no longer be found by a parent walk. Then the
+      process group is signalled when ``pid`` leads one (covers
+      grandchildren in the same session in one syscall), and every
+      snapshotted descendant is signalled individually — which also reaches
+      descendants that created their OWN sessions (a child that called
+      ``setsid``, exactly what user shell commands do; see
+      tools/environments/base.py). ``sig`` defaults to ``SIGKILL``.
+      psutil's identity-aware ``Process`` (PID + create time) means a
+      recycled PID is never signalled.
 
-    Returns True when a termination call was issued without error, False when
-    the process was already gone or the call failed (callers treat both as
-    "nothing more we can do").
+    Returns True when the target (or any of its tree) was signalled, False
+    when the process was already gone or every termination call failed.
     """
     if sys.platform == "win32":
         try:
-            subprocess.run(
+            from hermes_cli._subprocess_compat import windows_hide_flags
+
+            creationflags = windows_hide_flags()
+        except Exception:
+            creationflags = 0
+        try:
+            proc = subprocess.run(
                 ["taskkill", "/F", "/T", "/PID", str(pid)],
                 capture_output=True,
                 timeout=15,
                 check=False,
+                creationflags=creationflags,
             )
-            return True
+            # taskkill exits non-zero for not-found / access-denied; keep the
+            # cross-platform contract (False = nothing was terminated).
+            return proc.returncode == 0
         except Exception:
             logger.debug("kill_process_tree: taskkill failed for pid %s", pid, exc_info=True)
             return False
@@ -451,21 +497,48 @@ def kill_process_tree(pid: int, *, sig: Optional[int] = None) -> bool:
 
     if sig is None:
         sig = _signal.SIGKILL
+
+    # Snapshot descendants while the parent is still alive — after it dies
+    # they reparent to init/subreaper and a parent walk finds nothing.
+    descendants: list = []
     try:
+        import psutil
+
+        descendants = psutil.Process(int(pid)).children(recursive=True)
+    except Exception:
+        # Already gone, or psutil unavailable in a stripped env — the
+        # group-signal below still covers same-session descendants.
+        descendants = []
+
+    signalled = False
+    try:
+        # NOTE: getpgid→killpg has an inherent TOCTOU (pid could be reaped and
+        # recycled between the calls). All existing killpg sites share it; the
+        # psutil sweep below is identity-aware and does not.
         pgid = os.getpgid(pid)
     except (ProcessLookupError, PermissionError, OSError):
         pgid = None
     try:
         if pgid is not None and pgid == pid:
-            # pid leads its own group: kill the whole tree in one syscall.
+            # pid leads its own group: one syscall covers the whole group.
+            # (The == check guards against signalling the caller's own group
+            # when pid is not a leader.)
             os.killpg(pgid, sig)
         else:
-            # Not a group leader (killing its group would hit our own group
-            # or an unrelated one) — signal the single process.
             os.kill(pid, sig)
-        return True
+        signalled = True
     except ProcessLookupError:
-        return False
+        pass
     except (PermissionError, OSError):
         logger.debug("kill_process_tree: signal failed for pid %s", pid, exc_info=True)
-        return False
+
+    # Sweep the snapshot: reaches descendants outside the parent's group
+    # (their own setsid sessions) and the non-group-leader case.
+    for child in descendants:
+        try:
+            if child.is_running():  # identity-aware: recycled PIDs skipped
+                child.send_signal(sig)
+                signalled = True
+        except Exception:
+            continue
+    return signalled

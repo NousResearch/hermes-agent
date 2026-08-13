@@ -21,6 +21,12 @@ from agent.context_compressor import (
     _LEAN_RECOVERY_HEADING,
     _LEAN_SESSION_LOG_HEADING,
 )
+from agent.context_compressor_continuation import (
+    CURRENT_SUBTASK_HEADING,
+    GOVERNING_OUTCOME_HEADING,
+    LATEST_USER_CORRECTION_HEADING,
+    NEXT_OUTCOME_STEP_HEADING,
+)
 
 
 def _mk_compressor(**overrides):
@@ -71,7 +77,10 @@ def _big_region(n_rounds=60, tool_chars=6_000):
 
 SUMMARY_BODY = (
     "## Historical Task Snapshot\nUser asked: 'Please fix PR #12345 in agent/foo.py'\n\n"
-    "## Goal\nFix the bug.\n\n"
+    f"{GOVERNING_OUTCOME_HEADING}\nFix PR #12345 in agent/foo.py.\n\n"
+    f"{CURRENT_SUBTASK_HEADING}\nVerify the changes to agent/foo.py.\n\n"
+    f"{LATEST_USER_CORRECTION_HEADING}\nNone.\n\n"
+    f"{NEXT_OUTCOME_STEP_HEADING}\nReview the test results.\n\n"
     "## Completed Actions\n1. EDIT agent/foo.py — done [tool: patch]\n\n"
     f"{_LEAN_SESSION_LOG_HEADING}\n- Edited agent/foo.py; PR #12345; ran pytest.\n"
 )

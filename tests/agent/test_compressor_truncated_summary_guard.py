@@ -23,8 +23,26 @@ import pytest
 
 from agent.context_compressor import (
     ContextCompressor,
+    HISTORICAL_TASK_HEADING,
     _response_finish_reason,
 )
+from agent.context_compressor_continuation import (
+    CURRENT_SUBTASK_HEADING,
+    GOVERNING_OUTCOME_HEADING,
+    LATEST_USER_CORRECTION_HEADING,
+    NEXT_OUTCOME_STEP_HEADING,
+)
+
+
+def _valid_batch_summary(text):
+    return (
+        f"{HISTORICAL_TASK_HEADING}\nUser supplied task messages.\n\n"
+        f"{GOVERNING_OUTCOME_HEADING}\nUnknown.\n\n"
+        f"{CURRENT_SUBTASK_HEADING}\nNone.\n\n"
+        f"{LATEST_USER_CORRECTION_HEADING}\nNone.\n\n"
+        f"{NEXT_OUTCOME_STEP_HEADING}\nNone.\n\n"
+        f"## Completed Actions\n{text}"
+    )
 
 
 def _mock_response(content="a perfectly fine summary", finish_reason="stop"):
@@ -93,7 +111,7 @@ class TestGenerateSummaryTruncationGuard:
                 quiet_mode=True,
             )
         truncated = _mock_response("partial...", "length")
-        ok = _mock_response("full summary via main model", "stop")
+        ok = _mock_response(_valid_batch_summary("full summary via main model"), "stop")
         with patch(
             "agent.context_compressor.call_llm",
             side_effect=[truncated, ok],
@@ -151,7 +169,7 @@ class TestGenerateSummaryTruncationGuard:
             c = ContextCompressor(model="test", quiet_mode=True)
         with patch(
             "agent.context_compressor.call_llm",
-            return_value=_mock_response("complete summary", "stop"),
+            return_value=_mock_response(_valid_batch_summary("complete summary"), "stop"),
         ):
             result = c._generate_summary(_msgs(2))
         assert result is not None
@@ -161,7 +179,7 @@ class TestGenerateSummaryTruncationGuard:
         """Providers that omit finish_reason entirely must not be rejected."""
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):
             c = ContextCompressor(model="test", quiet_mode=True)
-        resp = {"choices": [{"message": {"content": "complete summary"}}]}
+        resp = {"choices": [{"message": {"content": _valid_batch_summary("complete summary")}}]}
         with patch("agent.context_compressor.call_llm", return_value=resp):
             result = c._generate_summary(_msgs(2))
         assert result is not None
@@ -174,7 +192,7 @@ class TestGenerateSummaryTruncationGuard:
         c._summary_failure_cooldown_until = 0
         with patch(
             "agent.context_compressor.call_llm",
-            return_value=_mock_response("fine", "stop"),
+            return_value=_mock_response(_valid_batch_summary("fine"), "stop"),
         ):
             result = c._generate_summary(_msgs(2))
         assert result is not None

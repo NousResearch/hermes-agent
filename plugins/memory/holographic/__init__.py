@@ -228,20 +228,25 @@ class HolographicMemoryProvider(MemoryProvider):
     }
 
     def _auto_extract_facts(self, messages: list) -> None:
-        # Compaction handoff summaries arrive as role="user" and match the decision patterns; never store the
-        # compactor's own output as a fact. A merge-into-tail row holds genuine prior user text BEFORE
-        # _MERGED_SUMMARY_DELIMITER (after the header) and the summary AFTER it — harvest only that segment.
-        from agent.context_compressor import _MERGED_PRIOR_CONTEXT_HEADER, _MERGED_SUMMARY_DELIMITER, is_compaction_summary_message  # heavy; lazy
+        # Loaded only when extraction runs; the projection imports the compressor.
+        from agent.compaction_display import project_compaction_message_for_display
+        from agent.message_content import flatten_message_text
+
         extracted = 0
         for msg in messages:
-            content = msg.get("content", "") if msg.get("role") == "user" else None
-            pre = content.split(_MERGED_SUMMARY_DELIMITER, 1)[0].removeprefix(_MERGED_PRIOR_CONTEXT_HEADER).strip() \
-                if isinstance(content, str) and _MERGED_SUMMARY_DELIMITER in content else ""
-            if pre:
-                content = pre
-            elif content is None or is_compaction_summary_message(msg):
+            if msg.get("role") != "user":
                 continue
-            if not isinstance(content, str) or len(content) < 10:
+            # Handoffs match the fact patterns too. Preserve genuine user content
+            # in mixed carriers, using the same boundary rules as the transcript.
+            projected = project_compaction_message_for_display(msg)
+            if projected is None:
+                continue
+            content = projected.get("content", "")
+            if isinstance(content, list):
+                content = flatten_message_text(content)
+            elif not isinstance(content, str):
+                continue
+            if len(content) < 10:
                 continue
             for patterns, category in _EXTRACT_CATEGORIES:
                 if any(p.search(content) for p in patterns):

@@ -16,6 +16,12 @@ from agent.context_compressor import (
     ContextCompressor,
     _NO_USER_TASK_SENTINEL,
 )
+from agent.context_compressor_continuation import (
+    CURRENT_SUBTASK_HEADING,
+    GOVERNING_OUTCOME_HEADING,
+    LATEST_USER_CORRECTION_HEADING,
+    NEXT_OUTCOME_STEP_HEADING,
+)
 from agent.conversation_compression import (
     _ensure_compressed_has_user_turn,
     compress_context,
@@ -35,8 +41,17 @@ def _valid_zero_user_summary(label: str = "Checked artifacts.") -> str:
     return f"""{HISTORICAL_TASK_HEADING}
 {_NO_USER_TASK_SENTINEL}
 
-## Goal
-Historical cron work only.
+{GOVERNING_OUTCOME_HEADING}
+Unknown. No user-authored governing outcome is available.
+
+{CURRENT_SUBTASK_HEADING}
+None. No user-authored subtask exists.
+
+{LATEST_USER_CORRECTION_HEADING}
+None. No user-authored correction exists.
+
+{NEXT_OUTCOME_STEP_HEADING}
+None. No user-authored next step exists.
 
 ## Completed Actions
 1. {label}
@@ -445,8 +460,6 @@ def test_compress_context_todo_snapshot_stays_synthetic_across_two_boundaries(
     assert "Second boundary" in handoff["content"]
     assert "User asked:" not in handoff["content"]
     db.close()
-
-
 
 
 

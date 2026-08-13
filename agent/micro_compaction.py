@@ -391,9 +391,18 @@ class MicroCompactionMixin:
 
     @staticmethod
     def _render_micro_marker_content(summary_text: str) -> str:
-        """Assemble the marker content wrapper around *summary_text*."""
+        """Point to surviving user turns; assistant/tool history cannot establish intent."""
+        from agent.context_compressor_continuation import MICRO_SUMMARY_PREFIX, MICRO_USER_SEQUENCE_POINTERS_HEADING
+
         cc = _cc()
-        return f"{cc.SUMMARY_PREFIX}\n\n{cc.HISTORICAL_TASK_HEADING}\n{summary_text.strip()}\n\n{cc._SUMMARY_END_MARKER}"
+        return (
+            f"{MICRO_SUMMARY_PREFIX}\n\n{MICRO_USER_SEQUENCE_POINTERS_HEADING}\n"
+            "- Governing User Outcome pointer: surviving real-user sequence; latest still-open explicit outcome.\n"
+            "- Current Subtask pointer: surviving real-user sequence; latest non-cancelled subtask.\n"
+            "- Latest User Correction pointer: surviving real-user sequence; latest applicable correction wins.\n"
+            "- Next Outcome-Relevant Step pointer: surviving real-user sequence; derive one step and clarify if ambiguous.\n\n"
+            f"{cc.HISTORICAL_TASK_HEADING}\n{summary_text.strip()}\n\n{cc._SUMMARY_END_MARKER}"
+        )
 
     def _merge_adjacent_user_turns(self, result: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """Merge consecutive plain-text real user turns left by a supersede. Same ``\\n\\n`` join as

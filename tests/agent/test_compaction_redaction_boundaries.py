@@ -23,8 +23,15 @@ import pytest
 
 from agent.context_compressor import (
     ContextCompressor,
+    HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     _redact_compaction_text,
+)
+from agent.context_compressor_continuation import (
+    CURRENT_SUBTASK_HEADING,
+    GOVERNING_OUTCOME_HEADING,
+    LATEST_USER_CORRECTION_HEADING,
+    NEXT_OUTCOME_STEP_HEADING,
 )
 
 SECRET = "sk-proj-" + ("a" * 40)
@@ -53,6 +60,26 @@ def _response(content: str):
     mock_response.choices = [MagicMock()]
     mock_response.choices[0].message.content = content
     return mock_response
+
+
+def _valid_user_summary(content: str) -> str:
+    return f"""{HISTORICAL_TASK_HEADING}
+User asked to continue the requested work.
+
+{GOVERNING_OUTCOME_HEADING}
+Complete the user's requested work.
+
+{CURRENT_SUBTASK_HEADING}
+Continue the current grounded step.
+
+{LATEST_USER_CORRECTION_HEADING}
+None.
+
+{NEXT_OUTCOME_STEP_HEADING}
+Complete the next grounded step.
+
+## Critical Context
+{content}"""
 
 
 def _assert_clean(text: str):
@@ -117,7 +144,8 @@ def test_summary_output_redacts_llm_echoed_secrets():
     leaked = f"Summary leaked OPENAI_API_KEY {SECRET} and {OAUTH_URL}"
 
     with patch(
-        "agent.context_compressor.call_llm", return_value=_response(leaked)
+        "agent.context_compressor.call_llm",
+        return_value=_response(_valid_user_summary(leaked)),
     ):
         summary = c._generate_summary([{"role": "user", "content": "hi"}])
 
@@ -136,7 +164,7 @@ def test_manual_focus_topic_redacted_before_summary_prompt():
 
     with patch(
         "agent.context_compressor.call_llm",
-        return_value=_response("## Goal\nSafe summary."),
+        return_value=_response(_valid_user_summary("Safe summary.")),
     ) as mock_call:
         result = c._generate_summary(
             turns, focus_topic=f"manual focus {SECRET} {OAUTH_URL}"
@@ -168,7 +196,7 @@ def test_previous_summary_redacted_before_iterative_prompt_reentry():
 
     with patch(
         "agent.context_compressor.call_llm",
-        return_value=_response("updated summary"),
+        return_value=_response(_valid_user_summary("updated summary")),
     ) as mock_call:
         result = c._generate_summary(
             [
@@ -214,7 +242,7 @@ def test_resumed_handoff_summary_redacted_before_iterative_prompt():
 
     with patch(
         "agent.context_compressor.call_llm",
-        return_value=_response("updated summary"),
+        return_value=_response(_valid_user_summary("updated summary")),
     ) as mock_call:
         c.compress(messages)
 

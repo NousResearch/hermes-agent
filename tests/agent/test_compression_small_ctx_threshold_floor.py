@@ -15,7 +15,28 @@ Covers the July 2026 compression tuning pass:
 from unittest.mock import patch
 
 import agent.context_compressor as cc
+import agent.context_compressor_continuation as continuation
 from agent.context_compressor import ContextCompressor
+
+
+def _valid_user_summary(content: str) -> str:
+    return f"""{cc.HISTORICAL_TASK_HEADING}
+User asked: 'hi'
+
+{continuation.GOVERNING_OUTCOME_HEADING}
+Respond to the user's request.
+
+{continuation.CURRENT_SUBTASK_HEADING}
+Prepare the response.
+
+{continuation.LATEST_USER_CORRECTION_HEADING}
+None.
+
+{continuation.NEXT_OUTCOME_STEP_HEADING}
+Provide the response.
+
+## Critical Context
+{content}"""
 
 
 def _make(ctx: int, pct: float = 0.50) -> ContextCompressor:
@@ -71,7 +92,9 @@ class TestReasoningExcludedFromSummarizer:
         comp = _make(128_000)
 
         class FakeMsg:
-            content = "<think>OUTPUT_TRACE</think>\n## Active Task\nUser asked X"
+            content = "<think>OUTPUT_TRACE</think>\n" + _valid_user_summary(
+                "The summary output remains available after trace removal."
+            )
 
         class FakeChoice:
             message = FakeMsg()
@@ -87,6 +110,7 @@ class TestReasoningExcludedFromSummarizer:
         # section instead of prepending a second task section next to it.
         assert cc.HISTORICAL_TASK_HEADING in out
         assert "## Active Task" not in out
+        assert "summary output remains available" in out
         # The iterative-update seed must be clean too, or the trace compounds
         # across every subsequent compaction.
         assert "OUTPUT_TRACE" not in (comp._previous_summary or "")
@@ -107,7 +131,7 @@ class TestSummaryBudgetEnvelope:
         captured = {}
 
         class FakeMsg:
-            content = "## Active Task\nUser asked X"
+            content = _valid_user_summary("The response remains within budget.")
 
         class FakeChoice:
             message = FakeMsg()

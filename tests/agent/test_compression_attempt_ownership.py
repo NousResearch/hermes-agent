@@ -23,6 +23,8 @@ no timing, no threads.
 
 from types import SimpleNamespace
 
+import pytest
+
 from agent.conversation_compression import (
     _claim_compressor_attempt,
     _clear_compression_cancelled_check_if_owner,
@@ -277,8 +279,57 @@ class TestStaleAttemptEndToEnd:
 
         resp = MagicMock()
         resp.choices = [MagicMock()]
-        resp.choices[0].message.content = content
+        resp.choices[0].message.content = (
+            "## Historical Task Snapshot\nSynthetic user request.\n\n"
+            f"## Governing User Outcome\n{content}\n\n"
+            "## Current Subtask\nNone.\n\n"
+            "## Latest User Correction\nNone.\n\n"
+            "## Next Outcome-Relevant Step (Reference Only)\nNone."
+        )
         return resp
+
+    @pytest.mark.parametrize("fallback_valid", [True, False], ids=["publish", "rollback"])
+    def test_superseded_deterministic_fallback_preserves_new_owner_state(self, monkeypatch, fallback_valid):
+        from agent.auxiliary_client import AuxiliaryExplicitCancellation
+        from agent.conversation_compression import (
+            _mark_compressor_working_attempt,
+            _run_summary_dispatch,
+        )
+
+        compressor = self._compressor()
+        compressor._previous_summary = "primary-era snapshot"
+        agent = SimpleNamespace(context_compressor=compressor, session_id="s1")
+        messages = self._messages()
+        original_builder = compressor._build_static_fallback_summary
+        builder_calls = []
+
+        def superseded_builder(turns, reason=None):
+            candidate = original_builder(turns, reason=reason)
+            assert candidate
+            builder_calls.append(candidate)
+            # The host has detached this attempt and its successor starts work
+            # before the deterministic candidate returns to the primary.
+            successor = _claim_compressor_attempt(compressor)
+            _mark_compressor_working_attempt(compressor, successor)
+            compressor._previous_summary = "successor-owned summary"
+            compressor._summary_has_user_turn = False
+            return candidate if fallback_valid else None
+
+        monkeypatch.setattr(compressor, "_find_tail_cut_by_tokens", lambda *_args, **_kwargs: 8)
+        monkeypatch.setattr(compressor, "_generate_summary", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(compressor, "_build_static_fallback_summary", superseded_builder)
+        primary = _claim_compressor_attempt(compressor)
+        try:
+            _run_summary_dispatch(
+                agent, messages, compressor.compress, {"current_tokens": 999999, "force": True},
+                commit_fence=None, attempt_generation=primary, hard_cancel_event=None,
+            )
+        except AuxiliaryExplicitCancellation:
+            pass
+
+        assert len(builder_calls) == 1
+        assert compressor._previous_summary == "successor-owned summary"
+        assert compressor._summary_has_user_turn is False
 
     def test_detached_primary_late_success_cannot_write_after_fallback(self):
         import threading
@@ -304,8 +355,8 @@ class TestStaleAttemptEndToEnd:
             if threading.current_thread() is thread_a[0]:
                 a_in_llm.set()
                 assert b_done.wait(10), "fallback did not complete in time"
-                return self._llm_response("## Goal\nstale-era summary")
-            return self._llm_response("## Goal\nfallback summary")
+                return self._llm_response("stale-era summary")
+            return self._llm_response("fallback summary")
 
         def attempt_a():
             try:
@@ -373,7 +424,7 @@ class TestStaleAttemptEndToEnd:
                 a_in_llm.set()
                 assert b_done.wait(10), "fallback did not complete in time"
                 raise AuxiliaryExplicitCancellation()
-            return self._llm_response("## Goal\nfallback summary")
+            return self._llm_response("fallback summary")
 
         def attempt_a():
             try:

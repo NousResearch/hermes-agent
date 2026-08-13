@@ -25,6 +25,7 @@ Capability id                Legacy config gate (``plugins.entries.<id>.…``)
 ``llm.agent_id_override``    ``llm.allow_agent_id_override``
 ``llm.profile_override``     ``llm.allow_profile_override``
 ``llm.task_override``        ``llm.allow_task_override``
+``gateway.platform_actions`` ``allow_platform_actions``
 ===========================  ==================================================
 
 The legacy ``allow_*`` keys keep working verbatim (deprecated but honored):
@@ -117,6 +118,14 @@ CAPABILITY_REGISTRY: Dict[str, CapabilitySpec] = {
             description=(
                 "Route its LLM calls through the host's built-in auxiliary "
                 "task lanes"
+            ),
+        ),
+        CapabilitySpec(
+            id="gateway.platform_actions",
+            legacy_path=("allow_platform_actions",),
+            description=(
+                "Act on connected chat platforms as the gateway bot "
+                "(add reactions, rename threads) via ctx.platform_actions"
             ),
         ),
     )

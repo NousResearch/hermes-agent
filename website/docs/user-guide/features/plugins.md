@@ -391,6 +391,7 @@ working but are **deprecated** in favor of the consent flow:
 | `llm.agent_id_override` | `llm.allow_agent_id_override` |
 | `llm.profile_override` | `llm.allow_profile_override` |
 | `llm.task_override` | `llm.allow_task_override` |
+| `gateway.platform_actions` | `allow_platform_actions` |
 
 A gate is open when *either* the capability is granted *or* the legacy key is
 set — existing configs keep working unchanged.
@@ -401,6 +402,53 @@ regular in-process Python: a malicious plugin can ignore every gate here.
 Granting a capability is a statement of trust in the plugin author — it is
 not a code audit, and Hermes has not reviewed the plugin's code. Only install
 plugins from sources you trust.
+:::
+
+### Platform actions
+
+`ctx.platform_actions` gives a plugin a minimal, capability-gated verb set for
+acting on connected chat platforms through the live gateway adapter registry —
+the sanctioned alternative to monkeypatching an adapter. **It is off by
+default**: every call re-checks the `gateway.platform_actions` capability
+(legacy key `plugins.entries.<id>.allow_platform_actions`), and an ungranted
+call returns a structured error instead of acting.
+
+v1 verbs (both `async`, both return a plain dict, and neither ever raises into
+hook dispatch):
+
+```python
+result = await ctx.platform_actions.add_reaction(
+    platform="telegram", chat_id="-100123", message_id="456", emoji="👍",
+)
+result = await ctx.platform_actions.set_thread_title(
+    platform="discord", chat_id="123", thread_id="456", title="New title",
+)
+if not result["ok"]:
+    print(result["error"], result.get("detail"))
+```
+
+Success is `{"ok": True, "action": <verb>}`. Failures are
+`{"ok": False, "error": <code>, "detail": <str>}` with stable error codes:
+`capability_not_granted`, `invalid_argument`, `gateway_unavailable`,
+`unknown_platform`, `adapter_not_registered`, `adapter_disconnected`,
+`unsupported_platform_action`, `action_failed`. Actions validate that the
+target adapter exists and is connected before acting; a disconnected or
+missing adapter degrades to a structured error, never an exception.
+
+Platforms supported in v1: Telegram and Discord. Telegram's `add_reaction`
+*sets* the bot's reaction (the Bot API replaces a previous bot reaction rather
+than stacking). Every action — allowed or denied — is written to the log with
+the plugin id, verb, platform, and outcome.
+
+:::warning Security note
+Platform actions are a **messaging-as-the-bot power**: a granted plugin can
+react and rename threads in any chat the gateway bot can reach, not just the
+chat that triggered the hook. Grant `gateway.platform_actions` only to plugins
+you trust, and prefer plugins that document exactly which actions they take.
+Raw platform SDK payload/handle access is deliberately **not** part of this
+surface — per the #64176 round-2 design correction it requires its own
+capability (`gateway.raw_events`) with a "no stability guarantee" label and a
+separate design, and has not shipped.
 :::
 
 ### Discovering community plugins

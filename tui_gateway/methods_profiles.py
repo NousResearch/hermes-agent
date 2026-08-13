@@ -102,8 +102,33 @@ def _(rid, params: dict) -> dict:
     Params: ``name`` (required, lowercase slug), ``description``,
     ``clone_from`` (source profile; omitted = fresh profile with bundled
     skills), ``clone_all``, ``no_skills``, ``soul`` (SOUL.md content),
-    ``model`` + ``provider`` (optional model pin, best-effort).
+    ``model`` + ``provider`` (optional model pin, best-effort), and
+    ``mirror_credentials`` (default true) — copy the launch profile's
+    ``.env`` and ``auth.json`` into the new profile, and inherit its
+    model.provider/model.default when no explicit pin is given.
+
+    Credential mirroring exists because ``create_profile()`` deliberately
+    seeds a comment-only ``.env`` and never copies ``auth.json`` (OAuth
+    tokens / credential pools), so a profile created headlessly from a
+    plugin was born with NO inference provider — the first message failed
+    with "No inference provider configured" and there is no interactive
+    ``hermes setup`` in that flow to recover. A profile spawned as an
+    always-available teammate must be able to think out of the box; callers
+    that want an isolated/credential-free profile pass
+    ``mirror_credentials: false``.
     """
+
+    def _has_real_env_content(env_path) -> bool:
+        """True when .env has any non-comment, non-blank line."""
+        try:
+            for line in env_path.read_text(encoding="utf-8", errors="replace").splitlines():
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#"):
+                    return True
+        except Exception:
+            pass
+        return False
+
     name = str(params.get("name") or "").strip()
     if not name:
         return _err(rid, 4061, "name required")
@@ -147,6 +172,43 @@ def _(rid, params: dict) -> dict:
         except Exception:
             pass
 
+    # Credential + provider mirroring (default ON): a headless-created
+    # profile must be able to run a first turn. Copy the launch profile's
+    # .env (only over the seeded comment-only stub — never clobber real
+    # secrets a clone brought along) and auth.json (only when absent), then
+    # inherit model.provider/model.default unless the caller pinned a model.
+    mirrored = {"env": False, "auth": False, "model_inherited": False}
+    if is_truthy_value(params.get("mirror_credentials", True)):
+        import shutil
+
+        from hermes_constants import get_hermes_home
+
+        launch_home = get_hermes_home()
+        try:
+            src_env = launch_home / ".env"
+            dst_env = path / ".env"
+            if src_env.is_file() and _has_real_env_content(src_env) and not _has_real_env_content(dst_env):
+                shutil.copy2(src_env, dst_env)
+                try:
+                    os.chmod(str(dst_env), 0o600)
+                except OSError:
+                    pass
+                mirrored["env"] = True
+        except Exception:
+            pass
+        try:
+            src_auth = launch_home / "auth.json"
+            dst_auth = path / "auth.json"
+            if src_auth.is_file() and not dst_auth.exists():
+                shutil.copy2(src_auth, dst_auth)
+                try:
+                    os.chmod(str(dst_auth), 0o600)
+                except OSError:
+                    pass
+                mirrored["auth"] = True
+        except Exception:
+            pass
+
     model = str(params.get("model") or "").strip()
     provider = str(params.get("provider") or "").strip()
     model_set = False
@@ -158,6 +220,22 @@ def _(rid, params: dict) -> dict:
             model_set = True
         except Exception:
             pass
+    elif is_truthy_value(params.get("mirror_credentials", True)) and not (path / "config.yaml").exists():
+        # No explicit pin and no cloned config: inherit the launch profile's
+        # provider+model so the first turn resolves. Same writer as the pin.
+        try:
+            from hermes_cli.config import load_config_readonly
+            from hermes_cli.web_routers.profiles import _write_profile_model
+
+            cfg = load_config_readonly() or {}
+            model_cfg = cfg.get("model") or {}
+            inherited_provider = str(model_cfg.get("provider") or "")
+            inherited_model = str(model_cfg.get("default") or "")
+            if inherited_provider and inherited_model:
+                _write_profile_model(path, inherited_provider, inherited_model)
+                mirrored["model_inherited"] = True
+        except Exception:
+            pass
 
     return _ok(
         rid,
@@ -167,6 +245,7 @@ def _(rid, params: dict) -> dict:
             "path": str(path),
             "soul_written": soul_written,
             "model_set": model_set,
+            "mirrored": mirrored,
         },
     )
 

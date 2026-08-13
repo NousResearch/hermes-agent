@@ -143,6 +143,15 @@ _MACHINE_PREFIXES = (
     "[System: The active model for this chat has changed to ",
 )
 
+# Speech-barge-in note prepended to the model-bound user message by the
+# CLI/TUI submit paths when the user interrupts a spoken reply
+# (tools.tts_streaming.SPEECH_INTERRUPTED_NOTE). The note wraps REAL user
+# text (the request typed after the barge), so unlike a machine prefix it is
+# stripped and the session titled from the words the user actually typed.
+_SPEECH_INTERRUPTED_PREFIX = (
+    "[Note: the user interrupted your previous spoken reply before it finished.]"
+)
+
 
 def _title_config() -> dict:
     """``auxiliary.title_generation`` (lazy read-only import: no hermes_cli cycle, no migration writes)."""
@@ -202,16 +211,26 @@ def _strip_one_wrapper(text: str) -> str:
 
 
 def _summarize_user_message(user_message: str) -> str:
-    """Text worth titling: describe a ``/skill`` invocation (it embeds the whole skill body), then strip wrappers."""
+    """Text worth titling: drop the speech-barge-in note first, describe a ``/skill`` invocation (it embeds the whole skill body), then strip wrappers."""
     if not user_message:
         return ""
+    # A speech-barge-in note (SPEECH_INTERRUPTED_NOTE) arrives as the first
+    # line of the model-bound message. It is scaffolding, not intent: drop it
+    # FIRST — before the skill-scaffolding parser — because a note-prefixed
+    # message no longer starts with the skill-invocation prefix, so
+    # describe_skill_invocation() returns None and the entire expanded skill
+    # body would flow into the title instead of the user's instruction.
+    text = user_message.lstrip()
+    if text.startswith(_SPEECH_INTERRUPTED_PREFIX):
+        text = text[len(_SPEECH_INTERRUPTED_PREFIX):].lstrip("\n").strip()
     described = None
     try:
         from agent.skill_commands import describe_skill_invocation
-        described = describe_skill_invocation(user_message)
+
+        described = describe_skill_invocation(text)
     except Exception:
         logger.debug("Skill-scaffolding summary failed; titling raw", exc_info=True)
-    return strip_control_wrappers(user_message if described is None else described)
+    return strip_control_wrappers(text if described is None else described)
 
 
 def build_title_input(user_message: str, title_preview: str | None = None) -> str:

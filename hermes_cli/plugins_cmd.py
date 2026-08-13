@@ -2724,29 +2724,121 @@ def _clear_plugin_bytecode(target: Path) -> int:
     return removed
 
 
+def _run_plugin_git(
+    git_exe: str, target: Path, *args: str, timeout: int = 60
+) -> subprocess.CompletedProcess:
+    """Run one git command inside a plugin checkout (non-interactive)."""
+    return subprocess.run(
+        [git_exe, *args],
+        capture_output=True,
+        text=True, encoding='utf-8', errors='replace',
+        timeout=timeout,
+        cwd=str(target),
+        stdin=subprocess.DEVNULL,
+        env=noninteractive_git_env(),
+    )
+
+
+def _stash_ref(git_exe: str, target: Path) -> str:
+    """Current ``refs/stash`` commit, or empty string when no stash exists."""
+    probe = _run_plugin_git(git_exe, target, "rev-parse", "--verify", "refs/stash")
+    return probe.stdout.strip() if probe.returncode == 0 else ""
+
+
 def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
+    """``git pull --ff-only`` a plugin checkout, autostashing local edits.
+
+    Users tweak installed plugins in place (config constants, small patches),
+    and a plain ``pull --ff-only`` then aborts with "Your local changes ...
+    would be overwritten by merge" — making the plugin permanently
+    un-updatable until they hand-run git. Same UX class Factory Droid fixed
+    in v0.188 ("Updating a plugin marketplace now succeeds when its checkout
+    has local changes"), and the same autostash approach ``hermes update``
+    already uses for the main checkout (PR #70161).
+
+    Flow: clean tree → plain pull (unchanged). Dirty tree → stash push
+    (ref-compared, so "nothing saved" is distinguished from "saved but exit
+    1"), pull, stash apply. A clean re-apply drops the entry; a conflicted
+    re-apply resets the tree to the updated revision and KEEPS the stash so
+    the plugin still imports and no local work is lost.
+    """
     git_exe = _resolve_git_executable()
     if not git_exe:
         return False, "git is not installed or not in PATH."
     try:
-        result = subprocess.run(
-            [git_exe, "pull", "--ff-only"],
-            capture_output=True,
-            text=True, encoding='utf-8', errors='replace',
-            timeout=60,
-            cwd=str(target),
-            stdin=subprocess.DEVNULL,
-            env=noninteractive_git_env(),
+        status = _run_plugin_git(git_exe, target, "status", "--porcelain")
+        dirty = status.returncode == 0 and bool(status.stdout.strip())
+
+        stash_created = False
+        pre_stash = ""
+        if dirty:
+            pre_stash = _stash_ref(git_exe, target)
+            push = _run_plugin_git(
+                git_exe, target,
+                "stash", "push", "--include-untracked",
+                "-m", "hermes-plugin-update-autostash",
+            )
+            post_stash = _stash_ref(git_exe, target)
+            stash_created = bool(post_stash) and post_stash != pre_stash
+            if not stash_created:
+                # Nothing was saved — do not risk the pull clobbering edits.
+                err = _safe_git_error(push)
+                return False, (
+                    "Local changes in the plugin checkout could not be "
+                    "stashed; update aborted before touching the checkout."
+                    + (f"\n{err}" if err else "")
+                )
+            if push.returncode != 0:
+                # Saved-but-couldn't-clean (undeletable untracked files):
+                # the stash entry is complete; reset tracked mods so the
+                # pull isn't blocked by a still-dirty tree.
+                _run_plugin_git(git_exe, target, "reset", "--hard", "HEAD")
+
+        result = _run_plugin_git(git_exe, target, "pull", "--ff-only")
+
+        if result.returncode != 0:
+            err = _safe_git_error(result)
+            if stash_created:
+                # Put the user's edits back before reporting the failure.
+                restore = _run_plugin_git(git_exe, target, "stash", "apply", "stash@{0}")
+                if restore.returncode == 0:
+                    _run_plugin_git(git_exe, target, "stash", "drop", "stash@{0}")
+                    note = "Local changes were restored."
+                else:
+                    note = (
+                        "Local changes are preserved in git stash "
+                        "(restore with: git stash pop)."
+                    )
+                return False, (err or "git pull failed.") + f"\n{note}"
+            return False, err or "git pull failed."
+
+        pulled = result.stdout.strip()
+        if not stash_created:
+            return True, pulled
+
+        restore = _run_plugin_git(git_exe, target, "stash", "apply", "stash@{0}")
+        unmerged = _run_plugin_git(
+            git_exe, target, "diff", "--name-only", "--diff-filter=U"
+        )
+        has_conflicts = bool(unmerged.stdout.strip())
+
+        if restore.returncode == 0 and not has_conflicts:
+            _run_plugin_git(git_exe, target, "stash", "drop", "stash@{0}")
+            return True, pulled + "\nLocal changes were re-applied on top of the update."
+
+        # Conflicted re-apply: leave the plugin importable on the updated
+        # revision; the user's edits stay safe in the stash entry.
+        _run_plugin_git(git_exe, target, "reset", "--hard", "HEAD")
+        return True, pulled + (
+            "\n⚠ Local changes in this plugin conflicted with the update and "
+            "were NOT re-applied. They are preserved in git stash — inspect "
+            "with `git stash show -p stash@{0}` and re-apply with "
+            f"`git stash pop` inside {target}."
         )
     except FileNotFoundError:
         return False, "git is not installed or not in PATH."
     except subprocess.TimeoutExpired:
-        return False, "Git pull timed out after 60 seconds."
-
-    if result.returncode != 0:
-        err = _safe_git_error(result)
-        return False, err or "git pull failed."
-    return True, result.stdout.strip()
+        return False, "Git operation timed out after 60 seconds."
 
 
 def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:

@@ -1496,8 +1496,8 @@ class HonchoMemoryProvider(MemoryProvider):
             except Exception as e:
                 logger.debug("Honcho memory mirror failed: %s", e)
 
-        t = spawn_context_thread(_write, name="honcho-memwrite")
-        t.start()
+        self._memwrite_thread = spawn_context_thread(_write, name="honcho-memwrite")
+        self._memwrite_thread.start()
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         """Flush all pending messages to Honcho on session end."""
@@ -1672,7 +1672,7 @@ class HonchoMemoryProvider(MemoryProvider):
             return tool_error(f"Honcho {tool_name} failed: {e}")
 
     def shutdown(self) -> None:
-        for t in (self._prefetch_thread, self._sync_thread):
+        for t in (self._prefetch_thread, self._sync_thread, getattr(self, "_memwrite_thread", None)):
             if t and t.is_alive():
                 t.join(timeout=5.0)
         manager = self._manager

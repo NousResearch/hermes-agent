@@ -2788,6 +2788,90 @@ describe('usePromptActions file attachment sync', () => {
     expect($composerAttachments.get()).toEqual([replacement])
   })
 
+  it('preserves a newer same-id URL added while a successful main submit is in flight', async () => {
+    const original: ComposerAttachment = {
+      id: 'url:https://example.com',
+      kind: 'url',
+      label: 'old',
+      refText: '@url:https://example.com'
+    }
+
+    const replacement: ComposerAttachment = {
+      ...original,
+      label: 'new'
+    }
+
+    let resolveSubmit!: (value: Record<string, never>) => void
+
+    const submitResult = new Promise<Record<string, never>>(resolve => {
+      resolveSubmit = resolve
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        return (await submitResult) as never
+      }
+
+      return {} as never
+    })
+
+    $composerAttachments.set([original])
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    let submitted!: Promise<boolean>
+    act(() => {
+      submitted = handle!.submitTextRaw('read this')
+    })
+
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+    )
+    $composerAttachments.set([replacement])
+    resolveSubmit({})
+
+    await act(async () => {
+      await expect(submitted).resolves.toBe(true)
+    })
+
+    expect($composerAttachments.get()).toEqual([replacement])
+  })
+
+  it('removes a successfully staged legacy file from the main composer', async () => {
+    $connection.set({ mode: 'remote' } as never)
+    const original = fileAttachment()
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:text/plain;base64,aGVsbG8=') }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'file.attach') {
+        return {
+          attached: true,
+          ref_text: '@file:.hermes/desktop-attachments/report.txt',
+          uploaded: true
+        } as never
+      }
+
+      return {} as never
+    })
+
+    $composerAttachments.set([original])
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await expect(handle!.submitTextRaw('read this')).resolves.toBe(true)
+    expect($composerAttachments.get()).toEqual([])
+  })
+
   it('uploads file bytes when the terminal backend is a container (docker)', async () => {
     // Container backends have their own filesystem: the host drop path would
     // dangle inside the sandbox, so the bytes must cross via file.attach's

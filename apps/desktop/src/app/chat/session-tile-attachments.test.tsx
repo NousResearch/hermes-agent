@@ -65,6 +65,26 @@ function makeAttachment(occurrenceId = createComposerAttachmentOccurrenceId()): 
   }
 }
 
+function makeUrlAttachment(label: string): ComposerAttachment {
+  return {
+    id: 'url:https://example.com',
+    kind: 'url',
+    label,
+    refText: '@url:https://example.com'
+  }
+}
+
+function makeFileAttachment(): ComposerAttachment {
+  return {
+    detail: 'C:\\Users\\alice\\Documents\\report.txt',
+    id: 'file:report.txt',
+    kind: 'file',
+    label: 'report.txt',
+    path: 'C:\\Users\\alice\\Documents\\report.txt',
+    refText: '@file:`C:\\Users\\alice\\Documents\\report.txt`'
+  }
+}
+
 function installDelegate(): void {
   const updateSession: SessionTileDelegate['updateSession'] = (runtimeId, updater) => {
     const current = $sessionStates.get()[runtimeId] ?? createClientSessionState(STORED_ID)
@@ -242,5 +262,73 @@ describe('session tile attachment occurrence ownership', () => {
     })
 
     expect(scope.attachments.$attachments.get()).toEqual([replacement])
+  })
+
+  it('preserves a newer same-id URL added while a successful tile submit is in flight', async () => {
+    const scope = createScope()
+    const original = makeUrlAttachment('old')
+    const replacement = makeUrlAttachment('new')
+    const submit = deferred<Record<string, never>>()
+
+    requestGateway.mockImplementation(async (method: string) => {
+      if (method === 'prompt.submit') {
+        return submit.promise
+      }
+
+      return {}
+    })
+
+    scope.attachments.add(original)
+
+    const { result } = renderHook(() =>
+      useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+    )
+
+    let submitted!: Promise<boolean>
+    act(() => {
+      submitted = result.current.submitText('read this')
+    })
+
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('prompt.submit', expect.anything(), expect.anything())
+    )
+    scope.attachments.remove(original.id)
+    scope.attachments.add(replacement)
+    submit.resolve({})
+
+    await act(async () => {
+      await expect(submitted).resolves.toBe(true)
+    })
+
+    expect(scope.attachments.$attachments.get()).toEqual([replacement])
+  })
+
+  it('removes a successfully staged legacy file from the tile composer', async () => {
+    const scope = createScope()
+    const original = makeFileAttachment()
+
+    requestGateway.mockImplementation(async (method: string) => {
+      if (method === 'file.attach') {
+        return {
+          attached: true,
+          ref_text: '@file:.hermes/desktop-attachments/report.txt',
+          uploaded: true
+        }
+      }
+
+      return {}
+    })
+
+    scope.attachments.add(original)
+
+    const { result } = renderHook(() =>
+      useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+    )
+
+    await act(async () => {
+      await expect(result.current.submitText('read this')).resolves.toBe(true)
+    })
+
+    expect(scope.attachments.$attachments.get()).toEqual([])
   })
 })

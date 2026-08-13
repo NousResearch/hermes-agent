@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $composerAttachments,
@@ -174,6 +174,35 @@ describe('updateComposerAttachment', () => {
     scope.removeOccurrences([submitted])
 
     expect(scope.$attachments.get()).toEqual([replacement])
+  })
+
+  it('preserves a newer same-id legacy attachment and still emits on successful cleanup', () => {
+    const scope = createComposerAttachmentScope()
+    const submitted = attachment({ id: 'url:https://example.com', kind: 'url', label: 'old' })
+    const replacement = attachment({ id: submitted.id, kind: 'url', label: 'new' })
+    const listener = vi.fn()
+    const unlisten = scope.$attachments.listen(listener)
+
+    scope.add(submitted)
+    scope.remove(submitted.id)
+    scope.add(replacement)
+    listener.mockClear()
+
+    scope.removeOccurrences([submitted])
+
+    expect(scope.$attachments.get()).toEqual([replacement])
+    expect(listener).toHaveBeenCalledTimes(1)
+    unlisten()
+  })
+
+  it('removes the exact submitted legacy attachment', () => {
+    const scope = createComposerAttachmentScope()
+    const submitted = attachment({ id: 'url:https://example.com', kind: 'url' })
+
+    scope.add(submitted)
+    scope.removeOccurrences([submitted])
+
+    expect(scope.$attachments.get()).toEqual([])
   })
 })
 

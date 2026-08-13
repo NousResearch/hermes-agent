@@ -103,10 +103,18 @@ export function createComposerAttachmentScope($attachments = atom<ComposerAttach
     removeOccurrences(attachments) {
       const current = $attachments.get()
 
-      const submitted = new Set(attachments.map(attachment => `${attachment.id}\u0000${attachment.occurrenceId ?? ''}`))
+      const submittedOccurrences = new Set(
+        attachments
+          .filter(attachment => attachment.occurrenceId !== undefined)
+          .map(attachment => `${attachment.id}\u0000${attachment.occurrenceId}`)
+      )
 
-      const next = current.filter(
-        attachment => !submitted.has(`${attachment.id}\u0000${attachment.occurrenceId ?? ''}`)
+      const submittedLegacy = new Set(attachments.filter(attachment => attachment.occurrenceId === undefined))
+
+      const next = current.filter(attachment =>
+        attachment.occurrenceId === undefined
+          ? !submittedLegacy.has(attachment)
+          : !submittedOccurrences.has(`${attachment.id}\u0000${attachment.occurrenceId}`)
       )
 
       // Preserve clear()'s notification semantics even when no captured

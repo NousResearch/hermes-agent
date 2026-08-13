@@ -714,10 +714,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
 
         if (usingComposerAttachments) {
-          // A submit owns only the occurrences captured before its first await.
-          // Preserve chips added or replaced while staging / prompt.submit was
-          // in flight instead of clearing the composer's newer draft state.
-          scope.removeAttachments(attachments)
+          // A submit owns only the occurrences that actually reached the
+          // gateway. Tokenized chips match across staging clones; legacy chips
+          // match by exact object identity, so a newer same-id replacement is
+          // preserved while the staged object for a submitted file is removed.
+          scope.removeAttachments(syncedAttachments)
         }
 
         // Submit landed — the turn now runs (busy stays true), but the submit

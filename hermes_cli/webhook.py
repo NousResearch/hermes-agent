@@ -21,7 +21,14 @@ from typing import Dict
 
 from hermes_constants import display_hermes_home
 from utils import atomic_replace
-from hermes_cli.config import cfg_get
+
+
+
+def _effective_webhook_config():
+    """Return the unified runtime webhook configuration."""
+    from gateway.webhook_config import resolve_effective_webhook_config
+
+    return resolve_effective_webhook_config()
 
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
@@ -81,17 +88,25 @@ def _save_subscriptions(subs: Dict[str, dict]) -> None:
 
 
 def _get_webhook_config() -> dict:
-    """Load webhook platform config. Returns {} if not configured."""
+    """Return the legacy dict shape backed by effective webhook config."""
     try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        return cfg_get(cfg, "platforms", "webhook", default={})
+        effective = _effective_webhook_config()
+        return {
+            "enabled": effective.enabled,
+            "extra": {
+                "host": effective.host,
+                "port": effective.port,
+            },
+        }
     except Exception:
         return {}
 
 
 def _is_webhook_enabled() -> bool:
-    return bool(_get_webhook_config().get("enabled"))
+    try:
+        return _effective_webhook_config().enabled
+    except Exception:
+        return bool(_get_webhook_config().get("enabled"))
 
 
 def _get_webhook_base_url() -> str:

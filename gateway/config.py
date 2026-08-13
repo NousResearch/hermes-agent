@@ -2242,21 +2242,24 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
         if api_server_model_name:
             config.platforms[Platform.API_SERVER].extra["model_name"] = api_server_model_name
 
-    # Webhook platform
-    webhook_enabled = is_truthy_value(getenv("WEBHOOK_ENABLED", ""))
-    webhook_port = getenv("WEBHOOK_PORT")
-    webhook_secret = getenv("WEBHOOK_SECRET", "")
-    if webhook_enabled:
+    # Webhook platform. Keep the effective resolver as the single source for
+    # management and runtime surfaces, including WEBHOOK_HOST (#13240).
+    from gateway.webhook_config import (
+        resolve_effective_webhook_config,
+        resolve_effective_webhook_secret,
+    )
+
+    effective_webhook = resolve_effective_webhook_config()
+    if effective_webhook.enabled or Platform.WEBHOOK in config.platforms:
         if Platform.WEBHOOK not in config.platforms:
             config.platforms[Platform.WEBHOOK] = PlatformConfig()
-        config.platforms[Platform.WEBHOOK].enabled = True
-        if webhook_port:
-            try:
-                config.platforms[Platform.WEBHOOK].extra["port"] = int(webhook_port)
-            except ValueError:
-                pass
-        if webhook_secret:
-            config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+        config.platforms[Platform.WEBHOOK].enabled = effective_webhook.enabled
+        config.platforms[Platform.WEBHOOK].extra["port"] = effective_webhook.port
+        config.platforms[Platform.WEBHOOK].extra["host"] = effective_webhook.host
+        if effective_webhook.global_secret_ref:
+            webhook_secret = resolve_effective_webhook_secret()
+            if webhook_secret:
+                config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
 
     # Microsoft Graph webhook platform
     msgraph_webhook_enabled = is_truthy_value(getenv("MSGRAPH_WEBHOOK_ENABLED", ""))

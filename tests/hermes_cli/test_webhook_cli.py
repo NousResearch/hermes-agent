@@ -18,10 +18,9 @@ from hermes_cli.webhook import (
 @pytest.fixture(autouse=True)
 def _isolate(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    # Default: webhooks enabled (most tests need this)
-    monkeypatch.setattr(
-        "hermes_cli.webhook._is_webhook_enabled", lambda: True
-    )
+    # Default: webhooks enabled through the same runtime env path used by
+    # production. Individual tests can override the effective resolver.
+    monkeypatch.setenv("WEBHOOK_ENABLED", "true")
 
 
 def _make_args(**kwargs):
@@ -135,7 +134,6 @@ class TestWebhookEnabledGate:
         assert "not enabled" in out.lower()
 
     def test_allows_when_enabled(self, capsys):
-        # _is_webhook_enabled already patched to True by autouse fixture
         webhook_command(_make_args(webhook_action="subscribe", name="allowed"))
         out = capsys.readouterr().out
         assert "Created" in out
@@ -152,4 +150,12 @@ class TestWebhookEnabledGate:
         )
         import hermes_cli.webhook as wh_mod
         assert wh_mod._is_webhook_enabled() is False
+
+    def test_env_only_runtime_config_enables_list(self, capsys, monkeypatch):
+        monkeypatch.delenv("WEBHOOK_ENABLED", raising=False)
+        monkeypatch.setenv("WEBHOOK_ENABLED", "true")
+        webhook_command(_make_args(webhook_action="list"))
+        out = capsys.readouterr().out
+        assert "not enabled" not in out.lower()
+        assert "No dynamic webhook subscriptions" in out
 

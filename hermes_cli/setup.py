@@ -2106,8 +2106,15 @@ def _setup_qqbot():
 
 def _setup_webhooks():
     """Configure webhook integration."""
+    from gateway.webhook_config import resolve_effective_webhook_config
+
     print_header("Webhooks")
     existing = get_env_value("WEBHOOK_ENABLED")
+    if not existing:
+        try:
+            existing = "true" if resolve_effective_webhook_config().enabled else None
+        except Exception:
+            existing = None
     if existing:
         print_info("Webhooks: already configured")
         if not prompt_yes_no("Reconfigure webhooks?", False):
@@ -2121,13 +2128,22 @@ def _setup_webhooks():
     print_info("   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/")
     print()
 
-    port = prompt("Webhook port (default 8644)")
+    current = resolve_effective_webhook_config()
+    current_host = current.host or ""
+    host = prompt(
+        f"Webhook bind host (empty for all interfaces) [{current_host}]"
+    )
+    if host:
+        save_env_value("WEBHOOK_HOST", host)
+        print_success(f"Webhook host set to {host}")
+
+    port = prompt(f"Webhook port (default {current.port})")
     if port:
         try:
             save_env_value("WEBHOOK_PORT", str(int(port)))
             print_success(f"Webhook port set to {port}")
         except ValueError:
-            print_warning("Invalid port number, using default 8644")
+            print_warning(f"Invalid port number, using default {current.port}")
 
     secret = prompt("Global HMAC secret (shared across all routes)", password=True)
     if secret:
@@ -2137,17 +2153,20 @@ def _setup_webhooks():
         print_warning("No secret set — you must configure per-route secrets in config.yaml")
 
     save_env_value("WEBHOOK_ENABLED", "true")
+    effective = resolve_effective_webhook_config()
+    display_host = effective.host or "localhost"
+    if ":" in display_host and not display_host.startswith("["):
+        display_host = f"[{display_host}]"
     print()
     print_success("Webhooks enabled! Next steps:")
     from hermes_constants import display_hermes_home as _dhh
     print_info(f"   1. Define webhook routes in {_dhh()}/config.yaml")
     print_info("   2. Point your service (GitHub, GitLab, etc.) at:")
-    print_info("      http://your-server:8644/webhooks/<route-name>")
+    print_info(f"      http://{display_host}:{effective.port}/webhooks/<route-name>")
     print()
     print_info("   Route configuration guide:")
     print_info("   https://hermes-agent.nousresearch.com/docs/user-guide/messaging/webhooks/#configuring-routes")
     print()
-    print_info("   Open config in your editor:  hermes config edit")
     print_info("   Open config in your editor:  hermes config edit")
 
 

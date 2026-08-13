@@ -331,6 +331,8 @@ Declarative plugins are symlinked with a `nix-managed-` prefix — they coexist 
 ```bash
 hermes plugins                               # unified interactive UI
 hermes plugins list                          # table: enabled / disabled / not enabled
+hermes plugins search <term>                 # search the community plugin index
+hermes plugins install <name>                # install by index name (resolved to repo @ pinned ref)
 hermes plugins install user/repo             # install from Git, then prompt Enable? [y/N]
 hermes plugins install user/repo --enable    # install AND enable (no prompt)
 hermes plugins install user/repo --no-enable # install but leave disabled (no prompt)
@@ -398,6 +400,75 @@ regular in-process Python: a malicious plugin can ignore every gate here.
 Granting a capability is a statement of trust in the plugin author — it is
 not a code audit, and Hermes has not reviewed the plugin's code. Only install
 plugins from sources you trust.
+:::
+
+### Discovering community plugins
+
+`hermes plugins search <term>` searches the **community plugin index** — a
+static, machine-readable JSON catalog of community plugins. Matching is fuzzy
+across name, description, and tags:
+
+```bash
+hermes plugins search telegram               # fuzzy search
+hermes plugins search                        # browse the whole index
+hermes plugins search --capability platform  # filter by declared capability
+hermes plugins search media --json           # machine-readable output
+hermes plugins search --refresh              # bypass the 24h local cache
+```
+
+Once you've found a plugin, install it by bare name — the name is resolved
+through the index to its `owner/repo` plus the index-pinned commit:
+
+```bash
+hermes plugins install hermes-media-studio
+```
+
+If a name matches more than one entry, the candidates are listed and nothing
+is installed. Explicit `owner/repo` or Git-URL identifiers never touch the
+index and keep working exactly as before. An explicit `--ref <sha>` always
+overrides the index pin.
+
+**How the index is fetched.** The index lives at a canonical URL
+(`https://raw.githubusercontent.com/NousResearch/hermes-plugin-index/main/index.json`,
+overridable via `hermes config set plugins.index_url <url>`). Fetches are
+cached under `~/.hermes/cache/plugin_index.json` for 24 hours; when the
+remote is unreachable the stale cache is used, and when there is no cache at
+all a bundled seed copy ships with Hermes — so search works fully offline.
+
+**Index entry format.** Each entry is a JSON object:
+
+```json
+{
+  "name": "hermes-media-studio",
+  "description": "Generative media workspace plugin.",
+  "author": "NousResearch",
+  "tags": ["media", "image-gen"],
+  "repo": "NousResearch/hermes-media-studio",
+  "ref": "<40-char commit SHA>",
+  "subdir": null,
+  "homepage": "https://github.com/NousResearch/hermes-media-studio",
+  "capabilities": ["tools", "dashboard"],
+  "api_version": 1,
+  "added_at": "2026-08-12"
+}
+```
+
+`repo` is the `owner/name` GitHub identifier, `ref` pins an immutable commit
+SHA, and optional `subdir` supports monorepos. The bundled seed file
+(`hermes_cli/data/plugin_index.json` in the repo) is the format reference.
+
+**Submitting a plugin.** The index is maintained as a plain JSON file —
+submit a pull request to the
+[hermes-plugin-index](https://github.com/NousResearch/hermes-plugin-index)
+repository adding your entry (name, description, author, tags, `owner/repo`,
+and a pinned commit SHA). Review covers the entry's *metadata* only.
+
+:::warning Indexed ≠ audited
+Inclusion in the community index means the entry's metadata was reviewed —
+**it is not a code audit**. Installing still goes through the normal
+consent/review flow (plugins install disabled by default, enabling is an
+explicit step, and tool-override rights require a separate grant). Review a
+plugin's source before enabling it.
 :::
 
 ### Interactive UI

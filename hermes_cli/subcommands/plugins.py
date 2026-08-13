@@ -22,11 +22,15 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
     plugins_subparsers = plugins_parser.add_subparsers(dest="plugins_action")
 
     plugins_install = plugins_subparsers.add_parser(
-        "install", help="Install a plugin from a Git URL or owner/repo"
+        "install", help="Install a plugin from a Git URL, owner/repo, or index name"
     )
     plugins_install.add_argument(
         "identifier",
-        help="Git URL or owner/repo shorthand (e.g. anpicasso/hermes-plugin-chrome-profiles)",
+        help=(
+            "Git URL, owner/repo shorthand (e.g. anpicasso/hermes-plugin-chrome-profiles), "
+            "or a bare plugin name resolved through the community index "
+            "(see `hermes plugins search`)"
+        ),
     )
     plugins_install.add_argument(
         "--force",
@@ -49,6 +53,32 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         "--no-enable",
         action="store_true",
         help="Install disabled (skip confirmation prompt); enable later with `hermes plugins enable <name>`",
+    )
+
+    plugins_search = plugins_subparsers.add_parser(
+        "search", help="Search the community plugin index"
+    )
+    plugins_search.add_argument(
+        "term",
+        nargs="?",
+        default="",
+        help="Search term matched fuzzily against name, description, and tags "
+        "(omit to browse the full index)",
+    )
+    plugins_search.add_argument(
+        "--json",
+        action="store_true",
+        help="Print machine-readable JSON",
+    )
+    plugins_search.add_argument(
+        "--capability",
+        metavar="CAP",
+        help="Filter by declared capability (e.g. tools, platform, commands)",
+    )
+    plugins_search.add_argument(
+        "--refresh",
+        action="store_true",
+        help="Bypass the local cache and re-fetch the index",
     )
 
     plugins_update = plugins_subparsers.add_parser(

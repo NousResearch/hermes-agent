@@ -54,3 +54,32 @@ def test_rewind_n_turns(store):
     assert len(store.load_transcript(sid)) == 2  # q1,a1
 
 
+def test_rewind_fails_closed_when_transcript_changes_after_snapshot(
+    store, monkeypatch
+):
+    sid = _seed(store, "gw-cas", turns=2)
+    sibling = SessionDB(db_path=store._db.db_path)
+    original_rewind = store._db.rewind_to_message
+
+    def _append_then_rewind(*args, **kwargs):
+        sibling.append_message(sid, "assistant", "concurrent tail")
+        return original_rewind(*args, **kwargs)
+
+    monkeypatch.setattr(store._db, "rewind_to_message", _append_then_rewind)
+
+    assert store.rewind_session(sid) is None
+
+    rows = store._db._conn.execute(
+        "SELECT content, active FROM messages "
+        "WHERE session_id = ? ORDER BY id",
+        (sid,),
+    ).fetchall()
+    assert [tuple(row) for row in rows] == [
+        ("q1", 1),
+        ("a1", 1),
+        ("q2", 1),
+        ("a2", 1),
+        ("concurrent tail", 1),
+    ]
+    sibling.close()
+

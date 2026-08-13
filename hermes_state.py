@@ -9473,8 +9473,37 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
     # Rewind (soft-delete) — see /rewind slash command + issue #21910
     # =========================================================================
 
+    @staticmethod
+    def _active_transcript_counts(conn, session_id: str) -> tuple[int, int]:
+        """Return active message/tool-call counts inside the caller's txn."""
+        rows = conn.execute(
+            "SELECT tool_calls FROM messages "
+            "WHERE session_id = ? AND active = 1",
+            (session_id,),
+        ).fetchall()
+        tool_call_count = 0
+        for row in rows:
+            raw = row[0]
+            if not raw:
+                continue
+            try:
+                decoded = json.loads(raw) if isinstance(raw, str) else raw
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if isinstance(decoded, list):
+                tool_call_count += len(decoded)
+            elif decoded:
+                tool_call_count += 1
+        return len(rows), tool_call_count
+
     def rewind_to_message(
-        self, session_id: str, target_message_id: int
+        self,
+        session_id: str,
+        target_message_id: int,
+        *,
+        preserve_compaction_handoff: bool = False,
+        expected_active_ids: Optional[List[int]] = None,
+        expected_target_content: Any = None,
     ) -> Dict[str, Any]:
         """Soft-delete all messages with id >= ``target_message_id`` in *session_id*.
 
@@ -9493,7 +9522,17 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             }
 
         Raises ``ValueError`` if the target message does not exist in
-        *session_id* or if its role is not ``"user"``.
+        *session_id* or if its role is not ``"user"``.  With
+        ``preserve_compaction_handoff=True``, a composite summary carrier is
+        split inside the same write transaction: its original row is archived
+        and its canonical hidden handoff scaffold is inserted as the new head.
+        That opt-in result also contains ``replacement_message_id``.
+
+        ``expected_active_ids`` optionally pins the ordered active row set.
+        ``expected_target_content`` additionally pins the selected canonical
+        live-user payload.  Both checks run inside the write transaction before
+        any row or counter mutation.  Presentation-only metadata changes (for
+        example Desktop reactions) deliberately do not invalidate a rewind.
 
         Always increments ``sessions.rewind_count`` — even when the
         target is already inactive — so the counter accurately reflects
@@ -9502,29 +9541,71 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         target is a no-op on row state but still bumps the counter.
         """
 
-        # 1) Validate target up-front (read-only, outside the write txn).
-        with self._lock:
-            row = self._conn.execute(
+        def _do(conn):
+            # Rewind changes the active transcript and must honor the same
+            # compression ownership/closed-parent guards as append writers.
+            self._check_transcript_write_guards(conn, session_id, None)
+
+            if expected_active_ids is not None:
+                active_rows = conn.execute(
+                    "SELECT id FROM messages "
+                    "WHERE session_id = ? AND active = 1 ORDER BY id",
+                    (session_id,),
+                ).fetchall()
+                active_ids = [int(active_row[0]) for active_row in active_rows]
+                if active_ids != expected_active_ids:
+                    raise RuntimeError(
+                        "active transcript changed before the rewind could be persisted"
+                    )
+
+            row = conn.execute(
                 "SELECT * FROM messages WHERE id = ? AND session_id = ?",
                 (target_message_id, session_id),
             ).fetchone()
-        if row is None:
-            raise ValueError(
-                f"message {target_message_id} not found in session {session_id}"
-            )
-        target_row = dict(row)
-        if target_row.get("role") != "user":
-            raise ValueError(
-                f"rewind target must be a 'user' message (got role="
-                f"{target_row.get('role')!r}, id={target_message_id})"
-            )
+            if row is None:
+                raise ValueError(
+                    f"message {target_message_id} not found in session {session_id}"
+                )
+            target_row = dict(row)
+            if target_row.get("role") != "user":
+                raise ValueError(
+                    f"rewind target must be a 'user' message (got role="
+                    f"{target_row.get('role')!r}, id={target_message_id})"
+                )
 
-        # Decode content for callers (prefill the prompt buffer).
-        target_row["content"] = self._decode_content(target_row.get("content"))
+            replacement_message_id: Optional[int] = None
+            replacement: Optional[Dict[str, Any]] = None
+            if preserve_compaction_handoff or expected_target_content is not None:
+                if not target_row.get("active"):
+                    raise ValueError("rewind target is not active")
+                from agent.context_compressor import split_user_originated_turn
 
-        rewound: List[int] = []
+                split_target = target_row.copy()
+                split_target["content"] = self._decode_content(
+                    split_target.get("content")
+                )
+                split_target["display_metadata"] = self._decode_display_metadata(
+                    split_target.get("display_metadata")
+                )
+                handoff, live_view = split_user_originated_turn(split_target)
+                if live_view is None:
+                    raise ValueError("rewind target is not a user-originated turn")
+                live_content = live_view.get("content")
+                if isinstance(live_content, str):
+                    live_content = sanitize_context(live_content).strip()
+                if (
+                    expected_target_content is not None
+                    and live_content != expected_target_content
+                ):
+                    raise RuntimeError(
+                        "rewind target changed before it could be persisted"
+                    )
+                if preserve_compaction_handoff and handoff is None:
+                    raise ValueError(
+                        "preserve_compaction_handoff requires an active composite carrier"
+                    )
+                replacement = handoff if preserve_compaction_handoff else None
 
-        def _do(conn):
             cursor = conn.execute(
                 "SELECT id FROM messages "
                 "WHERE session_id = ? AND id >= ? AND active = 1",
@@ -9537,28 +9618,48 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
                     f"UPDATE messages SET active = 0 WHERE id IN ({placeholders})",
                     ids,
                 )
+            if replacement is not None:
+                self._insert_message_rows(conn, session_id, [replacement])
+                inserted = conn.execute("SELECT last_insert_rowid()").fetchone()
+                replacement_message_id = int(inserted[0])
             conn.execute(
                 "UPDATE sessions SET rewind_count = COALESCE(rewind_count, 0) + 1 "
                 "WHERE id = ?",
                 (session_id,),
             )
-            return ids
-
-        rewound = self._execute_write(_do)
-
-        # 2) Compute new head id (largest still-active row id in session).
-        with self._lock:
-            head_row = self._conn.execute(
+            message_count, tool_call_count = self._active_transcript_counts(
+                conn, session_id
+            )
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? "
+                "WHERE id = ?",
+                (message_count, tool_call_count, session_id),
+            )
+            head_row = conn.execute(
                 "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1",
                 (session_id,),
             ).fetchone()
-        new_head_id = head_row[0] if head_row and head_row[0] is not None else None
+            new_head_id = (
+                head_row[0] if head_row and head_row[0] is not None else None
+            )
+            return target_row, ids, new_head_id, replacement_message_id
 
-        return {
+        target_row, rewound, new_head_id, replacement_message_id = (
+            self._execute_write(_do)
+        )
+
+        # Decode content for callers (prefill the prompt buffer) without a
+        # second fallible database operation after the transaction commits.
+        target_row["content"] = self._decode_content(target_row.get("content"))
+
+        result = {
             "rewound_count": len(rewound),
             "target_message": target_row,
             "new_head_id": new_head_id,
         }
+        if preserve_compaction_handoff:
+            result["replacement_message_id"] = replacement_message_id
+        return result
 
     def restore_rewound(self, session_id: str, since_message_id: int) -> int:
         """Mark inactive messages with id >= *since_message_id* active again.

@@ -14,11 +14,13 @@ _profile_scoped = _registry.profile_scoped
 
 
 def _history_user_indices(history: list) -> list:
-    """Indices of model-visible user turns (excludes display_kind timeline markers)."""
+    """Indices of canonical live-user turns, including composite carriers."""
+    from agent.context_compressor import user_originated_turn_view
+
     return [
         i
         for i, m in enumerate(history)
-        if m.get("role") == "user" and not m.get("display_kind")
+        if user_originated_turn_view(m) is not None
     ]
 
 
@@ -50,17 +52,28 @@ def _mem_db_pair_agrees(mem, db_msg) -> bool:
         return False
     if mem.get("role") != db_msg.get("role"):
         return False
+    if mem.get("role") == "user":
+        from agent.context_compressor import user_originated_turn_view
+        from agent.memory_manager import sanitize_context
+
+        mem_view = user_originated_turn_view(mem)
+        db_view = user_originated_turn_view(db_msg)
+        if (mem_view is None) != (db_view is None):
+            return False
+        if mem_view is None:
+            return bool(mem.get("display_kind")) == bool(
+                db_msg.get("display_kind")
+            )
+        mem_content = mem_view.get("content")
+        db_content = db_view.get("content")
+        if isinstance(mem_content, str) and isinstance(db_content, str):
+            if sanitize_context(mem_content).strip() != sanitize_context(
+                db_content
+            ).strip():
+                return False
+        return True
     if bool(mem.get("display_kind")) != bool(db_msg.get("display_kind")):
         return False
-    if mem.get("role") == "user" and not mem.get("display_kind"):
-        mem_content = mem.get("content")
-        db_content = db_msg.get("content")
-        if (
-            isinstance(mem_content, str)
-            and isinstance(db_content, str)
-            and mem_content.strip() != db_content.strip()
-        ):
-            return False
     return True
 
 
@@ -90,20 +103,15 @@ def _resolve_truncate_row_id(session: dict, history: list, target_row_id: int):
         return None
 
     try:
-        db = _get_db()
-    except Exception:
-        db = None
-    if db is None:
-        return None
-
-    get_conv = getattr(db, "get_messages_as_conversation", None)
-    if not callable(get_conv):
-        return None
-
-    try:
-        db_history = get_conv(
-            session_key, repair_alternation=True, include_row_ids=True
-        )
+        with _session_db(session) as db:
+            if db is None:
+                return None
+            get_conv = getattr(db, "get_messages_as_conversation", None)
+            if not callable(get_conv):
+                return None
+            db_history = get_conv(
+                session_key, repair_alternation=True, include_row_ids=True
+            )
     except Exception:
         logger.debug(
             "prompt.submit: failed loading DB history for row_id %s session %s",
@@ -379,7 +387,9 @@ def _(rid, params: dict) -> dict:
             or truncate_message_id is not None
             or truncate_row_id is not None
         ):
-            history = session.get("history", [])
+            history = _history_without_ephemeral_scaffolding(
+                session.get("history", [])
+            )
 
             # Malformed params refuse first (4004), regardless of consent —
             # the historical ordinal-path precedence.
@@ -504,7 +514,11 @@ def _(rid, params: dict) -> dict:
             # via replace_messages — an unrecoverable overwrite of the session DB.
             if ordinal < 0 or ordinal >= len(user_indices):
                 return _err(rid, 4018, "target user message is no longer in session history")
-            truncated = history[: user_indices[ordinal]]
+            from agent.context_compressor import history_before_user_originated_turn
+
+            truncated, _live_view = history_before_user_originated_turn(
+                history, user_indices[ordinal]
+            )
             # Second gate, on top of confirm_truncate: ordinal 0 resolves to
             # history[:0] == [] and replace_messages() DELETEs every durable
             # row. A confirmed rewind that happens to erase the whole
@@ -547,58 +561,39 @@ def _(rid, params: dict) -> dict:
             # new exchange is appended on top of the "undone" turns — durable
             # zombie history on resume, and the edit/regenerate never sticks.
             # Fail closed: refuse the turn and leave memory/DB unchanged.
-            if (db := _get_db()) is not None:
-                try:
-                    # active_only=True: replace only the live (active=1) rows.
-                    # In-place compaction (#38763) keeps the pre-compaction
-                    # transcript as active=0/compacted=1 rows under this same
-                    # session key; a bare replace_messages() would DELETE that
-                    # durable archive on every edit/regenerate — the same bug
-                    # class #80216 fixed for /retry. On an uncompacted session
-                    # all rows are active=1, so this is behaviorally identical
-                    # to the full replace.
-                    # archive_dropped: a rewind overwrites turns the user may
-                    # not have meant to drop, and this write is the last step
-                    # before they are gone — three reported incidents ended
-                    # here with nothing to restore from (#70516, #80763,
-                    # #82756). Soft-archiving keeps them on disk (active=0) and
-                    # in the FTS index, so a mis-aimed cut is recoverable
-                    # instead of terminal. The live transcript is unchanged.
-                    db.replace_messages(
-                        session["session_key"],
-                        truncated,
-                        active_only=True,
-                        archive_dropped=True,
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "prompt.submit: replace_messages failed for session %s "
-                        "(ordinal=%d); refusing turn so memory and DB stay "
-                        "aligned: %s",
-                        sid,
-                        ordinal,
-                        exc,
-                        exc_info=True,
-                    )
-                    return _err(
-                        rid,
-                        5008,
-                        f"failed to persist history truncation: {exc}",
-                    )
+            try:
+                with _session_db(session) as db:
+                    if db is not None:
+                        # Keep main's durable row-id contract: this rewrite
+                        # stamps fresh row ids onto the same surviving dicts,
+                        # and the response below lets Desktop rebind them.
+                        # ``truncated`` is carrier-aware, so a composite target
+                        # becomes its pure hidden scaffold in the same atomic
+                        # replace that archives the selected row and tail.
+                        db.replace_messages(
+                            session["session_key"],
+                            truncated,
+                            active_only=True,
+                            archive_dropped=True,
+                        )
+            except Exception as exc:
+                logger.error(
+                    "prompt.submit: replace_messages failed for session %s "
+                    "(ordinal=%d); refusing turn so memory and DB stay "
+                    "aligned: %s",
+                    sid,
+                    ordinal,
+                    exc,
+                    exc_info=True,
+                )
+                return _err(
+                    rid,
+                    5008,
+                    f"failed to persist history truncation: {exc}",
+                )
             session["history"] = truncated
             session["history_version"] = int(session.get("history_version", 0)) + 1
             if db is not None:
-                # replace_messages re-inserted the surviving prefix as NEW rows
-                # and stamped fresh _row_id values onto these same dicts.
-                # Surface the surviving user-turn ids (in visible-user-ordinal
-                # order) so the client can rebind its cached rowId stamps —
-                # otherwise a second rewind targeting an older surviving turn
-                # sends the pre-rewind id and the fail-closed resolver refuses
-                # it with 4018 (#83202 review: consecutive-rewind staleness).
-                # Ordinal order matches the client's visible-user filter the
-                # same way truncate ordinals already do. Entries are None when
-                # a row somehow has no stamp — the client must drop its cached
-                # id for that turn rather than keep a stale one.
                 survivor_user_row_ids = [
                     _message_row_id(truncated[i])
                     for i in _history_user_indices(truncated)

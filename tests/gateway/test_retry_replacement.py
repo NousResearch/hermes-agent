@@ -1,13 +1,29 @@
-"""Regression tests for /retry replacement semantics."""
+"""Regression tests for /retry replacement and carrier-aware undo semantics."""
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.context_compressor import (
+    HISTORICAL_TASK_HEADING,
+    SUMMARY_PREFIX,
+    _SUMMARY_END_MARKER,
+)
 from gateway.config import GatewayConfig
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionStore
+
+
+def _composite_carrier(ask="REAL ASK"):
+    return {
+        "role": "user",
+        "content": (
+            f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nold task\n\n"
+            f"{_SUMMARY_END_MARKER}\n\n{ask}"
+        ),
+    }
 
 
 @pytest.mark.asyncio
@@ -65,6 +81,191 @@ async def test_gateway_retry_replaces_last_user_turn_in_transcript(tmp_path, mon
         "first answer",
         "new answer",
     ]
+
+
+@pytest.mark.asyncio
+async def test_gateway_retry_redispatches_live_carrier_text_and_keeps_scaffold(
+    tmp_path, monkeypatch
+):
+    import hermes_state
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+
+    config = GatewayConfig()
+    store = SessionStore(sessions_dir=tmp_path, config=config)
+    session_id = "retry-carrier-session"
+    store._db.create_session(session_id=session_id, source="test")
+    store._db.append_message(session_id, "user", "older ask")
+    store._db.append_message(session_id, "assistant", "older answer")
+    store._db.append_message(session_id, "user", _composite_carrier()["content"])
+    store._db.append_message(session_id, "assistant", "failed answer")
+
+    gw = GatewayRunner.__new__(GatewayRunner)
+    gw.config = config
+    gw.session_store = store
+    session_entry = MagicMock(session_id=session_id, last_prompt_tokens=123)
+    gw.session_store.get_or_create_session = MagicMock(return_value=session_entry)
+
+    async def fake_handle_message(event):
+        assert event.text == "REAL ASK"
+        active = store.load_transcript(session_id)
+        assert [m.get("content") for m in active[:2]] == ["older ask", "older answer"]
+        scaffold = active[2]
+        assert scaffold["display_kind"] == "hidden"
+        assert "REAL ASK" not in scaffold["content"]
+        return "new answer"
+
+    gw._handle_message = AsyncMock(side_effect=fake_handle_message)
+
+    result = await gw._handle_retry_command(
+        MessageEvent(text="/retry", message_type=MessageType.TEXT, source=MagicMock())
+    )
+
+    assert result == "new answer"
+    assert session_entry.last_prompt_tokens == 0
+    gw._handle_message.assert_awaited_once()
+    archived = [
+        row
+        for row in store._db.get_messages(session_id, include_inactive=True)
+        if not row["active"]
+    ]
+    assert [row["content"] for row in archived] == [
+        _composite_carrier()["content"],
+        "failed answer",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_gateway_retry_does_not_rewind_a_newer_plain_turn(
+    tmp_path, monkeypatch
+):
+    """The carrier selected for retry must still be latest at commit time."""
+    import hermes_state
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+
+    config = GatewayConfig()
+    store = SessionStore(sessions_dir=tmp_path, config=config)
+    session_id = "retry-carrier-race-session"
+    store._db.create_session(session_id=session_id, source="test")
+    store._db.append_message(session_id, "user", _composite_carrier()["content"])
+    store._db.append_message(session_id, "assistant", "failed answer")
+
+    gw = GatewayRunner.__new__(GatewayRunner)
+    gw.config = config
+    gw.session_store = store
+    session_entry = MagicMock(session_id=session_id, last_prompt_tokens=123)
+    gw.session_store.get_or_create_session = MagicMock(return_value=session_entry)
+    original_rewind = store.rewind_session
+
+    def append_newer_turn_then_rewind(*args, **kwargs):
+        store._db.append_message(session_id, "user", "newer ask")
+        store._db.append_message(session_id, "assistant", "newer answer")
+        return original_rewind(*args, **kwargs)
+
+    monkeypatch.setattr(store, "rewind_session", append_newer_turn_then_rewind)
+    gw._handle_message = AsyncMock()
+
+    result = await gw._handle_retry_command(
+        MessageEvent(text="/retry", message_type=MessageType.TEXT, source=MagicMock())
+    )
+
+    assert result.startswith("Retry failed;")
+    assert session_entry.last_prompt_tokens == 123
+    gw._handle_message.assert_not_awaited()
+    assert [
+        message.get("content")
+        for message in store.load_transcript(session_id)
+        if message.get("role") == "user"
+    ] == [_composite_carrier()["content"], "newer ask"]
+
+
+@pytest.mark.asyncio
+async def test_gateway_retry_rejects_media_before_redispatch_or_token_reset():
+    gw = GatewayRunner.__new__(GatewayRunner)
+    backing_store = MagicMock()
+    gw.session_store = backing_store
+    session_entry = SimpleNamespace(session_id="sid", last_prompt_tokens=123)
+    facade = SimpleNamespace(
+        _store=backing_store,
+        get_or_create_session=AsyncMock(return_value=session_entry),
+        load_transcript=AsyncMock(
+            return_value=[
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "look again"},
+                        {"type": "image_url", "image_url": {"url": "image"}},
+                    ],
+                },
+                {"role": "assistant", "content": "old answer"},
+            ]
+        ),
+        rewrite_transcript=AsyncMock(return_value=True),
+    )
+    gw._async_session_store = facade
+    gw._handle_message = AsyncMock()
+
+    result = await gw._handle_retry_command(
+        MessageEvent(text="/retry", message_type=MessageType.TEXT, source=MagicMock())
+    )
+
+    assert result.startswith("Cannot retry that message safely:")
+    assert session_entry.last_prompt_tokens == 123
+    gw._handle_message.assert_not_awaited()
+    facade.rewrite_transcript.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_gateway_retry_stops_when_transcript_rewrite_fails():
+    gw = GatewayRunner.__new__(GatewayRunner)
+    backing_store = MagicMock()
+    gw.session_store = backing_store
+    session_entry = SimpleNamespace(session_id="sid", last_prompt_tokens=123)
+    facade = SimpleNamespace(
+        _store=backing_store,
+        get_or_create_session=AsyncMock(return_value=session_entry),
+        load_transcript=AsyncMock(
+            return_value=[
+                {"role": "user", "content": "retry me"},
+                {"role": "assistant", "content": "old answer"},
+            ]
+        ),
+        rewrite_transcript=AsyncMock(return_value=False),
+    )
+    gw._async_session_store = facade
+    gw._handle_message = AsyncMock()
+
+    result = await gw._handle_retry_command(
+        MessageEvent(text="/retry", message_type=MessageType.TEXT, source=MagicMock())
+    )
+
+    assert result.startswith("Retry failed;")
+    assert session_entry.last_prompt_tokens == 123
+    gw._handle_message.assert_not_awaited()
+    facade.rewrite_transcript.assert_awaited_once()
+
+
+def test_gateway_undo_prefills_live_carrier_text_and_keeps_scaffold(
+    tmp_path, monkeypatch
+):
+    import hermes_state
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+
+    store = SessionStore(sessions_dir=tmp_path, config=GatewayConfig())
+    session_id = "undo-carrier-session"
+    store._db.create_session(session_id=session_id, source="test")
+    store._db.append_message(session_id, "user", _composite_carrier()["content"])
+    store._db.append_message(session_id, "assistant", "failed answer")
+
+    result = store.rewind_session(session_id)
+
+    assert result["target_text"] == "REAL ASK"
+    assert result["rewound_count"] == 2
+    active = store._db.get_messages_as_conversation(
+        session_id, include_row_ids=True
+    )
+    assert len(active) == 1
+    assert active[0]["display_kind"] == "hidden"
+    assert "REAL ASK" not in active[0]["content"]
 
 
 @pytest.mark.asyncio

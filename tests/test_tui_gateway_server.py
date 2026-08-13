@@ -9140,6 +9140,7 @@ def test_rollback_restore_truncates_from_real_user_turn_not_marker(monkeypatch):
     server._sessions["sid"] = _session(
         agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr()),
         history=list(history),
+        session_key="",
     )
     try:
         resp = server.handle_request(
@@ -9200,6 +9201,7 @@ def test_rollback_restore_skips_legacy_compaction_handoff(monkeypatch):
     server._sessions["sid"] = _session(
         agent=types.SimpleNamespace(_checkpoint_mgr=_Mgr()),
         history=list(history),
+        session_key="",
     )
     try:
         resp = server.handle_request(
@@ -9220,6 +9222,85 @@ def test_rollback_restore_skips_legacy_compaction_handoff(monkeypatch):
 
 
 # ── session.steer ────────────────────────────────────────────────────
+
+
+def test_rollback_restore_preserves_composite_carrier_scaffold(monkeypatch, tmp_path):
+    """A checkpoint restore drops the live ask but keeps compacted context."""
+    from agent.context_compressor import (
+        HISTORICAL_TASK_HEADING,
+        SUMMARY_PREFIX,
+        _SUMMARY_END_MARKER,
+    )
+    from hermes_state import SessionDB
+
+    class _Mgr:
+        enabled = True
+
+        def list_checkpoints(self, cwd):
+            return [{"hash": "abc123"}]
+
+        def restore(self, cwd, target, file_path=None):
+            return {"success": True, "message": "restored"}
+
+    carrier = {
+        "role": "user",
+        "content": (
+            f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nold task\n\n"
+            f"{_SUMMARY_END_MARKER}\n\nREAL ASK"
+        ),
+    }
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("rollback-carrier", source="tui")
+    db.append_message("rollback-carrier", "user", carrier["content"])
+    db.append_message("rollback-carrier", "assistant", "answer")
+    durable = db.get_messages_as_conversation("rollback-carrier")
+    agent = types.SimpleNamespace(
+        _checkpoint_mgr=_Mgr(),
+        _session_messages=list(durable),
+        _last_flushed_db_idx=len(durable),
+        _db_flush_scan_prefix=list(durable),
+    )
+    server._sessions["sid"] = _session(
+        agent=agent,
+        history=list(durable),
+        session_key="rollback-carrier",
+    )
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "rollback.restore",
+                "params": {"session_id": "sid", "hash": "abc123"},
+            }
+        )
+
+        assert "result" in resp, resp
+        assert resp["result"]["success"] is True
+        assert resp["result"]["history_removed"] == 2
+        remaining = server._sessions["sid"]["history"]
+        assert len(remaining) == 1
+        assert remaining[0]["display_kind"] == "hidden"
+        assert SUMMARY_PREFIX in remaining[0]["content"]
+        assert "REAL ASK" not in remaining[0]["content"]
+        cold = db.get_messages_as_conversation(
+            "rollback-carrier", include_row_ids=True
+        )
+        assert len(cold) == 1
+        assert cold[0]["content"] == remaining[0]["content"]
+        assert cold[0]["display_kind"] == "hidden"
+        assert cold[0]["_row_id"] == remaining[0]["_row_id"]
+        assert agent._session_messages == remaining
+        assert agent._last_flushed_db_idx == 1
+        assert agent._db_flush_scan_prefix == remaining
+        inactive = db.get_messages_as_conversation(
+            "rollback-carrier", include_inactive=True
+        )
+        assert any("REAL ASK" in str(message.get("content")) for message in inactive)
+        assert any(message.get("content") == "answer" for message in inactive)
+    finally:
+        server._sessions.pop("sid", None)
+        db.close()
 
 
 def test_session_steer_calls_agent_steer_when_agent_supports_it():
@@ -9502,6 +9583,7 @@ def test_session_undo_allowed_when_idle():
     """Regression guard: when not running, /undo still works."""
     server._sessions["sid"] = _session(
         running=False,
+        session_key="",
         history=[
             {"role": "user", "content": "hi"},
             {"role": "assistant", "content": "hello"},

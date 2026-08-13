@@ -2977,6 +2977,10 @@ def plugins_command(args) -> None:
         cmd_list(args)
     elif action == "doctor":
         cmd_plugin_doctor(args.target, ci=getattr(args, "ci", False))
+    elif action == "pack":
+        from hermes_cli.plugin_packs import pack_command
+
+        pack_command(args)
     elif action in {"show", "info"}:
         cmd_show(args.name)
     elif action is None:

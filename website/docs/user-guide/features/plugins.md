@@ -472,6 +472,73 @@ explicit step, and tool-override rights require a separate grant). Review a
 plugin's source before enabling it.
 :::
 
+### Plugin packs
+
+A **plugin pack** is a declarative, shareable YAML file (`hermes-pack.yaml`)
+that pins a set of plugins — like sharing a modpack. Installing a pack fans
+out to ordinary pinned installs; nothing new exists at runtime.
+
+```yaml
+name: voice-assistant-pack
+description: STT + streaming TTS + approval relay
+author: hyper
+version: 1.0.0
+plugins:
+  - name: hermes-media-studio            # bare community-index name…
+    ref: e8d59971d2b7901405b39dac7b03bdd616272d0d
+  - repo: owner/approval-relay           # …or explicit owner/repo (or git URL)
+    ref: 8f3c2d1a9b4e5f6071829304a5b6c7d8e9f00112
+    subdir: plugins/relay                # optional monorepo path
+config:                                  # optional, non-secret seeds only
+  hermes-media-studio:
+    default_model: flux-3
+skills: []                               # declared list only (not auto-installed yet)
+```
+
+```bash
+hermes plugins pack show ./hermes-pack.yaml     # dry-run review
+hermes plugins pack install ./hermes-pack.yaml  # review → confirm → install
+hermes plugins pack export > hermes-pack.yaml   # snapshot the current install
+hermes plugins pack export --enabled-only       # only plugins.enabled
+```
+
+**Supply-chain posture.** Every entry's `ref` must be an exact 40-character
+commit SHA — tags and branch names are rejected with an error naming the
+entry, the same rule as the community index. Pack installs ride the exact
+same pinned install path as `hermes plugins install --ref <sha>` and record
+the same provenance in `plugins/.install-metadata.json`, so two installs of
+the same pack resolve identically. Packs build on the
+[manifest v2 fields](/developer-guide/plugins) (`manifest_version`,
+`api_version`, `requires_plugins`) — each plugin's own manifest still
+validates through the normal install path.
+
+**Consent is never bulk-granted.** `pack install` shows a mandatory review
+screen (every plugin, source, pinned ref, and the capabilities it declares),
+then asks **one** confirmation for the pack contents. After that, each
+plugin's declared capabilities go through the standard per-plugin
+capability-consent prompt — identical to a single `hermes plugins install`.
+There is no `--yes`, and non-interactive sessions cannot install packs.
+
+**Secrets never travel in packs.** `config:` seeds are limited to
+non-secret `plugins.entries.<id>` keys — secret-shaped key names
+(`*token*`, `*key*`, `*password*`, …), capability grants, and the deprecated
+`allow_*` trust gates are rejected on install and stripped on export.
+Plugins that need secrets declare them in their own `requires_env`, which
+prompts during install as usual. Existing user values in
+`plugins.entries.<id>` always win over pack seeds.
+
+**Partial failure.** Each plugin installs independently; failures are
+reported per plugin, the rest continue, and the command exits non-zero if
+any plugin failed.
+
+**Export caveats.** `pack export` only includes plugins with known Git
+provenance (installed via `hermes plugins install`). Local-only plugins are
+listed as warning comments in the emitted YAML, not as installable entries.
+
+The `skills:` list is parsed and displayed at install time but not yet
+auto-installed — install those manually for now (`hermes skills`). Wiring
+skill-hub ids into pack install is a documented follow-up seam.
+
 ### Interactive UI
 
 Running `hermes plugins` with no arguments opens a composite interactive screen:

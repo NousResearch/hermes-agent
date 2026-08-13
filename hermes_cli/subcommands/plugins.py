@@ -173,6 +173,53 @@ def build_plugins_parser(subparsers, *, cmd_plugins: Callable) -> None:
         help="Exit non-zero when validation reports an error",
     )
 
+    plugins_pack = plugins_subparsers.add_parser(
+        "pack",
+        help="Declarative, shareable plugin sets (hermes-pack.yaml)",
+        description=(
+            "Install, export, or inspect plugin packs — a single YAML file "
+            "pinning a set of plugins to exact commit SHAs, with optional "
+            "non-secret config seeds. Installing a pack fans out to ordinary "
+            "pinned installs; capability consent stays per-plugin."
+        ),
+    )
+    pack_subparsers = plugins_pack.add_subparsers(dest="pack_action")
+
+    pack_install = pack_subparsers.add_parser(
+        "install", help="Review and install a pack from a file path or https URL"
+    )
+    pack_install.add_argument(
+        "source", help="Path to a hermes-pack.yaml file, or an https:// URL"
+    )
+    pack_install.add_argument(
+        "--force",
+        "-f",
+        action="store_true",
+        help="Reinstall plugins that already exist",
+    )
+
+    pack_export = pack_subparsers.add_parser(
+        "export",
+        help="Emit a pack YAML for the current install on stdout",
+    )
+    pack_export.add_argument(
+        "--enabled-only",
+        action="store_true",
+        help="Only include plugins currently in plugins.enabled",
+    )
+    pack_export.add_argument(
+        "--name",
+        default="my-hermes-pack",
+        help="Pack name to embed in the exported YAML",
+    )
+
+    pack_show = pack_subparsers.add_parser(
+        "show", help="Dry-run: parse and display a pack without installing"
+    )
+    pack_show.add_argument(
+        "source", help="Path to a hermes-pack.yaml file, or an https:// URL"
+    )
+
     plugins_show = plugins_subparsers.add_parser(
         "show",
         aliases=["info"],

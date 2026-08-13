@@ -261,6 +261,39 @@ class TestCompactionRotation:
         )
         assert fake.subscribers.flushed >= 1
 
+    def test_rotating_compaction_mid_turn_defers_close_to_end_turn(
+        self, coordinator, monkeypatch
+    ):
+        """A rotating compaction completing while a turn is LIVE on the old
+        session must NOT close the session scope immediately — that would pop
+        it under the live turn scope (LIFO violation). The close defers to
+        that turn's end_turn."""
+        _set_segments(monkeypatch, on_compaction=True)
+        fake = _FakeRelay()
+        runtime = _make_runtime(fake)
+        lease = _acquire(coordinator, runtime, session_id="parent-1")
+
+        turn = coordinator.begin_turn(lease, turn_id="t1", task_id="task1")
+        coordinator.notify_session_compacted(
+            profile_key=runtime.profile_key,
+            session_id="child-1",
+            old_session_id="parent-1",
+        )
+        # No pops yet: neither the turn scope nor the session scope closed.
+        assert not fake.scope.pops, (
+            "old-session close must defer while its turn is live"
+        )
+
+        coordinator.end_turn(turn, outcome="success")
+        # Turn scope popped first, then the deferred session close popped
+        # the session scope — LIFO order preserved.
+        assert len(fake.scope.pops) == 2, "end_turn must consume deferred close"
+        assert fake.scope.pops[0].name == relay_runtime.TURN_SCOPE, (
+            "turn scope must pop before the session scope"
+        )
+        assert fake.scope.pops[-1].name == relay_runtime.SESSION_SCOPE
+        assert runtime.get_session("parent-1") is None
+
     def test_rotating_compaction_noop_when_disabled(self, coordinator, monkeypatch):
         fake = _FakeRelay()
         runtime = _make_runtime(fake)

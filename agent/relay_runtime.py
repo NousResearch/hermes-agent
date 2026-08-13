@@ -112,6 +112,10 @@ class RelaySession:
     segment_turns: int = 0
     # Set by compaction notification; consumed at the next begin_turn.
     rotate_pending: bool = False
+    # Rotating compaction landed while a turn was live on THIS session:
+    # closing now would pop the session scope under a live turn scope
+    # (LIFO violation). end_turn consumes this and closes the session.
+    close_pending: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -1007,6 +1011,38 @@ class RelaySessionCoordinator:
                 finally:
                     self._unregister_active_turn(turn)
                     self._reset_turn_context(turn)
+                self._consume_deferred_close(lease)
+
+    def _consume_deferred_close(self, lease: Any) -> None:
+        """Close a session whose rotating-compaction close was deferred.
+
+        ``notify_session_compacted`` sets ``close_pending`` instead of
+        closing when the old session still has a live turn (closing then
+        would pop the session scope under the live turn scope — LIFO
+        violation). The turn that was live consumes the flag here, after
+        its own turn scope popped and it unregistered from the
+        active-turn table. Skips when another turn is still live on the
+        same session; that turn's end_turn will consume it instead.
+        """
+        try:
+            if not (
+                isinstance(lease.host, RelayRuntime) and lease.session is not None
+            ):
+                return
+            session = lease.session
+            with session.lock:
+                pending = session.close_pending and not session.closing
+            if not pending:
+                return
+            if self.has_active_turn(
+                profile_key=lease.profile_key, session_id=lease.session_id
+            ):
+                return
+            lease.host.close_session({"session_id": lease.session_id})
+        except Exception:  # noqa: BLE001 - telemetry must never block end_turn
+            logger.warning(
+                "Hermes Relay deferred session close failed", exc_info=True
+            )
 
     def notify_session_compacted(
         self,
@@ -1042,7 +1078,19 @@ class RelaySessionCoordinator:
                 return
             if old_session_id and old_session_id != session_id:
                 # Rotating compaction: export the orphaned pre-compaction
-                # session scope (close_session is already bounded).
+                # session scope (close_session is already bounded). If a
+                # turn is still LIVE on the old session, closing now would
+                # pop the session scope under the live turn scope (LIFO
+                # violation) — defer to that turn's end_turn instead.
+                with host._sessions_lock:
+                    old_session = host._sessions.get(old_session_id)
+                if old_session is not None and self.has_active_turn(
+                    profile_key=profile_key, session_id=old_session_id
+                ):
+                    with old_session.lock:
+                        if not old_session.closing:
+                            old_session.close_pending = True
+                    return
                 host.close_session({"session_id": old_session_id})
                 return
             with host._sessions_lock:

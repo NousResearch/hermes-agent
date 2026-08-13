@@ -1253,12 +1253,25 @@ _MEDIA_DELIVERY_DENIED_WINDOWS_ENV_ROOTS = (
 # AppData is deliberately NOT denied wholesale: %LOCALAPPDATA%\Temp is a normal
 # place for generated artifacts, so a blanket rule would break legitimate media
 # delivery. Only the credential subtrees are listed.
-_MEDIA_DELIVERY_DENIED_WINDOWS_HOME_SUBPATHS = (
-    "AppData/Roaming/Microsoft/Credentials",
-    "AppData/Local/Microsoft/Credentials",
-    "AppData/Roaming/Microsoft/Protect",  # DPAPI master keys
-    "AppData/Roaming/Microsoft/Crypto",
-    "AppData/Local/Microsoft/Vault",
+#
+# Split by which AppData root they live under, because that root is NOT always
+# ``home / "AppData/Roaming"`` / ``home / "AppData/Local"``: Windows Known
+# Folder redirection (roaming profiles, Folder Redirection GPOs) can point
+# %APPDATA% / %LOCALAPPDATA% at a path outside %USERPROFILE% entirely, e.g.
+# %USERPROFILE%=C:\Users\svc but %APPDATA%=Z:\RoamingProfile\svc. Deriving
+# these paths from home alone denies the default-layout credential store but
+# not the redirected one — the actual live location on a redirected machine.
+# _media_delivery_denied_paths() below resolves both the home-relative form
+# (matches the common case with zero env dependency) AND the env-derived form
+# (matches the redirected case) so either layout is covered.
+_MEDIA_DELIVERY_DENIED_WINDOWS_ROAMING_SUBPATHS = (
+    "Microsoft/Credentials",
+    "Microsoft/Protect",  # DPAPI master keys
+    "Microsoft/Crypto",
+)
+_MEDIA_DELIVERY_DENIED_WINDOWS_LOCAL_SUBPATHS = (
+    "Microsoft/Credentials",
+    "Microsoft/Vault",
 )
 
 # Within $HOME we additionally deny common credential / config directories.
@@ -1399,8 +1412,20 @@ def _media_delivery_denied_paths() -> List[Path]:
             root = os.environ.get(env_name)
             if root:
                 denied.append(Path(root))
-        for sub in _MEDIA_DELIVERY_DENIED_WINDOWS_HOME_SUBPATHS:
-            denied.append(home / sub)
+        # Roaming/Local AppData credential subtrees: deny BOTH the
+        # home-relative form (correct on the common, non-redirected layout,
+        # and a fail-closed fallback when %APPDATA%/%LOCALAPPDATA% are unset)
+        # and the env-derived form (correct when Known Folder redirection
+        # points the real root outside %USERPROFILE%). See the subpaths'
+        # constant comment above.
+        roaming_root = Path(os.environ.get("APPDATA") or (home / "AppData" / "Roaming"))
+        local_root = Path(os.environ.get("LOCALAPPDATA") or (home / "AppData" / "Local"))
+        for sub in _MEDIA_DELIVERY_DENIED_WINDOWS_ROAMING_SUBPATHS:
+            denied.append(home / "AppData" / "Roaming" / sub)
+            denied.append(roaming_root / sub)
+        for sub in _MEDIA_DELIVERY_DENIED_WINDOWS_LOCAL_SUBPATHS:
+            denied.append(home / "AppData" / "Local" / sub)
+            denied.append(local_root / sub)
     # The active Hermes profile and shared Hermes root both contain control
     # files and credentials. Only cache subdirectories under them are
     # explicitly allowlisted above (matched BEFORE this denylist in

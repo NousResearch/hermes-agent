@@ -1360,22 +1360,8 @@ def _handle_create(args: dict, **kw) -> str:
         )
     body = args.get("body")
     parents = args.get("parents") or []
-    tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
-    # Stamp the originating session id when the agent loop runs under
-    # ACP (which sets HERMES_SESSION_ID before invoking tools). NULL on
-    # CLI / dashboard paths and on legacy hosts that don't set the env.
-    # Prefer the request-scoped api_server origin binding: HERMES_SESSION_ID
-    # is clobbered with a subagent's internal id whenever a child agent is
-    # constructed in-process (agent_init calls set_current_session_id), which
-    # would stamp — and later wake — the wrong session.
-    from tools.async_delegation import _current_origin_session_id
-
-    session_id = (
-        args.get("session_id")
-        or _current_origin_session_id()
-        or os.environ.get("HERMES_SESSION_ID")
-    )
     priority = args.get("priority")
+    tenant = args.get("tenant") or os.environ.get("HERMES_TENANT")
     # Resolve workspace. Workspace sharing is always explicit: omitted fields
     # mean a fresh scratch workspace, even when a dispatcher-spawned worker
     # creates the task. Reusing a parent's literal path would let a child
@@ -1423,6 +1409,27 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            # In a dispatcher-spawned worker HERMES_SESSION_ID is the worker's
+            # own ephemeral session. Child cards must wake the durable parent
+            # session stored on the worker's task row (#85575).
+            from tools.async_delegation import _current_origin_session_id
+
+            session_id: Optional[str] = (
+                args.get("session_id")
+                or _current_origin_session_id()
+            )
+            if not session_id:
+                # In a dispatcher-spawned worker HERMES_SESSION_ID is the
+                # worker's own ephemeral session. Child cards must wake the
+                # durable parent session stored on the worker's task row
+                # (#85575).
+                _self_tid = os.environ.get("HERMES_KANBAN_TASK")
+                if _self_tid:
+                    _self_task = kb.get_task(conn, _self_tid)
+                    if _self_task is not None and _self_task.session_id:
+                        session_id = _self_task.session_id
+            if not session_id:
+                session_id = os.environ.get("HERMES_SESSION_ID")
             # A project link is safe to inherit because ``create_task`` turns
             # it into a fresh per-task worktree. Never inherit the parent's
             # literal workspace kind/path; directory sharing must be explicit.

@@ -622,3 +622,36 @@ def test_notifier_delivers_block_loop_detected_triage_ping(tmp_path, monkeypatch
     finally:
         conn.close()
     assert remaining == []
+
+
+def test_notifier_wake_on_block_loop_detected(tmp_path, monkeypatch):
+    """A `block_loop_detected` event must also wake the creator session, not
+    only send the triage ping (#85575)."""
+    db_path = tmp_path / "block-loop-wake.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    kb.init_db()
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="loops forever", assignee="worker")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1",
+                          delivery_mode="notify+wake")
+        kb._append_event(
+            conn, tid, "block_loop_detected",
+            {"reason": "needs credentials", "kind": "needs_input",
+             "recurrences": 2, "limit": kb.BLOCK_RECURRENCE_LIMIT},
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 1, "block_loop_detected must produce a notification"
+    # The push-adapter wake is best-effort after the text ping; the
+    # RecordingAdapter has a handle_message hook we can observe.
+    assert len(adapter.handled) == 1, "block_loop_detected must also wake the creator"
+    assert adapter.handled[0].text
+    assert "loops forever" in adapter.handled[0].text

@@ -759,7 +759,7 @@ class GatewayKanbanWatchersMixin:
                         #   claim exactly like a failed send() above, so the
                         #   next tick retries.
                         task_terminal = task and task.status == "archived"
-                        _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
+                        _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked", "block_loop_detected")
                         _wake_kinds = (
                             {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
                             if wake_agent

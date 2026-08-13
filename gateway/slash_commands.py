@@ -524,6 +524,11 @@ class GatewaySlashCommandsMixin:
                     chat_type = str(getattr(source, "chat_type", "") or "") or None
                     thread_id = str(getattr(source, "thread_id", "") or "")
                     user_id = str(getattr(source, "user_id", "") or "") or None
+                    # Persist the platform-specific stable alt id (Signal UUID,
+                    # Feishu union_id) too: build_session_key keys the participant
+                    # on ``user_id_alt or user_id``, so a replayed wake only rebuilds
+                    # the same session key when the alt id survives the round-trip.
+                    user_id_alt = str(getattr(source, "user_id_alt", "") or "") or None
                     delivery_metadata = self._thread_metadata_for_source(
                         source, self._reply_anchor_for_event(event)
                     ) or None
@@ -542,7 +547,11 @@ class GatewaySlashCommandsMixin:
                                     chat_type=chat_type,
                                     thread_id=thread_id or None,
                                     user_id=user_id,
+                                    user_id_alt=user_id_alt,
                                     notifier_profile=getattr(self, "_kanban_notifier_profile", None) or self._active_profile_name(),
+                                    # Subscribing from chat: deliver the passive
+                                    # message and wake the destination agent.
+                                    delivery_mode="notify+wake",
                                     delivery_metadata=delivery_metadata,
                                 )
                             finally:

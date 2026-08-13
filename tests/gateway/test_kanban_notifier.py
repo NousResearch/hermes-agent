@@ -100,6 +100,7 @@ def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, m
             platform="telegram",
             chat_id="chat-1",
             thread_id="20197",
+            delivery_mode="notify+wake",
             delivery_metadata={
                 "chat_type": "dm",
                 "direct_messages_topic_id": "20197",
@@ -372,6 +373,7 @@ def test_notifier_wakeup_uses_subscription_chat_type(tmp_path, monkeypatch):
             platform="telegram",
             chat_id="chat-dm",
             chat_type="dm",
+            delivery_mode="notify+wake",
         )
         kb.complete_task(conn, tid, summary="done")
     finally:

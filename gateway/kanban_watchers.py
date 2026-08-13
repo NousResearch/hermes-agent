@@ -426,6 +426,9 @@ class GatewayKanbanWatchersMixin:
                         sub["task_id"], sub["platform"],
                         sub["chat_id"], sub.get("thread_id") or "",
                     )
+                    mode = sub.get("delivery_mode") or "notify"
+                    wake_agent = mode in ("notify+wake", "wake")
+                    send_passive = mode != "wake"
                     for ev in d["events"]:
                         kind = ev.kind
                         # Identity prefix: attribute terminal pings to the
@@ -530,6 +533,7 @@ class GatewayKanbanWatchersMixin:
                             if isinstance(delivery_metadata, dict)
                             else {}
                         )
+
                         if sub.get("thread_id") and not metadata.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
                         # Adapters with no push channel (the API server —
@@ -547,7 +551,7 @@ class GatewayKanbanWatchersMixin:
                         # creator is woken via the self-post below instead.
                         from gateway.wake import adapter_supports_push
 
-                        if not adapter_supports_push(adapter):
+                        if not adapter_supports_push(adapter) and wake_agent:
                             logger.debug(
                                 "kanban notifier: adapter %s has no push "
                                 "channel; skipping text ping for %s, relying "
@@ -558,6 +562,12 @@ class GatewayKanbanWatchersMixin:
                             # path the wake self-post below IS the delivery,
                             # so the counter is resolved (reset or bumped) by
                             # the self-post outcome, not by skipping the send.
+                            continue
+                        if not send_passive:
+                            # Wake-only subscriptions intentionally skip the
+                            # visible platform message. The retained wake path
+                            # below is the sole delivery.
+                            sub_fail_counts.pop(sub_key, None)
                             continue
                         try:
                             _send_res = await adapter.send(
@@ -652,7 +662,11 @@ class GatewayKanbanWatchersMixin:
                         #   next tick retries.
                         task_terminal = task and task.status in {"done", "archived"}
                         _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
-                        _wake_kinds = {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
+                        _wake_kinds = (
+                            {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
+                            if wake_agent
+                            else set()
+                        )
                         from gateway.wake import adapter_supports_push as _adapter_push_ok
 
                         _is_push_adapter = _adapter_push_ok(adapter)
@@ -660,7 +674,7 @@ class GatewayKanbanWatchersMixin:
                         _synth = ""
                         if _wake_kinds:
                             _session_key = getattr(task, "session_id", None) or ""
-                        if _wake_kinds and _session_key:
+                        if _wake_kinds:
                             _title = (task.title if task else sub["task_id"])[:120]
                             _assignee = task.assignee if task else ""
                             _parts = []
@@ -743,7 +757,7 @@ class GatewayKanbanWatchersMixin:
                         # dispatcher respawns the task and it cycles into the
                         # same state. See the longer comment on TERMINAL_KINDS
                         # above for the failure mode this prevents.
-                        if _is_push_adapter and _wake_kinds and _session_key:
+                        if _is_push_adapter and _wake_kinds:
                             try:
                                 from gateway.session import SessionSource
                                 from gateway.wake import deliver_wake
@@ -775,6 +789,7 @@ class GatewayKanbanWatchersMixin:
                                     chat_type=_chat_type,
                                     thread_id=sub.get("thread_id") or None,
                                     user_id=sub.get("user_id"),
+                                    user_id_alt=sub.get("user_id_alt"),
                                     profile=sub_profile or None,
                                 )
                                 # deliver_wake preserves the synthetic

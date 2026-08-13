@@ -158,21 +158,19 @@ def _parse_tool_arguments(raw_arguments: Any) -> tuple[dict, Optional[str]]:
 
 
 def _resolve_concurrent_tool_timeout() -> float | None:
-    raw = os.getenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "").strip()
-    if not raw:
-        return _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S
-    try:
-        value = float(raw)
-    except ValueError:
-        logger.warning(
-            "invalid HERMES_CONCURRENT_TOOL_TIMEOUT_S=%r; using %.0fs",
-            raw,
-            _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S,
-        )
-        return _DEFAULT_CONCURRENT_TOOL_TIMEOUT_S
-    if value <= 0:
-        return None
-    return value
+    """Resolve the per-batch concurrent tool deadline.
+
+    Delegates to the unified resolver (#85125): ``timeouts.tools.concurrent_batch``
+    in config.yaml wins, the legacy ``HERMES_CONCURRENT_TOOL_TIMEOUT_S`` env var
+    remains the back-compat bridge, and ``0``/negative still disables the bound.
+    """
+    from agent.deadline import resolve_timeout
+
+    return resolve_timeout(
+        "tools.concurrent_batch",
+        default=_DEFAULT_CONCURRENT_TOOL_TIMEOUT_S,
+        env_var="HERMES_CONCURRENT_TOOL_TIMEOUT_S",
+    )
 
 
 def _flush_session_db_after_tool_progress(

@@ -119,6 +119,9 @@ export interface Translations {
     memoryOomRestartBanner?: string;
     memoryCriticalBanner?: string;
     memoryElevatedBanner?: string;
+    /** NS-656 disk-usage banner — optional, English fallback. */
+    diskCriticalBanner?: string;
+    diskElevatedBanner?: string;
     dismiss?: string;
   };
 

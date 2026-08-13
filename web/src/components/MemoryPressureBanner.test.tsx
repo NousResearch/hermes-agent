@@ -9,7 +9,11 @@ import type { ReactNode } from "react";
 
 import { I18nProvider } from "@/i18n";
 import { MemoryPressureBanner } from "./MemoryPressureBanner";
-import type { StatusResponse, MemoryPressureStatus } from "@/lib/api";
+import type {
+  StatusResponse,
+  MemoryPressureStatus,
+  DiskPressureStatus,
+} from "@/lib/api";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -36,6 +40,13 @@ afterEach(async () => {
 
 function statusWith(memory: MemoryPressureStatus | undefined): StatusResponse {
   return { memory } as StatusResponse;
+}
+
+function statusWithDisk(
+  disk: DiskPressureStatus | undefined,
+  memory?: MemoryPressureStatus,
+): StatusResponse {
+  return { memory, disk } as StatusResponse;
 }
 
 function banner(): HTMLElement | null {
@@ -239,5 +250,189 @@ describe("MemoryPressureBanner", () => {
       <MemoryPressureBanner status={statusWith({ pressure: "elevated" })} />,
     );
     expect(banner()).toBeNull();
+  });
+
+  it("renders nothing for healthy or unknown disk", async () => {
+    await render(
+      <MemoryPressureBanner
+        status={statusWithDisk({ pressure: "ok", free_mb: 5000 })}
+      />,
+    );
+    expect(banner()).toBeNull();
+    await rerender(
+      <MemoryPressureBanner status={statusWithDisk({ pressure: "unknown" })} />,
+    );
+    expect(banner()).toBeNull();
+  });
+
+  it("shows the disk-critical warning with free-space detail", async () => {
+    await render(
+      <MemoryPressureBanner
+        status={statusWithDisk({ pressure: "critical", free_mb: 120 })}
+      />,
+    );
+    expect(banner()?.textContent).toContain("disk is almost full");
+    expect(banner()?.textContent).toContain("(120 MB free)");
+  });
+
+  it("shows the disk-elevated warning", async () => {
+    await render(
+      <MemoryPressureBanner
+        status={statusWithDisk({ pressure: "elevated", free_mb: 900 })}
+      />,
+    );
+    expect(banner()?.textContent).toContain("disk is filling up");
+  });
+
+  it("disk critical outranks memory critical", async () => {
+    // Imminent data loss beats imminent restart.
+    await render(
+      <MemoryPressureBanner
+        status={statusWithDisk(
+          { pressure: "critical", free_mb: 100 },
+          { pressure: "critical" },
+        )}
+      />,
+    );
+    expect(banner()?.textContent).toContain("disk is almost full");
+  });
+
+  it("memory OOM notice outranks disk elevated", async () => {
+    await render(
+      <MemoryPressureBanner
+        status={statusWithDisk(
+          { pressure: "elevated", free_mb: 900 },
+          { pressure: "ok", last_boot_suspected_oom: true },
+        )}
+      />,
+    );
+    expect(banner()?.textContent).toContain("restarted unexpectedly");
+  });
+
+  it("dismissing a disk warning does not mask a later memory warning", async () => {
+    await render(
+      <MemoryPressureBanner
+        status={statusWithDisk({ pressure: "elevated", free_mb: 900 })}
+      />,
+    );
+    const dismiss = container.querySelector(
+      '[data-testid="memory-pressure-banner"] button',
+    ) as HTMLButtonElement;
+    await act(async () => dismiss.click());
+    expect(banner()).toBeNull();
+    await rerender(
+      <MemoryPressureBanner
+        status={statusWithDisk(
+          { pressure: "elevated", free_mb: 900 },
+          { pressure: "elevated" },
+        )}
+      />,
+    );
+    expect(banner()?.textContent).toContain("running low on memory");
+  });
+
+  it("disk escalation to critical re-opens a dismissed disk banner", async () => {
+    await render(
+      <MemoryPressureBanner
+        status={statusWithDisk({ pressure: "elevated", free_mb: 900 })}
+      />,
+    );
+    const dismiss = container.querySelector(
+      '[data-testid="memory-pressure-banner"] button',
+    ) as HTMLButtonElement;
+    await act(async () => dismiss.click());
+    expect(banner()).toBeNull();
+    await rerender(
+      <MemoryPressureBanner
+        status={statusWithDisk({ pressure: "critical", free_mb: 150 })}
+      />,
+    );
+    expect(banner()?.textContent).toContain("disk is almost full");
+  });
+
+  it("disk recovery to ok resets disk dismissals for the next episode", async () => {
+    await render(
+      <MemoryPressureBanner
+        status={statusWithDisk({ pressure: "critical", free_mb: 150 })}
+      />,
+    );
+    const dismiss = container.querySelector(
+      '[data-testid="memory-pressure-banner"] button',
+    ) as HTMLButtonElement;
+    await act(async () => dismiss.click());
+    // User frees space (or grows the disk)...
+    await rerender(
+      <MemoryPressureBanner
+        status={statusWithDisk({ pressure: "ok", free_mb: 8000 })}
+      />,
+    );
+    expect(banner()).toBeNull();
+    // ...then the disk fills again: new episode surfaces.
+    await rerender(
+      <MemoryPressureBanner
+        status={statusWithDisk({ pressure: "critical", free_mb: 150 })}
+      />,
+    );
+    expect(banner()?.textContent).toContain("disk is almost full");
+  });
+
+  it("disk recovery does NOT reset memory dismissals (and vice versa)", async () => {
+    // Dismiss a memory warning while disk is also elevated.
+    await render(
+      <MemoryPressureBanner
+        status={statusWithDisk(
+          { pressure: "elevated", free_mb: 900 },
+          { pressure: "critical" },
+        )}
+      />,
+    );
+    const dismiss = container.querySelector(
+      '[data-testid="memory-pressure-banner"] button',
+    ) as HTMLButtonElement;
+    // Trigger shown is memory critical (outranks disk elevated) — dismiss it.
+    await act(async () => dismiss.click());
+    // Disk warning is next in line and has its own key, so it surfaces...
+    expect(banner()?.textContent).toContain("disk is filling up");
+    const dismissDisk = container.querySelector(
+      '[data-testid="memory-pressure-banner"] button',
+    ) as HTMLButtonElement;
+    await act(async () => dismissDisk.click());
+    expect(banner()).toBeNull();
+    // Disk recovers; memory still critical — its dismissal must survive.
+    await rerender(
+      <MemoryPressureBanner
+        status={statusWithDisk(
+          { pressure: "ok", free_mb: 8000 },
+          { pressure: "critical" },
+        )}
+      />,
+    );
+    expect(banner()).toBeNull();
+  });
+
+  it("a gateway reboot (boot_id change) re-opens a dismissed disk banner", async () => {
+    await render(
+      <MemoryPressureBanner
+        status={statusWithDisk(
+          { pressure: "critical", free_mb: 150 },
+          { pressure: "ok", boot_id: "2026-08-13T01:00:00+00:00" },
+        )}
+      />,
+    );
+    const dismiss = container.querySelector(
+      '[data-testid="memory-pressure-banner"] button',
+    ) as HTMLButtonElement;
+    await act(async () => dismiss.click());
+    expect(banner()).toBeNull();
+    // Restart with the disk still full: new boot, warning returns.
+    await rerender(
+      <MemoryPressureBanner
+        status={statusWithDisk(
+          { pressure: "critical", free_mb: 150 },
+          { pressure: "ok", boot_id: "2026-08-13T02:00:00+00:00" },
+        )}
+      />,
+    );
+    expect(banner()?.textContent).toContain("disk is almost full");
   });
 });

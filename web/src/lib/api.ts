@@ -1885,6 +1885,9 @@ export interface StatusResponse {
   /** NS-656: memory-pressure rollup from the gateway heartbeat +
    * lifecycle ledger. Absent on older gateways. */
   memory?: MemoryPressureStatus;
+  /** NS-656: disk-usage rollup for the HERMES_HOME volume. Absent on
+   * older gateways. */
+  disk?: DiskPressureStatus;
   release_date: string;
   version: string;
 }
@@ -1905,6 +1908,16 @@ export interface MemoryPressureStatus {
   /** Identity of the current gateway life (sentinel started_at). Changes on
    * every restart; keys per-incident banner dismissal. */
   boot_id?: string | null;
+}
+
+/** NS-656: coarse disk telemetry served by /api/status. Live statvfs
+ * sample of the HERMES_HOME volume — no staleness dimension, so no
+ * sampled_at. */
+export interface DiskPressureStatus {
+  pressure: "ok" | "elevated" | "critical" | "unknown";
+  total_mb?: number | null;
+  free_mb?: number | null;
+  used_percent?: number | null;
 }
 
 export interface SessionInfo {

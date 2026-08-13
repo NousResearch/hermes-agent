@@ -102,6 +102,10 @@ export const en: Translations = {
     memoryCriticalBanner:
       "Your agent is almost out of memory and may restart. Consider closing idle sessions or upgrading its memory.",
     memoryElevatedBanner: "Your agent is running low on memory.",
+    diskCriticalBanner:
+      "Your agent's disk is almost full. New messages, memories, and settings may fail to save.",
+    diskElevatedBanner:
+      "Your agent's disk is filling up. Consider clearing old sessions or expanding its storage.",
     dismiss: "Dismiss",
   },
 

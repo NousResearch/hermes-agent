@@ -3354,6 +3354,24 @@ async def get_status(profile: Optional[str] = None):
         except Exception:
             status["memory"] = {"pressure": "unknown"}
 
+        # Disk-usage rollup (NS-656, same lineage as OOF-2/OOF-107 fleet
+        # disk-exhaustion incidents). One statvfs call on HERMES_HOME's
+        # filesystem — coarse MB numbers + enum, same public disclosure
+        # class as the memory block, and equally advisory: not folded
+        # into components/overall.
+        try:
+            from gateway.disk_status import collect_disk_status
+
+            status["disk"] = await asyncio.get_running_loop().run_in_executor(
+                None,
+                functools.partial(
+                    collect_disk_status,
+                    profile_dir if profile_dir else get_hermes_home(),
+                ),
+            )
+        except Exception:
+            status["disk"] = {"pressure": "unknown"}
+
         # Deferred FTS rebuild progress (schema v23): lets the desktop /
         # dashboard render a "search index rebuilding: N%" indicator instead
         # of users wondering why old-message search is slower after an

@@ -17,13 +17,14 @@ import { useI18n } from "@/i18n";
  * OOM-killed hourly while the dashboard looked healthy.
  *
  * Dismissal semantics (session-scoped, sessionStorage):
- * - OOM-restart dismissal is keyed to the reporting boot (`boot_id`), so a
- *   LATER restart — the hourly-loop case this exists for — re-opens the
- *   banner in the same tab.
- * - Live-pressure dismissal masks only the dismissed severity; escalation
- *   (elevated → critical) re-opens immediately, and a confirmed recovery
- *   (pressure back to "ok", not "unknown") clears live dismissals so the
- *   NEXT episode surfaces again.
+ * - EVERY dismissal key embeds the reporting boot (`boot_id`), so a gateway
+ *   restart invalidates all of them. Without this, dismissing `critical`,
+ *   rebooting, and coming back still-critical would hide the NEW incident —
+ *   and mask the OOM notice too, since critical takes precedence.
+ * - Within one boot, live-pressure dismissal masks only the dismissed
+ *   severity; escalation (elevated → critical) re-opens immediately, and a
+ *   confirmed recovery (pressure back to "ok", not "unknown") clears live
+ *   dismissals so the NEXT episode in the same boot surfaces again.
  */
 
 const STORAGE_KEY = "memoryBannerDismissed";
@@ -68,15 +69,15 @@ export function MemoryPressureBanner({
   // pressure is demonstrably back to "ok", any dismissed live-pressure
   // entries describe a PAST episode — drop them so the next one isn't
   // silently hidden. "unknown" (stale/absent heartbeat) is absence of
-  // evidence, not recovery, and clears nothing.
+  // evidence, not recovery, and clears nothing. Cross-boot invalidation
+  // doesn't need handling here: boot_id is part of every dismissal key.
   const [prevPressure, setPrevPressure] = useState(pressure);
   if (pressure !== prevPressure) {
     setPrevPressure(pressure);
-    if (
-      pressure === "ok" &&
-      dismissed.some((entry) => LIVE_TRIGGERS.includes(entry))
-    ) {
-      const next = dismissed.filter((entry) => !LIVE_TRIGGERS.includes(entry));
+    const isLiveEntry = (entry: string) =>
+      LIVE_TRIGGERS.some((sev) => entry === sev || entry.startsWith(`${sev}:`));
+    if (pressure === "ok" && dismissed.some(isLiveEntry)) {
+      const next = dismissed.filter((entry) => !isLiveEntry(entry));
       writeDismissed(next);
       setDismissed(next);
     }
@@ -93,13 +94,13 @@ export function MemoryPressureBanner({
           ? "elevated"
           : null;
 
-  // OOM-restart dismissal is per incident (boot), live-pressure dismissal is
-  // per severity. A missing boot_id (degraded payload) degrades to a shared
-  // bucket — old behavior, never a crash.
-  const dismissKey =
-    trigger === "oom_restart"
-      ? `oom_restart:${memory?.boot_id ?? "unknown"}`
-      : trigger;
+  // Every dismissal is scoped to the reporting boot: `boot_id` changes on
+  // each gateway life, so restarts invalidate prior dismissals of ANY kind.
+  // A missing boot_id (degraded payload / pre-NS-656 image) degrades to a
+  // shared per-severity bucket — old behavior, never a crash.
+  const dismissKey = trigger
+    ? `${trigger}:${memory?.boot_id ?? "unknown"}`
+    : null;
 
   if (!trigger || !dismissKey || dismissed.includes(dismissKey)) return null;
 

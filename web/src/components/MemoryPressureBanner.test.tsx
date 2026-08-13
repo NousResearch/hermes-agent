@@ -161,6 +161,47 @@ describe("MemoryPressureBanner", () => {
     expect(banner()?.textContent).toContain("restarted unexpectedly");
   });
 
+  it("a gateway reboot (boot_id change) re-opens a dismissed live-pressure banner", async () => {
+    // Edge case: dismiss critical, gateway restarts, next poll is STILL
+    // critical with no observed "ok" in between. The new boot is a new
+    // incident — without boot-scoped keys it would stay hidden (and mask
+    // the OOM notice too, since critical takes precedence).
+    await render(
+      <MemoryPressureBanner
+        status={statusWith({
+          pressure: "critical",
+          boot_id: "2026-08-13T01:00:00+00:00",
+        })}
+      />,
+    );
+    const dismiss = container.querySelector(
+      '[data-testid="memory-pressure-banner"] button',
+    ) as HTMLButtonElement;
+    await act(async () => dismiss.click());
+    expect(banner()).toBeNull();
+    // Same boot, still critical: stays dismissed.
+    await rerender(
+      <MemoryPressureBanner
+        status={statusWith({
+          pressure: "critical",
+          boot_id: "2026-08-13T01:00:00+00:00",
+        })}
+      />,
+    );
+    expect(banner()).toBeNull();
+    // Rebooted, still critical: new incident, banner returns.
+    await rerender(
+      <MemoryPressureBanner
+        status={statusWith({
+          pressure: "critical",
+          last_boot_suspected_oom: true,
+          boot_id: "2026-08-13T02:00:00+00:00",
+        })}
+      />,
+    );
+    expect(banner()?.textContent).toContain("almost out of memory");
+  });
+
   it("recovery to ok resets a dismissed live-pressure banner for the next episode", async () => {
     await render(
       <MemoryPressureBanner status={statusWith({ pressure: "critical" })} />,

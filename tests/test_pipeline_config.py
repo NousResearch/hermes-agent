@@ -104,7 +104,8 @@ class TestGetPipelineConfig:
         result = get_pipeline_config()
         # research should be overridden
         assert result["stage_owners"]["research"] == "custom-research-profile"
-        # Other defaults should still be present
+        # Other defaults should still be present (2026-08-13, Option A:
+        # stage owners are LEAD profiles — leads execute and re-delegate)
         assert result["stage_owners"]["prd"] == "kensei"
         assert result["stage_owners"]["spec"] == "octacon"
 

@@ -18,6 +18,24 @@ from typing import Optional
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.MULTILINE)
 
+# Thinking-mode traces: some providers (and local fallback models) wrap their
+# answer in <｜end▁of▁thinking｜> blocks when reasoning output is enabled. Strip them
+# BEFORE any JSON strategy so the real JSON payload is reachable.
+_THINK_BLOCK_RE = re.compile(
+    r"<\s*(?:think|thinking|reasoning|analysis)\s*>.*?<\s*/\s*(?:think|thinking|reasoning|analysis)\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def _strip_think_blocks(text: str) -> str:
+    """Remove `` (and variants) reasoning traces from an LLM response."""
+    cleaned = _THINK_BLOCK_RE.sub("", text)
+    # A dangling opening tag (truncated response) — drop everything before the
+    # first closing tag if one exists, else leave as-is (other strategies will fail).
+    if cleaned is not text:
+        text = cleaned
+    return text
+
 
 def parse_llm_json(
     raw: str,
@@ -31,6 +49,9 @@ def parse_llm_json(
     1. Direct ``json.loads`` on the stripped input.
     2. Strip ```json fences, then try again.
     3. Find the first ``{`` to last ``}`` span and parse that.
+
+    Thinking-mode traces (``, ``) are stripped before
+    all strategies — providers with reasoning enabled wrap their payload.
 
     When ``raise_on_failure`` is True (default), raises ``ValueError``
     with a label-prefixed message on failure.  When False, returns None.
@@ -53,7 +74,7 @@ def parse_llm_json(
             raise ValueError(f"{label}: empty input" if label else "empty input")
         return None
 
-    text = raw.strip()
+    text = _strip_think_blocks(raw).strip()
 
     # Strategy 1: direct parse
     try:

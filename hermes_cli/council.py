@@ -36,6 +36,71 @@ logger = logging.getLogger(__name__)
 # Data structures
 # ---------------------------------------------------------------------------
 
+def _coerce_member_dict(entry: Any) -> Optional[Dict[str, Any]]:
+    """Coerce one panel/chairman entry into a {provider, model, fallback} dict.
+
+    Tolerates three shapes (see #council-config-shapes, 2026-08-13):
+
+    1. Plain dict: ``{"provider": ..., "model": ..., "fallback": [...]}``
+    2. JSON string: ``'{"provider": ..., ...}'`` — produced by
+       ``hermes config set council.panel '<json>'`` which stringifies values.
+    3. Anything else: rejected (None) so the caller can raise a clear error.
+    """
+    if isinstance(entry, str):
+        try:
+            entry = json.loads(entry)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(entry, dict):
+        return None
+    if not entry.get("provider") or not entry.get("model"):
+        return None
+    fallback = entry.get("fallback") or []
+    if isinstance(fallback, str):
+        try:
+            fallback = json.loads(fallback)
+        except json.JSONDecodeError:
+            fallback = []
+    if isinstance(fallback, dict):
+        # Numeric-keyed dict from indexed `config set` writes — re-order.
+        ordered = sorted(
+            ((int(k), v) for k, v in fallback.items() if str(k).isdigit() and isinstance(v, dict)),
+            key=lambda kv: kv[0],
+        )
+        fallback = [v for _, v in ordered]
+    if not isinstance(fallback, list):
+        fallback = []
+    return {"provider": entry["provider"], "model": entry["model"], "fallback": fallback}
+
+
+def _normalize_panel(value: Any) -> List[Dict[str, Any]]:
+    """Normalize a council panel/family value into an ordered list of member dicts.
+
+    Tolerates:
+    - list of dicts (canonical)
+    - dict with numeric string keys (``config set council.panel.0.provider`` writes)
+    - a single JSON string containing a list or dict
+    """
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            value = []
+    if isinstance(value, list):
+        return [m for m in (_coerce_member_dict(e) for e in value) if m]
+    if isinstance(value, dict):
+        # numeric-keyed dict (0, 1, 2) or fallback-shaped member dict
+        if all(str(k).isdigit() for k in value):
+            ordered = sorted(
+                ((int(k), v) for k, v in value.items()),
+                key=lambda kv: kv[0],
+            )
+            return [m for m in (_coerce_member_dict(v) for _, v in ordered) if m]
+        member = _coerce_member_dict(value)
+        return [member] if member else []
+    return []
+
+
 @dataclass
 class CouncilMember:
     """A single council panellist or the chairman."""
@@ -71,14 +136,33 @@ class CouncilConfig:
 
     @classmethod
     def from_config(cls, cfg: dict) -> "CouncilConfig":
+        panel_raw = cfg.get("panel", [])
+        panel_entries = _normalize_panel(panel_raw)
+        chairman_raw = cfg.get("chairman", {})
+        chairman_entries = _normalize_panel(chairman_raw)
+        if not panel_entries:
+            raise ValueError(
+                "Council panel is empty or malformed — expected a list of "
+                "{provider, model, fallback} members under council.panel"
+            )
+        if not chairman_entries:
+            raise ValueError(
+                "Council chairman is malformed — expected {provider, model, fallback} "
+                "under council.chairman"
+            )
+        pool_raw = cfg.get("fallback_pool", [])
+        pool_entries = _normalize_panel(pool_raw) if isinstance(pool_raw, (dict, str)) else (
+            [p for p in pool_raw if isinstance(p, dict) and p.get("provider") and p.get("model")]
+            if isinstance(pool_raw, list) else []
+        )
         return cls(
-            panel=[CouncilMember.from_config(m) for m in cfg.get("panel", [])],
-            chairman=CouncilMember.from_config(cfg.get("chairman", {})),
+            panel=[CouncilMember.from_config(m) for m in panel_entries],
+            chairman=CouncilMember.from_config(chairman_entries[0]),
             token_cap=cfg.get("token_cap"),
             timeout_seconds=cfg.get("timeout_seconds", 600),
             member_timeout_seconds=cfg.get("member_timeout_seconds", 180),
             quorum_min=cfg.get("quorum_min", 2),
-            fallback_pool=cfg.get("fallback_pool", []),
+            fallback_pool=pool_entries,
         )
 
     def validate_diversity(self) -> List[str]:

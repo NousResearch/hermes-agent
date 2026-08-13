@@ -206,4 +206,41 @@ describe('session tile attachment occurrence ownership', () => {
 
     expect(scope.attachments.$attachments.get()).toEqual([replacement])
   })
+
+  it('preserves a same-path replacement added while a successful tile submit is in flight', async () => {
+    const scope = createScope()
+    const original = makeAttachment()
+    const replacement = makeAttachment()
+    const attach = deferred<{ attached: boolean; path: string }>()
+
+    requestGateway.mockImplementation(async (method: string) => {
+      if (method === 'image.attach_bytes') {
+        return attach.promise
+      }
+
+      return {}
+    })
+
+    scope.attachments.add(original)
+
+    const { result } = renderHook(() =>
+      useSessionTileActions({ runtimeId: RUNTIME_ID, scope, storedSessionId: STORED_ID })
+    )
+
+    let submitted!: Promise<boolean>
+    act(() => {
+      submitted = result.current.submitText('describe this')
+    })
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', expect.anything()))
+    scope.attachments.remove(original.id)
+    scope.attachments.add(replacement)
+    attach.resolve({ attached: true, path: STAGED_PATH })
+
+    await act(async () => {
+      await expect(submitted).resolves.toBe(true)
+    })
+
+    expect(scope.attachments.$attachments.get()).toEqual([replacement])
+  })
 })

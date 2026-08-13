@@ -64,6 +64,7 @@ export interface ComposerAttachmentScope {
   add(attachment: ComposerAttachment): void
   clear(): void
   remove(id: string): ComposerAttachment | null
+  removeOccurrences(attachments: readonly ComposerAttachment[]): void
   setUploadState(id: string, uploadState?: ComposerAttachment['uploadState']): void
   update(attachment: ComposerAttachment): boolean
   updateIfCurrent(expected: ComposerAttachment, patch: ComposerAttachmentPatch): boolean
@@ -98,6 +99,20 @@ export function createComposerAttachmentScope($attachments = atom<ComposerAttach
       $attachments.set(current.filter(attachment => attachment.id !== id))
 
       return removed
+    },
+    removeOccurrences(attachments) {
+      const current = $attachments.get()
+
+      const submitted = new Set(attachments.map(attachment => `${attachment.id}\u0000${attachment.occurrenceId ?? ''}`))
+
+      const next = current.filter(
+        attachment => !submitted.has(`${attachment.id}\u0000${attachment.occurrenceId ?? ''}`)
+      )
+
+      // Preserve clear()'s notification semantics even when no captured
+      // occurrence remains. Some composer consumers settle local state on the
+      // successful-submit store emission.
+      $attachments.set(next)
     },
     setUploadState(id, uploadState) {
       const current = $attachments.get()

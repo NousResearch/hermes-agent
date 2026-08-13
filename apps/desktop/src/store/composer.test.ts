@@ -137,6 +137,44 @@ describe('updateComposerAttachment', () => {
       thumbnailUrl: 'data:image/png;base64,current'
     })
   })
+
+  it('removes submitted occurrences while preserving unrelated attachments', () => {
+    const scope = createComposerAttachmentScope()
+
+    const submitted = attachment({
+      id: 'image:submitted',
+      kind: 'image',
+      occurrenceId: 'occurrence-submitted'
+    })
+
+    const other = attachment({ id: 'file:other', occurrenceId: 'occurrence-other' })
+
+    scope.add(submitted)
+    scope.add(other)
+    scope.removeOccurrences([submitted])
+
+    expect(scope.$attachments.get()).toEqual([other])
+  })
+
+  it('preserves a same-id replacement of a submitted occurrence', () => {
+    const scope = createComposerAttachmentScope()
+
+    const submitted = attachment({
+      id: 'image:submitted',
+      kind: 'image',
+      occurrenceId: 'occurrence-submitted'
+    })
+
+    const replacement = attachment({
+      ...submitted,
+      occurrenceId: 'occurrence-replacement'
+    })
+
+    scope.add(replacement)
+    scope.removeOccurrences([submitted])
+
+    expect(scope.$attachments.get()).toEqual([replacement])
+  })
 })
 
 describe('session drafts', () => {

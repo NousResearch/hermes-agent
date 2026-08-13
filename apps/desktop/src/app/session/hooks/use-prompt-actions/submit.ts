@@ -14,8 +14,8 @@ import {
 } from '@/lib/voice-playback'
 import {
   $composerAttachments,
-  clearComposerAttachments,
   type ComposerAttachment,
+  mainComposerScope,
   terminalContextBlocksFromDraft
 } from '@/store/composer'
 import { $hudMode } from '@/store/hud'
@@ -77,7 +77,7 @@ interface SubmitPromptDeps {
    *  (defaults); a session tile injects its own so a tile submit never writes
    *  the primary view's $busy/$messages or clears the main attachment chips. */
   scope?: {
-    clearAttachments: () => void
+    removeAttachments: (attachments: readonly ComposerAttachment[]) => void
     readAttachments: () => ComposerAttachment[]
     setAwaitingResponse: (awaiting: boolean) => void
     setBusy: (busy: boolean) => void
@@ -88,7 +88,7 @@ interface SubmitPromptDeps {
 // Stable identity — a fresh default object per render would churn the
 // useCallback below on every render.
 const MAIN_SUBMIT_SCOPE: NonNullable<SubmitPromptDeps['scope']> = {
-  clearAttachments: clearComposerAttachments,
+  removeAttachments: attachments => mainComposerScope.removeOccurrences(attachments),
   readAttachments: () => $composerAttachments.get(),
   setAwaitingResponse,
   setBusy,
@@ -714,7 +714,10 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         }
 
         if (usingComposerAttachments) {
-          scope.clearAttachments()
+          // A submit owns only the occurrences captured before its first await.
+          // Preserve chips added or replaced while staging / prompt.submit was
+          // in flight instead of clearing the composer's newer draft state.
+          scope.removeAttachments(attachments)
         }
 
         // Submit landed — the turn now runs (busy stays true), but the submit

@@ -2517,6 +2517,7 @@ describe('usePromptActions restoreToMessage', () => {
 describe('usePromptActions file attachment sync', () => {
   afterEach(() => {
     cleanup()
+    $composerAttachments.set([])
     $connection.set(null)
     $currentCwd.set('')
     vi.restoreAllMocks()
@@ -2723,6 +2724,68 @@ describe('usePromptActions file attachment sync', () => {
       path: '/root/tmp/photo.jpg',
       thumbnailUrl
     })
+  })
+
+  it('preserves a same-path replacement added while a successful main submit is in flight', async () => {
+    $connection.set({ mode: 'local' } as never)
+    $currentCwd.set('/root')
+
+    const hostPath = 'C:\\Users\\alice\\Pictures\\photo.jpg'
+
+    const original: ComposerAttachment = {
+      detail: hostPath,
+      id: 'image:photo.jpg',
+      kind: 'image',
+      label: 'photo.jpg',
+      occurrenceId: 'occurrence-original',
+      path: hostPath
+    }
+
+    const replacement: ComposerAttachment = {
+      ...original,
+      occurrenceId: 'occurrence-replacement'
+    }
+
+    let resolveAttach!: (value: { attached: boolean; path: string }) => void
+
+    const attachResult = new Promise<{ attached: boolean; path: string }>(resolve => {
+      resolveAttach = resolve
+    })
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { readFileDataUrl: vi.fn(async () => 'data:image/jpeg;base64,aGVsbG8=') }
+    })
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'image.attach_bytes') {
+        return (await attachResult) as never
+      }
+
+      return {} as never
+    })
+
+    $composerAttachments.set([original])
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    let submitted!: Promise<boolean>
+    act(() => {
+      submitted = handle!.submitTextRaw('describe this')
+    })
+
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledWith('image.attach_bytes', expect.anything()))
+    $composerAttachments.set([replacement])
+    resolveAttach({ attached: true, path: '/root/tmp/photo.jpg' })
+
+    await act(async () => {
+      await expect(submitted).resolves.toBe(true)
+    })
+
+    expect($composerAttachments.get()).toEqual([replacement])
   })
 
   it('uploads file bytes when the terminal backend is a container (docker)', async () => {

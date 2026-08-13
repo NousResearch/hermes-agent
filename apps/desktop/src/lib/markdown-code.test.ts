@@ -39,9 +39,7 @@ describe('isLikelyProseCodeBlock', () => {
 
 describe('isLikelyStructuredText', () => {
   it('flags indented config stanzas', () => {
-    expect(
-      isLikelyStructuredText(['Host x', '    HostName 10.0.0.1', '    Port 22'].join('\n'))
-    ).toBe(true)
+    expect(isLikelyStructuredText(['Host x', '    HostName 10.0.0.1', '    Port 22'].join('\n'))).toBe(true)
   })
 
   it('flags flat key-value / settings listings', () => {

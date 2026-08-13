@@ -88,19 +88,19 @@ test('detectRemoteDisplay honors the HERMES_DESKTOP_DISABLE_GPU override both wa
 
 test('resolveLinuxPasswordStore applies known backends on linux', () => {
   for (const store of ['gnome-libsecret', 'kwallet', 'kwallet5', 'kwallet6', 'basic']) {
-    assert.deepEqual(
-      resolveLinuxPasswordStore({ env: { HERMES_DESKTOP_PASSWORD_STORE: store }, platform: 'linux' }),
-      { store, warning: null }
-    )
+    assert.deepEqual(resolveLinuxPasswordStore({ env: { HERMES_DESKTOP_PASSWORD_STORE: store }, platform: 'linux' }), {
+      store,
+      warning: null
+    })
   }
 })
 
 test('resolveLinuxPasswordStore is a no-op when the env var is unset', () => {
   assert.deepEqual(resolveLinuxPasswordStore({ env: {}, platform: 'linux' }), { store: null, warning: null })
-  assert.deepEqual(
-    resolveLinuxPasswordStore({ env: { HERMES_DESKTOP_PASSWORD_STORE: '  ' }, platform: 'linux' }),
-    { store: null, warning: null }
-  )
+  assert.deepEqual(resolveLinuxPasswordStore({ env: { HERMES_DESKTOP_PASSWORD_STORE: '  ' }, platform: 'linux' }), {
+    store: null,
+    warning: null
+  })
 })
 
 test('resolveLinuxPasswordStore ignores the env var off linux', () => {

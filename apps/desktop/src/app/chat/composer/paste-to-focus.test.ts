@@ -1,10 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import {
-  onComposerAttachImagesRequest,
-  onComposerFocusRequest,
-  onComposerInsertRequest
-} from './focus'
+import { onComposerAttachImagesRequest, onComposerFocusRequest, onComposerInsertRequest } from './focus'
 import { handleWindowPaste, routeClipboardToComposer } from './paste-to-focus'
 
 /** Minimal DataTransfer stand-in: text/plain + optional image file items. */

@@ -46,7 +46,12 @@ import {
 } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
 import { shouldLatchBackendStartFailure, shouldLatchRemoteReauthFailure } from './backend-start-failure'
-import { detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment, resolveLinuxPasswordStore } from './bootstrap-platform'
+import {
+  detectRemoteDisplay,
+  isWindowsBinaryPathInWsl,
+  isWslEnvironment,
+  resolveLinuxPasswordStore
+} from './bootstrap-platform'
 import { decideBootstrapRepair } from './bootstrap-repair-guard'
 import { runBootstrap } from './bootstrap-runner'
 import { applyConnectionChange, resolveTerminalConnection } from './connection-apply'

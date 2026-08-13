@@ -233,6 +233,7 @@ function SidebarSessionRowImpl({
   const context = useStoreSelector($projects, projects =>
     card ? (sessionProjectLabel(session, projects) ?? (pathLeaf(session.cwd) || t.sidebar.projects.home)) : null
   )
+
   // Card footer line: which model worked on it and how big it got. Rendered
   // as separate spans with a flex gap — a joined string can't put real space
   // between them (HTML collapses runs of whitespace to one).

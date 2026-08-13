@@ -34,6 +34,9 @@ def _clean_env(monkeypatch):
 
 
 _ANTHROPIC_BASE = "https://gateway.example.com/proxy/anthropic"
+# Known dual-surface (MiniMax) host: the only family still auto-rewritten to /v1
+# after the host-anchored policy of #83782 / #83642.
+_DUAL_SURFACE_BASE = "https://api.minimax.io/anthropic"
 
 
 def _client_base_url(client) -> str:
@@ -79,7 +82,9 @@ def test_explicit_base_anthropic_messages_keeps_anthropic_path():
 
 def test_explicit_base_anthropic_messages_openai_fallback_uses_v1():
     """When the anthropic SDK is unavailable, _maybe_wrap_anthropic returns the
-    plain OpenAI client — which must be on the /v1 base, never /anthropic."""
+    plain OpenAI client — for a dual-surface host it must be on the /v1 base.
+    (Anthropic-only gateways keep /anthropic since #83642 — there is no sibling
+    /v1 to fall back to.)"""
     from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
 
     with patch(
@@ -89,7 +94,7 @@ def test_explicit_base_anthropic_messages_openai_fallback_uses_v1():
         client, model = resolve_provider_client(
             "custom",
             model="claude-opus-4-8",
-            explicit_base_url=_ANTHROPIC_BASE,
+            explicit_base_url=_DUAL_SURFACE_BASE,
             explicit_api_key="k",
             api_mode="anthropic_messages",
         )
@@ -97,12 +102,31 @@ def test_explicit_base_anthropic_messages_openai_fallback_uses_v1():
     assert client is not None
     assert not isinstance(client, AnthropicAuxiliaryClient)
     # /anthropic → /v1 so the OpenAI SDK never hits /anthropic/chat/completions.
-    assert _client_base_url(client).rstrip("/").endswith("/proxy/v1")
+    assert _client_base_url(client).rstrip("/").endswith("/v1")
 
 
 def test_explicit_base_without_anthropic_mode_preserves_v1_rewrite():
     """Regression: with no anthropic_messages api_mode, the /anthropic → /v1
-    OpenAI-wire rewrite is preserved (fix is scoped, no behavior change)."""
+    OpenAI-wire rewrite is preserved for known dual-surface hosts."""
+    from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
+
+    client, model = resolve_provider_client(
+        "custom",
+        model="my-model",
+        explicit_base_url=_DUAL_SURFACE_BASE,
+        explicit_api_key="k",
+        api_mode="chat_completions",
+    )
+
+    assert client is not None
+    assert not isinstance(client, AnthropicAuxiliaryClient)
+    assert _client_base_url(client).rstrip("/").endswith("/v1")
+    assert "/anthropic" not in _client_base_url(client)
+
+
+def test_explicit_base_unknown_host_keeps_anthropic_path():
+    """Anthropic-only custom gateways (unknown hosts) keep their /anthropic
+    path even on the OpenAI wire — rewriting to /v1 404s (#83642)."""
     from agent.auxiliary_client import resolve_provider_client, AnthropicAuxiliaryClient
 
     client, model = resolve_provider_client(
@@ -115,4 +139,4 @@ def test_explicit_base_without_anthropic_mode_preserves_v1_rewrite():
 
     assert client is not None
     assert not isinstance(client, AnthropicAuxiliaryClient)
-    assert _client_base_url(client).rstrip("/").endswith("/proxy/v1")
+    assert _client_base_url(client).rstrip("/").endswith("/proxy/anthropic")

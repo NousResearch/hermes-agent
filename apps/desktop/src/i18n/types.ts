@@ -1814,6 +1814,13 @@ export interface Translations {
       doneTip: string
       failed: (server: string) => string
     }
+    cronSuggestions: {
+      label: string
+      tip: (phrase: string) => string
+      prefix: string
+      done: string
+      doneTip: string
+    }
   }
 
   statusStack: {

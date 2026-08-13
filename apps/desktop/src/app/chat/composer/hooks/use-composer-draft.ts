@@ -1,6 +1,7 @@
 // Register the built-in draft providers with the suggestion bus (side-effect
 // import — the bus itself is provider-agnostic). The repair provider is
 // event-driven and registers through the gateway stream instead.
+import '@/store/suggestion-providers/cron'
 import '@/store/suggestion-providers/mcp'
 import '@/store/suggestion-providers/skill'
 

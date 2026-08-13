@@ -35,6 +35,19 @@ export function invalidateSkillSuggestionIndex(): void {
 
 const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
+/** Whole-word pattern for a skill name, exported for tests. Hyphens and
+ *  underscores in the name also match spaces — people type "pr ready", the
+ *  skill is `pr-ready` — while "already" can never match a skill `read`. */
+export function skillPattern(name: string): RegExp {
+  const flexible = name
+    .toLowerCase()
+    .split(/[-_]/)
+    .map(escape)
+    .join('[-_ ]')
+
+  return new RegExp(`(?<![\\p{L}\\p{N}])${flexible}(?![\\p{L}\\p{N}-])`, 'u')
+}
+
 async function loadIndex(): Promise<SkillIndexEntry[]> {
   if (index && Date.now() - indexAt < SKILLS_TTL_MS) {
     return index
@@ -46,10 +59,7 @@ async function loadIndex(): Promise<SkillIndexEntry[]> {
     .filter(skill => skill.enabled && skill.name.length >= MIN_NAME_LENGTH)
     .map(skill => ({
       name: skill.name,
-      // Whole-word on unicode boundaries; hyphens/underscores inside a skill
-      // name ("pr-ready") are literal, so "pr-ready" matches but "already"
-      // never matches "read".
-      pattern: new RegExp(`(?<![\\p{L}\\p{N}])${escape(skill.name.toLowerCase())}(?![\\p{L}\\p{N}-])`, 'u')
+      pattern: skillPattern(skill.name)
     }))
   indexAt = Date.now()
 

@@ -2347,6 +2347,13 @@ export const zh: Translations = {
       doneTip: '新凭据已在此对话中生效',
       failed: server => `无法重新连接 ${server}`
     },
+    cronSuggestions: {
+      label: '定时执行',
+      tip: phrase => `“${phrase}”听起来是周期性任务 — 可以按计划运行`,
+      prefix: '将此设置为定时任务:',
+      done: '已标记为定时任务',
+      doneTip: '发送后由智能体创建任务'
+    },
     snippets: {
       codeReview: {
         label: '代码审查',

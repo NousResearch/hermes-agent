@@ -2157,6 +2157,13 @@ export const en: Translations = {
       doneTip: 'Fresh credentials are live in this chat',
       failed: server => `Could not reconnect ${server}`
     },
+    cronSuggestions: {
+      label: 'Schedule this',
+      tip: phrase => `“${phrase}” sounds recurring — run it on a schedule instead`,
+      prefix: 'Set this up as a scheduled job:',
+      done: 'Marked for scheduling',
+      doneTip: 'Send it and the agent creates the job'
+    },
     snippets: {
       codeReview: {
         label: 'Code review',

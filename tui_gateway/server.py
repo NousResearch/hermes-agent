@@ -285,6 +285,16 @@ _LONG_HANDLERS = frozenset(
         "voice.toggle",
         "voice.record",
         "voice.tts",
+        # wake.start calls check_wake_word_requirements() → _stt_ready() →
+        # _get_provider() → _try_lazy_install_stt() → ensure("stt.faster_whisper")
+        # (same synchronous subprocess install chain as the voice RPCs above).
+        # It also calls start_listening() → _build_engine() whose constructors
+        # call lazy_deps.ensure("wake.openwakeword" / "wake.sherpa" / …).
+        # wake.status calls check_wake_word_requirements() too and is polled
+        # by the desktop on every gateway-ready, so it can re-trigger the
+        # same block on a fresh launch. Same bug class as #21123 / #50005.
+        "wake.start",
+        "wake.status",
         # Desktop also polls the in-memory live-session registry every 15s.
         # The handler is normally cheap, but under heavy agent GIL pressure it
         # can still stall for tens of seconds. Keep it off the WS reader thread

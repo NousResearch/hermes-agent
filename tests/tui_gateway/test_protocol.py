@@ -658,9 +658,12 @@ def test_completion_handlers_are_pool_routed(completion_method, server):
     assert completion_method in server._LONG_HANDLERS
 
 
-@pytest.mark.parametrize("voice_method", ["voice.toggle", "voice.record", "voice.tts"])
-def test_voice_handlers_are_pool_routed(voice_method, server):
-    """Voice RPCs must run on the pool, never the WS reader thread.
+@pytest.mark.parametrize(
+    "voice_or_wake_method",
+    ["voice.toggle", "voice.record", "voice.tts", "wake.start", "wake.status"],
+)
+def test_voice_and_wake_handlers_are_pool_routed(voice_or_wake_method, server):
+    """Voice and wake RPCs must run on the pool, never the WS reader thread.
 
     Regression: voice.toggle (status) triggers check_voice_requirements() →
     STT provider auto-detect → a SYNCHRONOUS faster-whisper lazy install (uv/pip
@@ -668,8 +671,13 @@ def test_voice_handlers_are_pool_routed(voice_method, server):
     prompt.submit / session.list frames queued behind it — the desktop showed
     sent messages that never reached the agent. Same bug class as #21123 /
     #50005: anything that can stall for seconds must stay off the reader thread.
+
+    wake.start and wake.status share the same STT lazy-install path via
+    check_wake_word_requirements() → _stt_ready() → _get_provider(), and
+    wake.start additionally calls lazy_deps.ensure() for wake-word engine deps.
+    The desktop polls wake.status on every gateway-ready.
     """
-    assert voice_method in server._LONG_HANDLERS
+    assert voice_or_wake_method in server._LONG_HANDLERS
 
 
 def test_skin_live_switch_end_to_end(server, tmp_path, monkeypatch):

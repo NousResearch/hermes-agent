@@ -1612,12 +1612,12 @@ def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatc
     server._wake_owner_transport = None
     server._wake_owner_surface = ""
     try:
-        started = server.dispatch({
+        started = _dispatch_sync({
             "id": "wake-1",
             "method": "wake.start",
             "params": {"surface": "gui", "session_id": "first-session"},
         }, transport=first)
-        denied = server.dispatch({
+        denied = _dispatch_sync({
             "id": "wake-2",
             "method": "wake.start",
             "params": {"surface": "tui", "session_id": "second-session"},
@@ -1678,7 +1678,7 @@ def test_wake_owner_is_sticky_and_routes_detection_to_first_transport(monkeypatc
             "disabled_persisted": False,
         }
 
-        reclaimed = server.dispatch({
+        reclaimed = _dispatch_sync({
             "id": "wake-reclaim-2",
             "method": "wake.start",
             "params": {"surface": "tui", "session_id": "second-session"},
@@ -1748,7 +1748,7 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
     server._wake_owner_surface = ""
     try:
         # Passive auto-arm (no persist): refused, config untouched.
-        passive = server.dispatch({
+        passive = _dispatch_sync({
             "id": "wake-passive",
             "method": "wake.start",
             "params": {"surface": "gui"},
@@ -1757,7 +1757,7 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
         assert persisted == []
 
         # Explicit gesture: enables in config AND arms.
-        clicked = server.dispatch({
+        clicked = _dispatch_sync({
             "id": "wake-click",
             "method": "wake.start",
             "params": {"surface": "gui", "persist": True},
@@ -1778,7 +1778,7 @@ def test_wake_toggle_persists_enabled_flag_only_on_explicit_gesture(monkeypatch)
 
         # persist does NOT override an explicit surface scoping.
         config.update(enabled=True, surface="tui")
-        scoped = server.dispatch({
+        scoped = _dispatch_sync({
             "id": "wake-scoped",
             "method": "wake.start",
             "params": {"surface": "gui", "persist": True},
@@ -1832,7 +1832,7 @@ def test_wake_status_reports_configured_input_device_and_windows_silence_hint(mo
     server._wake_owner_transport = transport
     server._wake_owner_surface = "gui"
     try:
-        response = server.dispatch(
+        response = _dispatch_sync(
             {"id": "wake-status", "method": "wake.status", "params": {}},
             transport=transport,
         )

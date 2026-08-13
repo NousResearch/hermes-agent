@@ -383,22 +383,24 @@ def noninteractive_git_env(
 # -----------------------------------------------------------------------------
 
 
-def _kill_git_process_tree(proc: "subprocess.Popen") -> None:
+def kill_process_tree(proc: "subprocess.Popen") -> None:
     """Best-effort terminate *proc* and its descendants on both platforms.
 
     ``proc.kill()`` alone only terminates the direct child. On Windows a
-    suspended descendant ``git.exe`` can survive holding duplicates of the
+    suspended descendant (e.g. ``git.exe``) can survive holding duplicates of the
     captured pipe handles, which keeps the pipes from reaching EOF and leaks two
     reader threads + the process per fired timeout — ``taskkill /T /F`` takes the
     whole tree down so the bounded drain that follows can actually reach EOF.
     On POSIX the same class exists: killing the launcher leaves descendants
     (credential helpers, ``git-remote-https``, hook children) running and
-    holding the pipe write ends. The probe is spawned in its own process group
-    (``process_group=0`` in :func:`bounded_git_probe`), so when — and only
+    holding the pipe write ends. Callers spawn the child in its own process
+    group (``process_group=0``, Python ≥3.11), so when — and only
     when — the child leads its own group (``pgid == pid``), the entire group is
     signalled with ``os.killpg``. The ownership check means a fallback spawn
     that shares our group can never cause us to kill unrelated processes.
-    Ported from openai/codex#36793 ("Terminate timed-out Git process trees").
+    Ported from openai/codex#36793 ("Terminate timed-out Git process trees");
+    generalized for the shell-hook runner via openai/codex#37527
+    ("Terminate timed-out hook process trees").
 
     All failures are swallowed — this is cleanup on an already-failing path, and
     the caller's contract is to fail open. ``kill()`` can raise (access denied,
@@ -489,10 +491,14 @@ def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:
         # Timeout OR any other communicate() failure (torn-down pipe, decode
         # error): terminate the child + descendants and drain bounded. Leaving
         # it running would leak the same suspended-descendant class this guards.
-        _kill_git_process_tree(proc)
+        kill_process_tree(proc)
         try:
             proc.communicate(timeout=1)
         except Exception:
             pass
         return ""
     return stdout.strip() if proc.returncode == 0 else ""
+
+
+# Backward-compat alias — existing call sites/tests import the historical name.
+_kill_git_process_tree = kill_process_tree

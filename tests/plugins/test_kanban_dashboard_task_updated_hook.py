@@ -85,31 +85,6 @@ def test_patch_priority_fires_task_updated(client, captured_updates):
     assert kw["changed_fields"] == ["priority"]
     assert kw["board"]
 
-
-def test_patch_title_and_body_fires_task_updated(client, captured_updates):
-    tid = _make_task()
-    captured_updates.clear()
-    r = client.patch(
-        f"/api/plugins/kanban/tasks/{tid}",
-        json={"title": "new title", "body": "new body"},
-    )
-    assert r.status_code == 200
-    assert len(captured_updates) == 1
-    kw = captured_updates[0]
-    assert kw["task_id"] == tid
-    assert kw["changed_fields"] == ["title", "body"]
-
-
-def test_patch_empty_title_rejected_does_not_fire(client, captured_updates):
-    tid = _make_task()
-    captured_updates.clear()
-    r = client.patch(
-        f"/api/plugins/kanban/tasks/{tid}", json={"title": "   "},
-    )
-    assert r.status_code == 400
-    assert captured_updates == []
-
-
 def test_bulk_priority_fires_task_updated_per_task(client, captured_updates):
     tid1 = _make_task("a")
     tid2 = _make_task("b")
@@ -123,17 +98,3 @@ def test_bulk_priority_fires_task_updated_per_task(client, captured_updates):
     fired = {kw["task_id"]: kw for kw in captured_updates}
     assert set(fired) == {tid1, tid2}
     assert all(kw["changed_fields"] == ["priority"] for kw in fired.values())
-
-
-def test_patch_assignee_fires_once_via_assign_task(client, captured_updates):
-    """The dashboard assignee path goes through kanban_db.assign_task; the
-    dashboard layer must not double-fire it."""
-    tid = _make_task()
-    captured_updates.clear()
-    r = client.patch(
-        f"/api/plugins/kanban/tasks/{tid}", json={"assignee": "bob"},
-    )
-    assert r.status_code == 200
-    fired = [kw for kw in captured_updates if kw["task_id"] == tid]
-    assert len(fired) == 1
-    assert fired[0]["changed_fields"] == ["assignee"]

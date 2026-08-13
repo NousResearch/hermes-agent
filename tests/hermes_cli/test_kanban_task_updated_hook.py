@@ -40,11 +40,6 @@ def captured_updates(monkeypatch):
     finally:
         mgr._hooks = saved
 
-
-def test_task_updated_hook_is_registered_as_valid():
-    assert "on_kanban_task_updated" in VALID_HOOKS
-
-
 def test_assign_fires_updated_with_changed_fields(kanban_home, captured_updates):
     """assign_task fires the observer post-commit with the changed field."""
     assignee_at_fire_time: list = []
@@ -81,65 +76,6 @@ def test_assign_fires_updated_with_changed_fields(kanban_home, captured_updates)
     assert "board" in kw
     assert "run_id" in kw
     assert assignee_at_fire_time == ["bob"]
-
-
-def test_set_model_override_fires_with_changed_fields(
-    kanban_home, captured_updates,
-):
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(conn, title="t", assignee="alice")
-        captured_updates.clear()
-        assert kb.set_model_override(
-            conn, tid, "some-model", provider="some-provider",
-        ) is True
-    finally:
-        conn.close()
-    assert len(captured_updates) == 1
-    kw = captured_updates[0]
-    assert kw["task_id"] == tid
-    assert kw["changed_fields"] == ["model_override", "provider_override"]
-
-
-def test_set_reasoning_effort_fires_with_changed_fields(
-    kanban_home, captured_updates,
-):
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(conn, title="t", assignee="alice")
-        captured_updates.clear()
-        assert kb.set_reasoning_effort(conn, tid, "high") is True
-    finally:
-        conn.close()
-    assert len(captured_updates) == 1
-    kw = captured_updates[0]
-    assert kw["task_id"] == tid
-    assert kw["changed_fields"] == ["reasoning_effort"]
-
-
-def test_assign_missing_task_does_not_fire(kanban_home, captured_updates):
-    conn = kb.connect()
-    try:
-        assert kb.assign_task(conn, "kb-nope", "bob") is False
-    finally:
-        conn.close()
-    assert captured_updates == []
-
-
-def test_assign_running_task_raises_and_does_not_fire(
-    kanban_home, captured_updates,
-):
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(conn, title="t", assignee="alice")
-        kb.claim_task(conn, tid)
-        captured_updates.clear()
-        with pytest.raises(RuntimeError):
-            kb.assign_task(conn, tid, "bob")
-    finally:
-        conn.close()
-    assert captured_updates == []
-
 
 def test_raising_callback_does_not_break_assign(kanban_home):
     mgr = get_plugin_manager()

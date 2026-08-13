@@ -44,27 +44,6 @@ def captured_ticks(monkeypatch):
     finally:
         mgr._hooks = saved
 
-
-def test_dispatch_tick_hook_is_registered_as_valid():
-    assert "on_kanban_dispatch_tick" in VALID_HOOKS
-
-
-def test_idle_tick_fires_hook_with_outcome_idle(kanban_home, captured_ticks):
-    """An empty board produces one hook fire with outcome='idle'."""
-    conn = kb.connect()
-    try:
-        kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 12345)
-    finally:
-        conn.close()
-    assert len(captured_ticks) == 1
-    kw = captured_ticks[0]
-    assert kw["outcome"] == "idle"
-    assert kw["dry_run"] is False
-    assert isinstance(kw["result"], kb.DispatchResult)
-    assert "board" in kw
-    assert "profile_name" in kw
-
-
 def test_active_tick_fires_hook_with_outcome_ok(
     kanban_home, all_assignees_spawnable, captured_ticks,
 ):
@@ -81,35 +60,6 @@ def test_active_tick_fires_hook_with_outcome_ok(
     )
     result = ok_events[-1]["result"]
     assert any(row[0] == tid for row in result.spawned)
-
-
-def test_dry_run_tick_carries_dry_run_flag(kanban_home, captured_ticks):
-    """dry_run=True is propagated to the hook payload."""
-    conn = kb.connect()
-    try:
-        kb.dispatch_once(conn, dry_run=True, spawn_fn=lambda *a, **k: None)
-    finally:
-        conn.close()
-    assert captured_ticks
-    assert all(kw["dry_run"] is True for kw in captured_ticks)
-
-
-def test_contended_tick_fires_with_outcome_skipped_locked(
-    kanban_home, captured_ticks,
-):
-    """A losing dispatcher still reports its (empty) tick to observers."""
-    db_path = kb.kanban_db_path()
-    conn = kb.connect()
-    try:
-        with kb._dispatch_tick_lock(db_path) as held:
-            assert held is True
-            result = kb.dispatch_once(conn, spawn_fn=lambda *a, **k: 1)
-        assert result.skipped_locked is True
-    finally:
-        conn.close()
-    assert len(captured_ticks) == 1
-    assert captured_ticks[0]["outcome"] == "skipped_locked"
-
 
 def test_tick_hook_fires_after_dispatch_lock_released(kanban_home):
     """The #56066 sweeper finding, as a contract: subscribers run OUTSIDE

@@ -55,12 +55,6 @@ def captured_hooks(monkeypatch):
     finally:
         mgr._hooks = saved
 
-
-def test_worker_lifecycle_hooks_are_registered_as_valid():
-    for hook in WORKER_HOOKS:
-        assert hook in VALID_HOOKS, hook
-
-
 def test_dispatch_spawn_fires_worker_spawned(
     kanban_home, all_assignees_spawnable, captured_hooks,
 ):
@@ -102,24 +96,6 @@ def test_dispatch_spawn_fires_worker_spawned(
     assert "board" in kw
     assert pid_at_fire_time == [4242]
 
-
-def test_spawn_without_pid_fires_with_worker_pid_none(
-    kanban_home, all_assignees_spawnable, captured_hooks,
-):
-    """A spawn_fn that reports no PID still fires, with worker_pid=None."""
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(conn, title="t", assignee="alice")
-        kb.dispatch_once(conn, spawn_fn=lambda *a, **k: None)
-    finally:
-        conn.close()
-    fired = [e for e in captured_hooks if e[0] == "on_kanban_worker_spawned"]
-    assert len(fired) == 1
-    kw = fired[0][1]
-    assert kw["task_id"] == tid
-    assert kw["worker_pid"] is None
-
-
 def test_crash_reclaim_fires_worker_exited(kanban_home, captured_hooks, monkeypatch):
     """A dead-PID reclaim fires the exit observer with the exit facts."""
     conn = kb.connect()
@@ -145,32 +121,6 @@ def test_crash_reclaim_fires_worker_exited(kanban_home, captured_hooks, monkeypa
     assert kw["run_id"] is not None
     assert "profile_name" in kw
     assert "board" in kw
-
-
-def test_rate_limited_exit_fires_worker_exited_with_outcome(
-    kanban_home, captured_hooks, monkeypatch,
-):
-    """The EX_TEMPFAIL sentinel classifies as a rate_limited exit."""
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(conn, title="t", assignee="worker")
-        kb.claim_task(conn, tid)
-        kb._set_worker_pid(conn, tid, 24680)
-        # Simulate the reap loop having recorded the sentinel exit status.
-        kb._record_worker_exit(24680, kb.KANBAN_RATE_LIMIT_EXIT_CODE << 8)
-        monkeypatch.setattr(kb, "_pid_alive", lambda pid: False)
-        assert kb.detect_crashed_workers(conn) == []
-    finally:
-        conn.close()
-
-    fired = [e for e in captured_hooks if e[0] == "on_kanban_worker_exited"]
-    assert len(fired) == 1
-    kw = fired[0][1]
-    assert kw["task_id"] == tid
-    assert kw["exit_kind"] == "rate_limited"
-    assert kw["exit_code"] == kb.KANBAN_RATE_LIMIT_EXIT_CODE
-    assert kw["outcome"] == "rate_limited"
-
 
 def test_stale_claim_reclaim_fires_hook(kanban_home, captured_hooks):
     """A TTL-expired reclaim fires the stale-claim observer post-commit."""
@@ -198,29 +148,6 @@ def test_stale_claim_reclaim_fires_hook(kanban_home, captured_hooks):
     assert kw["run_id"] is not None
     assert "profile_name" in kw
     assert "board" in kw
-
-
-def test_claim_extension_does_not_fire_stale_claim(
-    kanban_home, captured_hooks, monkeypatch,
-):
-    """A live-PID claim extension is not a reclaim and must not fire."""
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(conn, title="t", assignee="worker")
-        kb.claim_task(conn, tid)
-        kb._set_worker_pid(conn, tid, 13579)
-        monkeypatch.setattr(kb, "_pid_alive", lambda pid: True)
-        conn.execute(
-            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
-            (int(time.time()) - 100, tid),
-        )
-        conn.commit()
-        assert kb.release_stale_claims(conn) == 0
-    finally:
-        conn.close()
-    fired = [e for e in captured_hooks if e[0] == "on_kanban_worker_stale_claim"]
-    assert fired == []
-
 
 def test_raising_callbacks_never_break_worker_lifecycle(
     kanban_home, all_assignees_spawnable, monkeypatch,

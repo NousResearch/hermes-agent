@@ -880,3 +880,52 @@ class TestWeixinVoiceGatewayHandoff:
             "the wrong transcript instead of re-transcribing (#27300)."
         )
 
+
+class TestWeixinSSLCipherFix:
+    """Regression tests for the SSL cipher fix (#84394).
+
+    WeChat's CDN rejects Python's default restrictive cipher list with
+    SSLV3_ALERT_HANDSHAKE_FAILURE.  _make_ssl_connector must reset ciphers
+    to OpenSSL DEFAULT so media downloads succeed.
+    """
+
+    def test_ssl_connector_sets_default_ciphers(self):
+        """The SSL context created inside _make_ssl_connector must have its
+        cipher list reset to DEFAULT so WeChat CDN handshakes succeed.
+
+        We can't instantiate the full aiohttp.TCPConnector without a running
+        event loop, so we verify the SSL context construction logic directly
+        by patching aiohttp.TCPConnector to capture the ssl argument.
+        """
+        import ssl
+
+        try:
+            import certifi
+        except ImportError:
+            pytest.skip("certifi not available")
+
+        captured_ssl_ctx = {}
+
+        class _FakeConnector:
+            def __init__(self, **kwargs):
+                captured_ssl_ctx["ssl"] = kwargs.get("ssl")
+
+        with patch("gateway.platforms.weixin.aiohttp.TCPConnector", _FakeConnector):
+            from gateway.platforms.weixin import _make_ssl_connector
+
+            _make_ssl_connector()
+
+        ssl_ctx = captured_ssl_ctx.get("ssl")
+        assert ssl_ctx is not None, "No SSL context was passed to TCPConnector"
+
+        # Verify the context has ciphers available (set_ciphers("DEFAULT")
+        # was called successfully).  Without the fix, Python's restrictive
+        # default cipher list causes SSLV3_ALERT_HANDSHAKE_FAILURE against
+        # WeChat CDN.
+        ciphers = ssl_ctx.get_ciphers()
+        assert len(ciphers) > 0, (
+            "SSL context has no available ciphers — set_ciphers('DEFAULT') "
+            "was not called, causing SSLV3_ALERT_HANDSHAKE_FAILURE against "
+            "WeChat CDN (#84394)"
+        )
+

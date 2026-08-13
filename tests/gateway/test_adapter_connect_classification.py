@@ -97,7 +97,12 @@ class PrivilegedIntentsRequired(Exception):
 def _discord_classifier():
     from plugins.platforms.discord.adapter import DiscordAdapter
 
-    return DiscordAdapter._classify_connect_exception
+    # Instance-bound (the intents branch reads the adapter's allowlists to
+    # tailor its guidance); a bare instance with empty allowlists suffices.
+    adapter = object.__new__(DiscordAdapter)
+    adapter._allowed_user_ids = set()
+    adapter._allowed_role_ids = set()
+    return adapter._classify_connect_exception
 
 
 class TestDiscordConnectClassification:

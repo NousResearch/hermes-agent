@@ -282,17 +282,6 @@ def _needs_server_members_intent(
     return bool(allowed_role_ids)
 
 
-def _is_privileged_intents_required(exc: BaseException) -> bool:
-    """True when ``exc`` is discord.py's PrivilegedIntentsRequired error."""
-    if type(exc).__name__ == "PrivilegedIntentsRequired":
-        return True
-    if discord is None:
-        return False
-    err_mod = getattr(discord, "errors", None)
-    cls = getattr(err_mod, "PrivilegedIntentsRequired", None)
-    return cls is not None and isinstance(exc, cls)
-
-
 def _format_privileged_intents_guidance(*, needs_members: bool) -> str:
     """Actionable fix text when Discord rejects privileged Gateway Intents."""
     lines = [
@@ -1493,25 +1482,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return False
         except Exception as e:  # pragma: no cover - defensive logging
-            # PrivilegedIntentsRequired is a Developer Portal config error, not a
-            # transient network blip — name the exact intents Hermes requested and
-            # mark non-retryable so the gateway does not spin reconnect forever
-            # (#79430).
-            if _is_privileged_intents_required(e):
-                guidance = _format_privileged_intents_guidance(
-                    needs_members=_needs_server_members_intent(
-                        getattr(self, "_allowed_user_ids", None),
-                        getattr(self, "_allowed_role_ids", None),
-                    )
-                )
-                logger.error("[%s] %s", self.name, guidance)
-                self._set_fatal_error(
-                    "privileged_intents_required",
-                    guidance,
-                    retryable=False,
-                )
-            else:
-                logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
+            logger.error("[%s] Failed to connect to Discord: %s", self.name, e, exc_info=True)
             # Same zombie-client hazard as the timeout branch: the background
             # client.start() task may already be running when a later setup
             # step raises. Cancel it so the discarded adapter cannot connect.
@@ -1528,8 +1499,7 @@ class DiscordAdapter(BasePlatformAdapter):
             self._set_fatal_error(code, message, retryable=retryable)
             return False
 
-    @staticmethod
-    def _classify_connect_exception(error: Exception) -> tuple:
+    def _classify_connect_exception(self, error: Exception) -> tuple:
         """Map a Discord startup exception to ``(code, message, retryable)``.
 
         Type-based only — never match on message text. Unknown exception
@@ -1559,14 +1529,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 False,
             )
         if _is("PrivilegedIntentsRequired"):
-            return (
-                "discord_intents_required",
-                "Discord privileged intents are not enabled for this bot: "
-                f"{error}. Enable 'Message Content Intent' (and any other "
-                "required privileged intents) for this application in the "
-                "Discord Developer Portal → Bot → Privileged Gateway Intents.",
-                False,
+            # Name the exact intents Hermes requested (#79430): Message
+            # Content always; Server Members only when username/role
+            # allowlists actually need member lookups.
+            guidance = _format_privileged_intents_guidance(
+                needs_members=_needs_server_members_intent(
+                    getattr(self, "_allowed_user_ids", None),
+                    getattr(self, "_allowed_role_ids", None),
+                )
             )
+            return ("discord_intents_required", guidance, False)
         return ("discord_connect_error", f"Discord startup failed: {error}", True)
 
     def _discord_message_admission(

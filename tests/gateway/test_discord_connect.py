@@ -702,7 +702,7 @@ class TestPrivilegedIntentsRequiredFatal:
         assert ok is False
         assert adapter.has_fatal_error is True
         assert adapter.fatal_error_retryable is False
-        assert adapter.fatal_error_code == "privileged_intents_required"
+        assert adapter.fatal_error_code == "discord_intents_required"
         assert "Message Content Intent" in (adapter.fatal_error_message or "")
         assert "discord.com/developers/applications" in (adapter.fatal_error_message or "")
         assert adapter._bot_task is None

@@ -197,6 +197,118 @@ describe('scanVenvBlockers', () => {
     assert.equal(o.kind, 'probe-failure')
   })
 
+  // -------------------------------------------------------------------------
+  // #74805: the scan runs immediately after releaseBackendLock tree-kills the
+  // desktop's backends. On Windows those PIDs linger in the process table for
+  // a few scheduler ticks, so a single probe reports a blocker that is really
+  // just a dying remnant and the update aborts on every first attempt.
+  // -------------------------------------------------------------------------
+  describe('blocked-verdict settling (#74805)', () => {
+    const noSleep = async () => {}
+
+    /** Returns each queued payload in order, repeating the last one. */
+    function execSequence(payloads: string[], calls: { n: number }): any {
+      return (async () => {
+        const json = payloads[Math.min(calls.n, payloads.length - 1)]
+        calls.n += 1
+
+        return { stdout: json, stderr: '' }
+      }) as any
+    }
+
+    it('treats a blocked-then-clear scan as clear', async () => {
+      const calls = { n: 0 }
+
+      const outcome = await scanVenvBlockers(
+        '/r',
+        execSequence([blockedJson, okJson], calls),
+        stubVenv,
+        { sleep: noSleep }
+      )
+
+      assert.equal(outcome.kind, 'clear')
+      assert.equal(calls.n, 2)
+    })
+
+    it('still reports blocked when every attempt sees a holder', async () => {
+      const calls = { n: 0 }
+
+      const outcome = await scanVenvBlockers(
+        '/r',
+        execSequence([blockedJson], calls),
+        stubVenv,
+        { sleep: noSleep }
+      )
+
+      assert.equal(outcome.kind, 'blocked')
+      assert.equal(calls.n, 3, 'should exhaust the default attempt budget')
+    })
+
+    it('does not re-probe when the first scan is already clear', async () => {
+      const calls = { n: 0 }
+
+      const outcome = await scanVenvBlockers('/r', execSequence([okJson], calls), stubVenv, {
+        sleep: noSleep
+      })
+
+      assert.equal(outcome.kind, 'clear')
+      assert.equal(calls.n, 1)
+    })
+
+    it('does not re-probe a probe-failure', async () => {
+      const calls = { n: 0 }
+
+      const failing = (async () => {
+        calls.n += 1
+        const e: any = new Error()
+        e.status = 2
+        e.stderr = Buffer.from('ModuleNotFoundError')
+        throw e
+      }) as any
+
+      const outcome = await scanVenvBlockers('/r', failing, stubVenv, { sleep: noSleep })
+
+      assert.equal(outcome.kind, 'probe-failure')
+      assert.equal(calls.n, 1, 'a broken probe cannot become informative by repeating')
+    })
+
+    it('honours an explicit attempt budget and waits between probes', async () => {
+      const calls = { n: 0 }
+      const waits: number[] = []
+
+      const outcome = await scanVenvBlockers(
+        '/r',
+        execSequence([blockedJson], calls),
+        stubVenv,
+        {
+          attempts: 2,
+          delayMs: 250,
+          sleep: async ms => {
+            waits.push(ms)
+          }
+        }
+      )
+
+      assert.equal(outcome.kind, 'blocked')
+      assert.equal(calls.n, 2)
+      assert.deepEqual(waits, [250])
+    })
+
+    it('attempts is clamped to at least one probe', async () => {
+      const calls = { n: 0 }
+
+      const outcome = await scanVenvBlockers(
+        '/r',
+        execSequence([blockedJson], calls),
+        stubVenv,
+        { attempts: 0, sleep: noSleep }
+      )
+
+      assert.equal(outcome.kind, 'blocked')
+      assert.equal(calls.n, 1)
+    })
+  })
+
   it('calls subprocess with correct args, cwd and timeout', async () => {
     const calls: any[] = []
 

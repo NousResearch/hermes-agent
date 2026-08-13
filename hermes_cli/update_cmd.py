@@ -5184,6 +5184,13 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 pass
 
         gateway_fleet_restart_incomplete = False
+        # Snapshot of gateways running before we touch anything. Stays empty
+        # until we successfully import the probe and are about to stop/drain —
+        # so an exception raised before we touch any gateway keeps this empty
+        # (nothing to fail closed on), while a failure after we have stopped a
+        # discovered gateway lets the handler fail closed on an empty survivor
+        # probe rather than reporting a clean update (#78574).
+        _pre_restart_gateway_pids: list | None = []
 
         # Auto-restart ALL gateways after update.
         # The code update (git pull) is shared across all profiles, so every
@@ -5362,6 +5369,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
             killed_pids = set()
             relaunched_profiles = []
             externally_supervised_profiles = []
+
+            # Record which gateways are running before any stop/drain, so a
+            # later failure that leaves the survivor probe empty can still be
+            # recognised as "a running gateway was stopped and did not come
+            # back" rather than "nothing was running" (#78574). Best-effort:
+            # if the probe itself raises, leave the snapshot as-is (the
+            # survivor probe's own None result already fails closed).
+            try:
+                _pre_restart_gateway_pids = list(find_gateway_pids(all_profiles=True))
+            except Exception:
+                _pre_restart_gateway_pids = None
 
             # --- Systemd services (Linux) ---
             # Discover all hermes-gateway* units (default + profiles)
@@ -5849,8 +5867,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # output the user relies on never printed. Don't let that pass for
             # a clean update: surface it and treat the fleet as stale unless we
             # can positively prove no gateway is running (#78574).
+            #
+            # A positive-empty ``_surviving`` is only proof-of-safety when
+            # nothing was running before we touched anything. If a gateway was
+            # discovered pre-restart and none survive now, it was stopped and
+            # its replacement was never verified — the same fail-open contract
+            # this fix closes — so we must still fail closed on ``[]``.
             _surviving = _surviving_gateway_pids_after_failed_restart()
-            if _surviving is None or _surviving:
+            if _restart_phase_failure_is_incomplete(
+                _surviving, _pre_restart_gateway_pids
+            ):
                 gateway_fleet_restart_incomplete = True
                 _warn_gateway_restart_phase_aborted(e, _surviving)
                 if gateway_mode:
@@ -5919,6 +5945,27 @@ def _cmd_update_impl(args, gateway_mode: bool):
             sys.exit(1)
 
 # --- Hoisted from the body of _cmd_update_impl (self-contained, no closure state) ---
+
+def _restart_phase_failure_is_incomplete(surviving, pre_restart_pids) -> bool:
+    """Whether an escaped gateway-restart-phase exception must fail the update.
+
+    Fail closed unless we can positively prove the fleet is safe:
+
+    * ``surviving is None`` — the survivor probe could not determine state
+      (typically the freshly-pulled ``hermes_cli.gateway`` no longer imports,
+      one of the ways the phase aborts). Assume stale.
+    * ``surviving`` non-empty — a gateway is still running pre-update code.
+    * ``surviving == []`` — nothing is running now. That is proof-of-safety
+      ONLY when nothing was running before we touched anything. If a gateway
+      was discovered pre-restart (``pre_restart_pids`` non-empty, or ``None``
+      meaning the pre-state could not be read), it was stopped without a
+      verified replacement, so we still fail closed (#78574).
+    """
+    if surviving is None or surviving:
+        return True
+    # surviving == []: safe only if we know nothing was running beforehand.
+    return pre_restart_pids is None or bool(pre_restart_pids)
+
 
 def _print_items(items, label, key, fallback_key=None):
     if not items:

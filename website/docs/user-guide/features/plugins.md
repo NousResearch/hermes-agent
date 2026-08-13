@@ -115,6 +115,7 @@ Every `ctx.*` API below is available inside a plugin's `register(ctx)` function.
 | Route human approval prompts | `ctx.register_approval_transport(name, present_fn)` — see [Approval transports](#approval-transports) |
 | Register a memory backend | Subclass `MemoryProvider` in `plugins/memory/<name>/__init__.py` — see [Memory Provider Plugins](/developer-guide/memory-provider-plugin) (uses a separate discovery system) |
 | Run a host-owned LLM call | `ctx.llm.complete(...)` / `ctx.llm.complete_structured(...)` — borrow the user's active model + auth for a one-shot completion with optional JSON schema validation. See [Plugin LLM Access](/developer-guide/plugin-llm-access) |
+| Call an MCP tool (capability-gated) | `ctx.call_mcp(server, tool, arguments, timeout=30)` — see [Calling MCP servers from plugins](#calling-mcp-servers-from-plugins) |
 | Register an inference backend (LLM provider) | `register_provider(ProviderProfile(...))` in `plugins/model-providers/<name>/__init__.py` — see [Model Provider Plugins](/developer-guide/model-provider-plugin) (uses a separate discovery system) |
 
 ## Plugin discovery
@@ -259,13 +260,13 @@ When you upgrade to a version of Hermes that has opt-in plugins (config schema v
 
 ## Available hooks
 
-Plugins can register the 25 lifecycle events currently accepted by `hermes_cli.plugins.VALID_HOOKS`. The **[Event Hooks catalog](/user-guide/features/hooks#shipped-plugin-hook-catalog)** is canonical for exact timing, return handling, payload fields, and privacy notes.
+Plugins can register the 26 lifecycle events currently accepted by `hermes_cli.plugins.VALID_HOOKS`. The **[Event Hooks catalog](/user-guide/features/hooks#shipped-plugin-hook-catalog)** is canonical for exact timing, return handling, payload fields, and privacy notes.
 
 | Descriptive category | Shipped hooks |
 |---|---|
 | **Directive/control** | `pre_tool_call`, `pre_llm_call`, `pre_verify`, `pre_gateway_dispatch` |
 | **Transform** | `transform_tool_result`, `transform_terminal_output`, `transform_llm_output`, `pre_transcription` |
-| **Observer** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `on_stream_start`, `on_stream_delta`, `on_stream_end`, `on_interim_message`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
+| **Observer** | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `api_request_error`, `on_stream_start`, `on_stream_delta`, `on_stream_end`, `on_interim_message`, `on_session_start`, `on_session_end`, `on_session_finalize`, `on_session_reset`, `on_skill_lifecycle`, `subagent_start`, `subagent_stop`, `pre_approval_request`, `post_approval_response`, `pre_command`, `kanban_task_claimed`, `kanban_task_completed`, `kanban_task_blocked` |
 
 These categories describe current behavior rather than defining future naming rules. Plugin middleware remains a separate registry/surface.
 ## Plugin types
@@ -571,6 +572,47 @@ Only grant gateway injection to plugins you trust. Hermes checks this host API p
 
 :::note
 This plugin API does not expose a public HTTP endpoint or CLI command for external processes. The plugin must already know the target gateway `session_key`, for example from its own trusted configuration or previously retained session state.
+:::
+
+## Calling MCP servers from plugins
+
+`ctx.call_mcp()` lets a plugin call a tool on one of the user's configured MCP servers — synchronously, from any hook or tool handler — routing through Hermes' existing native MCP client (same connections, trust-tier gates, circuit breaker, and reconnect logic as model-invoked MCP tools; never a parallel client).
+
+```python
+result = ctx.call_mcp(
+    "knowledge_rag",            # server name from mcp.servers
+    "query_knowledge",          # tool on that server
+    {"query": "deploy runbook"},
+    timeout=30,                 # seconds; clamped to 1–600
+)
+if result["ok"]:
+    print(result["result"])
+else:
+    print("MCP error:", result["error"])
+```
+
+**Signature:** `ctx.call_mcp(server: str, tool: str, arguments: dict | None = None, timeout: float = 30) -> dict`
+
+Returns a stable envelope: `{"ok": True, "result": ...}` (plus `structuredContent` when the server provides it) or `{"ok": False, "error": "..."}`. Results over ~64 KB are truncated and flagged with `"truncated": True`.
+
+### Security: default-off, per-server allowlist
+
+A plugin has **no MCP access by default**. The operator must grant each server explicitly in `config.yaml`:
+
+```yaml
+plugins:
+  entries:
+    my-plugin:
+      mcp_allowlist: ["knowledge_rag", "github"]
+```
+
+- Calling a server not in the list raises `PermissionError` naming the exact config key to set.
+- The grant is per-server and per-plugin — never ambient authority over every configured server, and `"*"` wildcards are not honored.
+- Every call has an enforced timeout (default 30 s) so a hung MCP server cannot stall the hook or tool pipeline that invoked it.
+- MCP servers return untrusted content. Treat `result` as data, not instructions — don't feed it into privileged decisions (approvals, command execution) without validation.
+
+:::warning
+Granting `mcp_allowlist` gives the plugin the same access to that MCP server as the model has — including any write-capable tools the server exposes (subject to the server's `trust` tier gates). Grant only servers the plugin genuinely needs.
 :::
 
 See the **[full guide](/developer-guide/plugins)** for handler contracts, schema format, hook behavior, error handling, and common mistakes.

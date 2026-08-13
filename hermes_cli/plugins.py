@@ -265,6 +265,25 @@ VALID_HOOKS: Set[str] = {
     #       contracts; no inert VALID_HOOKS surface is registered ahead of
     #       implementation.
     "gateway_platform_event",
+    # Slash-command dispatch observer (#64204, observer-first per #64182
+    # ground rule 3). Fired when a recognized slash command is about to be
+    # dispatched, BEFORE the handler runs, on both the interactive CLI
+    # (cli.py process_command) and the gateway canonical-command dispatch
+    # (gateway/run.py _handle_message). Return values are IGNORED in v1 —
+    # a plugin returning a directive-shaped dict gets a debug log so future
+    # block/rewrite adopters are discoverable once the middleware variant
+    # ships against the #64231 taxonomy.
+    #
+    # Deliberately NOT fired for the gateway's running-agent intercept path
+    # (/stop, /approve, busy_policy dispatch while a turn is live): those are
+    # control-plane operations on an in-flight run — letting plugins observe
+    # (and one day veto) the operator's escape hatches would turn a slow or
+    # hostile plugin into a way to lose control of a running agent.
+    #
+    # Kwargs: surface: "cli" | "gateway", command: canonical name (str),
+    #   alias_used: the exact token the user typed (str), args_raw: str,
+    #   session_key: str | None (gateway), platform: str | None (gateway).
+    "pre_command",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
@@ -1457,6 +1476,130 @@ class PluginContext:
             return True
         plugin_id = self.manifest.key or self.manifest.name
         return plugin_capability_granted(plugin_id, capability)
+
+    # -- capability-gated MCP access ----------------------------------------
+
+    def call_mcp(
+        self,
+        server: str,
+        tool: str,
+        arguments: Optional[Dict[str, Any]] = None,
+        timeout: float = 30,
+    ) -> Dict[str, Any]:
+        """Call a tool on a configured MCP server (#64204, capability-gated).
+
+        Synchronous; safe to call from plugin hooks and tools. Routes through
+        the EXISTING native MCP client machinery in :mod:`tools.mcp_tool`
+        (background loop, trust-tier gates, circuit breaker, reconnect and
+        result rendering) — never a parallel client or connection.
+
+        Default-off: a plugin has NO MCP access until the operator lists the
+        servers it may reach under ``plugins.entries.<plugin_id>.mcp_allowlist``
+        in config.yaml::
+
+            plugins:
+              entries:
+                my-plugin:
+                  mcp_allowlist: ["knowledge_rag", "github"]
+
+        Calls to unlisted servers raise :class:`PermissionError`. This is a
+        per-server grant, deliberately not ambient authority over every
+        configured server.
+        # TODO(#64228): swap the per-server allowlist for the declared
+        # capability model once it lands (per-tool grants, expiry, ro/rw).
+
+        Args:
+            server: MCP server name as configured in ``mcp.servers``.
+            tool: Tool name on that server (unprefixed).
+            arguments: JSON-serializable arguments dict for the tool.
+            timeout: Seconds to wait for the call (default 30) so a hung
+                MCP server can never stall the hook/tool pipeline.
+
+        Returns:
+            Envelope dict: ``{"ok": True, "result": <parsed result>}`` on
+            success or ``{"ok": False, "error": <message>}`` when the MCP
+            call itself failed. Results larger than ~64KB are truncated
+            with a marker.
+
+        Raises:
+            PermissionError: server not in this plugin's ``mcp_allowlist``.
+        """
+        plugin_id = self.manifest.key or self.manifest.name
+        allowlist = self._mcp_allowlist(plugin_id)
+        if server not in allowlist:
+            raise PermissionError(
+                f"Plugin {self.manifest.name!r} is not allowed to call MCP "
+                f"server {server!r}. Add it to "
+                f"plugins.entries.{plugin_id}.mcp_allowlist in config.yaml "
+                f"to grant access (default is no MCP access)."
+            )
+
+        try:
+            timeout = float(timeout)
+        except (TypeError, ValueError):
+            timeout = 30.0
+        timeout = max(1.0, min(timeout, 600.0))
+
+        # Reuse the exact handler the tool registry uses for MCP tools —
+        # same trust gate, circuit breaker, reconnect and rendering paths.
+        from tools.mcp_tool import _make_tool_handler
+
+        handler = _make_tool_handler(server, tool, timeout)
+        raw = handler(dict(arguments or {}))
+
+        logger.debug(
+            "Plugin %s called MCP %s/%s (timeout=%ss, %d chars returned)",
+            self.manifest.name, server, tool, timeout, len(raw or ""),
+        )
+        return self._mcp_envelope(raw)
+
+    _MCP_RESULT_CHAR_CAP = 65536
+
+    @classmethod
+    def _mcp_envelope(cls, raw: Any) -> Dict[str, Any]:
+        """Normalize an MCP handler result string into a stable envelope."""
+        if not isinstance(raw, str):
+            raw = "" if raw is None else str(raw)
+        if len(raw) > cls._MCP_RESULT_CHAR_CAP:
+            raw = raw[: cls._MCP_RESULT_CHAR_CAP] + "… [truncated]"
+            truncated = True
+        else:
+            truncated = False
+        parsed: Any = None
+        try:
+            parsed = json.loads(raw)
+        except (ValueError, TypeError):
+            parsed = None
+        if isinstance(parsed, dict) and "error" in parsed:
+            envelope: Dict[str, Any] = {"ok": False, "error": parsed["error"]}
+        elif isinstance(parsed, dict) and "result" in parsed:
+            envelope = {"ok": True, "result": parsed["result"]}
+            if "structuredContent" in parsed:
+                envelope["structuredContent"] = parsed["structuredContent"]
+        else:
+            envelope = {"ok": True, "result": parsed if parsed is not None else raw}
+        if truncated:
+            envelope["truncated"] = True
+        return envelope
+
+    @staticmethod
+    def _mcp_allowlist(plugin_id: str) -> List[str]:
+        """Return the operator-granted MCP server allowlist for a plugin.
+
+        Missing key or unreadable config → empty list (fail closed,
+        default-deny).
+        """
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+        except Exception:
+            return []
+        entries = (cfg.get("plugins") or {}).get("entries") or {}
+        entry = entries.get(plugin_id) or {}
+        allowlist = entry.get("mcp_allowlist")
+        if not isinstance(allowlist, list):
+            return []
+        return [str(item) for item in allowlist]
 
     # -- override trust gate ------------------------------------------------
 
@@ -5128,6 +5271,49 @@ def has_hook(hook_name: str) -> bool:
 def iter_hook_callbacks(hook_name: str) -> tuple[Callable, ...]:
     """Return a stable snapshot of callbacks registered for a hook."""
     return get_plugin_manager().iter_hook_callbacks(hook_name)
+
+
+def fire_pre_command_hook(
+    *,
+    surface: str,
+    command: str,
+    alias_used: str,
+    args_raw: str,
+    session_key: Optional[str] = None,
+    platform: Optional[str] = None,
+) -> None:
+    """Fire the ``pre_command`` observer hook (#64204). Never raises.
+
+    Observer-only in v1: return values are ignored. If a plugin returns a
+    directive-shaped dict (``action``/``decision`` keys), a debug line is
+    logged so future block/rewrite adopters are discoverable when the
+    middleware variant ships against the #64231 command-event taxonomy.
+    """
+    try:
+        manager = get_plugin_manager()
+        if not manager.has_hook("pre_command"):
+            return
+        results = manager.invoke_hook(
+            "pre_command",
+            surface=surface,
+            command=command,
+            alias_used=alias_used,
+            args_raw=args_raw,
+            session_key=session_key,
+            platform=platform,
+        )
+        for result in results:
+            if isinstance(result, dict) and (
+                "action" in result or "decision" in result
+            ):
+                logger.debug(
+                    "pre_command is observer-only in v1: ignoring directive "
+                    "%r for /%s (surface=%s). Block/rewrite will arrive with "
+                    "the command middleware variant (#64204/#64231).",
+                    result, command, surface,
+                )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("pre_command hook dispatch failed (non-fatal): %s", exc)
 
 
 _thread_tool_whitelist = threading.local()

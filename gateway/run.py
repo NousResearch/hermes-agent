@@ -15746,6 +15746,35 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _denied is not None:
                 return _denied
 
+        # pre_command observer hook (#64204): fires for every recognized
+        # slash command BEFORE core handling, mirroring the CLI fire-site in
+        # cli.py process_command. Observer-only in v1 (returns ignored).
+        #
+        # Placement matters: this cold-path dispatch is only reached when NO
+        # agent is running for the session. The running-agent intercept path
+        # above (/stop, /approve, busy_policy dispatch via
+        # _dispatch_busy_slash_command) deliberately does NOT fire this hook —
+        # those are control-plane operations on an in-flight run, and giving
+        # plugins an observation (and eventually veto) point there would let
+        # a slow or hostile plugin interfere with the operator's escape
+        # hatches for a live agent.
+        if command and is_gateway_known_command(canonical):
+            try:
+                from hermes_cli.plugins import fire_pre_command_hook
+                fire_pre_command_hook(
+                    surface="gateway",
+                    command=str(canonical),
+                    alias_used=str(command),
+                    args_raw=event.get_command_args().strip(),
+                    session_key=_quick_key,
+                    platform=source.platform.value if source.platform else "",
+                )
+            except Exception as _pre_cmd_err:
+                logger.debug(
+                    "pre_command hook dispatch failed (non-fatal): %s",
+                    _pre_cmd_err,
+                )
+
         # Fire the ``command:<canonical>`` hook for any recognized slash
         # command — built-in OR plugin-registered. Handlers can return a
         # dict with ``{"decision": "deny" | "handled" | "rewrite", ...}``

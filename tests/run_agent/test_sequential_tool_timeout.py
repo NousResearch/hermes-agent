@@ -1,13 +1,17 @@
 """Sequential tool calls recover when one dispatch never returns."""
 
+import json
 import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent.tool_executor import execute_tool_calls_sequential
 from run_agent import AIAgent
+from tools.clarify_gateway import resolve_clarify_timeout
 
 
 def _make_agent(tmp_path: Path) -> AIAgent:
@@ -54,6 +58,17 @@ def _tool_call(call_id: str):
         id=call_id,
         type="function",
         function=SimpleNamespace(name="web_extract", arguments="{}"),
+    )
+
+
+def _clarify_call(call_id: str = "clarify-1"):
+    return SimpleNamespace(
+        id=call_id,
+        type="function",
+        function=SimpleNamespace(
+            name="clarify",
+            arguments='{"question": "Pick one?", "choices": ["A", "B"]}',
+        ),
     )
 
 
@@ -153,3 +168,61 @@ def test_sequential_tool_timeout_suppresses_late_terminal_event(tmp_path, monkey
         ("hung", "tool_timeout"),
         ("next", None),
     ]
+
+
+@pytest.mark.parametrize(
+    "clarify_timeout",
+    [resolve_clarify_timeout({}), 0],
+    ids=["default-3600s", "unlimited"],
+)
+def test_sequential_timeout_does_not_cut_clarify_human_wait(
+    tmp_path, monkeypatch, clarify_timeout
+):
+    """Clarify waits on a human; the generic sequential deadline must not fire.
+
+    Default ``agent.clarify_timeout`` is 3600s; ``<= 0`` is unlimited. Both
+    outlast ``HERMES_CONCURRENT_TOOL_TIMEOUT_S`` (default 420s).
+    """
+    agent = _make_agent(tmp_path)
+    monkeypatch.setenv("HERMES_CONCURRENT_TOOL_TIMEOUT_S", "0.05")
+    monkeypatch.setattr(
+        "tools.clarify_gateway.get_clarify_timeout",
+        lambda: clarify_timeout,
+    )
+
+    def _callback(question, choices, multi_select=False):
+        time.sleep(0.15)
+        return "A"
+
+    agent.clarify_callback = _callback
+    terminal_events: list[dict] = []
+
+    def _dispatch(_name, _args, _task_id, *, tool_call_id, **_kwargs):
+        return "second result"
+
+    def _capture_terminal_event(*_args, **kwargs):
+        terminal_events.append(kwargs)
+
+    messages: list[dict] = []
+    started = time.monotonic()
+    with (
+        patch("run_agent.handle_function_call", side_effect=_dispatch),
+        patch(
+            "agent.tool_executor._emit_terminal_post_tool_call",
+            side_effect=_capture_terminal_event,
+        ),
+    ):
+        execute_tool_calls_sequential(
+            agent,
+            SimpleNamespace(tool_calls=[_clarify_call(), _tool_call("next")]),
+            messages,
+            "task",
+        )
+
+    assert time.monotonic() - started < 1.0
+    assert [message["tool_call_id"] for message in messages] == ["clarify-1", "next"]
+    payload = json.loads(messages[0]["content"])
+    assert payload["user_response"] == "A"
+    assert "timed out" not in messages[0]["content"]
+    assert messages[1]["content"] == "second result"
+    assert not any(event.get("error_type") == "tool_timeout" for event in terminal_events)

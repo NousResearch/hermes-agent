@@ -33,6 +33,7 @@ from agent.display import (
     _detect_tool_failure,
 )
 from agent.tool_dispatch_helpers import (
+    _NEVER_PARALLEL_TOOLS,
     _is_destructive_command,
     _is_multimodal_tool_result,
     _multimodal_text_summary,
@@ -677,7 +678,13 @@ def _run_sequential_tool_execution_middleware(
     display_index: int | None = None,
     middleware_trace: list[dict[str, Any]] | None = None,
 ) -> _ManagedToolResult:
-    """Run one sequential call with the concurrent executor's deadline."""
+    """Run one sequential call with the concurrent executor's deadline.
+
+    Interactive input tools such as ``clarify`` wait on a human. Their own
+    timeout (``agent.clarify_timeout``: default 3600s, or unlimited when
+    ``<= 0``) owns that wait. Applying the generic tool deadline here would
+    return ``tool_timeout`` while the prompt and worker stay active.
+    """
     timeout_s = _resolve_concurrent_tool_timeout()
     kwargs = {
         "function_name": function_name,
@@ -689,7 +696,7 @@ def _run_sequential_tool_execution_middleware(
         "display_index": display_index,
         "middleware_trace": middleware_trace,
     }
-    if timeout_s is None:
+    if timeout_s is None or function_name in _NEVER_PARALLEL_TOOLS:
         return _run_agent_tool_execution_middleware(agent, **kwargs)
 
     from tools.daemon_pool import DaemonThreadPoolExecutor

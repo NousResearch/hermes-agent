@@ -11699,13 +11699,13 @@ ipcMain.handle('hermes:fs:openDir', async (_event, dirPath) => {
 // it yields `undefined/desktop-plugins` (or a non-existent remote path) and the
 // on-disk plugin door silently breaks (#66899). Electron owns this resolution
 // so it stays valid in every connection mode. Created on demand, like openDir.
-ipcMain.handle('hermes:fs:desktopPluginsRoot', async () => {
+async function localPluginsRoot(dirName: string): Promise<string> {
   // Profile-aware: a named Desktop profile gets its own plugin root under
   // profiles/<name>/, matching the profile-scoped hermes_home the backend
   // reported before this resolver existed. 'default'/unset pins the global root.
   const profile = readActiveDesktopProfile()
   const base = profile && profile !== 'default' ? path.join(HERMES_HOME, 'profiles', profile) : HERMES_HOME
-  const dir = path.join(base, 'desktop-plugins')
+  const dir = path.join(base, dirName)
 
   try {
     await fs.promises.mkdir(dir, { recursive: true })
@@ -11715,7 +11715,16 @@ ipcMain.handle('hermes:fs:desktopPluginsRoot', async () => {
   }
 
   return dir
-})
+}
+
+ipcMain.handle('hermes:fs:desktopPluginsRoot', async () => localPluginsRoot('desktop-plugins'))
+
+// The LOCAL agent-plugin root (`<HERMES_HOME>/plugins`), same Electron-local
+// resolution as above. This is the desktop half of a UNIFIED plugin package:
+// an agent plugin may ship `desktop/plugin.js` alongside its Python code (the
+// same shape as `dashboard/manifest.json`), and the renderer's disk door scans
+// this root for it — one installable folder serving both SDKs.
+ipcMain.handle('hermes:fs:agentPluginsRoot', async () => localPluginsRoot('plugins'))
 
 // Rename a file/folder in place. The renderer passes the existing path + a new
 // base name; the destination is resolved in the SAME parent dir so a rename can

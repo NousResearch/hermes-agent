@@ -11,8 +11,9 @@
  * broken plugin can never take the app down.
  *
  * Sources today: the in-repo runtime example (`?raw`, proves the pipeline)
- * and `<hermes home>/desktop-plugins/<name>/plugin.js` on disk — the door the
- * agent writes through.
+ * and the two on-disk doors — `<hermes home>/desktop-plugins/<name>/plugin.js`
+ * and the unified agent-plugin half `<hermes home>/plugins/<name>/desktop/
+ * plugin.js` — the doors the agent writes through.
  *
  * SECURITY — this is NOT a capability boundary. A loaded plugin is evaluated
  * as ESM in the renderer realm with FULL app authority: the React singleton,
@@ -179,13 +180,19 @@ export async function loadRuntimePlugin(
 }
 
 // ---------------------------------------------------------------------------
-// The on-disk plugin door: `<hermes home>/desktop-plugins/<name>/plugin.js`
-// (agent- or user-written). SELF-MAINTAINING — no reload ceremony:
+// The on-disk plugin door — TWO roots, one pipeline:
+//  - `<hermes home>/desktop-plugins/<name>/plugin.js` — the standalone door
+//    (agent- or user-written desktop-only plugins);
+//  - `<hermes home>/plugins/<name>/desktop/plugin.js` — the desktop HALF of a
+//    unified agent-plugin package: the same installed folder that carries the
+//    Python plugin (plugin.yaml / plugin.json) ships its desktop UI beside it,
+//    so one feature is ONE install instead of two co-dependent plugins.
+// SELF-MAINTAINING — no reload ceremony:
 //  - each plugin.js is fs-watched (the preview watcher IPC, debounced in
 //    main): saving the file hot-reloads the plugin in place;
-//  - the directory itself is fs-watched too (watchDirectory IPC), so new
-//    folders load + removed ones unload on the change tick; older Electron
-//    shells without watchDirectory fall back to the slow visible-tab poll.
+//  - each root is fs-watched too (watchDirectory IPC), so new folders load +
+//    removed ones unload on the change tick; older Electron shells without
+//    watchDirectory fall back to the slow visible-tab poll.
 // Panes land via placement adoption and STAY where the user drags them —
 // the tree treats not-yet-loaded pane ids as hidden, so boot and reload are
 // collapse -> appear, never a placeholder flash.
@@ -193,25 +200,60 @@ export async function loadRuntimePlugin(
 
 const DISK_POLL_MS = 5_000
 
+interface DiskRoot {
+  dir: string
+  /** Resolve a scanned folder to its candidate plugin entry file. */
+  entry: (folderPath: string) => string
+}
+
+/** Both scan roots, resolved fresh each pass (Electron-local, never the
+ *  backend's hermes_home — #66899). `agentPluginsRoot` is optional: older
+ *  shells predate it and the unified-package half simply doesn't scan. */
+async function diskRoots(): Promise<DiskRoot[]> {
+  const desktop = window.hermesDesktop
+
+  if (!desktop) {
+    return []
+  }
+
+  const roots: DiskRoot[] = []
+  const standalone = await desktop.desktopPluginsRoot?.()
+
+  if (standalone) {
+    roots.push({ dir: standalone, entry: folder => `${folder}/plugin.js` })
+  }
+
+  const unified = await desktop.agentPluginsRoot?.()
+
+  if (unified) {
+    roots.push({ dir: unified, entry: folder => `${folder}/desktop/plugin.js` })
+  }
+
+  return roots
+}
+
 interface DiskPlugin {
   file: string
   /** Loaded plugin id (null while broken — kept so a fixing save reloads). */
   id: null | string
+  /** Origin label (folder name) — the toast/inventory name for load errors. */
+  origin: string
   watchId: null | string
 }
 
+/** Live disk plugins keyed by ENTRY FILE path — unique across both roots
+ *  (folder names alone can collide between them). */
 const disk = new Map<string, DiskPlugin>()
 let watching = false
 let scanning = false
 
-async function loadDiskPlugin(name: string, file: string): Promise<void> {
+async function loadDiskPlugin(entry: DiskPlugin): Promise<void> {
   const desktop = window.hermesDesktop!
-  const entry = disk.get(name)
-  const prevId = entry?.id
+  const prevId = entry.id
 
   try {
-    const { text } = await desktop.readFileText(file)
-    const id = await loadRuntimePlugin(text, name, { file })
+    const { text } = await desktop.readFileText(entry.file)
+    const id = await loadRuntimePlugin(text, entry.origin, { file: entry.file })
 
     // A hot-edit that changes `plugin.id`: loadRuntimePlugin only disposes the
     // NEW id, so unload the previous incarnation here or its contributions +
@@ -221,14 +263,12 @@ async function loadDiskPlugin(name: string, file: string): Promise<void> {
       dropPlugin(prevId)
     }
 
-    if (entry) {
-      entry.id = id ?? entry.id
-    }
+    entry.id = id ?? entry.id
 
     // A fixing save under a different plugin id — drop the folder-named
     // error record so the inventory shows one row, not a ghost.
-    if (id && id !== name) {
-      dropPlugin(name)
+    if (id && id !== entry.origin) {
+      dropPlugin(entry.origin)
     }
   } catch {
     // File vanished mid-read — the next scan reconciles.
@@ -247,48 +287,53 @@ async function scanDiskPlugins(): Promise<void> {
   scanning = true
 
   try {
-    // The plugin root is a LOCAL Electron path, resolved independently of the
-    // connected backend — a remote backend's hermes_home is a remote path and
-    // yields `undefined/desktop-plugins` here (#66899).
-    const root = await desktop.desktopPluginsRoot?.()
+    const roots = await diskRoots()
 
-    if (!root) {
+    if (roots.length === 0) {
       return
     }
 
-    const { entries } = await desktop.readDir(root)
     const seen = new Set<string>()
 
-    for (const dir of entries.filter(e => e.isDirectory)) {
-      seen.add(dir.name)
-
-      if (disk.has(dir.name)) {
-        continue
-      }
-
-      const file = `${dir.path}/plugin.js`
+    for (const root of roots) {
+      let entries
 
       try {
-        await desktop.readFileText(file)
+        ;({ entries } = await desktop.readDir(root.dir))
       } catch {
-        continue // No plugin.js (yet) — not a plugin folder.
+        continue // Root missing (no plugins yet) — the poll/watch reconciles.
       }
 
-      const record: DiskPlugin = { file, id: null, watchId: null }
-      disk.set(dir.name, record)
-      await loadDiskPlugin(dir.name, file)
+      for (const dir of entries.filter(e => e.isDirectory)) {
+        const file = root.entry(dir.path)
+        seen.add(file)
 
-      try {
-        record.watchId = (await desktop.watchPreviewFile(file)).id
-      } catch {
-        // Unwatchable — the poll still reconciles new folders; edits need a
-        // manual "Reload desktop plugins".
+        if (disk.has(file)) {
+          continue
+        }
+
+        try {
+          await desktop.readFileText(file)
+        } catch {
+          continue // No entry file (yet) — not a plugin folder for this root.
+        }
+
+        const record: DiskPlugin = { file, id: null, origin: dir.name, watchId: null }
+        disk.set(file, record)
+        await loadDiskPlugin(record)
+
+        try {
+          record.watchId = (await desktop.watchPreviewFile(file)).id
+        } catch {
+          // Unwatchable — the poll still reconciles new folders; edits need a
+          // manual "Reload desktop plugins".
+        }
       }
     }
 
     // Folder deleted -> plugin gone, cleanly (inventory row included).
-    for (const [name, record] of disk) {
-      if (seen.has(name)) {
+    for (const [file, record] of disk) {
+      if (seen.has(file)) {
         continue
       }
 
@@ -297,16 +342,16 @@ async function scanDiskPlugins(): Promise<void> {
         dropPlugin(record.id)
       }
 
-      dropPlugin(name)
+      dropPlugin(record.origin)
 
       if (record.watchId) {
         void desktop.stopPreviewFileWatch(record.watchId)
       }
 
-      disk.delete(name)
+      disk.delete(file)
     }
   } catch {
-    // No desktop-plugins dir (or no gateway yet) — nothing to reconcile.
+    // No plugin roots (or no gateway yet) — nothing to reconcile.
   } finally {
     scanning = false
   }
@@ -326,51 +371,60 @@ export function watchRuntimePlugins(): void {
 
   watching = true
 
-  let dirWatchId: null | string = null
+  const dirWatchIds = new Set<string>()
+  const watchedDirs = new Set<string>()
 
   desktop.onPreviewFileChanged(({ id }) => {
     // Directory tick: a plugin folder appeared or vanished — reconcile.
-    if (dirWatchId && id === dirWatchId) {
+    if (dirWatchIds.has(id)) {
       void scanDiskPlugins()
 
       return
     }
 
-    for (const [name, record] of disk) {
+    for (const record of disk.values()) {
       if (record.watchId === id) {
-        void loadDiskPlugin(name, record.file)
+        void loadDiskPlugin(record)
 
         return
       }
     }
   })
 
-  const startDirWatch = async (): Promise<boolean> => {
+  // True only when EVERY root is fs-watched — a partially watched set keeps
+  // the poll alive so unwatched roots still reconcile new/removed folders.
+  const startDirWatches = async (): Promise<boolean> => {
     if (!desktop.watchDirectory) {
       return false
     }
 
-    try {
-      // Same Electron-local root as the scanner — never the backend's
-      // hermes_home, which is a remote path in remote mode (#66899).
-      const root = await desktop.desktopPluginsRoot?.()
+    const roots = await diskRoots()
 
-      if (!root) {
-        return false
-      }
-
-      dirWatchId = (await desktop.watchDirectory(root)).id
-
-      return true
-    } catch {
-      // Dir missing (no plugins yet) or unwatchable — fall back to the poll,
-      // which also handles the dir being created later.
+    if (roots.length === 0) {
       return false
     }
+
+    let all = true
+
+    for (const root of roots) {
+      if (watchedDirs.has(root.dir)) {
+        continue
+      }
+
+      try {
+        dirWatchIds.add((await desktop.watchDirectory(root.dir)).id)
+        watchedDirs.add(root.dir)
+      } catch {
+        // Dir missing or unwatchable — the poll covers it and retries here.
+        all = false
+      }
+    }
+
+    return all
   }
 
   void scanDiskPlugins()
-  void startDirWatch().then(watched => {
+  void startDirWatches().then(watched => {
     if (watched) {
       return
     }
@@ -382,15 +436,13 @@ export function watchRuntimePlugins(): void {
 
       void scanDiskPlugins()
 
-      // The dir may have been created since — upgrade to the watch and retire
-      // this poll once it lands.
-      if (dirWatchId === null) {
-        void startDirWatch().then(upgraded => {
-          if (upgraded) {
-            window.clearInterval(timer)
-          }
-        })
-      }
+      // A root may have appeared since — upgrade to the watches and retire
+      // this poll once every root is covered.
+      void startDirWatches().then(upgraded => {
+        if (upgraded) {
+          window.clearInterval(timer)
+        }
+      })
     }, DISK_POLL_MS)
   })
 }

@@ -7308,13 +7308,16 @@ def run_conversation(
                                 "now using %s on %s",
                                 agent.model, agent.provider,
                             )
-                            # Failover shrank the compressor's context window to
-                            # the fallback's; restart the outer iteration so the
-                            # pre-API preflight re-runs against the new threshold
-                            # before the first fallback call (#84733).
+                            # This site sits directly in the OUTER iteration
+                            # loop (not the retry loop), so `continue` already
+                            # restarts the iteration and re-runs the pre-API
+                            # preflight against the fallback's context window
+                            # (#84733). A `break` here would exit the outer
+                            # loop and end the turn without ever calling the
+                            # fallback. Clear the preflight block so the
+                            # re-run isn't skipped.
                             _preflight_compression_blocked = False
-                            _retry.restart_with_rebuilt_messages = True
-                            break
+                            continue
 
                     # Exhausted retries and fallback chain (or no
                     # fallback configured).  Fall through to the

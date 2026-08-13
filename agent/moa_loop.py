@@ -464,7 +464,9 @@ def _maybe_apply_moa_cache_control(
         return apply_anthropic_cache_control(
             messages,
             cache_ttl=effective_cache_ttl(
-                cache_ttl or "5m",
+                # effective_cache_ttl resolves None → "5m"; the should_cache
+                # gate above already returned for cache-disabled routes.
+                cache_ttl,
                 provider=runtime.get("provider") or "",
                 model=runtime.get("model") or "",
             ),

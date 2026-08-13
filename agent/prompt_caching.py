@@ -120,10 +120,11 @@ def _build_marker(ttl: str) -> Dict[str, str]:
     return marker
 
 
-# Routes whose context cache documents a five-minute window (renewed on
-# hit) and rejects the Anthropic 1h tier. Kept in parity with the
-# alibaba-family set in agent_runtime_helpers.anthropic_prompt_cache_policy.
-_QWEN_1H_UNSUPPORTED_PROVIDERS = frozenset({
+# Alibaba-family providers (Qwen routes). Their context cache documents a
+# five-minute window (renewed on hit) and rejects the Anthropic 1h tier.
+# Shared with agent_runtime_helpers.anthropic_prompt_cache_policy so the
+# cache-policy opt-in and the TTL clamp can never desync (#84733).
+ALIBABA_FAMILY_PROVIDERS = frozenset({
     "opencode",
     "opencode-zen",
     "opencode-go",
@@ -151,7 +152,7 @@ def effective_cache_ttl(
         return ttl or "5m"
     if "qwen" in (model or "").lower():
         return "5m"
-    if (provider or "").lower() in _QWEN_1H_UNSUPPORTED_PROVIDERS:
+    if (provider or "").lower() in ALIBABA_FAMILY_PROVIDERS:
         return "5m"
     return "1h"
 

@@ -177,19 +177,56 @@ class TestFailoverRestartsPreflight:
     """#84733: a fallback provider switch must re-run the pre-API preflight.
 
     ``_try_activate_fallback`` already shrinks the compressor's context
-    window to the fallback's; the old ``continue`` re-fired the request
-    without re-running the pre-API pressure check. Every activation site
-    must instead ``break`` to the ``restart_with_rebuilt_messages`` handler,
-    which restarts the outer iteration (and its preflight) via a budget
-    refund. Source-level guard: importing the module and parsing the
-    function is cheap, and the assertion encodes the bug class — a new
-    failover site added with ``continue`` fails here on purpose.
+    window to the fallback's; the pre-API preflight runs at the top of the
+    OUTER iteration loop, before the retry loop. So the restart discipline
+    is loop-aware:
+
+    - Sites INSIDE the retry loop (``while retry_count < max_retries``)
+      must ``break`` out of it with ``restart_with_rebuilt_messages`` set,
+      so the handler after the retry loop refunds the budget and
+      ``continue``s the outer iteration (which re-runs the preflight).
+      A plain ``continue`` there would only re-fire the retry loop and
+      skip the preflight — the original bug.
+    - Sites DIRECTLY in the outer loop must ``continue`` — the next outer
+      iteration re-runs the preflight already. A ``break`` there would
+      exit the conversation loop and end the turn without ever calling
+      the just-activated fallback.
+
+    Source-level guard: parsing the function is cheap, and the assertion
+    encodes the bug class — a new failover site added with the wrong
+    restart statement for its loop fails here on purpose.
     """
 
-    def test_every_fallback_activation_breaks_to_repreflight(self):
+    def test_every_fallback_activation_restarts_preflight(self):
         from agent import conversation_loop
 
         tree = ast.parse(inspect.getsource(conversation_loop.run_conversation))
+
+        # Parent map so each site can be bound to its nearest enclosing loop.
+        parents = {}
+        for node in ast.walk(tree):
+            for child in ast.iter_child_nodes(node):
+                parents[child] = node
+
+        retry_loops = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.While)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == "retry_count"
+        ]
+        assert retry_loops, "expected the retry loop in run_conversation"
+        retry_loop_ids = {id(loop) for loop in retry_loops}
+
+        def _inside_retry_loop(node):
+            cur = parents.get(node)
+            while cur is not None:
+                if id(cur) in retry_loop_ids:
+                    return True
+                cur = parents.get(cur)
+            return False
+
         fallback_ifs = [
             node
             for node in ast.walk(tree)
@@ -200,8 +237,80 @@ class TestFailoverRestartsPreflight:
         ]
         assert fallback_ifs, "expected _try_activate_fallback sites in run_conversation"
         for node in fallback_ifs:
-            assert any(isinstance(stmt, ast.Break) for stmt in node.body), (
-                "fallback activation must break to the restart-with-rebuilt-"
-                "messages handler so the pre-API preflight re-runs against "
-                "the fallback's context window (#84733)"
+            if _inside_retry_loop(node):
+                assert any(isinstance(stmt, ast.Break) for stmt in node.body), (
+                    "retry-loop fallback activation must break to the "
+                    "restart-with-rebuilt-messages handler so the pre-API "
+                    "preflight re-runs against the fallback's context "
+                    "window (#84733)"
+                )
+            else:
+                assert any(
+                    isinstance(stmt, ast.Continue) for stmt in node.body
+                ), (
+                    "outer-loop fallback activation must continue the outer "
+                    "iteration (which re-runs the preflight); a break here "
+                    "would end the turn without calling the fallback (#84733)"
+                )
+                assert not any(
+                    isinstance(stmt, ast.Break) for stmt in node.body
+                ), (
+                    "outer-loop fallback activation must not break — that "
+                    "exits the conversation loop and ends the turn (#84733)"
+                )
+
+
+class TestAuxFallbackReplanThreadsTtl:
+    """#84733 follow-up: the auxiliary fallback replan path threads the
+    configured tier too — it has no live agent, so it reads the same
+    config key agent_init snapshots into ``agent._cache_ttl``."""
+
+    def test_configured_cache_ttl_reads_valid_tiers(self, monkeypatch):
+        import agent.agent_runtime_helpers as arh
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"prompt_caching": {"cache_ttl": "1h"}},
+        )
+        assert arh.configured_cache_ttl() == "1h"
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"prompt_caching": {"cache_ttl": "5m"}},
+        )
+        assert arh.configured_cache_ttl() == "5m"
+
+    def test_configured_cache_ttl_none_for_disabled_or_unknown(self, monkeypatch):
+        import agent.agent_runtime_helpers as arh
+
+        for value in ("off", False, None, "2h"):
+            monkeypatch.setattr(
+                "hermes_cli.config.load_config_readonly",
+                lambda value=value: {"prompt_caching": {"cache_ttl": value}},
             )
+            assert arh.configured_cache_ttl() is None, value
+
+    def test_replan_threads_configured_ttl_to_markers(self, monkeypatch):
+        from agent import auxiliary_client
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config_readonly",
+            lambda: {"prompt_caching": {"cache_ttl": "1h"}},
+        )
+        destination = auxiliary_client._FallbackDestination(
+            "anthropic",
+            "https://api.anthropic.com",
+            "anthropic_messages",
+            "claude-opus-4.8",
+        )
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "hello"},
+        ]
+        out_msgs, _ = auxiliary_client._replan_synchronous_cache_sections(
+            messages, None, destination=destination
+        )
+        markers = _collect_cache_controls(out_msgs)
+        assert markers, "expected cache_control markers on a caching route"
+        assert all(m.get("ttl") == "1h" for m in markers), (
+            "the configured 1h tier must reach auxiliary fallback replans"
+        )

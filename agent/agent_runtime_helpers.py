@@ -1982,6 +1982,25 @@ def prompt_caching_disabled_from_config() -> bool:
     return cache_ttl_means_disabled(ttl)
 
 
+def configured_cache_ttl() -> Optional[str]:
+    """Return the configured ``prompt_caching.cache_ttl`` tier, if valid.
+
+    Mirrors ``agent_init``'s reading of the same key (``5m``/``1h`` accepted,
+    anything else ignored) so stub-based paths without a live ``AIAgent``
+    (auxiliary fallback replan) stop regressing a configured ``1h`` to the
+    5m default (#84733). Returns ``None`` for unset/disabled/unknown values;
+    ``effective_cache_ttl`` resolves ``None`` to ``5m`` downstream.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        pc_cfg = load_config_readonly().get("prompt_caching", {}) or {}
+        ttl = pc_cfg.get("cache_ttl", "5m")
+    except Exception:
+        return None
+    return ttl if ttl in ("5m", "1h") else None
+
+
 def blank_cache_policy_stub(cache_disabled: Optional[bool] = None):
     """Build the destination-identity-blank stub for ``anthropic_prompt_cache_policy``.
 
@@ -2066,7 +2085,11 @@ def plan_cache_sections_for_destination(
         messages,
         tools,
         cache_ttl=effective_cache_ttl(
-            cache_ttl or "5m",
+            # effective_cache_ttl resolves None → "5m"; markers are only
+            # emitted at all when should_cache passed above, so a
+            # cache-disabled agent (_cache_ttl=None) never reaches here
+            # with caching active.
+            cache_ttl,
             provider=provider,
             model=model,
         ),
@@ -2270,9 +2293,12 @@ def anthropic_prompt_cache_policy(
     # format that cache markers produce (content becomes a block array
     # instead of a plain string), causing HTTP 400 (#77217).
     model_is_qwen = "qwen" in model_lower
-    provider_is_alibaba_family = provider_lower in {
-        "opencode", "opencode-zen", "opencode-go", "alibaba",
-    }
+    # Single source of truth for the family set — shared with the
+    # effective_cache_ttl clamp so the opt-in and the TTL clamp can
+    # never desync (#84733).
+    from agent.prompt_caching import ALIBABA_FAMILY_PROVIDERS
+
+    provider_is_alibaba_family = provider_lower in ALIBABA_FAMILY_PROVIDERS
     if provider_is_alibaba_family and model_is_qwen:
         # Envelope layout (native_anthropic=False): markers on inner
         # content parts, not top-level tool messages.  Matches

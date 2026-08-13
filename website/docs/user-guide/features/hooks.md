@@ -849,51 +849,18 @@ For standing guidance that should shape the built-in missing-evidence nudge, use
 
 ### `transform_api_error_classification`
 
-Fires **once per failed API call**, at the top of `agent/error_classifier.classify_api_error()` — BEFORE the built-in classification pipeline. Cold path: it never fires on a successful call. Provider plugins use it to own their provider's error quirks (a vendor-specific 404 that should fast-fallback, a misleading status code) without core patches.
+Fires once per failed API call, at the top of `agent/error_classifier.classify_api_error()`, before the built-in pipeline. Provider plugins use it to own their provider's error quirks without core patches. It is behavior-changing (transform family): the returned classification drives retry, compression, credential rotation, and fallback routing.
 
-This hook is **behavior-changing** (transform family): the returned classification drives retry, compression, credential-rotation, and fallback routing for the failed call.
-
-**Callback signature:**
+Callbacks receive the parsed error context as kwargs — `provider` (self-scope on this), `model`, `status_code`, `error_type`, `error_code`, `error_message`, `error_body`, `error`, `approx_tokens`, `context_length`, `num_messages`. Return `None` to decline, or a dict to claim the error:
 
 ```python
-def my_callback(provider: str, model: str, status_code, error_type: str,
-                error_code, error_message: str, error_body, error,
-                approx_tokens, context_length, num_messages, **kwargs):
+return {"reason": "model_not_found",   # required: a FailoverReason name
+        "retryable": False, "should_fallback": True}  # optional recovery-hint overrides
 ```
 
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `provider` | `str` | The provider whose call failed — **self-scope on this** |
-| `model` | `str` | The model identifier for the failed call |
-| `status_code` | `int \| None` | HTTP status, when the error carried one |
-| `error_type` | `str` | The exception class name |
-| `error_code` | `str \| None` | Provider error code, when present |
-| `error_message` | `str` | Lower-cased error message text |
-| `error_body` | `dict` | Parsed provider error body, when present |
-| `error` | `Exception` | The original exception object |
-| `approx_tokens` | `int \| None` | Approximate prompt tokens of the failed request |
-| `context_length` | `int \| None` | Model context length, when known |
-| `num_messages` | `int \| None` | Message count of the failed request |
+Dispatch is run-all-then-pick-first: every callback runs, failures are isolated, and the first valid result in registration order wins (valid-but-losing results log a runtime warning). Invalid dicts and unknown reasons are skipped, so a broken plugin can never break classification.
 
-**Return value — claim the error:**
-
-```python
-return {
-    "reason": "model_not_found",        # required: a FailoverReason name
-    "retryable": False,                  # optional recovery-hint overrides
-    "should_fallback": True,
-    "should_compress": False,
-    "should_rotate_credential": False,
-    "message": "...",                    # optional user-facing guidance
-    "error_context": {...},              # optional extra context
-}
-```
-
-Return `None` (or nothing) to decline and defer to the built-in pipeline. Dispatch is **run-all-then-pick-first**: every registered callback runs on each failed call (an earlier answer never stops later callbacks), each callback's failure is isolated, and the first valid result **in registration order** wins — if two plugins can both answer, the first-registered one is the tie-break, and every valid-but-losing result is reported with a runtime warning so a shadowed provider plugin is visible in logs. Invalid dicts and unknown reasons are skipped, so a broken plugin can never break error classification.
-
-**Privacy:** `error_message` and `error_body` may carry an unredacted provider error dump. Do not log or forward them from a callback without redaction.
-
-**Python plugins only.** Shell hooks cannot register for this event: the shell response parser has no channel for the classification directive, so a shell registration is refused at config parse with a warning rather than being silently ignored.
+**Privacy:** `error_message` and `error_body` may carry unredacted provider data. **Python plugins only** — shell registrations are refused at config parse with a warning.
 
 ---
 

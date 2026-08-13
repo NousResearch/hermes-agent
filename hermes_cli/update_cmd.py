@@ -2102,6 +2102,34 @@ def _record_npm_lockfile_hash(hermes_root: Path) -> None:
     except OSError:
         logger.debug("Could not write npm lockfile hash cache")
 
+def _repair_node_deps_on_current_checkout(print_completion) -> None:
+    """Repair Node deps on the ``commit_count == 0`` path (#77211).
+
+    A current checkout does not imply healthy Node deps: a previous npm
+    install may have failed (EBADENGINE from a node/npm mismatch, network
+    timeout, interrupted install) and its error message says to "re-run
+    hermes update" — but the early return never reached the Node refresh,
+    so that repair advice could never work. ``_update_node_dependencies``
+    self-gates on the lockfile hash, which is only recorded after a
+    SUCCESSFUL npm install (and re-trips when node_modules is missing or
+    the web toolchain never landed), so this is a cheap no-op on healthy
+    installs and a real repair after a failed one.
+    """
+    node_failures = _update_node_dependencies()
+    if node_failures:
+        print(f"  ⚠ Node.js refresh failed for: {', '.join(node_failures)}")
+        print("    Fix npm and re-run `hermes update`.")
+        print_completion(
+            "⚠ Checkout is current, but Node.js dependencies could not be repaired."
+        )
+        return
+    # Pair the refresh with the web build like every other
+    # _update_node_dependencies call site; it staleness-checks internally,
+    # so this is a no-op when nothing changed.
+    _m()._build_web_ui(_m().PROJECT_ROOT / "web")
+    print_completion("✓ Already up to date!")
+
+
 def _update_node_dependencies() -> list[str]:
     """Refresh Node deps for the ui-tui and web workspaces.
 
@@ -4228,7 +4256,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     print(f"⚠ Venv still unhealthy after repair: {detail_after}")
                     print("  Close all Hermes windows/gateways and re-run: hermes update")
             else:
-                _print_update_completion("✓ Already up to date!")
+                _repair_node_deps_on_current_checkout(_print_update_completion)
             if runtime_repaired is not None and not _m()._is_windows():
                 print()
                 print(

@@ -18928,6 +18928,34 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
 
+            # transform_footer lifecycle hook — let a plugin append an extra
+            # block after the runtime footer line (e.g. a per-provider quota
+            # summary). Observer-only: each plugin returns a string block; we
+            # concatenate non-empty ones. Fail-open: any exception is logged and
+            # skipped so a broken plugin can never abort the response.
+            try:
+                from hermes_cli.lifecycle import has_hook as _has_footer_hook
+                from hermes_cli.lifecycle import invoke_hook as _invoke_footer_hook
+                if _has_footer_hook("transform_footer"):
+                    _footer_blocks = _invoke_footer_hook(
+                        "transform_footer",
+                        model=agent_result.get("model"),
+                        context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
+                        context_length=agent_result.get("context_length") or None,
+                        cwd=os.environ.get("TERMINAL_CWD", ""),
+                        turn_seconds=_turn_seconds,
+                        platform_key=_platform_config_key(source.platform),
+                        user_config=_load_gateway_config(),
+                    )
+                    _footer_extra = "\n\n".join(
+                        b for b in (str(b).strip() for b in _footer_blocks) if b
+                    )
+                    if _footer_extra and response and not agent_result.get("already_sent") and not _intentional_silence:
+                        response = f"{response}\n\n{_footer_extra}"
+            except Exception as _footer_hook_err:
+                logger.debug("transform_footer hook failed: %s", _footer_hook_err)
+
+
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
                 **hook_ctx,

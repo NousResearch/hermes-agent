@@ -287,6 +287,19 @@ VALID_HOOKS: Set[str] = {
     #   alias_used: the exact token the user typed (str), args_raw: str,
     #   session_key: str | None (gateway), platform: str | None (gateway).
     "pre_command",
+    # Render-transform hook: append a block to the runtime footer on the final
+    # agent response (agent loop, gateway, desktop). Observer-side render
+    # extension: a plugin returns a string block (or dict with "text") that is
+    # concatenated after the runtime footer line. Return values are appended;
+    # None/empty contributes nothing. Fail-open: any hook error is logged and
+    # skipped so a broken plugin can never abort the response.
+    #   Kwargs mirror build_footer_line:
+    #     model, context_tokens, context_length, cwd, turn_seconds,
+    #     platform_key, user_config.
+    # Concrete consumer: rarf/hermes-quota-plugin appends a per-provider
+    # quota/rate-limit block to the footer (reads a precomputed cache, no
+    # network I/O on the hot path).
+    "transform_footer",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

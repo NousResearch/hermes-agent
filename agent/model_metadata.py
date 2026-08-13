@@ -2001,37 +2001,64 @@ def _model_name_suggests_minimax_m3(model: str) -> bool:
     """Return True if the model name looks like MiniMax M3.
 
     Catches ``MiniMax-M3``, ``minimax/minimax-m3``, and similar variants
-    across surfaces (native MiniMax-M3, OpenRouter/Nous minimax/minimax-m3).
-    Used as a guard against stale cache entries seeded by pre-catalog builds
-    that resolved M3 via the generic ``minimax`` catch-all (204,800) before
-    the ``minimax-m3`` (1M) entry existed in DEFAULT_CONTEXT_LENGTHS.
+    across surfaces. Used by the models.dev underreport guard below and the
+    cache-control gating in agent_runtime_helpers (stale persisted cache
+    entries are handled generically by _stale_pre_catalog_cache_entry).
     """
     return "minimax-m3" in model.lower()
 
 
-def _model_name_suggests_grok_4_3(model: str) -> bool:
-    """Return True if the model name looks like a Grok 4.3 variant.
+# Catalog keys whose DEFAULT_CONTEXT_LENGTHS entry was added AFTER the model
+# first became reachable through a shorter catch-all (or the 256K probe
+# fallback).  Builds from that window persisted the catch-all's value, and
+# the step-1 persistent-cache hit would otherwise pin it forever.  Each key
+# listed here gets a stale-entry guard in get_model_context_length(): a
+# cached value at or below what the old resolution path could have produced
+# is treated as a pre-catalog leftover and dropped so the entry re-resolves
+# against the current catalog.
+#
+# Only add keys whose catalog value is STRICTLY ABOVE every shorter matching
+# key (and above the 256K fallback) — the guard infers the stale threshold
+# from those shorter keys, so a model whose true window is below its
+# catch-all can never be listed here.
+_PRE_CATALOG_STALE_KEYS = frozenset({
+    "minimax-m3",    # 1M; older builds persisted the "minimax" catch-all (204,800)
+    "grok-4.3",      # 1M; pre-2026-05-15 builds persisted the "grok-4" catch-all (256,000)
+    "grok-4.6",      # 500K; pre-catalog builds persisted the "grok-4" catch-all (256,000)
+    "grok-4-fast",   # 2M; pre-2026-04-10 builds fell through to the 256K probe fallback
+    "grok-4.20",     # 2M; pre-2026-04-10 builds fell through to the 256K probe fallback
+    "qwen3.6-plus",  # 1M; pre-2026-05-17 builds persisted the "qwen" catch-all (131,072)
+})
 
-    Catches ``grok-4.3``, ``grok-4.3-latest``, and similar slugs.
-    Used as a guard against stale cache entries seeded by pre-catalog builds
-    that resolved grok-4.3 via the generic ``grok-4`` catch-all (256,000)
-    before the ``grok-4.3`` (1M) entry was added to DEFAULT_CONTEXT_LENGTHS
-    on 2026-05-15.
+
+def _stale_pre_catalog_cache_entry(model: str, cached: int) -> bool:
+    """Return True when a persisted context length is a pre-catalog leftover.
+
+    Generic replacement for the per-model ``_model_name_suggests_*`` guards
+    (MiniMax-M3, Grok-4.3, Grok-4.6, ...).  The model must resolve — by the
+    same longest-key-first substring match step 8 uses — to a catalog key
+    listed in ``_PRE_CATALOG_STALE_KEYS``, and the cached value must be at or
+    below the best value the OLD resolution path could have produced: the
+    largest shorter matching catch-all entry, or ``DEFAULT_FALLBACK_CONTEXT``
+    when no shorter key matches.  Cached values above that threshold (e.g. a
+    genuine probe result) are never dropped.
     """
-    return "grok-4.3" in model.lower()
-
-
-def _model_name_suggests_grok_4_6(model: str) -> bool:
-    """Return True if the model name looks like a Grok 4.6 variant.
-
-    Catches ``grok-4.6`` and aggregator-prefixed slugs. Used as a guard
-    against stale cache entries seeded by pre-catalog builds that resolved
-    grok-4.6 via the generic ``grok-4`` catch-all (256,000) before the
-    500K entry existed. Official card: docs.x.ai/developers/models/grok-4.6.
-    Live GET /v1/models lists ``grok-4.6`` at context_length 500000 and does
-    not publish a ``grok-4.6-latest`` alias.
-    """
-    return "grok-4.6" in model.lower()
+    model_lower = model.lower()
+    matches = [
+        (key, value)
+        for key, value in DEFAULT_CONTEXT_LENGTHS.items()
+        if key in model_lower
+    ]
+    if not matches:
+        return False
+    specific_key, specific_value = max(matches, key=lambda kv: len(kv[0]))
+    if specific_key not in _PRE_CATALOG_STALE_KEYS:
+        return False
+    if cached >= specific_value:
+        return False
+    shorter_values = [v for k, v in matches if len(k) < len(specific_key)]
+    threshold = max(shorter_values, default=DEFAULT_FALLBACK_CONTEXT)
+    return cached <= threshold
 
 
 def _query_local_context_length(model: str, base_url: str, api_key: str = "") -> Optional[int]:
@@ -2632,37 +2659,14 @@ def get_model_context_length(
                     model, base_url, f"{cached:,}",
                 )
                 _invalidate_cached_context_length(model, base_url)
-            # Invalidate stale ≤204,800 cache entries for MiniMax-M3.  Pre-catalog
-            # builds resolved M3 via the generic ``minimax`` catch-all (204,800)
-            # and persisted it before the ``minimax-m3`` (1M) entry existed; that
-            # stale value would otherwise stick forever here at step 1.  M3 is 1M,
-            # so any sub-256K cached value for an M3 slug is a leftover — drop it
-            # and fall through to the hardcoded default.
-            elif cached <= 204_800 and _model_name_suggests_minimax_m3(model):
+            # Invalidate pre-catalog leftovers: models whose catalog entry was
+            # added after a shorter catch-all (or the 256K fallback) had
+            # already persisted a smaller value — MiniMax-M3, Grok-4.3/-4.6/
+            # -4-fast/-4.20, qwen3.6-plus, ... (see _PRE_CATALOG_STALE_KEYS).
+            # Drop the stale entry and fall through to the hardcoded default.
+            elif _stale_pre_catalog_cache_entry(model, cached):
                 logger.info(
-                    "Dropping stale MiniMax-M3 cache entry %s@%s -> %s (pre-catalog value); "
-                    "re-resolving via hardcoded defaults",
-                    model, base_url, f"{cached:,}",
-                )
-                _invalidate_cached_context_length(model, base_url)
-            # Invalidate stale ≤256,000 cache entries for Grok-4.3.  The
-            # ``grok-4.3`` (1M) entry was added to DEFAULT_CONTEXT_LENGTHS on
-            # 2026-05-15; prior to that, grok-4.3 slugs resolved via the
-            # ``grok-4`` catch-all (256,000) and that value was persisted.
-            # grok-4.3 is 1M, so any sub-262K cached value is a pre-catalog
-            # leftover — drop it and fall through to the hardcoded default.
-            elif cached <= 256_000 and _model_name_suggests_grok_4_3(model):
-                logger.info(
-                    "Dropping stale Grok-4.3 cache entry %s@%s -> %s (pre-catalog value); "
-                    "re-resolving via hardcoded defaults",
-                    model, base_url, f"{cached:,}",
-                )
-                _invalidate_cached_context_length(model, base_url)
-            # Same class of leftover as grok-4.3: grok-4.6 is 500K, but
-            # pre-catalog builds persisted the grok-4 catch-all (256,000).
-            elif cached <= 256_000 and _model_name_suggests_grok_4_6(model):
-                logger.info(
-                    "Dropping stale Grok-4.6 cache entry %s@%s -> %s (pre-catalog value); "
+                    "Dropping stale pre-catalog cache entry %s@%s -> %s; "
                     "re-resolving via hardcoded defaults",
                     model, base_url, f"{cached:,}",
                 )

@@ -2,6 +2,7 @@ import { requestComposerFocus, requestComposerInsert } from '@/app/chat/composer
 import { getSkills } from '@/hermes'
 import { translateNow } from '@/i18n'
 import { type ComposerSuggestion, registerDraftProvider } from '@/store/composer-suggestions'
+import { $currentCwd } from '@/store/session'
 
 /**
  * Skill-match draft provider: the draft names a skill the user has, so offer
@@ -41,7 +42,34 @@ const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 export function skillPattern(name: string): RegExp {
   const flexible = name.toLowerCase().split(/[-_]/).map(escape).join('[-_ ]')
 
-  return new RegExp(`(?<![\\p{L}\\p{N}])${flexible}(?![\\p{L}\\p{N}-])`, 'u')
+  return new RegExp(`(?<![\\p{L}\\p{N}])${flexible}(?![\\p{L}\\p{N}-])`, 'gu')
+}
+
+/** Completed whole-word hit, exported for tests: the match only counts once
+ *  at least one character follows it. The debounce fires mid-sentence, and a
+ *  name still under the caret is a word in progress, not a request — the pill
+ *  waiting for the next keystroke is the difference between "offering" and
+ *  "reading over your shoulder". */
+export function skillHit(pattern: RegExp, haystack: string): boolean {
+  pattern.lastIndex = 0
+
+  for (const match of haystack.matchAll(pattern)) {
+    if (match.index + match[0].length < haystack.length) {
+      return true
+    }
+  }
+
+  return false
+}
+
+/** Workspace homonym guard, exported for tests: a skill named like the
+ *  working directory is the project's name, not a request for the skill.
+ *  Working in `~/www/hermes-agent`, the draft says "hermes-agent" constantly
+ *  — a "Use skill: hermes-agent" pill on every mention is noise (the reported
+ *  annoyance that prompted this guard). Boundary containment, not exact
+ *  segment equality, so worktree dirs (`hermes-agent-suggest`) suppress too. */
+export function collidesWithWorkspace(name: string, cwd: string): boolean {
+  return new RegExp(`(?<![\\p{L}\\p{N}])${escape(name.toLowerCase())}(?![\\p{L}\\p{N}])`, 'u').test(cwd.toLowerCase())
 }
 
 async function loadIndex(): Promise<SkillIndexEntry[]> {
@@ -94,7 +122,10 @@ registerDraftProvider('skill', async ({ text }) => {
   }
 
   const haystack = text.toLowerCase()
+  const cwd = $currentCwd.get()
   const skills = await loadIndex()
 
-  return skills.filter(skill => skill.pattern.test(haystack)).map(skill => toSuggestion(skill.name))
+  return skills
+    .filter(skill => skillHit(skill.pattern, haystack) && !collidesWithWorkspace(skill.name, cwd))
+    .map(skill => toSuggestion(skill.name))
 })

@@ -151,6 +151,10 @@ def test_build_empty_returns_nothing(monkeypatch, tmp_path):
     monkeypatch.setattr(brb, "PREVIEW_DIR", tmp_path)
     monkeypatch.setattr(brb, "_blog_items", lambda *a, **k: [])
     monkeypatch.setattr(brb, "_pending_article_items", lambda *a, **k: ({X_GROUP: [], LINKEDIN_GROUP: []}, []))
+    # idea_cards() reads ~/.hermes/research/idea-backlog.jsonl — real machine
+    # state. Stub it so the emptiness check is deterministic (same isolation
+    # pattern as the other two sources).
+    monkeypatch.setattr(brb, "idea_cards", lambda: [])
     assert build() == []
 
 
@@ -161,6 +165,7 @@ def test_main_prints_silent_when_nothing_pending(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(brb.database, "list_article_approvals", lambda status: [])
     monkeypatch.setattr(brb, "_blog_items", lambda *a, **k: [])
     monkeypatch.setattr(brb, "_pending_article_items", lambda *a, **k: ({X_GROUP: [], LINKEDIN_GROUP: []}, []))
+    monkeypatch.setattr(brb, "idea_cards", lambda: [])
     main()
     assert capsys.readouterr().out.strip() == "[SILENT]"
 
@@ -172,6 +177,7 @@ def test_main_prints_summary_and_media_lines(monkeypatch, capsys, tmp_path):
     monkeypatch.setattr(brb.database, "list_article_approvals", lambda status: [])
     monkeypatch.setattr(brb, "_blog_items", lambda *a, **k: [_item("a", "Alpha", BLOG_GROUP)])
     monkeypatch.setattr(brb, "_pending_article_items", lambda *a, **k: ({X_GROUP: [], LINKEDIN_GROUP: []}, []))
+    monkeypatch.setattr(brb, "idea_cards", lambda: [])
     main()
     out = capsys.readouterr().out
     assert "awaiting review" in out

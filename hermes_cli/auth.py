@@ -414,6 +414,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("ALIBABA_CODING_PLAN_API_KEY", "DASHSCOPE_API_KEY"),
         base_url_env_var="ALIBABA_CODING_PLAN_BASE_URL",
     ),
+    "qwencloud": ProviderConfig(
+        id="qwencloud",
+        name="QwenCloud (Token Plan)",
+        auth_type="api_key",
+        inference_base_url="https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+        api_key_env_vars=("QWENCLOUD_API_KEY",),
+        base_url_env_var="QWENCLOUD_BASE_URL",
+    ),
     "minimax-cn": ProviderConfig(
         id="minimax-cn",
         name="MiniMax (China)",
@@ -2054,6 +2062,8 @@ def resolve_provider(
         "minimax-portal": "minimax-oauth", "minimax-global": "minimax-oauth", "minimax_oauth": "minimax-oauth",
         "alibaba_coding": "alibaba-coding-plan", "alibaba-coding": "alibaba-coding-plan",
         "alibaba_coding_plan": "alibaba-coding-plan",
+        "qwencloud-token-plan": "qwencloud", "qwencloud_token_plan": "qwencloud",
+        "qwen-cloud": "qwencloud",
         "claude": "anthropic", "claude-code": "anthropic",
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",

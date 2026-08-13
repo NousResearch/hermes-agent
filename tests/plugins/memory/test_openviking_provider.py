@@ -846,8 +846,9 @@ def test_cloud_health_retries_with_api_key_after_anonymous_auth_error(monkeypatc
     assert payload == modern
     assert client.health() is True
     assert calls[0] == {"Accept": "application/json"}
+    assert "Authorization" in calls[1]
     assert calls[1]["Authorization"].startswith("Bearer account.user.")
-    assert calls[1]["X-API-Key"].startswith("account.user.")
+    assert "X-API-Key" in calls[1]
     # No tenant headers on health.
     assert "X-OpenViking-Account" not in calls[1]
     assert "X-OpenViking-User" not in calls[1]

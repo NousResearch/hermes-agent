@@ -458,14 +458,7 @@ class _VikingClient:
         still avoid disclosing credentials to a server that answers health
         anonymously.
         """
-        headers = {"Accept": "application/json"}
-        # Reuse the same key headers as authenticated API calls, but omit
-        # tenant identity — health is not a tenant-scoped resource.
-        if self._api_key:
-            headers["X-API-Key"] = self._api_key
-            headers["Authorization"] = "Bearer " + self._api_key
-        if self._agent:
-            headers["X-OpenViking-Actor-Peer"] = self._agent
+        headers = self._headers(include_tenant=False)
         resp = self._httpx.get(
             self._url(path), headers=headers, timeout=3.0
         )
@@ -474,21 +467,7 @@ class _VikingClient:
     @staticmethod
     def _health_requires_credentials(exc: Exception) -> bool:
         """True when /health rejected the anonymous probe for auth reasons."""
-        status = getattr(exc, "status_code", None)
-        if status in {401, 403}:
-            return True
-        message = str(exc).lower()
-        return any(
-            token in message
-            for token in (
-                "authenticationerror",
-                "unauthorized",
-                "api key",
-                "apikey",
-                "invalid authentication",
-                "missing or invalid",
-            )
-        )
+        return _status_code_from_error(exc) in {401, 403}
 
     def health_payload(self) -> dict:
         """Fetch ``GET /health``.

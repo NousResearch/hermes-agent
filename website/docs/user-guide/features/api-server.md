@@ -298,6 +298,14 @@ Requested capabilities outside that list are filtered out. Raw CDP, arbitrary
 script evaluation, console access, uploads, image extraction, and vision are not
 part of the controller protocol.
 
+When a request has no bound controller identity, or when the feature is disabled,
+Hermes preserves the existing browser backend. Once the gateway binds a
+controller principal and transport family to the request, that extension lane
+is authoritative: missing, ambiguous, disconnected, or incapable controllers
+fail closed instead of silently switching to a different local/cloud browser.
+After an exact controller is selected, its result or error is authoritative and
+Hermes never retries the same action through another backend.
+
 ### Local API registration
 
 1. Send an authenticated `POST /v1/browser-control/register` with

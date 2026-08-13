@@ -51,23 +51,27 @@ def test_feature_off_calls_existing_backend_once_without_touching_broker():
     "scope,selected",
     [(None, None), ("scope-fixture", None)],
 )
-def test_no_exact_capable_controller_preserves_existing_backend(scope, selected):
+def test_bound_request_without_exact_capable_controller_fails_closed(scope, selected):
+    from gateway.browser_control_broker import ControllerUnavailable
+
     broker = FakeBroker(scope=scope, selected=selected)
     fallbacks = []
 
-    result = route_browser_tool(
-        "browser_navigate",
-        {"url": "https://example.test"},
-        fallback=lambda: fallbacks.append(True) or "legacy-result",
-        broker=broker,
-        enabled=True,
-        session_id="session-fixture",
-        task_id="task-fixture",
-        tool_call_id="tool-call-fixture",
-    )
+    with pytest.raises(ControllerUnavailable, match="browser_navigate"):
+        route_browser_tool(
+            "browser_navigate",
+            {"url": "https://example.test"},
+            fallback=lambda: fallbacks.append(True) or "unsafe-legacy-result",
+            broker=broker,
+            enabled=True,
+            session_id="session-fixture",
+            task_id="task-fixture",
+            principal_id="principal-fixture",
+            transport_family="local-api",
+            tool_call_id="tool-call-fixture",
+        )
 
-    assert result == "legacy-result"
-    assert fallbacks == [True]
+    assert fallbacks == []
     assert not any(call[0] == "dispatch" for call in broker.calls)
 
 
@@ -265,6 +269,58 @@ def test_extension_availability_requires_exact_scope_and_capability(monkeypatch)
         ),
         ("select", "scope-fixture", "browser_snapshot"),
     ]
+
+
+def test_bound_controller_disappearing_after_schema_build_never_falls_back(monkeypatch):
+    from gateway.browser_control_broker import (
+        BrowserControlBroker,
+        ControllerScope,
+        ControllerUnavailable,
+    )
+    from gateway.session_context import clear_session_vars, set_session_vars
+    from tools import browser_extension_router
+
+    broker = BrowserControlBroker(command_timeout=0.1)
+    scope = ControllerScope(
+        principal_id="principal-fixture",
+        profile_id="default",
+        session_id="session-fixture",
+        controller_id="controller-fixture",
+        browser_profile_id="browser-profile-fixture",
+        transport_family="local-api",
+        capabilities=frozenset({"browser_snapshot"}),
+    )
+    broker.attach(scope, lambda _frame: None, owner="socket-fixture")
+    monkeypatch.setattr(
+        "gateway.browser_control_broker.browser_control_enabled",
+        lambda: True,
+    )
+    monkeypatch.setattr(
+        "gateway.browser_control_broker.get_browser_control_broker",
+        lambda: broker,
+    )
+    tokens = set_session_vars(
+        session_id="session-fixture",
+        browser_control_principal="principal-fixture",
+        browser_control_transport_family="local-api",
+    )
+    fallbacks = []
+    try:
+        assert browser_extension_router.extension_controller_available(
+            "browser_snapshot"
+        ) is True
+        assert broker.disconnect_owner("socket-fixture") == 1
+        with pytest.raises(ControllerUnavailable, match="browser_snapshot"):
+            routed_browser_handler(
+                "browser_snapshot",
+                {},
+                fallback=lambda: fallbacks.append(True) or "unsafe-legacy-result",
+            )
+    finally:
+        clear_session_vars(tokens)
+        broker.reset()
+
+    assert fallbacks == []
 
 
 def test_routeable_browser_tools_preserve_legacy_gate_without_bound_identity(monkeypatch):

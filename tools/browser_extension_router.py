@@ -13,15 +13,13 @@ Routing contract (exercised by ``tests/tools/test_browser_extension_router.py``)
   default: ``browser.extension_control.enabled`` is false unless explicitly
   configured, so every real browser action keeps its exact legacy path.
 
-- **No exact server-bound scope ⇒ legacy.** ``broker.scope_for_session(...)``
-  must return exactly one attached controller scope for the caller's session,
-  authenticated principal, and transport family. Missing identity, no match,
-  or ambiguity preserves the existing backend.
+- **No server-bound identity ⇒ legacy.** Generic Hermes callers keep the
+  existing backend when no authenticated browser-controller identity is bound.
 
-- **No exact capable controller ⇒ legacy.** ``broker.select(scope, action)``
-  must return a controller whose capability set contains the action.
-  Controllers currently register with only ``controller.noop``, so real
-  browser actions never match and always fall back.
+- **Bound identity ⇒ authoritative extension lane.** Once the gateway binds a
+  browser-controller principal and transport family, missing/ambiguous scope,
+  disconnect, or capability mismatch fail closed. A "control this tab" turn
+  must never jump to an unrelated local/cloud browser backend.
 
 - **Selected controller ⇒ authoritative.** Once a controller is selected the
   command is dispatched to it and its result returned; the legacy backend
@@ -111,9 +109,9 @@ def route_browser_tool(
     args:
         Tool arguments as received from the model. Never mutated.
     fallback:
-        The existing backend handler, called exactly once when the router
-        decides the extension path must not run (feature off, no scope, or
-        no capable controller). Must be a zero-argument callable.
+        The existing backend handler, called exactly once when the feature is
+        off or no server-bound controller identity exists. Must be a
+        zero-argument callable.
     broker:
         Object exposing ``scope_for_session(**identity) -> scope|None``,
         ``select(scope, capability) -> controller|None`` and
@@ -125,7 +123,8 @@ def route_browser_tool(
         Caller session hints forwarded to ``scope_for_session``.
     principal_id/transport_family:
         Server-bound caller identity. Both are mandatory when the feature is
-        enabled; missing values fail closed to the existing backend.
+        enabled; missing values preserve the existing backend for generic
+        Hermes callers.
     tool_call_id:
         Caller tool-call id forwarded verbatim to ``dispatch``.
 
@@ -148,13 +147,19 @@ def route_browser_tool(
         transport_family=transport_family,
     )
     if scope is None:
-        # No unambiguous attached session scope: preserve existing backend.
-        return fallback()
+        from gateway.browser_control_broker import ControllerUnavailable
+
+        raise ControllerUnavailable(
+            f"bound browser controller unavailable for {action}"
+        )
 
     controller = broker.select(scope, action)
     if controller is None:
-        # No controller capable of this exact action: preserve existing backend.
-        return fallback()
+        from gateway.browser_control_broker import ControllerUnavailable
+
+        raise ControllerUnavailable(
+            f"bound browser controller cannot execute {action}"
+        )
 
     # A controller was selected: it is authoritative. Never retry through the
     # existing backend, whatever happens here. Registry handlers must return a

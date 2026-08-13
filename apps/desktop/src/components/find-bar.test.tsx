@@ -8,7 +8,7 @@ import { en } from '@/i18n/en'
 import { zh } from '@/i18n/zh'
 import { findBarClaimsCombo, findBarKeyAction, formatMatchLabel } from '@/lib/find-in-page'
 import { KEYBIND_ACTIONS } from '@/lib/keybinds/actions'
-import { comboAllowedInInput } from '@/lib/keybinds/combo'
+import { actionAllowedInInput } from '@/lib/keybinds/combo'
 import {
   $findInPage,
   closeFindBar,
@@ -202,10 +202,9 @@ describe('find-in-page keybind registration', () => {
   })
 
   it('mod+f fires from inside a textarea (browser find behavior)', () => {
-    // The runtime consults comboAllowedInInput before dispatching a combo
-    // while an editable element owns focus; if mod combos ever stop
-    // qualifying, ⌘F from the composer would type 'f' instead of opening find.
-    expect(comboAllowedInInput('mod+f')).toBe(true)
+    // The runtime consults actionAllowedInInput before dispatching while an
+    // editable element owns focus; ⌘F should still open find from the composer.
+    expect(actionAllowedInInput('view.findInPage', 'mod+f')).toBe(true)
   })
 
   it('registers the step pair unbound so it cannot conflict with view.toggleReview', () => {

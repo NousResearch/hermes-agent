@@ -31,6 +31,62 @@ from tools.environments.local import (
 logger = logging.getLogger(__name__)
 
 
+# Marker stamped into the environment of every ``docker exec`` so the command's
+# in-container process tree can be found again when we need to tear it down.
+#
+# ``docker exec`` never reports the in-container PID back to the client, so the
+# host has nothing to signal. Tagging the environment instead of tracking a
+# process group is what makes the teardown correct in the case that actually
+# leaks: the environment is inherited by every descendant and survives
+# reparenting, so orphans already adopted away by PID 1 still carry it. It is
+# also inherently scoped — only processes bearing this exact id are signalled,
+# so unrelated commands sharing a persistent container are never touched.
+_EXEC_ID_ENV = "HERMES_EXEC_ID"
+
+# Seconds to wait between SIGTERM and SIGKILL when tearing down a tree.
+_TREE_KILL_GRACE_SECONDS = 2
+
+# In-container teardown, written in pure bash on purpose. ``_run_bash`` already
+# requires bash, whereas everything else this would otherwise reach for varies
+# across minimal images: ``pgrep`` is often absent, ``ps`` flags differ under
+# busybox, ``grep -z`` is GNU-only, and busybox ``sleep`` may reject fractional
+# seconds. Reading /proc/*/environ rather than walking parent PIDs is the whole
+# point — a reparented orphan has lost its ancestry but not its environment.
+_TREE_KILL_SCRIPT = r"""
+marker="$1"
+grace="$2"
+pids=""
+for d in /proc/[0-9]*; do
+    [ -r "$d/environ" ] || continue
+    while IFS= read -r -d '' entry; do
+        if [ "$entry" = "$marker" ]; then
+            pids="$pids ${d##*/}"
+            break
+        fi
+    done < "$d/environ"
+done
+[ -n "$pids" ] || exit 0
+kill -TERM $pids 2>/dev/null
+waited=0
+while [ "$waited" -lt "$grace" ]; do
+    alive=""
+    for p in $pids; do
+        [ -d "/proc/$p" ] && alive="$alive $p"
+    done
+    [ -n "$alive" ] || exit 0
+    sleep 1
+    waited=$((waited + 1))
+done
+alive=""
+for p in $pids; do
+    [ -d "/proc/$p" ] && alive="$alive $p"
+done
+[ -n "$alive" ] || exit 0
+kill -KILL $alive 2>/dev/null
+exit 0
+"""
+
+
 # Common Docker Desktop install paths checked when 'docker' is not in PATH.
 # macOS Intel: /usr/local/bin, macOS Apple Silicon (Homebrew): /opt/homebrew/bin,
 # Docker Desktop app bundle: /Applications/Docker.app/Contents/Resources/bin
@@ -1622,6 +1678,12 @@ class DockerEnvironment(BaseEnvironment):
             quoted_names = " ".join(shlex.quote(name) for name in unset_names)
             cmd_string = f"unset {quoted_names} 2>/dev/null || true\n{cmd_string}"
 
+        # Stamp this invocation so _kill_process() can find its descendants
+        # inside the container later. Must precede the container id, like the
+        # other -e args above.
+        exec_id = uuid.uuid4().hex
+        cmd.extend(["-e", f"{_EXEC_ID_ENV}={exec_id}"])
+
         cmd.extend([self._container_id])
 
         if login:
@@ -1629,7 +1691,64 @@ class DockerEnvironment(BaseEnvironment):
         else:
             cmd.extend(["bash", "-c", cmd_string])
 
-        return _popen_bash(cmd, stdin_data)
+        proc = _popen_bash(cmd, stdin_data)
+        # The base class hands the kill path nothing but this handle, so the id
+        # has to ride along on it rather than live in per-environment state —
+        # which also keeps concurrent commands in a shared container independent.
+        # Not every handle accepts attributes (a bare ``object()`` has no
+        # ``__dict__``); one that doesn't simply gets the previous host-only
+        # kill rather than an AttributeError on the spawn path.
+        try:
+            proc._hermes_exec_id = exec_id
+        except AttributeError:
+            logger.debug(
+                "process handle %s rejects attributes; "
+                "in-container tree teardown unavailable for this exec",
+                type(proc).__name__,
+            )
+        return proc
+
+    def _kill_process(self, proc):
+        """Kill the host-side ``docker exec`` client *and* its container tree.
+
+        The base implementation kills only the local client. That leaves the
+        command's descendants running inside the container, where they get
+        reparented and keep holding pids-cgroup slots; enough timed-out calls
+        and ``pids.max`` is exhausted, after which even ``date`` or ``pwd``
+        hangs. Issue #84967.
+
+        Cleanup is best-effort and never raises: this runs on the timeout,
+        interrupt and exception paths, and a teardown failure must not mask the
+        condition that triggered it.
+        """
+        super()._kill_process(proc)
+        exec_id = getattr(proc, "_hermes_exec_id", None)
+        if not exec_id or not self._container_id:
+            return
+        self._kill_container_tree(exec_id)
+
+    def _kill_container_tree(
+        self, exec_id: str, grace: int = _TREE_KILL_GRACE_SECONDS,
+    ) -> None:
+        """SIGTERM then SIGKILL every in-container process tagged ``exec_id``."""
+        try:
+            subprocess.run(
+                [
+                    self._docker_exe, "exec", self._container_id,
+                    "bash", "-c", _TREE_KILL_SCRIPT,
+                    "hermes-tree-kill", f"{_EXEC_ID_ENV}={exec_id}", str(grace),
+                ],
+                capture_output=True,
+                text=True, encoding="utf-8", errors="replace",
+                # Outlive the script's own bounded wait, but never hang the
+                # kill path if the daemon or container is unresponsive.
+                timeout=grace + 8,
+                stdin=subprocess.DEVNULL,
+            )
+        except Exception as e:
+            logger.debug(
+                "in-container tree kill for %s failed: %s", exec_id[:8], e,
+            )
 
     # ------------------------------------------------------------------
     # "No such container" recovery (issue #36266)

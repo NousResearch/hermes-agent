@@ -560,23 +560,11 @@ def format_banner_version_label() -> str:
     upstream = state["upstream"]
     local = state["local"]
     ahead = int(state.get("ahead") or 0)
-    behind = int(state.get("behind") or 0)
-
-    if (ahead <= 0 and behind <= 0) or upstream == local:
+    if ahead <= 0 or upstream == local:
         return f"{base} · upstream {upstream}"
 
-    parts = [f"{base} · upstream {upstream}"]
-    if ahead > 0:
-        carried_word = "commit" if ahead == 1 else "commits"
-        parts.append(f"local {local} (+{ahead} carried {carried_word})")
-    else:
-        parts.append(f"local {local}")
-
-    if behind > 0:
-        behind_word = "commit" if behind == 1 else "commits"
-        parts.append(f"(-{behind} upstream {behind_word})")
-
-    return " · ".join(parts)
+    carried_word = "commit" if ahead == 1 else "commits"
+    return f"{base} · upstream {upstream} · local {local} (+{ahead} carried {carried_word})"
 
 
 # =========================================================================
@@ -1148,6 +1136,16 @@ def build_welcome_banner(console: "Console", model: str, cwd: str,
     if mcp_connected:
         summary_parts.append(f"{mcp_connected} MCP servers")
     summary_parts.append("/help for commands")
+    # Fork divergence belongs on the same operational summary line, after the
+    # command hint. Keep the title stable: it is the version/provenance label.
+    try:
+        git_state = get_git_banner_state()
+        behind = int((git_state or {}).get("behind") or 0)
+        if behind > 0:
+            word = "commit" if behind == 1 else "commits"
+            summary_parts.append(f"{behind} {word} behind")
+    except Exception:
+        pass
     # Indicate when the codex_app_server runtime is active so users
     # understand why tool counts may not match what's actually reachable
     # (codex builds its own tool list inside the spawned subprocess).

@@ -1552,6 +1552,10 @@ export function ChatSidebar({
               <SidebarSessionsSection
                 activeProjectId={activeProjectId}
                 activeSessionId={activeSidebarSessionId}
+                // Inbox style is a render variant, not a grouping: only the
+                // flat recents list opts in, and only outside the project tree
+                // (whose rows already carry workspace context).
+                card={cardRows && !agentsGrouped}
                 collapsible={!inProject}
                 contentClassName={cn(
                   'flex min-h-0 flex-1 flex-col gap-px pb-1.75',
@@ -1600,10 +1604,6 @@ export function ChatSidebar({
                 // list does — only the flat list can swap its dividers for
                 // WORKING / DONE.
                 grouping={showArchived || rankedGlobally ? 'none' : grouping === 'status' ? 'status' : 'date'}
-                // Inbox style is a render variant, not a grouping: only the
-                // flat recents list opts in, and only outside the project tree
-                // (whose rows already carry workspace context).
-                card={cardRows && !agentsGrouped}
                 groups={displayAgentGroups}
                 headerAction={
                   inProject && enteredProject ? (

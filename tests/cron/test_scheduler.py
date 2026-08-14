@@ -8,6 +8,7 @@ import os
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
+import model_tools
 
 from cron.scheduler import (
     SILENT_MARKER,
@@ -1082,6 +1083,43 @@ class TestRunJobConfigEnvVarExpansion:
         assert kwargs["model"] == "gpt-4o-mini-cron-test", (
             f"Expected model='gpt-4o-mini-cron-test', got {kwargs['model']!r}. "
             "config.yaml ${VAR} was not expanded in the cron execution path."
+        )
+
+    def test_tool_definitions_cache_is_cleared_after_dotenv_reload(self, tmp_path):
+        """Loading .env before a cron job must invalidate the tool-defs cache.
+
+        get_tool_definitions(quiet_mode=True) memoizes results with a key
+        that does not include env state. A previous call made before
+        TAVILY_API_KEY was available can cache a web/file-only result that
+        excludes web_search/web_extract. When cron re-reads .env each tick
+        it must drop that stale cache so the freshly loaded env is reflected
+        in the agent's tool list (#82912).
+        """
+        model_tools._clear_tool_defs_cache()
+        model_tools._tool_defs_cache[("stale-key",)] = [
+            {"type": "function", "function": {"name": "stale_tool"}}
+        ]
+
+        job = {"id": "cache-clear-job", "name": "cache test", "prompt": "hi"}
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("hermes_cli.env_loader.load_hermes_dotenv"), \
+             patch("hermes_cli.env_loader.reset_secret_source_cache"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider",
+                   return_value=self._RUNTIME), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+            success, _, _, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert not model_tools._tool_defs_cache, (
+            "run_job must clear model_tools._tool_defs_cache after reloading .env"
         )
 
 

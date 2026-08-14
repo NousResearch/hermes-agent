@@ -2578,17 +2578,22 @@ async function checkUpdates() {
     // fabricate a "1 commit behind". Recover the exact count via the GitHub
     // compare API when possible; otherwise behind stays null ("update
     // available, count unknown") and updateAvailable carries the signal.
-    const upToDate = Boolean(currentSha && currentSha === targetSha)
+    // ahead_by === 0 with differing tips means the remote tip is reachable
+    // from our HEAD — a local carried commit sitting AHEAD, not behind:
+    // flagging that as an update nudges the user into wiping their work.
+    const tipsEqual = Boolean(currentSha && currentSha === targetSha)
 
-    const sshBehind = upToDate
+    const sshBehind = tipsEqual
       ? 0
       : await fetchCompareBehindCount({ currentSha, originUrl: OFFICIAL_REPO_HTTPS_URL, targetSha })
+
+    const upToDate = tipsEqual || sshBehind === 0
 
     return {
       supported: true,
       branch,
       currentBranch,
-      behind: sshBehind,
+      behind: upToDate ? 0 : sshBehind,
       updateAvailable: !upToDate,
       currentSha,
       targetSha,

@@ -26,8 +26,11 @@ function markerStartedAt(home: string): number {
 
 function runPosix(installRoot: string, startedAt?: string) {
   const env = { ...process.env }
-  if (startedAt === undefined) delete env.HERMES_UPDATE_STARTED_AT
-  else env.HERMES_UPDATE_STARTED_AT = startedAt
+  if (startedAt === undefined) {
+    delete env.HERMES_UPDATE_STARTED_AT
+  } else {
+    env.HERMES_UPDATE_STARTED_AT = startedAt
+  }
 
   return spawnSync('/bin/bash', [POSIX_SCRIPT, '--install-root', installRoot, '--self-test-marker'], {
     env,
@@ -37,8 +40,11 @@ function runPosix(installRoot: string, startedAt?: string) {
 
 function runWindows(installRoot: string, startedAt?: string) {
   const env = { ...process.env }
-  if (startedAt === undefined) delete env.HERMES_UPDATE_STARTED_AT
-  else env.HERMES_UPDATE_STARTED_AT = startedAt
+  if (startedAt === undefined) {
+    delete env.HERMES_UPDATE_STARTED_AT
+  } else {
+    env.HERMES_UPDATE_STARTED_AT = startedAt
+  }
 
   return spawnSync(
     'powershell.exe',

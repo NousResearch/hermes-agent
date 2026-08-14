@@ -2213,18 +2213,32 @@ import threading as _threading  # noqa: E402
 _picker_prewarm_done = _threading.Event()
 
 
-def _credential_pool_is_usable(provider: str, *, raw_pool_present: bool = False) -> bool:
+def _credential_pool_is_usable(
+    provider: str,
+    *,
+    raw_pool_present: bool = False,
+    _pool_cache: Optional[Dict[str, Any]] = None,
+) -> bool:
     """Return whether *provider* has a credential that can be selected now.
 
     ``auth.json`` historically allowed opaque token-style pool values that do
     not deserialize into ``PooledCredential`` entries. Preserve visibility for
     those legacy values, but when a real pool exists its availability state is
     authoritative: an all-exhausted/dead pool is not authenticated.
+
+    ``_pool_cache`` lets ``list_authenticated_providers()`` reuse the same
+    ``CredentialPool`` instance across the three sections that check the same
+    provider, instead of loading and seeding the pool repeatedly for each row.
     """
     try:
         from agent.credential_pool import load_pool
 
-        pool = load_pool(provider)
+        if _pool_cache is not None and provider in _pool_cache:
+            pool = _pool_cache[provider]
+        else:
+            pool = load_pool(provider)
+            if _pool_cache is not None:
+                _pool_cache[provider] = pool
         if pool.has_credentials():
             return pool.has_available()
     except Exception:
@@ -2648,6 +2662,14 @@ def list_authenticated_providers(
     _current_provider_norm = str(current_provider or "").strip().lower()
     _current_base_url_norm = str(current_base_url or "").strip().rstrip("/").lower()
 
+    # list_authenticated_providers() checks the same provider in up to three
+    # sections (HERMES_OVERLAYS, canonical list, and section-1 fallback). Each
+    # check used to call load_pool() and re-seed from auth.json/config, so a
+    # single /model invocation loaded the same pool 2-3x per provider. Cache
+    # CredentialPool instances within this call; they are read-only for the
+    # has_credentials/has_available checks we perform here.
+    _pool_cache: Dict[str, Any] = {}
+
     def _can_probe_custom_provider(*, row_is_current: bool) -> bool:
         return bool(probe_custom_providers or (probe_current_custom_provider and row_is_current))
 
@@ -2876,7 +2898,9 @@ def list_authenticated_providers(
                 )
                 if raw_pool_present:
                     has_creds = _credential_pool_is_usable(
-                        hermes_id, raw_pool_present=True
+                        hermes_id,
+                        raw_pool_present=True,
+                        _pool_cache=_pool_cache,
                     )
             except Exception:
                 pass
@@ -2993,7 +3017,7 @@ def list_authenticated_providers(
         # imports on demand but aren't in the raw auth.json yet.
         if not has_creds:
             try:
-                if _credential_pool_is_usable(hermes_slug):
+                if _credential_pool_is_usable(hermes_slug, _pool_cache=_pool_cache):
                     has_creds = True
                 elif for_picker:
                     # For the interactive /model picker, also show providers
@@ -3003,8 +3027,12 @@ def list_authenticated_providers(
                     # model under the same provider may work even when all keys
                     # are in cooldown.
                     try:
-                        from agent.credential_pool import load_pool
-                        _pool = load_pool(hermes_slug)
+                        _pool = _pool_cache.get(hermes_slug)
+                        if _pool is None:
+                            from agent.credential_pool import load_pool
+
+                            _pool = load_pool(hermes_slug)
+                            _pool_cache[hermes_slug] = _pool
                         if _pool.has_credentials():
                             has_creds = True
                     except Exception:
@@ -3148,7 +3176,7 @@ def list_authenticated_providers(
                 pass
         if not _cp_has_creds:
             try:
-                if _credential_pool_is_usable(_cp.slug):
+                if _credential_pool_is_usable(_cp.slug, _pool_cache=_pool_cache):
                     _cp_has_creds = True
             except Exception:
                 pass

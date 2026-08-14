@@ -132,5 +132,6 @@ def test_installed_llamacpp_plugin_source_registers(tmp_path, monkeypatch):
     assert "llamacpp" in profile.aliases
     assert "llama-swap" in profile.aliases
     assert get_provider_profile("llama-swap") is profile
+    assert getattr(profile, "activates_on_requested_provider", False) is True
 
     _clear_provider_caches()

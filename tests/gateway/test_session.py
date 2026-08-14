@@ -2,7 +2,7 @@
 import json
 import pytest
 from dataclasses import replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 from hermes_state import SessionDB
@@ -1290,6 +1290,34 @@ class TestSessionMetadata:
             )
             == "123.456"
         )
+
+    def test_metadata_write_does_not_touch_activity_clock(self, tmp_path):
+        """set_session_metadata is bookkeeping — it must not bump updated_at.
+
+        updated_at drives idle/daily reset policy and the restart-resume
+        freshness gate (#85709); a background metadata write on an idle
+        session must not make it look recently active.
+        """
+        config = GatewayConfig()
+        store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = None
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="group",
+            user_id="U123",
+            thread_id="123.000",
+        )
+
+        entry = store.get_or_create_session(source)
+        idle = datetime.now() - timedelta(days=21)
+        with store._lock:
+            entry.updated_at = idle
+
+        assert store.set_session_metadata(entry.session_key, "k", "v")
+        assert entry.updated_at == idle
+        # And the restart freshness gate must still see it as idle.
+        assert store.suspend_recently_active(max_age_seconds=120) == 0
 
 
 class TestRewriteTranscriptPreservesReasoning:

@@ -57,6 +57,18 @@ class FakeTerminal {
     return { dispose() {} };
   }
 
+  onScroll() {
+    return { dispose() {} };
+  }
+
+  get buffer() {
+    // Minimal active-buffer surface for the resume follow-scroll pin
+    // (isViewportPinnedToBottom reads viewportY/baseY).
+    return { active: { baseY: 0, viewportY: 0 } };
+  }
+
+  scrollToBottom() {}
+
   open() {}
 
   paste() {}

@@ -9,7 +9,7 @@ from hermes_cli.config import DEFAULT_CONFIG
 def _create_service(monkeypatch, config):
     from agent.lsp.manager import LSPService
 
-    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: config)
     return LSPService.create_from_config()
 
 

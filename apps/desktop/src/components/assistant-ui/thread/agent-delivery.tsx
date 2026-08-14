@@ -1,11 +1,7 @@
 import { type ToolCallMessagePartProps } from '@assistant-ui/react'
 import { type FC, useEffect, useState } from 'react'
 
-import {
-  AGENT_MESSAGE_RE,
-  agentAvatarCache,
-  resolveAgentAvatar
-} from '@/components/assistant-ui/thread/user-message'
+import { AGENT_MESSAGE_RE, agentAvatarCache, resolveAgentAvatar } from '@/components/assistant-ui/thread/user-message'
 
 // Sender-side inter-agent delivery: `hermes -p <agent> chat … -q "Message
 // from 🤖 <sender>…"` run through the terminal tool IS the messaging

@@ -7,15 +7,13 @@ import { deliveryTargetFromCommand, replyTextFromResult } from './agent-delivery
 // (the canonical Bot Mode command shape) and the reply extraction.
 describe('delivery command detection', () => {
   it('matches the canonical delivery command', () => {
-    const cmd =
-      'hermes -p turqoise chat --in ~ -c "Bot Chat" -Q -q "Message from 🤖 Hermes (@hermes): hi there"'
+    const cmd = 'hermes -p turqoise chat --in ~ -c "Bot Chat" -Q -q "Message from 🤖 Hermes (@hermes): hi there"'
 
     expect(deliveryTargetFromCommand(cmd)).toBe('turqoise')
   })
 
   it('matches with a cd prefix and timeout wrapper', () => {
-    const cmd =
-      'cd ~ && timeout 240 hermes -p mr-tester chat --in "~" -Q -q "Message from 🤖 Hermes: hello"'
+    const cmd = 'cd ~ && timeout 240 hermes -p mr-tester chat --in "~" -Q -q "Message from 🤖 Hermes: hello"'
 
     expect(deliveryTargetFromCommand(cmd)).toBe('mr-tester')
   })

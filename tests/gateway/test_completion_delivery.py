@@ -733,3 +733,154 @@ def test_shutdown_cancels_overlapping_flushes_for_same_route():
 
     asyncio.run(_exercise())
     adapter.handle_message.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Async-delegation same-tick coalescing (#70300)
+# ---------------------------------------------------------------------------
+
+
+def _distinct_async_event(delegation_id, session_key="agent:main:telegram:dm:12345:678"):
+    event = _async_event(delegation_id)
+    event["session_key"] = session_key
+    event["summary"] = f"Result for {delegation_id}"
+    return event
+
+
+def test_same_tick_async_batch_coalesces_into_one_turn_and_acks_all_rows(
+    monkeypatch, isolated_registry,
+):
+    """Three same-session async completions in one drain -> one synthetic turn.
+
+    All three durable delegation rows must be honestly acknowledged only
+    after the single consolidated injection was accepted by the adapter.
+    """
+    from tools import async_delegation
+
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    events = [_distinct_async_event(f"deleg_batch_{i}") for i in range(3)]
+    for event in events:
+        _persist_pending_completion(event)
+        isolated.put(dict(event))
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    adapter.handle_message.assert_awaited_once()
+    delivered = adapter.handle_message.await_args.args[0]
+    assert "3 background subagent delegations" in delivered.text
+    for i in range(3):
+        assert f"Result for deleg_batch_{i}" in delivered.text
+    for event in events:
+        row = async_delegation.get_durable_delegation(event["delegation_id"])
+        assert row is not None
+        assert row["delivery_state"] == "delivered"
+    assert isolated.empty()
+
+
+def test_same_tick_async_events_for_different_sessions_do_not_coalesce(
+    monkeypatch, isolated_registry,
+):
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    isolated.put(_distinct_async_event("deleg_route_a"))
+    isolated.put(_distinct_async_event(
+        "deleg_route_b", session_key="agent:main:telegram:dm:99999:678",
+    ))
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    assert adapter.handle_message.await_count == 2
+    texts = [call.args[0].text for call in adapter.handle_message.await_args_list]
+    assert not any("background subagent delegations" in text for text in texts)
+    assert any("deleg_route_a" in text for text in texts)
+    assert any("deleg_route_b" in text for text in texts)
+
+
+def test_single_async_event_latency_and_text_are_unchanged(
+    monkeypatch, isolated_registry,
+):
+    """A lone completion keeps the plain per-event formatter output."""
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    isolated.put(_distinct_async_event("deleg_single"))
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    adapter.handle_message.assert_awaited_once()
+    delivered = adapter.handle_message.await_args.args[0]
+    assert "background subagent delegations" not in delivered.text
+    assert "deleg_single" in delivered.text
+
+
+def test_failed_coalesced_async_batch_releases_claims_and_retries(
+    monkeypatch, isolated_registry,
+):
+    """A rejected consolidated injection leaves every durable row pending."""
+    from tools import async_delegation
+
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    events = [_distinct_async_event(f"deleg_retry_{i}") for i in range(2)]
+    for event in events:
+        _persist_pending_completion(event)
+        isolated.put(dict(event))
+
+    adapter = SimpleNamespace(
+        handle_message=AsyncMock(side_effect=[RuntimeError("temporary"), None])
+    )
+    runner = _runner(adapter)
+    _stop_after_sleeps(monkeypatch, runner, count=3)
+
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    # First tick fails as one batch, second tick delivers the same batch.
+    assert adapter.handle_message.await_count == 2
+    for event in events:
+        row = async_delegation.get_durable_delegation(event["delegation_id"])
+        assert row is not None
+        assert row["delivery_state"] == "delivered"
+    assert isolated.empty()
+
+
+def test_sibling_claimed_by_other_consumer_is_not_double_delivered(
+    monkeypatch, isolated_registry,
+):
+    """A sibling owned elsewhere is excluded from the consolidated turn."""
+    from tools import async_delegation
+
+    isolated = queue.Queue()
+    monkeypatch.setattr(isolated_registry, "completion_queue", isolated)
+    events = [_distinct_async_event(f"deleg_owned_{i}") for i in range(2)]
+    for event in events:
+        _persist_pending_completion(event)
+        isolated.put(dict(event))
+    # Simulate another live consumer holding the second row's claim.
+    assert async_delegation.claim_completion_delivery(
+        events[1]["delegation_id"], "other-consumer:claim",
+    )
+
+    adapter = SimpleNamespace(handle_message=AsyncMock())
+    runner = _runner(adapter)
+    _stop_after_sleeps(monkeypatch, runner, count=2)
+
+    asyncio.run(runner._async_delegation_watcher(interval=0))
+
+    adapter.handle_message.assert_awaited_once()
+    delivered = adapter.handle_message.await_args.args[0]
+    assert "Result for deleg_owned_0" in delivered.text
+    assert "Result for deleg_owned_1" not in delivered.text
+    row = async_delegation.get_durable_delegation(events[1]["delegation_id"])
+    assert row["delivery_state"] == "pending"

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 
 import { listAllProfileSessions, listSidebarSessions, type SessionInfo } from '@/hermes'
 import { sameCronSignature } from '@/lib/session-signatures'
@@ -102,10 +102,12 @@ interface UseSessionListActionsArgs {
 export function useSessionListActions({ profileScope }: UseSessionListActionsArgs) {
   const profileScopeRef = useRef(profileScope)
   const loadMoreMessagingRequestRef = useRef<Record<string, number>>({})
-  const refreshCronJobsRequestRef = useRef(0)
   const refreshMessagingSessionsRequestRef = useRef(0)
   const refreshSessionsRequestRef = useRef(0)
-  profileScopeRef.current = profileScope
+
+  useLayoutEffect(() => {
+    profileScopeRef.current = profileScope
+  }, [profileScope])
 
   /** Refresh the active profile's messaging-platform sidebar slice. */
   const refreshMessagingSessions = useCallback(async () => {
@@ -164,14 +166,21 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       const inPlatform = (s: SessionInfo) => normalizeSessionSource(s.source) === platform && inProfile(s)
       const loaded = $messagingSessions.get().filter(inPlatform).length
 
-      const result = await listAllProfileSessions(
-        loaded + SIDEBAR_SESSIONS_PAGE_SIZE,
-        1,
-        'exclude',
-        'recent',
-        sessionProfile,
-        { source: platform }
-      )
+      let result
+
+      try {
+        result = await listAllProfileSessions(
+          loaded + SIDEBAR_SESSIONS_PAGE_SIZE,
+          1,
+          'exclude',
+          'recent',
+          sessionProfile,
+          { source: platform }
+        )
+      } catch {
+        // Non-fatal: leave the platform's loaded rows and total unchanged.
+        return
+      }
 
       if (
         loadMoreMessagingRequestRef.current[requestKey] !== requestId ||
@@ -201,9 +210,6 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     if (messagingProfileFor(profileScopeRef.current) !== sessionProfile) {
       return
     }
-
-    const requestId = refreshCronJobsRequestRef.current + 1
-    refreshCronJobsRequestRef.current = requestId
 
     try {
       await refreshCronJobsStore(sessionProfile)

@@ -38,6 +38,20 @@ test('remote sidebar slices preserve the explicit all-profiles scope', () => {
   )
 })
 
+test('remote sidebar slices fall back to the all-profiles scope and default limits', () => {
+  for (const searchParams of [new URLSearchParams(), new URLSearchParams({ recents_profile: '   ' })]) {
+    const slices = buildSidebarSessionSliceParams(searchParams)
+
+    assert.deepEqual(
+      Object.values(slices).map(params => params.get('profile')),
+      ['all', 'all', 'all']
+    )
+    assert.equal(slices.recents.get('limit'), '20')
+    assert.equal(slices.cron.get('limit'), '50')
+    assert.equal(slices.messaging.get('limit'), '100')
+  }
+})
+
 test('primary session reads use the profile-aware request path', async () => {
   const calls: Array<{ profile: string | null; path: string }> = []
   const expected = { sessions: [{ id: 'session-1' }], total: 1, profile_totals: { default: 1 } }

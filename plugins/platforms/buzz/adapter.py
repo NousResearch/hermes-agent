@@ -752,7 +752,11 @@ class BuzzAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=False, error="Empty message")
         args = ["messages", "send", "--channel", str(chat_id), "--content", "-"]
-        reply_target = reply_to or (metadata or {}).get("thread_id")
+        # Prefer explicit reply_to, then metadata.thread_id (Slack-style), then
+        # metadata.reply_to_message_id (gateway stream consumer / progress).
+        # Without the last, interim commentary posts flat in the channel.
+        meta = metadata or {}
+        reply_target = reply_to or meta.get("thread_id") or meta.get("reply_to_message_id")
         if reply_target:
             args += ["--reply-to", str(reply_target)]
         code, out, err = await self._run_cli(args, input_text=content)

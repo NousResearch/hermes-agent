@@ -922,7 +922,7 @@ def _resolve_progress_thread_id(
         return str(source_thread_id) if source_thread_id else None
     if source_thread_id:
         return str(source_thread_id)
-    if platform_key in {"slack", "mattermost"} and event_message_id:
+    if platform_key in {"slack", "mattermost", "buzz"} and event_message_id:
         return str(event_message_id)
     return None
 
@@ -28317,6 +28317,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if (
                 source.platform in (Platform.FEISHU, Platform.MATTERMOST)
                 and source.thread_id
+                and event_message_id
+            )
+            or (
+                # Buzz has no native thread_id; threading is always via reply-to
+                # the triggering event id (channel clutter otherwise).
+                str(getattr(source.platform, "value", source.platform) or "").lower() == "buzz"
                 and event_message_id
             )
             or _relay_prospective_thread_id

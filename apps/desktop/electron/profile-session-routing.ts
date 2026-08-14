@@ -118,6 +118,7 @@ export function buildSidebarSessionSliceParams(searchParams: URLSearchParams): S
   }
 }
 
+/** Fetch the primary backend's profile-aware session slice, falling back to an empty result when unavailable. */
 export async function fetchPrimaryProfileSessions(
   searchParams: URLSearchParams,
   fetchJsonForProfile: FetchJsonForProfile

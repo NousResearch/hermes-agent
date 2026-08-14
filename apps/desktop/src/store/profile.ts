@@ -315,11 +315,11 @@ export async function ensureGatewayProfile(profile: string | null | undefined): 
 
 export const ALL_PROFILES = '__all__'
 
-// Messaging totals belong to the Desktop profile route as well as the source.
-// Shared by the fetcher and sidebar so neither can read another profile's count.
+/** Normalize a sidebar scope to the profile key used by messaging session queries. */
 export const messagingProfileFor = (profileScope: string): string =>
   profileScope === ALL_PROFILES ? 'all' : normalizeProfileKey(profileScope)
 
+/** Key a platform total by its Desktop profile route so counts cannot leak across profiles. */
 export const messagingTotalsKey = (messagingProfile: string, sourceId: string): string =>
   `${messagingProfile}:${sourceId}`
 

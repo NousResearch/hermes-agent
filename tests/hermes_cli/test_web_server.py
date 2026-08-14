@@ -1926,6 +1926,59 @@ class TestWebServerEndpoints:
             "msg 499",
         ]
 
+    def test_get_session_messages_returns_full_compression_lineage(self):
+        """#79565: the messages endpoint serves the FULL compression lineage,
+        not just the tip segment — early dialogue must not disappear after a
+        compression fork."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            root_id, child_id = "lineage-root", "lineage-child"
+            db.create_session(root_id, "cli")
+            # Early dialogue lives only in the root (pre-compression).
+            for i in range(3):
+                db.append_message(root_id, role="user", content=f"early {i}")
+            db.end_session(root_id, "compression")
+            db.create_session(child_id, "cli", parent_session_id=root_id)
+            # Latest dialogue lives only in the child (post-compression).
+            for i in range(2):
+                db.append_message(child_id, role="user", content=f"late {i}")
+        finally:
+            db.close()
+
+        # Query by the ROOT id (the desktop's stored session handle).
+        resp = self.client.get("/api/sessions/lineage-root/messages")
+        assert resp.status_code == 200
+        payload = resp.json()
+        contents = [m["content"] for m in payload["messages"]]
+        assert "early 0" in contents and "early 2" in contents
+        assert "late 0" in contents and "late 1" in contents
+
+    def test_get_session_messages_lineage_pagination(self):
+        """#79565: pagination pages across the full lineage (ancestors + tip)."""
+        from hermes_state import SessionDB
+
+        db = SessionDB()
+        try:
+            root_id, child_id = "page-root", "page-child"
+            db.create_session(root_id, "cli")
+            for i in range(2):
+                db.append_message(root_id, role="user", content=f"early {i}")
+            db.end_session(root_id, "compression")
+            db.create_session(child_id, "cli", parent_session_id=root_id)
+            for i in range(2):
+                db.append_message(child_id, role="user", content=f"late {i}")
+        finally:
+            db.close()
+
+        resp = self.client.get("/api/sessions/page-root/messages?limit=2&offset=2")
+        assert resp.status_code == 200
+        payload = resp.json()
+        contents = [m["content"] for m in payload["messages"]]
+        # offset=2 lands mid-lineage: the child (late) rows.
+        assert contents == ["late 0", "late 1"]
+
     def test_export_session_streams_bounded_message_pages(self, monkeypatch):
         from hermes_state import SessionDB
 

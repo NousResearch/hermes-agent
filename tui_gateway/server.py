@@ -3775,7 +3775,7 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
 # ``billing_provider="openrouter"``; dropping it forces resume to the current
 # global model (e.g. a custom endpoint), which is the wrong provider for the
 # stored model. See #57588.
-_BARE_BILLING_PROVIDERS = {"auto", "custom"}
+from hermes_state import _BARE_BILLING_PROVIDERS
 
 
 def _stored_session_runtime_overrides(row: dict | None) -> dict:

@@ -278,3 +278,90 @@ def test_round_trip_persist_then_restore(tmp_path, monkeypatch):
     assert restored.model == "deepseek-v4-flash-free"
     assert restored.provider == "custom:opencode-zen"
     assert restored.base_url == "https://oz/v1"
+
+
+# ── update_session_model provider persistence (#79536) ──────────────
+
+
+def test_update_session_model_persists_provider(tmp_path, monkeypatch):
+    """update_session_model writes $.model + $.provider into model_config."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="s1", source="cli", model="m0")
+    db.update_session_model("s1", "claude-x", provider="custom:feather")
+    meta = db.get_session("s1")
+    assert meta["model"] == "claude-x"
+    config = json.loads(meta["model_config"])
+    assert config["model"] == "claude-x"
+    assert config["provider"] == "custom:feather"
+
+
+def test_update_session_model_without_provider_preserves_existing(tmp_path, monkeypatch):
+    """Without provider, existing $.provider is left untouched."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="s2", source="cli", model="m0")
+    db.update_session_model("s2", "claude-x", provider="custom:feather")
+    db.update_session_model("s2", "gpt-5.4")  # no provider
+    meta = db.get_session("s2")
+    config = json.loads(meta["model_config"])
+    assert config["model"] == "gpt-5.4"
+    assert config["provider"] == "custom:feather"  # preserved
+
+
+def test_update_session_model_null_model_config_with_provider(tmp_path, monkeypatch):
+    """Provider persistence works when model_config starts as NULL."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(session_id="s3", source="cli", model="m0")
+    # model_config is NULL at creation — update_session_model must create it
+    db.update_session_model("s3", "claude-x", provider="minimax")
+    meta = db.get_session("s3")
+    config = json.loads(meta["model_config"])
+    assert config["model"] == "claude-x"
+    assert config["provider"] == "minimax"
+
+
+# ── session_gateway_runtime billing_provider fallback (#85721) ─────
+
+
+def test_session_gateway_runtime_falls_back_to_billing_provider():
+    """Sessions that never ran /model have only billing_provider."""
+    meta = {
+        "model": "glm-4.7",
+        "model_config": None,
+        "billing_provider": "minimax",
+    }
+    runtime = SessionDB.session_gateway_runtime(meta)
+    assert runtime == {"provider": "minimax"}
+
+
+def test_session_gateway_runtime_billing_provider_bare_bucket_ignored():
+    """Bare billing buckets (auto/custom) are not routable — skip them."""
+    for bare in ("auto", "custom"):
+        meta = {
+            "model": "m",
+            "model_config": None,
+            "billing_provider": bare,
+        }
+        assert SessionDB.session_gateway_runtime(meta) == {}
+
+
+def test_session_gateway_runtime_explicit_provider_wins_over_billing():
+    """Explicit model_config provider takes precedence over billing_provider."""
+    meta = _row(model_config={"provider": "nous"})
+    meta["billing_provider"] = "minimax"
+    runtime = SessionDB.session_gateway_runtime(meta)
+    assert runtime == {"provider": "nous"}
+
+
+def test_restore_session_model_restores_billing_provider_fallback():
+    """End-to-end: _restore_session_model uses billing_provider fallback."""
+    stub = _make_stub()
+    stub._restore_session_model({
+        "model": "glm-4.7",
+        "model_config": None,
+        "billing_provider": "minimax",
+    })
+    assert stub.model == "glm-4.7"
+    assert stub.provider == "minimax"

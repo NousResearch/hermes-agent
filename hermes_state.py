@@ -255,6 +255,15 @@ def _delegate_from_json(col: str = "model_config") -> str:
 # None result ("merged config is empty → store NULL").
 _MODEL_CONFIG_ROW_MISSING = object()
 
+# Billing-bucket classes that aren't a routable provider identity on their
+# own — used by session_gateway_runtime's billing_provider fallback and by
+# tui_gateway.server._stored_session_runtime_overrides. A session that
+# persisted only one of these (never ran /model) must fall back to the
+# ambient config default rather than restore a bare bucket. Shared here so
+# both consumers stay in sync (previously duplicated as a set in
+# tui_gateway/server.py).
+_BARE_BILLING_PROVIDERS = frozenset({"auto", "custom"})
+
 
 def _cwd_prefix_clause(cwd_prefix: str) -> Tuple[str, List[str]]:
     prefix = cwd_prefix.rstrip("/\\") or cwd_prefix
@@ -5893,7 +5902,9 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
             self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
 
-    def update_session_model(self, session_id: str, model: str) -> None:
+    def update_session_model(
+        self, session_id: str, model: str, provider: Optional[str] = None
+    ) -> None:
         """Update the model for a session after a mid-session switch.
 
         Unlike ``update_token_counts`` which uses ``COALESCE(model, ?)``
@@ -5903,6 +5914,13 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         footer metadata is rebuilt on the next turn. A successful /model
         switch explicitly replaces any confirmed Browser runtime lock while
         preserving unrelated lineage markers in ``model_config``.
+
+        When *provider* is given, it is merged into ``model_config``
+        alongside the model (``$.model`` / ``$.provider``) so a later
+        resume recombines the persisted model with the provider that
+        actually serves it instead of the config.yaml primary provider
+        (#79536). Callers without provider knowledge leave any stored
+        provider untouched.
         """
         # This write bypasses the token queue, so deltas enqueued before the
         # switch must land first: a still-queued first delta carries the
@@ -5913,19 +5931,24 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         self.flush_token_counts()
 
         def _do(conn):
+            # Use the shared merge discipline so lineage markers like
+            # _branched_from / _delegate_from survive. browser_model_lock
+            # is deleted via a None patch value (same semantics as the
+            # old json_remove).
+            patch: Dict[str, Any] = {"browser_model_lock": None}
+            if model:
+                patch["model"] = model
+            if provider:
+                patch["provider"] = provider
+            merged = self._merge_model_config_json(conn, session_id, patch)
+            if merged is _MODEL_CONFIG_ROW_MISSING:
+                return
             conn.execute(
-                """UPDATE sessions SET
-                   model = ?,
-                   model_config = CASE
-                       WHEN model_config IS NULL THEN NULL
-                       WHEN json_valid(model_config)
-                           THEN json_remove(model_config, '$.browser_model_lock')
-                       ELSE model_config
-                   END,
-                   system_prompt = NULL,
-                   system_prompt_hash = NULL
-                   WHERE id = ?""",
-                (model, session_id),
+                "UPDATE sessions SET "
+                "model = ?, model_config = ?, "
+                "system_prompt = NULL, system_prompt_hash = NULL "
+                "WHERE id = ?",
+                (model, merged, session_id),
             )
             self._delete_unreferenced_system_prompts(conn)
         self._execute_write(_do)
@@ -6118,18 +6141,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         ``gateway_runtime`` key (written by the gateway's
         ``_sync_session_model_from_agent`` and the CLI ``/model`` persist),
         falling back to the top-level ``provider``/``base_url``/``api_mode``
-        keys the TUI gateway's ``_runtime_model_config`` writes. Returns an
-        empty dict on any parse failure — resume falls back to ambient
-        config resolution.
+        keys the TUI gateway's ``_runtime_model_config`` writes. As a last
+        resort, falls back to the ``billing_provider`` column (written on
+        every session's first accounted API call) so sessions that never ran
+        ``/model`` still restore the provider that actually served them.
+        Returns an empty dict on any parse failure — resume falls back to
+        ambient config resolution.
         """
         raw = (session_meta or {}).get("model_config")
         if isinstance(raw, str):
             try:
                 raw = json.loads(raw)
             except Exception:
-                return {}
+                raw = {}
         if not isinstance(raw, dict):
-            return {}
+            raw = {}
         runtime = raw.get("gateway_runtime")
         if isinstance(runtime, dict) and runtime.get("provider"):
             # Filter None values: the persist path writes or-None to trigger
@@ -6143,7 +6169,21 @@ class SessionDB(SessionSearchMixin, SessionSchemaMixin, SessionPortabilityMixin)
         }
         if top_level:
             return top_level
-        return dict(runtime) if isinstance(runtime, dict) else {}
+        # Last resort: billing_provider column. Written via COALESCE on every
+        # session's first accounted API call — the only durable record for
+        # sessions that never ran /model. Mirrors the TUI gateway's
+        # _stored_session_runtime_overrides fallback. Bare billing buckets
+        # ("auto"/"custom") are not routable identities — filter them out so
+        # resume falls back to the ambient config default instead.
+        billing_provider = str(
+            (session_meta or {}).get("billing_provider") or ""
+        ).strip()
+        if (
+            billing_provider
+            and billing_provider.lower() not in _BARE_BILLING_PROVIDERS
+        ):
+            return {"provider": billing_provider}
+        return {k: v for k, v in (runtime or {}).items() if v is not None} if isinstance(runtime, dict) else {}
 
     def update_session_billing_route(
         self,

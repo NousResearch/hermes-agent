@@ -9259,12 +9259,12 @@ def _define_discord_view_classes() -> None:
 
         async def _expensive_warning_for(self, model_id: str):
             try:
-                from hermes_cli.model_cost_guard import expensive_model_warning
+                from hermes_cli.model_selection_guards import combined_selection_warning
 
                 # Pricing lookup can hit models.dev / a /models endpoint on a
                 # cache miss — keep it off the event loop.
                 return await asyncio.to_thread(
-                    expensive_model_warning,
+                    combined_selection_warning,
                     model_id,
                     provider=self._selected_provider,
                 )
@@ -9363,7 +9363,7 @@ def _define_discord_view_classes() -> None:
                 self._build_expensive_confirm(model_id)
                 await interaction.response.edit_message(
                     embed=discord.Embed(
-                        title="⚠ Expensive Model Warning",
+                        title=f"⚠ {warning.title}",
                         description=warning.message,
                         color=discord.Color.red(),
                     ),

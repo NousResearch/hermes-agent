@@ -2433,18 +2433,19 @@ class GatewaySlashCommandsMixin:
 
             return "\n".join(lines)
 
-        # Expensive-model confirmation gate (typed /model <name> path).
+        # Selection-guard confirmation gate (typed /model <name> path).
         # The pickers (Telegram/Discord inline keyboards, TUI, dashboard)
         # already confirm via their own UI affordances; this covers the
         # direct text command, which previously bypassed the guard.
-        # expensive_model_warning() may hit models.dev or a /models endpoint
-        # on a cache miss, so run it off the event loop.
+        # Runs the unified registry (cost + data-policy + future guards).
+        # Pricing lookups may hit models.dev or a /models endpoint on a
+        # cache miss, so run it off the event loop.
         _cost_warning = None
         try:
-            from hermes_cli.model_cost_guard import expensive_model_warning
+            from hermes_cli.model_selection_guards import combined_selection_warning
 
             _cost_warning = await asyncio.to_thread(
-                expensive_model_warning,
+                combined_selection_warning,
                 result.new_model,
                 provider=result.target_provider,
                 base_url=result.base_url or current_base_url or "",
@@ -2461,7 +2462,7 @@ class GatewaySlashCommandsMixin:
                         f"({current_model or 'unknown'})."
                     )
                 # "once" and "always" both proceed — there is no persistent
-                # opt-out for the cost guard (each expensive switch should be
+                # opt-out for selection guards (each guarded switch should be
                 # an explicit decision).
                 return await _finish_switch()
 
@@ -2469,9 +2470,9 @@ class GatewaySlashCommandsMixin:
             return await self._request_slash_confirm(
                 event=event,
                 command="model",
-                title="Expensive Model Warning",
+                title=_cost_warning.title,
                 message=(
-                    f"⚠️ **Expensive Model Warning**\n\n{_cost_warning.message}\n\n"
+                    f"⚠️ **{_cost_warning.title}**\n\n{_cost_warning.message}\n\n"
                     f"_Text fallback: reply `{_p}approve` to switch or `{_p}cancel` to keep "
                     "the current model._"
                 ),

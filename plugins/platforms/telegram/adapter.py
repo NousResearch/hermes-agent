@@ -6519,12 +6519,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
 
             try:
-                from hermes_cli.model_cost_guard import expensive_model_warning
+                from hermes_cli.model_selection_guards import combined_selection_warning
 
                 # Pricing lookup can hit models.dev / a /models endpoint on a
                 # cache miss — keep it off the event loop.
                 warning = await asyncio.to_thread(
-                    expensive_model_warning,
+                    combined_selection_warning,
                     model_id,
                     provider=provider_slug,
                 )
@@ -6540,12 +6540,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 ])
                 await query.edit_message_text(
                     text=self.format_message(
-                        f"⚠ *Expensive Model Warning*\n\n{warning.message}"
+                        f"⚠ *{warning.title}*\n\n{warning.message}"
                     ),
                     parse_mode=ParseMode.MARKDOWN_V2,
                     reply_markup=keyboard,
                 )
-                await query.answer(text="Confirm expensive model")
+                await query.answer(text="Confirm model selection")
                 return
 
             switch_failed = False

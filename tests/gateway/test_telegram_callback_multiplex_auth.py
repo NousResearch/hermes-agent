@@ -367,3 +367,150 @@ class TestCallbackDispatchGating:
         assert query.answers
         assert "not authorized" not in query.answers[-1].lower()
         assert "already" in query.answers[-1].lower()
+
+
+# -- Fully wired: runner registration + real per-profile PairingStore ------
+
+
+@contextmanager
+def _clean_auth_env(monkeypatch):
+    """Strip every Telegram auth env so ``_is_user_authorized`` reaches the
+    pairing-store check instead of short-circuiting on an allowlist."""
+    for var in (
+        "TELEGRAM_ALLOWED_USERS",
+        "TELEGRAM_ALLOW_ALL_USERS",
+        "TELEGRAM_ALLOW_BOTS",
+        "TELEGRAM_GROUP_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_CHATS",
+        "GATEWAY_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOWED_USERS",
+    ):
+        monkeypatch.delenv(var, raising=False)
+    yield
+
+
+def _wired_runner(monkeypatch, *, routed_profile, pairing_stores, default_store):
+    """A GatewayRunner exposing the REAL callback-authorization chain:
+    ``_authorize_platform_callback`` → ``_is_user_authorized`` →
+    ``_pairing_store_for`` → per-profile ``PairingStore``.
+
+    Only the seams the issue lets us stub are stubbed: route *name* resolution
+    (covered live by ``TestAuthorizePlatformCallback``), the adapter-lookup
+    helpers, the profile runtime scope, and profile-home resolution. Env
+    allowlists and adapter-delegation are neutralized so the pairing store is
+    the sole authorization authority — i.e. routing the callback to the wrong
+    store, or dropping resolver registration, both surface as a denied gate.
+    """
+    from gateway.run import GatewayRunner
+
+    runner = MagicMock(spec=GatewayRunner)
+    runner.config = SimpleNamespace(multiplex_profiles=True, profile_routes=[])
+    runner.pairing_stores = pairing_stores
+    runner.pairing_store = default_store
+    runner._profile_name_for_source = MagicMock(return_value=routed_profile)
+    # Bind the real authorization chain to this runner instance.
+    runner._authorize_platform_callback = (
+        GatewayRunner._authorize_platform_callback.__get__(runner)
+    )
+    runner._is_user_authorized = GatewayRunner._is_user_authorized.__get__(runner)
+    runner._pairing_store_for = GatewayRunner._pairing_store_for.__get__(runner)
+    # Benign adapter-lookup helpers: never fail open through the delegation gate
+    # (a bare MagicMock here would auto-truthy and admit everyone).
+    runner._adapter_authorization_is_upstream = MagicMock(return_value=False)
+    runner._adapter_enforces_own_access_policy = MagicMock(return_value=False)
+    runner._adapter_profile_for_source = MagicMock(return_value=None)
+    runner._adapter_for_source = MagicMock(return_value=None)
+    runner._resolve_profile_home_for_source = MagicMock(return_value="/home")
+    monkeypatch.setattr("gateway.run._profile_runtime_scope", _noop_scope)
+    return runner
+
+
+@pytest.fixture
+def _pairing_env(monkeypatch, tmp_path):
+    """Real per-profile + default PairingStores under a temp HERMES_HOME, with
+    operator ``999`` paired ONLY in the ``secondary`` profile."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    from gateway.pairing import PairingStore
+
+    secondary = PairingStore(profile="secondary")
+    secondary._approve_user("telegram", "999", "op")
+    default_store = PairingStore(profile="default")
+    # Sanity: the operator is isolated to the routed profile.
+    assert secondary.is_approved("telegram", "999") is True
+    assert default_store.is_approved("telegram", "999") is False
+    return {"secondary": secondary}, default_store
+
+
+class TestFullyWiredPairingStoreDispatch:
+    """End-to-end callback gating with the resolver actually *registered* on the
+    adapter (``set_callback_auth_resolver``) and a real per-profile
+    ``PairingStore`` behind ``_is_user_authorized``. This is the regression the
+    seam-level tests could not catch: it would fail if resolver registration
+    were removed from the runner, or if the callback were authorized against the
+    wrong (default) pairing store — the exact #86296 failure mode."""
+
+    @pytest.mark.parametrize(
+        "data, registry_attr, key",
+        [
+            ("ea:once:1", "_approval_state", 1),
+            ("sc:once:cid", "_slash_confirm_state", "cid"),
+            ("cl:lid:0", "_clarify_state", "lid"),
+        ],
+    )
+    def test_paired_operator_on_routed_profile_clears_gate(
+        self, monkeypatch, _pairing_env, data, registry_attr, key
+    ):
+        with _clean_auth_env(monkeypatch):
+            pairing_stores, default_store = _pairing_env
+            runner = _wired_runner(
+                monkeypatch,
+                routed_profile="secondary",
+                pairing_stores=pairing_stores,
+                default_store=default_store,
+            )
+            adapter = _make_adapter()
+            # REAL registration: the runner installs its own resolver.
+            adapter.set_callback_auth_resolver(runner._authorize_platform_callback)
+            setattr(adapter, registry_attr, {})
+            query = _FakeQuery(data)
+            _run(adapter._handle_callback_query(_FakeUpdate(query), None))
+
+        assert query.answers
+        assert "not authorized" not in query.answers[-1].lower()
+        assert "already" in query.answers[-1].lower()
+
+    @pytest.mark.parametrize(
+        "data, registry_attr, key, denial_marker",
+        [
+            ("ea:once:1", "_approval_state", 1, "approve"),
+            ("sc:once:cid", "_slash_confirm_state", "cid", "answer this prompt"),
+            ("cl:lid:0", "_clarify_state", "lid", "answer this prompt"),
+        ],
+    )
+    def test_unpaired_default_route_denies_and_keeps_state(
+        self, monkeypatch, _pairing_env, data, registry_attr, key, denial_marker
+    ):
+        """No matching route → the default store (where the operator is NOT
+        paired) is consulted, the tap is denied, and the pending action is not
+        consumed. Proves the allow branch above is not vacuous and that the
+        authorization really flows through the per-source store selection."""
+        with _clean_auth_env(monkeypatch):
+            pairing_stores, default_store = _pairing_env
+            runner = _wired_runner(
+                monkeypatch,
+                routed_profile=None,
+                pairing_stores=pairing_stores,
+                default_store=default_store,
+            )
+            adapter = _make_adapter()
+            adapter.set_callback_auth_resolver(runner._authorize_platform_callback)
+            adapter._approval_state = {1: "sess-ea"}
+            adapter._slash_confirm_state = {"cid": "sess-sc"}
+            adapter._clarify_state = {"lid": "sess-cl"}
+            query = _FakeQuery(data)
+            _run(adapter._handle_callback_query(_FakeUpdate(query), None))
+
+        assert query.answers
+        assert "not authorized" in query.answers[-1].lower()
+        assert denial_marker in query.answers[-1].lower()
+        assert key in getattr(adapter, registry_attr)

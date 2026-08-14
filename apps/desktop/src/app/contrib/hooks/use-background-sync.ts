@@ -411,7 +411,7 @@ export function useBackgroundSync({
         })
         .catch(() => undefined)
     }
-  }, [gatewayState, refreshCurrentModel, refreshSessions, requestGateway])
+  }, [activeGatewayProfile, gatewayState, refreshCurrentModel, refreshSessions, requestGateway])
 
   // A reconnect loses renderer-only working/attention atoms while the backend
   // keeps the actual turns alive. Re-seed from the gateway's in-memory session

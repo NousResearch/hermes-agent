@@ -108,6 +108,41 @@ The adapter will restore saved credentials, connect to the iLink API, and begin 
 - **Message deduplication** — 5-minute sliding window prevents double-processing
 - **Automatic retry with backoff** — recovers from transient API errors
 
+## Multiple Accounts
+
+Hermes can connect to **more than one** personal WeChat account in a single gateway process. The primary account is configured the normal way (via `WEIXIN_TOKEN` + `WEIXIN_ACCOUNT_ID` or the `weixin` key in `config.yaml`). Each additional account is identified by a stable string (`account_id`) and persists its credentials under `~/.hermes/weixin/accounts/<account_id>.json` — the same path the QR-login flow already writes to.
+
+### Add a second account
+
+The simplest way is to re-run the QR login with a different `account_id`:
+
+```bash
+# From any directory, with HERMES_HOME pointing at your install.
+hermes weixin login --account-id work
+hermes weixin login --account-id personal
+```
+
+This writes two files:
+
+```
+~/.hermes/weixin/accounts/work.json
+~/.hermes/weixin/accounts/personal.json
+```
+
+Restart the gateway. On startup, `gateway.platforms.weixin_multi.register_persisted_weixin_accounts` discovers both files and creates one `weixin:work` and one `weixin:personal` platform entry alongside the primary. Each account runs its own long-poll loop and is addressed by name from `send_message` (e.g. `deliver=weixin:work`) and from `cron` (`hermes cron` targets).
+
+### How it works
+
+* Each persisted account becomes an independent `BasePlatformAdapter` registered in `platform_registry`. The gateway runner iterates `config.platforms` and connects every enabled entry exactly like any other platform.
+* The primary account's `dm_policy`, `allow_from`, `send_chunk_delay_seconds`, etc. are inherited by the extras; per-account overrides can be set in `config.yaml` under `platforms."weixin:<account_id>"`.
+* A single outbound reply from the agent fans out to **every** connected account — the same message becomes visible from each signed-in WeChat identity.
+
+### Caveats
+
+* Each account needs its own `iLink` bot token; reusing a token across accounts is rejected by the iLink API.
+* All accounts share the same iLink rate-limit budget per IP — running too many in parallel may trip `RATE_LIMIT_ERRCODE` back-off.
+* The same Hermes agent session is reused across all accounts: any one of them can be the trigger that wakes the agent, but only one reply will be produced per turn.
+
 ## Configuration Options
 
 Set these in `config.yaml` under `platforms.weixin.extra`:

@@ -41,6 +41,7 @@ import yaml
 from hermes_constants import (
     get_hermes_home,
     get_optional_mcps_dir,
+    venv_python_path,
 )
 from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.colors import Colors, color
@@ -404,9 +405,10 @@ def _runtime_python_executable() -> str:
 
 
 def _venv_python_path(install_dir: Path, *, os_name: str) -> str:
+    path = venv_python_path(install_dir / ".venv", windows=os_name == "nt")
     if os_name == "nt":
-        return str(PureWindowsPath(str(install_dir)) / ".venv" / "Scripts" / "python.exe")
-    return str(PurePosixPath(str(install_dir).replace("\\", "/")) / ".venv" / "bin" / "python")
+        return str(PureWindowsPath(str(path)))
+    return str(PurePosixPath(str(path).replace("\\", "/")))
 
 
 def _install_dir_value(install_dir: Path, *, os_name: str) -> str:
@@ -420,17 +422,9 @@ def _expand_catalog_vars(
     value: str,
     install_dir: Optional[Path],
     *,
-    for_shell: bool = False,
     os_name: Optional[str] = None,
-    python_executable: Optional[str] = None,
 ) -> str:
-    """Expand trusted catalog path variables for this runtime.
-
-    Bootstrap commands run through a shell and therefore receive quoted
-    substitutions. Transport command/args are persisted as raw argv values.
-    User environment placeholders are deliberately left untouched for the MCP
-    runtime's existing `${ENV_VAR}` expansion.
-    """
+    """Expand trusted catalog variables into raw transport argv values."""
     resolved_os = os_name or _runtime_os_name()
     needs_install = _INSTALL_DIR_VAR in value or _VENV_PYTHON_VAR in value
     if needs_install and install_dir is None:
@@ -442,7 +436,7 @@ def _expand_catalog_vars(
         )
 
     replacements = {
-        _PYTHON_VAR: python_executable or _runtime_python_executable(),
+        _PYTHON_VAR: _runtime_python_executable(),
     }
     if install_dir is not None:
         replacements[_INSTALL_DIR_VAR] = _install_dir_value(

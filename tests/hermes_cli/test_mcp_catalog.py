@@ -7,6 +7,7 @@ launch an MCP is mocked.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from unittest.mock import patch
@@ -229,7 +230,7 @@ class TestCatalogPathVariables:
             r"C:\MCP installs\n8n\.venv\Scripts\python.exe"
         )
 
-    def test_windows_bootstrap_escapes_percent_in_install_path(self):
+    def test_windows_bootstrap_keeps_path_metacharacters_out_of_command(self):
         from hermes_cli.mcp_catalog import _expand_bootstrap_vars
 
         command, env = _expand_bootstrap_vars(
@@ -238,7 +239,11 @@ class TestCatalogPathVariables:
             os_name="nt",
         )
 
-        assert command == '"%HERMES_MCP_BOOTSTRAP_VENV_PYTHON%" -m pip --version'
+        assert command == (
+            '"%HERMES_MCP_BOOTSTRAP_VENV_PYTHON%" -m pip --version'
+        )
+        assert "&" not in command
+        assert "%TEMP%" not in command
         assert env["HERMES_MCP_BOOTSTRAP_VENV_PYTHON"] == (
             r"C:\MCP&%TEMP%\n8n\.venv\Scripts\python.exe"
         )
@@ -312,12 +317,23 @@ class TestCatalogPathVariables:
             for call in calls
         )
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX shell regression")
+    def test_bootstrap_does_not_reparse_install_dir_metacharacters(self, tmp_path):
+        from hermes_cli.mcp_catalog import _run_bootstrap
 
+        cwd = tmp_path / "MCP & $(touch INJECTED) $HOME"
+        cwd.mkdir()
 
+        _run_bootstrap(
+            cwd,
+            [
+                '${PYTHON} -c "from pathlib import Path; import sys; '
+                "Path(sys.argv[1], 'ok').write_text('ok')\" ${INSTALL_DIR}"
+            ],
+        )
 
-
-
-
+        assert (cwd / "ok").read_text() == "ok"
+        assert not (cwd / "INJECTED").exists()
 
 # ---------------------------------------------------------------------------
 # Install flow

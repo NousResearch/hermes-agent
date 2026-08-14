@@ -5180,6 +5180,7 @@ from hermes_cli.update_cmd import (  # noqa: F401
     _ensure_acp_launcher,
     _ensure_fhs_path_guard,
     _ensure_uv_for_termux,
+    _fetch_with_stale_ref_recovery,
     _finish_dashboard_update_cleanup,
     _for_each_systemd_gateway_unit,
     _format_concurrent_instances_message,

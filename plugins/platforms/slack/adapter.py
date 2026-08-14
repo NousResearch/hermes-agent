@@ -1955,7 +1955,28 @@ class SlackAdapter(BasePlatformAdapter):
                 token=primary_token,
                 user_agent_prefix=_HERMES_SLACK_USER_AGENT_PREFIX,
             )
-            self._app = AsyncApp(token=primary_token, client=primary_client)
+            # slack_bolt auto-enables multi-team OAuth when both
+            # SLACK_CLIENT_ID and SLACK_CLIENT_SECRET are present in the
+            # environment (async_app.py:182-188).  Hermes authenticates with
+            # a plain bot token and never runs an OAuth install flow, so the
+            # auto-enabled FileInstallationStore is empty and every inbound
+            # event is silently dropped before any handler runs (#86228).
+            # Suppress the two env vars for the duration of the AsyncApp
+            # constructor so slack_bolt stays in single-team bot-token mode.
+            _slack_oauth_env = ("SLACK_CLIENT_ID", "SLACK_CLIENT_SECRET")
+            _saved_env = {
+                k: os.environ.pop(k) for k in _slack_oauth_env if k in os.environ
+            }
+            if _saved_env:
+                logger.info(
+                    "[Slack] Suppressing %s during AsyncApp init to prevent "
+                    "inadvertent multi-team OAuth activation",
+                    ", ".join(sorted(_saved_env)),
+                )
+            try:
+                self._app = AsyncApp(token=primary_token, client=primary_client)
+            finally:
+                os.environ.update(_saved_env)
             _apply_slack_proxy(self._app.client, proxy_url)
 
             # Register each bot token and map team_id → client

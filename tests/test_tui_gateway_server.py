@@ -5110,6 +5110,90 @@ def test_finalize_session_closes_slash_worker(monkeypatch):
     assert closed["count"] == 1
 
 
+def test_close_transport_rebinds_session_to_remaining_viewer(monkeypatch):
+    """Closing a pop-out window's transport must re-bind the session to a
+    still-open window instead of stranding it on the drop sentinel (#83716)."""
+    reap_calls = []
+    monkeypatch.setattr(server, "_schedule_ws_orphan_reap", lambda sid: reap_calls.append(sid))
+
+    class _LiveTransport:
+        def write(self, *a, **k):
+            return True
+
+    main = _LiveTransport()
+    popout = _LiveTransport()
+    session = _session(transport=popout, running=False)
+    session["viewers"] = {main: 100.0, popout: 200.0}
+    server._sessions["multi-sid"] = session
+
+    reaped, detached = server._close_sessions_for_transport(popout)
+
+    assert reaped == 0 and detached == 0
+    assert session["transport"] is main
+    assert "multi-sid" not in reap_calls
+    assert server._ws_session_is_orphaned(session) is False
+
+
+def test_close_transport_detaches_when_no_viewers_remain(monkeypatch):
+    """The last viewer closing still lands the session on the drop sentinel
+    and schedules the grace reap (unchanged single-window behavior)."""
+    reap_calls = []
+    monkeypatch.setattr(server, "_schedule_ws_orphan_reap", lambda sid: reap_calls.append(sid))
+
+    class _LiveTransport:
+        def write(self, *a, **k):
+            return True
+
+    only = _LiveTransport()
+    session = _session(transport=only, running=False)
+    session["viewers"] = {only: 100.0}
+    server._sessions["solo-sid"] = session
+
+    reaped, detached = server._close_sessions_for_transport(only)
+
+    assert reaped == 0 and detached == 1
+    assert session["transport"] is server._detached_ws_transport
+    assert reap_calls == ["solo-sid"]
+
+
+def test_close_transport_skips_dead_remaining_viewers(monkeypatch):
+    """A viewer whose socket is already dead must not win the re-bind."""
+    reap_calls = []
+    monkeypatch.setattr(server, "_schedule_ws_orphan_reap", lambda sid: reap_calls.append(sid))
+
+    class _LiveTransport:
+        def write(self, *a, **k):
+            return True
+
+    dead = _LiveTransport()
+    dead._closed = True
+    owner = _LiveTransport()
+    session = _session(transport=owner, running=False)
+    session["viewers"] = {dead: 100.0, owner: 200.0}
+    server._sessions["dead-viewer-sid"] = session
+
+    reaped, detached = server._close_sessions_for_transport(owner)
+
+    assert detached == 1
+    assert session["transport"] is server._detached_ws_transport
+    assert reap_calls == ["dead-viewer-sid"]
+
+
+def test_live_session_payload_registers_transport_as_viewer():
+    """Resume/activate through _live_session_payload must register the caller
+    as a viewer so the disconnect path has something to re-bind to (#83716)."""
+    class _LiveTransport:
+        def write(self, *a, **k):
+            return True
+
+    t = _LiveTransport()
+    session = _session(transport=server._detached_ws_transport, running=False)
+    server._live_session_payload("viewer-sid", session, transport=t)
+
+    assert session["transport"] is t
+    assert t in session.get("viewers", {})
+
+
 def test_ws_orphan_reap_spares_reattached_session(monkeypatch):
     """A session that rebinds a live transport is NOT considered orphaned."""
 

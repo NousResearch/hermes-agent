@@ -1329,6 +1329,22 @@ def _close_sessions_for_transport(
             # Point detached sessions at the drop sentinel (NOT real stdio) so
             # _ws_session_is_orphaned recognizes them and the grace-reap can
             # actually fire; a standalone `hermes --tui` keeps real _stdio.
+            # UNLESS another window still shows the session: multi-window
+            # pop-outs all register as viewers, so on disconnect re-bind the
+            # session to the most recent surviving viewer instead of
+            # stranding the original window on the sentinel (#83716).
+            viewers = session.get("viewers")
+            if viewers:
+                viewers.pop(transport, None)
+            remaining = [
+                (ts, v)
+                for v, ts in (viewers or {}).items()
+                if v is not transport and not _transport_is_dead(v)
+            ]
+            if remaining:
+                remaining.sort(key=lambda kv: kv[0])
+                session["transport"] = remaining[-1][1]
+                continue
             session["transport"] = _detached_ws_transport
             session.pop("_client_gone_interrupt_requested", None)
             detached += 1
@@ -9160,6 +9176,13 @@ def _live_session_payload(
             session["cols"] = cols
         if transport is not None:
             session["transport"] = transport
+            # Track every transport that has shown this session (multi-window:
+            # pop-out windows each resume the same sid). The last viewer
+            # becomes the transport on the disconnect path so closing a
+            # pop-out re-binds the session to a still-open window instead of
+            # stranding it on the drop sentinel (#83716).
+            viewers = session.setdefault("viewers", {})
+            viewers[transport] = time.time()
         if touch:
             session["last_active"] = time.time()
         in_memory_history = list(session.get("display_history_prefix") or []) + list(

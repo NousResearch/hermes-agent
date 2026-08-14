@@ -1271,6 +1271,13 @@ def _block(event: str, sid: str, payload: dict, timeout: float | None = 300, bat
     with _prompt_lock:
         _pending[rid] = (sid, ev)
         payload["request_id"] = rid
+        # Tell renderers how long the bridge can stay blocked: a finite
+        # positive timeout means the server gives up after it (the renderer
+        # may then drop a stale dialog once the turn ends); None means the
+        # request blocks until a real answer (clarify_timeout <= 0), in which
+        # case renderers must NOT drop the dialog on turn-end events (#83319).
+        if timeout is not None and timeout > 0:
+            payload["timeout_seconds"] = float(timeout)
         _pending_prompt_payloads[rid] = (event, dict(payload))
         if batch_qids:
             # Multi-question clarify: per-question answers accumulate here (update-in-place until every

@@ -57,6 +57,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
     const rawChoices = payload?.choices
     const choices = normalizeChoices(rawChoices)
     const multiSelect = payload?.multi_select === true
+    const timeoutSeconds =
+      typeof payload?.timeout_seconds === 'number' && payload.timeout_seconds > 0 ? payload.timeout_seconds : null
     // Batch (multi-question) clarify: `questions` replaces question/choices
     // on the wire. `answers` rides along only on reconnect replay, carrying
     // the per-question locks the server already accepted.
@@ -80,7 +82,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         questions,
         receivedAt: Date.now() / 1000,
         requestId,
-        sessionId: sessionId ?? null
+        sessionId: sessionId ?? null,
+        timeoutSeconds
       }
 
       setClarifyRequest(request)
@@ -128,7 +131,8 @@ export function handleInputRequestEvent(ctx: GatewayEventContext): boolean {
         choices: choices.length > 0 ? choices : null,
         multiSelect,
         receivedAt: Date.now() / 1000,
-        sessionId: sessionId ?? null
+        sessionId: sessionId ?? null,
+        timeoutSeconds
       }
 
       setClarifyRequest(request)

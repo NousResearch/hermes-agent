@@ -167,6 +167,22 @@ model:
 #         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
 # =============================================================================
+# Unified Timeouts (operation deadlines)
+# =============================================================================
+# One place to override Hermes's internal operation deadlines (seconds).
+# Keys are dotted paths resolved by agent/deadline.py:resolve_timeout().
+# Precedence: this section > legacy HERMES_* env var (back-compat) > built-in
+# default. 0 or a negative value disables the bound (unbounded); very large
+# values are clamped to a platform-safe maximum automatically.
+#
+# Currently resolved keys (more paths migrate here over time — see issue #85125):
+#
+# timeouts:
+#   tools:
+#     concurrent_batch: 420   # Deadline for a parallel tool-call batch
+#                             # (legacy env: HERMES_CONCURRENT_TOOL_TIMEOUT_S)
+
+# =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
 # =============================================================================
 # Control how requests are routed across providers on OpenRouter.

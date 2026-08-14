@@ -579,7 +579,21 @@ def _inflight_min_allowance_minutes() -> float:
 
     Effective allowance per job is ``max(2 * interval, this)``, so a
     slow-but-healthy long-interval job is never clipped by the sweep.
+    Reads ``cron.inflight_max_minutes`` from config.yaml; the
+    ``HERMES_CRON_INFLIGHT_MAX_MINUTES`` env var is kept as an internal
+    escape hatch only.
     """
+    try:
+        _ucfg = load_config() or {}
+        _cfg_val = (
+            _ucfg.get("cron", {}) if isinstance(_ucfg, dict) else {}
+        ).get("inflight_max_minutes")
+        if _cfg_val is not None:
+            val = float(_cfg_val)
+            if val > 0:
+                return val
+    except Exception:
+        pass
     raw = os.getenv("HERMES_CRON_INFLIGHT_MAX_MINUTES", "").strip()
     if raw:
         try:
@@ -636,6 +650,10 @@ def _job_interval_minutes(job: dict) -> Optional[float]:
     """
     try:
         schedule = job.get("schedule")
+        if isinstance(schedule, str) and schedule.strip():
+            from cron.jobs import parse_schedule
+
+            schedule = parse_schedule(schedule) or {}
         if isinstance(schedule, dict):
             kind = schedule.get("kind")
             if kind == "interval":
@@ -643,18 +661,8 @@ def _job_interval_minutes(job: dict) -> Optional[float]:
                 return float(minutes) if minutes else None
             if kind == "cron":
                 return _cron_interval_minutes(str(schedule.get("expr") or ""))
-            return None
-        if isinstance(schedule, str) and schedule.strip():
-            from cron.jobs import parse_schedule
-
-            parsed = parse_schedule(schedule) or {}
-            if parsed.get("kind") == "interval":
-                minutes = parsed.get("minutes")
-                return float(minutes) if minutes else None
-            if parsed.get("kind") == "cron":
-                return _cron_interval_minutes(str(parsed.get("expr") or ""))
     except Exception:
-        return None
+        pass
     return None
 
 
@@ -5478,20 +5486,26 @@ def tick(
 
         # Bound the in-flight set BEFORE the dedup guard is consulted, so a
         # leaked claim is force-released in-cycle rather than silently eating
-        # every subsequent fire until the gateway process restarts. Runs even
-        # when nothing is due — a wedged job's own fires are exactly what the
-        # leak suppresses (t_3778a491; recurring no_agent router/watchdog jobs,
-        # 2026-08-14 t_20e23f84).
-        try:
-            from cron.jobs import load_jobs as _load_all_jobs
+        # every subsequent fire until the gateway process restarts. Skips the
+        # extra load_jobs when there are no in-flight claims (the common idle
+        # tick) and reuses due_jobs when they already cover the in-flight set
+        # (get_due_jobs calls load_jobs internally, so this avoids a redundant
+        # second file read on every active tick).
+        if _running_job_ids:
+            _sweep_jobs = due_jobs
+            try:
+                _inflight_ids = set(_running_job_ids)
+                _due_ids = {j.get("id") for j in due_jobs if isinstance(j, dict)}
+                if not _inflight_ids <= _due_ids:
+                    from cron.jobs import load_jobs as _load_all_jobs
 
-            _all_jobs = _load_all_jobs()
-        except Exception:
-            _all_jobs = due_jobs
-        try:
-            sweep_stale_inflight(_all_jobs)
-        except Exception as e:
-            logger.warning("Stale in-flight sweep failed: %s", e)
+                    _sweep_jobs = _load_all_jobs()
+            except Exception:
+                pass
+            try:
+                sweep_stale_inflight(_sweep_jobs)
+            except Exception as e:
+                logger.warning("Stale in-flight sweep failed: %s", e)
 
         if not due_jobs:
             # Idle tick: skip config load + pool partitioning entirely

@@ -565,6 +565,9 @@ export interface DesktopActiveProfile {
 
 export interface DesktopConnectionConfig {
   envOverride: boolean
+  // Named profile scopes distinguish an explicit entry from inherited global
+  // routing. Global scope always reports false for both fields.
+  inherited?: boolean
   // The saved connection mode. 'cloud' is a Hermes Cloud connection: it carries
   // a remote-shaped block (remoteUrl = the selected agent's dashboardUrl,
   // remoteAuthMode 'oauth') but is remembered as cloud so settings reopens into
@@ -574,6 +577,7 @@ export interface DesktopConnectionConfig {
   // The profile this config describes, or null for the global/default
   // connection. Per-profile entries let a profile point at its own backend.
   profile: null | string
+  profileOverride?: boolean
   remoteAuthMode: 'oauth' | 'token'
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
@@ -604,6 +608,8 @@ export interface DesktopConnectionConfigInput {
   // When set, the save/apply/test targets this profile's per-profile remote
   // override instead of the global connection.
   profile?: null | string
+  // Remove only this named profile's entry and resume global routing.
+  inherit?: boolean
   remoteAuthMode?: 'oauth' | 'token'
   remoteToken?: string
   // When true and secure (OS-keychain) storage is unavailable, persist the
@@ -819,6 +825,9 @@ export type DesktopBootstrapEvent =
 
 export interface HermesApiRequest {
   path: string
+  // Exact backend target. `local` is supported; unknown ids fail closed.
+  // Omit to preserve the active ambient connection.
+  gatewayId?: string
   method?: string
   body?: unknown
   // Single-file multipart upload (FastAPI UploadFile endpoints). Mutually

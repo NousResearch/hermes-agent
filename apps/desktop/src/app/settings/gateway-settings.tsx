@@ -6,7 +6,13 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip } from '@/components/ui/tooltip'
-import type { DesktopAuthProvider, DesktopCloudAgent, DesktopCloudOrg, DesktopConnectionProbeResult } from '@/global'
+import type {
+  DesktopAuthProvider,
+  DesktopCloudAgent,
+  DesktopCloudOrg,
+  DesktopConnectionConfig,
+  DesktopConnectionProbeResult
+} from '@/global'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import {
@@ -25,6 +31,7 @@ import {
 import { coerceRemoteUrlScheme } from '@/lib/remote-url'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
+import { rehomeSecondaryGateway } from '@/store/gateway'
 import { notify, notifyError, readableError } from '@/store/notifications'
 import { $profiles, refreshActiveProfile } from '@/store/profile'
 
@@ -40,7 +47,9 @@ type CloudDiscoverStatus = 'idle' | 'loading' | 'done' | 'error'
 
 interface GatewaySettingsState {
   envOverride: boolean
+  inherited: boolean
   mode: Mode
+  profileOverride: boolean
   remoteAuthMode: AuthMode
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
@@ -65,7 +74,9 @@ const SSH_HOST_CUSTOM = '__custom__'
 
 const EMPTY_STATE: GatewaySettingsState = {
   envOverride: false,
+  inherited: false,
   mode: 'local',
+  profileOverride: false,
   remoteAuthMode: 'token',
   remoteOauthConnected: false,
   remoteTokenPreview: null,
@@ -176,9 +187,15 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   const contextSeq = useRef(0)
   const [connectedCloudUrl, setConnectedCloudUrl] = useState('')
 
-  const acceptSavedConfig = (config: GatewaySettingsState) => {
-    setState(config)
-    setConnectedCloudUrl(savedCloudConnectionUrl(config))
+  const acceptSavedConfig = (config: DesktopConnectionConfig) => {
+    const next = {
+      ...config,
+      inherited: Boolean(config.inherited),
+      profileOverride: Boolean(config.profileOverride)
+    }
+
+    setState(next)
+    setConnectedCloudUrl(savedCloudConnectionUrl(next))
   }
 
   // When set, the plain-text opt-in dialog is open; `apply` remembers whether
@@ -455,6 +472,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   }, [authMode, oauthConnected, remoteToken, state.remoteTokenSet, trimmedUrl])
 
   const payload = (allowPlainTextToken?: boolean) => ({
+    ...(scope !== null && state.inherited ? { inherit: true } : {}),
     mode: state.mode,
     profile: scope ?? undefined,
     remoteAuthMode: authMode,
@@ -489,6 +507,10 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
       const next = apply
         ? await window.hermesDesktop.applyConnectionConfig(payload(allowPlainTextToken))
         : await window.hermesDesktop.saveConnectionConfig(payload(allowPlainTextToken))
+
+      if (apply && scope !== null) {
+        await rehomeSecondaryGateway(scope)
+      }
 
       if (seq !== saveSeq.current) {
         return
@@ -895,6 +917,10 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         cloudOrg: cloudOrgRef.current ?? undefined
       })
 
+      if (scope !== null) {
+        await rehomeSecondaryGateway(scope)
+      }
+
       if (seq !== contextSeq.current) {
         return
       }
@@ -1108,39 +1134,57 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
           {g.modeTitle}
         </div>
-        <div className="grid auto-rows-fr grid-cols-1 gap-2 sm:grid-cols-2 min-[72rem]:grid-cols-4">
+        <div className="grid auto-rows-fr grid-cols-1 gap-2 sm:grid-cols-2 min-[72rem]:grid-cols-5">
+          {scope !== null ? (
+            <ModeCard
+              active={state.inherited}
+              description={g.inheritDesc}
+              disabled={state.envOverride}
+              icon={RefreshCw}
+              onSelect={() => setState(current => ({ ...current, inherited: true, profileOverride: false }))}
+              title={g.inheritTitle}
+            />
+          ) : null}
           <ModeCard
-            active={state.mode === 'local'}
-            description={scope === null ? g.localDesc : g.inheritDesc}
+            active={state.mode === 'local' && (scope === null || state.profileOverride)}
+            description={g.localDesc}
             disabled={state.envOverride}
             icon={Monitor}
-            onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
-            title={scope === null ? g.localTitle : g.inheritTitle}
+            onSelect={() =>
+              setState(current => ({ ...current, inherited: false, mode: 'local', profileOverride: true }))
+            }
+            title={g.localTitle}
           />
           <ModeCard
-            active={state.mode === 'cloud'}
+            active={state.mode === 'cloud' && (scope === null || state.profileOverride)}
             description={g.cloudDesc}
             disabled={state.envOverride}
             icon={Cloud}
-            onSelect={() => setState(current => ({ ...current, mode: 'cloud' }))}
+            onSelect={() =>
+              setState(current => ({ ...current, inherited: false, mode: 'cloud', profileOverride: true }))
+            }
             title={g.cloudTitle}
           />
           <ModeCard
-            active={state.mode === 'remote'}
+            active={state.mode === 'remote' && (scope === null || state.profileOverride)}
             description={g.remoteDesc}
             disabled={state.envOverride}
             hint={g.remoteAuthHint}
             icon={Globe}
-            onSelect={() => setState(current => ({ ...current, mode: 'remote' }))}
+            onSelect={() =>
+              setState(current => ({ ...current, inherited: false, mode: 'remote', profileOverride: true }))
+            }
             title={g.remoteTitle}
           />
           <ModeCard
-            active={state.mode === 'ssh'}
+            active={state.mode === 'ssh' && (scope === null || state.profileOverride)}
             description={g.sshDesc}
             disabled={state.envOverride}
             hint={g.sshTrustHint}
             icon={Terminal}
-            onSelect={() => setState(current => ({ ...current, mode: 'ssh' }))}
+            onSelect={() =>
+              setState(current => ({ ...current, inherited: false, mode: 'ssh', profileOverride: true }))
+            }
             title={g.sshTitle}
           />
         </div>

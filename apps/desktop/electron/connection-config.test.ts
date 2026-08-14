@@ -23,6 +23,7 @@ import {
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  createAppliedConnectionConfig,
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
   isGatewayAuthRejection,
@@ -32,7 +33,9 @@ import {
   normalizeSshConfig,
   normAuthMode,
   pathWithGlobalRemoteProfile,
+  profileConnectionState,
   profileHasRemoteConnection,
+  profileLocalOverride,
   profileRemoteOverride,
   profileSshOverride,
   resolveAuthMode,
@@ -40,7 +43,8 @@ import {
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   savedProfileSsh,
-  tokenPreview
+  tokenPreview,
+  updateProfileConnectionEntries
 } from './connection-config'
 
 // --- connectionScopeKey / normAuthMode ---
@@ -219,6 +223,32 @@ test('saved SSH drafts are inactive and explicit overrides take precedence', () 
   assert.equal(profileHasRemoteConnection(config, 'coder'), true)
 })
 
+test('named Local and Inherit remain distinct persisted states', () => {
+  const local = { profiles: { work: { mode: 'local' } } }
+
+  assert.equal(profileLocalOverride(local, 'work'), true)
+  assert.deepEqual(profileConnectionState(local, 'work'), { inherited: false, profileOverride: true })
+
+  const inherited = {
+    ...local,
+    profiles: updateProfileConnectionEntries(local.profiles, 'work', null, true)
+  }
+
+  assert.equal(profileLocalOverride(inherited, 'work'), false)
+  assert.deepEqual(profileConnectionState(inherited, 'work'), { inherited: true, profileOverride: false })
+})
+
+test('staged persistence does not change live routing until Apply promotes it', () => {
+  const live = createAppliedConnectionConfig({ mode: 'remote', profiles: {} })
+  const staged = { mode: 'remote', profiles: { work: { mode: 'local' } } }
+
+  assert.equal(profileLocalOverride(live.current(), 'work'), false)
+  assert.equal(profileLocalOverride(staged, 'work'), true)
+
+  live.promote(staged)
+  assert.equal(profileLocalOverride(live.current(), 'work'), true)
+})
+
 // --- resolveProfileBackendRoute ---
 
 const ROUTES = [
@@ -250,6 +280,12 @@ const ROUTES = [
     name: 'a profile with its own remote override gets a pooled descriptor for that host',
     profile: 'coder',
     opts: { primaryProfile: 'default', globalRemote: true, profileRemoteOverride: true },
+    expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
+  },
+  {
+    name: 'an explicit local profile bypasses the app-global remote',
+    profile: 'coder',
+    opts: { primaryProfile: 'default', globalRemote: true, profileLocalOverride: true },
     expected: { backend: 'pool', descriptorProfile: null, scopePath: false }
   },
   {

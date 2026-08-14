@@ -96,6 +96,13 @@ import {
 import { describeDevCdpDecision, resolveDevCdpPort } from './dev-cdp'
 import { installEmbedReferer } from './embed-referer'
 import { createEventDeduper } from './event-dedupe'
+import {
+  buildTerminalScript,
+  resolveTerminalLaunch,
+  terminalScriptEnv,
+  terminalScriptExtension,
+  tuiResumeArgs
+} from './external-terminal'
 import { findGitBash as _findGitBash } from './find-git-bash'
 import { installFoundInPageForwarder, performFind, stopFind } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
@@ -10101,6 +10108,70 @@ ipcMain.handle('hermes:window:openInstance', async () => {
   createInstanceWindow()
 
   return { ok: true }
+})
+
+// Hand a session to the user's OWN terminal emulator, running the TUI against
+// it (`hermes --tui --resume <id>`). Not the in-app terminal pane: the point is
+// to continue the chat in the terminal they already live in.
+//
+// The desktop's runtime is usually a venv Python invoked as
+// `python -m hermes_cli.main`, so we resolve the SAME backend the app itself
+// launches and carry its argv + PYTHONPATH into a launcher script rather than
+// hoping a `hermes` exists on the user's interactive PATH. Resolution only —
+// never ensureRuntime(), which would kick off a first-run install from a menu
+// click; an unresolved runtime is reported instead.
+ipcMain.handle('hermes:window:openInTerminal', async (_event, sessionId, opts) => {
+  if (typeof sessionId !== 'string' || !sessionId.trim()) {
+    return { ok: false, error: 'invalid-session-id' }
+  }
+
+  try {
+    const profile = typeof opts?.profile === 'string' ? opts.profile.trim() : ''
+    const backend = resolveHermesBackend(tuiResumeArgs(sessionId.trim(), profile || undefined))
+
+    if (!backend.command) {
+      return { ok: false, error: 'Hermes is not installed yet' }
+    }
+
+    const { cwd } = sanitizeWorkspaceCwd(opts?.cwd)
+    const scriptDir = path.join(app.getPath('userData'), 'open-in-terminal')
+    fs.mkdirSync(scriptDir, { recursive: true })
+
+    const scriptPath = path.join(
+      scriptDir,
+      `hermes-${crypto.randomBytes(6).toString('hex')}${terminalScriptExtension()}`
+    )
+
+    fs.writeFileSync(
+      scriptPath,
+      buildTerminalScript({
+        args: backend.args,
+        command: backend.command,
+        cwd,
+        env: terminalScriptEnv(backend.env, HERMES_HOME)
+      }),
+      { mode: 0o700 }
+    )
+
+    const launch = resolveTerminalLaunch({ findOnPath, scriptPath })
+
+    if (!launch) {
+      return { ok: false, error: 'No terminal emulator found' }
+    }
+
+    rememberLog(`[terminal] opening session ${sessionId} via ${launch.command}`)
+
+    // Detached + unref'd: the terminal window outlives the desktop app, and
+    // never inherits our stdio (a closed pipe would kill the TUI).
+    const child = spawn(launch.command, launch.args, { detached: true, stdio: 'ignore' })
+    child.unref()
+
+    return { ok: true }
+  } catch (error) {
+    rememberLog(`[terminal] open in terminal failed: ${error.message}`)
+
+    return { ok: false, error: error.message }
+  }
 })
 ipcMain.handle('hermes:wake-indicator:get', () => wakeIndicatorController.getState())
 ipcMain.on('hermes:wake-indicator:set', (_event, state) => {

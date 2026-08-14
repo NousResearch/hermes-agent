@@ -248,12 +248,24 @@ class HookRegistry:
                         flush=True,
                     )
                     # Fail-closed: a crashed participant did not delegate.
+                    # Advance past the end so no delegating ancestor frame's
+                    # while-loop resumes and re-invokes this handler (a
+                    # throwing participant was already executed — running it
+                    # again would double-fire and see a stale input).
+                    index = len(handlers)
                     break
                 if not delegated:
                     # Short-circuit: the participant owns the decision and its
                     # return value IS the waterfall result (Cordis semantics).
                     if result is not None:
                         current = result
+                    # Advance past the end: this participant was already
+                    # executed. Without this, every delegating ancestor frame
+                    # resumes its while-loop at the SAME un-advanced index and
+                    # re-invokes the short-circuiting handler (dispatch order
+                    # [A,B,C] becomes [A,B,C,C,C], and the repeat runs see the
+                    # prior run's return value as their input).
+                    index = len(handlers)
                     break
             return current
 

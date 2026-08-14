@@ -62,6 +62,91 @@ class TestEmitWaterfall:
         assert result == "rewritten"
 
     @pytest.mark.asyncio
+    async def test_short_circuit_after_delegation_runs_once(self):
+        """Regression (triage #85370): a downstream short-circuiting handler
+        must execute exactly ONCE even when upstream handlers delegated to it.
+
+        The shared mutable ``index`` used to let each delegating ancestor
+        frame resume its while-loop at the SAME un-advanced index, so with
+        [A, B, C] where A and B call next_fn() and C returns without
+        delegating, C ran three times (and the repeats saw the prior run's
+        return value as input). Dispatch must be [A, B, C], not
+        [A, B, C, C, C].
+        """
+        reg = HookRegistry()
+        seen = []
+
+        def a(event_type, value, context, next_fn):
+            seen.append(("A", value))
+            return next_fn()
+
+        def b(event_type, value, context, next_fn):
+            seen.append(("B", value))
+            return next_fn()
+
+        def c(event_type, value, context, next_fn):
+            seen.append(("C", value))
+            return {"decision": "deny"}  # owns the decision — no delegation
+
+        reg._handlers["policy"] = [a, b, c]
+
+        result = await reg.emit_waterfall("policy", "original", {})
+
+        assert seen == [("A", "original"), ("B", "original"), ("C", "original")], (
+            f"each handler must run exactly once, got {seen}"
+        )
+        assert result == {"decision": "deny"}
+        # C must have received the ORIGINAL input, not a prior run's return.
+        assert seen[2] == ("C", "original")
+
+    @pytest.mark.asyncio
+    async def test_short_circuit_after_two_delegations_three_handlers(self):
+        """Triage repro: 'I don't...' exact shape — three delegating handlers
+        then a short-circuiting owner. No handler may run more than once."""
+        reg = HookRegistry()
+        seen = []
+
+        async def a(event_type, value, context, next_fn):
+            seen.append("A")
+            return await next_fn()
+
+        async def b(event_type, value, context, next_fn):
+            seen.append("B")
+            return await next_fn()
+
+        async def owner(event_type, value, context, next_fn):
+            seen.append("OWNER")
+            return {"decision": "allow"}
+
+        reg._handlers["chain"] = [a, b, owner]
+
+        result = await reg.emit_waterfall("chain", "x", {})
+        assert seen == ["A", "B", "OWNER"], f"got {seen}"
+        assert result == {"decision": "allow"}
+
+    @pytest.mark.asyncio
+    async def test_throwing_participant_after_delegation_runs_once(self):
+        """Regression (triage #85370): a throwing participant's error was
+        logged once per delegating ancestor; the handler itself re-ran for
+        each ancestor frame. It must execute exactly once."""
+        reg = HookRegistry()
+        seen = []
+
+        async def a(event_type, value, context, next_fn):
+            seen.append("A")
+            return await next_fn()
+
+        def boom(event_type, value, context, next_fn):
+            seen.append("BOOM")
+            raise RuntimeError("policy crash")
+
+        reg._handlers["policy"] = [a, boom]
+
+        result = await reg.emit_waterfall("policy", "v", {})
+        assert seen == ["A", "BOOM"], f"got {seen}"
+        assert result == "v"  # fail-closed: value unchanged
+
+    @pytest.mark.asyncio
     async def test_short_circuit_stops_chain(self):
         reg = HookRegistry()
         seen = []

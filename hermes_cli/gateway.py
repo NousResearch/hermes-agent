@@ -1565,6 +1565,31 @@ def _reap_unsupervised_gateway_orphans(extra_exclude: set | None = None) -> bool
             own |= _get_service_pids()
         except Exception:
             pass
+    # On Windows there is no systemd/launchd service query to fall back on
+    # (_get_service_pids() returns an empty set), so a gateway supervised by
+    # a Scheduled Task / Startup VBS looks like an unsupervised orphan to the
+    # process scan.  Exempt the recorded healthy gateway PID and its parent
+    # chain: the Scheduled Task launches a ``gateway run`` bootstrap whose
+    # argv matches the gateway scan, and killing that bootstrap takes the
+    # detached gateway it spawned down with it (#86098).
+    if is_windows():
+        try:
+            from gateway.status import get_running_pid
+
+            recorded = get_running_pid()
+            if recorded and recorded > 0:
+                own.add(recorded)
+                try:
+                    import psutil  # type: ignore
+
+                    parent = psutil.Process(recorded).parent()
+                    while parent is not None:
+                        own.add(parent.pid)
+                        parent = parent.parent()
+                except Exception:
+                    pass
+        except Exception:
+            pass
     try:
         # launchd/systemd-supervised gateways are not orphans — never reap them.
         own |= _get_service_pids()

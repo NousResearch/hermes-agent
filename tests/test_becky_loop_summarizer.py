@@ -199,6 +199,61 @@ def test_extract_visible_messages_omits_rewound_entries() -> None:
     assert [message.text for message in visible] == ["keep this"]
 
 
+def test_extract_visible_messages_removes_embedded_tool_envelopes() -> None:
+    """An assistant turn cannot send browser or MCP payloads to the provider."""
+    timestamp = datetime(2026, 8, 13, 20, 0, tzinfo=UTC)
+    envelope = (
+        '<untrusted_tool_result source="browser_console">'
+        '{"success":true,"result":["private browser snapshot"]}'
+        "</untrusted_tool_result>"
+    )
+
+    visible = extract_visible_messages(
+        [
+            {
+                "role": "assistant",
+                "content": f"Keep this decision. {envelope} Ask Cory to confirm.",
+                "timestamp": timestamp,
+            },
+            {
+                "role": "assistant",
+                "content": envelope,
+                "timestamp": timestamp,
+            },
+        ],
+        set(),
+    )
+
+    assert [message.text for message in visible] == [
+        "Keep this decision. Ask Cory to confirm."
+    ]
+
+
+def test_extract_visible_messages_drops_only_tool_result_json() -> None:
+    """A tool-result JSON turn is excluded without suppressing ordinary user JSON."""
+    timestamp = datetime(2026, 8, 13, 20, 0, tzinfo=UTC)
+
+    visible = extract_visible_messages(
+        [
+            {
+                "role": "assistant",
+                "content": '{"success":true,"result":[],"result_type":"list"}',
+                "timestamp": timestamp,
+            },
+            {
+                "role": "user",
+                "content": '{"destination":"Orlando","budget":397}',
+                "timestamp": timestamp,
+            },
+        ],
+        set(),
+    )
+
+    assert [message.text for message in visible] == [
+        '{"destination":"Orlando","budget":397}'
+    ]
+
+
 def test_extract_visible_messages_redacts_hidden_values_in_url_credentials() -> None:
     """Short or percent-encoded hidden values cannot leak through URL syntax."""
     timestamp = datetime(2026, 8, 13, 20, 0, tzinfo=UTC)
@@ -442,6 +497,40 @@ def test_model_result_validation_rejects_non_objects_without_echoing_text(
 
     assert str(exc_info.value) == "summary_invalid"
     assert "provider-secret" not in str(exc_info.value)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "about",
+        "action_needed",
+        "decisions",
+        "unresolved_items",
+        "key_event_labels",
+        "final_outcome",
+    ],
+)
+def test_model_result_validation_rejects_tool_envelope_in_every_public_text_field(
+    field: str,
+) -> None:
+    """A provider echo of a tool envelope must never cross the public boundary."""
+    raw = _valid_model_result(
+        action_needed="Confirm the flight dates.",
+        final_outcome=None,
+    )
+    marker = '<untrusted_tool_result source="browser_console">private</untrusted_tool_result>'
+    if field in {"decisions", "unresolved_items", "key_event_labels"}:
+        raw[field] = [marker]
+        if field == "key_event_labels":
+            raw["key_event_refs"] = ["m000001"]
+    else:
+        raw[field] = marker
+        if field == "final_outcome":
+            raw["unresolved_items"] = []
+            raw["waiting_on"] = "none"
+
+    with pytest.raises(_SummaryValidationError, match="^summary_invalid$"):
+        LoopSummarizer._validate_model_result(raw, {"m000001"})
 
 
 def test_auxiliary_provider_uses_no_tools_call_and_first_assistant_json(

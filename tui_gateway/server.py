@@ -11662,6 +11662,19 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.battery", nv_b)
         return _ok(rid, {"key": key, "value": "on" if nv_b else "off"})
 
+    if key == "copy-on-select":
+        raw = str(value or "").strip().lower()
+        if raw == "on":
+            nv = True
+        elif raw == "off":
+            nv = False
+        elif raw == "auto":
+            nv = None
+        else:
+            return _err(rid, 4002, f"unknown copy-on-select value: {value}")
+        _write_config_key("display.tui_copy_on_select", nv)
+        return _ok(rid, {"key": key, "value": raw})
+
     if key == "theme":
         # TUI light/dark mode pin: 'light'/'dark' beat background
         # auto-detection (xterm.js hosts misreport OSC 11); 'auto' trusts it.
@@ -12393,6 +12406,11 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
 )
 
 _TUI_EXTRA: list[tuple[str, str, str]] = [
+    (
+        "/copy-on-select",
+        "Set copy on select [on|off|auto|status]",
+        "TUI",
+    ),
     ("/density", "Toggle compact display mode", "TUI"),
     ("/logs", "Show recent gateway log lines", "TUI"),
     (

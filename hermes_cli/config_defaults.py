@@ -1175,6 +1175,11 @@ DEFAULT_CONFIG = {
         # Mirrors `hermes -c` muscle memory.  Default off so existing
         # users aren't surprised.  HERMES_TUI_RESUME=<id> always wins.
         "tui_auto_resume_recent": False,
+        # Copy a stable TUI mouse selection as soon as the drag ends while
+        # keeping the highlight visible. None preserves the platform default
+        # (enabled on macOS for Terminal.app compatibility, disabled elsewhere);
+        # true/false explicitly override it on every platform.
+        "tui_copy_on_select": None,
         # When true (default), `hermes --tui` drops a one-time hint
         # ("subagents working · /agents to watch live") the first time a turn
         # starts delegating, nudging the user toward the live spawn-tree

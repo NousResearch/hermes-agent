@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { isUsableClipboardText, readClipboardText, writeClipboardText } from '../lib/clipboard.js'
+import { copyTextToClipboard, isUsableClipboardText, readClipboardText, writeClipboardText } from '../lib/clipboard.js'
 
 describe('readClipboardText', () => {
   it('reads text from pbpaste on macOS', async () => {
@@ -389,5 +389,68 @@ describe('writeClipboardText', () => {
     const script = calledArgs[commandIdx + 1]
     expect(script).toContain(Buffer.from(cjkText, 'utf8').toString('base64'))
     expect(script).toContain('UTF8.GetString')
+  })
+})
+
+describe('copyTextToClipboard', () => {
+  it('uses the confirmed native path locally without invoking terminal fallback', async () => {
+    const writeNative = vi.fn().mockResolvedValue(true)
+    const writeTerminal = vi.fn()
+
+    await expect(
+      copyTextToClipboard('local text', {
+        env: {},
+        writeNative,
+        writeTerminal
+      })
+    ).resolves.toEqual({ path: 'native', success: true })
+    expect(writeNative).toHaveBeenCalledWith('local text')
+    expect(writeTerminal).not.toHaveBeenCalled()
+  })
+
+  it('skips native clipboard commands remotely and writes the OSC 52 fallback sequence', async () => {
+    const writeNative = vi.fn()
+    const writeSequence = vi.fn()
+    const writeTerminal = vi.fn().mockResolvedValue({ path: 'osc52', sequence: '<osc52>', success: true })
+
+    await expect(
+      copyTextToClipboard('remote text', {
+        env: { SSH_CONNECTION: '1' },
+        writeNative,
+        writeSequence,
+        writeTerminal
+      })
+    ).resolves.toEqual({ path: 'osc52', success: true })
+    expect(writeNative).not.toHaveBeenCalled()
+    expect(writeTerminal).toHaveBeenCalledWith('remote text')
+    expect(writeSequence).toHaveBeenCalledWith('<osc52>')
+  })
+
+  it('falls back to the tmux buffer after a local native failure', async () => {
+    const writeNative = vi.fn().mockResolvedValue(false)
+    const writeSequence = vi.fn()
+    const writeTerminal = vi.fn().mockResolvedValue({ path: 'tmux-buffer', sequence: '', success: true })
+
+    await expect(
+      copyTextToClipboard('tmux text', {
+        env: { TMUX: '/tmp/tmux/default,1,0' },
+        writeNative,
+        writeSequence,
+        writeTerminal
+      })
+    ).resolves.toEqual({ path: 'tmux-buffer', success: true })
+    expect(writeNative).toHaveBeenCalledWith('tmux text')
+    expect(writeTerminal).toHaveBeenCalledWith('tmux text')
+    expect(writeSequence).not.toHaveBeenCalled()
+  })
+
+  it('returns a failed result when neither native nor terminal transport succeeds', async () => {
+    const writeNative = vi.fn().mockResolvedValue(false)
+    const writeTerminal = vi.fn().mockResolvedValue({ path: null, sequence: '', success: false })
+
+    await expect(copyTextToClipboard('lost text', { env: {}, writeNative, writeTerminal })).resolves.toEqual({
+      path: null,
+      success: false
+    })
   })
 })

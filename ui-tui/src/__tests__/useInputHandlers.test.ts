@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import {
   applyVoiceRecordResponse,
+  copyInputSelection,
   dismissSensitivePrompt,
   handleIdleHotkeyExit,
   shouldAllowIdleHotkeyExit,
@@ -18,6 +19,40 @@ const baseKey = {
   wheelDown: false,
   wheelUp: false
 }
+
+describe('copyInputSelection', () => {
+  it('copies the selected composer text before clearing the selection', () => {
+    const copyText = vi.fn().mockResolvedValue({ path: 'native', success: true })
+    const clear = vi.fn()
+
+    expect(
+      copyInputSelection(
+        {
+          clear,
+          collapseToEnd: vi.fn(),
+          end: 5,
+          start: 1,
+          value: 'a日本🎉z'
+        },
+        copyText
+      )
+    ).toBe(true)
+    expect(copyText).toHaveBeenCalledWith('日本🎉')
+    expect(clear).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves collapsed or missing selections alone', () => {
+    const copyText = vi.fn()
+    const clear = vi.fn()
+
+    expect(copyInputSelection(null, copyText)).toBe(false)
+    expect(
+      copyInputSelection({ clear, collapseToEnd: vi.fn(), end: 2, start: 2, value: 'text' }, copyText)
+    ).toBe(false)
+    expect(copyText).not.toHaveBeenCalled()
+    expect(clear).not.toHaveBeenCalled()
+  })
+})
 
 describe('shouldFallThroughForScroll — keep transcript scrolling alive during prompt overlays', () => {
   it('falls through for wheel scrolls', () => {

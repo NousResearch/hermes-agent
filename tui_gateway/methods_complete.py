@@ -418,6 +418,12 @@ def _(rid, params: dict) -> dict:
         text_lower = text.lower()
         extras = [
             {
+                "text": "/copy-on-select",
+                "display": "/copy-on-select",
+                "meta": "Set copy on select [on|off|auto|status]",
+                "kind": "command",
+            },
+            {
                 "text": "/density",
                 "display": "/density",
                 "meta": "Toggle compact display mode",

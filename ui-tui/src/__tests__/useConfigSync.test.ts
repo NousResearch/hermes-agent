@@ -30,6 +30,7 @@ describe('applyDisplay', () => {
             show_reasoning: true,
             streaming: false,
             tui_compact: true,
+            tui_copy_on_select: true,
             tui_statusbar: false
           }
         }
@@ -40,6 +41,7 @@ describe('applyDisplay', () => {
     const s = $uiState.get()
     expect(setBell).toHaveBeenCalledWith(true)
     expect(s.compact).toBe(true)
+    expect(s.copyOnSelect).toBe(true)
     expect(s.detailsMode).toBe('expanded')
     expect(s.inlineDiffs).toBe(false)
     expect(s.showReasoning).toBe(true)
@@ -64,11 +66,22 @@ describe('applyDisplay', () => {
 
     const s = $uiState.get()
     expect(setBell).toHaveBeenCalledWith(false)
+    expect(s.copyOnSelect).toBeNull()
     expect(s.inlineDiffs).toBe(true)
     expect(s.showReasoning).toBe(false)
     expect(s.statusBar).toBe('top')
     expect(s.streaming).toBe(true)
     expect(s.sections).toEqual({})
+  })
+
+  it('preserves explicit copy-on-select overrides', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: { tui_copy_on_select: false } } }, setBell)
+    expect($uiState.get().copyOnSelect).toBe(false)
+
+    applyDisplay({ config: { display: { tui_copy_on_select: true } } }, setBell)
+    expect($uiState.get().copyOnSelect).toBe(true)
   })
 
   it('uses documented mouse_tracking with legacy tui_mouse fallback', () => {

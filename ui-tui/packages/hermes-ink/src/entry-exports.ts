@@ -36,6 +36,7 @@ export {
   terminalForegroundHex
 } from './ink/terminal.js'
 export type { MouseTrackingMode } from './ink/termio/dec.js'
+export { type ClipboardPath, type ClipboardResult, setTerminalClipboard } from './ink/termio/osc.js'
 export { wrapAnsi } from './ink/wrapAnsi.js'
 
 // NOTE: Do not re-export from 'ink-text-input' here.

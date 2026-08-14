@@ -14,13 +14,9 @@ import type {
   SessionUndoResponse,
   SystemBatteryResponse
 } from '../../../gatewayTypes.js'
-import { writeClipboardText } from '../../../lib/clipboard.js'
-import { writeOsc52Clipboard } from '../../../lib/osc52.js'
-import {
-  configureDetectedTerminalKeybindings,
-  configureTerminalKeybindings,
-  isRemoteShellSession
-} from '../../../lib/terminalSetup.js'
+import { copyTextToClipboard } from '../../../lib/clipboard.js'
+import { resolveCopyOnSelect } from '../../../lib/platform.js'
+import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
 import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
@@ -179,6 +175,35 @@ export const coreCommands: SlashCommand[] = [
       ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'mouse', value: next }).catch(() => {})
 
       queueMicrotask(() => ctx.transcript.sys(`mouse tracking ${next}`))
+    }
+  },
+
+  {
+    help: 'set copy on select [on|off|auto|status]',
+    name: 'copy-on-select',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+      const current = ctx.ui.copyOnSelect
+
+      if (!mode || mode === 'status') {
+        const status =
+          current === null ? `auto (currently ${resolveCopyOnSelect(current) ? 'on' : 'off'})` : current ? 'on' : 'off'
+
+        return ctx.transcript.sys(`copy on select: ${status}`)
+      }
+
+      const next = mode === 'on' ? true : mode === 'off' ? false : mode === 'auto' ? null : undefined
+
+      if (next === undefined) {
+        return ctx.transcript.sys('usage: /copy-on-select [on|off|auto|status]')
+      }
+
+      patchUiState({ copyOnSelect: next })
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'copy-on-select', value: mode })
+        .catch(() => {})
+
+      queueMicrotask(() => ctx.transcript.sys(`copy on select: ${mode}`))
     }
   },
 
@@ -408,32 +433,25 @@ export const coreCommands: SlashCommand[] = [
         return sys('nothing to copy — start a conversation first')
       }
 
-      const shouldUseTerminalClipboard = isRemoteShellSession(process.env)
+      const result = await copyTextToClipboard(target.text)
 
-      if (shouldUseTerminalClipboard) {
-        writeOsc52Clipboard(target.text)
-
-        return sys('sent OSC52 copy sequence (terminal support required)')
+      if (ctx.stale()) {
+        return
       }
 
-      void writeClipboardText(target.text)
-        .then(nativeOk => {
-          if (ctx.stale()) {
-            return
-          }
+      if (!result.success) {
+        return sys('clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence')
+      }
 
-          if (nativeOk) {
-            sys('copied to clipboard')
-          } else {
-            writeOsc52Clipboard(target.text)
-            sys('sent OSC52 copy sequence (terminal support required)')
-          }
-        })
-        .catch(error => {
-          if (!ctx.stale()) {
-            sys(`copy failed: ${String(error)}`)
-          }
-        })
+      if (result.path === 'native') {
+        return sys('copied to clipboard')
+      }
+
+      if (result.path === 'tmux-buffer') {
+        return sys('copied to tmux buffer')
+      }
+
+      return sys('sent OSC52 copy sequence (terminal support required)')
     }
   },
 

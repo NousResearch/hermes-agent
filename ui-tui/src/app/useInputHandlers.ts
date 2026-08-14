@@ -12,12 +12,13 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
+import { copyTextToClipboard } from '../lib/clipboard.js'
 import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
 import { computePrecisionWheelStep, initPrecisionWheel } from '../lib/precisionWheel.js'
 import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 import { closeWidget, dispatchWidgetInput } from '../sdk/host.js'
 
-import { getInputSelection } from './inputSelectionStore.js'
+import { getInputSelection, type InputSelection } from './inputSelectionStore.js'
 import {
   type GatewayRpc,
   type InputHandlerActions,
@@ -32,6 +33,20 @@ import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 const DASHBOARD_NEW_SESSION_MESSAGE = 'starting a fresh dashboard chat...'
+
+export function copyInputSelection(
+  selection: InputSelection | null,
+  copyText: (text: string) => Promise<unknown> = copyTextToClipboard
+): boolean {
+  if (!selection || selection.end <= selection.start) {
+    return false
+  }
+
+  void copyText(selection.value.slice(selection.start, selection.end))
+  selection.clear()
+
+  return true
+}
 
 export const shouldAllowIdleHotkeyExit = (dashboardTuiMode = DASHBOARD_TUI_MODE) => !dashboardTuiMode
 
@@ -560,11 +575,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
         return copySelection()
       }
 
-      const inputSel = getInputSelection()
-
-      if (inputSel && inputSel.end > inputSel.start) {
-        inputSel.clear()
-
+      if (copyInputSelection(getInputSelection())) {
         return
       }
 

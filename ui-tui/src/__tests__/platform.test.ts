@@ -31,6 +31,17 @@ describe('platform action modifier', () => {
   })
 })
 
+describe('resolveCopyOnSelect', () => {
+  it('uses the platform default only when the config is unset', async () => {
+    const { resolveCopyOnSelect } = await importPlatform('linux')
+
+    expect(resolveCopyOnSelect(undefined, false)).toBe(false)
+    expect(resolveCopyOnSelect(null, true)).toBe(true)
+    expect(resolveCopyOnSelect(true, false)).toBe(true)
+    expect(resolveCopyOnSelect(false, true)).toBe(false)
+  })
+})
+
 describe('isCopyShortcut', () => {
   it('keeps Ctrl+C as the local non-macOS copy chord', async () => {
     const { isCopyShortcut } = await importPlatform('linux')

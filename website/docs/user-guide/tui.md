@@ -241,10 +241,19 @@ display:
                              #   buttons — adds 1002 for terminal-side drag selection
                              #   all     — adds 1003 for hover (scrollbar paginate-on-hover,
                              #             link mouseenter, etc.)
+  tui_copy_on_select: null   # true: copy when a mouse selection ends; false: disable.
+                             # null/unset: enabled on macOS, disabled elsewhere.
 ```
+
+`tui_copy_on_select` applies to transcript and composer selections, copies only
+after the drag has stabilized, and keeps the highlight visible. Mouse drag
+events must reach the TUI; inside tmux, keep `display.mouse_tracking` set to
+`buttons` or `all` and forward the relevant mouse events with `send-keys -M`.
 
 Runtime toggles:
 
+- `/copy-on-select [on|off|auto|status]` — override copy-on-select or restore
+  the platform default with `auto`
 - `/details [hidden|collapsed|expanded|cycle]` — set the global mode
 - `/details <section> [hidden|collapsed|expanded|reset]` — override one section
   (sections: `thinking`, `tools`, `subagents`, `activity`)

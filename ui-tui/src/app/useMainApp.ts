@@ -31,7 +31,7 @@ import { useGitBranch } from '../hooks/useGitBranch.js'
 import { pruneVirtualHeightCache, useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { composerPromptWidth } from '../lib/inputMetrics.js'
 import { appendTranscriptMessage, capTranscriptHistory } from '../lib/messages.js'
-import { DEFAULT_VOICE_RECORD_KEY, isMac, type ParsedVoiceRecordKey } from '../lib/platform.js'
+import { DEFAULT_VOICE_RECORD_KEY, type ParsedVoiceRecordKey, resolveCopyOnSelect } from '../lib/platform.js'
 import { createResizeCoalescer } from '../lib/resizeCoalescer.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
@@ -254,16 +254,15 @@ export function useMainApp(gw: GatewayClient) {
     setDimFallbackColor(ui.theme.color.muted)
   }, [ui.theme.color.muted])
 
-  // macOS Terminal.app does not forward Cmd+C to fullscreen TUIs that enable
-  // mouse tracking, so the only reliable native-feeling path is iTerm-style
-  // copy-on-select: once a drag creates a stable TUI selection, write it to
-  // the system clipboard while keeping the highlight visible.
+  // macOS defaults this on because Terminal.app does not forward Cmd+C to a
+  // fullscreen TUI with mouse tracking. Other platforms can opt into the same
+  // iTerm/Claude-style behavior with display.tui_copy_on_select.
   //
   // Subscribe directly via the ink selection bus (not useSyncExternalStore)
   // so React doesn't re-render MainApp on every drag-move tick. The version
   // ref de-dupes against re-entrant notifications.
   useEffect(() => {
-    if (!isMac) {
+    if (!resolveCopyOnSelect(ui.copyOnSelect)) {
       return
     }
 
@@ -287,7 +286,7 @@ export function useMainApp(gw: GatewayClient) {
       lastCopiedVersionRef.current = version
       void selection.copySelectionNoClear()
     })
-  }, [selection])
+  }, [selection, ui.copyOnSelect])
 
   const clearSelection = useCallback(() => {
     selection.clearSelection()

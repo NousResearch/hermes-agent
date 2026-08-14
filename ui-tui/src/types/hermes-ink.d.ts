@@ -132,6 +132,12 @@ declare module '@hermes/ink' {
   export const scrollFastPathStats: ScrollFastPathStats
 
   export type EvictLevel = 'all' | 'half'
+  export type ClipboardPath = 'native' | 'tmux-buffer' | 'osc52'
+  export interface ClipboardResult {
+    readonly path: ClipboardPath | null
+    readonly sequence: string
+    readonly success: boolean
+  }
   export type InkCacheSizes = {
     readonly lineWidth: number
     readonly slice: number
@@ -142,6 +148,7 @@ declare module '@hermes/ink' {
 
   export function forceRedraw(stdout?: NodeJS.WriteStream): boolean
   export function render(node: React.ReactNode, options?: NodeJS.WriteStream | RenderOptions): Instance
+  export function setTerminalClipboard(text: string): Promise<ClipboardResult>
 
   export function useApp(): { readonly exit: (error?: Error) => void }
   export type RunExternalProcess = () => Promise<void>

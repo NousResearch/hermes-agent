@@ -3680,7 +3680,18 @@ def run_job(
         if _session_db_timeout > 0:
             _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
             try:
-                _session_db = _session_db_pool.submit(SessionDB).result(timeout=_session_db_timeout)
+                # The timeout worker is a second thread, so it does not inherit
+                # the multiplexed profile ContextVar automatically. Capture it
+                # before submitting SessionDB and pass the resolved database path
+                # explicitly so profile cron runs cannot fall back to the
+                # process-global default state.db.
+                _session_db_context = contextvars.copy_context()
+                _session_db_path = _get_hermes_home() / "state.db"
+                _session_db = _session_db_pool.submit(
+                    _session_db_context.run,
+                    SessionDB,
+                    db_path=_session_db_path,
+                ).result(timeout=_session_db_timeout)
             finally:
                 # Don't wait for a wedged connect() to unwind — abandon the
                 # worker thread (same pattern as the agent inactivity timeout

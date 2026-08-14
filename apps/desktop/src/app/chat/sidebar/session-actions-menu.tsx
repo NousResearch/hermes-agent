@@ -251,6 +251,7 @@ function useSessionActions({
             label: r.openInTerminal,
             onSelect: () => {
               triggerHaptic('selection')
+
               // Read the row lazily: subscribing every row's menu to $sessions
               // would re-render the whole sidebar on each session update.
               const cwd =

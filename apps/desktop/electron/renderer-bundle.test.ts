@@ -21,10 +21,7 @@ const INDEX_HTML = [
 ].join('\n')
 
 test('parseModuleAssetRefs collects module scripts and modulepreload hrefs', () => {
-  assert.deepEqual(parseModuleAssetRefs(INDEX_HTML), [
-    '/assets/index-a1b2c3.js',
-    '/assets/shiki-block-COiz1pEN.js'
-  ])
+  assert.deepEqual(parseModuleAssetRefs(INDEX_HTML), ['/assets/index-a1b2c3.js', '/assets/shiki-block-COiz1pEN.js'])
 })
 
 test('parseModuleAssetRefs ignores non-module tags (plain stylesheet, non-module script)', () => {
@@ -80,10 +77,7 @@ const INDEX_PATH = path.join('/app', 'dist', 'index.html')
 const INDEX_DIR = path.dirname(INDEX_PATH)
 
 test('missingRendererAssets: intact generation reports nothing missing', () => {
-  const deps = depsFor(INDEX_DIR, INDEX_HTML, [
-    'assets/index-a1b2c3.js',
-    'assets/shiki-block-COiz1pEN.js'
-  ])
+  const deps = depsFor(INDEX_DIR, INDEX_HTML, ['assets/index-a1b2c3.js', 'assets/shiki-block-COiz1pEN.js'])
 
   assert.deepEqual(missingRendererAssets(INDEX_PATH, deps), [])
 })
@@ -113,10 +107,7 @@ test('missingRendererAssets: existence is checked relative to the index dir, per
   const unpackedIndex = path.join('/app', 'app.asar.unpacked', 'dist', 'index.html')
   const unpackedDir = path.dirname(unpackedIndex)
 
-  const intact = depsFor(unpackedDir, INDEX_HTML, [
-    'assets/index-a1b2c3.js',
-    'assets/shiki-block-COiz1pEN.js'
-  ])
+  const intact = depsFor(unpackedDir, INDEX_HTML, ['assets/index-a1b2c3.js', 'assets/shiki-block-COiz1pEN.js'])
 
   const torn = depsFor(INDEX_DIR, INDEX_HTML, ['assets/index-a1b2c3.js'])
 

@@ -70,7 +70,6 @@ export const mergeUsageStable = (prev: Usage, patch: Partial<Usage> | undefined)
   return usageChanged(prev, merged) ? merged : prev
 }
 
-
 const statusFromBusy = () => (getUiState().busy ? 'running…' : 'ready')
 
 // The last gateway skin, kept so the theme can be re-derived when the OSC-11

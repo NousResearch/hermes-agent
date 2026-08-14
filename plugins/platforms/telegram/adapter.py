@@ -416,7 +416,7 @@ def check_telegram_requirements() -> bool:
     global TELEGRAM_AVAILABLE, Update, Bot, Message, InlineKeyboardButton
     global InlineKeyboardMarkup, LinkPreviewOptions, Application
     global CommandHandler, CallbackQueryHandler, TelegramMessageHandler
-    global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest
+    global ContextTypes, filters, ParseMode, ChatType, HTTPXRequest, TypeHandler
     if TELEGRAM_AVAILABLE:
         return True
     try:
@@ -436,6 +436,7 @@ def check_telegram_requirements() -> bool:
             CallbackQueryHandler as _CQH,
             MessageHandler as _MH,
             ContextTypes as _CT, filters as _filters,
+            TypeHandler as _TH,
         )
         from telegram.constants import ParseMode as _PM, ChatType as _CtT
         from telegram.request import HTTPXRequest as _HR
@@ -456,6 +457,7 @@ def check_telegram_requirements() -> bool:
     ParseMode = _PM
     ChatType = _CtT
     HTTPXRequest = _HR
+    TypeHandler = _TH
     TELEGRAM_AVAILABLE = True
     return True
 

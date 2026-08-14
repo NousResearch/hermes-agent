@@ -90,10 +90,10 @@ export const AGENT_MESSAGE_RE =
 // sender handle -> avatar data URL (null = known absent). Module-level so a
 // chat full of notices from one bot resolves once. Profiles change rarely;
 // stale entries only persist for the window's lifetime.
-const agentAvatarCache = new Map<string, null | string>()
+export const agentAvatarCache = new Map<string, null | string>()
 const agentAvatarInflight = new Map<string, Promise<null | string>>()
 
-async function resolveAgentAvatar(handle: string): Promise<null | string> {
+export async function resolveAgentAvatar(handle: string): Promise<null | string> {
   const key = handle.trim().toLowerCase()
 
   if (!key) {

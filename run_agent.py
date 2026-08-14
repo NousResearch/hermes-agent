@@ -473,6 +473,8 @@ class AIAgent(
 
     _stream_diag_init = _forward_static("agent.stream_diag", "stream_diag_init")
     _stream_diag_capture_response = _forward("agent.stream_diag", "stream_diag_capture_response")
+    _profile_surfaces_server_timings = _forward("agent.server_observability", "profile_surfaces_server_timings")
+    _capture_server_timings = _forward("agent.server_observability", "capture_server_timings")
     _flatten_exception_chain = _forward_static("agent.stream_diag", "flatten_exception_chain")
 
     def _is_provider_stream_parse_error(self, error: BaseException) -> bool:

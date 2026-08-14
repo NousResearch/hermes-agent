@@ -3149,11 +3149,18 @@ def _store_full_snapshot(snapshot_text: str) -> Optional[str]:
                 + f"\n\n[... stored copy truncated at {MAX_STORED_SNAPSHOT_CHARS:,} chars "
                 f"of {len(content):,} ...]"
             )
+        from tools.spill_safety import ensure_spill_dir, write_text_exclusive
+
         cache_dir = get_hermes_dir("cache/web", "web_cache")
-        cache_dir.mkdir(parents=True, exist_ok=True)
+        ensure_spill_dir(cache_dir, private=False)
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:10]
         path = cache_dir / f"browser-snapshot-{digest}.txt"
-        path.write_text(content, encoding="utf-8")
+        # Deterministic filename in a well-known dir: refuse symlinks via
+        # lstat-unlink + exclusive create. Re-snapshotting the same page
+        # state legitimately overwrites (same content-hash name). Not
+        # private: cache/web is bind-mounted into remote backends whose
+        # container UID must be able to read it.
+        write_text_exclusive(path, content, private=False, overwrite=True)
         return str(path)
     except Exception as exc:  # noqa: BLE001
         logger.debug("Failed to store full browser snapshot: %s", exc)

@@ -229,6 +229,39 @@ class TestTruncateSnapshot:
         content = Path(stored).read_text(encoding="utf-8")
         assert "STOREDSNAPSHOTSECRET" not in content
 
+    def test_stored_snapshot_refuses_planted_symlink(self, tmp_path, monkeypatch):
+        """A pre-planted symlink at the content-hash path must not be
+        followed to its target — only the link itself may be replaced.
+
+        Mirrors web_tools._store_full_text's use of write_text_exclusive
+        (overwrite=True) for the same cache/web directory and naming
+        scheme: a legitimate re-snapshot of the same page state safely
+        replaces a same-path symlink with a real file, never writing
+        through it onto whatever the link points at.
+        """
+        import hashlib
+        from pathlib import Path
+        from tools.browser_tool import _store_full_snapshot
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        snapshot = "\n".join(f"- line {i}" for i in range(50))
+        # No secret-like content, so redact_sensitive_text leaves it
+        # unchanged and the digest is predictable from the raw text.
+        digest = hashlib.sha256(snapshot.encode("utf-8")).hexdigest()[:10]
+
+        cache_dir = tmp_path / "cache" / "web"
+        cache_dir.mkdir(parents=True)
+        victim = tmp_path / "victim.txt"
+        victim.write_text("original", encoding="utf-8")
+        planted = cache_dir / f"browser-snapshot-{digest}.txt"
+        planted.symlink_to(victim)
+
+        stored = _store_full_snapshot(snapshot)
+        assert stored is not None
+        assert victim.read_text(encoding="utf-8") == "original"  # link target untouched
+        assert not planted.is_symlink()  # link replaced by a real file
+        assert Path(stored).read_text(encoding="utf-8") == snapshot
+
     def test_truncated_snapshot_appends_stored_pointer(self):
         """Truncated snapshots point at the stored full text for read_file paging."""
         from tools.browser_tool import _truncate_snapshot

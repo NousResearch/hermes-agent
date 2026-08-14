@@ -4019,6 +4019,7 @@ def delegate_task(
             origin_ui_session_id=_origin_ui_session_id,
             origin_session_id=_wake_sid,
             parent_session_id=_parent_session_id,
+            source_session_key=_session_key,
             runner=_batch_runner,
             interrupt_fn=_batch_interrupt,
             max_async_children=_get_max_async_children(),

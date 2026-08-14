@@ -543,6 +543,88 @@ class TestSessionStoreSwitchSession:
         db.close()
 
 
+class TestSwitchSessionCrossAdapterGuard:
+    """#64934: switch_session/advance_compression_session refuse to sew a
+    routing key onto a session owned by a different adapter unless the caller
+    explicitly opts in. The key→id layer honors the per-adapter isolation the
+    key layer encodes."""
+
+    @staticmethod
+    def _store(tmp_path):
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        store._db = SessionDB(db_path=tmp_path / "state.db")
+        store._loaded = True
+        return store
+
+    @staticmethod
+    def _feishu_group_entry(store, adapter_id):
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_chat",
+            chat_type="group",
+            user_id="user-1",
+            adapter_id=adapter_id,
+        )
+        return store.get_or_create_session(source)
+
+    def test_refuses_cross_adapter_sew(self, tmp_path):
+        store = self._store(tmp_path)
+        entry = self._feishu_group_entry(store, "feishu:app1")
+        # target owned by app2; key is app1 → refused, entry unchanged
+        result = store.switch_session(
+            entry.session_key, "target_sid",
+            expected_adapter_id="feishu:app2",
+        )
+        assert result is None
+        assert store._entries[entry.session_key].session_id == entry.session_id
+        store._db.close()
+
+    def test_allows_same_adapter(self, tmp_path):
+        store = self._store(tmp_path)
+        entry = self._feishu_group_entry(store, "feishu:app1")
+        store._db.create_session("target_sid", "feishu")
+        result = store.switch_session(
+            entry.session_key, "target_sid",
+            expected_adapter_id="feishu:app1",
+        )
+        assert result is not None
+        assert result.session_id == "target_sid"
+        store._db.close()
+
+    def test_skips_check_when_no_expected_adapter(self, tmp_path):
+        store = self._store(tmp_path)
+        entry = self._feishu_group_entry(store, "feishu:app1")
+        store._db.create_session("target_sid", "feishu")
+        # no expected_adapter_id → guard skipped, legacy behavior preserved
+        result = store.switch_session(entry.session_key, "target_sid")
+        assert result is not None
+        store._db.close()
+
+    def test_allows_cross_when_explicit(self, tmp_path):
+        store = self._store(tmp_path)
+        entry = self._feishu_group_entry(store, "feishu:app1")
+        store._db.create_session("target_sid", "feishu")
+        result = store.switch_session(
+            entry.session_key, "target_sid",
+            allow_cross_adapter=True,
+            expected_adapter_id="feishu:app2",
+        )
+        assert result is not None
+        store._db.close()
+
+    def test_advance_compression_refuses_cross_adapter(self, tmp_path):
+        store = self._store(tmp_path)
+        entry = self._feishu_group_entry(store, "feishu:app1")
+        result = store.advance_compression_session(
+            entry.session_key, entry.session_id, "target_sid",
+            expected_adapter_id="feishu:app2",
+        )
+        assert result is None
+        store._db.close()
+
+
 class TestSessionStoreLookup:
     @pytest.fixture()
     def store(self, tmp_path):

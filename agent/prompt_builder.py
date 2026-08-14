@@ -413,6 +413,23 @@ PARALLEL_TOOL_CALL_GUIDANCE = (
     "in doubt and the calls are independent, batch them."
 )
 
+# Group-chat collaboration vs delegation — guides the bot to @-mention peers
+# (visible, bot-to-bot routed) instead of using delegate_task (invisible
+# subagent) when the goal is getting a colleague's input in a shared chat.
+COLLABORATION_GUIDANCE = (
+    "# Group-chat collaboration: @-mention vs delegation\n"
+    "When you are in a group chat alongside other specialist bots and a task "
+    "needs a colleague's expertise, @-mention that colleague in your reply "
+    "(visible to everyone, routes via the gateway's bot-to-bot mechanism). "
+    "Do NOT use delegate_task for this — delegation spawns an isolated "
+    "subagent with no group context, so the colleague never sees the "
+    "discussion, can't @ others, and the group can't follow the exchange.\n"
+    "Use delegate_task only for independent subtasks you must complete "
+    "yourself (e.g. deep analysis, code generation) where no peer interaction "
+    "is needed. Rule of thumb: @-mention = visible collaboration; delegation "
+    "= solo work handoff."
+)
+
 # OpenAI GPT/Codex-specific execution guidance.  Addresses known failure modes
 # where GPT models abandon work on partial results, skip prerequisite lookups,
 # hallucinate instead of using tools, and declare "done" without verification.

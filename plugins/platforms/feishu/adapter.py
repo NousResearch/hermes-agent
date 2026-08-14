@@ -66,7 +66,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Literal, Optional, Sequence
+from typing import Any, Callable, Dict, List, Literal, Optional, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -466,6 +466,8 @@ RejectReason = Literal[
     "bots_disabled",
     "bot_not_mentioned",
     "group_policy_rejected",
+    "dm_policy_rejected",
+    "bot_loop_prevented",
 ]
 
 
@@ -1322,16 +1324,86 @@ def _strip_edge_self_mentions(
             return remaining
 
 
+class _ThreadSafeWsLoopProxy:
+    """Race-free stand-in for lark_oapi.ws.client's module-level ``loop``.
+
+    The SDK's Client.start/_connect/_ping_loop/_receive_message_loop all read
+    a single shared ``loop`` module global to call ``.create_task()`` /
+    ``.run_until_complete()``. With multi-profile routing, each profile runs
+    its own WS client in its own thread with its own event loop, and used to
+    overwrite that shared global on every (re)connect (see
+    ``ws_client_module.loop = loop`` below). Two profiles reconnecting close
+    together would stomp on each other's ``loop`` global mid-flight, so
+    ``create_task`` calls would schedule a task onto the wrong profile's
+    event loop and raise ``RuntimeError: ... attached to a different loop``.
+
+    Installed once as a singleton (idempotent even if raced), this proxy
+    carries no mutable state itself — every call resolves the loop that is
+    actually executing right now, which is inherently thread-safe:
+    ``asyncio.get_running_loop()`` for ``create_task`` (always called from
+    within a coroutine already running on the correct loop) and
+    ``asyncio.get_event_loop()`` for the synchronous ``run_until_complete``
+    entrypoint (asyncio keeps that thread-local already).
+    """
+
+    @staticmethod
+    def create_task(coro: Any) -> "asyncio.Task":
+        return asyncio.get_event_loop().create_task(coro)
+
+    @staticmethod
+    def run_until_complete(coro: Any) -> Any:
+        return asyncio.get_event_loop().run_until_complete(coro)
+
+
+_WS_LOOP_PROXY = _ThreadSafeWsLoopProxy()
+
+# Per-thread ping_interval/ping_timeout overrides for the websockets.connect
+# monkeypatch below. Using threading.local() (rather than swapping the
+# shared ws_client_module.websockets.connect attribute per profile thread,
+# as before) avoids the analogous race: concurrent profile threads used to
+# save/restore each other's "original" connect function, so whichever
+# profile connected or reconnected last silently overwrote the ping
+# settings applied to every other profile's subsequent connects.
+_ws_connect_overrides = threading.local()
+_ws_connect_patch_lock = threading.Lock()
+_ws_original_connect: Optional[Callable[..., Any]] = None
+
+
+def _threadsafe_ws_connect(*args: Any, **kwargs: Any) -> Any:
+    ping_interval = getattr(_ws_connect_overrides, "ping_interval", None)
+    ping_timeout = getattr(_ws_connect_overrides, "ping_timeout", None)
+    if ping_interval is not None and "ping_interval" not in kwargs:
+        kwargs["ping_interval"] = ping_interval
+    if ping_timeout is not None and "ping_timeout" not in kwargs:
+        kwargs["ping_timeout"] = ping_timeout
+    assert _ws_original_connect is not None
+    return _ws_original_connect(*args, **kwargs)
+
+
+def _ensure_ws_connect_patched(ws_client_module: Any) -> None:
+    """Idempotently install the thread-safe connect wrapper (once, ever)."""
+    global _ws_original_connect
+    if ws_client_module.websockets.connect is _threadsafe_ws_connect:
+        return
+    with _ws_connect_patch_lock:
+        if ws_client_module.websockets.connect is _threadsafe_ws_connect:
+            return
+        _ws_original_connect = ws_client_module.websockets.connect
+        ws_client_module.websockets.connect = _threadsafe_ws_connect
+
+
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     """Run the official Lark WS client in its own thread-local event loop."""
     import lark_oapi.ws.client as ws_client_module
 
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    ws_client_module.loop = loop
+    # Singleton proxy, not a fresh loop object — safe to assign from every
+    # profile thread without synchronization. See _ThreadSafeWsLoopProxy.
+    ws_client_module.loop = _WS_LOOP_PROXY
+    _ensure_ws_connect_patched(ws_client_module)
     adapter._ws_thread_loop = loop
 
-    original_connect = ws_client_module.websockets.connect
     original_configure = getattr(ws_client, "_configure", None)
 
     def _apply_runtime_ws_overrides() -> None:
@@ -1343,13 +1415,6 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         except Exception:
             logger.debug("[Feishu] Failed to apply websocket runtime overrides", exc_info=True)
 
-    def _connect_with_overrides(*args: Any, **kwargs: Any) -> Any:
-        if adapter._ws_ping_interval is not None and "ping_interval" not in kwargs:
-            kwargs["ping_interval"] = adapter._ws_ping_interval
-        if adapter._ws_ping_timeout is not None and "ping_timeout" not in kwargs:
-            kwargs["ping_timeout"] = adapter._ws_ping_timeout
-        return original_connect(*args, **kwargs)
-
     def _configure_with_overrides(conf: Any) -> Any:
         if original_configure is None:
             raise RuntimeError("Feishu _configure_with_overrides called but original_configure is None")
@@ -1357,7 +1422,10 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         _apply_runtime_ws_overrides()
         return result
 
-    ws_client_module.websockets.connect = _connect_with_overrides
+    # Thread-local, not a shared global swap — this profile's ping settings
+    # can never leak into another profile's concurrent (re)connect.
+    _ws_connect_overrides.ping_interval = adapter._ws_ping_interval
+    _ws_connect_overrides.ping_timeout = adapter._ws_ping_timeout
     if original_configure is not None:
         setattr(ws_client, "_configure", _configure_with_overrides)
     _apply_runtime_ws_overrides()
@@ -1366,7 +1434,8 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
     except Exception:
         pass
     finally:
-        ws_client_module.websockets.connect = original_connect
+        _ws_connect_overrides.ping_interval = None
+        _ws_connect_overrides.ping_timeout = None
         if original_configure is not None:
             setattr(ws_client, "_configure", original_configure)
         pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
@@ -1524,7 +1593,16 @@ class FeishuAdapter(BasePlatformAdapter):
         self._event_handler: Optional[Any] = None
         self._seen_message_ids: Dict[str, float] = {}  # message_id → seen_at (time.time())
         self._seen_message_order: List[str] = []
-        self._dedup_state_path = get_hermes_home() / "feishu_seen_message_ids.json"
+        # Per-app dedup state. In a multi-app config (feishu.apps[]), each
+        # FeishuAdapter is a separate bot that independently receives the same
+        # group message_id. Sharing one JSON file made concurrent
+        # _persist_seen_message_ids() calls clobber each other (last-writer-
+        # wins) and let one app's seen-set silently suppress another's after a
+        # restart. Namespacing by app_id gives each bot its own file; an empty
+        # app_id (single-app mode / tests) falls back to the legacy path.
+        _app_ns = re.sub(r"[^A-Za-z0-9_-]", "", self._app_id or "")
+        _dedup_name = f"feishu_seen_message_ids_{_app_ns}.json" if _app_ns else "feishu_seen_message_ids.json"
+        self._dedup_state_path = get_hermes_home() / _dedup_name
         self._dedup_lock = threading.Lock()
         self._sender_name_cache: Dict[str, tuple[str, float]] = {}  # sender_id → (name, expire_at)
         self._webhook_rate_counts: Dict[str, tuple[int, float]] = {}  # rate_key → (count, window_start)
@@ -1541,6 +1619,9 @@ class FeishuAdapter(BasePlatformAdapter):
         self._sent_message_ids_to_chat: Dict[str, str] = {}  # message_id → chat_id (for reaction routing)
         self._sent_message_id_order: List[str] = []  # LRU order for _sent_message_ids_to_chat
         self._chat_info_cache: Dict[str, Dict[str, Any]] = {}
+        # chat_id → (fetched_at, members list). Group membership changes
+        # infrequently; a TTL avoids refetching on every agent tool call.
+        self._chat_members_cache: Dict[str, tuple] = {}
         self._message_text_cache: "OrderedDict[str, Optional[str]]" = OrderedDict()
         self._app_lock_identity: Optional[str] = None
         self._text_batch_state = FeishuBatchState()
@@ -1556,10 +1637,89 @@ class FeishuAdapter(BasePlatformAdapter):
         # Update prompt button state (prompt_id → {session_key, message_id, chat_id})
         self._update_prompt_state: Dict[int, Dict[str, str]] = {}
         self._update_prompt_counter = itertools.count(1)
+        # Clarify button state (clarify_id → {session_key, message_id, chat_id})
+        self._clarify_state: Dict[str, Dict[str, str]] = {}
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
         self._load_seen_message_ids()
+        # Peer bot registry for bot-to-bot @mention (text-based fallback).
+        # Loaded from feishu_peer_bots.json in HERMES_HOME. Each adapter finds
+        # its own entry by app_id and uses the name+aliases for text @mention
+        # matching in _mentions_self().
+        self._bot_aliases: List[str] = []
+        self._peer_mention_map: Dict[str, str] = {}
+        # peer profile indices for bot-to-bot internal routing (Feishu doesn't
+        # deliver bot→bot messages, so the gateway routes @-mentions itself).
+        self._peer_profile_by_openid: Dict[str, str] = {}
+        self._peer_profile_by_name: Dict[str, str] = {}
+        # profile → canonical display name (for the group-chat colleague hint)
+        self._peer_canonical_by_profile: Dict[str, str] = {}
+        # Runner-injected async router; None = bot-to-bot routing disabled.
+        self._bot_to_bot_router: Optional[Callable] = None
+        # (sender_profile, reply_hop) set when a bot-to-bot synthetic triggers
+        # this adapter's turn; the next send auto-routes the reply back to the
+        # sender (bidirectional). hop increments to bound ping-pong loops.
+        self._bot_to_bot_reply_profile: Optional[tuple] = None
+        self._load_peer_bot_registry()
+        # Bot-to-bot loop prevention: track timestamps of bot-originated
+        # messages per (chat_id, sender_bot) pair. Each individual bot gets
+        # its own budget so normal multi-bot collaboration (6 bots each
+        # replying in the same window) is not penalised, while a single
+        # bot stuck in a self-feeding loop is still caught.
+        self._bot_interaction_history: Dict[tuple[str, str], List[float]] = {}
+        self._BOT_INTERACTION_LIMIT = int(
+            os.getenv("FEISHU_BOT_INTERACTION_LIMIT", "20")
+        )
+        self._BOT_INTERACTION_WINDOW = int(
+            os.getenv("FEISHU_BOT_INTERACTION_WINDOW", "60")
+        )
+
+    def _load_peer_bot_registry(self) -> None:
+        """Load peer bot registry: own aliases for inbound matching, plus the
+        full peer list for outbound @mention construction."""
+        try:
+            registry_path = get_hermes_home() / "feishu_peer_bots.json"
+            if not registry_path.exists():
+                return
+            with open(registry_path) as f:
+                data = json.load(f)
+            for entry in data.get("bots", []):
+                if entry.get("app_id") == self._app_id:
+                    self._bot_aliases = [
+                        a for a in entry.get("aliases", []) if a
+                    ]
+                    canonical = entry.get("name", "")
+                    if canonical and canonical not in self._bot_aliases:
+                        self._bot_aliases.append(canonical)
+                    break
+            # Build peer list (excluding self) for outbound @mention injection.
+            # Map: lowercase alias/name → open_id. On conflict, first entry wins.
+            self._peer_mention_map: Dict[str, str] = {}
+            self._peer_profile_by_openid: Dict[str, str] = {}
+            self._peer_profile_by_name: Dict[str, str] = {}
+            self._peer_canonical_by_profile: Dict[str, str] = {}
+            for entry in data.get("bots", []):
+                if entry.get("app_id") == self._app_id:
+                    continue
+                open_id = entry.get("open_id", "")
+                profile = str(entry.get("profile", "") or "").strip()
+                canonical = str(entry.get("name", "") or "").strip()
+                if not open_id:
+                    continue
+                if profile:
+                    self._peer_profile_by_openid[open_id] = profile
+                    if canonical:
+                        self._peer_canonical_by_profile[profile] = canonical
+                names = [entry.get("name", "")] + entry.get("aliases", [])
+                for name in names:
+                    name = name.strip()
+                    if name and name.lower() not in self._peer_mention_map:
+                        self._peer_mention_map[name.lower()] = open_id
+                        if profile:
+                            self._peer_profile_by_name[name.lower()] = profile
+        except Exception:
+            logger.debug("[Feishu] Failed to load peer bot registry", exc_info=True)
 
     @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
@@ -1956,6 +2116,12 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        # Synthetic bot-to-bot events use "bot2bot-xxx" message_ids that Feishu
+        # rejects as reply_to (error 99992354) — strip them so the response
+        # posts as a standalone message instead of failing entirely.
+        if reply_to and str(reply_to).startswith("bot2bot-"):
+            reply_to = None
+
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
         # When chunking splits a long markdown response, an individual chunk
@@ -2007,10 +2173,85 @@ class FeishuAdapter(BasePlatformAdapter):
                     )
                 last_response = response
 
-            return self._finalize_send_result(last_response, "send failed")
+            result = self._finalize_send_result(last_response, "send failed")
+            # Bot-to-bot internal routing: Feishu doesn't deliver bot→bot
+            # messages, so if this outbound @-mentioned a peer bot, dispatch
+            # to the runner-injected router for direct injection into the peer.
+            if result.success and self._bot_to_bot_router is not None:
+                _targets = self._parse_peer_mention_targets(content)
+                _reply_hop = 0
+                _reply = getattr(self, "_bot_to_bot_reply_profile", None)
+                logger.debug(
+                    "[Feishu] send hook READ reply_profile: adapter_id=%s reply=%s",
+                    getattr(self, "adapter_id", "?"), _reply,
+                )
+                if _reply:
+                    _reply_profile, _reply_hop = _reply
+                    if _reply_profile and _reply_profile not in [t[0] for t in _targets]:
+                        _targets = _targets + [(_reply_profile, _reply_profile)]
+                self._bot_to_bot_reply_profile = None  # one-shot per synthetic turn
+                logger.debug(
+                    "[Feishu] send hook: peer targets=%s reply_hop=%d content=%r",
+                    _targets, _reply_hop, content[:150],
+                )
+                if _targets:
+                    # p2p fallback: a peer @-mentioned in a DM can't be in that
+                    # DM, so the peer's reply would 230002 ("Bot/User can NOT be
+                    # out of the chat"). Reroute the injection to the configured
+                    # fallback group, where all colleagues are members.
+                    _route_chat_id = chat_id
+                    _cfg_extra = getattr(getattr(self, "config", None), "extra", None) or {}
+                    _fallback_chat = _cfg_extra.get("peer_routing_fallback_chat", "") or ""
+                    if _fallback_chat:
+                        # get_chat_info never raises — on lookup failure it
+                        # returns {"type": "dm"}, the safe default for "only
+                        # reroute on DM" (worst case: a misread group gets
+                        # rerouted to a group where peers are still reachable).
+                        _info = await self.get_chat_info(chat_id)
+                        if _info.get("type") == "dm":
+                            _route_chat_id = _fallback_chat
+                            logger.info(
+                                "[Feishu] p2p @peer → rerouting bot-to-bot to fallback chat %s",
+                                _fallback_chat,
+                            )
+                    try:
+                        asyncio.create_task(
+                            self._bot_to_bot_router(
+                                _targets,
+                                content,
+                                _route_chat_id,
+                                self,
+                                hop=_reply_hop,
+                                thread_id=(metadata or {}).get("thread_id"),
+                                anchor_message_id=getattr(result, "message_id", None),
+                            )
+                        )
+                    except Exception:
+                        logger.debug(
+                            "[Feishu] bot-to-bot router dispatch failed", exc_info=True
+                        )
+            return result
         except Exception as exc:
             logger.error("[Feishu] Send error: %s", exc, exc_info=True)
             return SendResult(success=False, error=str(exc))
+
+    async def _on_send_dead_letter(self, chat_id, content, result) -> None:
+        """Forward a permanently-failed send to the configured dead-letter
+        group via the runner-injected forwarder (which emits from the default
+        adapter — all colleagues are members of the dead-letter group, so the
+        forward itself won't 230002). No-op when unconfigured or before the
+        runner has injected ``_dead_letter_forwarder``."""
+        _cfg_extra = getattr(getattr(self, "config", None), "extra", None) or {}
+        _dead_letter_chat = _cfg_extra.get("send_failure_dead_letter_chat", "") or ""
+        if not _dead_letter_chat:
+            return
+        _forwarder = getattr(self, "_dead_letter_forwarder", None)
+        if not callable(_forwarder):
+            return
+        try:
+            await _forwarder(self, chat_id, content, getattr(result, "error", "") or "")
+        except Exception:
+            logger.warning("[Feishu] dead-letter forward failed", exc_info=True)
 
     async def edit_message(
         self,
@@ -2236,6 +2477,133 @@ class FeishuAdapter(BasePlatformAdapter):
         tmp_path.write_text(answer, encoding="utf-8")
         tmp_path.replace(response_path)
 
+    # ------------------------------------------------------------------
+    # Clarify — interactive card with one button per choice
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _build_clarify_card(
+        *,
+        question: str,
+        choices: List[str],
+        clarify_id: str,
+    ) -> Dict[str, Any]:
+        """Build raw card JSON for a multi-choice clarify prompt.
+
+        One button per choice carries ``hermes_clarify_action`` and the
+        ``clarify_id`` so ``_on_card_action_trigger`` can route the callback.
+        A final ``other`` button flips the entry to text-capture mode.
+        """
+        def _btn(label: str, action_value: dict, btn_type: str = "default") -> dict:
+            return {
+                "tag": "button",
+                "text": {"tag": "plain_text", "content": label},
+                "type": btn_type,
+                "value": action_value,
+            }
+
+        actions: List[dict] = []
+        for idx, choice in enumerate(choices):
+            actions.append(_btn(
+                str(choice)[:20],  # Feishu button label cap
+                {"hermes_clarify_action": str(idx), "clarify_id": clarify_id},
+            ))
+        actions.append(_btn(
+            "✏️ 其他（手打）",
+            {"hermes_clarify_action": "other", "clarify_id": clarify_id},
+        ))
+
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "❓ " + question[:100], "tag": "plain_text"},
+                "template": "blue",
+            },
+            "elements": [
+                {"tag": "markdown", "content": question},
+                {"tag": "action", "actions": actions},
+            ],
+        }
+
+    @staticmethod
+    def _build_resolved_clarify_card(
+        *,
+        response: str,
+        user_name: str,
+    ) -> Dict[str, Any]:
+        """Build raw card JSON for a resolved clarify choice."""
+        return {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "title": {"content": "✅ 已选择", "tag": "plain_text"},
+                "template": "green",
+            },
+            "elements": [
+                {
+                    "tag": "markdown",
+                    "content": f"**{response}** — by {user_name}",
+                },
+            ],
+        }
+
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a clarify prompt as a Feishu interactive card.
+
+        Multi-choice mode (``choices`` non-empty): renders one button per
+        option plus a final "Other" button.  Button callbacks resolve via
+        ``tools.clarify_gateway.resolve_gateway_clarify(clarify_id, response)``.
+
+        Open-ended mode (``choices`` empty): renders the question as plain
+        text and enables text-capture so the gateway intercept catches the
+        next user message.
+        """
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        # Open-ended: fall back to base class text rendering.
+        if not choices:
+            from tools.clarify_gateway import mark_awaiting_text
+            mark_awaiting_text(clarify_id)
+            text = f"❓ {question}"
+            return await self.send(
+                chat_id=chat_id, content=text, metadata=metadata,
+            )
+
+        try:
+            card = self._build_clarify_card(
+                question=question,
+                choices=list(choices),
+                clarify_id=clarify_id,
+            )
+            payload = json.dumps(card, ensure_ascii=False)
+            response = await self._feishu_send_with_retry(
+                chat_id=chat_id,
+                msg_type="interactive",
+                payload=payload,
+                reply_to=None,
+                metadata=metadata,
+            )
+
+            result = self._finalize_send_result(response, "send_clarify failed")
+            if result.success:
+                self._clarify_state[clarify_id] = {
+                    "session_key": session_key,
+                    "message_id": result.message_id or "",
+                    "chat_id": chat_id,
+                }
+            return result
+        except Exception as exc:
+            logger.warning("[Feishu] send_clarify failed: %s", exc)
+            return SendResult(success=False, error=str(exc))
+
     async def send_voice(
         self,
         chat_id: str,
@@ -2457,6 +2825,79 @@ class FeishuAdapter(BasePlatformAdapter):
         except Exception:
             logger.warning("[Feishu] Failed to get chat info for %s", chat_id, exc_info=True)
             return fallback
+
+    async def get_chat_members(
+        self, chat_id: str, member_id_type: str = "open_id"
+    ) -> List[Dict[str, str]]:
+        """Return group member list as [{name, member_id, id_type}, ...].
+
+        Lets the agent resolve who is in a chat (with their open_id) so it can
+        @ specific people. The lark SDK exposes this via
+        ``client.im.v1.chat_members.get`` (``GetChatMembersRequest``). Returns
+        ``[]`` on any failure — callers should treat an empty list as "unable
+        to fetch" (commonly a missing ``im:chat.member:read`` scope on the app,
+        which must be granted and the app version published).
+        """
+        # Cache first — a cached hit serves without the client, so a transient
+        # client outage still returns recent membership.
+        now = time.time()
+        cached = self._chat_members_cache.get(chat_id)
+        if cached and now - cached[0] < 300:
+            return list(cached[1])
+
+        if not self._client or not chat_id:
+            return []
+
+        try:
+            from lark_oapi.api.im.v1 import GetChatMembersRequest
+
+            all_members: List[Dict[str, str]] = []
+            page_token: Optional[str] = None
+            while True:
+                builder = (
+                    GetChatMembersRequest.builder()
+                    .chat_id(chat_id)
+                    .member_id_type(member_id_type)
+                    .page_size(100)
+                )
+                if page_token:
+                    builder = builder.page_token(page_token)
+                request = builder.build()
+                response = await self._run_blocking(
+                    self._client.im.v1.chat_members.get, request
+                )
+                if not response or getattr(response, "success", lambda: False)() is False:
+                    code = getattr(response, "code", "unknown")
+                    msg = getattr(response, "msg", "members lookup failed")
+                    logger.warning(
+                        "[Feishu] Failed to get chat members for %s: [%s] %s "
+                        "(empty list returned — if code is a permission error, grant "
+                        "im:chat.member:read and publish a new app version)",
+                        chat_id, code, msg,
+                    )
+                    return all_members
+
+                data = getattr(response, "data", None)
+                items = getattr(data, "items", None) or []
+                for _m in items:
+                    all_members.append({
+                        "name": str(getattr(_m, "name", "") or ""),
+                        "member_id": str(getattr(_m, "member_id", "") or ""),
+                        "id_type": str(getattr(_m, "member_id_type", "") or member_id_type),
+                    })
+                if not getattr(data, "has_more", False):
+                    break
+                page_token = getattr(data, "page_token", None)
+                if not page_token:
+                    break
+
+            self._chat_members_cache[chat_id] = (now, all_members)
+            return list(all_members)
+        except Exception:
+            logger.warning(
+                "[Feishu] Failed to get chat members for %s", chat_id, exc_info=True
+            )
+            return []
 
     def format_message(self, content: str) -> str:
         """Feishu text messages are plain text by default."""
@@ -2734,11 +3175,21 @@ class FeishuAdapter(BasePlatformAdapter):
             action_value.get("hermes_update_prompt_action")
             if isinstance(action_value, dict) else None
         )
+        clarify_action = (
+            action_value.get("hermes_clarify_action")
+            if isinstance(action_value, dict) else None
+        )
 
         if hermes_action:
             return self._handle_approval_card_action(event=event, action_value=action_value, loop=loop)
         if update_prompt_action:
             return self._handle_update_prompt_card_action(
+                event=event,
+                action_value=action_value,
+                loop=loop,
+            )
+        if clarify_action is not None:
+            return self._handle_clarify_card_action(
                 event=event,
                 action_value=action_value,
                 loop=loop,
@@ -2985,6 +3436,127 @@ class FeishuAdapter(BasePlatformAdapter):
             )
         except Exception as exc:
             logger.error("Failed to resolve Feishu update prompt: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Clarify card-action handler + resolver
+    # ------------------------------------------------------------------
+
+    def _handle_clarify_card_action(self, *, event: Any, action_value: Dict[str, Any], loop: Any) -> Any:
+        """Schedule clarify resolution and build the synchronous callback response."""
+        clarify_id = action_value.get("clarify_id")
+        if not clarify_id:
+            logger.debug("[Feishu] Card action missing clarify_id, ignoring")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        state = self._clarify_state.get(clarify_id)
+        if not state:
+            logger.debug("[Feishu] Clarify %s already resolved or unknown", clarify_id)
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        action = str(action_value.get("hermes_clarify_action", "") or "")
+
+        operator = getattr(event, "operator", None)
+        open_id = str(getattr(operator, "open_id", "") or "")
+        sender_id = SimpleNamespace(open_id=open_id, user_id=str(getattr(operator, "user_id", "") or ""))
+        if not self._allow_group_message(sender_id, state.get("chat_id", ""), is_bot=False):
+            logger.warning("[Feishu] Unauthorized clarify click by %s", open_id or "<unknown>")
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        callback_chat_id = str(getattr(getattr(event, "context", None), "open_chat_id", "") or "")
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if callback_chat_id and expected_chat_id and callback_chat_id != expected_chat_id:
+            logger.warning(
+                "[Feishu] Clarify callback chat mismatch for %s (expected=%s, got=%s)",
+                clarify_id, expected_chat_id, callback_chat_id,
+            )
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        # "other" → text-capture mode: flip the entry, don't pop state.
+        if action == "other":
+            if not self._submit_on_loop(
+                loop,
+                self._handle_clarify_other(clarify_id),
+            ):
+                return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+            # Return a toast-like card telling user to type their answer.
+            if P2CardActionTriggerResponse is None:
+                return None
+            response = P2CardActionTriggerResponse()
+            return response
+
+        user_name = self._get_cached_sender_name(open_id) or open_id
+        if not self._submit_on_loop(
+            loop,
+            self._resolve_clarify(
+                clarify_id,
+                action,
+                user_name,
+                open_id=open_id,
+                chat_id=callback_chat_id,
+            ),
+        ):
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+
+        if P2CardActionTriggerResponse is None:
+            return None
+        return P2CardActionTriggerResponse()
+
+    async def _handle_clarify_other(self, clarify_id: str) -> None:
+        """Flip a clarify entry into text-capture mode for free-form answers."""
+        from tools.clarify_gateway import mark_awaiting_text
+        mark_awaiting_text(clarify_id)
+
+    async def _resolve_clarify(
+        self,
+        clarify_id: str,
+        action: str,
+        user_name: str,
+        *,
+        open_id: str = "",
+        chat_id: str = "",
+    ) -> None:
+        """Pop clarify state and unblock the waiting agent thread."""
+        state = self._clarify_state.get(clarify_id)
+        if not state:
+            logger.debug("[Feishu] Clarify %s already resolved or unknown", clarify_id)
+            return
+        if not self._is_interactive_operator_authorized(open_id):
+            logger.warning("[Feishu] Unauthorized clarify click by %s for %s", open_id or "<unknown>", clarify_id)
+            return
+        expected_chat_id = str(state.get("chat_id", "") or "")
+        if expected_chat_id and chat_id and expected_chat_id != chat_id:
+            logger.warning(
+                "[Feishu] Clarify %s chat mismatch (expected=%s, got=%s)",
+                clarify_id, expected_chat_id, chat_id,
+            )
+            return
+        state = self._clarify_state.pop(clarify_id, None)
+        if not state:
+            logger.debug("[Feishu] Clarify %s already resolved while validating callback", clarify_id)
+            return
+
+        # For choice buttons, the action is the numeric index of the choice.
+        # Look up the entry to resolve with the actual choice text.
+        from tools.clarify_gateway import resolve_gateway_clarify, _entries, _lock
+
+        response_text = action
+        with _lock:
+            entry = _entries.get(clarify_id)
+            if entry and entry.choices:
+                try:
+                    idx = int(action)
+                    if 0 <= idx < len(entry.choices):
+                        response_text = str(entry.choices[idx])
+                except (ValueError, TypeError):
+                    response_text = action
+
+        try:
+            resolved = resolve_gateway_clarify(clarify_id, response_text)
+            logger.info(
+                "Feishu clarify button resolved for session %s (response=%s, user=%s, resolved=%s)",
+                state["session_key"], response_text, user_name, resolved,
+            )
+        except Exception as exc:
+            logger.error("Failed to resolve gateway clarify from Feishu button: %s", exc)
 
     async def _handle_reaction_event(self, event_type: str, data: Any) -> None:
         """Fetch the reacted-to message; if it was sent by this bot, emit a synthetic text event."""
@@ -3386,6 +3958,15 @@ class FeishuAdapter(BasePlatformAdapter):
             user_id_alt=sender_profile["user_id_alt"],
             is_bot=is_bot,
         )
+        _channel_prompt = self._resolve_channel_prompt(chat_id, thread_id or None)
+        # Inject peer colleague hint in BOTH group and DM — bots need to know
+        # their colleagues exist even when a user asks in a private chat.
+        _peer_hint = self._build_peer_colleague_hint()
+        if _peer_hint:
+            _channel_prompt = (
+                f"{_channel_prompt}\n{_peer_hint}" if _channel_prompt else _peer_hint
+            )
+            logger.debug("[Feishu] Injected peer colleague hint into %s channel_prompt for %s", chat_type, chat_id)
         normalized = MessageEvent(
             text=text,
             message_type=inbound_type,
@@ -3396,7 +3977,7 @@ class FeishuAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=reply_to_message_id,
             reply_to_text=reply_to_text,
-            channel_prompt=self._resolve_channel_prompt(chat_id, thread_id or None),
+            channel_prompt=_channel_prompt,
             timestamp=datetime.now(),
         )
         await self._dispatch_inbound_event(normalized)
@@ -4364,6 +4945,30 @@ class FeishuAdapter(BasePlatformAdapter):
             # Defensive: pre-hydration or malformed payloads.
             if not self_ids or not sender_ids:
                 return "self_ids_unknown"
+            # Bot-to-bot loop prevention: track recent messages per
+            # (chat_id, sender_bot) pair. Each bot gets its own budget so
+            # normal multi-bot collaboration is not penalised, while a single
+            # bot stuck in a self-feeding loop is caught.
+            if is_group:
+                now_ts = time.time()
+                # Use the first available sender ID as the bot key.
+                sender_key = next(iter(sender_ids), "") or ""
+                hist_key = (chat_id, sender_key)
+                bot_history = self._bot_interaction_history.get(hist_key, [])
+                # Prune entries outside the window.
+                bot_history = [
+                    t for t in bot_history
+                    if now_ts - t < self._BOT_INTERACTION_WINDOW
+                ]
+                if len(bot_history) >= self._BOT_INTERACTION_LIMIT:
+                    logger.warning(
+                        "[Feishu] Bot interaction limit reached for chat %s "
+                        "sender %s (%d in %ds), dropping bot message to prevent loop.",
+                        chat_id, sender_key, len(bot_history), self._BOT_INTERACTION_WINDOW,
+                    )
+                    return "bot_loop_prevented"
+                bot_history.append(now_ts)
+                self._bot_interaction_history[hist_key] = bot_history
             # Step 4 covers mention enforcement for groups when require_mention
             # is on; check here only on paths step 4 won't reach.
             if mode == "mentions" and not require_mention and not self._mentions_self(message):
@@ -4458,7 +5063,36 @@ class FeishuAdapter(BasePlatformAdapter):
             mentions=getattr(message, "mentions", None),
             bot=self._bot_identity(),
         )
-        return self._post_mentions_bot(normalized.mentions)
+        if self._post_mentions_bot(normalized.mentions):
+            return True
+        # Text-based @mention fallback for bot-to-bot communication.
+        # When a peer bot sends a text message containing "@BotName" or an
+        # alias, the Feishu API does not populate the structured mentions[]
+        # array (only the native client UI does). Match against this bot's
+        # hydrated name and configured aliases so the message passes the
+        # require_mention gate.
+        return self._text_mentions_self(raw_content)
+
+    def _text_mentions_self(self, raw_content: str) -> bool:
+        """Check if raw text content contains @mention of this bot by name/alias."""
+        if not raw_content or not self._bot_aliases:
+            return False
+        # Strip JSON wrapper to get the actual text for plain text messages.
+        text = raw_content
+        try:
+            parsed = json.loads(raw_content)
+            if isinstance(parsed, dict) and "text" in parsed:
+                text = parsed["text"]
+        except (json.JSONDecodeError, TypeError):
+            pass
+        for alias in self._bot_aliases:
+            if not alias:
+                continue
+            # Match "@alias" at word boundary — handles "@Alex", "@架构师", etc.
+            at_alias = f"@{alias}"
+            if at_alias in text:
+                return True
+        return False
 
     def _message_mentions_bot(self, mentions: List[Any]) -> bool:
         # IDs trump names: when both sides have open_id (or both user_id),
@@ -4640,6 +5274,15 @@ class FeishuAdapter(BasePlatformAdapter):
     def _build_outbound_payload(
         self, content: str, *, prefer_post: bool = False,
     ) -> tuple[str, str]:
+        # Peer @mention injection takes priority over plain markdown: agent
+        # output typically contains markdown formatting, so the markdown
+        # branch below would fire first and the <at> injection would never
+        # run. Check for peer mentions first so both structured mentions
+        # (for bot-to-bot communication) and markdown rendering work.
+        if self._peer_mention_map:
+            injected = self._inject_peer_mentions(content)
+            if injected is not None:
+                return "post", injected
         # Empirically (issue #52786), current Feishu clients render markdown
         # tables inside ``post``-type ``md`` elements natively. The previous
         # table-downgrade branch forced any table-containing message to
@@ -4655,6 +5298,166 @@ class FeishuAdapter(BasePlatformAdapter):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
+
+    # Pattern to match @Name at start of content or after whitespace/newline.
+    # Avoids matching emails or code paths. Excludes trailing punctuation
+    # (both ASCII and CJK) so "@Alex, help" matches "Alex" not "Alex,".
+    _PEER_MENTION_RE = re.compile(
+        r"(?:^|(?<=\s))@([^\s@<\[\{\(，。！？；：、）】》]+)"
+    )
+
+    @staticmethod
+    def _code_spans(content: str) -> List[tuple[int, int]]:
+        """Return (start, end) offsets of fenced code blocks in *content*.
+
+        Used to suppress @mention injection inside ```` ``` ```` fenced blocks
+        so that ```` ```python \n @decorator \n ``` ```` is not mistaken for
+        a peer mention.
+        """
+        spans: List[tuple[int, int]] = []
+        in_block = False
+        block_start = 0
+        for m in re.finditer(r"^```", content, re.MULTILINE):
+            if not in_block:
+                in_block = True
+                block_start = m.start()
+            else:
+                in_block = False
+                spans.append((block_start, m.end()))
+        return spans
+
+    def _parse_peer_mention_targets(self, content: str) -> List[tuple]:
+        """Return [(profile, matched_name), ...] for @-mentioned peer bots.
+
+        Mirrors _inject_peer_mentions' scan (_PEER_MENTION_RE + progressive
+        prefix + code-span skip) but resolves to peer profiles for the
+        gateway's internal bot-to-bot router (Feishu doesn't deliver bot→bot
+        messages). De-duplicates by profile.
+        """
+        if not self._peer_mention_map:
+            return []
+        code_spans = self._code_spans(content)
+
+        def _in_code(offset: int) -> bool:
+            return any(s <= offset < e for s, e in code_spans)
+
+        targets: List[tuple] = []
+        seen: set = set()
+        for m in self._PEER_MENTION_RE.finditer(content):
+            if _in_code(m.start()):
+                continue
+            raw_name = m.group(1).strip()
+            open_id = self._peer_mention_map.get(raw_name.lower())
+            resolved = raw_name
+            if not open_id:
+                for end in range(len(raw_name) - 1, 0, -1):
+                    candidate = raw_name[:end]
+                    oid = self._peer_mention_map.get(candidate.lower())
+                    if oid:
+                        open_id = oid
+                        resolved = candidate
+                        break
+            if not open_id:
+                continue
+            profile = (
+                self._peer_profile_by_openid.get(open_id)
+                or self._peer_profile_by_name.get(resolved.lower())
+            )
+            if profile and profile not in seen:
+                seen.add(profile)
+                targets.append((profile, resolved))
+        return targets
+
+    def _build_peer_colleague_hint(self) -> str:
+        """List peer bot colleagues so the agent knows whom it can @.
+
+        Injected into group-chat channel_prompt. Without this the agent has no
+        way to discover its colleagues, so it would never @ them — and the
+        bot-to-bot internal router (send hook) would never fire. The hint is
+        stable (derived from feishu_peer_bots.json), so it doesn't destabilize
+        per-session prompt caching.
+        """
+        peers = getattr(self, "_peer_canonical_by_profile", None) or {}
+        logger.debug(
+            "[Feishu] _build_peer_colleague_hint: peers=%d app_id=%s",
+            len(peers), getattr(self, "_app_id", "?"),
+        )
+        if not peers:
+            return ""
+        names = list(peers.values())
+        return (
+            "[你的同事，可 @ 提及协作（gateway 会把 @同事 的消息内部路由给他们，"
+            "飞书本身不投递 bot→bot 消息）。"
+            "需要同事参与时，在群里 @他们进行可见讨论，不要用 delegation/subagent 委托（对其他人不可见）。"
+            "回复同事时务必 @对方，否则对方收不到你的消息。] "
+            + "、".join(f"@{n}" for n in names)
+        )
+
+    def _inject_peer_mentions(self, content: str) -> Optional[str]:
+        """Scan content for @peer_alias patterns and build a post payload with
+        Feishu <at> elements. Returns None if no peer mentions found.
+
+        Mentions inside fenced code blocks are skipped. Falls back to
+        progressively shorter prefixes if the full match fails, so
+        "@架构师Alex" still resolves when only "架构师" is registered but
+        "架构师Alex" is not.
+        """
+        code_spans = self._code_spans(content)
+
+        def _in_code(offset: int) -> bool:
+            return any(s <= offset < e for s, e in code_spans)
+
+        mentions_found: List[tuple[int, int, str, str]] = []
+        # (match_start, match_end, name, open_id)
+        for m in self._PEER_MENTION_RE.finditer(content):
+            if _in_code(m.start()):
+                continue
+            raw_name = m.group(1).strip()
+            # Try full name first, then progressively shorter prefixes
+            # (e.g. "架构师Alex" -> "架构师" if only the latter is registered)
+            open_id = self._peer_mention_map.get(raw_name.lower())
+            resolved_name = raw_name
+            if not open_id:
+                for end in range(len(raw_name) - 1, 0, -1):
+                    candidate = raw_name[:end]
+                    oid = self._peer_mention_map.get(candidate.lower())
+                    if oid:
+                        open_id = oid
+                        resolved_name = candidate
+                        break
+            if open_id:
+                # match_start/end covers only "@resolved_name" — the rest
+                # of raw_name (e.g. "Alex" after "@架构师") stays in the
+                # following text segment.
+                name_len = len(resolved_name)
+                start = m.start()
+                end = start + 1 + name_len  # +1 for the "@"
+                mentions_found.append((start, end, resolved_name, open_id))
+        if not mentions_found:
+            return None
+        # Build post rows: interleave md elements with <at> elements.
+        # Uses _build_markdown_post_rows for fenced code block isolation,
+        # so markdown rendering (bold, code blocks, tables) is preserved
+        # in the non-mention segments.
+        rows: List[List[Dict[str, str]]] = []
+        pos = 0
+        for start, end, name, open_id in mentions_found:
+            # Text before the mention — use markdown post rows so code blocks
+            # and markdown formatting in surrounding text still render.
+            before = content[pos:start]
+            if before.strip():
+                rows.extend(_build_markdown_post_rows(before))
+            # The <at> element — user_id is the bot's open_id, user_name is
+            # the display name shown in the Feishu client.
+            rows.append([{"tag": "at", "user_id": open_id, "user_name": name}])
+            pos = end
+        # Remaining text after last mention
+        remaining = content[pos:]
+        if remaining.strip():
+            rows.extend(_build_markdown_post_rows(remaining))
+        if not rows:
+            return None
+        return json.dumps({"zh_cn": {"content": rows}}, ensure_ascii=False)
 
     @staticmethod
     def _get_audio_duration_ms(file_path: str) -> int:
@@ -4823,6 +5626,12 @@ class FeishuAdapter(BasePlatformAdapter):
         effective_reply_to = reply_to
         if not effective_reply_to and metadata and metadata.get("thread_id"):
             effective_reply_to = metadata.get("reply_to_message_id")
+        # 最终防御：合成 bot2bot message_id 绝不能作为飞书 reply anchor（飞书以
+        # 99992354 拒绝）。覆盖 reply_to 参数与 metadata.reply_to_message_id 两条
+        # 来源，确保漏过上游 strip（base._reply_anchor_for_event / send / retry）时
+        # 此处兜底。
+        if effective_reply_to and str(effective_reply_to).startswith("bot2bot-"):
+            effective_reply_to = None
         reply_in_thread = bool((metadata or {}).get("thread_id"))
         if effective_reply_to:
             body = self._build_reply_message_body(
@@ -4834,34 +5643,50 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(effective_reply_to, body)
             return await self._run_blocking(self._client.im.v1.message.reply, request)
 
-        # For topic/thread messages that fell back from reply→create, use
-        # thread_id as receive_id so the message lands in the topic instead of
-        # the main chat.
+        # 话题消息但无 reply anchor（典型场景：bot-to-bot 合成消息、会话恢复后
+        # anchor 丢失）。飞书 create 不支持 receive_id_type=thread_id，直接发
+        # chat_id 又会在话题群新建话题根。改用 thread_id 查话题内最后一条消息
+        # 作为 reply anchor，以 reply_in_thread 回到原话题。
         _thread_id = (metadata or {}).get("thread_id")
         if _thread_id:
-            body = self._build_create_message_body(
-                receive_id=_thread_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
+            _topic_anchor = await self._fetch_last_message_in_thread(_thread_id)
+            if _topic_anchor:
+                body = self._build_reply_message_body(
+                    content=payload,
+                    msg_type=msg_type,
+                    reply_in_thread=True,
+                    uuid_value=str(uuid.uuid4()),
+                )
+                request = self._build_reply_message_request(_topic_anchor, body)
+                return await self._run_blocking(self._client.im.v1.message.reply, request)
+            logger.warning(
+                "[Feishu] 话题 %s 内无可回复消息；为避免在话题群新建话题根，跳过此次发送",
+                _thread_id,
             )
-            request = self._build_create_message_request("thread_id", body)
-        else:
-            receive_id = chat_id
-            receive_id_type = "chat_id"
-            if chat_id.startswith("feishu_user_id:"):
-                receive_id = chat_id.split(":", 1)[1]
-                receive_id_type = "user_id"
-            elif chat_id.startswith("ou_"):
-                receive_id_type = "open_id"
+            # 返回类飞书 response（success 为 callable），保持 _send_raw_message
+            # 的返回类型契约 —— 上层 _response_succeeded/_finalize_send_result 会
+            # 将其视为发送失败，而非对 bool 调用导致 TypeError 崩溃。
+            return SimpleNamespace(
+                success=lambda: False,
+                code=0,
+                msg=f"thread {_thread_id} has no anchor message; skipped to avoid creating a new topic",
+                data=None,
+            )
 
-            body = self._build_create_message_body(
-                receive_id=receive_id,
-                msg_type=msg_type,
-                content=payload,
-                uuid_value=str(uuid.uuid4()),
-            )
-            request = self._build_create_message_request(receive_id_type, body)
+        receive_id = chat_id
+        receive_id_type = "chat_id"
+        if chat_id.startswith("feishu_user_id:"):
+            receive_id = chat_id.split(":", 1)[1]
+            receive_id_type = "user_id"
+        elif chat_id.startswith("ou_"):
+            receive_id_type = "open_id"
+        body = self._build_create_message_body(
+            receive_id=receive_id,
+            msg_type=msg_type,
+            content=payload,
+            uuid_value=str(uuid.uuid4()),
+        )
+        request = self._build_create_message_request(receive_id_type, body)
         return await self._run_blocking(self._client.im.v1.message.create, request)
 
     @staticmethod
@@ -4997,7 +5822,9 @@ class FeishuAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
         last_error: Optional[Exception] = None
-        active_reply_to = reply_to
+        # Final defense: strip synthetic bot2bot reply_to at the API boundary.
+        # Feishu rejects "bot2bot-xxx" with error 99992354 (invalid message_id).
+        active_reply_to = reply_to if not (reply_to and str(reply_to).startswith("bot2bot-")) else None
         for attempt in range(_FEISHU_SEND_ATTEMPTS):
             try:
                 response = await self._send_raw_message(
@@ -5852,11 +6679,123 @@ def _apply_yaml_config(yaml_cfg: dict, feishu_cfg: dict) -> dict | None:
 
     Implements the apply_yaml_config_fn contract (#24849). Mirrors the legacy
     feishu_cfg block from gateway/config.py::load_gateway_config() (allow_bots).
-    Env vars take precedence over YAML. Returns None — flows through env.
+
+    Now also supports feishu.apps[] list for multi-app profile routing (#68046).
+    When feishu.apps is configured, each app entry becomes a separate
+    PlatformConfig in the platforms.feishu list, with per-app credentials,
+    home_channel, authorization policies, and profile mapping.
+
+    YAML takes precedence over env vars when feishu.apps[] is configured.
+    Returns bridged config dict for multi-app, or None for single-app mode (flows through env).
     """
+    # Single-app config (legacy): allow_bots
     if "allow_bots" in feishu_cfg and not os.getenv("FEISHU_ALLOW_BOTS"):
         os.environ["FEISHU_ALLOW_BOTS"] = str(feishu_cfg["allow_bots"]).lower()
-    return None
+
+    # Multi-app config: feishu.apps[] list
+    apps_list = feishu_cfg.get("apps")
+    if not isinstance(apps_list, list):
+        return None  # Single-app mode, no bridging needed
+
+    # YAML/env coexistence warning (#68046): if both feishu.apps[] and FEISHU_APP_ID
+    # are present, YAML takes precedence but warn the user of the conflict.
+    if os.getenv("FEISHU_APP_ID"):
+        logger.warning(
+            "Both feishu.apps[] config and FEISHU_APP_ID env var detected; "
+            "using YAML apps config, ignoring env var."
+        )
+
+    # Validate app count (hard limit: 10)
+    if len(apps_list) > 10:
+        raise ValueError(
+            f"feishu.apps contains {len(apps_list)} entries; maximum is 10. "
+            "Multi-app Feishu supports up to 10 concurrent apps per gateway."
+        )
+
+    # Collect app_ids to detect duplicates (#68046)
+    seen_app_ids = set()
+
+    # Build per-app config dicts for platforms.feishu list
+    platform_configs = []
+    for i, app_entry in enumerate(apps_list):
+        if not isinstance(app_entry, dict):
+            continue
+
+        app_id = app_entry.get("app_id")
+        app_secret = app_entry.get("app_secret")
+        if not app_id or not app_secret:
+            continue
+
+        # Duplicate app_id check (#68046)
+        if app_id in seen_app_ids:
+            raise ValueError(f"Duplicate app_id in feishu.apps: {app_id}")
+        seen_app_ids.add(app_id)
+
+        # Base config for this app
+        app_config = {
+            "enabled": True,
+            "extra": {
+                "app_id": app_id,
+                "app_secret": app_secret,
+                # adapter_id is used by _adapter_instance_id() to generate the full
+                # "platform:id" string. Store just the app_id here, not the full prefix.
+                "adapter_id": app_id,
+            }
+        }
+
+        # Optional profile mapping
+        profile = app_entry.get("profile", "").strip()
+        if profile:
+            app_config["extra"]["profile"] = profile
+
+        # Optional home_channel
+        home_channel = app_entry.get("home_channel", "").strip()
+        if home_channel:
+            app_config["extra"]["home_channel"] = home_channel
+
+        # Per-app authorization: allow_all_users
+        if "allow_all_users" in app_entry:
+            app_config["extra"]["allow_all_users"] = app_entry["allow_all_users"]
+
+        # Per-app authorization: allowed_users
+        allowed_users = app_entry.get("allowed_users", "").strip()
+        if allowed_users:
+            app_config["extra"]["allowed_users"] = allowed_users
+
+        # Per-app bot policy (#68046): allow_bots per app entry.
+        # Falls back to the top-level feishu.allow_bots (already bridged to
+        # the env var above), so single-app backward compat is preserved.
+        if "allow_bots" in app_entry:
+            app_config["extra"]["allow_bots"] = str(app_entry["allow_bots"]).lower()
+
+        # Bridge every remaining app_entry field (default_group_policy,
+        # group_policy, require_mention, group_rules, dm_policy, admins, …)
+        # into extra so the adapter's _load_settings sees it. Without this,
+        # per-app YAML policy is silently dropped and the adapter falls back
+        # to env defaults — e.g. FEISHU_GROUP_POLICY=allowlist — which then
+        # rejects all group traffic even though the user wrote
+        # default_group_policy: open (#68046 regression). setdefault keeps
+        # the explicit values assigned above intact.
+        for _field, _value in app_entry.items():
+            app_config["extra"].setdefault(_field, _value)
+
+        # Bridge gateway-level (top-level feishu) routing keys into every
+        # app's extra. Each adapter only reads its own config.extra, so shared
+        # keys must be copied per-app or they vanish. Used by the bot-to-bot
+        # p2p fallback reroute (peer_routing_fallback_chat) and the send-failure
+        # dead-letter sink (send_failure_dead_letter_chat).
+        for _gw_key in ("peer_routing_fallback_chat", "send_failure_dead_letter_chat"):
+            _gw_val = feishu_cfg.get(_gw_key, "")
+            if isinstance(_gw_val, str) and _gw_val.strip():
+                app_config["extra"].setdefault(_gw_key, _gw_val.strip())
+
+        platform_configs.append(app_config)
+
+    if not platform_configs:
+        return None  # No valid apps, fall back to single-app mode
+
+    # Return multi-app config list (will be merged into platforms.feishu)
+    return {"platforms_list": platform_configs}
 
 
 def _is_connected(config) -> bool:

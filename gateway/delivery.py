@@ -104,6 +104,14 @@ def resolve_delivery_transport(
     live_adapters = adapters or {}
     native = live_adapters.get(platform)
     native_config = config.platforms.get(platform)
+    # Multi-app configs store a list of PlatformConfig; the live adapter is a
+    # single instance, so unwrap to one enabled entry instead of calling
+    # .enabled on the list (which would raise AttributeError).
+    if isinstance(native_config, list):
+        native_config = next(
+            (c for c in native_config if getattr(c, "enabled", False)),
+            native_config[0] if native_config else None,
+        )
     # Preserve DeliveryRouter's historical support for explicitly supplied live
     # adapters with no config block, but never let an explicitly disabled native
     # adapter shadow an enabled Relay transport.

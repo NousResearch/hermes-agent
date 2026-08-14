@@ -33,6 +33,8 @@ _AMBIENT_TOKEN_SHAPE = re.compile(
     r"|[A-Za-z0-9_-]{32,}"  # long opaque bearer token
 )
 
+from agent.secret_scope import get_secret
+
 
 def relay_url() -> Optional[str]:
     """The connector relay endpoint URL, or None when relay is not configured.
@@ -160,7 +162,7 @@ def relay_connection_auth() -> tuple[Optional[str], Optional[str]]:
     ``gateway.relay_id`` / ``gateway.relay_secret`` in config.yaml.
     """
     gateway_id = os.environ.get("GATEWAY_RELAY_ID", "").strip()
-    secret = os.environ.get("GATEWAY_RELAY_SECRET", "").strip()
+    secret = (get_secret("GATEWAY_RELAY_SECRET") or "").strip()
     if not (gateway_id and secret):
         try:
             from gateway.run import _load_gateway_config  # late import to avoid cycle
@@ -543,7 +545,7 @@ def _resolve_relay_identity_token() -> str:
     """
     token_url = os.environ.get("GATEWAY_RELAY_IDP_TOKEN_URL", "").strip()
     client_id = os.environ.get("GATEWAY_RELAY_IDP_CLIENT_ID", "").strip()
-    client_secret = os.environ.get("GATEWAY_RELAY_IDP_CLIENT_SECRET", "").strip()
+    client_secret = (get_secret("GATEWAY_RELAY_IDP_CLIENT_SECRET") or "").strip()
     scope = os.environ.get("GATEWAY_RELAY_IDP_SCOPE", "").strip()
     if not token_url:
         try:
@@ -750,9 +752,9 @@ def self_provision_relay() -> bool:
         # outbound WS upgrade). Subsequent platforms share the same gatewayId +
         # secret (the connector returns the same record for the same gatewayId).
         # Never logged.
-        if "GATEWAY_RELAY_SECRET" not in os.environ or not os.environ.get("GATEWAY_RELAY_SECRET"):
+        if not (get_secret("GATEWAY_RELAY_SECRET") or ""):
             os.environ["GATEWAY_RELAY_ID"] = str(result.get("gatewayId") or gateway_id)
-            os.environ["GATEWAY_RELAY_SECRET"] = str(result.get("secret") or "")
+            os.environ["GATEWAY_RELAY_SECRET"] = str(result.get("secret") or "")  # credential-lint: ok - process-global (GATEWAY_RELAY_ is in secret_scope._GLOBAL_ENV_PREFIXES)
             os.environ["GATEWAY_RELAY_DELIVERY_KEY"] = str(result.get("deliveryKey") or "")
 
     if not provisioned:

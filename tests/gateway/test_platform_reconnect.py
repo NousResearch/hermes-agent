@@ -63,6 +63,9 @@ def _make_runner():
     runner._exit_cleanly = False
     runner._failed_platforms = {}
     runner.adapters = {}
+    runner.adapters_by_id = {}
+    runner._platform_adapter_ids = {}
+    runner._adapter_profile_map = {}
     runner.delivery_router = MagicMock()
     runner._running_agents = {}
     runner._pending_messages = {}

@@ -265,6 +265,8 @@ def _stub_adapter(platform: Platform, runner) -> "_StubAdapter":
     a = _StubAdapter.__new__(_StubAdapter)
     a.platform = platform
     a.gateway_runner = runner
+    # __new__ bypasses BasePlatformAdapter.__init__, which normally sets this.
+    a.adapter_id = None
     return a
 
 

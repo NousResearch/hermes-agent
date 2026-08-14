@@ -164,7 +164,13 @@ def _reply_anchor_for_event(event) -> str | None:
         return None
     if platform == "feishu" and thread_id and getattr(event, "reply_to_message_id", None):
         return getattr(event, "reply_to_message_id", None)
-    return getattr(event, "message_id", None)
+    _msg_id = getattr(event, "message_id", None)
+    # Synthetic bot-to-bot events use a "bot2bot-xxx" message_id that Feishu
+    # doesn't recognise — passing it as reply_to makes the API reject the send.
+    # Skip it so the response posts as a standalone message instead.
+    if _msg_id and str(_msg_id).startswith("bot2bot-"):
+        return None
+    return _msg_id
 
 
 def should_send_media_as_audio(platform, ext: str, is_voice: bool = False) -> bool:
@@ -3005,6 +3011,7 @@ class BasePlatformAdapter(ABC):
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
         self.platform = platform
+        self.adapter_id: Optional[str] = None
         self._message_handler: Optional[MessageHandler] = None
         # Optional gateway-supplied fan-out for platform-native emoji
         # reaction events (see ``set_reaction_handler``).
@@ -5441,6 +5448,17 @@ class BasePlatformAdapter(ABC):
             return self
         return live_adapter
 
+    async def _on_send_dead_letter(
+        self,
+        chat_id: str,
+        content: str,
+        result: "SendResult",
+    ) -> None:
+        """Hook fired when a send permanently fails after all retries and
+        fallbacks. Default is a no-op; platform adapters may override it to
+        forward the lost message to a dead-letter channel. ``result`` is the
+        final failed SendResult (inspect ``.error`` for diagnostics)."""
+
     async def _send_with_retry(
         self,
         chat_id: str,
@@ -5518,6 +5536,7 @@ class BasePlatformAdapter(ABC):
                     await self.send(chat_id=chat_id, content=notice, reply_to=reply_to, metadata=metadata)
                 except Exception as notify_err:
                     logger.debug("[%s] Could not send delivery-failure notice: %s", self.name, notify_err)
+                await self._on_send_dead_letter(chat_id, content, result)
                 return result
 
         # Non-network / post-retry formatting failure: try plain text as fallback
@@ -5530,6 +5549,7 @@ class BasePlatformAdapter(ABC):
         )
         if not fallback_result.success:
             logger.error("[%s] Fallback send also failed: %s", self.name, fallback_result.error)
+            await self._on_send_dead_letter(chat_id, content, fallback_result)
         return fallback_result
 
     @staticmethod
@@ -6471,9 +6491,10 @@ class BasePlatformAdapter(ABC):
                 if text_content and not _tts_caption_delivered:
                     delivery_adapter = self._final_delivery_adapter(event.source)
                     logger.info(
-                        "[%s] Sending response (%d chars) to %s",
+                        "[%s] Sending response (%d chars) via adapter_id=%s to %s",
                         delivery_adapter.name,
                         len(text_content),
+                        getattr(event.source, "adapter_id", None) or getattr(self, "adapter_id", None) or "default",
                         event.source.chat_id,
                     )
                     _reply_anchor = _reply_anchor_for_event(event)
@@ -7025,6 +7046,7 @@ class BasePlatformAdapter(ABC):
         guild_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None,
         message_id: Optional[str] = None,
+        adapter_id: Optional[str] = None,
         role_authorized: bool = False,
         auto_thread_created: bool = False,
         auto_thread_initial_name: Optional[str] = None,
@@ -7092,6 +7114,11 @@ class BasePlatformAdapter(ABC):
             guild_id=str(guild_id) if guild_id else None,
             parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
             message_id=str(message_id) if message_id else None,
+            adapter_id=(
+                str(adapter_id or getattr(self, "adapter_id", None))
+                if (adapter_id or getattr(self, "adapter_id", None))
+                else None
+            ),
             profile=profile,
             role_authorized=role_authorized,
             auto_thread_created=auto_thread_created,

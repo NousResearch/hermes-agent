@@ -217,3 +217,238 @@ class TestResetHandlerInterruptsDelegations:
         src = inspect.getsource(slash_commands.GatewaySlashCommandsMixin._handle_reset_command)
         assert "interrupt_for_session" in src
         assert "session_reset" in src
+
+
+def test_async_delegations_schema_has_cross_adapter_columns():
+    """A (#64934): the durable table carries the cross-adapter routing fields
+    so a completion can be matched back to its spawning adapter."""
+    import tools.async_delegation as ad
+
+    conn = ad._connect()
+    try:
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(async_delegations)")}
+    finally:
+        conn.close()
+    for col in (
+        "source_adapter_id",
+        "source_profile",
+        "source_session_key",
+        "delegation_type",
+    ):
+        assert col in cols, f"async_delegations missing column {col}"
+
+
+class TestCrossAdapterCompletionIsolation:
+    """#64934: a delegation spawned on adapter A must not be sewn onto the
+    parent session when its completion routes through adapter B (multi-app
+    fan-out). Drop fail-closed; the result remains in async_delegations."""
+
+    @staticmethod
+    def _feishu_entry(session_id, adapter_id):
+        from datetime import datetime
+
+        from gateway.config import Platform
+        from gateway.session import SessionEntry
+
+        aid = adapter_id.replace("%", "%25").replace(":", "%3A")
+        return SessionEntry(
+            session_key=f"agent:main:feishu:adapter={aid}:group:oc_chat:omt_thread",
+            session_id=session_id,
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.FEISHU,
+            chat_type="group",
+        )
+
+    @staticmethod
+    def _source_key(adapter_id):
+        aid = adapter_id.replace("%", "%25").replace(":", "%3A")
+        return f"agent:main:feishu:adapter={aid}:group:oc_chat:omt_thread"
+
+    def _make_runner(self, rows, *, switched_entry=None, compression_tip=None):
+        from gateway.run import GatewayRunner
+        from gateway.session import AsyncSessionStore
+
+        runner = object.__new__(GatewayRunner)
+        db = MagicMock()
+        db.get_session = AsyncMock(side_effect=lambda sid: rows.get(sid))
+        db.get_compression_tip = AsyncMock(return_value=compression_tip)
+        runner._session_db = db
+        runner.session_store = MagicMock()
+        runner.session_store.switch_session = MagicMock(return_value=switched_entry)
+        runner.session_store.advance_compression_session = MagicMock(
+            return_value=switched_entry
+        )
+        runner._async_session_store = AsyncSessionStore(runner.session_store)
+        return runner
+
+    @staticmethod
+    def _assert_no_route_change(runner):
+        runner.session_store.switch_session.assert_not_called()
+        runner.session_store.advance_compression_session.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_cross_adapter_completion_drops_instead_of_sewing(self):
+        # Completion routes through Tony's adapter (cli_aad581a8) but the
+        # delegation was spawned by Pete (cli_aad7c4d).
+        current = self._feishu_entry("sess_tony", "feishu:cli_aad581a8")
+        runner = self._make_runner(
+            {"sess_pete": {"id": "sess_pete", "ended_at": None}},
+            switched_entry=self._feishu_entry("sess_pete", "feishu:cli_aad7c4d"),
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_pete",
+            source_session_key=self._source_key("feishu:cli_aad7c4d"),
+        )
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
+    @pytest.mark.asyncio
+    async def test_same_adapter_completion_still_pins(self):
+        current = self._feishu_entry("sess_tony", "feishu:cli_aad581a8")
+        target = self._feishu_entry("sess_pete", "feishu:cli_aad581a8")
+        runner = self._make_runner(
+            {"sess_pete": {"id": "sess_pete", "ended_at": None}},
+            switched_entry=target,
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_pete",
+            source_session_key=self._source_key("feishu:cli_aad581a8"),
+        )
+
+        assert resolved is target
+        runner.session_store.switch_session.assert_called_once_with(
+            current.session_key, "sess_pete", expected_adapter_id="feishu:cli_aad581a8"
+        )
+
+    @pytest.mark.asyncio
+    async def test_missing_source_key_falls_back_to_pin(self):
+        # Legacy record (pre-#64934): empty source_session_key → original pin.
+        current = self._feishu_entry("sess_tony", "feishu:cli_aad581a8")
+        target = self._feishu_entry("sess_pete", "feishu:cli_aad7c4d")
+        runner = self._make_runner(
+            {"sess_pete": {"id": "sess_pete", "ended_at": None}},
+            switched_entry=target,
+        )
+
+        resolved = await runner._resolve_async_delegation_session(current, "sess_pete")
+
+        assert resolved is target
+        runner.session_store.switch_session.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cross_adapter_with_compression_still_drops(self):
+        # pinned parent ended via compression; current route owns the lineage
+        # (session_id == pinned) but its KEY belongs to a different adapter.
+        current = self._feishu_entry("sess_pete", "feishu:cli_aad581a8")
+        runner = self._make_runner(
+            {
+                "sess_pete": {
+                    "id": "sess_pete",
+                    "ended_at": "2026-07-08T00:00:00",
+                    "end_reason": "compression",
+                },
+                "sess_child": {"id": "sess_child", "ended_at": None},
+            },
+            switched_entry=self._feishu_entry("sess_child", "feishu:cli_aad7c4d"),
+            compression_tip="sess_child",
+        )
+
+        resolved = await runner._resolve_async_delegation_session(
+            current, "sess_pete",
+            source_session_key=self._source_key("feishu:cli_aad7c4d"),
+        )
+
+        assert resolved is None
+        self._assert_no_route_change(runner)
+
+
+class TestParentAdapterReroute:
+    """#64934 (B): a cross-adapter completion is rerouted to the spawning
+    adapter's source so the result lands in the parent's own session."""
+
+    @staticmethod
+    def _feishu_source(adapter_id):
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+
+        return SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="oc_chat",
+            chat_type="group",
+            thread_id="omt_thread",
+            adapter_id=adapter_id,
+        )
+
+    @staticmethod
+    def _key(adapter_id):
+        aid = adapter_id.replace(":", "%3A")
+        return f"agent:main:feishu:adapter={aid}:group:oc_chat:omt_thread"
+
+    def _make_runner(self, parent_source):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        runner._build_process_event_source = lambda evt: parent_source
+        return runner
+
+    def test_cross_adapter_reroutes_to_parent_source(self):
+        parent = self._feishu_source("feishu:cli_aad7c4d")  # Pete
+        runner = self._make_runner(parent)
+        current = self._feishu_source("feishu:cli_aad581a8")  # Tony
+
+        result = runner._maybe_reroute_to_parent_adapter(
+            {
+                "session_key": self._key("feishu:cli_aad581a8"),
+                "source_session_key": self._key("feishu:cli_aad7c4d"),
+            },
+            current,
+        )
+
+        assert result is parent
+
+    def test_same_adapter_no_reroute(self):
+        parent = self._feishu_source("feishu:cli_aad581a8")
+        runner = self._make_runner(parent)
+        current = self._feishu_source("feishu:cli_aad581a8")
+
+        result = runner._maybe_reroute_to_parent_adapter(
+            {
+                "session_key": self._key("feishu:cli_aad581a8"),
+                "source_session_key": self._key("feishu:cli_aad581a8"),
+            },
+            current,
+        )
+
+        assert result is current
+
+    def test_missing_source_key_no_reroute(self):
+        runner = self._make_runner(None)
+        current = self._feishu_source("feishu:cli_aad581a8")
+
+        result = runner._maybe_reroute_to_parent_adapter(
+            {"session_key": self._key("feishu:cli_aad581a8")},
+            current,
+        )
+
+        assert result is current
+
+    def test_parent_source_unresolvable_no_reroute(self):
+        # Cross-adapter but the parent source cannot be rebuilt → stay put;
+        # the resolver guard then drops the sew fail-closed.
+        runner = self._make_runner(None)
+        current = self._feishu_source("feishu:cli_aad581a8")
+
+        result = runner._maybe_reroute_to_parent_adapter(
+            {
+                "session_key": self._key("feishu:cli_aad581a8"),
+                "source_session_key": self._key("feishu:cli_aad7c4d"),
+            },
+            current,
+        )
+
+        assert result is current
+

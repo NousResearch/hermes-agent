@@ -192,6 +192,7 @@ class InProcessCronScheduler(CronScheduler):
         interval=60,
         can_dispatch=None,
         profile_homes=None,
+        profile_adapters=None,
     ):
         import logging
         from cron.scheduler import tick as cron_tick
@@ -216,6 +217,7 @@ class InProcessCronScheduler(CronScheduler):
                 stop_event,
                 profile_homes=profile_homes,
                 adapters=adapters,
+                profile_adapters=profile_adapters,
                 loop=loop,
                 interval=interval,
                 can_dispatch=can_dispatch,
@@ -276,6 +278,7 @@ class InProcessCronScheduler(CronScheduler):
         *,
         profile_homes,
         adapters=None,
+        profile_adapters=None,
         loop=None,
         interval=60,
         can_dispatch=None,
@@ -287,6 +290,17 @@ class InProcessCronScheduler(CronScheduler):
         agent execution to that profile's home — mirroring how
         ``_profile_runtime_scope`` scopes the multiplexed inbound path and
         ``web_server.py`` scopes per-profile cron API calls.
+
+        ``profile_adapters`` (optional ``{profile_name: {Platform: adapter}}``)
+        lets each profile's tick deliver through ITS OWN live adapters (e.g. a
+        distinct Feishu bot app per profile) instead of every profile reusing
+        the single default-profile ``adapters`` dict — which would either miss
+        the live-adapter path entirely (falling back to the slower standalone
+        HTTP send) or, if the default profile happens to run the same
+        platform, deliver through the wrong bot/credentials. Falls back to
+        ``adapters`` for any profile with no entry (e.g. an older caller that
+        doesn't pass ``profile_adapters``, or a profile with no live adapters
+        of its own yet).
         """
         import logging
         from cron.scheduler import tick as cron_tick
@@ -329,13 +343,17 @@ class InProcessCronScheduler(CronScheduler):
                     logger.debug("Cron dispatch paused while gateway drains existing work")
                 else:
                     for entry in profile_homes:
+                        name = entry[0] if isinstance(entry, tuple) else entry
                         home = entry[1] if isinstance(entry, tuple) else entry
+                        entry_adapters = (
+                            (profile_adapters or {}).get(name, adapters)
+                        )
                         home_token = set_hermes_home_override(str(home))
                         try:
                             with use_cron_store(home):
                                 cron_tick(
                                     verbose=False,
-                                    adapters=adapters,
+                                    adapters=entry_adapters,
                                     loop=loop,
                                     sync=False,
                                     can_dispatch=can_dispatch,

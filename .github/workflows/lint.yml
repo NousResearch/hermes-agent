@@ -178,3 +178,24 @@ jobs:
 
       - name: Run footgun checker
         run: python scripts/check-windows-footguns.py --all
+
+  credential-env-access:
+    # Blocks direct os.getenv()/os.environ reads of credential-shaped env
+    # vars (*_API_KEY, *_TOKEN, *_SECRET, *_PASSWORD) in agent/ and gateway/
+    # — the multiplex-gateway secret scope (agent/secret_scope.py) requires
+    # these go through get_secret() so profiles stay isolated. See
+    # scripts/check_credential_env_access.py for the full rule.
+    name: Credential env access (blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v5
+        with:
+          python-version: "3.11"
+
+      - name: Run credential env-access checker
+        run: python scripts/check_credential_env_access.py --all

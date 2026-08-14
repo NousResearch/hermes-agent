@@ -402,6 +402,11 @@ def _handle_send(args):
         return tool_error(f"Unknown platform: {platform_name}")
 
     pconfig = config.platforms.get(platform)
+    # Handle List[PlatformConfig] (feishu multi-app config)
+    if isinstance(pconfig, list):
+        if not pconfig:
+            return tool_error(f"Platform '{platform_name}' has no active configurations.")
+        pconfig = pconfig[0]
     if not pconfig or not pconfig.enabled:
         # Weixin can be configured purely via .env; synthesize a pconfig so
         # send_message and cron delivery work without a gateway.yaml entry.

@@ -132,3 +132,32 @@ def test_secondary_open_policy_fails_startup_guard(monkeypatch):
     assert violation is not None
     assert "wecom" in violation
     assert "open policy" in violation
+
+
+def test_handoff_process_passes_profile_to_session_key():
+    """#4: _process_handoff must wire profile into build_session_key so a
+    multi-profile CLI handoff keys under ``agent:<profile>`` instead of
+    collapsing to the default ``agent:main`` namespace (which would bind the
+    wrong session_store entry)."""
+    import inspect
+
+    from gateway.run import GatewayRunner
+
+    src = inspect.getsource(GatewayRunner._process_handoff)
+    assert "_resolve_profile_for_key" in src
+    assert "profile=" in src
+
+
+def test_build_session_key_profile_namespace_isolates_handoff_target():
+    """#4 semantic: with a resolved profile, build_session_key namespaces the
+    handoff key under ``agent:<profile>``, distinct from ``agent:main``."""
+    from gateway.session import SessionSource, build_session_key
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM, chat_id="c1", chat_type="dm", user_id="u1",
+    )
+    default_key = build_session_key(source)  # no profile → agent:main
+    profiled_key = build_session_key(source, profile="coder")
+    assert default_key.startswith("agent:main:")
+    assert profiled_key.startswith("agent:coder:")
+    assert default_key != profiled_key

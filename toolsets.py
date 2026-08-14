@@ -372,6 +372,12 @@ TOOLSETS = {
         "includes": []
     },
 
+    "feishu_chat": {
+        "description": "Feishu/Lark group chat operations (list members for @-mention)",
+        "tools": ["get_chat_members"],
+        "includes": []
+    },
+
     "spotify": {
         "description": "Native Spotify playback, search, playlist, album, and library tools",
         "tools": [

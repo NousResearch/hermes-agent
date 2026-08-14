@@ -158,6 +158,18 @@ def make_restart_runner(
     runner.session_store._entries = {}
     runner.delivery_router = MagicMock()
 
+    # Mirrors GatewayRunner.__init__'s multi-instance adapter registry so
+    # code paths that call _adapter_instance_id/_register_connected_adapter
+    # (e.g. during start()) don't hit a missing-attribute error.
+    runner.adapters_by_id = {}
+    runner._platform_adapter_ids = {}
+    runner._adapter_instance_id = GatewayRunner._adapter_instance_id.__get__(
+        runner, GatewayRunner
+    )
+    runner._register_connected_adapter = GatewayRunner._register_connected_adapter.__get__(
+        runner, GatewayRunner
+    )
+
     platform_adapter = adapter or RestartTestAdapter()
     platform_adapter.set_message_handler(AsyncMock(return_value=None))
     platform_adapter.set_busy_session_handler(runner._handle_active_session_busy_message)

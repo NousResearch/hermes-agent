@@ -108,6 +108,12 @@ class _FakeGateway:
         except Exception:
             pass
 
+    def _iter_connected_adapters(self):
+        # Mirrors GatewayRunner._iter_connected_adapters's simple case: this
+        # fake has no multi-instance adapters_by_id registry, just the
+        # single-profile `adapters` map.
+        return list(self.adapters.items())
+
     def _evict_cached_agent(self, key):
         pass
 

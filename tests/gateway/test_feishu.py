@@ -241,6 +241,120 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertEqual(call_kwargs["extra_ua_tags"], ["channel"],
                          "extra_ua_tags must be ['channel'] to enable group event routing")
 
+    def test_ws_loop_proxy_delegates_to_whichever_loop_is_running(self):
+        """Regression test for the multi-profile 'attached to a different
+        loop' crash: the SDK's shared module-level ``loop`` global used to
+        be overwritten by whichever profile thread (re)connected last, so a
+        task created by one profile could get scheduled on another
+        profile's loop. The proxy must always resolve the loop actually
+        driving the current coroutine, never a captured/shared one."""
+        from plugins.platforms.feishu.adapter import _ThreadSafeWsLoopProxy
+
+        proxy = _ThreadSafeWsLoopProxy()
+
+        async def _inner():
+            await proxy.create_task(asyncio.sleep(0))
+            return asyncio.get_running_loop()
+
+        loop_a = asyncio.new_event_loop()
+        loop_b = asyncio.new_event_loop()
+        try:
+            result_a = loop_a.run_until_complete(_inner())
+            result_b = loop_b.run_until_complete(_inner())
+        finally:
+            loop_a.close()
+            loop_b.close()
+
+        self.assertIs(result_a, loop_a)
+        self.assertIs(result_b, loop_b)
+
+    def test_ws_connect_overrides_are_thread_local_across_concurrent_profiles(self):
+        """Regression test: two profiles' WS client threads used to save
+        and restore a shared ``websockets.connect`` reference, so whichever
+        profile (re)connected last would silently leak its
+        ping_interval/ping_timeout onto every other profile's subsequent
+        connects. Per-thread overrides must stay isolated even when both
+        profiles set them and connect at the same instant."""
+        import threading
+
+        from plugins.platforms.feishu import adapter as feishu_module
+
+        captured: Dict[str, Dict[str, object]] = {}
+
+        def _fake_connect(url, **kwargs):
+            captured[threading.current_thread().name] = kwargs
+            return f"conn-for-{url}"
+
+        fake_module = SimpleNamespace(websockets=SimpleNamespace(connect=_fake_connect))
+
+        # Reset singleton patch state so this test doesn't depend on
+        # whichever module happened to be patched by an earlier test.
+        feishu_module._ws_original_connect = None
+        feishu_module._ensure_ws_connect_patched(fake_module)
+
+        barrier = threading.Barrier(2)
+        profiles = {"profile-a": (10, 5), "profile-b": (99, 42)}
+
+        def _worker(name: str, interval: int, timeout: int) -> None:
+            feishu_module._ws_connect_overrides.ping_interval = interval
+            feishu_module._ws_connect_overrides.ping_timeout = timeout
+            barrier.wait()  # force maximum overlap with the other profile
+            fake_module.websockets.connect(f"wss://{name}")
+
+        threads = [
+            threading.Thread(target=_worker, args=(name, interval, timeout), name=name)
+            for name, (interval, timeout) in profiles.items()
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=5)
+
+        for name, (interval, timeout) in profiles.items():
+            self.assertEqual(captured[name]["ping_interval"], interval)
+            self.assertEqual(captured[name]["ping_timeout"], timeout)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_edit_message_updates_existing_feishu_message(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def update(self, request):
+                captured["request"] = request
+                return SimpleNamespace(success=lambda: True)
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("plugins.platforms.feishu.adapter.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.edit_message(
+                    chat_id="oc_chat",
+                    message_id="om_progress",
+                    content="📖 read_file: \"/tmp/image.png\"",
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_progress")
+        self.assertEqual(captured["request"].message_id, "om_progress")
+        self.assertEqual(captured["request"].request_body.msg_type, "text")
+        self.assertEqual(
+            captured["request"].request_body.content,
+            json.dumps({"text": "📖 read_file: \"/tmp/image.png\""}, ensure_ascii=False),
+        )
 
     @patch.dict(os.environ, {}, clear=True)
     def test_edit_message_falls_back_to_text_when_post_update_is_rejected(self):
@@ -1246,6 +1360,133 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertTrue(captured["request"].request_body.reply_in_thread)
 
+    def test_send_with_thread_id_but_no_anchor_replies_into_topic(self):
+        """Regression: 话题消息但无 reply anchor（bot-to-bot 合成消息、会话恢复后
+        anchor 丢失），必须用 thread_id 查话题内最后一条消息作 reply anchor 回到
+        原话题。绝不能走 create（话题群里 create 到 chat_id 会新建话题根），也
+        不能用飞书不支持的 receive_id_type=thread_id。"""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        async def _fetch_last(_thread_id):
+            return "om_topic_last"
+
+        adapter._fetch_last_message_in_thread = _fetch_last
+        captured: dict = {}
+
+        class _MessageAPI:
+            def reply(self, request):
+                captured["reply"] = request
+                return SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_new"))
+
+            def create(self, request):
+                captured["create"] = request
+                return SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_new"))
+
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+
+        result = asyncio.run(
+            adapter._send_raw_message(
+                chat_id="oc_chat",
+                msg_type="text",
+                payload='{"text":"hi"}',
+                reply_to=None,
+                metadata={"thread_id": "omt_topic"},
+            )
+        )
+
+        self.assertTrue(result.success())
+        self.assertIn("reply", captured)
+        self.assertNotIn("create", captured, "话题消息不得走 create（会在话题群新建话题根）")
+        self.assertTrue(captured["reply"].request_body.reply_in_thread)
+
+    def test_send_with_thread_id_no_topic_message_skips_not_creates(self):
+        """话题 id 存在但话题内无任何消息（fetch 返回 None）时，必须跳过发送并
+        返回失败，绝不能 fallback 到 create chat_id（会在话题群新建话题根）。"""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        async def _fetch_last(_thread_id):
+            return None
+
+        adapter._fetch_last_message_in_thread = _fetch_last
+        captured: dict = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["create"] = request
+                return SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_new"))
+
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+
+        result = asyncio.run(
+            adapter._send_raw_message(
+                chat_id="oc_chat",
+                msg_type="text",
+                payload='{"text":"hi"}',
+                reply_to=None,
+                metadata={"thread_id": "omt_topic"},
+            )
+        )
+
+        # 跳过分支返回类飞书 response（success 为 callable，False）；绝不能
+        # 返回 SendResult（其 success 是 bool，会让上层 _response_succeeded 崩溃）。
+        self.assertFalse(result.success())
+        self.assertNotIn("create", captured, "话题空时绝不能 create 新建话题根")
+
+    def test_send_strips_bot2bot_reply_anchor(self):
+        """Regression: 合成 bot2bot message_id 绝不能作为飞书 reply anchor（飞书
+        以 99992354 拒绝）。无论来自 reply_to 参数还是 metadata.reply_to_message_id，
+        都必须在 _send_raw_message 兜底 strip，转而用话题内消息作 anchor。"""
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        async def _fetch_last(_thread_id):
+            return "om_topic_last"
+
+        adapter._fetch_last_message_in_thread = _fetch_last
+        captured: dict = {}
+
+        class _MessageAPI:
+            def reply(self, request):
+                captured.setdefault("reply_anchors", []).append(request.message_id)
+                return SimpleNamespace(success=lambda: True, data=SimpleNamespace(message_id="om_new"))
+
+        adapter._client = SimpleNamespace(im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI())))
+
+        # 场景1: reply_to 参数为 bot2bot
+        asyncio.run(
+            adapter._send_raw_message(
+                chat_id="oc_chat",
+                msg_type="text",
+                payload='{"text":"hi"}',
+                reply_to="bot2bot-aaa",
+                metadata={"thread_id": "omt_topic"},
+            )
+        )
+        # 场景2: metadata.reply_to_message_id 为 bot2bot（绕过 send/retry 的 strip）
+        asyncio.run(
+            adapter._send_raw_message(
+                chat_id="oc_chat",
+                msg_type="text",
+                payload='{"text":"hi"}',
+                reply_to=None,
+                metadata={"thread_id": "omt_topic", "reply_to_message_id": "bot2bot-bbb"},
+            )
+        )
+
+        # 两种来源的 bot2bot 都被 strip；reply anchor 用话题内消息（om_topic_last），
+        # 绝不是 bot2bot-xxx（否则飞书 99992354）。
+        self.assertEqual(len(captured["reply_anchors"]), 2)
+        for anchor in captured["reply_anchors"]:
+            self.assertNotIn("bot2bot", str(anchor))
+
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_post_for_every_chunk_of_multi_chunk_markdown(self):
@@ -1655,6 +1896,70 @@ class TestDedupTTL(unittest.TestCase):
                 assert "om_good" in adapter._seen_message_ids
                 assert "om_bad_str" not in adapter._seen_message_ids
                 assert "om_bad_null" not in adapter._seen_message_ids
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_persist_saves_timestamps_as_dict(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        ts = time.time()
+        adapter._seen_message_ids = {"om_ts1": ts}
+        adapter._seen_message_order = ["om_ts1"]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            adapter._dedup_state_path = Path(tmpdir) / "dedup.json"
+            adapter._persist_seen_message_ids()
+            saved = json.loads(adapter._dedup_state_path.read_text())
+        self.assertIsInstance(saved["message_ids"], dict)
+        self.assertAlmostEqual(saved["message_ids"]["om_ts1"], ts, places=1)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_load_backward_compat_list_format(self):
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "dedup.json"
+            path.write_text(json.dumps({"message_ids": ["om_a", "om_b"]}), encoding="utf-8")
+            adapter._dedup_state_path = path
+            adapter._load_seen_message_ids()
+        self.assertIn("om_a", adapter._seen_message_ids)
+        self.assertIn("om_b", adapter._seen_message_ids)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_multi_app_adapters_isolate_dedup_state_by_app_id(self):
+        """Multi-app config (#68046): each FeishuAdapter is a distinct bot
+        that independently receives the same group message_id. Sharing one
+        dedup file let one app's seen-set silently suppress another's after a
+        restart, and concurrent persists clobbered each other. Each app must
+        get its own namespaced file so a message seen by app A is still
+        processed by app B.
+        """
+        import tempfile
+        from gateway.config import PlatformConfig
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        with tempfile.TemporaryDirectory() as temp_home:
+            with patch.dict(os.environ, {"HERMES_HOME": temp_home}, clear=True):
+                app_a = FeishuAdapter(PlatformConfig(extra={"app_id": "cli_app_a"}))
+                app_b = FeishuAdapter(PlatformConfig(extra={"app_id": "cli_app_b"}))
+
+                # Distinct app_ids → distinct, app_id-namespaced state files.
+                self.assertNotEqual(app_a._dedup_state_path, app_b._dedup_state_path)
+                self.assertIn("cli_app_a", app_a._dedup_state_path.name)
+                self.assertIn("cli_app_b", app_b._dedup_state_path.name)
+
+                # A message seen by app A must NOT suppress the same message_id
+                # in app B — they are different bots in the same group.
+                with patch.object(app_a, "_persist_seen_message_ids"):
+                    self.assertFalse(app_a._is_duplicate("om_shared"))
+                with patch.object(app_b, "_persist_seen_message_ids"):
+                    self.assertFalse(app_b._is_duplicate("om_shared"))
+
+                # Within one app, the same id is still deduplicated.
+                with patch.object(app_a, "_persist_seen_message_ids"):
+                    self.assertTrue(app_a._is_duplicate("om_shared"))
 
 
 class TestGroupMentionAtAll(unittest.TestCase):
@@ -2465,5 +2770,200 @@ class TestChatLockEviction(unittest.TestCase):
 
         adapter = self._make_adapter()
         self.assertIsInstance(adapter._chat_locks, _collections.OrderedDict)
+
+
+class TestGetChatMembers(unittest.TestCase):
+    """get_chat_members: parse SDK response, paginate, cache, fail to []."""
+
+    def _build_adapter(self, *, items=None, success=True):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._chat_members_cache = {}
+
+        def _item(name, mid):
+            return SimpleNamespace(name=name, member_id=mid, member_id_type="open_id")
+
+        resp = SimpleNamespace(
+            success=lambda: success,
+            code=0 if success else 99991672,
+            msg="ok" if success else "permission denied",
+            data=SimpleNamespace(
+                items=[_item(n, m) for n, m in (items or [])],
+                has_more=False,
+                page_token=None,
+            ),
+        )
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    chat_members=SimpleNamespace(get=lambda req: resp)
+                )
+            )
+        )
+
+        async def _run(func, *args):
+            return func(*args)
+
+        adapter._run_blocking = _run
+        return adapter
+
+    def test_returns_members(self):
+        adapter = self._build_adapter(items=[("Alice", "ou_a"), ("Bob", "ou_b")])
+        members = asyncio.run(adapter.get_chat_members("oc_x"))
+        self.assertEqual(members, [
+            {"name": "Alice", "member_id": "ou_a", "id_type": "open_id"},
+            {"name": "Bob", "member_id": "ou_b", "id_type": "open_id"},
+        ])
+
+    def test_failure_returns_empty(self):
+        adapter = self._build_adapter(success=False)
+        self.assertEqual(asyncio.run(adapter.get_chat_members("oc_x")), [])
+
+    def test_no_client_returns_empty(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._client = None
+        adapter._chat_members_cache = {}
+        self.assertEqual(asyncio.run(adapter.get_chat_members("oc_x")), [])
+
+    def test_cache_hits_without_refetch(self):
+        adapter = self._build_adapter(items=[("Alice", "ou_a")])
+        asyncio.run(adapter.get_chat_members("oc_x"))
+        # Second call must hit cache — sabotaging the client should be harmless.
+        adapter._client = None
+        again = asyncio.run(adapter.get_chat_members("oc_x"))
+        self.assertEqual(again, [{"name": "Alice", "member_id": "ou_a", "id_type": "open_id"}])
+
+
+class TestParsePeerMentionTargets(unittest.TestCase):
+    """_parse_peer_mention_targets: resolve @peer to profile for bot-to-bot routing."""
+
+    def _make_adapter(self, peer_map, by_openid, by_name):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        a = FeishuAdapter.__new__(FeishuAdapter)
+        a._peer_mention_map = peer_map
+        a._peer_profile_by_openid = by_openid
+        a._peer_profile_by_name = by_name
+        return a
+
+    def test_resolves_mention_to_profile(self):
+        a = self._make_adapter(
+            {"架构师": "ou_arch", "alex": "ou_arch"},
+            {"ou_arch": "architect"},
+            {"架构师": "architect", "alex": "architect"},
+        )
+        self.assertEqual(
+            a._parse_peer_mention_targets("@架构师 帮我设计数据库"),
+            [("architect", "架构师")],
+        )
+
+    def test_progressive_prefix_match(self):
+        a = self._make_adapter(
+            {"架构师": "ou_arch"}, {"ou_arch": "architect"}, {"架构师": "architect"}
+        )
+        # "架构师Alex" resolves via progressive prefix to "架构师"
+        self.assertEqual(
+            a._parse_peer_mention_targets("@架构师Alex 你好"),
+            [("architect", "架构师")],
+        )
+
+    def test_no_peer_mention_returns_empty(self):
+        a = self._make_adapter({"架构师": "ou_arch"}, {"ou_arch": "architect"}, {})
+        self.assertEqual(a._parse_peer_mention_targets("没有@任何人"), [])
+
+    def test_skips_mentions_in_code_spans(self):
+        a = self._make_adapter(
+            {"架构师": "ou_arch"}, {"ou_arch": "architect"}, {"架构师": "architect"}
+        )
+        self.assertEqual(a._parse_peer_mention_targets("```\n@架构师\n```"), [])
+
+    def test_dedup_by_profile(self):
+        a = self._make_adapter(
+            {"架构师": "ou_arch", "alex": "ou_arch"},
+            {"ou_arch": "architect"},
+            {},
+        )
+        # two aliases of the same profile collapse to one target
+        self.assertEqual(len(a._parse_peer_mention_targets("@架构师 @Alex")), 1)
+
+    def test_colleague_hint_lists_peers(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        a = FeishuAdapter.__new__(FeishuAdapter)
+        a._peer_canonical_by_profile = {"architect": "架构师Alex", "designer": "设计师Diana"}
+        hint = a._build_peer_colleague_hint()
+        self.assertIn("@架构师Alex", hint)
+        self.assertIn("@设计师Diana", hint)
+
+    def test_colleague_hint_empty_when_no_peers(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        a = FeishuAdapter.__new__(FeishuAdapter)
+        a._peer_canonical_by_profile = {}
+        self.assertEqual(a._build_peer_colleague_hint(), "")
+
+
+class TestRouteBotToBot(unittest.TestCase):
+    """_route_bot_to_bot: inject synthetic inbound to peer + loop breakers."""
+
+    @staticmethod
+    def _make_adapter(adapter_id, bot_open_id, bot_name):
+        return SimpleNamespace(
+            adapter_id=adapter_id,
+            _bot_open_id=bot_open_id,
+            _bot_name=bot_name,
+            build_source=Mock(return_value=SimpleNamespace(profile=None)),
+            _resolve_channel_prompt=Mock(return_value=None),
+            _handle_message_with_guards=AsyncMock(),
+        )
+
+    def _make_runner(self, adapters_by_id, profile_map):
+        from gateway.run import GatewayRunner
+
+        r = GatewayRunner.__new__(GatewayRunner)
+        r.adapters_by_id = adapters_by_id
+        r._adapter_profile_map = profile_map
+        return r
+
+    def test_routes_to_target_adapter(self):
+        from gateway.config import Platform
+
+        sender = self._make_adapter("feishu:pm", "ou_pm", "PM")
+        target = self._make_adapter("feishu:arch", "ou_arch", "Arch")
+        r = self._make_runner(
+            {"feishu:pm": sender, "feishu:arch": target},
+            {"feishu:pm": "product-manager", "feishu:arch": "architect"},
+        )
+        asyncio.run(
+            r._route_bot_to_bot([("architect", "架构师")], "@架构师 设计", "oc_x", sender)
+        )
+        target._handle_message_with_guards.assert_awaited_once()
+
+    def test_skips_when_target_is_sender_profile(self):
+        sender = self._make_adapter("feishu:pm", "ou_pm", "PM")
+        target = self._make_adapter("feishu:arch", "ou_arch", "Arch")
+        r = self._make_runner(
+            {"feishu:pm": sender, "feishu:arch": target},
+            {"feishu:pm": "product-manager", "feishu:arch": "architect"},
+        )
+        # PM @PM → target == sender_profile → skip (A↔B ping-pong breaker)
+        asyncio.run(r._route_bot_to_bot([("product-manager", "PM")], "@PM", "oc_x", sender))
+        target._handle_message_with_guards.assert_not_awaited()
+
+    def test_hop_limit_breaks_loop(self):
+        sender = self._make_adapter("feishu:pm", "ou_pm", "PM")
+        target = self._make_adapter("feishu:arch", "ou_arch", "Arch")
+        r = self._make_runner(
+            {"feishu:pm": sender, "feishu:arch": target},
+            {"feishu:pm": "product-manager", "feishu:arch": "architect"},
+        )
+        # hop >= _BOT_TO_BOT_HOP_LIMIT → no injection (ring breaker)
+        asyncio.run(
+            r._route_bot_to_bot([("architect", "架构师")], "@架构师", "oc_x", sender, hop=99)
+        )
+        target._handle_message_with_guards.assert_not_awaited()
 
 

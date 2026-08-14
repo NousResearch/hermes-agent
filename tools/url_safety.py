@@ -196,9 +196,14 @@ _ALWAYS_BLOCKED_NETWORKS = (
 
 # Exact HTTPS hostnames allowed to resolve to private/benchmark-space IPs.
 # This is intentionally narrow: QQ media downloads can legitimately resolve
-# to 198.18.0.0/15 behind local proxy/benchmark infrastructure.
+# to 198.18.0.0/15 behind local proxy/benchmark infrastructure. Same story
+# for github.com/raw.githubusercontent.com on dev boxes running a local
+# proxy (e.g. Surge) with fake-ip DNS enabled — do NOT flip the global
+# security.allow_private_urls toggle for this, add the specific host here.
 _TRUSTED_PRIVATE_IP_HOSTS = frozenset({
     "multimedia.nt.qq.com.cn",
+    "github.com",
+    "raw.githubusercontent.com",
 })
 
 _MAX_SSRF_CONNECT_IPS = 8

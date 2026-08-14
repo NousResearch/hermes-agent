@@ -414,3 +414,148 @@ def test_multiplex_ticker_ticks_each_profile_once(tmp_path, monkeypatch):
         f"Expected >= {len(profile_homes)} tick calls, got {len(tick_count)}"
 
 
+def test_multiplex_ticks_each_profile_with_its_own_adapters(tmp_path, monkeypatch):
+    """Each profile's tick() call gets ITS OWN adapters dict, not the single
+    default-profile dict, so cron delivery for a secondary profile (e.g. a
+    distinct Feishu bot app) resolves the correct live adapter instead of
+    silently falling back to the standalone HTTP path or, worse, delivering
+    through the default profile's (wrong) bot credentials."""
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    p1 = tmp_path / "default"
+    p2 = tmp_path / "home-ops"
+    for d in (p1, p2):
+        (d / "cron").mkdir(parents=True)
+    profile_homes = [("default", p1), ("home-ops", p2)]
+
+    default_adapters = {"default-marker": object()}
+    secondary_adapters = {"home-ops-marker": object()}
+    profile_adapters = {"default": default_adapters, "home-ops": secondary_adapters}
+
+    # _start_multiplex ticks profile_homes in list order every cycle, so the
+    # call sequence should alternate [default, home-ops, default, home-ops, ...]
+    # with each call carrying that profile's own adapters dict.
+    call_adapters: list = []
+
+    def _tracking_tick(*args, **kwargs):
+        call_adapters.append(kwargs.get("adapters"))
+        return 0
+
+    stop = threading.Event()
+    prov = InProcessCronScheduler()
+
+    with patch("cron.scheduler.tick", side_effect=_tracking_tick), \
+         patch("cron.jobs.record_ticker_heartbeat", lambda **kw: None):
+        t = threading.Thread(
+            target=prov.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": profile_homes,
+                "adapters": default_adapters,
+                "profile_adapters": profile_adapters,
+            },
+            daemon=True,
+        )
+        t.start()
+        deadline = time.monotonic() + 10
+        while len(call_adapters) < len(profile_homes) and time.monotonic() < deadline:
+            time.sleep(0.005)
+        stop.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive()
+    assert call_adapters[0] is default_adapters
+    assert call_adapters[1] is secondary_adapters
+
+
+def test_multiplex_falls_back_to_default_adapters_when_unmapped(tmp_path, monkeypatch):
+    """A profile absent from profile_adapters (e.g. no live adapters of its
+    own yet, or an older caller that never passes profile_adapters) falls
+    back to the shared `adapters` dict rather than getting None/crashing."""
+    from cron.scheduler_provider import InProcessCronScheduler
+
+    p1 = tmp_path / "default"
+    p2 = tmp_path / "home-ops"
+    for d in (p1, p2):
+        (d / "cron").mkdir(parents=True)
+    profile_homes = [("default", p1), ("home-ops", p2)]
+
+    default_adapters = {"default-marker": object()}
+    call_adapters: list = []
+
+    def _tracking_tick(*args, **kwargs):
+        call_adapters.append(kwargs.get("adapters"))
+        return 0
+
+    stop = threading.Event()
+    prov = InProcessCronScheduler()
+
+    with patch("cron.scheduler.tick", side_effect=_tracking_tick), \
+         patch("cron.jobs.record_ticker_heartbeat", lambda **kw: None):
+        t = threading.Thread(
+            target=prov.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": profile_homes,
+                "adapters": default_adapters,
+                # No profile_adapters passed at all.
+            },
+            daemon=True,
+        )
+        t.start()
+        deadline = time.monotonic() + 10
+        while len(call_adapters) < len(profile_homes) and time.monotonic() < deadline:
+            time.sleep(0.005)
+        stop.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive()
+    assert all(a is default_adapters for a in call_adapters)
+
+
+def test_multiplex_heartbeat_scoped_per_profile(tmp_path, monkeypatch):
+    """record_ticker_heartbeat is scoped to each profile's store under
+    multiplex, so 'hermes cron status' can report liveness per profile."""
+    from cron.scheduler_provider import InProcessCronScheduler
+    from cron.jobs import record_ticker_heartbeat as _real_heartbeat
+
+    p_default = tmp_path / "default"
+    p_sec = tmp_path / "home-ops"
+    for d in (p_default, p_sec):
+        (d / "cron").mkdir(parents=True)
+    profile_homes = [("default", p_default), ("home-ops", p_sec)]
+
+    beat_log: list[str] = []
+
+    def _track_beat(*, success=False):
+        beat_log.append(str(success))
+        # Write the real heartbeat files so we can check them after.
+        _real_heartbeat(success=success)
+
+    stop = threading.Event()
+    prov = InProcessCronScheduler()
+
+    with patch("cron.scheduler.tick", return_value=0), \
+         patch("cron.jobs.record_ticker_heartbeat", side_effect=_track_beat):
+        t = threading.Thread(
+            target=prov.start,
+            args=(stop,),
+            kwargs={"interval": 0, "profile_homes": profile_homes},
+            daemon=True,
+        )
+        t.start()
+        deadline = time.monotonic() + 10
+        # Wait for at least 2 tick iterations over all profiles (2 profiles).
+        while len(beat_log) < len(profile_homes) * 2 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        stop.set()
+        t.join(timeout=5)
+
+    assert not t.is_alive()
+    # Every profile should have a heartbeat file.
+    assert (p_default / "cron" / "ticker_heartbeat").exists(), \
+        "default profile heartbeat file missing"
+    assert (p_sec / "cron" / "ticker_heartbeat").exists(), \
+        "secondary profile heartbeat file missing"

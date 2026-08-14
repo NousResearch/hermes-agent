@@ -1979,6 +1979,13 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             pconfig = config.platforms.get(platform)
             runtime_adapter = None
 
+        # Unwrap list-of-configs (multi-instance platforms like multiple Feishu
+        # bots) to the first enabled config. Union[PlatformConfig,
+        # List[PlatformConfig]] allows lists, but the rest of this function
+        # assumes a single PlatformConfig object.
+        if isinstance(pconfig, list):
+            pconfig = next((c for c in pconfig if getattr(c, "enabled", False)), pconfig[0] if pconfig else None)
+
         if transport is not None and transport.is_relay:
             # A relay transport carries the RELAY adapter's config, and
             # resolve_delivery_transport already applied relay's enablement

@@ -62,6 +62,10 @@ def make_startup_runner(tmp_path):
         sessions_dir=tmp_path / "sessions",
     )
     runner.adapters = {}
+    # Mirrors GatewayRunner.__init__'s multi-instance adapter registry, used
+    # by _adapter_instance_id/_register_connected_adapter during start().
+    runner.adapters_by_id = {}
+    runner._platform_adapter_ids = {}
     runner._running = False
     runner._shutdown_event = asyncio.Event()
     runner._exit_reason = None

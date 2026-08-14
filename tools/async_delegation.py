@@ -163,7 +163,11 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
             task_json TEXT,
             delivery_claim TEXT,
             delivery_claimed_at REAL,
-            origin_session_id TEXT NOT NULL DEFAULT ''
+            origin_session_id TEXT NOT NULL DEFAULT '',
+            source_adapter_id TEXT NOT NULL DEFAULT '',
+            source_profile TEXT NOT NULL DEFAULT '',
+            source_session_key TEXT NOT NULL DEFAULT '',
+            delegation_type TEXT NOT NULL DEFAULT 'same_adapter'
         )"""
     )
     columns = {row[1] for row in conn.execute("PRAGMA table_info(async_delegations)")}
@@ -178,6 +182,14 @@ def _initialize_schema(conn: sqlite3.Connection) -> None:
         # completions recovered after a process restart are unroutable on
         # api_server (the in-memory record that carried it is gone).
         ("origin_session_id", "TEXT"),
+        # #64934: the spawning (parent) adapter/profile/session_key, so a
+        # completion arriving on a DIFFERENT adapter (multi-app fan-out) can
+        # be detected and rerouted instead of sewn onto the parent session_id.
+        # Empty for legacy records → resolver falls back to the original pin.
+        ("source_adapter_id", "TEXT"),
+        ("source_profile", "TEXT"),
+        ("source_session_key", "TEXT"),
+        ("delegation_type", "TEXT"),
     ):
         if name not in columns:
             conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
@@ -257,13 +269,19 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
                (delegation_id, origin_session, origin_ui_session_id,
                 parent_session_id, state, dispatched_at, updated_at,
                 delivery_state, delivery_attempts, owner_pid,
-                owner_started_at, task_json, origin_session_id)
-               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?)""",
+                owner_started_at, task_json, origin_session_id,
+                source_adapter_id, source_profile, source_session_key,
+                delegation_type)
+               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?, ?,
+                       ?, ?, ?, ?)""",
             (record["delegation_id"], record.get("session_key", ""),
              record.get("origin_ui_session_id", ""), record.get("parent_session_id"),
              record["dispatched_at"], now, __import__("os").getpid(),
              owner_started_at, json.dumps(task_payload),
-             record.get("origin_session_id", "")),
+             record.get("origin_session_id", ""),
+             record.get("source_adapter_id", ""), record.get("source_profile", ""),
+             record.get("source_session_key", ""),
+             record.get("delegation_type", "same_adapter")),
         )
     _prune_durable_records()
 
@@ -344,12 +362,13 @@ def recover_abandoned_delegations() -> int:
         rows = conn.execute(
             """SELECT delegation_id, origin_session, origin_ui_session_id,
                       parent_session_id, dispatched_at, owner_pid,
-                      owner_started_at, task_json, origin_session_id
+                      owner_started_at, task_json, origin_session_id,
+                      source_session_key
                FROM async_delegations WHERE state IN ('running','finalizing')"""
         ).fetchall()
         for row in rows:
             (delegation_id, session_key, origin_ui, parent_id, dispatched_at,
-             pid, started, task_json, origin_session_id) = row
+             pid, started, task_json, origin_session_id, source_sk) = row
             live = False
             if pid:
                 live = _pid_exists(int(pid))
@@ -365,6 +384,7 @@ def recover_abandoned_delegations() -> int:
                 # after a restart remain routable to api_server sessions.
                 "origin_session_id": origin_session_id or "",
                 "parent_session_id": parent_id, "goal": task.get("goal", ""),
+                "source_session_key": source_sk or "",
                 "goals": task.get("goals"), "context": task.get("context"),
                 "toolsets": task.get("toolsets"), "role": task.get("role"),
                 "model": task.get("model"), "is_batch": bool(task.get("is_batch")),
@@ -969,6 +989,7 @@ def _push_completion_event(
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),
         "origin_session_id": record.get("origin_session_id", ""),
         "parent_session_id": record.get("parent_session_id"),
+        "source_session_key": record.get("source_session_key", ""),
         "goal": record.get("goal", ""),
         "context": record.get("context"),
         "toolsets": record.get("toolsets"),
@@ -1028,6 +1049,7 @@ def dispatch_async_delegation_batch(
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     delegation_id: Optional[str] = None,
     progress_fn: Optional[Callable[[], tuple]] = None,
+    source_session_key: str = "",
 ) -> Dict[str, Any]:
     """Dispatch a WHOLE fan-out batch as ONE background unit.
 
@@ -1069,6 +1091,7 @@ def dispatch_async_delegation_batch(
         "origin_session_id": origin_session_id,
         "parent_session_id": parent_session_id,
         **_capture_routing_origin(),
+        "source_session_key": source_session_key,
         "status": "running",
         "dispatched_at": dispatched_at,
         "completed_at": None,
@@ -1181,6 +1204,7 @@ def _push_batch_completion_event(
         "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
         "origin_session_id": event_record.get("origin_session_id", ""),
         "parent_session_id": event_record.get("parent_session_id"),
+        "source_session_key": event_record.get("source_session_key", ""),
         "goal": event_record.get("goal", ""),
         "goals": event_record.get("goals"),
         "context": event_record.get("context"),

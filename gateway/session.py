@@ -95,6 +95,7 @@ from .whatsapp_identity import (
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
 from utils import atomic_replace
+from agent.secret_scope import get_secret
 from agent.turn_context import extract_api_content_sidecar
 
 # Session keys/ids flow into filesystem paths downstream (e.g.
@@ -176,6 +177,7 @@ class SessionSource:
     guild_id: Optional[str] = None  # @deprecated legacy alias for scope_id (D-Q2.5)
     parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
     message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
+    adapter_id: Optional[str] = None  # Concrete adapter instance that received the message
     role_authorized: bool = False  # True when adapter granted access via role (not user ID)
     # Profile this inbound message is routed to in a multiplexing gateway
     # (from the /p/<profile>/ URL prefix or per-credential adapter ownership).
@@ -277,6 +279,8 @@ class SessionSource:
             d["parent_chat_id"] = self.parent_chat_id
         if self.message_id:
             d["message_id"] = self.message_id
+        if self.adapter_id:
+            d["adapter_id"] = self.adapter_id
         if self.profile:
             d["profile"] = self.profile
         if self.auto_thread_created:
@@ -305,6 +309,7 @@ class SessionSource:
             scope_id=data.get("scope_id", data.get("guild_id")),
             parent_chat_id=data.get("parent_chat_id"),
             message_id=data.get("message_id"),
+            adapter_id=data.get("adapter_id"),
             profile=data.get("profile"),
             auto_thread_created=bool(data.get("auto_thread_created", False)),
             auto_thread_initial_name=data.get("auto_thread_initial_name"),
@@ -1067,6 +1072,24 @@ def is_shared_multi_user_session(
     return not group_sessions_per_user
 
 
+def _adapter_id_from_key(session_key: str) -> Optional[str]:
+    """Extract the adapter_id segment from a session key, if present.
+
+    Namespace-agnostic (unlike run.py's ``_parse_session_key``, which requires
+    ``parts[1]=='main'``), so multi-profile keys still resolve. Returns None
+    when the key carries no adapter segment. Used by the #64934 cross-adapter
+    sew guard on ``switch_session``/``advance_compression_session``.
+    """
+    if not session_key:
+        return None
+    from urllib.parse import unquote
+
+    for _part in session_key.split(":"):
+        if _part.startswith("adapter="):
+            return unquote(_part[len("adapter="):]) or None
+    return None
+
+
 def _session_key_namespace(profile: Optional[str]) -> str:
     """Return the ``agent:<ns>`` namespace prefix for a session key.
 
@@ -1132,12 +1155,22 @@ def build_session_key(
         if source.platform == Platform.SLACK and source.scope_id
         else None
     )
+    # Multi-instance adapters, such as multiple Feishu apps, append the
+    # concrete adapter id so colliding app-scoped chat/user ids cannot share
+    # an agent cache or transcript (#68046).
+    adapter_id_part = None
+    _adapter_id = str(getattr(source, "adapter_id", "") or "").strip()
+    if _adapter_id and _adapter_id != platform:
+        adapter_id_part = f"adapter={_adapter_id.replace('%', '%25').replace(':', '%3A')}"
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
         if source.platform == Platform.WHATSAPP:
             dm_chat_id = canonical_whatsapp_identifier(source.chat_id)
 
-        dm_parts = [ns, platform, "dm"]
+        dm_parts = [ns, platform]
+        if adapter_id_part:
+            dm_parts.append(adapter_id_part)
+        dm_parts.append("dm")
         if slack_scope_id:
             dm_parts.append(slack_scope_id)
         if dm_chat_id:
@@ -1189,7 +1222,10 @@ def build_session_key(
     chat_type_slot = source.chat_type
     if source.prospective_thread_id and not source.thread_id:
         chat_type_slot = "thread"
-    key_parts = [ns, platform, chat_type_slot]
+    key_parts = [ns, platform]
+    if adapter_id_part:
+        key_parts.append(adapter_id_part)
+    key_parts.append(chat_type_slot)
 
     if slack_scope_id:
         key_parts.append(slack_scope_id)
@@ -3322,6 +3358,9 @@ class SessionStore:
         session_key: str,
         expected_session_id: str,
         target_session_id: str,
+        *,
+        allow_cross_adapter: bool = False,
+        expected_adapter_id: Optional[str] = None,
     ) -> Optional[SessionEntry]:
         """CAS-advance one route along an already-verified compression lineage.
 
@@ -3339,6 +3378,16 @@ class SessionStore:
             entry = self._entries.get(session_key)
             if entry is None:
                 return None
+            # #64934 cross-adapter sew guard (mirrors switch_session).
+            if expected_adapter_id and not allow_cross_adapter:
+                _key_adapter = _adapter_id_from_key(session_key)
+                if _key_adapter and _key_adapter != expected_adapter_id:
+                    logger.warning(
+                        "advance_compression_session refused: key adapter %s != "
+                        "expected %s (#64934 cross-adapter sew guard); key=%s",
+                        _key_adapter, expected_adapter_id, session_key,
+                    )
+                    return None
             if entry.session_id == target_session_id:
                 return entry
             if entry.session_id != expected_session_id:
@@ -3353,7 +3402,14 @@ class SessionStore:
             self._save()
             return entry
 
-    def switch_session(self, session_key: str, target_session_id: str) -> Optional[SessionEntry]:
+    def switch_session(
+        self,
+        session_key: str,
+        target_session_id: str,
+        *,
+        allow_cross_adapter: bool = False,
+        expected_adapter_id: Optional[str] = None,
+    ) -> Optional[SessionEntry]:
         """Switch a session key to point at an existing session ID.
 
         Used by ``/resume`` to restore a previously-named session.
@@ -3376,6 +3432,20 @@ class SessionStore:
             # Don't switch if already on that session
             if old_entry.session_id == target_session_id:
                 return old_entry
+            # #64934 cross-adapter sew guard: refuse to re-point a routing key
+            # onto a session owned by a different adapter unless the caller
+            # explicitly opts in (CLI continuity is the one intentional case).
+            # The key→id layer must honor the per-adapter isolation the key
+            # layer already encodes, or #68046's key isolation is bypassed.
+            if expected_adapter_id and not allow_cross_adapter:
+                _key_adapter = _adapter_id_from_key(session_key)
+                if _key_adapter and _key_adapter != expected_adapter_id:
+                    logger.warning(
+                        "switch_session refused: key adapter %s != expected %s "
+                        "(#64934 cross-adapter sew guard); key=%s",
+                        _key_adapter, expected_adapter_id, session_key,
+                    )
+                    return None
 
             db_end_session_id = old_entry.session_id
 

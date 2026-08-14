@@ -425,6 +425,20 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "MATRIX_REQUIRE_MENTION",
 })
 
+# Proxy env vars read by tools/url_safety.py, gateway/platforms/base.py,
+# gateway/platforms/qqbot/adapter.py, and agent/auxiliary_client.py. A
+# developer or CI runner shell with a proxy configured otherwise leaks into
+# DNS-fallback / proxy-detection branches and websocket-proxy selection,
+# making those tests pass or fail depending on the ambient shell instead of
+# the fixture's explicit monkeypatch.setenv calls.
+_PROXY_ENV_VARS = frozenset({
+    "HTTP_PROXY", "http_proxy",
+    "HTTPS_PROXY", "https_proxy",
+    "ALL_PROXY", "all_proxy",
+    "NO_PROXY", "no_proxy",
+    "WSS_PROXY", "wss_proxy",
+})
+
 
 @pytest.fixture(autouse=True)
 def _hermetic_environment(tmp_path, monkeypatch):
@@ -441,6 +455,14 @@ def _hermetic_environment(tmp_path, monkeypatch):
 
     # 2. Blank behavioral HERMES_* vars that could change test semantics.
     for name in _HERMES_BEHAVIORAL_VARS:
+        monkeypatch.delenv(name, raising=False)
+
+    # 2b. Blank proxy env vars. A shell with HTTP_PROXY/HTTPS_PROXY/etc. set
+    # otherwise flips DNS-fallback and proxy-selection branches in
+    # url_safety.py / platforms/base.py / qqbot adapter tests depending on
+    # who runs the suite. Tests exercising proxy behavior set these
+    # explicitly via monkeypatch.setenv.
+    for name in _PROXY_ENV_VARS:
         monkeypatch.delenv(name, raising=False)
 
     # Honcho's fallback host/config resolution legitimately reads the user's

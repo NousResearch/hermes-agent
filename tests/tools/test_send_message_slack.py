@@ -137,3 +137,38 @@ def test_standalone_send_stops_on_non_token_error(monkeypatch, _standalone_send)
 
     assert result == {"error": "Slack API error: msg_too_long"}
     assert len(fake_session.calls) == 1
+
+
+def test_standalone_send_drops_non_dotted_thread_ts(monkeypatch, _standalone_send):
+    """A bare numeric thread id (e.g. a migrated Telegram topic) must not be
+    passed to Slack as ``thread_ts`` — Slack rejects it with
+    ``invalid_thread_ts`` and the whole cron delivery fails silently (#86264).
+    Drop it and post to the channel root instead."""
+    fake_session = _SlackSession()
+    monkeypatch.setattr("aiohttp.ClientSession", lambda *a, **k: fake_session)
+
+    pconfig = SimpleNamespace(enabled=True, token="good-token", extra={})
+    result = asyncio.run(
+        _standalone_send(pconfig, "C123", "hello", thread_id="15900")
+    )
+
+    assert "error" not in result
+    assert len(fake_session.calls) == 1
+    _token, body = fake_session.calls[0]
+    assert "thread_ts" not in body
+
+
+def test_standalone_send_keeps_valid_thread_ts(monkeypatch, _standalone_send):
+    """A well-formed dotted Slack ts is preserved as the thread anchor."""
+    fake_session = _SlackSession()
+    monkeypatch.setattr("aiohttp.ClientSession", lambda *a, **k: fake_session)
+
+    pconfig = SimpleNamespace(enabled=True, token="good-token", extra={})
+    result = asyncio.run(
+        _standalone_send(pconfig, "C123", "hello", thread_id="1718000000.123456")
+    )
+
+    assert "error" not in result
+    assert len(fake_session.calls) == 1
+    _token, body = fake_session.calls[0]
+    assert body.get("thread_ts") == "1718000000.123456"

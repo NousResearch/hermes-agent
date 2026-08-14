@@ -136,14 +136,29 @@ class ReasoningParamsMixin:
         messages that omit ``reasoning_content`` (refs 15250, #17400). Xiaomi MiMo thinking mode has the
         same requirement.
         """
-        key = (self.provider, self.model, getattr(self, "_base_url_lower", self.base_url))
+        key = (self.provider, getattr(self, "requested_provider", None), self.model,
+               getattr(self, "_base_url_lower", self.base_url))
         cached = getattr(self, "_thinking_pad_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
         result = (self._needs_deepseek_tool_reasoning() or self._needs_kimi_tool_reasoning()
-                  or self._needs_mimo_tool_reasoning() or self._reasoning_echo_opt_in())
+                  or self._needs_mimo_tool_reasoning() or self._reasoning_echo_opt_in()
+                  or self._needs_profile_reasoning_echo())
         self._thinking_pad_cache = (key, result)
         return result
+
+    def _needs_profile_reasoning_echo(self) -> bool:
+        """True when the resolved provider profile opts into reasoning_content echo-back
+        (``echo_reasoning_content``). Lets a provider profile (the llamacpp plugin, for llama-server
+        ``--reasoning-preserve`` prompt-cache reuse) join the echo families without a hardcoded row in
+        ``message_sanitization._REASONING_ECHO_RULES``. Resolution is requested-provider-first
+        (``providers.resolve_provider_profile``), matching the transport's profile activation."""
+        try:
+            from providers import resolve_provider_profile
+            profile = resolve_provider_profile(self.provider, getattr(self, "requested_provider", None))
+        except Exception:
+            return False
+        return bool(getattr(profile, "echo_reasoning_content", False))
 
     def _reasoning_echo_opt_in(self) -> bool:
         """``model.reasoning_echo`` opt-in for the *current* provider (covers gateways the host rules miss);

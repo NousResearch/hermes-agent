@@ -128,6 +128,17 @@ test('writeUpdateMarker preserves a live holder age across pid hand-off', () => 
   assert.equal(Number.parseInt(startedLine, 10), startedAt, 'the holder age must not restart during hand-off')
 })
 
+test('writeUpdateMarker uses the acquisition time passed to a detached script', () => {
+  const home = tmpHome('write-script-acquired-at')
+  const now = 1_000_000_000_000
+  const startedAt = Math.floor(now / 1000) - 300
+
+  writeUpdateMarker(home, 2020, { now: () => now, startedAt })
+
+  const [, startedLine] = fs.readFileSync(markerPath(home), 'utf8').split('\n')
+  assert.equal(Number.parseInt(startedLine, 10), startedAt)
+})
+
 test('writeUpdateMarker is best-effort (no throw on bad path)', () => {
   // A non-existent directory should not throw.
   const badHome = path.join(os.tmpdir(), 'hermes-marker-nonexistent-' + Date.now())

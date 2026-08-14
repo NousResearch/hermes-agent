@@ -132,20 +132,26 @@ export function writeUpdateMarker(
   {
     kill,
     now = Date.now,
-    maxAgeMs = UPDATE_MARKER_MAX_AGE_MS
+    maxAgeMs = UPDATE_MARKER_MAX_AGE_MS,
+    startedAt
   }: {
     now?: () => number
     maxAgeMs?: number
     kill?: typeof process.kill
+    startedAt?: number
   } = {}
 ) {
   const file = markerPath(hermesHome)
   const nowMs = now()
   const owner = readLiveUpdateMarker(hermesHome, { kill, maxAgeMs, now: () => nowMs })
-  const startedAt = owner ? Math.floor((nowMs - owner.ageMs) / 1000) : Math.floor(nowMs / 1000)
+  const acquiredAt = typeof startedAt === 'number' && Number.isInteger(startedAt)
+    ? startedAt
+    : owner
+      ? Math.floor((nowMs - owner.ageMs) / 1000)
+      : Math.floor(nowMs / 1000)
 
   try {
-    fs.writeFileSync(file, `${pid}\n${startedAt}\n`, 'utf8')
+    fs.writeFileSync(file, `${pid}\n${acquiredAt}\n`, 'utf8')
   } catch {
     // Best-effort: if we can't write the marker, proceed anyway. The
     // updater will write its own when it reaches run_update.

@@ -35,7 +35,8 @@
 #
 # Marker: we claim HERMES_HOME\.hermes-update-in-progress with OUR pid as
 # step 0 (the wrapper cmd.exe pid the Desktop saw is useless -- it exits
-# immediately). hermes_cli/update_lock.py's ancestry rule lets our
+# immediately), retaining HERMES_UPDATE_STARTED_AT from the Desktop hand-off.
+# hermes_cli/update_lock.py's ancestry rule lets our
 # `hermes update` child adopt the claim; electron/update-marker.ts parks a
 # relaunched Desktop on it. Cleanup only removes the marker while WE still
 # own it (a handoff partner that rewrote it keeps its claim).
@@ -48,7 +49,8 @@ param(
     [switch]$NoUi,
     [switch]$NoMarkerCleanup,
     [switch]$SelfTestUi,
-    [switch]$SelfTestPipeDrain
+    [switch]$SelfTestPipeDrain,
+    [switch]$SelfTestMarker
 )
 
 if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
@@ -899,12 +901,23 @@ try {
     # -- 0. Claim the update marker with OUR pid ---------------------------
     try {
         $epoch = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
+        $startedAt = 0L
+        $hasStartedAt = [int64]::TryParse($env:HERMES_UPDATE_STARTED_AT, [ref]$startedAt)
+        if (-not $hasStartedAt -or $startedAt -gt $epoch -or ($epoch - $startedAt) -gt 1200) {
+            $startedAt = $epoch
+        }
         # WriteAllText for byte-exact LF framing: Set-Content emits CRLF and
         # the marker contract (Rust/TS/Python readers) is "<pid>\n<ts>\n".
-        [System.IO.File]::WriteAllText($MarkerPath, "$PID`n$epoch`n")
+        [System.IO.File]::WriteAllText($MarkerPath, "$PID`n$startedAt`n")
         Write-HandoffLog "claimed update marker (pid $PID)"
     } catch {
         Write-HandoffLog "WARNING: could not write update marker: $($_.Exception.Message)"
+    }
+
+    if ($SelfTestMarker) {
+        $finalCode = 0
+        $finalMsg = "marker self-test complete"
+        exit 0
     }
 
     # -- 1. Wait for the Desktop to exit (FAIL CLOSED) ----------------------

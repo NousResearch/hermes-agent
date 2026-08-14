@@ -2,6 +2,7 @@ import { act, renderHook } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SessionInfo, SidebarSessionsResponse } from '@/hermes'
+import { $cronJobs, setCronJobs } from '@/store/cron'
 import {
   $cronSessions,
   $messagingPlatformTotals,
@@ -57,12 +58,14 @@ const sidebar = (
 
 const listSidebarSessions = vi.fn()
 const listAllProfileSessions = vi.fn()
+const getCronJobs = vi.fn()
 
 interface Deferred<T> {
   promise: Promise<T>
   resolve: (value: T) => void
 }
 
+/** Create a promise whose completion order the stale-response tests control. */
 function deferred<T>(): Deferred<T> {
   let resolve!: (value: T) => void
 
@@ -75,7 +78,7 @@ function deferred<T>(): Deferred<T> {
 
 vi.mock('@/hermes', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  getCronJobs: vi.fn(async () => []),
+  getCronJobs: (...args: unknown[]) => getCronJobs(...args),
   listAllProfileSessions: (...args: unknown[]) => listAllProfileSessions(...args),
   listSidebarSessions: (...args: unknown[]) => listSidebarSessions(...args)
 }))
@@ -89,9 +92,12 @@ vi.mock('@/store/projects', () => ({
 }))
 
 beforeEach(() => {
+  getCronJobs.mockReset()
+  getCronJobs.mockResolvedValue([])
   listSidebarSessions.mockReset()
   listAllProfileSessions.mockReset()
   removed.ids = new Set()
+  setCronJobs([])
   setSessions([])
   setCronSessions([])
   setMessagingSessions([])
@@ -101,6 +107,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  setCronJobs([])
   setSessions([])
   setCronSessions([])
   setMessagingSessions([])
@@ -284,8 +291,67 @@ describe('refreshSessions batches slices into one request', () => {
     )
   })
 
+  it('does not start a refresh callback captured before a profile switch', async () => {
+    listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
+
+    const { rerender, result } = renderHook(({ profileScope }) => useSessionListActions({ profileScope }), {
+      initialProps: { profileScope: 'work' }
+    })
+
+    const staleRefresh = result.current.refreshSessions
+
+    rerender({ profileScope: 'personal' })
+
+    await act(async () => {
+      await staleRefresh()
+    })
+
+    expect(listSidebarSessions).not.toHaveBeenCalled()
+  })
+
+  it('ignores an in-flight sidebar response after the active profile changes', async () => {
+    const work = deferred<SidebarSessionsResponse>()
+    const personal = deferred<SidebarSessionsResponse>()
+
+    listSidebarSessions.mockImplementation(({ recentsProfile }) =>
+      recentsProfile === 'work' ? work.promise : personal.promise
+    )
+
+    const { rerender, result } = renderHook(({ profileScope }) => useSessionListActions({ profileScope }), {
+      initialProps: { profileScope: 'work' }
+    })
+
+    const workRefresh = result.current.refreshSessions()
+
+    rerender({ profileScope: 'personal' })
+    const personalRefresh = result.current.refreshSessions()
+
+    await act(async () => {
+      personal.resolve(
+        sidebar(
+          { sessions: [row('personal-session', { profile: 'personal' })] },
+          [row('personal-cron', { profile: 'personal', source: 'cron' })],
+          [row('personal-signal', { profile: 'personal', source: 'signal' })]
+        )
+      )
+      await personalRefresh
+
+      work.resolve(
+        sidebar(
+          { sessions: [row('work-session', { profile: 'work' })] },
+          [row('work-cron', { profile: 'work', source: 'cron' })],
+          [row('work-telegram', { profile: 'work', source: 'telegram' })]
+        )
+      )
+      await workRefresh
+    })
+
+    expect($sessions.get().map(session => session.id)).toEqual(['personal-session'])
+    expect($cronSessions.get().map(session => session.id)).toEqual(['personal-cron'])
+    expect($messagingSessions.get().map(session => session.id)).toEqual(['personal-signal'])
+  })
+
   it('scopes the cron-jobs fetch to the active profile (all → unified view)', async () => {
-    const { getCronJobs } = await import('@/hermes')
     listSidebarSessions.mockResolvedValue(sidebar({ sessions: [] }))
 
     const scoped = renderHook(() => useSessionListActions({ profileScope: 'work' }))
@@ -303,6 +369,33 @@ describe('refreshSessions batches slices into one request', () => {
     })
 
     expect(getCronJobs).toHaveBeenLastCalledWith('all')
+  })
+
+  it('ignores an out-of-order cron-jobs response from the previous profile', async () => {
+    const work = deferred<Array<{ enabled: boolean; id: string }>>()
+    const personal = deferred<Array<{ enabled: boolean; id: string }>>()
+
+    getCronJobs.mockImplementation((profile: string) => (profile === 'work' ? work.promise : personal.promise))
+
+    const { rerender, result } = renderHook(({ profileScope }) => useSessionListActions({ profileScope }), {
+      initialProps: { profileScope: 'work' }
+    })
+
+    const workRefresh = result.current.refreshCronJobs()
+
+    rerender({ profileScope: 'personal' })
+    const personalRefresh = result.current.refreshCronJobs()
+
+    await act(async () => {
+      personal.resolve([{ enabled: true, id: 'personal-job' }])
+      await personalRefresh
+
+      work.resolve([{ enabled: true, id: 'work-job' }])
+      await workRefresh
+    })
+
+    expect(getCronJobs.mock.calls.map(call => call[0])).toEqual(['work', 'personal'])
+    expect($cronJobs.get().map(job => job.id)).toEqual(['personal-job'])
   })
 })
 

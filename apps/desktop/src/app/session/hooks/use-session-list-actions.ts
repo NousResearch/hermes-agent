@@ -102,15 +102,12 @@ interface UseSessionListActionsArgs {
 export function useSessionListActions({ profileScope }: UseSessionListActionsArgs) {
   const profileScopeRef = useRef(profileScope)
   const loadMoreMessagingRequestRef = useRef<Record<string, number>>({})
+  const refreshCronJobsRequestRef = useRef(0)
   const refreshMessagingSessionsRequestRef = useRef(0)
   const refreshSessionsRequestRef = useRef(0)
   profileScopeRef.current = profileScope
 
-  // Messaging-platform sessions as their own slice, fetched separately from
-  // local recents so each platform renders a self-managed section and never
-  // competes with local chats for the recents page budget. Keep the fetch on
-  // the sidebar's profile scope; otherwise a remote-profile switch leaks one
-  // instance's Telegram/Signal sections into another instance's workspace.
+  /** Refresh the active profile's messaging-platform sidebar slice. */
   const refreshMessagingSessions = useCallback(async () => {
     const sessionProfile = messagingProfileFor(profileScope)
 
@@ -148,9 +145,7 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     }
   }, [profileScope])
 
-  // Page a single platform's section independently (mirrors the per-profile
-  // pager): fetch that source's next window and merge it back in place, leaving
-  // every other platform's rows untouched. Resolves the platform's exact total.
+  /** Page one messaging platform without replacing another platform's rows. */
   const loadMoreMessagingForPlatform = useCallback(
     async (platform: string) => {
       const sessionProfile = messagingProfileFor(profileScope)
@@ -199,22 +194,32 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     [profileScope]
   )
 
-  // Cron *jobs* drive the sidebar "Cron jobs" section. Jobs are created
-  // synchronously (agent tool call or the cron UI), so refreshing here right
-  // after an agent turn surfaces a new job immediately; the interval poll keeps
-  // next-run/state fresh as the scheduler advances them. Jobs live per-profile
-  // on disk and the list endpoint aggregates 'all' by default, so scope the
-  // fetch to the sidebar's profile scope — a concrete profile sees only its
-  // own jobs; ALL_PROFILES keeps the unified view.
+  /** Refresh cron jobs only while the profile that requested them remains active. */
   const refreshCronJobs = useCallback(async () => {
+    const sessionProfile = messagingProfileFor(profileScope)
+
+    if (messagingProfileFor(profileScopeRef.current) !== sessionProfile) {
+      return
+    }
+
+    const requestId = refreshCronJobsRequestRef.current + 1
+    refreshCronJobsRequestRef.current = requestId
+
     try {
-      await refreshCronJobsStore(messagingProfileFor(profileScope))
+      await refreshCronJobsStore(sessionProfile)
     } catch {
       // Non-fatal: the cron section just keeps its last-known jobs.
     }
   }, [profileScope])
 
+  /** Refresh every sidebar session slice without committing an obsolete profile response. */
   const refreshSessions = useCallback(async () => {
+    const sessionProfile = messagingProfileFor(profileScope)
+
+    if (messagingProfileFor(profileScopeRef.current) !== sessionProfile) {
+      return
+    }
+
     const requestId = refreshSessionsRequestRef.current + 1
     refreshSessionsRequestRef.current = requestId
     // The loading flag exists to drive the initial skeletons (they only render
@@ -240,8 +245,6 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
       // with few recent sessions isn't windowed out of the cross-profile
       // recency page and never inherits another profile's cron or messaging
       // sections. ALL_PROFILES remains the explicit unified view.
-      const sessionProfile = messagingProfileFor(profileScope)
-
       // Batched: one request opens each profile DB once and returns all three
       // source-scoped slices, instead of three separate listAllProfileSessions
       // calls that each reopened + re-counted every profile DB per refresh.
@@ -254,7 +257,10 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
         messagingExclude: MESSAGING_EXCLUDED_SOURCES
       })
 
-      if (refreshSessionsRequestRef.current === requestId) {
+      if (
+        refreshSessionsRequestRef.current === requestId &&
+        messagingProfileFor(profileScopeRef.current) === sessionProfile
+      ) {
         const recents = result.recents
 
         // Drop rows the user just deleted/archived: a refresh can race an
@@ -319,7 +325,9 @@ export function useSessionListActions({ profileScope }: UseSessionListActionsArg
     }
 
     // Cron *jobs* are a distinct API (getCronJobs), not a session slice.
-    void refreshCronJobs()
+    if (messagingProfileFor(profileScopeRef.current) === sessionProfile) {
+      void refreshCronJobs()
+    }
   }, [profileScope, refreshCronJobs])
 
   const loadMoreSessions = useCallback(async () => {

@@ -6011,6 +6011,37 @@ def test_config_get_reasoning_quoted_false_hides_display(tmp_path, monkeypatch):
     assert response["result"]["display"] == "hide"
 
 
+def test_config_get_full_normalizes_quoted_false_show_reasoning(tmp_path, monkeypatch):
+    """config.get full must hand the TUI a real bool, not the quoted string.
+
+    useConfigSync hydrates showReasoning with ``!!value``, so a quoted
+    ``show_reasoning: "false"`` reaching the full payload would render as
+    truthy and keep reasoning visible in the TUI.
+    """
+    import yaml
+
+    monkeypatch.setattr(server, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"display": {"show_reasoning": "false"}})
+    )
+
+    response = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "full"}}
+    )
+    assert response["result"]["config"]["display"]["show_reasoning"] is False
+    # Other display keys pass through untouched.
+    (tmp_path / "config.yaml").write_text(
+        yaml.safe_dump({"display": {"show_reasoning": True, "tui_statusbar": "fancy"}})
+    )
+    response = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "full"}}
+    )
+    cfg = response["result"]["config"]
+    assert cfg["display"]["show_reasoning"] is True
+    assert cfg["display"]["tui_statusbar"] == "fancy"
+
+
 def test_desktop_contract_includes_approval_mode_rpc():
     assert server.DESKTOP_BACKEND_CONTRACT >= 3
 

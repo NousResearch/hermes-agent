@@ -190,7 +190,21 @@ def _(rid, params: dict) -> dict:
         cwd = _completion_cwd({"cwd": raw} if raw else {})
         return _ok(rid, {"cwd": cwd, "branch": _git_branch_for_cwd(cwd)})
     if key == "full":
-        return _ok(rid, {"config": _load_cfg()})
+        cfg = _load_cfg()
+        display = cfg.get("display")
+        if isinstance(display, dict) and "show_reasoning" in display:
+            # The TUI hydrates showReasoning with `!!value` (useConfigSync),
+            # so a hand-edited quoted ``show_reasoning: "false"`` would render
+            # as truthy. Normalize to a real bool here, matching the
+            # `/reasoning` handler below.
+            display = {
+                **display,
+                "show_reasoning": is_truthy_value(
+                    display.get("show_reasoning"), default=True
+                ),
+            }
+            cfg = {**cfg, "display": display}
+        return _ok(rid, {"config": cfg})
     if key == "prompt":
         return _ok(rid, {"prompt": _load_cfg().get("custom_prompt", "")})
     if key == "skin":

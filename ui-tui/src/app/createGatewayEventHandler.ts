@@ -48,7 +48,7 @@ const normalizeVoiceSubmitMode = (value: unknown): VoiceSubmitMode =>
 // iterates the union of keys generically so a future Usage field (e.g.
 // active_subagents, consumed by the status rule's subagent segment) can never
 // be silently dropped from the comparison.
-const usageChanged = (prev: Usage, next: Usage): boolean => {
+export const usageChanged = (prev: Usage, next: Usage): boolean => {
   const keys = new Set([...Object.keys(prev), ...Object.keys(next)]) as Set<keyof Usage>
   for (const key of keys) {
     if (prev[key] !== next[key]) return true
@@ -56,7 +56,7 @@ const usageChanged = (prev: Usage, next: Usage): boolean => {
   return false
 }
 
-const mergeUsageStable = (prev: Usage, patch: Partial<Usage> | undefined): Usage => {
+export const mergeUsageStable = (prev: Usage, patch: Partial<Usage> | undefined): Usage => {
   if (!patch) return prev
   const merged: Usage = { ...prev, ...patch }
   return usageChanged(prev, merged) ? merged : prev

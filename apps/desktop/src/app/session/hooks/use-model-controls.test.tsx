@@ -219,7 +219,7 @@ describe('useModelControls', () => {
     })
   })
 
-  it('routes active-session picker changes through config.set with an explicit session-scoped provider', async () => {
+  it('persists an active primary-session picker change as the profile default via config.set --global', async () => {
     $activeSessionId.set('session-1')
     const requestGateway = vi.fn(async () => ({ key: 'model', value: 'claude-sonnet-4.6' }) as never)
     let controls!: Controls
@@ -233,10 +233,13 @@ describe('useModelControls', () => {
       })
     ).resolves.toBe(true)
 
+    // The primary main agent's pick IS the profile default, so it persists to
+    // config.yaml (model.default + model.provider) — which is what lets a
+    // chosen subscription provider outrank a leftover OPENAI_API_KEY env var.
     expect(requestGateway).toHaveBeenCalledWith('config.set', {
       session_id: 'session-1',
       key: 'model',
-      value: 'claude-sonnet-4.6 --provider anthropic --session'
+      value: 'claude-sonnet-4.6 --provider anthropic --global'
     })
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })

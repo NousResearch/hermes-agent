@@ -62,6 +62,7 @@ import {
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
   cookiesHaveLiveSession,
+  cookiesHavePrivyAccessToken,
   cookiesHavePrivySession,
   cookiesHaveSession,
   gatewayTicketFailure,
@@ -6745,7 +6746,61 @@ function resolvePortalBaseUrl() {
 // checks for the `privy-token` cookie on the portal host (NOT
 // hasLiveOauthSession, which looks for hermes_session_at/rt that the portal
 // never sets). See connection-config.ts cookiesHavePrivySession.
+//
+// Mirrors hasLiveOauthSession's cold-start guard (#73495): a `persist:`
+// partition's cookie store hydrates lazily, so the FIRST read on a fresh boot
+// can come back empty even for a signed-in user. The renderer checks Cloud
+// status exactly once on entering cloud mode, so a single false-negative here
+// used to clear the discovered agent list and demand a re-login that a plain
+// retry would have avoided. Warm the store and re-read with a short backoff
+// before trusting a negative.
 async function hasLivePortalSession() {
+  const sess = getOauthSession()
+
+  if (!sess) {
+    return false
+  }
+
+  const portalBaseUrl = resolvePortalBaseUrl()
+  const parsed = new URL(portalBaseUrl)
+
+  const readPortal = async () => {
+    try {
+      const cookies = await sess.cookies.get({ url: portalBaseUrl })
+
+      return cookiesHavePrivySession(cookies)
+    } catch {
+      try {
+        const cookies = await sess.cookies.get({ domain: parsed.hostname })
+
+        return cookiesHavePrivySession(cookies)
+      } catch {
+        return false
+      }
+    }
+  }
+
+  if (await readPortal()) {
+    return true
+  }
+
+  await warmOauthCookieStore()
+
+  for (const delayMs of [30, 60, 90]) {
+    if (await readPortal()) {
+      return true
+    }
+
+    await new Promise(resolve => setTimeout(resolve, delayMs))
+  }
+
+  return readPortal()
+}
+
+// Whether the jar holds the short-lived Privy ACCESS token — the exact cookie
+// `/api/agents` validates. hasLivePortalSession() answers "signed in at all?"
+// (renewal material counts); this answers "can discovery succeed right now?".
+async function hasPortalAccessToken() {
   const sess = getOauthSession()
 
   if (!sess) {
@@ -6758,16 +6813,145 @@ async function hasLivePortalSession() {
   try {
     const cookies = await sess.cookies.get({ url: portalBaseUrl })
 
-    return cookiesHavePrivySession(cookies)
+    return cookiesHavePrivyAccessToken(cookies)
   } catch {
     try {
       const cookies = await sess.cookies.get({ domain: parsed.hostname })
 
-      return cookiesHavePrivySession(cookies)
+      return cookiesHavePrivyAccessToken(cookies)
     } catch {
       return false
     }
   }
+}
+
+// Bounded silent renewal of the short-lived Privy access token (#73495).
+//
+// After a Desktop restart the long-lived `privy-session` / `privy-refresh-token`
+// cookies routinely survive while the ~1h `privy-token` access cookie has
+// expired. Discovery then 401s and the only offered recovery used to be a full
+// interactive re-login — even though the persisted refresh material can mint a
+// fresh access token with no user action: loading any portal page runs the
+// Privy client, which rotates a new `privy-token` from the refresh session.
+//
+// This drives exactly that, headlessly: a hidden window on the portal root in
+// the OAuth partition, polled until the access cookie lands, torn down on a
+// bounded timeout. Never shown — if renewal can't complete silently the caller
+// falls back to the interactive needsCloudLogin path. The in-flight promise is
+// shared so concurrent discovery + cascade calls ride one renewal.
+let portalAccessRenewal: Promise<boolean> | null = null
+
+function renewPortalAccessSilently() {
+  if (portalAccessRenewal) {
+    return portalAccessRenewal
+  }
+
+  portalAccessRenewal = (async () => {
+    if (!app.isReady()) {
+      return false
+    }
+
+    const sess = getOauthSession()
+
+    if (!sess) {
+      return false
+    }
+
+    // No renewal material at all → nothing to renew; interactive login is
+    // genuinely required.
+    if (!(await hasLivePortalSession())) {
+      return false
+    }
+
+    if (await hasPortalAccessToken()) {
+      return true
+    }
+
+    const portalBaseUrl = resolvePortalBaseUrl()
+
+    return await new Promise<boolean>(resolve => {
+      let settled = false
+      let win = null
+      let pollTimer = null
+      let deadlineTimer = null
+
+      const finish = (ok: boolean) => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+
+        if (pollTimer) {
+          clearInterval(pollTimer)
+        }
+
+        if (deadlineTimer) {
+          clearTimeout(deadlineTimer)
+        }
+
+        try {
+          if (win && !win.isDestroyed()) {
+            win.destroy()
+          }
+        } catch {
+          // window already torn down
+        }
+
+        rememberLog(`[cloud] silent portal access renewal ${ok ? 'succeeded' : 'did not complete'}`)
+        resolve(ok)
+      }
+
+      const checkCookie = async () => {
+        if (settled) {
+          return
+        }
+
+        if (await hasPortalAccessToken()) {
+          finish(true)
+        }
+      }
+
+      try {
+        win = new BrowserWindow({
+          width: 520,
+          height: 720,
+          show: false,
+          title: 'Renewing Hermes Cloud session…',
+          autoHideMenuBar: true,
+          webPreferences: {
+            contextIsolation: true,
+            nodeIntegration: false,
+            sandbox: true,
+            session: sess,
+            webSecurity: true
+          }
+        })
+      } catch {
+        finish(false)
+
+        return
+      }
+
+      win.webContents.on('did-navigate', () => void checkCookie())
+      win.webContents.on('did-redirect-navigation', () => void checkCookie())
+      win.webContents.on('did-frame-navigate', () => void checkCookie())
+      installWindowRendererLifecycle(win, { kind: 'portal-renew', callbacks: { log: rememberLog } })
+      pollTimer = setInterval(() => void checkCookie(), 500)
+      // Hard deadline: this window is never revealed, so an unrenewable session
+      // (revoked refresh token, portal down) must resolve false rather than
+      // hang the discovery call behind an invisible window.
+      deadlineTimer = setTimeout(() => finish(false), 12_000)
+
+      win.on('closed', () => finish(false))
+
+      win.loadURL(portalBaseUrl).catch(() => finish(false))
+    })
+  })().finally(() => {
+    portalAccessRenewal = null
+  }) as Promise<boolean>
+
+  return portalAccessRenewal
 }
 
 // Drive a one-time interactive portal sign-in in the OAuth partition. Unlike
@@ -6898,37 +7082,65 @@ async function discoverCloudAgents(org?: string) {
     throw err
   }
 
+  // Renewable session present but the short-lived access token `/api/agents`
+  // validates is gone (typical after a restart — `privy-token` is ~1h,
+  // `privy-session`/`privy-refresh-token` last ~30 days). Renew silently up
+  // front instead of letting the request 401 into a re-login demand (#73495).
+  if (!(await hasPortalAccessToken())) {
+    await renewPortalAccessSilently()
+  }
+
   const orgQuery = org ? `?org=${encodeURIComponent(org)}` : ''
   let body
 
-  try {
-    body = (await fetchJsonViaOauthSession(`${portalBaseUrl}/api/agents${orgQuery}`, {
+  const fetchAgents = () =>
+    fetchJsonViaOauthSession(`${portalBaseUrl}/api/agents${orgQuery}`, {
       method: 'GET',
       timeoutMs: 15_000
-    })) as any
-  } catch (error) {
-    // A 401 means the portal session lapsed between the liveness check and the
-    // call — surface it as a re-login, not a generic failure.
-    if (error && error.statusCode === 401) {
-      const err = new Error('Your Hermes Cloud session has expired. Open Settings → Gateway and sign in again.') as any
-      err.needsCloudLogin = true
-      err.cause = error
-      throw err
-    }
+    })
 
-    // A 409 means we're a multi-org user who hasn't picked an org. The body
-    // carries the user's org list; surface it so the renderer shows a picker
-    // and re-calls discovery with the chosen org. (fetchJsonViaOauthSession
-    // throws on >=400 with err.statusCode + err.message "409: <json body>".)
-    if (error && error.statusCode === 409) {
-      const orgs = parseOrgSelectionError(error)
+  try {
+    body = (await fetchAgents()) as any
+  } catch (initialError) {
+    let error = initialError as any
 
-      if (orgs) {
-        return { needsOrgSelection: true, orgs }
+    // A 401 with renewal material still in the jar: attempt ONE bounded silent
+    // renewal and retry, so a lapsed access token doesn't surface as a full
+    // interactive re-login while a 30-day refresh session sits unused. Only a
+    // rejected/failed renewal (or a second 401 on genuinely fresh access)
+    // falls through to needsCloudLogin.
+    if (error && error.statusCode === 401 && (await renewPortalAccessSilently())) {
+      try {
+        body = (await fetchAgents()) as any
+      } catch (retryError) {
+        error = retryError
       }
     }
 
-    throw error
+    if (body === undefined) {
+      // A 401 means the portal session lapsed (and silent renewal could not
+      // recover it) — surface it as a re-login, not a generic failure.
+      if (error && error.statusCode === 401) {
+        const err = new Error('Your Hermes Cloud session has expired. Open Settings → Gateway and sign in again.') as any
+        err.needsCloudLogin = true
+        err.cause = error
+        throw err
+      }
+
+      // A 409 means we're a multi-org user who hasn't picked an org. The body
+      // carries the user's org list; surface it so the renderer shows a picker
+      // and re-calls discovery with the chosen org. (fetchJsonViaOauthSession
+      // throws on >=400 with err.statusCode + err.message "409: <json body>".)
+      if (error && error.statusCode === 409) {
+        const orgs = parseOrgSelectionError(error)
+
+        if (orgs) {
+          return { needsOrgSelection: true, orgs }
+        }
+      }
+
+      throw error
+    }
   }
 
   return { agents: trimCloudAgents(body), org: trimCloudOrg(body?.org) }
@@ -7018,6 +7230,14 @@ async function cloudAgentSilentSignIn(dashboardUrl) {
     const err = new Error('Your Hermes Cloud session has expired. Sign in to Hermes Cloud again.') as any
     err.needsCloudLogin = true
     throw err
+  }
+
+  // The cascade rides the portal's auto-approve, which needs the short-lived
+  // access state just like discovery. If only renewal material survived the
+  // restart, mint a fresh access token first so the hidden cascade window
+  // auto-SSOs instead of stalling on an interactive chooser (#73495).
+  if (!(await hasPortalAccessToken())) {
+    await renewPortalAccessSilently()
   }
 
   await openOauthLoginWindow(baseUrl, { silent: true })

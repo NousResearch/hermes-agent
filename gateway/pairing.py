@@ -38,7 +38,6 @@ from hermes_constants import (
     get_hermes_dir,
     get_hermes_home,
 )
-from hermes_constants import set_hermes_home_override, reset_hermes_home_override
 from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
@@ -242,6 +241,78 @@ def _read_profile_allowlist_env(env_var: str, profile: str) -> str:
         return ""
 
 
+def _write_profile_env_file(
+    env_var: str, value: Optional[str], profile: str
+) -> None:
+    """Set (or remove, when ``value`` is None) an env var in a profile's OWN
+    ``.env`` file WITHOUT touching the process environment or the shared env
+    cache.
+
+    ``save_env_value()`` / ``remove_env_value()`` write the file AND then
+    mutate ``os.environ`` + invalidate the global env cache. Under
+    multiplexing that leaks a profile-scoped allowlist grant into the shared
+    process allowlist consumed by sibling profiles and live adapter checks —
+    approving one profile would grant users in another. This writer is
+    file-only, so the isolation is real (``#77519`` follow-up review, P1).
+    """
+    from hermes_cli.config import (
+        _env_line_defines_key,
+        _quote_env_value,
+        _sanitize_env_lines,
+    )
+
+    env_path = _profile_home_dir(profile) / ".env"
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+
+    read_kw = {"encoding": "utf-8-sig", "errors": "replace"}
+    write_kw = {"encoding": "utf-8"}
+
+    lines: list = []
+    if env_path.exists():
+        with open(env_path, **read_kw) as f:
+            lines = f.readlines()
+        lines = _sanitize_env_lines(lines)
+
+    found = False
+    if value is None:
+        # Remove every line that defines the key (plain or export-prefixed),
+        # mirroring remove_env_value()'s matching semantics (#40041).
+        kept: list = []
+        for line in lines:
+            if _env_line_defines_key(line, env_var):
+                found = True
+                continue
+            kept.append(line)
+        lines = kept
+    else:
+        serialized = _quote_env_value(value)
+        for i, line in enumerate(lines):
+            if _env_line_defines_key(line, env_var):
+                lines[i] = f"{env_var}={serialized}\n"
+                found = True
+                break
+        if not found:
+            if lines and not lines[-1].endswith("\n"):
+                lines[-1] += "\n"
+            lines.append(f"{env_var}={serialized}\n")
+
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(env_path.parent), suffix=".tmp", prefix=".env_"
+    )
+    try:
+        with os.fdopen(fd, "w", **write_kw) as f:
+            f.writelines(lines)
+            f.flush()
+            os.fsync(f.fileno())
+        atomic_replace(tmp_path, env_path)
+    except BaseException:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
 def _sync_allowlist_add(
     platform: str, user_id: str, *, profile: Optional[str] = None
 ) -> None:
@@ -276,15 +347,15 @@ def _sync_allowlist_add(
         return  # Already covered.
     ids.append(str(user_id))
     try:
-        from hermes_cli.config import save_env_value
-
         if profile:
-            token = set_hermes_home_override(str(_profile_home_dir(profile)))
-            try:
-                save_env_value(env_var, ",".join(ids))
-            finally:
-                reset_hermes_home_override(token)
+            # File-only writer: the profile's .env must change WITHOUT
+            # mutating os.environ / the shared env cache — otherwise the
+            # grant leaks into sibling profiles' process allowlist and live
+            # adapter checks (#77519 follow-up review, P1).
+            _write_profile_env_file(env_var, ",".join(ids), profile)
         else:
+            from hermes_cli.config import save_env_value
+
             save_env_value(env_var, ",".join(ids))
     except Exception:
         # Best-effort: the pairing store grant still authorizes via the union,
@@ -292,8 +363,16 @@ def _sync_allowlist_add(
         pass
 
 
-def _iter_live_gateway_adapters():
-    """Yield adapters from the in-process GatewayRunner, if one is running."""
+def _iter_live_gateway_adapters(profile: Optional[str] = None):
+    """Yield adapters from the in-process GatewayRunner, if one is running.
+
+    When ``profile`` is given (and not ``default``/``None``), only that
+    profile's adapters are yielded — the default-profile adapters live in
+    ``runner.adapters``, secondary-profile adapters in
+    ``runner._profile_adapters[profile]``. This lets a profile-scoped revoke
+    purge ONLY the target profile's live allowlist instead of every adapter
+    on the platform (``#77519`` follow-up review, P2).
+    """
     try:
         from gateway.run import _gateway_runner_ref
 
@@ -302,6 +381,23 @@ def _iter_live_gateway_adapters():
         return
     if runner is None:
         return
+    if profile:
+        # Explicit profile scope: yield ONLY that profile's adapters. The
+        # default profile's adapters live in runner.adapters; secondary
+        # profiles' adapters live in runner._profile_adapters[profile].
+        if profile == "default":
+            adapters = getattr(runner, "adapters", None) or {}
+            for adapter in adapters.values():
+                if adapter is not None:
+                    yield adapter
+            return
+        profile_adapters = getattr(runner, "_profile_adapters", None) or {}
+        mapping = profile_adapters.get(profile) or {}
+        for adapter in mapping.values():
+            if adapter is not None:
+                yield adapter
+        return
+    # Unscoped (legacy behavior): every adapter in the process.
     adapters = getattr(runner, "adapters", None) or {}
     for adapter in adapters.values():
         if adapter is not None:
@@ -349,18 +445,24 @@ def _purge_allowlist_entries(entries, platform: str, user_id: str):
     return entries
 
 
-def _sync_live_adapter_allowlist_remove(platform: str, user_id: str) -> None:
+def _sync_live_adapter_allowlist_remove(
+    platform: str, user_id: str, *, profile: Optional[str] = None
+) -> None:
     """Clear revoked principals from in-process adapter allowlist snapshots.
 
     ``WhatsAppAdapter`` (and Cloud) snapshot ``_allow_from`` at construction.
     Pairing revoke updates ``WHATSAPP_ALLOWED_USERS`` / cloud env, but when the
     revoked principal was the sole entry the env key is removed entirely.
     Intake must not keep authorizing from the stale snapshot until restart.
+
+    When ``profile`` is set, only the target profile's adapters are purged —
+    a profile-scoped revoke must not remove a sibling profile's live
+    authorization (``#77519`` follow-up review, P2).
     """
     platform_name = (platform or "").strip().lower()
     if not platform_name or not str(user_id or "").strip():
         return
-    for adapter in _iter_live_gateway_adapters():
+    for adapter in _iter_live_gateway_adapters(profile=profile):
         if _adapter_platform_name(adapter) != platform_name:
             continue
         if hasattr(adapter, "_allow_from"):
@@ -420,25 +522,26 @@ def _sync_allowlist_remove(
     if len(remaining) == len(ids):
         return  # Not present.
     try:
-        from hermes_cli.config import save_env_value, remove_env_value
-
-        def _write(value_remaining: bool) -> None:
-            if value_remaining:
-                save_env_value(env_var, ",".join(remaining))
-            else:
-                remove_env_value(env_var)
-
         if profile:
-            token = set_hermes_home_override(str(_profile_home_dir(profile)))
-            try:
-                _write(bool(remaining))
-            finally:
-                reset_hermes_home_override(token)
+            # File-only writer: revoking one profile must not purge the
+            # process-global allowlist that sibling profiles consume (#77519
+            # follow-up review, P1).
+            _write_profile_env_file(
+                env_var, ",".join(remaining) if remaining else None, profile
+            )
         else:
+            from hermes_cli.config import save_env_value, remove_env_value
+
+            def _write(value_remaining: bool) -> None:
+                if value_remaining:
+                    save_env_value(env_var, ",".join(remaining))
+                else:
+                    remove_env_value(env_var)
+
             _write(bool(remaining))
     except Exception:
         pass
-    _sync_live_adapter_allowlist_remove(platform, user_id)
+    _sync_live_adapter_allowlist_remove(platform, user_id, profile=profile)
 
 
 def _load_json_file(path: Path) -> dict:

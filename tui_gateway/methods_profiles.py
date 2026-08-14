@@ -474,19 +474,31 @@ def _(rid, params: dict) -> dict:
                 )
             except Exception:
                 platform_enabled = set()
+            try:
+                from hermes_cli.tools_config import _DEFAULT_OFF_TOOLSETS
+            except Exception:
+                _DEFAULT_OFF_TOOLSETS = set()
             toolsets_out = []
             for ts_name, ts_label, ts_desc in _get_effective_configurable_toolsets():
                 if not _toolset_allowed_for_platform(ts_name, "cli"):
                     continue
-                try:
-                    tool_count = len(set(resolve_toolset(ts_name)))
-                except Exception:
-                    tool_count = 0
                 enabled = (
                     ts_name in pinned_set
                     if pinned_set is not None
                     else ts_name in platform_enabled
                 )
+                # Default-off integrations (a2a, yuanbao, spotify, ...) are
+                # opt-ins; when the profile hasn't opted in they're noise in
+                # a per-profile editor — `hermes tools` / Settings is where
+                # you turn them on globally first. Enabled ones still show.
+                # yuanbao rides the same rule: a region-specific integration
+                # that isn't in _DEFAULT_OFF_TOOLSETS but is equally opt-in.
+                if (ts_name in _DEFAULT_OFF_TOOLSETS or ts_name == "yuanbao") and not enabled:
+                    continue
+                try:
+                    tool_count = len(set(resolve_toolset(ts_name)))
+                except Exception:
+                    tool_count = 0
                 toolsets_out.append(
                     {
                         "name": ts_name,

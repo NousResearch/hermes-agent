@@ -307,8 +307,8 @@ class TestDetectServerTypeNegativeCaching:
             assert detect_local_server_type("http://remote:8080/v1") is None
 
         # Second call served from the in-memory negative entry: the
-        # waterfall ran exactly once (5 GETs), not twice.
-        assert client.get.call_count == 5
+        # waterfall ran exactly once (6 GETs), not twice.
+        assert client.get.call_count == 6
         assert "http://remote:8080" in model_metadata._endpoint_probe_path_cache
 
     def test_negative_verdict_not_written_to_disk(self):
@@ -339,6 +339,6 @@ class TestDetectServerTypeNegativeCaching:
             )
             assert detect_local_server_type("http://remote3:8080/v1") is None
 
-        assert client.get.call_count == 10  # waterfall re-ran after expiry
+        assert client.get.call_count == 12  # waterfall re-ran after expiry
 
 

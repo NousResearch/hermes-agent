@@ -3447,11 +3447,23 @@ _electron_zip_name() {
 }
 
 # Locate the zip @electron/get cached during the mirror download.
+# Honors the SAME cache-root overrides @electron/get respects as
+# clear_electron_build_cache() above (electron_config_cache / ELECTRON_CACHE
+# / XDG_CACHE_HOME), then the platform defaults — otherwise a custom cache
+# setting would let the mirror artifact evade verification entirely.
 _electron_cached_zip() {
     local electron_dir="$1"
     local zip_name
     zip_name="$(_electron_zip_name "$electron_dir")" || return 1
-    local roots=("$HOME/.cache/electron" "$HOME/Library/Caches/electron")
+    local roots=()
+    [ -n "${electron_config_cache:-}" ] && roots+=("$electron_config_cache")
+    [ -n "${ELECTRON_CACHE:-}" ] && roots+=("$ELECTRON_CACHE")
+    if [ "$OS" = "macos" ]; then
+        roots+=("$HOME/Library/Caches/electron")
+    else
+        [ -n "${XDG_CACHE_HOME:-}" ] && roots+=("$XDG_CACHE_HOME/electron")
+        roots+=("$HOME/.cache/electron")
+    fi
     local root zip_path=""
     for root in "${roots[@]}"; do
         [ -d "$root" ] || continue
@@ -3472,7 +3484,19 @@ _verify_electron_zip_official() {
     [ -n "$checksums_file" ] && [ -f "$checksums_file" ] || return 2
     zip_name="$(_electron_zip_name "$electron_dir")" || return 2
     zip_path="$(_electron_cached_zip "$electron_dir")" || return 2
-    expected="$(awk -v n="$zip_name" '$1==n || $2=="*"n {print $1}' "$checksums_file" | head -1)"
+    # SHASUMS256.txt ships the standard digest-first form
+    # "<sha256>  electron-v<ver>-<plat>-<arch>.zip" (two spaces), and some
+    # mirrors emit a star-prefixed filename ("*electron-...") or a
+    # filename-first line. Match all three forms and keep only a 64-hex
+    # digest so a malformed line can never be mistaken for a match.
+    # In digest-first lines the digest is column 1; in filename-first lines
+    # it is column 2.
+    expected="$(awk -v n="$zip_name" '
+        $1==n || $2==n || $2=="*"n {
+            d = ($1==n) ? $2 : $1
+            if (d ~ /^[0-9a-fA-F]{64}$/) { print d; exit }
+        }
+    ' "$checksums_file" | head -1)"
     [ -n "$expected" ] || return 2
     actual="$(shasum -a 256 "$zip_path" | awk '{print $1}')"
     [ -n "$actual" ] || return 2
@@ -3528,6 +3552,19 @@ _restore_electron_dist() {
             log_info "    (mirror Electron binary verified against official checksums)"
         else
             log_warn "    (mirror Electron binary FAILED official checksum verification — treating as failed)"
+            rm -rf "$electron_dir/dist" 2>/dev/null || true
+            rm -f "$checksums_file" 2>/dev/null || true
+            return 1
+        fi
+    elif [ -n "$mirror" ]; then
+        # Official checksums unreachable. Fail closed: never accept a
+        # mirror-sourced artifact with no independent integrity proof,
+        # unless the user explicitly opted into unverified mirror builds.
+        if [ -n "${ELECTRON_MIRROR_UNVERIFIED:-}" ]; then
+            log_warn "    (ELECTRON_MIRROR_UNVERIFIED set — accepting unverified mirror Electron build)"
+        else
+            log_warn "    (cannot fetch official Electron checksums — mirror verification unavailable; refusing unverified mirror build)"
+            log_warn "    (set ELECTRON_MIRROR_UNVERIFIED=1 to explicitly accept an unverified mirror build)"
             rm -rf "$electron_dir/dist" 2>/dev/null || true
             rm -f "$checksums_file" 2>/dev/null || true
             return 1
@@ -3711,10 +3748,17 @@ install_desktop() {
             elif [ -n "$official_cs" ]; then
                 log_warn "  (mirror Electron binary FAILED official checksum verification — not accepting the build)"
                 pack_ok=false
-            else
-                # Official checksums unreachable: nothing to verify against;
-                # accept the build but the earlier warning stands.
+            elif [ -n "${ELECTRON_MIRROR_UNVERIFIED:-}" ]; then
+                # Official checksums unreachable but the user explicitly
+                # opted into unverified mirror builds.
+                log_warn "  (official Electron checksums unreachable; ELECTRON_MIRROR_UNVERIFIED set — accepting unverified mirror build)"
                 pack_ok=true
+            else
+                # Official checksums unreachable: fail closed. Never accept a
+                # mirror-sourced artifact with no independent integrity proof
+                # without an explicit opt-in.
+                log_warn "  (official Electron checksums unreachable — refusing unverified mirror build; set ELECTRON_MIRROR_UNVERIFIED=1 to accept)"
+                pack_ok=false
             fi
         fi
         rm -f "$official_cs" 2>/dev/null || true

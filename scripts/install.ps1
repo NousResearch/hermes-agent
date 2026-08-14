@@ -4003,14 +4003,19 @@ function Get-ElectronZipName {
 }
 
 # Locate the zip @electron/get cached during the mirror download.
+# Honors the SAME cache-root overrides @electron/get respects as
+# Clear-ElectronBuildCache above (electron_config_cache / ELECTRON_CACHE /
+# HOME fallback), then the Windows default - otherwise a custom cache setting
+# would let the mirror artifact evade verification entirely.
 function Get-ElectronCachedZip {
     param([string]$ElectronDir)
     $zipName = Get-ElectronZipName -ElectronDir $ElectronDir
     if (-not $zipName) { return $null }
-    $cacheRoots = @(
-        (Join-Path $env:LOCALAPPDATA 'electron\Cache'),
-        (Join-Path $env:LOCALAPPDATA 'electron\cache')
-    )
+    $cacheRoots = @()
+    if ($env:electron_config_cache) { $cacheRoots += $env:electron_config_cache }
+    if ($env:ELECTRON_CACHE)        { $cacheRoots += $env:ELECTRON_CACHE }
+    if ($env:LOCALAPPDATA)          { $cacheRoots += (Join-Path $env:LOCALAPPDATA 'electron\Cache') }
+    $cacheRoots += (Join-Path $HOME 'AppData\Local\electron\Cache')
     foreach ($root in $cacheRoots) {
         if (-not (Test-Path -LiteralPath $root)) { continue }
         $hit = Get-ChildItem -LiteralPath $root -Recurse -Filter $zipName -File -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -4033,8 +4038,14 @@ function Test-ElectronZipOfficial {
     $expected = $null
     foreach ($line in (Get-Content -LiteralPath $ChecksumsFile)) {
         if ($line.EndsWith("  *$zipName") -or $line.EndsWith(" *$zipName") -or $line.EndsWith("  $zipName") -or $line.EndsWith(" $zipName")) {
-            $expected = ($line -split '\s+')[0]
-            break
+            $candidate = ($line -split '\s+')[0]
+            # Keep only a well-formed 64-hex digest so a malformed line can
+            # never be mistaken for a match (digest-first AND filename-first
+            # forms both put the digest in column 1).
+            if ($candidate -match '^[0-9a-fA-F]{64}$') {
+                $expected = $candidate
+                break
+            }
         }
     }
     if (-not $expected) { return 2 }
@@ -4098,8 +4109,20 @@ function Restore-ElectronDist {
         $verify = Test-ElectronZipOfficial -ElectronDir $electronDir -ChecksumsFile $checksumsFile
         if ($verify -eq 0) {
             Write-Host "    (mirror Electron binary verified against official checksums)" -ForegroundColor Green
-        } elseif ($verify -eq 1) {
+        } else {
             Write-Warn "    (mirror Electron binary FAILED official checksum verification - treating as failed)"
+            Remove-Item -LiteralPath $distDir -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $checksumsFile -Force -ErrorAction SilentlyContinue
+            return $false
+        }
+    } elseif ($Mirror) {
+        # Official checksums unreachable. Fail closed: never accept a
+        # mirror-sourced artifact with no independent integrity proof,
+        # unless the user explicitly opted into unverified mirror builds.
+        if ($env:ELECTRON_MIRROR_UNVERIFIED) {
+            Write-Warn "    (ELECTRON_MIRROR_UNVERIFIED set - accepting unverified mirror Electron build)"
+        } else {
+            Write-Warn "    (cannot fetch official Electron checksums - refusing unverified mirror build; set ELECTRON_MIRROR_UNVERIFIED=1 to accept)"
             Remove-Item -LiteralPath $distDir -Recurse -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $checksumsFile -Force -ErrorAction SilentlyContinue
             return $false
@@ -4387,7 +4410,18 @@ function Install-Desktop {
                 } elseif ($verify -eq 1) {
                     Write-Warn "  (mirror Electron binary FAILED official checksum verification - not accepting the build)"
                     $code = 1
+                } else {
+                    Write-Warn "  (mirror Electron binary could not be verified against official checksums - not accepting the build)"
+                    $code = 1
                 }
+            } elseif (-not $env:ELECTRON_MIRROR_UNVERIFIED) {
+                # Official checksums unreachable. Fail closed: never accept a
+                # mirror-sourced artifact with no independent integrity proof
+                # without an explicit opt-in.
+                Write-Warn "  (official Electron checksums unreachable - refusing unverified mirror build; set ELECTRON_MIRROR_UNVERIFIED=1 to accept)"
+                $code = 1
+            } else {
+                Write-Warn "  (official Electron checksums unreachable; ELECTRON_MIRROR_UNVERIFIED set - accepting unverified mirror build)"
             }
             if ($officialCs) {
                 Remove-Item -LiteralPath $officialCs -Force -ErrorAction SilentlyContinue

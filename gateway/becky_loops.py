@@ -24,6 +24,14 @@ from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.http11 import Headers, Request, Response
 
 logger = logging.getLogger(__name__)
+_WEBSOCKET_LOGGER = logging.getLogger("gateway.becky_loops.websocket")
+_WEBSOCKET_LOGGER.setLevel(logging.WARNING)
+_WEBSOCKET_LOGGER.propagate = False
+
+try:
+    from agent.redact import redact_sensitive_text as _force_redact
+except Exception:  # pragma: no cover - only applies to an incomplete Hermes install
+    _force_redact = None
 
 _READY = {
     "jsonrpc": "2.0",
@@ -59,6 +67,8 @@ _MAX_REQUEST_BYTES = 65_536
 _MAX_RESPONSE_BYTES = 262_144
 _MAX_SUMMARY_CHARS = 2_000
 _MAX_LIST_ITEMS = 12
+_SESSION_PAGE_SIZE = 200
+_MAX_SESSION_SCAN = 10_000
 
 
 @dataclass(frozen=True)
@@ -100,12 +110,12 @@ def _bounded_text(value: Any, limit: int = 500) -> str:
 def _safe_public_text(value: Any, hidden_values: set[str], limit: int = 500) -> str:
     """Bound text while removing known Telegram/session identifiers."""
     text = _redact(str(value or ""))
+    if _force_redact is None:
+        return "[REDACTED]" if text else ""
     try:
-        from agent.redact import redact_sensitive_text
-
-        text = redact_sensitive_text(text, force=True)
+        text = _force_redact(text, force=True)
     except Exception:
-        logger.debug("Hermes force redactor unavailable", exc_info=True)
+        return "[REDACTED]" if text else ""
     for hidden in sorted(
         (item for item in hidden_values if len(item) >= 3), key=len, reverse=True
     ):
@@ -169,14 +179,22 @@ class SessionDBBeckyLoopsStore:
     def list_topics(self, chat_id: str) -> list[dict[str, Any]]:
         self._chat_id = str(chat_id)
         self._source_rows = {}
-        rows = self._db.list_sessions_rich(
-            source="telegram",
-            include_children=False,
-            include_archived=False,
-            project_compression_tips=True,
-            order_by_last_active=True,
-            limit=200,
-        )
+        rows: list[dict[str, Any]] = []
+        offset = 0
+        while len(rows) < _MAX_SESSION_SCAN:
+            page = self._db.list_sessions_rich(
+                source="telegram",
+                include_children=False,
+                include_archived=False,
+                project_compression_tips=True,
+                order_by_last_active=True,
+                limit=_SESSION_PAGE_SIZE,
+                offset=offset,
+            )
+            rows.extend(page)
+            if len(page) < _SESSION_PAGE_SIZE:
+                break
+            offset += len(page)
         result: list[dict[str, Any]] = []
         for raw in rows:
             if self._hidden_child(raw):
@@ -212,6 +230,8 @@ class SessionDBBeckyLoopsStore:
                 "thread_id": thread_id,
                 "_revision_input": revision_input,
             }
+            if ref in self._source_rows:
+                continue
             self._source_rows[ref] = item
             result.append(item)
         return result
@@ -293,6 +313,7 @@ class BeckyLoopsBridgeServer:
             close_timeout=1,
             compression=None,
             server_header="Hermes-Becky-Loops",
+            logger=_WEBSOCKET_LOGGER,
         )
         logger.info("Becky loop bridge listening on 127.0.0.1:%d", self.bound_port)
 
@@ -560,26 +581,37 @@ class BeckyLoopsBridgeServer:
     @staticmethod
     def _valid_reopen_params(params: dict[str, Any]) -> bool:
         context = params.get("context")
+        if not isinstance(context, dict):
+            return False
+        decisions = context.get("decisions")
+        unresolved = context.get("unresolved_items")
+        final_outcome = context.get("final_outcome")
         return (
             set(params) == {"source_ref", "idempotency_key", "context"}
             and isinstance(params.get("source_ref"), str)
             and _SOURCE_REF_RE.fullmatch(params["source_ref"]) is not None
             and isinstance(params.get("idempotency_key"), str)
             and _UUID_RE.fullmatch(params["idempotency_key"]) is not None
-            and isinstance(context, dict)
             and set(context)
             == {"title", "summary", "decisions", "unresolved_items", "final_outcome"}
             and isinstance(context.get("title"), str)
             and 1 <= len(context["title"]) <= 128
             and isinstance(context.get("summary"), str)
             and 1 <= len(context["summary"]) <= 2000
-            and isinstance(context.get("decisions"), list)
-            and len(context["decisions"]) <= 12
-            and isinstance(context.get("unresolved_items"), list)
-            and len(context["unresolved_items"]) <= 12
+            and isinstance(decisions, list)
+            and len(decisions) <= 12
+            and all(
+                isinstance(item, str) and 1 <= len(item) <= 500 for item in decisions
+            )
+            and isinstance(unresolved, list)
+            and len(unresolved) <= 12
+            and all(
+                isinstance(item, str) and 1 <= len(item) <= 500 for item in unresolved
+            )
             and (
-                context.get("final_outcome") is None
-                or isinstance(context.get("final_outcome"), str)
+                final_outcome is None
+                or isinstance(final_outcome, str)
+                and 1 <= len(final_outcome) <= 1000
             )
         )
 

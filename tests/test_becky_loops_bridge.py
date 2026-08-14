@@ -365,6 +365,19 @@ def test_session_store_excludes_branch_delegate_and_tool_children() -> None:
     assert [row["title"] for row in rows] == ["Root"]
 
 
+def test_session_store_coalesces_restarted_sessions_for_one_topic() -> None:
+    from gateway.becky_loops import SessionDBBeckyLoopsStore
+
+    db = ProjectionDB()
+    db.rows.insert(
+        0,
+        {**db.rows[0], "id": "newer", "title": "Newer", "last_active": 1_755_104_500.0},
+    )
+    store = SessionDBBeckyLoopsStore(db)
+    rows = store.list_topics("123456789")
+    assert [row["title"] for row in rows] == ["Newer"]
+
+
 @pytest.mark.asyncio
 async def test_bridge_close_and_reopen_fail_closed_without_topic_control() -> None:
     server = BeckyLoopsBridgeServer(config=config(), store=FakeStore())

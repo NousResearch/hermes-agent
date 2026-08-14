@@ -294,11 +294,18 @@ const DESKTOP_COMMAND_SPECS: readonly DesktopCommandSpec[] = [
   { name: '/retry', description: 'Retry the last user message', surface: exec() },
   // /learn is open-ended: the gateway rewrites the turn to a standards-guided
   // prompt (agent/learn_prompt.py::build_learn_prompt) and falls through to
-  // normal agent processing. It must be `exec()` so the desktop dispatcher sends
-  // it to slash.exec -> command.dispatch, which the TUI backend already handles
-  // (tui_gateway/methods_tools.py). Without a spec row it fails
-  // isDesktopSlashCommand and never reaches the backend (#radar).
-  { name: '/learn', description: 'Learn a reusable skill from anything you describe (dirs, URLs, this chat, notes)', surface: exec(), argumentMode: 'text' },
+  // normal agent processing. Routing already reached the backend before this
+  // row via the isDesktopSlashExtensionCommand fallthrough, so this spec does
+  // not fix a broken path — it promotes /learn to a first-class curated
+  // command: a human-readable description, an explicit argumentMode, and a
+  // stable identity in the palette that no longer depends on the "unknown
+  // extension" catch-all (which is brittle to any future allowlist change).
+  {
+    name: '/learn',
+    description: 'Learn a reusable skill from anything you describe (dirs, URLs, this chat, notes)',
+    surface: exec(),
+    argumentMode: 'text',
+  },
   { name: '/rollback', description: 'List or restore filesystem checkpoints', surface: exec() },
   {
     name: '/save',

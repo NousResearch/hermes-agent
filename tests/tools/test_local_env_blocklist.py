@@ -724,3 +724,53 @@ class TestHermesInternalDynamicSecrets:
         ):
             run_env = _make_run_env({})
         assert run_env.get("GIT_TERMINAL_PROMPT") == "0"
+
+
+class TestPostSourceSnapshotHardening:
+    """Session snapshot source can restore tokens / git prompt; re-harden after."""
+
+    def test_post_source_script_unsets_package_tokens_and_forces_git(self):
+        from tools.environments.local import _post_source_env_hardening_script
+
+        script = _post_source_env_hardening_script()
+        assert "NPM_TOKEN" in script
+        assert "CARGO_REGISTRY_TOKEN" in script
+        assert "GIT_TERMINAL_PROMPT=0" in script
+        assert "GCM_INTERACTIVE=Never" in script
+
+    def test_wrap_command_reapplies_hardening_after_snapshot_source(self):
+        from tools.environments.base import BaseEnvironment
+
+        class _Stub(BaseEnvironment):
+            def cleanup(self):
+                pass
+
+            def _run_bash(self, *a, **k):
+                raise NotImplementedError
+
+        env = _Stub(cwd="/tmp", timeout=10)
+        env._snapshot_ready = True
+        env._snapshot_path = "/tmp/hermes-snap-test.sh"
+        wrapped = env._wrap_command("echo hi", "/tmp")
+        src_i = wrapped.find("source ")
+        hard_i = wrapped.find("GIT_TERMINAL_PROMPT=0")
+        eval_i = wrapped.find("eval '")
+        assert src_i != -1 and hard_i != -1 and eval_i != -1
+        assert src_i < hard_i < eval_i
+        assert "unset -v NPM_TOKEN" in wrapped
+        assert "GCM_INTERACTIVE=Never" in wrapped
+
+    def test_make_run_env_sets_gcm_interactive(self):
+        from tools.environments.local import _make_run_env, _sanitize_subprocess_env
+
+        with patch.dict(os.environ, {"PATH": "/usr/bin", "GCM_INTERACTIVE": "Always"}, clear=True):
+            run_env = _make_run_env({})
+        assert run_env.get("GCM_INTERACTIVE") == "Never"
+        assert run_env.get("GIT_TERMINAL_PROMPT") == "0"
+
+        result = _sanitize_subprocess_env(
+            {"PATH": "/usr/bin", "NPM_TOKEN": "x", "GIT_TERMINAL_PROMPT": "1"}
+        )
+        assert "NPM_TOKEN" not in result
+        assert result.get("GIT_TERMINAL_PROMPT") == "0"
+        assert result.get("GCM_INTERACTIVE") == "Never"

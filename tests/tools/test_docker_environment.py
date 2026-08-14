@@ -1880,3 +1880,68 @@ def test_persist_mode_cleanup_registers_no_teardown_thread(monkeypatch):
     assert not any(
         isinstance(c, list) and len(c) >= 2 and c[1] in ("stop", "rm") for c in calls
     ), f"persist-mode cleanup must not stop/rm; got {calls}"
+
+
+def test_drain_rescans_for_workers_registered_mid_drain():
+    """``_drain_outstanding_cleanups`` must join teardown workers registered
+    *after* it started, not only those present at an initial snapshot.
+
+    The idle reaper can detach an env and call ``cleanup()`` while the atexit
+    drain is already running (its timer fires during interpreter shutdown),
+    registering a fresh worker mid-drain. A single-snapshot drain would return
+    without joining it, leaving ``docker rm`` to be killed at exit (#86317).
+
+    Driven with lightweight fakes whose ``join()`` deterministically registers
+    a second worker — no real races. With the old single-snapshot drain the
+    late worker is never joined (stays "alive"); the re-scanning drain joins it.
+    """
+
+    class _FakeWorker:
+        def __init__(self, on_join=None):
+            self._alive = True
+            self._on_join = on_join
+
+        def is_alive(self):
+            return self._alive
+
+        def join(self, timeout=None):
+            self._alive = False
+            if self._on_join is not None:
+                self._on_join()
+
+    late = _FakeWorker()
+
+    def _register_late():
+        # Registered only once the first worker is being joined — i.e. after
+        # the drain's initial snapshot was taken.
+        docker_env._register_cleanup_thread(late)
+
+    first = _FakeWorker(on_join=_register_late)
+    docker_env._register_cleanup_thread(first)
+    try:
+        assert docker_env._drain_outstanding_cleanups(timeout=5.0) is True
+        # Both the initial and the mid-drain worker were joined to completion.
+        assert not first.is_alive()
+        assert not late.is_alive()
+    finally:
+        docker_env._discard_cleanup_thread(first)
+        docker_env._discard_cleanup_thread(late)
+
+
+def test_drain_returns_false_when_worker_outlasts_deadline():
+    """A worker that never finishes must make the drain report an unclean
+    exit (``False``) rather than block forever."""
+
+    class _StuckWorker:
+        def is_alive(self):
+            return True
+
+        def join(self, timeout=None):
+            return  # never actually finishes
+
+    stuck = _StuckWorker()
+    docker_env._register_cleanup_thread(stuck)
+    try:
+        assert docker_env._drain_outstanding_cleanups(timeout=0.05) is False
+    finally:
+        docker_env._discard_cleanup_thread(stuck)

@@ -1087,7 +1087,7 @@ def _confirm_startup_expensive_model_override(args) -> None:
 
     try:
         from hermes_cli.config import load_config
-        from hermes_cli.model_cost_guard import expensive_model_warning
+        from hermes_cli.model_selection_guards import combined_selection_warning
     except Exception as exc:
         logger.warning("startup model cost guard unavailable: %s", exc)
         return
@@ -1105,7 +1105,9 @@ def _confirm_startup_expensive_model_override(args) -> None:
         return
     provider = (explicit_provider or model_cfg.get("provider") or "").strip()
     try:
-        warning = expensive_model_warning(
+        # Unified registry: cost guard + id-keyed guards (e.g. the
+        # data-training-tier warning) all fire at startup too.
+        warning = combined_selection_warning(
             model,
             provider=provider,
             base_url=(model_cfg.get("base_url") or ""),
@@ -11233,6 +11235,7 @@ def _try_fast_chat_launch() -> bool:
     _prepare_agent_startup(args)
 
     if getattr(args, "oneshot", None):
+        _confirm_startup_expensive_model_override(args)
         _run_and_exit_oneshot(
             args.oneshot,
             model=getattr(args, "model", None),

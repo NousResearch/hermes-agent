@@ -551,10 +551,10 @@ test('darwin staging ships the Swift helper executable and the rewritten windows
 // ─── stageGetWindows (optionalDependency gate) ──────────────────────
 //
 // get-windows is an optionalDependency: on Linux its node-pre-gyp install
-// script fails (no Linux prebuilt; the node-gyp fallback needs `gyp` in the
-// active Python), so npm skips the package and `npm ci` must still succeed.
-// The staging step mirrors that: absent package on Linux is a skip, on
-// darwin/win32 it is a hard failure because the native payload is required.
+// script fails because no prebuilt exists. Windows ARM64 has the same package
+// state: its prebuilt URL returns 404 and npm may omit the optional dependency.
+// Staging skips those unsupported targets, but supported native targets remain
+// a hard failure when the package is missing.
 
 test('linux staging skips when get-windows is absent (optional dep skipped by npm)', () => {
   assert.equal(stageGetWindows({ platform: 'linux', resolveRoot: () => null }), undefined)
@@ -562,14 +562,21 @@ test('linux staging skips when get-windows is absent (optional dep skipped by np
 
 test('darwin staging fails when get-windows is absent', () => {
   assert.throws(
-    () => stageGetWindows({ platform: 'darwin', resolveRoot: () => null }),
+    () => stageGetWindows({ platform: 'darwin', arch: 'arm64', resolveRoot: () => null }),
     /get-windows is not installed/
   )
 })
 
-test('win32 staging fails when get-windows is absent', () => {
+test('win32-arm64 staging skips when get-windows is absent after its optional install fails', () => {
+  assert.equal(
+    stageGetWindows({ platform: 'win32', arch: 'arm64', resolveRoot: () => null }),
+    undefined
+  )
+})
+
+test('win32-x64 staging fails when get-windows is absent', () => {
   assert.throws(
-    () => stageGetWindows({ platform: 'win32', resolveRoot: () => null }),
+    () => stageGetWindows({ platform: 'win32', arch: 'x64', resolveRoot: () => null }),
     /get-windows is not installed/
   )
 })

@@ -408,9 +408,9 @@ export function openWindowsSync() {
 
 function resolveGetWindowsRoot() {
   // get-windows is an optionalDependency (its node-pre-gyp install script has
-  // no Linux prebuilt and the node-gyp fallback needs `gyp` in the active
-  // Python, so `npm ci` may skip it entirely on Linux). Return null when it is
-  // absent; the caller decides whether that is fatal per platform.
+  // no Linux or Windows ARM64 prebuilt and its node-gyp fallback may fail, so
+  // `npm ci` can skip it entirely on those targets). Return null when it is
+  // absent; the caller decides whether that is fatal per platform and arch.
   try {
     // get-windows' exports map doesn't expose ./package.json; resolve the entry
     // (index.js sits at the package root) and take its directory.
@@ -565,22 +565,22 @@ export function stageGetWindows(
   const destRoot = resolve(projectRoot, 'dist/node_modules/get-windows')
 
   if (!srcRoot) {
-    // get-windows is an optionalDependency: `npm ci` on Linux skips it when the
-    // install script fails (no Linux prebuilt, node-gyp needs `gyp` in the
-    // active Python), so absence here is a normal state, not a broken checkout.
-    // On Linux it only backs read_window_below over X11 (lib/linux.js shells
-    // out to xprop); skipping it degrades that tool to Hyprland IPC or an
-    // "unavailable" note instead of failing the whole desktop build. On
-    // darwin/win32 the native payload is required, so fail loudly.
-    if (platform === 'linux') {
+    // npm may omit an optional dependency whose install script fails. That is
+    // expected on Linux and win32-arm64 because get-windows 9.3.0 publishes no
+    // native prebuilt for either target. The runtime import already fails soft,
+    // so disable only window enumeration instead of failing the Desktop build.
+    // Other Windows architectures and macOS have supported native payloads and
+    // remain fail-closed so a broken package cannot ship silently.
+    const canDegrade = platform === 'linux' || (platform === 'win32' && arch === 'arm64')
+    if (canDegrade) {
       console.warn(
-        '[stage-native-deps] get-windows not installed (optional dep skipped on ' +
-          'Linux); read_window_below will be unavailable in this build'
+        `[stage-native-deps] get-windows not installed (optional dep skipped for ${platform}-${arch}); ` +
+          'read_window_below will be unavailable in this build'
       )
       return undefined
     }
     throw new Error(
-      `[stage-native-deps] get-windows is not installed; cannot stage its ${platform} native payload`
+      `[stage-native-deps] get-windows is not installed; cannot stage its ${platform}-${arch} native payload`
     )
   }
 

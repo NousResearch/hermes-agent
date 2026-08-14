@@ -125,11 +125,11 @@ type GetWindowsModule = {
 let getWindowsModule: Promise<GetWindowsModule | null> | null = null
 
 const loadGetWindows = (): Promise<GetWindowsModule | null> => {
-  // get-windows is an optionalDependency: on Linux `npm ci` skips it when its
-  // node-pre-gyp install script fails (no Linux prebuilt, and the node-gyp
-  // fallback needs `gyp` in the active Python). A missing module is therefore
-  // a normal state, so the lazy import resolves to null instead of rejecting;
-  // enumeration then degrades to the failure note instead of an uncaught error.
+  // get-windows is an optionalDependency: `npm ci` can skip it when its native
+  // install fails, including Linux and Windows ARM64 where 9.3.0 has no
+  // prebuilt. A missing module is therefore a normal state on those targets,
+  // so the lazy import resolves to null instead of rejecting; enumeration then
+  // degrades to the failure note instead of an uncaught error.
   getWindowsModule ??= import('get-windows').catch(() => null)
 
   return getWindowsModule

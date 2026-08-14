@@ -47,8 +47,36 @@ export function createClientSessionState(
   }
 }
 
+/**
+ * Internal compaction envelopes must never become user-visible titles (#72452).
+ *
+ * The backend treats any `[CONTEXT COMPACTION` prefix as compressed synthetic
+ * content (see gateway/platforms/api_server.py `_is_compressed_summary_message`),
+ * so match that whole family here rather than only the `— REFERENCE ONLY]` form.
+ */
+const COMPACTION_TITLE_PREFIXES = [
+  '[CONTEXT COMPACTION',
+  '[CONTEXT SUMMARY]:',
+  '[CONTEXT SUMMARY]',
+] as const
+
+export function isCompactionEnvelopePreview(preview: string | null | undefined): boolean {
+  const text = (preview ?? '').trim()
+
+  if (!text) {return false}
+
+  return COMPACTION_TITLE_PREFIXES.some(prefix => text.startsWith(prefix))
+}
+
 export function sessionTitle(session: SessionInfo): string {
-  return session.title?.trim() || session.preview?.trim() || 'Untitled session'
+  const explicit = session.title?.trim()
+
+  if (explicit) {return explicit}
+  const preview = session.preview?.trim()
+
+  if (preview && !isCompactionEnvelopePreview(preview)) {return preview}
+
+  return 'Untitled session'
 }
 
 /** What a session is called before it has been sent — and before its composer

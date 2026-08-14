@@ -1,15 +1,18 @@
 import { describe, expect, it } from 'vitest'
 
 import type { ComposerAttachment } from '@/store/composer'
+import type { SessionInfo } from '@/types/hermes'
 
 import {
   attachmentDisplayText,
   attachmentId,
   coerceThinkingText,
+  isCompactionEnvelopePreview,
   messageCreatedAt,
   optimisticAttachmentRef,
   parseCommandDispatch,
-  parseSlashCommand
+  parseSlashCommand,
+  sessionTitle,
 } from './chat-runtime'
 
 const DATA_URL = 'data:image/png;base64,iVBORw0KGgoAAAANS'
@@ -226,5 +229,50 @@ describe('messageCreatedAt', () => {
   it('treats a zero / non-finite timestamp as absent', () => {
     expect(messageCreatedAt({ timestamp: 0 }, NOW).getTime()).toBe(NOW)
     expect(messageCreatedAt({ timestamp: Number.NaN }, NOW).getTime()).toBe(NOW)
+  })
+})
+
+function makeSession(partial: Partial<SessionInfo>): SessionInfo {
+  return {
+    id: 's1',
+    title: null,
+    preview: null,
+    ...partial,
+  } as SessionInfo
+}
+
+describe('sessionTitle', () => {
+  it('prefers explicit titles', () => {
+    expect(sessionTitle(makeSession({ title: 'My chat', preview: '[CONTEXT COMPACTION — REFERENCE ONLY] x' }))).toBe(
+      'My chat'
+    )
+  })
+
+  it('uses ordinary user previews for untitled sessions', () => {
+    expect(sessionTitle(makeSession({ title: null, preview: 'Please fix the build' }))).toBe('Please fix the build')
+  })
+
+  it('never uses compaction envelope previews as titles', () => {
+    expect(
+      sessionTitle(
+        makeSession({
+          title: null,
+          preview: '[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into a summary.',
+        })
+      )
+    ).toBe('Untitled session')
+    expect(isCompactionEnvelopePreview('[CONTEXT SUMMARY]: old')).toBe(true)
+  })
+
+  it('treats the generic [CONTEXT COMPACTION] envelope form as a compaction preview', () => {
+    expect(isCompactionEnvelopePreview('[CONTEXT COMPACTION] Earlier turns were compacted.')).toBe(true)
+    expect(
+      sessionTitle(
+        makeSession({
+          title: null,
+          preview: '[CONTEXT COMPACTION] Earlier turns were compacted.',
+        })
+      )
+    ).toBe('Untitled session')
   })
 })

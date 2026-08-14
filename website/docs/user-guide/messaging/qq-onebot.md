@@ -52,7 +52,7 @@ Like other platforms, inbound users must be authorized before they can talk to t
 
 | Env var | Meaning |
 |---------|---------|
-| `ONEBOT_ALLOWED_USERS` | Comma-separated QQ user ids allowed to chat (e.g. `841859784`) |
+| `ONEBOT_ALLOWED_USERS` | Comma-separated QQ user ids allowed to chat (e.g. `123456789`) |
 | `ONEBOT_ALLOW_ALL_USERS` | `true` allows anyone (dev only) |
 | `GATEWAY_ALLOW_ALL_USERS` | Global allow-all for every platform |
 

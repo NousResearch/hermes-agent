@@ -19,6 +19,6 @@ optional_env:
     prompt: "Allow all users? (true/false)"
     password: false
   - name: ONEBOT_HOME_CHANNEL
-    description: "Default chat id for cron / notification delivery (e.g. private:841859784)"
+    description: "Default chat id for cron / notification delivery (e.g. private:123456789)"
     prompt: "Home channel (private:<qq> or group:<qq>)"
     password: false

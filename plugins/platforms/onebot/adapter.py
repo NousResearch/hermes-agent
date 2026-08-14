@@ -247,6 +247,7 @@ class OneBotAdapter(BasePlatformAdapter):
         self._self_id: Optional[str] = None  # bot's own QQ, learned from events
         self._member_chats: set = set()  # 普通用户受限会话（出站敏感审计用）
         self._nicknames: Dict[str, str] = {}  # chat_id -> last known user nickname
+        self._load_nicknames()
         self._pending_actions: Dict[str, asyncio.Future] = {}
         self._runner: Optional[Any] = None  # reverse-mode web runner
         self._site: Optional[Any] = None
@@ -259,6 +260,8 @@ class OneBotAdapter(BasePlatformAdapter):
         # 收到最终回复（t2i 图片等）时合并为一条 QQ 转发并撤回原消息。
         self._loop_buffer: Dict[str, List[Tuple[str, str]]] = {}
         self._loop_buffer_ts: Dict[str, float] = {}
+        # 合并转发已完成、待撤回的原消息 id（撤回在最终内容发送后执行）
+        self._pending_recalls: Dict[str, List[str]] = {}
 
     # ------------------------------------------------------------------
     # Connection lifecycle
@@ -337,7 +340,7 @@ class OneBotAdapter(BasePlatformAdapter):
     async def _handle_group_history(self, request: web.Request) -> web.Response:
         """Local helper endpoint: pull group message history via NapCat API.
 
-        GET /api/group_history?group_id=492373722&count=20[&message_seq=N]
+        GET /api/group_history?group_id=123456789&count=20[&message_seq=N]
         Reuses the reverse-WS echo mechanism, so it works without an HTTP API
         on the NapCat side. No auth (loopback/LAN only) — same posture as /ws.
         """
@@ -489,6 +492,30 @@ class OneBotAdapter(BasePlatformAdapter):
         if self._self_id is None or self._self_id == sid:
             self._self_id = sid
 
+    # -- 昵称持久化（t2i 顶栏；重启后 cron 推送/会话恢复也能画出顶栏） --
+
+    def _nicknames_file(self) -> str:
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), "nicknames.json")
+
+    def _load_nicknames(self) -> None:
+        try:
+            with open(self._nicknames_file(), "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                self._nicknames = {str(k): str(v) for k, v in data.items()}
+        except Exception:
+            self._nicknames = {}
+
+    def _persist_nicknames(self) -> None:
+        try:
+            path = self._nicknames_file()
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self._nicknames, f, ensure_ascii=False, indent=1)
+            os.replace(tmp, path)
+        except Exception as e:
+            logger.debug("[onebot] persist nicknames failed: %s", e)
+
     # ------------------------------------------------------------------
     # Inbound messages
     # ------------------------------------------------------------------
@@ -530,10 +557,12 @@ class OneBotAdapter(BasePlatformAdapter):
             # 记录最近发言者昵称（文字图顶栏 "To XXX" 用）
             if nickname:
                 self._nicknames[chat_id] = nickname
+                self._persist_nicknames()
 
             # 新一轮用户消息: 清理上一轮残留的 loop 缓冲（防止跨轮合并）
             self._loop_buffer.pop(chat_id, None)
             self._loop_buffer_ts.pop(chat_id, None)
+            self._pending_recalls.pop(chat_id, None)
 
             message = data.get("message")
             reply_id: Optional[str] = None
@@ -548,7 +577,7 @@ class OneBotAdapter(BasePlatformAdapter):
 
             # 普通用户斜杠命令拦截（/new /model /help /reset 等全禁）
             # 复用 get_command 同款规则：首词 /xxx 且命令名不含 /（排除路径误判）
-            # @提及会拼在文本前（如 "@2512172957/help"），先剥离开头 at 再判
+            # @提及会拼在文本前（如 "@123456789/help"），先剥离开头 at 再判
             if role == "member" and text:
                 _probe = re.sub(r"^@\d+\s*", "", text.lstrip())
                 if _probe.startswith("/"):
@@ -712,6 +741,11 @@ class OneBotAdapter(BasePlatformAdapter):
         )
         text = u._CQ_REPLY_RE.sub(lambda m: "", text)
         text = u._CQ_FACE_RE.sub(lambda m: u._FACE_EMOJI.get(m.group(1), "[表情]"), text)
+        text = u._CQ_FILE_RE.sub(u._cq_file_text, text)
+        text = u._CQ_VIDEO_RE.sub("[视频]", text)
+        text = u._CQ_FORWARD_RE.sub(lambda m: f"[合并转发:{m.group(1)}]", text)
+        text = u._CQ_JSON_RE.sub("[卡片]", text)
+        text = u._CQ_POKE_RE.sub("[戳一戳]", text)
         text = u._CQ_ANY_RE.sub("", text)
         text = re.sub(r"[ \t]+", " ", text).strip()
         text = u._cq_unescape(text)
@@ -1060,9 +1094,10 @@ class OneBotAdapter(BasePlatformAdapter):
                 chat_id, len(content or ""), is_final, is_interim,
                 sorted(meta.keys()), len(self._loop_buffer.get(chat_id, [])),
             )
-            # 最终消息：先结算缓冲（合并转发 + 撤回）
+            # 最终消息：先合并转发（过程回顾先发出），撤回留到内容发送后
+            # 顺序：合并转发 → 最终内容（t2i）→ 撤回原 interim（2026-08-14）
             if is_final:
-                await self._settle_loop_buffer(chat_id, params, kind)
+                await self._merge_loop_buffer(chat_id, params, kind)
             # 消息发送成功后, interim 纯文本进缓冲（图片/语音等中间媒体不进）
             _buf_sent_ids: List[Tuple[str, str]] = []
             _buf_sent_flag = is_interim and not (metadata or {}).get("media_files")
@@ -1128,6 +1163,9 @@ class OneBotAdapter(BasePlatformAdapter):
                     mid = data.get("message_id")
                     if _buf_sent_flag and mid is not None:
                         _buf_sent_ids.append((str(mid), raw_content))
+                    # t2i 结果发送完成后撤回原 interim（合并转发已在内容前发出）
+                    if is_final:
+                        await self._recall_loop_buffer(chat_id)
                     return SendResult(
                         success=True, message_id=str(mid) if mid is not None else None
                     )
@@ -1137,6 +1175,8 @@ class OneBotAdapter(BasePlatformAdapter):
                     )
 
             if not parts and not media_segments:
+                if is_final:
+                    await self._recall_loop_buffer(chat_id)
                 return SendResult(success=True, message_id=None)
 
             last_message_id: Optional[str] = None
@@ -1170,6 +1210,9 @@ class OneBotAdapter(BasePlatformAdapter):
                     self._loop_buffer.pop(chat_id, None)
                     self._loop_buffer_ts.pop(chat_id, None)
 
+            # 最终内容已发完，撤回原 interim（合并转发已在内容前发出）
+            if is_final:
+                await self._recall_loop_buffer(chat_id)
             return SendResult(success=True, message_id=last_message_id)
         except asyncio.CancelledError:
             raise
@@ -1177,13 +1220,16 @@ class OneBotAdapter(BasePlatformAdapter):
             logger.warning("[onebot] send failed: %s", e)
             return SendResult(success=False, error=str(e), retryable=True)
 
-    async def _settle_loop_buffer(
+    async def _merge_loop_buffer(
         self, chat_id: str, params: Dict[str, Any], kind: str
     ) -> None:
-        """把一次回复周期内缓冲的 interim 消息合并为一条 QQ 转发并撤回原消息。
+        """把一次回复周期内缓冲的 interim 消息合并为一条 QQ 转发（先发）。
+
+        顺序（2026-08-14）：合并转发 → 最终内容（t2i）→ 撤回原消息。
+        本方法只做合并转发，撤回由 _recall_loop_buffer 在内容发送后执行。
 
         - 仅当缓冲 ≥2 条时才合并（单条不值得；转发本身也占空间）
-        - 合并转发成功后逐个撤回原消息；失败则保留原消息（不丢内容）
+        - 合并成功后待撤回 id 记入 _pending_recalls；失败则保留原消息（不丢内容）
         - 群聊用 send_forward_msg(group_id)，私聊用 send_private_forward_msg(user_id)
         """
         buf = self._loop_buffer.pop(chat_id, None)
@@ -1213,16 +1259,24 @@ class OneBotAdapter(BasePlatformAdapter):
             fwd_params = dict(params)
             fwd_params["messages"] = nodes
             await self._call_action(action, fwd_params, timeout=30.0)
-            # 转发成功后才撤回原消息
-            for mid, _ in buf:
-                try:
-                    await self._call_action(
-                        "delete_msg", {"message_id": mid}, timeout=10.0
-                    )
-                except Exception as e:
-                    logger.debug("[onebot] delete_msg failed for %s: %s", mid, e)
+            # 转发成功后才登记撤回（撤回在最终内容发送后执行）
+            self._pending_recalls[chat_id] = [mid for mid, _ in buf]
         except Exception as e:
+            self._pending_recalls.pop(chat_id, None)
             logger.info("[onebot] loop merge failed, keeping original messages: %s", e)
+
+    async def _recall_loop_buffer(self, chat_id: str) -> None:
+        """撤回已合并转发的原 interim 消息（在最终内容发送完成后调用）。"""
+        mids = self._pending_recalls.pop(chat_id, None)
+        if not mids:
+            return
+        for mid in mids:
+            try:
+                await self._call_action(
+                    "delete_msg", {"message_id": mid}, timeout=10.0
+                )
+            except Exception as e:
+                logger.debug("[onebot] delete_msg failed for %s: %s", mid, e)
 
     async def _file_to_base64(self, path: str, max_bytes: int = IMAGE_MAX_BYTES) -> Optional[str]:
         try:
@@ -1302,7 +1356,7 @@ class OneBotAdapter(BasePlatformAdapter):
 
         块格式: 第一行是转发者名字, 其余为内容; 块之间用 --- 分隔。
         """
-        uin = str(self._self_id or 2512172957)
+        uin = str(self._self_id or self._bot_qq or "0")
         nodes: List[Dict[str, Any]] = []
         for block in inner.split("\n---\n"):
             lines = [l.rstrip() for l in block.split("\n") if l.strip()]

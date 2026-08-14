@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 # ── CQ 码解析 ──────────────────────────────────────────────────────────
 _FORWARD_RE = re.compile(r"\[\[qq_forward\]\](.*?)\[\[/qq_forward\]\]", re.S)
 _CQ_AT_RE = re.compile(r"\[CQ:at,qq=(\d+|all)\]")
+_CQ_FORWARD_RE = re.compile(r"\[CQ:forward,id=([^,\]]+)\]")
 _CQ_IMAGE_RE = re.compile(r"\[CQ:image,[^\]]*?url=([^,\]]+)\]")
 _CQ_IMAGE_ALL_RE = re.compile(r"\[CQ:image,([^\]]*)\]")
 _CQ_IMAGE_NOURL_RE = re.compile(r"\[CQ:image(?:,[^\]]*)?\]")
@@ -24,7 +25,24 @@ _CQ_RECORD_RE = re.compile(r"\[CQ:record,[^\]]*?url=([^,\]]+)\]")
 _CQ_RECORD_NOURL_RE = re.compile(r"\[CQ:record(?:,[^\]]*)?\]")
 _CQ_REPLY_RE = re.compile(r"\[CQ:reply,id=(\d+)\]")
 _CQ_FACE_RE = re.compile(r"\[CQ:face,id=(\d+)\]")
+# CQ:file —— NapCat 私聊文件属性：file=文件名, file_id=, file_size=, url=
+# 无 name 参数（标准 OneBot 的 name 在 NapCat 里不出现），文件名取 file= 值
+_CQ_FILE_RE = re.compile(r"\[CQ:file,([^\]]*)\]")
+_CQ_VIDEO_RE = re.compile(r"\[CQ:video(?:,[^\]]*)?\]")
+_CQ_JSON_RE = re.compile(r"\[CQ:json(?:,[^\]]*)?\]")
+_CQ_POKE_RE = re.compile(r"\[CQ:poke(?:,[^\]]*)?\]")
 _CQ_ANY_RE = re.compile(r"\[CQ:[^\]]*\]")
+
+
+def _cq_file_text(m: "re.Match") -> str:
+    """把 [CQ:file,...] 转为 '[文件:文件名]'（name 优先，无 name 取 file= 值）。"""
+    attrs = {}
+    for kv in m.group(1).split(","):
+        if "=" in kv:
+            k, _, v = kv.partition("=")
+            attrs[k.strip()] = _cq_unescape(v)
+    name = attrs.get("name") or attrs.get("file") or "文件"
+    return f"[文件:{name}]"
 
 
 def _cq_unescape(s: str) -> str:

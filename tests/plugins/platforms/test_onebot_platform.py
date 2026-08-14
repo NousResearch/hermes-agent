@@ -185,8 +185,8 @@ def test_shrink_image_disabled_with_zero(tmp_path) -> None:
 
 def test_is_mentioned() -> None:
     adapter = _make_adapter()
-    adapter._self_id = "2512172957"
-    assert adapter._is_mentioned("[CQ:at,qq=2512172957] 嗨")
+    adapter._self_id = "123456789"
+    assert adapter._is_mentioned("[CQ:at,qq=123456789] 嗨")
     assert adapter._is_mentioned("带回复 [CQ:reply,id=5]")
     assert not adapter._is_mentioned("没 @ 的消息")
 
@@ -289,11 +289,11 @@ def test_send_uses_segment_array_without_reply() -> None:
     adapter = _make_adapter()
     ws = _FakeWS(adapter)
     adapter._ws = ws
-    result = asyncio.run(adapter.send("private:841859784", "你好"))
+    result = asyncio.run(adapter.send("private:123456789", "你好"))
     assert result.success
     payload = ws.sent[0]
     assert payload["action"] == "send_msg"
-    assert payload["params"]["user_id"] == 841859784
+    assert payload["params"]["user_id"] == 123456789
     assert payload["params"]["message"] == [
         {"type": "text", "data": {"text": "你好"}}
     ]
@@ -368,11 +368,11 @@ def test_send_typing_private_chat() -> None:
     adapter = _make_adapter()
     ws = _FakeWS(adapter)
     adapter._ws = ws
-    asyncio.run(adapter.send_typing("private:841859784"))
+    asyncio.run(adapter.send_typing("private:123456789"))
     assert len(ws.sent) == 1
     payload = ws.sent[0]
     assert payload["action"] == "set_input_status"
-    assert payload["params"] == {"user_id": "841859784", "event_type": 1}
+    assert payload["params"] == {"user_id": "123456789", "event_type": 1}
 
 
 def test_send_typing_group_chat_is_noop() -> None:
@@ -387,9 +387,9 @@ def test_stop_typing_private_chat() -> None:
     adapter = _make_adapter()
     ws = _FakeWS(adapter)
     adapter._ws = ws
-    asyncio.run(adapter.stop_typing("private:841859784"))
+    asyncio.run(adapter.stop_typing("private:123456789"))
     assert len(ws.sent) == 1
-    assert ws.sent[0]["params"] == {"user_id": "841859784", "event_type": 0}
+    assert ws.sent[0]["params"] == {"user_id": "123456789", "event_type": 0}
 
 
 # ---------------------------------------------------------------------------
@@ -427,12 +427,12 @@ async def test_reverse_ws_round_trip(monkeypatch) -> None:
                         {
                             "post_type": "meta_event",
                             "meta_event_type": "heartbeat",
-                            "self_id": 2512172957,
+                            "self_id": 123456789,
                         }
                     )
                 )
                 await asyncio.sleep(0.05)
-                assert adapter._self_id == "2512172957"
+                assert adapter._self_id == "123456789"
 
                 # Private message → dispatched as DM event.
                 await ws.send_str(
@@ -441,7 +441,7 @@ async def test_reverse_ws_round_trip(monkeypatch) -> None:
                             "post_type": "message",
                             "message_type": "private",
                             "user_id": 10001,
-                            "self_id": 2512172957,
+                            "self_id": 123456789,
                             "message_id": 111,
                             "raw_message": "你好[CQ:face,id=0]",
                             "sender": {"user_id": 10001, "nickname": "测试员"},
@@ -464,7 +464,7 @@ async def test_reverse_ws_round_trip(monkeypatch) -> None:
                             "message_type": "group",
                             "group_id": 888888,
                             "user_id": 10002,
-                            "self_id": 2512172957,
+                            "self_id": 123456789,
                             "message_id": 222,
                             "raw_message": "没 @ 的消息",
                             "sender": {"user_id": 10002, "nickname": "群友"},
@@ -482,9 +482,9 @@ async def test_reverse_ws_round_trip(monkeypatch) -> None:
                             "message_type": "group",
                             "group_id": 888888,
                             "user_id": 10002,
-                            "self_id": 2512172957,
+                            "self_id": 123456789,
                             "message_id": 333,
-                            "raw_message": "[CQ:at,qq=2512172957] 在吗",
+                            "raw_message": "[CQ:at,qq=123456789] 在吗",
                             "sender": {
                                 "user_id": 10002,
                                 "nickname": "群友",
@@ -496,7 +496,7 @@ async def test_reverse_ws_round_trip(monkeypatch) -> None:
                 await asyncio.sleep(0.15)
                 assert len(received) == before + 1
                 ev = received[-1]
-                assert ev.text.endswith("@2512172957 在吗")
+                assert ev.text.endswith("@123456789 在吗")
                 assert ev.source.chat_id == "group:888888"
                 assert ev.source.chat_type == "group"
                 assert ev.source.user_name == "卡"  # group card preferred
@@ -515,7 +515,7 @@ async def _noop() -> None:
 
 def test_quote_reply_fetches_original_text_and_image(monkeypatch) -> None:
     """引用消息时通过 get_msg 取回原文文本 + 图片（reply 段路径）。"""
-    adapter = _make_adapter()
+    adapter = _make_adapter(admin_users=[123456789])
     ws = _FakeWS(adapter)
     adapter._ws = ws
     captured: list = []
@@ -544,12 +544,12 @@ def test_quote_reply_fetches_original_text_and_image(monkeypatch) -> None:
         await adapter._process_message(
             {
                 "message_type": "private",
-                "user_id": 841859784,
+                "user_id": 123456789,
                 "message": [
                     {"type": "reply", "data": {"id": 12345}},
                     {"type": "text", "data": {"text": "你看看这个"}},
                 ],
-                "self_id": 2512172957,
+                "self_id": 123456789,
             }
         )
 
@@ -568,8 +568,8 @@ def test_loop_merge_buffers_interim_then_forwards_and_retracts(monkeypatch) -> N
     adapter = _make_adapter()
     ws = _FakeWS(adapter)
     adapter._ws = ws
-    adapter._self_id = "2512172957"
-    chat = "group:492373722"
+    adapter._self_id = "123456789"
+    chat = "group:123456789"
 
     async def run():
         # 2 条 interim 中间评论
@@ -584,7 +584,7 @@ def test_loop_merge_buffers_interim_then_forwards_and_retracts(monkeypatch) -> N
     assert actions.count("send_forward_msg") == 1
     assert actions.count("delete_msg") == 2
     fwd = next(p for p in ws.sent if p["action"] == "send_forward_msg")
-    assert fwd["params"]["group_id"] == 492373722
+    assert fwd["params"]["group_id"] == 123456789
     assert len(fwd["params"]["messages"]) == 2
     assert adapter._loop_buffer.get(chat) is None
 
@@ -594,8 +594,8 @@ def test_loop_merge_private_uses_send_private_forward_msg(monkeypatch) -> None:
     adapter = _make_adapter()
     ws = _FakeWS(adapter)
     adapter._ws = ws
-    adapter._self_id = "2512172957"
-    chat = "private:841859784"
+    adapter._self_id = "123456789"
+    chat = "private:123456789"
 
     async def run():
         await adapter.send(chat, "中间一", metadata={"interim": True})
@@ -606,7 +606,7 @@ def test_loop_merge_private_uses_send_private_forward_msg(monkeypatch) -> None:
     actions = [p["action"] for p in ws.sent]
     assert actions.count("send_private_forward_msg") == 1
     fwd = next(p for p in ws.sent if p["action"] == "send_private_forward_msg")
-    assert fwd["params"]["user_id"] == 841859784
+    assert fwd["params"]["user_id"] == 123456789
 
 
 def test_loop_merge_single_interim_does_not_merge(monkeypatch) -> None:
@@ -614,7 +614,7 @@ def test_loop_merge_single_interim_does_not_merge(monkeypatch) -> None:
     adapter = _make_adapter()
     ws = _FakeWS(adapter)
     adapter._ws = ws
-    adapter._self_id = "2512172957"
+    adapter._self_id = "123456789"
     chat = "group:1"
 
     async def run():
@@ -635,10 +635,10 @@ def test_loop_merge_single_interim_does_not_merge(monkeypatch) -> None:
 def test_classify_user_role():
     from plugins.platforms.onebot.onebot_utils import classify_user_role
 
-    assert classify_user_role("841859784", {"841859784"}) == "admin"
-    assert classify_user_role("12345", {"841859784"}) == "member"
+    assert classify_user_role("123456789", {"123456789"}) == "admin"
+    assert classify_user_role("12345", {"123456789"}) == "member"
     assert classify_user_role("12345", set()) == "member"   # 空=全员 member（安全侧）
-    assert classify_user_role("", {"841859784"}) == "member"  # 空 id 安全侧
+    assert classify_user_role("", {"123456789"}) == "member"  # 空 id 安全侧
 
 
 def test_scan_sensitive():
@@ -656,7 +656,7 @@ def test_scan_sensitive():
 
 def test_member_group_message_gets_restricted_prefix(monkeypatch) -> None:
     """群聊普通用户消息注入 [受限用户] 前缀（软限制依据）。"""
-    adapter = _make_adapter(admin_users=[841859784])
+    adapter = _make_adapter(admin_users=[123456789])
     ws = _FakeWS(adapter)
     adapter._ws = ws
     captured: list = []
@@ -670,13 +670,13 @@ def test_member_group_message_gets_restricted_prefix(monkeypatch) -> None:
         await adapter._process_message(
             {
                 "message_type": "group",
-                "group_id": 492373722,
+                "group_id": 123456789,
                 "user_id": 99999999,          # 非管理员
                 "message": [
-                    {"type": "at", "data": {"qq": adapter._self_id or "2512172957"}},
+                    {"type": "at", "data": {"qq": adapter._self_id or "123456789"}},
                     {"type": "text", "data": {"text": "今天天气怎么样"}},
                 ],
-                "self_id": 2512172957,
+                "self_id": 123456789,
             }
         )
 
@@ -687,7 +687,7 @@ def test_member_group_message_gets_restricted_prefix(monkeypatch) -> None:
 
 def test_member_dm_rejected(monkeypatch) -> None:
     """普通用户私聊直接丢弃（pairing 入口已关，事件不构造）。"""
-    adapter = _make_adapter(admin_users=[841859784])
+    adapter = _make_adapter(admin_users=[123456789])
     ws = _FakeWS(adapter)
     adapter._ws = ws
     captured: list = []
@@ -703,7 +703,7 @@ def test_member_dm_rejected(monkeypatch) -> None:
                 "message_type": "private",
                 "user_id": 99999999,
                 "message": [{"type": "text", "data": {"text": "你好"}}],
-                "self_id": 2512172957,
+                "self_id": 123456789,
             }
         )
 
@@ -713,7 +713,7 @@ def test_member_dm_rejected(monkeypatch) -> None:
 
 def test_member_slash_command_blocked(monkeypatch) -> None:
     """普通用户斜杠命令（/help /new 等）直接丢弃。"""
-    adapter = _make_adapter(admin_users=[841859784])
+    adapter = _make_adapter(admin_users=[123456789])
     ws = _FakeWS(adapter)
     adapter._ws = ws
     captured: list = []
@@ -727,13 +727,13 @@ def test_member_slash_command_blocked(monkeypatch) -> None:
         await adapter._process_message(
             {
                 "message_type": "group",
-                "group_id": 492373722,
+                "group_id": 123456789,
                 "user_id": 99999999,
                 "message": [
-                    {"type": "at", "data": {"qq": "2512172957"}},
+                    {"type": "at", "data": {"qq": "123456789"}},
                     {"type": "text", "data": {"text": "/help"}},
                 ],
-                "self_id": 2512172957,
+                "self_id": 123456789,
             }
         )
 
@@ -743,7 +743,7 @@ def test_member_slash_command_blocked(monkeypatch) -> None:
 
 def test_member_path_text_not_blocked(monkeypatch) -> None:
     """普通用户含路径的文本（/tmp/x 等）不误伤（命令名含 / 即非命令）。"""
-    adapter = _make_adapter(admin_users=[841859784])
+    adapter = _make_adapter(admin_users=[123456789])
     ws = _FakeWS(adapter)
     adapter._ws = ws
     captured: list = []
@@ -757,13 +757,13 @@ def test_member_path_text_not_blocked(monkeypatch) -> None:
         await adapter._process_message(
             {
                 "message_type": "group",
-                "group_id": 492373722,
+                "group_id": 123456789,
                 "user_id": 99999999,
                 "message": [
-                    {"type": "at", "data": {"qq": "2512172957"}},
+                    {"type": "at", "data": {"qq": "123456789"}},
                     {"type": "text", "data": {"text": "看看 /tmp/x 里的内容"}},
                 ],
-                "self_id": 2512172957,
+                "self_id": 123456789,
             }
         )
 
@@ -774,7 +774,7 @@ def test_member_path_text_not_blocked(monkeypatch) -> None:
 
 def test_admin_group_message_no_prefix(monkeypatch) -> None:
     """管理员群聊消息不注入受限标记，斜杠命令放行。"""
-    adapter = _make_adapter(admin_users=[841859784])
+    adapter = _make_adapter(admin_users=[123456789])
     ws = _FakeWS(adapter)
     adapter._ws = ws
     captured: list = []
@@ -788,13 +788,13 @@ def test_admin_group_message_no_prefix(monkeypatch) -> None:
         await adapter._process_message(
             {
                 "message_type": "group",
-                "group_id": 492373722,
-                "user_id": 841859784,
+                "group_id": 123456789,
+                "user_id": 123456789,
                 "message": [
-                    {"type": "at", "data": {"qq": "2512172957"}},
+                    {"type": "at", "data": {"qq": "123456789"}},
                     {"type": "text", "data": {"text": "/new"}},
                 ],
-                "self_id": 2512172957,
+                "self_id": 123456789,
             }
         )
 

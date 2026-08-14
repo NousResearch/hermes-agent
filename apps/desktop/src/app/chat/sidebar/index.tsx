@@ -1368,6 +1368,20 @@ export function ChatSidebar({
   const showSessionSections =
     showSessionSkeletons || filtersActive || sortedSessions.length > 0 || projectModel.length > 0
 
+  // The sidebar's session-area mode — exposed as data-attributes so custom
+  // skins can target project mode (overview vs. entered), archived, or search
+  // without relying on internal class names. `data-sessions-project` carries
+  // the entered project's id for per-project targeting.
+  const sessionsMode: 'archived' | 'flat' | 'project' | 'projects' | 'search' = trimmedQuery
+    ? 'search'
+    : showArchived
+      ? 'archived'
+      : inProject
+        ? 'project'
+        : worktreeGroupingActive
+          ? 'projects'
+          : 'flat'
+
   // Each reorderable list reports its OWN new id order; persisting is a direct,
   // typed write — no id-prefix sniffing to figure out which level moved.
   const reorderSessions = (ids: string[]) => {
@@ -1514,7 +1528,11 @@ export function ChatSidebar({
         )}
 
         {showSessionSections && (
-          <div className={cn('flex min-h-0 flex-1 flex-col pb-1.75', SCROLL_Y, SCROLL_GUTTER)}>
+          <div
+            className={cn('flex min-h-0 flex-1 flex-col pb-1.75', SCROLL_Y, SCROLL_GUTTER)}
+            data-sessions-mode={sessionsMode}
+            data-sessions-project={inProject ? (enteredProjectId ?? undefined) : undefined}
+          >
             {trimmedQuery && (
               <SidebarSessionsSection
                 activeSessionId={activeSidebarSessionId}

@@ -3052,8 +3052,77 @@ def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> 
         "  Close the Hermes desktop app / other Hermes terminals, then re-run:"
     )
     lines.append("    hermes update")
-    lines.append("  (or use `hermes update --force-venv` to proceed anyway at your own risk)")
+    lines.append("  (or use `hermes update --force-kill` to stop them and update, or `hermes update --force-venv` to proceed anyway at your own risk)")
     return "\n".join(lines)
+
+
+def _kill_hermes_python_processes() -> int:
+    """Force-stop safe venv Python processes holding ``.pyd`` locks before an update.
+
+    Reuses :func:`_detect_venv_python_processes` to find candidates, then
+    ``terminate_pid(force=True)`` (a tree-kill) on each PID so the kernel
+    releases native-extension handles.  Best-effort: processes that refuse
+    to die are logged but do not block the update — ``--force-kill`` was
+    explicitly requested, so we proceed regardless.
+
+    **Desktop backend exclusion:** the Hermes Desktop app supervises its
+    ``python.exe -m hermes_cli.main serve`` backend and respawns it within
+    seconds, so killing it would not release the lock for long enough to
+    let the dependency sync through.  Such PIDs are skipped with a printed
+    hint telling the user to close the Desktop app instead (mirrors the
+    *caller should refuse* contract in ``_detect_venv_python_processes``'s
+    docstring).
+
+    Returns the number of PIDs that were actually terminated.  Off-Windows
+    this is a no-op that always returns 0.
+    """
+    if not _m()._is_windows():
+        return 0
+    holders = _detect_venv_python_processes()
+    if not holders:
+        return 0
+
+    from gateway.status import terminate_pid
+
+    killed = 0
+    refused: list[tuple[int, str, str]] = []
+    toxic: list[tuple[int, str, str]] = []
+    for pid, name, cmdline in holders:
+        low = cmdline.lower()
+        # Mirror _format_venv_python_holders_message's Desktop classification
+        # — "serve" / "dashboard" invocations are Desktop-supervised and
+        # respawn faster than we can sync deps. Refuse rather than kill.
+        if "serve" in low or "dashboard" in low:
+            refused.append((pid, name, cmdline))
+            continue
+        toxic.append((pid, name, cmdline))
+
+    if toxic:
+        pids = [pid for pid, _, _ in toxic]
+        print(f"→ Force-stopping {len(pids)} Hermes-related Python process(es) before update")
+        for pid, name, cmdline in toxic[:6]:
+            print(f"    PID {pid}  {name}  {cmdline}")
+        if len(toxic) > 6:
+            print(f"    ... and {len(toxic) - 6} more")
+        for pid in pids:
+            try:
+                terminate_pid(int(pid), force=True)
+                killed += 1
+            except (ProcessLookupError, PermissionError, OSError) as exc:
+                logger.debug("Could not force-stop venv pid %s: %s", pid, exc)
+
+    if refused:
+        print("⚠ Skipping Hermes Desktop backend process(es) — close the Desktop app first:")
+        for pid, name, cmdline in refused[:6]:
+            print(f"    PID {pid}  {name}  {cmdline}  ← Desktop backend (respawns if killed)")
+        if len(refused) > 6:
+            print(f"    ... and {len(refused) - 6} more")
+
+    if killed:
+        # Brief pause so the kernel releases .pyd handles before pip/uv runs.
+        _time.sleep(1.0)
+    return killed
+
 
 def _venv_launcher_ancestors(pids: list[int]) -> list[int]:
     """Return venv-interpreter ancestors of *pids* that hold the install open.
@@ -3941,6 +4010,14 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # and app.asar — a non-desktop venv python holding a .pyd would sail
     # through and corrupt the sync (the exact failure this guard exists for).
     # --force-venv is the explicit escape hatch.
+    # --force-kill is the user-facing "shut everything down then update"
+    # path: it terminates the venv holders so the dependency sync can
+    # proceed, rather than aborting (default) or racing past the lock
+    # (--force-venv). Executed AFTER gateway pause/snapshot so relaunch
+    # state is preserved.
+    if _m()._is_windows() and getattr(args, "force_kill", False):
+        _kill_hermes_python_processes()
+
     if _m()._is_windows() and not getattr(args, "force_venv", False):
         _venv_holders = _m()._detect_venv_python_processes()
         if _venv_holders:

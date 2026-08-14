@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-08-13T18:19:29Z",
+  "updated_at": "2026-08-14T17:59:48Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -91,6 +91,10 @@
         {
           "id": "deepseek/deepseek-v4-pro",
           "description": ""
+        },
+        {
+          "id": "deepseek/deepseek-v4-pro-0813",
+          "description": "dated snapshot of v4-pro"
         },
         {
           "id": "deepseek/deepseek-v4-flash",
@@ -230,6 +234,9 @@
         },
         {
           "id": "deepseek/deepseek-v4-pro"
+        },
+        {
+          "id": "deepseek/deepseek-v4-pro-0813"
         },
         {
           "id": "deepseek/deepseek-v4-flash"

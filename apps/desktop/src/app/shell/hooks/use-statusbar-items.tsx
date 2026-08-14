@@ -1,10 +1,11 @@
 import { useStore } from '@nanostores/react'
-import { useCallback, useMemo } from 'react'
+import { useMemo } from 'react'
 
 import type { CommandCenterSection } from '@/app/command-center'
 import { useApprovalModeStatusbarItem } from '@/app/shell/approval-mode-menu'
 import { ContextUsagePanel } from '@/app/shell/context-usage-panel'
 import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
+import { useContextBreakdown } from '@/app/shell/hooks/use-context-breakdown'
 import { $paneVisible, togglePaneVisible } from '@/components/pane-shell/tree/store'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -31,10 +32,10 @@ import {
   $sessionStartedAt,
   $turnStartedAt,
   idsShareLineage,
-  sessionMatchesStoredId,
-  setCurrentUsage
+  sessionMatchesStoredId
 } from '@/store/session'
 import { $focusedRuntimeId, $focusedSessionState, $focusedStoredSessionId } from '@/store/session-states'
+import { $statusbarHiddenIds } from '@/store/statusbar-prefs'
 import { $subagentsBySession, activeSubagentCount, failedSubagentCount } from '@/store/subagents'
 import { $gatewayRestarting } from '@/store/system-actions'
 import {
@@ -50,7 +51,7 @@ import type { StatusResponse, UsageStats } from '@/types/hermes'
 import { CRON_ROUTE, SETTINGS_ROUTE, WEBHOOKS_ROUTE } from '../../routes'
 import type { StatusbarItem } from '../statusbar-controls'
 
-const EMPTY_USAGE = { calls: 0, input: 0, output: 0, total: 0 } as const
+const EMPTY_USAGE: UsageStats = { calls: 0, input: 0, output: 0, total: 0 }
 
 interface StatusbarItemsOptions {
   agentsOpen: boolean
@@ -223,15 +224,44 @@ export function useStatusbarItems({
       ? focusedRowStartedAt * 1000
       : null
 
-  const contextUsage = useMemo(() => usageContextLabel(currentUsage), [currentUsage])
-  const contextBar = useMemo(() => contextBarLabel(currentUsage), [currentUsage])
+  // The backend only knows a session's MEASURED occupancy once a turn has run
+  // in this process, so a resumed conversation reports none and the gauge had
+  // nothing to paint — turning it on looked like it did nothing until you sent
+  // a message. Estimate from the live prompt + transcript instead, on the same
+  // read-only RPC the popover uses, so the readout is right the moment it's on
+  // screen. Gated on the gauge being shown — the bar itself is unmounted while
+  // toggled off, so this covers the rest.
+  const contextItemHidden = useStore($statusbarHiddenIds).includes('context-usage')
 
-  const publishContextUsage = useCallback(
-    (snapshot: Pick<UsageStats, 'context_max' | 'context_percent' | 'context_used'>) => {
-      setCurrentUsage(current => ({ ...current, ...snapshot }))
-    },
-    []
+  const { breakdown: contextBreakdown, loading: contextBreakdownLoading } = useContextBreakdown({
+    busy,
+    enabled: !contextItemHidden,
+    requestGateway,
+    sessionId: activeSessionId
+  })
+
+  // The breakdown wins whenever we have one, for two reasons: it reports the
+  // MEASURED occupancy once the backend has it (falling back to the estimate
+  // only before that), and it is keyed to the session it describes. The global
+  // `$currentUsage` is neither — a resumed session reports no context fields,
+  // and the store merges rather than replaces, so the PREVIOUS session's gauge
+  // numbers survive the switch. Mid-turn there's no breakdown by design and
+  // the streamed usage carries the gauge.
+  const gaugeUsage = useMemo<UsageStats>(
+    () =>
+      contextBreakdown
+        ? {
+            ...currentUsage,
+            context_max: contextBreakdown.context_max,
+            context_percent: contextBreakdown.context_percent,
+            context_used: contextBreakdown.context_used
+          }
+        : currentUsage,
+    [contextBreakdown, currentUsage]
   )
+
+  const contextUsage = useMemo(() => usageContextLabel(gaugeUsage), [gaugeUsage])
+  const contextBar = useMemo(() => contextBarLabel(gaugeUsage), [gaugeUsage])
 
   const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestGateway)
 
@@ -535,10 +565,9 @@ export function useStatusbarItems({
         menuClassName: 'w-auto border-(--ui-stroke-secondary) p-0',
         menuContent: (
           <ContextUsagePanel
-            currentUsage={currentUsage}
-            onUsageSnapshot={publishContextUsage}
-            requestGateway={requestGateway}
-            sessionId={activeSessionId}
+            breakdown={contextBreakdown}
+            loading={contextBreakdownLoading}
+            usage={gaugeUsage}
           />
         ),
         toggleLabel: copy.toggleContextUsage,
@@ -572,18 +601,17 @@ export function useStatusbarItems({
       ...(backendVersionItem ? [backendVersionItem] : [])
     ],
     [
-      activeSessionId,
       approvalModeItem,
       backendVersionItem,
       busy,
       chatOpen,
       clientVersionItem,
       contextBar,
+      contextBreakdown,
+      contextBreakdownLoading,
       contextUsage,
       copy,
-      currentUsage,
-      publishContextUsage,
-      requestGateway,
+      gaugeUsage,
       sessionStartedAt,
       gatewayState,
       terminalShowing,

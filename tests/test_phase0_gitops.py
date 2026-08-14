@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-REPO = Path("/home/kensei/repos/KenseiAgent")
+REPO = Path("/home/kensei/worktrees/gitops-hardening-20260814")
 GITOPS = REPO / "scripts" / "gitops"
 TEMPLATE = GITOPS / "templates" / ".gitignore.template"
 WATCHER = GITOPS / "hermes-auto-commit.sh"
@@ -74,6 +74,16 @@ class TestWatcherScript:
         for path in ["config.yaml", "profiles", "cron", "governance", "scripts", "skills", "runbooks"]:
             assert f'"{path}"' in text, f"TRACK_PATHS missing {path!r}"
 
+    def test_unstages_cron_jobs_json(self):
+        """Watcher must unstage cron/jobs.json after git add to prevent
+        commits on scheduler metadata changes."""
+        text = WATCHER.read_text()
+        assert "git reset -- cron/jobs.json" in text, (
+            "watcher missing `git reset -- cron/jobs.json` — "
+            "scheduler metadata (last_run_at, next_run_at, etc.) would cause "
+            "a commit every 5 minutes"
+        )
+
 
 # ---- Unit: template --------------------------------------------------------
 
@@ -117,6 +127,34 @@ class TestGitignoreTemplate:
     def test_always_allows_gitignore(self):
         text = TEMPLATE.read_text()
         assert "!.gitignore" in text, "template must always allow .gitignore"
+
+    def test_blocks_nested_auth_temp_files(self):
+        """Nested profiles/**/auth.json.* and auth.tmp.* must be excluded."""
+        text = TEMPLATE.read_text()
+        for pattern in [
+            "**/auth.json.*",
+            "**/auth.tmp.*",
+            "**/credentials.json.*",
+            "**/credentials.tmp.*",
+        ]:
+            assert pattern in text, f"template missing nested auth pattern {pattern!r}"
+
+    def test_blocks_vault_and_private_keys(self):
+        """Vault keys and private keys must be excluded."""
+        text = TEMPLATE.read_text()
+        for pattern in [
+            "**/vault.key",
+            "**/*.pem",
+            "**/id_rsa*",
+            "**/id_ed25519*",
+            "**/id_ecdsa*",
+        ]:
+            assert pattern in text, f"template missing key pattern {pattern!r}"
+
+    def test_blocks_cron_jobs_json(self):
+        """cron/jobs.json must be excluded (runtime metadata, not config)."""
+        text = TEMPLATE.read_text()
+        assert "cron/jobs.json" in text, "template missing cron/jobs.json exclusion"
 
 
 # ---- Unit: backfill parser -------------------------------------------------
@@ -194,6 +232,16 @@ class TestInstallSandbox:
             ["git", "log", "--oneline"], cwd=tmp_hermes, capture_output=True, text=True
         )
         assert "init:" in log.stdout, f"no init commit; log: {log.stdout}"
+
+    def test_install_uses_script_path_for_cron_dedup(self):
+        """install.sh must check for the watcher script path (not just the
+        comment tag) to avoid duplicate crontab entries when Hermes cron
+        already owns the watcher."""
+        text = INSTALL.read_text()
+        assert 'grep -qF "$DEPLOY_DIR/hermes-auto-commit.sh"' in text, (
+            "install.sh must use grep -qF on the script path for cron dedup, "
+            "not just the comment tag"
+        )
 
     def test_watcher_is_idempotent(self, tmp_hermes: Path, monkeypatch):
         env = os.environ.copy()
@@ -299,3 +347,49 @@ class TestPreCommitLint:
             ["git", "commit", "-m", "test"], cwd=tmp_hermes, capture_output=True, text=True
         )
         assert res.returncode == 0, f"clean YAML should pass: {res.stderr}"
+
+    def test_blocks_nested_auth_temp(self, tmp_hermes: Path):
+        """Pre-commit must block nested profiles/**/auth.json.* paths."""
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_hermes, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "kensei@local"], cwd=tmp_hermes, check=True
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "KENSEI"], cwd=tmp_hermes, check=True
+        )
+        (tmp_hermes / ".git" / "hooks").mkdir(exist_ok=True)
+        shutil.copy(LINT, tmp_hermes / ".git" / "hooks" / "pre-commit")
+        os.chmod(tmp_hermes / ".git" / "hooks" / "pre-commit", 0o755)
+
+        # Simulate a nested auth temp file inside profiles/
+        (tmp_hermes / "profiles" / "kensei").mkdir(parents=True, exist_ok=True)
+        (tmp_hermes / "profiles" / "kensei" / "auth.json.bak").write_text("{}")
+        subprocess.run(
+            ["git", "add", "profiles/kensei/auth.json.bak"], cwd=tmp_hermes, check=True
+        )
+        res = subprocess.run(
+            ["git", "commit", "-m", "test"], cwd=tmp_hermes, capture_output=True, text=True
+        )
+        assert res.returncode != 0, "lint should have blocked nested auth.json.bak"
+        assert "forbidden" in res.stderr.lower() or "refusing" in res.stderr.lower()
+
+    def test_blocks_private_key(self, tmp_hermes: Path):
+        """Pre-commit must block private key files."""
+        subprocess.run(["git", "init", "-q", "-b", "main"], cwd=tmp_hermes, check=True)
+        subprocess.run(
+            ["git", "config", "user.email", "kensei@local"], cwd=tmp_hermes, check=True
+        )
+        subprocess.run(
+            ["git", "config", "user.name", "KENSEI"], cwd=tmp_hermes, check=True
+        )
+        (tmp_hermes / ".git" / "hooks").mkdir(exist_ok=True)
+        shutil.copy(LINT, tmp_hermes / ".git" / "hooks" / "pre-commit")
+        os.chmod(tmp_hermes / ".git" / "hooks" / "pre-commit", 0o755)
+
+        (tmp_hermes / "id_rsa").write_text("PRIVATE KEY")
+        subprocess.run(["git", "add", "id_rsa"], cwd=tmp_hermes, check=True)
+        res = subprocess.run(
+            ["git", "commit", "-m", "test"], cwd=tmp_hermes, capture_output=True, text=True
+        )
+        assert res.returncode != 0, "lint should have blocked id_rsa"
+        assert "forbidden" in res.stderr.lower() or "refusing" in res.stderr.lower()

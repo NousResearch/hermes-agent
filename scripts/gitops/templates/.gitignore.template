@@ -47,9 +47,24 @@
 **/*.log
 # Cron outputs (the JSON config is what we track, the output dir is junk)
 cron/output/
+# Cron runtime metadata: jobs.json mutates on every scheduler tick
+# (last_run_at, next_run_at, repeat.completed, updated_at). The job
+# definitions are tracked via the curated allowlist; runtime state is not.
+cron/jobs.json
 # Feature-artifacts: only .md files tracked; deny everything else inside.
 feature-artifacts/**
 !feature-artifacts/**/*.md
+# Auth / credential temp files and backups (defence-in-depth).
+**/auth.json.*
+**/auth.tmp.*
+**/credentials.json.*
+**/credentials.tmp.*
+# Vault keys and private keys.
+**/vault.key
+**/*.pem
+**/id_rsa*
+**/id_ed25519*
+**/id_ecdsa*
 
 # --- 4. Always allow these, regardless of position ---
 !.gitignore

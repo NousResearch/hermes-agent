@@ -80,11 +80,14 @@ done
 log "deployed watcher + backfill to $DEPLOY_DIR"
 
 # 5. Install cron entry. Prefer a user crontab; fall back to a hint if crontab is locked.
+# Check for the watcher script path (not just the comment tag) to avoid
+# duplicates when the comment format varies or Hermes cron already owns
+# the watcher.
 CRON_LINE="*/5 * * * * $DEPLOY_DIR/hermes-auto-commit.sh >/dev/null 2>&1 # kensei-gitops-watcher"
 if command -v crontab >/dev/null 2>&1; then
   CURRENT=$(crontab -l 2>/dev/null || true)
-  if echo "$CURRENT" | grep -q "kensei-gitops-watcher"; then
-    log "cron entry already present"
+  if echo "$CURRENT" | grep -qF "$DEPLOY_DIR/hermes-auto-commit.sh"; then
+    log "cron entry already present (matched by script path)"
   else
     printf '%s\n%s\n' "$CURRENT" "$CRON_LINE" | crontab -
     log "installed cron: $CRON_LINE"

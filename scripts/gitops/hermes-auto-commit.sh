@@ -57,6 +57,12 @@ cd "$HERMES_HOME"
 # `--quiet` keeps the cron output free of noise.
 git add -- "${TRACK_PATHS[@]}" 2>/dev/null || true
 
+# Unstage cron/jobs.json — it mutates on every scheduler tick
+# (last_run_at, next_run_at, repeat.completed, updated_at) and would
+# cause a commit every 5 minutes. Job definitions are tracked via the
+# curated allowlist; runtime metadata is not.
+git reset -- cron/jobs.json 2>/dev/null || true
+
 # If nothing is staged, exit cleanly.
 if git diff --cached --quiet; then
   echo "[$(date -u +%FT%TZ)] no curated-path changes" >> "$LOG_FILE"

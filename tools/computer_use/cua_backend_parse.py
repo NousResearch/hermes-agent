@@ -9,7 +9,7 @@ import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
-from tools.computer_use.backend import ActionResult, UIElement, image_dimensions_from_bytes
+from tools.computer_use.backend import ELEMENT_STATE_KEYS, ActionResult, UIElement, image_dimensions_from_bytes
 
 # Linux/X11 surfaces GNOME Shell / desktop backdrop windows ahead of real app windows with no useful z-order; they
 # are targetable but capture as empty, so default capture skips them.
@@ -112,9 +112,15 @@ def _parse_elements_from_structured(raw_elements: List[Dict[str, Any]]) -> List[
         with contextlib.suppress(TypeError, ValueError):
             if isinstance(frame, dict) and frame:
                 bounds = tuple(int(frame.get(k, 0)) for k in ("x", "y", "w", "h"))  # type: ignore[assignment]
+        attributes = {
+            key: raw[key]
+            for key in ELEMENT_STATE_KEYS
+            if key in raw
+        }
         elements.append(UIElement(
             index=idx, role=role if isinstance(role, str) else "", label=label if isinstance(label, str) else "",
             bounds=bounds,
+            attributes=attributes,
             # Opaque `s{snapshot_hex}:{index}` token — the driver owns parse + LRU semantics.
             element_token=token if isinstance(token, str) and token else None,
         ))

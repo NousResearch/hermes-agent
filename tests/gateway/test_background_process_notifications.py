@@ -72,11 +72,20 @@ def _watcher_dict(session_id="proc_test", thread_id=""):
 
 class TestLoadBackgroundNotificationsMode:
 
-    def test_defaults_to_all(self, monkeypatch, tmp_path):
+    def test_defaults_to_concise(self, monkeypatch, tmp_path):
         import gateway.run as gw
         monkeypatch.setattr(gw, "_hermes_home", tmp_path)
         monkeypatch.delenv("HERMES_BACKGROUND_NOTIFICATIONS", raising=False)
-        assert GatewayRunner._load_background_notifications_mode() == "all"
+        assert GatewayRunner._load_background_notifications_mode() == "concise"
+
+    def test_unknown_mode_falls_back_to_concise(self, monkeypatch, tmp_path):
+        (tmp_path / "config.yaml").write_text(
+            "display:\n  background_process_notifications: bogus\n"
+        )
+        import gateway.run as gw
+        monkeypatch.setattr(gw, "_hermes_home", tmp_path)
+        monkeypatch.delenv("HERMES_BACKGROUND_NOTIFICATIONS", raising=False)
+        assert GatewayRunner._load_background_notifications_mode() == "concise"
 
     def test_reads_config_yaml(self, monkeypatch, tmp_path):
         (tmp_path / "config.yaml").write_text(
@@ -256,6 +265,138 @@ async def test_inject_watch_notification_ignores_foreground_event_source(monkeyp
     # Must route to thread 42 (process origin), NOT some other thread
     assert synth_event.source.thread_id == "42"
     assert synth_event.source.user_id == "proc_owner"
+
+
+# ---------------------------------------------------------------------------
+# concise mode — pretty one-liner instead of the raw output dump
+# ---------------------------------------------------------------------------
+
+
+class TestConciseFormatter:
+
+    def test_success_is_one_line_without_output(self):
+        from gateway.run import _format_concise_process_notification
+        text = _format_concise_process_notification(
+            "proc_abc", "python3 scan_fleet.py --all", 0,
+            "1300\n1400\n1500\n{...huge json...}",
+            duration_seconds=754,
+        )
+        assert text.startswith("✅ Background task finished")
+        assert "scan_fleet.py" in text
+        assert "12m 34s" in text
+        # The raw output must NOT appear on success
+        assert "1300" not in text
+        assert "\n" not in text
+
+    def test_failure_appends_short_tail(self):
+        from gateway.run import _format_concise_process_notification
+        out = "\n".join(f"line{i}" for i in range(50)) + "\nTraceback: boom"
+        text = _format_concise_process_notification(
+            "proc_abc", "make build", 2, out,
+        )
+        assert text.startswith("❌ Background task failed (exit 2)")
+        assert "Traceback: boom" in text
+        # Only a short tail, not the whole output
+        assert "line0" not in text
+
+    def test_long_command_is_truncated(self):
+        from gateway.run import _format_concise_process_notification
+        text = _format_concise_process_notification(
+            "proc_abc", "x" * 300, 0, "",
+        )
+        assert "…" in text
+        assert len(text) < 200
+
+
+@pytest.mark.asyncio
+async def test_concise_mode_sends_pretty_message_not_raw_dump(monkeypatch, tmp_path):
+    """Default mode: a finished process produces the one-line status message,
+    never the '[Background process ... Here's the final output: ...]' wall."""
+    import tools.process_registry as pr_module
+
+    big_output = "\n".join(str(i * 100) for i in range(60))
+    sessions = [SimpleNamespace(
+        output_buffer=big_output, exited=True, exit_code=0,
+        command="python3 scan.py", started_at=None,
+    )]
+    monkeypatch.setattr(
+        pr_module, "process_registry", _FakeRegistry(sessions, consumed=False)
+    )
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_watcher_dict())
+
+    adapter.send.assert_awaited_once()
+    sent_text = adapter.send.await_args.args[1]
+    assert sent_text.startswith("✅ Background task finished")
+    assert "Here's the final output" not in sent_text
+    assert "5000" not in sent_text
+
+
+@pytest.mark.asyncio
+async def test_concise_mode_failure_includes_tail(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+
+    sessions = [SimpleNamespace(
+        output_buffer="starting\nfatal: repo not found\n", exited=True,
+        exit_code=128, command="git clone x", started_at=None,
+    )]
+    monkeypatch.setattr(
+        pr_module, "process_registry", _FakeRegistry(sessions, consumed=False)
+    )
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_watcher_dict())
+
+    adapter.send.assert_awaited_once()
+    sent_text = adapter.send.await_args.args[1]
+    assert sent_text.startswith("❌ Background task failed (exit 128)")
+    assert "fatal: repo not found" in sent_text
+
+
+@pytest.mark.asyncio
+async def test_concise_mode_no_interim_output_updates(monkeypatch, tmp_path):
+    """concise never pushes 'is still running~ New output' interim updates."""
+    import tools.process_registry as pr_module
+
+    running = SimpleNamespace(
+        output_buffer="chunk one\n", exited=False, exit_code=None,
+        command="sleep 100", started_at=None,
+    )
+    done = SimpleNamespace(
+        output_buffer="chunk one\nchunk two\n", exited=True, exit_code=0,
+        command="sleep 100", started_at=None,
+    )
+    monkeypatch.setattr(
+        pr_module, "process_registry", _FakeRegistry([running, done], consumed=False)
+    )
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path, "concise")
+    adapter = runner.adapters[Platform.TELEGRAM]
+
+    await runner._run_process_watcher(_watcher_dict())
+
+    # Exactly one send: the final concise message; no interim updates.
+    adapter.send.assert_awaited_once()
+    sent_text = adapter.send.await_args.args[1]
+    assert "is still running" not in sent_text
+    assert sent_text.startswith("✅ Background task finished")
 
 
 # ---------------------------------------------------------------------------

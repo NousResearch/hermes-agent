@@ -3483,6 +3483,54 @@ def _parse_session_key(session_key: str) -> "dict | None":
     return None
 
 
+def _shorten_command_for_display(command: str, limit: int = 80) -> str:
+    """Collapse a shell command onto one line and cap its length for display."""
+    one_line = " ".join((command or "").split())
+    if len(one_line) > limit:
+        one_line = one_line[: limit - 1] + "…"
+    return one_line
+
+
+def _format_concise_process_notification(
+    session_id: str,
+    command: str,
+    exit_code,
+    output: str,
+    duration_seconds=None,
+) -> str:
+    """One-line "pretty" completion message for the ``concise`` display mode.
+
+    Success is a single status line; failure appends a short tail of output so
+    the user can see what went wrong without the full raw dump. The full
+    output always remains available to the agent via process(log/wait).
+    """
+    ok = exit_code in {0, None}
+    icon = "✅" if ok else "❌"
+    verb = "finished" if ok else f"failed (exit {exit_code})"
+    parts = [f"{icon} Background task {verb}"]
+    short_cmd = _shorten_command_for_display(command)
+    if short_cmd:
+        parts.append(f"— `{short_cmd}`")
+    if isinstance(duration_seconds, (int, float)) and duration_seconds >= 0:
+        secs = int(duration_seconds)
+        if secs >= 3600:
+            dur = f"{secs // 3600}h {(secs % 3600) // 60}m"
+        elif secs >= 60:
+            dur = f"{secs // 60}m {secs % 60}s"
+        else:
+            dur = f"{secs}s"
+        parts.append(f"({dur})")
+    text = " ".join(parts)
+    if not ok and output:
+        tail_lines = [ln for ln in output.strip().splitlines() if ln.strip()][-5:]
+        tail = "\n".join(tail_lines)
+        if len(tail) > 500:
+            tail = tail[-500:]
+        if tail:
+            text += f"\n```\n{tail}\n```"
+    return text
+
+
 def _format_gateway_process_notification(evt: dict) -> "str | None":
     """Format a watch pattern event from completion_queue into a [IMPORTANT:] message."""
     evt_type = evt.get("type", "completion")
@@ -9052,9 +9100,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Load background process notification mode from config or env var.
 
         Modes:
-          - ``all``    — push running-output updates *and* the final message (default)
-          - ``result`` — only the final completion message (regardless of exit code)
-          - ``error``  — only the final message when exit code is non-zero
+          - ``concise`` — one-line status message on completion (default);
+            failures append a short output tail
+          - ``all``    — running-output updates *and* the final raw-output message
+          - ``result`` — only the final raw-output completion message
+          - ``error``  — only the final raw-output message when exit code is non-zero
           - ``off``    — no watcher messages at all
         """
         mode = os.getenv("HERMES_BACKGROUND_NOTIFICATIONS", "")
@@ -9065,14 +9115,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 mode = "off"
             elif raw not in {None, ""}:
                 mode = str(raw)
-        mode = (mode or "all").strip().lower()
-        valid = {"all", "result", "error", "off"}
+        mode = (mode or "concise").strip().lower()
+        valid = {"concise", "all", "result", "error", "off"}
         if mode not in valid:
             logger.warning(
-                "Unknown background_process_notifications '%s', defaulting to 'all'",
+                "Unknown background_process_notifications '%s', defaulting to 'concise'",
                 mode,
             )
-            return "all"
+            return "concise"
         return mode
 
     @staticmethod
@@ -23951,9 +24001,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Auto-removes when the process exits or is killed.
 
         Notification mode (from ``display.background_process_notifications``):
-          - ``all``    — running-output updates + final message
-          - ``result`` — final completion message only
-          - ``error``  — final message only when exit code != 0
+          - ``concise`` — one-line status message on completion (default);
+            failures append a short output tail
+          - ``all``    — running-output updates + final raw-output message
+          - ``result`` — final raw-output completion message only
+          - ``error``  — final raw-output message only when exit code != 0
           - ``off``    — no messages at all
         """
         from tools.process_registry import process_registry
@@ -24071,7 +24123,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     break
                 # Decide whether to notify based on mode
                 should_notify = (
-                    notify_mode in {"all", "result"}
+                    notify_mode in {"concise", "all", "result"}
                     or (notify_mode == "error" and session.exit_code not in {0, None})
                 )
                 if should_notify:
@@ -24081,10 +24133,26 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         new_output = redact_terminal_output(
                             new_output, getattr(session, "command", "") or ""
                         )
-                    message_text = (
-                        f"[Background process {session_id} finished with exit code {session.exit_code}~ "
-                        f"Here's the final output:\n{new_output}]"
-                    )
+                    if notify_mode == "concise":
+                        _cmd_disp = _redact_gateway_user_facing_secrets(
+                            getattr(session, "command", "") or ""
+                        )
+                        _started = getattr(session, "started_at", None)
+                        _dur = None
+                        if isinstance(_started, (int, float)):
+                            _dur = max(0.0, time.time() - _started)
+                        message_text = _format_concise_process_notification(
+                            session_id,
+                            _cmd_disp,
+                            session.exit_code,
+                            new_output,
+                            duration_seconds=_dur,
+                        )
+                    else:
+                        message_text = (
+                            f"[Background process {session_id} finished with exit code {session.exit_code}~ "
+                            f"Here's the final output:\n{new_output}]"
+                        )
                     adapter = None
                     for p, a in self.adapters.items():
                         if p.value == platform_name:

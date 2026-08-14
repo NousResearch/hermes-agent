@@ -1193,6 +1193,15 @@ DEFAULT_CONFIG = {
         #   "verbose" — include a compact content preview of what changed
         # Per-platform overrides via display.platforms.<platform>.memory_notifications.
         "memory_notifications": "on",
+        # Gateway notifications when a terminal(background=true) process
+        # finishes:
+        #   "concise" — one-line status message; failures append a short
+        #               output tail (default)
+        #   "all"     — running-output updates + final raw-output message
+        #   "result"  — final raw-output message only
+        #   "error"   — final raw-output message only on non-zero exit
+        #   "off"     — no watcher messages at all
+        "background_process_notifications": "concise",
         "streaming": False,
         "timestamps": False,      # Show timestamp on user and assistant labels
         "timestamp_format": "%H:%M",  # strftime format for timestamps (e.g. "%b-%d %H:%M")
@@ -3357,7 +3366,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 34,
+    "_config_version": 35,
 }
 
 # Optional environment variables that enhance functionality

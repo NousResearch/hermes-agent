@@ -12388,6 +12388,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
             adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
             adapter.set_platform_event_handler(self._primary_platform_event_handler())
+            adapter.set_callback_auth_resolver(self._authorize_platform_callback)
             adapter._busy_text_mode = self._busy_text_mode
             _pending_connects.append((platform, platform_config, adapter))
 
@@ -13869,6 +13870,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     adapter.set_topic_recovery_fn(self._recover_telegram_topic_thread_id)
                     adapter.set_authorization_check(self._make_adapter_auth_check(adapter.platform))
                     adapter.set_platform_event_handler(self._primary_platform_event_handler())
+                    adapter.set_callback_auth_resolver(self._authorize_platform_callback)
                     adapter._busy_text_mode = self._busy_text_mode
 
                     # Reconnect after an outage: preserve the platform's
@@ -15194,6 +15196,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         if getattr(self.config, "multiplex_profiles", False):
             return self._make_default_profile_platform_event_handler()
         return self._handle_gateway_platform_event
+
+    def _authorize_platform_callback(self, source) -> bool:
+        """Authorize an inline-button (callback) actor via the normal path.
+
+        Adapters build the callback actor's ``SessionSource`` but cannot
+        reliably recover the runner from a bound ``_message_handler.__self__``:
+        under ``multiplex_profiles`` the primary handler is a closure with no
+        ``__self__``, so callbacks fell back to env-only auth and skipped the
+        routed profile's pairing store (#86296). Installed on the adapter via
+        ``set_callback_auth_resolver``, this resolver applies the same profile
+        route resolution, profile stamping, runtime scope, and gateway
+        authorization decision that normal inbound messages receive — so
+        slash-confirm, clarify, and dangerous-command approval buttons honor a
+        pairing-authorized operator on their routed profile.
+
+        Fails closed when an explicit route targets an unserved profile;
+        unexpected errors propagate so the adapter's own fallback can log them.
+        """
+        from gateway.profile_routing import ProfileRouteRejected
+
+        # Mirror the ingress route-resolution gate in ``_handle_message``:
+        # most adapters stamp ``source.profile`` in ``build_source``, but a
+        # callback source is constructed directly and must be routed here.
+        if (
+            getattr(getattr(self, "config", None), "multiplex_profiles", False)
+            and not getattr(source, "profile", None)
+            and getattr(source, "profile_route_rejected", False) is not True
+        ):
+            try:
+                source.profile = self._profile_name_for_source(source)
+            except ProfileRouteRejected:
+                source.profile_route_rejected = True
+                return False
+        if getattr(source, "profile_route_rejected", False) is True:
+            return False
+        with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+            return bool(self._is_user_authorized(source))
 
     @staticmethod
     def _adapter_credential_claim(

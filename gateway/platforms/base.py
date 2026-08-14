@@ -3017,6 +3017,14 @@ class BasePlatformAdapter(ABC):
         self._platform_event_handler: Optional[
             Callable[[Dict[str, Any], Any], Awaitable[None]]
         ] = None
+        # Optional runner-owned resolver for inline-button (callback) auth.
+        # Adapters build the actor's SessionSource and defer the final
+        # allow/deny to this callable, which applies the same profile-route
+        # resolution, profile stamping, and runtime scope as normal inbound
+        # messages before calling the gateway authorization decision. Without
+        # it, adapters that recover the runner via ``_message_handler.__self__``
+        # fail closed to env-only auth under multiplex closures (#86296).
+        self._callback_auth_resolver: Optional[Callable[[Any], bool]] = None
         # Optional hook (e.g. Telegram DM topic recovery) that rewrites
         # ``event.source.thread_id`` before session keying. Returns the
         # corrected thread_id or None to leave the source untouched.
@@ -3616,6 +3624,21 @@ class BasePlatformAdapter(ABC):
         therefore fails closed instead of exposing pre-auth events.
         """
         self._platform_event_handler = handler
+
+    def set_callback_auth_resolver(
+        self,
+        resolver: Optional[Callable[[Any], bool]],
+    ) -> None:
+        """Install the runner-owned resolver for inline-button callback auth.
+
+        The adapter builds the callback actor's ``SessionSource`` and delegates
+        the allow/deny decision to ``resolver``, which applies the same profile
+        routing and runtime scope as normal inbound messages. This replaces
+        recovering the runner via ``_message_handler.__self__``, which fails
+        under multiplex closure handlers (no bound ``__self__``) and skips the
+        routed profile's pairing store (#86296).
+        """
+        self._callback_auth_resolver = resolver
 
     def set_topic_recovery_fn(
         self,

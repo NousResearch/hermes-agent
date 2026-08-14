@@ -206,3 +206,107 @@ def test_unresolved_builtin_target_keeps_directory_error() -> None:
     }
     send_mock.assert_not_awaited()
 
+
+
+def test_unresolved_builtin_target_passes_through_when_requested() -> None:
+    """Cron and react keep the old pass-through behavior for unresolved
+    built-in targets: with no model in the loop to react to an error, the
+    raw id must reach the adapter, as it did before resolve_send_target
+    took over these callers."""
+    from tools.send_message_tool import resolve_send_target
+
+    with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
+        chat_id, thread_id, error = resolve_send_target(
+            "telegram", "ops-room", pass_unresolved_references=True
+        )
+
+    assert error is None
+    assert chat_id == "ops-room"
+    assert thread_id is None
+
+
+def test_unresolved_builtin_target_still_errors_for_the_model_tool() -> None:
+    """The model-facing default stays strict: unresolved targets error with a hint."""
+    from tools.send_message_tool import resolve_send_target
+
+    with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
+        chat_id, _thread_id, error = resolve_send_target("telegram", "ops-room")
+
+    assert chat_id is None
+    assert error is not None
+
+
+def test_photon_group_guid_passes_through_when_requested() -> None:
+    """The reported regression case: a photon group GUID matches no parser
+    pattern (only DM GUIDs have an explicit rule) and no directory entry.
+    Photon registers as a parser-less plugin platform, so the pass-through
+    applies once platforms are prepared."""
+    from tools.send_message_tool import (
+        prepare_send_message_platforms,
+        resolve_send_target,
+    )
+
+    prepare_send_message_platforms()
+    with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
+        chat_id, thread_id, error = resolve_send_target(
+            "photon", "iMessage;+;chat527148912345", pass_unresolved_references=True
+        )
+
+    assert error is None
+    assert chat_id == "iMessage;+;chat527148912345"
+    assert thread_id is None
+
+
+def test_parserless_plugin_target_passes_through_when_requested() -> None:
+    """A plugin platform that declares no parser has no explicit syntax at
+    all, so passing the raw id through is the only way cron can target it."""
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from tools.send_message_tool import resolve_send_target
+
+    platform_name = "opaque-cron-fallback-test"
+    entry = PlatformEntry(
+        name=platform_name,
+        label="Opaque cron fallback test",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+    )
+    platform_registry.register(entry)
+    try:
+        with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
+            chat_id, thread_id, error = resolve_send_target(
+                platform_name, "dm:panyaozhen", pass_unresolved_references=True
+            )
+    finally:
+        platform_registry.unregister(platform_name)
+
+    assert error is None
+    assert chat_id == "dm:panyaozhen"
+    assert thread_id is None
+
+
+def test_plugin_parser_stays_authoritative_despite_fallback() -> None:
+    """A plugin that DOES declare a parser stays strict for every caller:
+    its parser is the authority on native syntax, so an unrecognized
+    target errors even with pass_unresolved_references."""
+    from gateway.platform_registry import PlatformEntry, platform_registry
+    from tools.send_message_tool import resolve_send_target
+
+    platform_name = "opaque-parser-strict-test"
+    entry = PlatformEntry(
+        name=platform_name,
+        label="Opaque parser strict test",
+        adapter_factory=lambda cfg: None,
+        check_fn=lambda: True,
+        parse_target_ref_fn=lambda ref: None,
+    )
+    platform_registry.register(entry)
+    try:
+        with patch("gateway.channel_directory.resolve_channel_name", return_value=None):
+            chat_id, _thread_id, error = resolve_send_target(
+                platform_name, "dm:panyaozhen", pass_unresolved_references=True
+            )
+    finally:
+        platform_registry.unregister(platform_name)
+
+    assert chat_id is None
+    assert error is not None

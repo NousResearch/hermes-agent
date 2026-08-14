@@ -1859,8 +1859,13 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
         )
 
         prepare_send_message_platforms()
+        # pass_unresolved_references: stored jobs have no model in the loop to react
+        # to a resolution error, and a target the directory doesn't know
+        # (fresh install, platform-native id) used to be handed to the
+        # adapter as written. Dropping it here silently loses the job's
+        # output.
         chat_id, thread_id, resolution_error = resolve_send_target(
-            platform_key, rest
+            platform_key, rest, pass_unresolved_references=True
         )
         if resolution_error:
             logger.warning(

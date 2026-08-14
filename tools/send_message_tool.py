@@ -296,8 +296,11 @@ def _handle_react(args, remove=False):
     chat_id = None
     prepare_send_message_platforms()
     if target_ref:
+        # Platform-native ids (e.g. photon space GUIDs like 'any;-;+1555...')
+        # match no parser pattern and no directory entry, so hand them to
+        # the adapter unchanged; it validates them.
         chat_id, _thread_id, resolution_error = resolve_send_target(
-            platform_name, target_ref
+            platform_name, target_ref, pass_unresolved_references=True
         )
         if resolution_error:
             return tool_error(resolution_error)
@@ -622,14 +625,26 @@ def _parse_target_ref(platform_name: str, target_ref: str):
 
 
 def resolve_send_target(
-    platform_name: str, target_ref: str
+    platform_name: str, target_ref: str, *, pass_unresolved_references: bool = False
 ) -> tuple[str | None, str | None, str | None]:
-    """Resolve one send target identically for model/CLI/cron surfaces.
+    """Resolve one send target the same way for every caller (model tool, CLI, cron).
 
     Channel-directory IDs are trusted. Plugin platforms must explicitly parse
-    native target syntax; unresolved strings never receive an opaque fallback.
-    The optional validator is the final authority over parser-normalized and
-    directory-resolved IDs.
+    native target syntax; for the model-facing send tool (the default), a
+    target that can't be resolved is an error — the model can read the error
+    and pick a listed target instead.
+
+    ``pass_unresolved_references=True`` restores the old pass-through behavior for
+    callers that have no model in the loop (cron delivering a stored job's
+    output, react/unreact on platform-native message ids): if the target
+    can't be resolved and the platform is built in, or is a plugin platform
+    that declares no parser, the string is handed to the adapter exactly as
+    written and the adapter decides whether it's valid. A plugin platform
+    that DOES declare a parser stays strict for every caller — its parser is
+    the authority on native syntax.
+
+    The optional validator has the final say over parser-normalized,
+    directory-resolved, and passed-through IDs alike.
     """
     from gateway.config import Platform
     from gateway.platform_registry import platform_registry
@@ -715,13 +730,30 @@ def resolve_send_target(
     is_builtin = platform_name in {member.value for member in Platform}
     if entry is None and not is_builtin:
         return None, None, f"Unknown or unregistered plugin platform: {platform_name}"
+
+    def _pass_through_unresolved():
+        """Hand the raw target to the adapter unchanged (it validates)."""
+        error = _validate(target_ref)
+        if error:
+            return None, None, error
+        logger.debug(
+            "Handing unresolved target '%s' to the %s adapter unchanged "
+            "(the adapter validates it)",
+            target_ref, platform_name,
+        )
+        return target_ref, None, None
+
     if entry is not None and entry.source == "plugin" and not is_builtin:
+        if pass_unresolved_references and entry.parse_target_ref_fn is None:
+            return _pass_through_unresolved()
         return (
             None,
             None,
             f"Could not resolve '{target_ref}' on {platform_name}. "
             "The plugin parser did not recognize it and no channel-directory entry matched.",
         )
+    if pass_unresolved_references:
+        return _pass_through_unresolved()
     hint = (
         "Try using a numeric channel ID instead."
         if resolution_failed

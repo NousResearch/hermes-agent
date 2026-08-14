@@ -8275,14 +8275,18 @@ class AIAgent:
                 # The holder may have compressed and rotated the session while
                 # this process waited. Resolve and reload only AFTER admission;
                 # a caller-provided in-memory snapshot is necessarily stale.
-                latest_session_id = _turn_db.resolve_resume_session_id(session_id)
-                if latest_session_id:
-                    self.session_id = latest_session_id
-                    task_context["session_id"] = latest_session_id
-                conversation_history = _turn_db.get_messages_as_conversation(
-                    self.session_id,
-                    repair_alternation=True,
-                )
+                # Skip when acquisition was immediate — no other process held
+                # the lease, so the in-memory history is current and reloading
+                # would only cause an unnecessary prompt cache miss.
+                if _lease_waited:
+                    latest_session_id = _turn_db.resolve_resume_session_id(session_id)
+                    if latest_session_id:
+                        self.session_id = latest_session_id
+                        task_context["session_id"] = latest_session_id
+                    conversation_history = _turn_db.get_messages_as_conversation(
+                        self.session_id,
+                        repair_alternation=True,
+                    )
 
                 # Long model/tool/compression turns outlive a fixed TTL. Refresh
                 # in a daemon thread; holder-qualified UPDATE and DELETE fence a
@@ -8306,6 +8310,7 @@ class AIAgent:
                                 self.interrupt(message, hard_cancel=True)
                             except Exception:
                                 self._interrupt_requested = True
+                                self._interrupt_message = message
 
                     while not durable_turn_lease_stop.wait(_lease_refresh_interval):
                         try:
@@ -8411,9 +8416,11 @@ class AIAgent:
                 finally:
                     # The lease remains held through relay/task finalization, but
                     # those post-loop steps must not receive a late refresh
-                    # interrupt that poisons the next turn on this cached agent.
+                    # interrupt that poisons the next turn on a cached agent.
                     _stop_durable_turn_lease_refresher()
-                    _clear_durable_turn_lease_interrupt()
+                    # Interrupt clear is deferred to after thread join in the
+                    # outer finally: a refresher firing between stop and join
+                    # would otherwise set an interrupt that survives the clear.
             terminal = result if isinstance(result, dict) else {}
             if terminal.get("interrupted") is True:
                 relay_outcome = "cancelled"
@@ -8465,6 +8472,10 @@ class AIAgent:
                         and durable_turn_lease_thread.is_alive()
                     ):
                         durable_turn_lease_thread.join(timeout=1.0)
+                    # Clear any interrupt the refresher may have fired between
+                    # the inner stop and this join. Must run AFTER join so a
+                    # late interrupt does not survive into the next turn.
+                    _clear_durable_turn_lease_interrupt()
                     if durable_turn_lease is not None:
                         try:
                             _turn_db.release_session_turn_lease(

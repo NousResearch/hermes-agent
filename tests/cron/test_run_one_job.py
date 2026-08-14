@@ -76,6 +76,89 @@ def test_run_one_job_success_sequence(monkeypatch):
     assert calls[-1] == ("mark", "j2", True)
 
 
+def test_run_one_job_exception_delivers_failure_alert(monkeypatch):
+    """An exception escaping the run body must not become a silent error row."""
+    delivered = []
+    marked = []
+    finished = []
+
+    monkeypatch.setattr(
+        s, "create_execution", lambda *_a, **_kw: {"id": "exec-j3"}
+    )
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_kw: (_ for _ in ()).throw(
+            RuntimeError("Gemini HTTP 503 (UNAVAILABLE)")
+        ),
+    )
+    monkeypatch.setattr(
+        s,
+        "_deliver_result",
+        lambda job, content, **_kw: delivered.append((job["id"], content)) or None,
+    )
+    monkeypatch.setattr(
+        s,
+        "mark_job_run",
+        lambda *args, **kwargs: marked.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        s,
+        "finish_execution",
+        lambda *args, **kwargs: finished.append((args, kwargs)),
+    )
+
+    ok = s.run_one_job({"id": "j3", "name": "morning", "deliver": "telegram"})
+
+    assert ok is False
+    assert delivered == [
+        ("j3", "⚠️ Cron 'morning' failed: Gemini HTTP 503 (UNAVAILABLE)")
+    ]
+    assert marked == [
+        (("j3", False, "Gemini HTTP 503 (UNAVAILABLE)"), {"delivery_error": None})
+    ]
+    assert finished == [
+        (
+            ("exec-j3",),
+            {
+                "success": False,
+                "error": "Gemini HTTP 503 (UNAVAILABLE)",
+                "delivery_outcome": "delivered",
+            },
+        )
+    ]
+
+
+def test_run_one_job_exception_records_failure_alert_delivery_error(monkeypatch):
+    """A failed fallback alert must populate last_delivery_error."""
+    marked = []
+
+    monkeypatch.setattr(
+        s, "create_execution", lambda *_a, **_kw: {"id": "exec-j4"}
+    )
+    monkeypatch.setattr(s, "claim_dispatch", lambda _job_id: True)
+    monkeypatch.setattr(s, "mark_execution_running", lambda _execution_id: None)
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("provider failed")),
+    )
+    monkeypatch.setattr(s, "_deliver_result", lambda *_a, **_kw: "send failed: 502")
+    monkeypatch.setattr(
+        s,
+        "mark_job_run",
+        lambda *args, **kwargs: marked.append((args, kwargs)),
+    )
+    monkeypatch.setattr(s, "finish_execution", lambda *_a, **_kw: None)
+
+    assert s.run_one_job({"id": "j4", "deliver": "telegram"}) is False
+    assert marked == [
+        (("j4", False, "provider failed"), {"delivery_error": "send failed: 502"})
+    ]
+
+
 def test_run_one_job_installs_secret_scope_under_multiplex(monkeypatch, tmp_path):
     """Regression: under profile isolation (multiplex active), run_one_job must
     execute run_job inside a profile secret scope so credential reads

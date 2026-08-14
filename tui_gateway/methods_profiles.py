@@ -246,7 +246,19 @@ def _(rid, params: dict) -> dict:
     # .env (only over the seeded comment-only stub — never clobber real
     # secrets a clone brought along) and auth.json (only when absent), then
     # inherit model.provider/model.default unless the caller pinned a model.
+    #
+    # ``share_auth`` (default false): SKIP the auth.json copy so the new
+    # profile reads OAuth/token state through the global-root fallback
+    # instead (hermes_cli.auth: profile reads fall back to the global
+    # store, and token refreshes write THROUGH to it). A copy forks token
+    # state — the first refresh in either store invalidates the other
+    # for single-use refresh tokens. Sharing keeps one live token pool
+    # for the main profile and every bot. Static .env keys still copy
+    # (no refresh semantics, so copying is safe).
     mirrored = {"env": False, "auth": False, "model_inherited": False, "voice": False}
+    share_auth = is_truthy_value(params.get("share_auth", False))
+    if share_auth:
+        mirrored["auth"] = "shared"
     if is_truthy_value(params.get("mirror_credentials", True)):
         import shutil
 
@@ -268,7 +280,7 @@ def _(rid, params: dict) -> dict:
         try:
             src_auth = launch_home / "auth.json"
             dst_auth = path / "auth.json"
-            if src_auth.is_file() and not dst_auth.exists():
+            if not share_auth and src_auth.is_file() and not dst_auth.exists():
                 shutil.copy2(src_auth, dst_auth)
                 try:
                     os.chmod(str(dst_auth), 0o600)
@@ -447,6 +459,31 @@ def _(rid, params: dict) -> dict:
             except Exception:
                 pass
 
+            # MCP servers configured for this profile (config.yaml
+            # mcp_servers). Report name + enabled + a transport hint so a
+            # capabilities UI can list and toggle them without parsing the
+            # raw config shape.
+            mcp_out = []
+            try:
+                mcp_cfg = cfg.get("mcp_servers")
+                if isinstance(mcp_cfg, dict):
+                    for srv_name in sorted(mcp_cfg.keys()):
+                        entry = mcp_cfg.get(srv_name)
+                        if not isinstance(entry, dict):
+                            continue
+                        transport = "stdio"
+                        if entry.get("url"):
+                            transport = str(entry.get("transport") or "http")
+                        mcp_out.append(
+                            {
+                                "name": str(srv_name),
+                                "enabled": not is_truthy_value(entry.get("disabled", False)),
+                                "transport": transport,
+                            }
+                        )
+            except Exception:
+                pass
+
             model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
 
             description = ""
@@ -470,6 +507,7 @@ def _(rid, params: dict) -> dict:
                     "skills": installed,
                     "toolsets": toolsets_out,
                     "toolsets_pinned": pinned_set is not None,
+                    "mcp_servers": mcp_out,
                 },
             )
         finally:
@@ -582,10 +620,25 @@ def _(rid, params: dict) -> dict:
             except Exception:
                 applied["model"] = False
 
-        needs_cfg = isinstance(params.get("disabled_skills"), list) or isinstance(
-            params.get("enabled_toolsets"), list
+        needs_cfg = (
+            isinstance(params.get("disabled_skills"), list)
+            or isinstance(params.get("enabled_toolsets"), list)
+            or isinstance(params.get("enabled_mcp_servers"), list)
         )
         if needs_cfg:
+            # Launch profile's MCP catalog, read BEFORE the home override
+            # flips config resolution to the target profile.
+            launch_mcp = {}
+            if isinstance(params.get("enabled_mcp_servers"), list):
+                try:
+                    from hermes_cli.config import load_config_readonly
+
+                    launch_cfg = load_config_readonly() or {}
+                    if isinstance(launch_cfg.get("mcp_servers"), dict):
+                        launch_mcp = launch_cfg["mcp_servers"]
+                except Exception:
+                    launch_mcp = {}
+
             token = set_hermes_home_override(str(profile_dir))
             try:
                 from hermes_cli.config import load_config, save_config
@@ -620,6 +673,44 @@ def _(rid, params: dict) -> dict:
                         applied["toolsets"] = True
                     except Exception:
                         applied["toolsets"] = False
+
+                # ``enabled_mcp_servers`` (list[str], replace semantics):
+                # toggle the profile's mcp_servers entries via the standard
+                # ``disabled`` flag. Enabling a server the profile doesn't
+                # define copies its definition from the LAUNCH profile's
+                # config (capabilities UIs offer the main profile's catalog);
+                # unknown names are skipped, never invented. Server defs are
+                # config, not secrets — credentials stay in .env/auth.
+                if isinstance(params.get("enabled_mcp_servers"), list):
+                    try:
+                        wanted = {
+                            str(s).strip()
+                            for s in params["enabled_mcp_servers"]
+                            if str(s).strip()
+                        }
+                        cfg = load_config() or {}
+                        mcp_cfg = (
+                            cfg.get("mcp_servers")
+                            if isinstance(cfg.get("mcp_servers"), dict)
+                            else {}
+                        )
+
+                        for srv in wanted:
+                            if srv in mcp_cfg and isinstance(mcp_cfg[srv], dict):
+                                mcp_cfg[srv].pop("disabled", None)
+                            elif srv in launch_mcp and isinstance(launch_mcp[srv], dict):
+                                mcp_cfg[srv] = dict(launch_mcp[srv])
+                                mcp_cfg[srv].pop("disabled", None)
+                        for srv, entry in mcp_cfg.items():
+                            if srv not in wanted and isinstance(entry, dict):
+                                entry["disabled"] = True
+
+                        if mcp_cfg:
+                            cfg["mcp_servers"] = mcp_cfg
+                        save_config(cfg)
+                        applied["mcp_servers"] = True
+                    except Exception:
+                        applied["mcp_servers"] = False
             finally:
                 reset_hermes_home_override(token)
 

@@ -279,6 +279,26 @@ class TestSaveEnvValueSecure:
         env_mode = env_path.stat().st_mode & 0o777
         assert env_mode == 0o640, f"expected 0o640, got {oct(env_mode)}"
 
+    def test_reload_env_removes_deleted_matrix_refresh_token(self, tmp_path):
+        """Platform metadata makes the refresh credential known to reloads."""
+        from hermes_cli.config import reload_env
+
+        (tmp_path / ".env").write_text(
+            "MATRIX_ACCESS_TOKEN=access\n", encoding="utf-8"
+        )
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_HOME": str(tmp_path),
+                "MATRIX_ACCESS_TOKEN": "stale-access",
+                "MATRIX_REFRESH_TOKEN": "stale-refresh",
+            },
+            clear=False,
+        ):
+            reload_env()
+            assert os.environ["MATRIX_ACCESS_TOKEN"] == "access"
+            assert "MATRIX_REFRESH_TOKEN" not in os.environ
+
     def test_save_env_value_quotes_values_containing_hash(self, tmp_path):
         """Regression test for #30355."""
         from dotenv import dotenv_values

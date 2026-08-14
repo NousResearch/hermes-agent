@@ -12431,9 +12431,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
         """Enable voice TTS when configured without overriding explicit state."""
         try:
             from hermes_cli.config import load_config
+            from utils import is_truthy_value
             _raw_voice = load_config().get("voice")
             voice_config = _raw_voice if isinstance(_raw_voice, dict) else {}
-            if voice_config.get("auto_tts", False):
+            if is_truthy_value(voice_config.get("auto_tts"), default=False):
                 with self._voice_lock:
                     self._voice_tts = True
         except Exception:

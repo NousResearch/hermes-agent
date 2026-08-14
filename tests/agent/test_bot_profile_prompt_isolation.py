@@ -114,3 +114,19 @@ def test_profile_name_default_when_home_is_root(tmp_path, monkeypatch):
 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     assert system_prompt._profile_name_for_home(tmp_path) == "default"
+
+
+def test_profile_name_correct_when_ambient_is_another_profile(tmp_path, monkeypatch):
+    """CodeRabbit case: agent belongs to profile A while the ambient home is
+    bound to profile B. The root must derive independently of the ambient
+    home, so A still resolves as 'mybot' (not 'default', and never 'other')."""
+    from agent import system_prompt
+
+    bot_home = tmp_path / "profiles" / "mybot"
+    bot_home.mkdir(parents=True)
+    other_home = tmp_path / "profiles" / "other"
+    other_home.mkdir(parents=True)
+
+    monkeypatch.setenv("HERMES_HOME", str(other_home))
+
+    assert system_prompt._profile_name_for_home(bot_home) == "mybot"

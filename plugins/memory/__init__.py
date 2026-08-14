@@ -197,17 +197,6 @@ def _iter_provider_dirs() -> List[Tuple[str, Path]]:
     return dirs
 
 
-def find_provider_dir(name: str) -> Optional[Path]:
-    """Resolve a provider name by bundled, profile-local, then root-shared precedence."""
-    bundled = _MEMORY_PLUGINS_DIR / name
-    if bundled.is_dir() and (bundled / "__init__.py").exists():
-        return bundled
-    for plugins_dir in (_get_user_plugins_dir(), _get_shared_user_plugins_dir()):
-        if plugins_dir is None:
-            continue
-        candidate = plugins_dir / name
-        if candidate.is_dir() and _is_memory_provider_dir(candidate):
-            return candidate
 def _iter_entry_points():
     """Yield pip-installed memory provider entry points."""
     try:
@@ -225,8 +214,8 @@ def _iter_entry_points():
 def find_provider_dir(name: str) -> Optional[Path]:
     """Resolve a provider name to the directory holding its files.
 
-    Checks bundled, then user-installed, then project-local, then the package
-    directory of a pip entry-point provider.
+    Checks bundled, then user-installed, then root-shared, then project-local,
+    then the package directory of a pip entry-point provider.
 
     The entry-point case matters because two of a provider's files are read
     from disk rather than imported: ``config_schema.py`` (loaded by path so the
@@ -241,8 +230,8 @@ def find_provider_dir(name: str) -> Optional[Path]:
     bundled = _MEMORY_PLUGINS_DIR / name
     if bundled.is_dir() and (bundled / "__init__.py").exists():
         return bundled
-    # User-installed, then project-local
-    for source_dir in (_get_user_plugins_dir(), _get_project_plugins_dir()):
+    # User-installed, then root-shared, then project-local
+    for source_dir in (_get_user_plugins_dir(), _get_shared_user_plugins_dir(), _get_project_plugins_dir()):
         if not source_dir:
             continue
         candidate = source_dir / name

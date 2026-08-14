@@ -43,3 +43,21 @@ def capture_server_timings(agent, response: Any) -> None:
     except Exception:
         tps = None
     agent.last_server_tps = tps
+
+
+def capture_server_residency(agent) -> None:
+    """Record which models the endpoint's swap proxy has resident as ``agent.last_server_residency``.
+
+    Only profiles exposing ``resident_models`` report anything; all others record None and the indicator
+    stays hidden.
+    """
+    residency = None
+    try:
+        getter = getattr(_resolved_profile(agent), "resident_models", None)
+        if callable(getter):
+            resident = getter(base_url=agent.base_url)
+            if resident is not None:
+                residency = tuple(str(m) for m in resident)
+    except Exception:
+        residency = None
+    agent.last_server_residency = residency

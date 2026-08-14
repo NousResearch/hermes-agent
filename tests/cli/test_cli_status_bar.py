@@ -754,3 +754,49 @@ class TestStatusBarServerTps:
         text = cli_obj._build_status_bar_text(width=120)
 
         assert "tok/s" not in text
+
+
+class TestStatusBarResidency:
+    """Swap-proxy residency: shown only when the agent recorded it."""
+
+    def _cli(self):
+        return _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_000,
+            completion_tokens=2_000,
+            total_tokens=12_000,
+            api_calls=3,
+            context_tokens=12_000,
+            context_length=200_000,
+        )
+
+    def test_residency_shown_in_wide_status_bar(self):
+        cli_obj = self._cli()
+        cli_obj.agent.last_server_residency = ("qwen-small",)
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "⌂ qwen-small" in text
+
+    def test_multiple_resident_models_joined(self):
+        cli_obj = self._cli()
+        cli_obj.agent.last_server_residency = ("a-model", "b-model")
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "⌂ a-model+b-model" in text
+
+    def test_no_residency_concept_shows_nothing(self):
+        cli_obj = self._cli()  # agent has no last_server_residency attribute
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "⌂" not in text
+
+    def test_empty_residency_hidden(self):
+        cli_obj = self._cli()
+        cli_obj.agent.last_server_residency = ()
+
+        text = cli_obj._build_status_bar_text(width=120)
+
+        assert "⌂" not in text

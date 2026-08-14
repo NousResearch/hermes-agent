@@ -2588,6 +2588,11 @@ def human_wait_ceiling() -> float:
     authorization gate's serialization-lock acquire, so the two bounds cannot
     drift. Never call while holding ``_human_wait_lock`` — it reads the
     config cache.
+
+    Platform safety: ``_get_approval_timeout`` caps at
+    ``agent.deadline.MAX_SAFE_TIMEOUT_S``, so this value is always safe to
+    hand to ``Lock.acquire(timeout=...)`` / ``Thread.join(timeout=...)``
+    (#83220 macOS time_t overflow).
     """
     return float(_get_approval_timeout()) + HUMAN_WAIT_MARGIN_S
 
@@ -3430,11 +3435,25 @@ def _get_approval_timeout() -> int:
     approvals arrive as push notifications the user may not see for a couple
     of minutes; 60s proved too tight in practice (Telegram taps landed after
     the wait had already failed closed).
+
+    Clamped to ``agent.deadline.MAX_SAFE_TIMEOUT_S`` (1 year — semantically
+    unbounded): a very large configured value overflows ``time_t`` inside
+    ``Thread.join(timeout=...)`` / ``Lock.acquire(timeout=...)`` on macOS,
+    and before this clamp a single oversized ``approvals.timeout`` crashed
+    every parallel tool batch with OverflowError (#83220). Clamping at the
+    single config-read site keeps every consumer (prompt join, gateway poll
+    deadline, human-wait ceiling, authorization gate) platform-safe at once.
     """
     try:
-        return int(_get_approval_config().get("timeout", 300))
+        raw = int(_get_approval_config().get("timeout", 300))
     except (ValueError, TypeError):
         return 300
+    try:
+        from agent.deadline import MAX_SAFE_TIMEOUT_S
+
+        return min(raw, int(MAX_SAFE_TIMEOUT_S))
+    except Exception:
+        return raw
 
 
 def _get_cron_approval_mode() -> str:

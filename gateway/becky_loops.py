@@ -20,6 +20,14 @@ from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import parse_qs, urlsplit
 
+from gateway.becky_loop_summarizer import (
+    AsyncAuxiliarySummaryProvider,
+    LoopSummary,
+    LoopSummarizer,
+    SummaryUnavailable,
+    _ConversationTooLarge,
+    _SummaryValidationError,
+)
 from websockets.asyncio.server import Server, ServerConnection, serve
 from websockets.http11 import Headers, Request, Response
 
@@ -65,8 +73,7 @@ _UUID_RE = re.compile(
 )
 _MAX_REQUEST_BYTES = 65_536
 _MAX_RESPONSE_BYTES = 262_144
-_MAX_SUMMARY_CHARS = 2_000
-_MAX_LIST_ITEMS = 12
+_SUMMARY_DEADLINE_SECONDS = 30.0
 _SESSION_PAGE_SIZE = 200
 _MAX_SESSION_SCAN = 10_000
 
@@ -280,7 +287,13 @@ class SessionDBBeckyLoopsStore:
 class BeckyLoopsBridgeServer:
     """A single-process, authenticated WebSocket server for Becky."""
 
-    def __init__(self, *, config: BeckyLoopsConfig, store: BeckyLoopsStore) -> None:
+    def __init__(
+        self,
+        *,
+        config: BeckyLoopsConfig,
+        store: BeckyLoopsStore,
+        summarizer: LoopSummarizer,
+    ) -> None:
         if not config.enabled:
             raise ValueError("Becky loops bridge is disabled")
         if len(config.token) < 32:
@@ -291,6 +304,7 @@ class BeckyLoopsBridgeServer:
             raise ValueError("Becky loops bridge port is invalid")
         self.config = config
         self.store = store
+        self.summarizer = summarizer
         self._server: Server | None = None
 
     @property
@@ -396,7 +410,7 @@ class BeckyLoopsBridgeServer:
         except _RemoteFailure as failure:
             return self._remote_error(request_id, failure.code)
         except Exception:
-            logger.warning("Becky bridge method failed: %s", method, exc_info=True)
+            logger.warning("Becky bridge method failed: %s", method)
             return self._error(request_id, "protocol")
         if result is _PROTOCOL_FAILURE:
             return self._error(request_id, "protocol")
@@ -454,7 +468,26 @@ class BeckyLoopsBridgeServer:
             )
             if current_revision != expected_revision:
                 raise _RemoteFailure("revision_conflict")
-            return self._summary(row, transcript)
+            try:
+                summary = await self.summarizer.summarize(
+                    row=row,
+                    transcript=transcript,
+                    deadline=(
+                        asyncio.get_running_loop().time() + _SUMMARY_DEADLINE_SECONDS
+                    ),
+                )
+            except _ConversationTooLarge:
+                raise _RemoteFailure("conversation_too_large") from None
+            except _SummaryValidationError:
+                raise _RemoteFailure("summary_invalid") from None
+            except SummaryUnavailable:
+                raise _RemoteFailure("summary_timeout") from None
+            return self._public_summary(
+                row=row,
+                revision=current_revision,
+                transcript=transcript,
+                summary=summary,
+            )
         if method == "becky.loops.close":
             if not self._valid_close_params(params):
                 return _PROTOCOL_FAILURE
@@ -493,8 +526,13 @@ class BeckyLoopsBridgeServer:
             "telegram_url": None,
         }
 
-    def _summary(
-        self, row: dict[str, Any], transcript: list[dict[str, Any]]
+    def _public_summary(
+        self,
+        *,
+        row: dict[str, Any],
+        revision: str,
+        transcript: list[dict[str, Any]],
+        summary: LoopSummary,
     ) -> dict[str, Any]:
         hidden_values = {
             self.config.chat_id,
@@ -515,55 +553,38 @@ class BeckyLoopsBridgeServer:
                 value = message.get(key)
                 if value not in (None, ""):
                     hidden_values.add(str(value))
-        texts = [
-            (_safe_public_text(message.get("content"), hidden_values, 900), message)
-            for message in transcript
-            if isinstance(message.get("content"), str)
-            and _bounded_text(message.get("content"), 900)
-        ]
-        user_texts = [text for text, message in texts if message.get("role") == "user"]
-        assistant_texts = [
-            text for text, message in texts if message.get("role") == "assistant"
-        ]
-        summary_source = " ".join(text for text, _ in texts[-4:]).strip()
-        summary = _safe_public_text(
-            summary_source or "No summary text was available.",
-            hidden_values,
-            _MAX_SUMMARY_CHARS,
-        )
-        decisions = [
-            text[:500]
-            for text in user_texts + assistant_texts
-            if re.search(
-                r"\b(decid|agreed|choose|selected|will use|approved)\w*\b", text, re.I
-            )
-        ][-(_MAX_LIST_ITEMS):]
-        unresolved = [text[:500] for text in user_texts if "?" in text][
-            -(_MAX_LIST_ITEMS):
-        ]
-        last_message = texts[-1][1] if texts else {}
-        waiting_on = "user" if last_message.get("role") == "assistant" else "becky"
-        key_events = [
-            {
-                "occurred_at": _utc_datetime(message.get("timestamp")).isoformat(),
-                "text": text[:500],
-            }
-            for text, message in texts[-_MAX_LIST_ITEMS:]
-        ]
         return {
             "schema_version": "1",
             "source_ref": row["source_ref"],
-            "revision": row["revision"],
+            "revision": revision,
             "generated_at": datetime.now(UTC).isoformat(),
-            "summary": summary,
-            "decisions": decisions,
-            "unresolved_items": unresolved,
-            "next_action": user_texts[-1][:500]
-            if user_texts and last_message.get("role") == "user"
-            else None,
-            "waiting_on": waiting_on,
-            "key_events": key_events,
-            "final_outcome": assistant_texts[-1][:1000] if assistant_texts else None,
+            "summary": _safe_public_text(summary.summary, hidden_values, 2_000),
+            "decisions": [
+                _safe_public_text(item, hidden_values, 500)
+                for item in summary.decisions
+            ],
+            "unresolved_items": [
+                _safe_public_text(item, hidden_values, 500)
+                for item in summary.unresolved_items
+            ],
+            "next_action": (
+                _safe_public_text(summary.next_action, hidden_values, 500)
+                if summary.next_action is not None
+                else None
+            ),
+            "waiting_on": summary.waiting_on,
+            "key_events": [
+                {
+                    "occurred_at": event["occurred_at"],
+                    "text": _safe_public_text(event["text"], hidden_values, 500),
+                }
+                for event in summary.key_events
+            ],
+            "final_outcome": (
+                _safe_public_text(summary.final_outcome, hidden_values, 1_000)
+                if summary.final_outcome is not None
+                else None
+            ),
         }
 
     @staticmethod
@@ -707,7 +728,10 @@ def load_becky_loops_config(config_path: Path | None = None) -> BeckyLoopsConfig
 
 
 async def start_becky_loops_bridge(
-    *, config: BeckyLoopsConfig | None, db: Any
+    *,
+    config: BeckyLoopsConfig | None,
+    db: Any,
+    summarizer: LoopSummarizer | None = None,
 ) -> BeckyLoopsBridgeServer | None:
     """Start the opt-in bridge and return its lifecycle handle."""
     if config is None or not config.enabled:
@@ -715,7 +739,15 @@ async def start_becky_loops_bridge(
     try:
         store = SessionDBBeckyLoopsStore(db)
         store._chat_id = config.chat_id
-        server = BeckyLoopsBridgeServer(config=config, store=store)
+        server = BeckyLoopsBridgeServer(
+            config=config,
+            store=store,
+            summarizer=(
+                summarizer
+                if summarizer is not None
+                else LoopSummarizer(AsyncAuxiliarySummaryProvider())
+            ),
+        )
         await server.start()
         return server
     except Exception:

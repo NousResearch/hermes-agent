@@ -1,10 +1,19 @@
 import json
+import logging
+from asyncio import get_running_loop
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 from websockets.asyncio.client import connect
 from websockets.exceptions import InvalidStatus
 
+from gateway.becky_loop_summarizer import (
+    LoopSummary,
+    SummaryUnavailable,
+    _ConversationTooLarge,
+    _SummaryValidationError,
+)
 from gateway.becky_loops import BeckyLoopsBridgeServer, BeckyLoopsConfig
 
 
@@ -56,6 +65,47 @@ class RacingStore(FakeStore):
     def revision_for_topic(self, row: dict, transcript: list[dict]) -> str:
         del row, transcript
         return "sha256:" + "b" * 64
+
+
+def loop_summary() -> LoopSummary:
+    return LoopSummary(
+        summary="Use the smaller layout.",
+        decisions=["The smaller layout was approved."],
+        unresolved_items=["Confirm the installation date."],
+        next_action="Prepare the final plan.",
+        waiting_on="becky",
+        key_events=[
+            {
+                "occurred_at": "2026-08-13T20:00:00+00:00",
+                "text": "The smaller layout was chosen.",
+            }
+        ],
+        final_outcome=None,
+    )
+
+
+class FakeSummarizer:
+    def __init__(
+        self,
+        *,
+        result: LoopSummary | None = None,
+        failure: Exception | None = None,
+    ) -> None:
+        self.result = result or loop_summary()
+        self.failure = failure
+        self.calls: list[dict[str, Any]] = []
+
+    async def summarize(
+        self,
+        *,
+        row: dict[str, Any],
+        transcript: list[dict[str, Any]],
+        deadline: float,
+    ) -> LoopSummary:
+        self.calls.append({"row": row, "transcript": transcript, "deadline": deadline})
+        if self.failure is not None:
+            raise self.failure
+        return self.result
 
 
 class ProjectionDB:
@@ -137,7 +187,9 @@ async def rpc(ws, request_id: int, method: str, params: dict) -> dict:
 
 @pytest.mark.asyncio
 async def test_bridge_auth_ready_capabilities_and_list() -> None:
-    server = BeckyLoopsBridgeServer(config=config(), store=FakeStore())
+    server = BeckyLoopsBridgeServer(
+        config=config(), store=FakeStore(), summarizer=FakeSummarizer()
+    )
     await server.start()
     try:
         async with connect(
@@ -168,7 +220,9 @@ async def test_bridge_auth_ready_capabilities_and_list() -> None:
 
 @pytest.mark.asyncio
 async def test_bridge_rejects_wrong_token_before_accepting_socket() -> None:
-    server = BeckyLoopsBridgeServer(config=config(), store=FakeStore())
+    server = BeckyLoopsBridgeServer(
+        config=config(), store=FakeStore(), summarizer=FakeSummarizer()
+    )
     await server.start()
     try:
         with pytest.raises(InvalidStatus) as caught:
@@ -183,7 +237,9 @@ async def test_bridge_rejects_wrong_token_before_accepting_socket() -> None:
 
 @pytest.mark.asyncio
 async def test_bridge_rejects_duplicate_or_extra_token_query_values() -> None:
-    server = BeckyLoopsBridgeServer(config=config(), store=FakeStore())
+    server = BeckyLoopsBridgeServer(
+        config=config(), store=FakeStore(), summarizer=FakeSummarizer()
+    )
     await server.start()
     try:
         with pytest.raises(InvalidStatus) as caught:
@@ -198,7 +254,9 @@ async def test_bridge_rejects_duplicate_or_extra_token_query_values() -> None:
 
 @pytest.mark.asyncio
 async def test_bridge_returns_structured_protocol_errors() -> None:
-    server = BeckyLoopsBridgeServer(config=config(), store=FakeStore())
+    server = BeckyLoopsBridgeServer(
+        config=config(), store=FakeStore(), summarizer=FakeSummarizer()
+    )
     malformed = await server._dispatch("not-json")
     assert malformed == {
         "jsonrpc": "2.0",
@@ -216,29 +274,14 @@ async def test_bridge_returns_structured_protocol_errors() -> None:
     assert boolean_id["id"] is None
 
 
-def test_public_text_uses_force_redaction_and_title_fallback() -> None:
+def test_public_index_uses_force_redaction_and_title_fallback() -> None:
     store = FakeStore()
     store.rows[0]["title"] = "123456789"
-    server = BeckyLoopsBridgeServer(config=config(), store=store)
+    server = BeckyLoopsBridgeServer(
+        config=config(), store=store, summarizer=FakeSummarizer()
+    )
     index = server._public_index(store.rows[0])
     assert index["title"] == "Telegram loop"
-    redacted = server._summary(
-        store.rows[0],
-        [{"role": "user", "content": "AWS key=AKIA1234567890123456", "timestamp": 0}],
-    )
-    assert "AKIA1234567890123456" not in json.dumps(redacted)
-
-
-def test_public_text_does_not_redact_short_id_substrings() -> None:
-    store = FakeStore()
-    store.rows[0]["session_id"] = "s"
-    store.rows[0]["thread_id"] = "t"
-    server = BeckyLoopsBridgeServer(config=config(), store=store)
-    summary = server._summary(
-        store.rows[0],
-        [{"role": "user", "content": "This is a useful plan.", "timestamp": 0}],
-    )
-    assert summary["summary"] == "This is a useful plan."
 
 
 @pytest.mark.asyncio
@@ -256,7 +299,25 @@ async def test_bridge_never_advertises_unproven_topic_control_or_identifiers() -
         port=0,
         topic_control="bot_api_private_topic",
     )
-    server = BeckyLoopsBridgeServer(config=bridge_config, store=store)
+    unsafe_summary = LoopSummary(
+        summary="Session session-1 in thread-9 for chat 123456789 needs review.",
+        decisions=["Use session-1 in thread-9."],
+        unresolved_items=["Does 123456789 need review?"],
+        next_action="Review session-1.",
+        waiting_on="becky",
+        key_events=[
+            {
+                "occurred_at": "2026-08-13T20:00:00+00:00",
+                "text": "thread-9 was selected for 123456789.",
+            }
+        ],
+        final_outcome=None,
+    )
+    server = BeckyLoopsBridgeServer(
+        config=bridge_config,
+        store=store,
+        summarizer=FakeSummarizer(result=unsafe_summary),
+    )
     await server.start()
     try:
         async with connect(
@@ -286,8 +347,11 @@ async def test_bridge_never_advertises_unproven_topic_control_or_identifiers() -
 
 
 @pytest.mark.asyncio
-async def test_bridge_summarize_is_bounded_and_revision_bound() -> None:
-    server = BeckyLoopsBridgeServer(config=config(), store=FakeStore())
+async def test_bridge_summarize_delegates_to_injected_summarizer() -> None:
+    store = FakeStore()
+    store.transcripts["session-1"][0]["content"] = "RAW TRANSCRIPT MUST NOT RETURN"
+    summarizer = FakeSummarizer()
+    server = BeckyLoopsBridgeServer(config=config(), store=store, summarizer=summarizer)
     await server.start()
     try:
         async with connect(
@@ -307,9 +371,30 @@ async def test_bridge_summarize_is_bounded_and_revision_bound() -> None:
                 },
             )
             assert summary["result"]["source_ref"] == SOURCE_REF
-            assert len(summary["result"]["summary"]) <= 2000
-            assert summary["result"]["decisions"]
-            assert summary["result"]["waiting_on"] == "user"
+            assert summary["result"] == {
+                "schema_version": "1",
+                "source_ref": SOURCE_REF,
+                "revision": REVISION,
+                "generated_at": summary["result"]["generated_at"],
+                "summary": "Use the smaller layout.",
+                "decisions": ["The smaller layout was approved."],
+                "unresolved_items": ["Confirm the installation date."],
+                "next_action": "Prepare the final plan.",
+                "waiting_on": "becky",
+                "key_events": [
+                    {
+                        "occurred_at": "2026-08-13T20:00:00+00:00",
+                        "text": "The smaller layout was chosen.",
+                    }
+                ],
+                "final_outcome": None,
+            }
+            assert len(summarizer.calls) == 1
+            call = summarizer.calls[0]
+            assert call["row"] == store.rows[0]
+            assert call["transcript"] == store.transcripts["session-1"]
+            assert call["deadline"] > get_running_loop().time()
+            assert "RAW TRANSCRIPT MUST NOT RETURN" not in json.dumps(summary)
 
             conflict = await rpc(
                 ws,
@@ -331,8 +416,91 @@ async def test_bridge_summarize_is_bounded_and_revision_bound() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "code"),
+    [
+        (_ConversationTooLarge(), "conversation_too_large"),
+        (_SummaryValidationError(), "summary_invalid"),
+        (SummaryUnavailable(), "summary_timeout"),
+    ],
+)
+async def test_bridge_maps_summary_failures_without_transcript_fallback(
+    failure: Exception, code: str
+) -> None:
+    store = FakeStore()
+    store.transcripts["session-1"][0]["content"] = "RAW TRANSCRIPT MUST NOT RETURN"
+    server = BeckyLoopsBridgeServer(
+        config=config(), store=store, summarizer=FakeSummarizer(failure=failure)
+    )
+    await server.start()
+    try:
+        async with connect(
+            f"ws://127.0.0.1:{server.bound_port}/api/ws?token={'t' * 64}"
+        ) as ws:
+            await ws.recv()
+            response = await rpc(
+                ws,
+                1,
+                "becky.loops.summarize",
+                {
+                    "source_ref": SOURCE_REF,
+                    "expected_revision": REVISION,
+                    "force": False,
+                },
+            )
+            assert response == {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {"code": -32000, "message": code},
+            }
+            assert "RAW TRANSCRIPT MUST NOT RETURN" not in json.dumps(response)
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_bridge_hides_unexpected_summary_error_details_from_logs(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    provider_error = "PROVIDER_OUTPUT_SENTINEL"
+    server = BeckyLoopsBridgeServer(
+        config=config(),
+        store=FakeStore(),
+        summarizer=FakeSummarizer(failure=RuntimeError(provider_error)),
+    )
+    await server.start()
+    try:
+        async with connect(
+            f"ws://127.0.0.1:{server.bound_port}/api/ws?token={'t' * 64}"
+        ) as ws:
+            await ws.recv()
+            with caplog.at_level(logging.WARNING, logger="gateway.becky_loops"):
+                response = await rpc(
+                    ws,
+                    1,
+                    "becky.loops.summarize",
+                    {
+                        "source_ref": SOURCE_REF,
+                        "expected_revision": REVISION,
+                        "force": False,
+                    },
+                )
+            assert response == {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "error": {"code": -32600, "message": "protocol"},
+            }
+            assert provider_error not in caplog.text
+    finally:
+        await server.stop()
+
+
+@pytest.mark.asyncio
 async def test_bridge_rechecks_transcript_revision_before_summarizing() -> None:
-    server = BeckyLoopsBridgeServer(config=config(), store=RacingStore())
+    summarizer = FakeSummarizer()
+    server = BeckyLoopsBridgeServer(
+        config=config(), store=RacingStore(), summarizer=summarizer
+    )
     await server.start()
     try:
         async with connect(
@@ -353,6 +521,7 @@ async def test_bridge_rechecks_transcript_revision_before_summarizing() -> None:
                 "code": -32000,
                 "message": "revision_conflict",
             }
+            assert summarizer.calls == []
     finally:
         await server.stop()
 
@@ -380,7 +549,9 @@ def test_session_store_coalesces_restarted_sessions_for_one_topic() -> None:
 
 @pytest.mark.asyncio
 async def test_bridge_close_and_reopen_fail_closed_without_topic_control() -> None:
-    server = BeckyLoopsBridgeServer(config=config(), store=FakeStore())
+    server = BeckyLoopsBridgeServer(
+        config=config(), store=FakeStore(), summarizer=FakeSummarizer()
+    )
     await server.start()
     try:
         async with connect(

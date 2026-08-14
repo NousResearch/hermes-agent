@@ -1416,13 +1416,16 @@ def _terminate_verified_owner(
     return None
 
 
-def write_planned_stop_marker(target_pid: int) -> bool:
-    """Record that ``target_pid`` is being stopped intentionally: unexpected SIGTERM exits non-zero
-    so service managers revive the gateway; the CLI writes this first so a deliberate stop exits
-    cleanly."""
+def write_planned_stop_marker(
+    target_pid: int,
+    *,
+    trigger_watcher: bool = True,
+) -> bool:
+    """Record an intentional stop; reserve for the signal handler when watcher triggering is off."""
     return _write_marker(_get_planned_stop_marker_path(), {
         "target_pid": target_pid, "target_start_time": _get_process_start_time(target_pid),
-        "stopper_pid": os.getpid(), "written_at": _utc_now_iso(),
+        "stopper_pid": os.getpid(), "trigger_watcher": trigger_watcher,
+        "written_at": _utc_now_iso(),
     })
 
 
@@ -1436,9 +1439,14 @@ def consume_planned_stop_marker_for_self() -> bool:
 def planned_stop_marker_targets_self() -> bool:
     """Non-destructive watcher probe: True when a live planned-stop marker names us. Never unlinks a
     matching marker (the shutdown handler does the authoritative consume); malformed/expired ones
-    are still cleaned up; markers naming another PID are left alone."""
+    are still cleaned up; markers naming another PID or reserved for the signal handler are left
+    alone."""
     parsed = _read_live_pid_marker(_get_planned_stop_marker_path(), _PLANNED_STOP_MARKER_TTL_S)
-    return parsed is not None and _pid_marker_names_self(parsed[1], parsed[2])
+    return (
+        parsed is not None
+        and parsed[0].get("trigger_watcher", True) is not False
+        and _pid_marker_names_self(parsed[1], parsed[2])
+    )
 
 
 def get_running_pid(

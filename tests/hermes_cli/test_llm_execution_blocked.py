@@ -54,7 +54,13 @@ class TestDirectRaise:
             run_llm_execution_middleware({"model": "x"}, terminal)
 
         assert excinfo.value.reason == "budget exceeded"
-        assert excinfo.value.metadata == {"budget_usd": 5.0}
+        # The runner backfills checked_by from the raising callback's own
+        # name when the plugin didn't set it — original metadata is preserved
+        # alongside it, not replaced.
+        assert excinfo.value.metadata == {
+            "budget_usd": 5.0,
+            "checked_by": "blocking_middleware",
+        }
         assert provider_called == [], "terminal provider call must not happen when blocked"
 
     def test_next_call_result_discarded_if_middleware_still_raises(self, monkeypatch):
@@ -187,3 +193,51 @@ class TestRegressionNormalBehaviorUnaffected:
         except LLMExecutionBlocked as caught:
             assert caught.metadata["budget_usd"] == 5.0
             assert caught.metadata["session_id"] == "abc123"
+
+
+class TestCheckedByBackfill:
+    """checked_by envelope convention (docs/plugins/hook-taxonomy.md): required
+    on the deny-path, but a plugin never has to set it itself — the runner
+    backfills it from the raising callback's own registered name."""
+
+    def test_checked_by_backfilled_when_omitted(self, monkeypatch):
+        def budget_guard(request, next_call, **kw):
+            raise LLMExecutionBlocked("budget exceeded")
+
+        _set_callbacks(monkeypatch, [budget_guard])
+
+        with pytest.raises(LLMExecutionBlocked) as excinfo:
+            run_llm_execution_middleware({"model": "x"}, lambda r: {"ok": True})
+
+        assert excinfo.value.metadata["checked_by"] == "budget_guard"
+
+    def test_checked_by_not_overwritten_when_plugin_sets_it(self, monkeypatch):
+        def budget_guard(request, next_call, **kw):
+            raise LLMExecutionBlocked(
+                "budget exceeded", metadata={"checked_by": "amp-governance"}
+            )
+
+        _set_callbacks(monkeypatch, [budget_guard])
+
+        with pytest.raises(LLMExecutionBlocked) as excinfo:
+            run_llm_execution_middleware({"model": "x"}, lambda r: {"ok": True})
+
+        # The plugin's own attribution wins — the runner only fills a gap,
+        # it never overrides an explicit value.
+        assert excinfo.value.metadata["checked_by"] == "amp-governance"
+
+    def test_checked_by_reflects_raising_callback_in_a_multi_middleware_chain(
+        self, monkeypatch
+    ):
+        def observer_like(request, next_call, **kw):
+            return next_call(request)
+
+        def budget_guard(request, next_call, **kw):
+            raise LLMExecutionBlocked("budget exceeded")
+
+        _set_callbacks(monkeypatch, [observer_like, budget_guard])
+
+        with pytest.raises(LLMExecutionBlocked) as excinfo:
+            run_llm_execution_middleware({"model": "x"}, lambda r: {"ok": True})
+
+        assert excinfo.value.metadata["checked_by"] == "budget_guard"

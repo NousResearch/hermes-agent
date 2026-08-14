@@ -58,6 +58,34 @@ domain signal with true interpreter-level events (`SystemExit`,
 the runner is self-documenting — it states, at the point a reviewer is
 reading the runner, "this must not be swallowed by the fallthrough path."
 
+**The `checked_by` envelope.** Deny-path metadata (block/gate decisions, not
+pure observers) may carry a small host-owned convention rather than growing
+new first-class exception fields:
+
+```python
+raise LLMExecutionBlocked(
+    "Session cost budget exceeded",
+    metadata={
+        "checked_by": "budget_guard",       # required on deny-path
+        "decision": "block",
+        "chain": ["budget_guard", "..."],   # optional, order that ran
+    },
+)
+```
+
+- `reason` stays the human/log-facing string; the envelope lives in `metadata`
+  so existing raises and their tests don't churn.
+- `checked_by` is **required on the deny-path**, but a plugin never has to set
+  it itself: the runner backfills it from the raising callback's own
+  registered name (`_run_execution_chain`'s `except LLMExecutionBlocked`
+  site) if the plugin omitted it. The host fills the gap rather than failing
+  closed on a missing key — a bare `raise LLMExecutionBlocked("...")` stays a
+  valid, working call site.
+- `decision` / `chain` are conventions a plugin may set for richer
+  provenance; the runner does not require or backfill them.
+- Pure observer hooks are not part of this envelope — it applies only to
+  deny/gate paths like `llm_execution`.
+
 ### Shape B — First-valid-wins
 
 Used by `#58524` (`classify_api_error`). A hook needs to supply an answer

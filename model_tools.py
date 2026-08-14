@@ -680,6 +680,43 @@ class _CallIds:
         """Same fields with None -> "" (hook/middleware wire contract)."""
         return {k: v or "" for k, v in asdict(self).items()}
 
+def project_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """Strip arguments not declared in the tool's registered schema.
+
+    Prevents hidden control-plane parameters (e.g. ``force`` on the terminal
+    tool) from reaching handlers when the model includes them in the tool
+    call arguments.  Schemas that explicitly set ``additionalProperties: true``
+    on the top-level parameters object are respected — unknown arguments are
+    preserved for tools that intentionally accept them.
+    """
+    if not args or not isinstance(args, dict):
+        return args
+
+    schema = registry.get_schema(tool_name)
+    if not schema:
+        return args
+
+    params = schema.get("parameters") or {}
+    properties = params.get("properties")
+    if not properties:
+        return args
+
+    # JSON Schema: missing additionalProperties defaults to True (allow extra).
+    # Only strip when a schema explicitly forbids them.
+    if params.get("additionalProperties") is not False:
+        return args
+
+    declared = set(properties.keys())
+    unknown = set(args.keys()) - declared
+    if not unknown:
+        return args
+
+    logger.warning(
+        "project_tool_args: stripped unknown arguments for %s: %s",
+        tool_name, ", ".join(sorted(unknown)),
+    )
+    return {k: v for k, v in args.items() if k in declared}
+
 
 def _tool_result_observer_fields(tool_name: str, result: Any) -> tuple[str, Optional[str], Optional[str]]:
     """Derive (status, error_type, error_message) from a tool result for observer hooks."""
@@ -919,6 +956,8 @@ def handle_function_call(
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
+    # Schema projection now happens inside registry.dispatch() so middleware
+    # can still rewrite arguments before they are validated at the handler.
     trace = list(tool_request_middleware_trace or [])
     function_name = _LEGACY_TOOL_ALIASES.get(function_name, function_name)
     ids = _CallIds(task_id, session_id, tool_call_id, turn_id, api_request_id, conversation_id)

@@ -209,3 +209,55 @@ def test_no_base_url_passes_verbatim(llamacpp_profile):
         reasoning_config={"enabled": True, "effort": "high"}
     )
     assert extra["chat_template_kwargs"]["reasoning_effort"] == "high"
+
+
+# ── thinking-off control ──────────────────────────────────────────
+
+
+def test_disabled_emits_enable_thinking_false_boolean(llamacpp_profile):
+    extra, top = llamacpp_profile.build_api_kwargs_extras(
+        reasoning_config={"enabled": False}
+    )
+    assert extra == {"chat_template_kwargs": {"enable_thinking": False}}
+    # a string "false" is a server-side 400 - the type matters
+    assert extra["chat_template_kwargs"]["enable_thinking"] is False
+    assert top == {}
+
+
+def test_effort_none_emits_enable_thinking_false(llamacpp_profile):
+    extra, _ = llamacpp_profile.build_api_kwargs_extras(
+        reasoning_config={"enabled": True, "effort": "none"}
+    )
+    assert extra == {"chat_template_kwargs": {"enable_thinking": False}}
+
+
+def test_disabled_omitted_when_template_has_no_toggle(
+    llamacpp_profile, monkeypatch
+):
+    probe_pkg = _probe_pkg(llamacpp_profile)
+    caps = probe_pkg.TemplateCaps(
+        has_reasoning_effort=False,
+        accepted_efforts=(),
+        remapped_efforts={},
+        default_effort=None,
+        supports_thinking_toggle=False,
+        tolerated_efforts=(),
+    )
+    _fake_probe(monkeypatch, llamacpp_profile, caps)
+    extra, _ = llamacpp_profile.build_api_kwargs_extras(
+        reasoning_config={"enabled": False},
+        base_url="http://rig:8080/v1",
+        model="m",
+    )
+    assert extra == {}
+
+
+def test_disabled_emitted_when_template_has_toggle(llamacpp_profile, monkeypatch):
+    probe_pkg = _probe_pkg(llamacpp_profile)
+    _fake_probe(monkeypatch, llamacpp_profile, _qwen38_caps(probe_pkg))
+    extra, _ = llamacpp_profile.build_api_kwargs_extras(
+        reasoning_config={"enabled": False},
+        base_url="http://rig:8080/v1",
+        model="m",
+    )
+    assert extra["chat_template_kwargs"]["enable_thinking"] is False

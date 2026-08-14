@@ -579,13 +579,19 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     except Exception:
         active_profile = "default"
     # Home string for the message text: prefer the agent's own home so the
-    # paths named match the profile just resolved. The root (where the
-    # default profile's data lives) comes from get_default_hermes_root():
-    # get_hermes_home() on a bound profile session is the PROFILE dir, which
-    # would misname the default profile's paths.
-    from hermes_constants import get_default_hermes_root as _root_fn
-    _home_str = str(_agent_home_path if _agent_home_path is not None else get_hermes_home())
-    _root_str = str(_root_fn())
+    # paths named match the profile just resolved. When we have an explicit
+    # agent home, the root (where the default profile's data lives) comes
+    # from get_default_hermes_root(): get_hermes_home() on a bound profile
+    # session is the PROFILE dir, which would misname the default profile's
+    # paths. Without an agent home, keep the ambient resolution byte-identical
+    # to the legacy behavior (and patchable via this module's get_hermes_home).
+    if _agent_home_path is not None:
+        from hermes_constants import get_default_hermes_root as _root_fn
+
+        _home_str = str(_agent_home_path)
+        _root_str = str(_root_fn())
+    else:
+        _home_str = _root_str = str(get_hermes_home())
     if active_profile == "default":
         post_workspace_parts.append(
             "Active Hermes profile: default. Other profiles (if any) live "

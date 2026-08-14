@@ -196,3 +196,119 @@ def test_standalone_send_drops_unicode_digit_thread_ts(
     assert len(fake_session.calls) == 1
     _token, body = fake_session.calls[0]
     assert "thread_ts" not in body
+
+
+class _FakeAsyncWebClient:
+    """Records ``chat_postMessage`` / ``files_upload_v2`` kwargs for the media
+    path so tests can assert the ``thread_ts`` that reaches Slack uploads."""
+
+    created: list = []
+
+    def __init__(self, token=None, **_kwargs):
+        self.token = token
+        self.post_calls: list = []
+        self.upload_calls: list = []
+        _FakeAsyncWebClient.created.append(self)
+
+    async def chat_postMessage(self, **kwargs):
+        self.post_calls.append(kwargs)
+        return {"ok": True, "ts": "1718000000.999999"}
+
+    async def files_upload_v2(self, **kwargs):
+        self.upload_calls.append(kwargs)
+        return {"ok": True, "file": {"timestamp": "1718000000.888888"}}
+
+
+@pytest.fixture
+def _fake_web_client(monkeypatch):
+    """Inject a recording ``AsyncWebClient`` for ``_standalone_send``'s media
+    path (function-local ``from slack_sdk.web.async_client import ...``)."""
+    _ensure_slack_mock(monkeypatch)
+    _FakeAsyncWebClient.created = []
+    monkeypatch.setitem(
+        sys.modules,
+        "slack_sdk.web.async_client",
+        SimpleNamespace(AsyncWebClient=_FakeAsyncWebClient),
+    )
+    return _FakeAsyncWebClient
+
+
+def test_standalone_send_media_upload_drops_invalid_thread_ts(
+    tmp_path, _standalone_send, _fake_web_client
+):
+    """The coerced ``thread_ts`` must also gate the ``files_upload_v2`` media
+    path — a bare numeric id has to be dropped from the upload, not just from
+    the text ``chat.postMessage``, or media cron sends fail with
+    ``invalid_thread_ts`` (#86264)."""
+    media = tmp_path / "chart.png"
+    media.write_bytes(b"\x89PNG\r\n")
+
+    pconfig = SimpleNamespace(enabled=True, token="good-token", extra={})
+    result = asyncio.run(
+        _standalone_send(
+            pconfig,
+            "C123",
+            "",
+            thread_id="15900",
+            media_files=[(str(media), False)],
+            caption="here you go",
+        )
+    )
+
+    assert "error" not in result
+    client = _fake_web_client.created[-1]
+    assert len(client.upload_calls) == 1
+    assert "thread_ts" not in client.upload_calls[0]
+    assert client.upload_calls[0]["initial_comment"]
+
+
+def test_standalone_send_media_upload_keeps_valid_thread_ts(
+    tmp_path, _standalone_send, _fake_web_client
+):
+    """A well-formed dotted ts is preserved as the upload's ``thread_ts`` so a
+    valid media reply still lands in-thread."""
+    media = tmp_path / "chart.png"
+    media.write_bytes(b"\x89PNG\r\n")
+
+    pconfig = SimpleNamespace(enabled=True, token="good-token", extra={})
+    result = asyncio.run(
+        _standalone_send(
+            pconfig,
+            "C123",
+            "",
+            thread_id="1718000000.123456",
+            media_files=[(str(media), False)],
+            caption="here you go",
+        )
+    )
+
+    assert "error" not in result
+    client = _fake_web_client.created[-1]
+    assert len(client.upload_calls) == 1
+    assert client.upload_calls[0].get("thread_ts") == "1718000000.123456"
+
+
+def test_standalone_send_caption_fallback_drops_invalid_thread_ts(
+    tmp_path, _standalone_send, _fake_web_client
+):
+    """When the media file is missing, the caption rides a fallback
+    ``chat.postMessage`` — that request must drop an invalid ``thread_ts`` too."""
+    missing = tmp_path / "gone.png"
+
+    pconfig = SimpleNamespace(enabled=True, token="good-token", extra={})
+    result = asyncio.run(
+        _standalone_send(
+            pconfig,
+            "C123",
+            "",
+            thread_id="15900",
+            media_files=[(str(missing), False)],
+            caption="caption text",
+        )
+    )
+
+    assert "warnings" in result
+    client = _fake_web_client.created[-1]
+    assert client.upload_calls == []
+    assert len(client.post_calls) == 1
+    assert "thread_ts" not in client.post_calls[0]

@@ -52,6 +52,67 @@ class FakeStore:
         return list(self.transcripts.get(session_id, []))
 
 
+class RacingStore(FakeStore):
+    def revision_for_topic(self, row: dict, transcript: list[dict]) -> str:
+        del row, transcript
+        return "sha256:" + "b" * 64
+
+
+class ProjectionDB:
+    def __init__(self) -> None:
+        self.rows = [
+            {
+                "id": "root",
+                "source": "telegram",
+                "chat_id": "123456789",
+                "thread_id": "root-thread",
+                "parent_session_id": None,
+                "model_config": "{}",
+                "title": "Root",
+                "started_at": 1_755_104_400.0,
+                "last_active": 1_755_104_460.0,
+                "message_count": 1,
+                "ended_at": None,
+            },
+            {
+                "id": "branch",
+                "source": "telegram",
+                "chat_id": "123456789",
+                "thread_id": "branch-thread",
+                "parent_session_id": "root",
+                "model_config": "{}",
+                "title": "Branch",
+                "started_at": 1_755_104_400.0,
+                "last_active": 1_755_104_460.0,
+                "message_count": 1,
+                "ended_at": None,
+            },
+            {
+                "id": "delegate",
+                "source": "telegram",
+                "chat_id": "123456789",
+                "thread_id": "delegate-thread",
+                "parent_session_id": None,
+                "model_config": '{"_delegate_from": "root"}',
+                "title": "Delegate",
+                "started_at": 1_755_104_400.0,
+                "last_active": 1_755_104_460.0,
+                "message_count": 1,
+                "ended_at": None,
+            },
+        ]
+
+    def list_sessions_rich(self, **kwargs: object) -> list[dict]:
+        del kwargs
+        return list(self.rows)
+
+    def get_messages(
+        self, session_id: str, include_inactive: bool = False
+    ) -> list[dict]:
+        del session_id, include_inactive
+        return [{"role": "user", "content": "hello", "timestamp": 1_755_104_400.0}]
+
+
 def config(*, port: int = 0) -> BeckyLoopsConfig:
     return BeckyLoopsConfig(
         enabled=True,
@@ -133,6 +194,26 @@ async def test_bridge_rejects_duplicate_or_extra_token_query_values() -> None:
         assert caught.value.response.status_code == 401
     finally:
         await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_bridge_returns_structured_protocol_errors() -> None:
+    server = BeckyLoopsBridgeServer(config=config(), store=FakeStore())
+    malformed = await server._dispatch("not-json")
+    assert malformed == {
+        "jsonrpc": "2.0",
+        "id": None,
+        "error": {"code": -32600, "message": "protocol"},
+    }
+    boolean_id = await server._dispatch(
+        json.dumps({
+            "jsonrpc": "2.0",
+            "id": True,
+            "method": "becky.loops.list",
+            "params": {},
+        })
+    )
+    assert boolean_id["id"] is None
 
 
 @pytest.mark.asyncio
@@ -222,6 +303,41 @@ async def test_bridge_summarize_is_bounded_and_revision_bound() -> None:
             }
     finally:
         await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_bridge_rechecks_transcript_revision_before_summarizing() -> None:
+    server = BeckyLoopsBridgeServer(config=config(), store=RacingStore())
+    await server.start()
+    try:
+        async with connect(
+            f"ws://127.0.0.1:{server.bound_port}/api/ws?token={'t' * 64}"
+        ) as ws:
+            await ws.recv()
+            response = await rpc(
+                ws,
+                1,
+                "becky.loops.summarize",
+                {
+                    "source_ref": SOURCE_REF,
+                    "expected_revision": REVISION,
+                    "force": False,
+                },
+            )
+            assert response["error"] == {
+                "code": -32000,
+                "message": "revision_conflict",
+            }
+    finally:
+        await server.stop()
+
+
+def test_session_store_excludes_branch_delegate_and_tool_children() -> None:
+    from gateway.becky_loops import SessionDBBeckyLoopsStore
+
+    store = SessionDBBeckyLoopsStore(ProjectionDB())
+    rows = store.list_topics("123456789")
+    assert [row["title"] for row in rows] == ["Root"]
 
 
 @pytest.mark.asyncio

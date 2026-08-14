@@ -77,6 +77,10 @@ class BeckyLoopsStore(Protocol):
 
     def transcript(self, session_id: str) -> list[dict[str, Any]]: ...
 
+    def revision_for_topic(
+        self, row: dict[str, Any], transcript: list[dict[str, Any]]
+    ) -> str: ...
+
 
 def _utc_datetime(value: Any) -> datetime:
     if isinstance(value, datetime):
@@ -165,6 +169,8 @@ class SessionDBBeckyLoopsStore:
         )
         result: list[dict[str, Any]] = []
         for raw in rows:
+            if self._hidden_child(raw):
+                continue
             if str(raw.get("chat_id") or "") != str(chat_id):
                 continue
             thread_id = str(raw.get("thread_id") or "").strip()
@@ -175,6 +181,7 @@ class SessionDBBeckyLoopsStore:
                 continue
             ref = source_ref_for(chat_id=str(chat_id), thread_id=thread_id)
             transcript = self.transcript(session_id)
+            revision_input = {**raw, "source_ref": ref}
             source_state = "active" if raw.get("ended_at") is None else "closed"
             item = {
                 "source_ref": ref,
@@ -182,7 +189,7 @@ class SessionDBBeckyLoopsStore:
                     raw.get("title") or raw.get("preview") or "Telegram loop", 128
                 ),
                 "source_state": source_state,
-                "revision": revision_for({**raw, "source_ref": ref}, transcript),
+                "revision": revision_for(revision_input, transcript),
                 "message_count": max(
                     0, int(raw.get("message_count") or len(transcript))
                 ),
@@ -193,6 +200,7 @@ class SessionDBBeckyLoopsStore:
                 "telegram_url": None,
                 "session_id": session_id,
                 "thread_id": thread_id,
+                "_revision_input": revision_input,
             }
             self._source_rows[ref] = item
             result.append(item)
@@ -211,6 +219,32 @@ class SessionDBBeckyLoopsStore:
 
     def transcript(self, session_id: str) -> list[dict[str, Any]]:
         return self._db.get_messages(session_id, include_inactive=False)
+
+    @staticmethod
+    def _hidden_child(row: dict[str, Any]) -> bool:
+        if row.get("parent_session_id") not in (None, ""):
+            return True
+        model_config = row.get("model_config")
+        if isinstance(model_config, str):
+            try:
+                model_config = json.loads(model_config)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                model_config = None
+        if isinstance(model_config, dict) and (
+            model_config.get("_branched_from") is not None
+            or model_config.get("_delegate_from") is not None
+        ):
+            return True
+        return str(row.get("source") or "") == "tool"
+
+    @staticmethod
+    def revision_for_topic(
+        row: dict[str, Any], transcript: list[dict[str, Any]]
+    ) -> str:
+        revision_input = row.get("_revision_input")
+        if not isinstance(revision_input, dict):
+            revision_input = row
+        return revision_for(revision_input, transcript)
 
 
 class BeckyLoopsBridgeServer:
@@ -315,7 +349,10 @@ class BeckyLoopsBridgeServer:
             or not isinstance(request.get("params"), dict)
         ):
             return self._error(
-                request_id if isinstance(request_id, int) else None, "protocol"
+                request_id
+                if isinstance(request_id, int) and not isinstance(request_id, bool)
+                else None,
+                "protocol",
             )
         method = request["method"]
         params = request["params"]
@@ -374,7 +411,12 @@ class BeckyLoopsBridgeServer:
             # test/store implementations that supply an explicit revision
             # contract-compatible while the SessionDB store still recomputes it
             # on every list call.
-            current_revision = str(row.get("revision") or "")
+            revision_fn = getattr(self.store, "revision_for_topic", None)
+            current_revision = (
+                revision_fn(row, transcript)
+                if callable(revision_fn)
+                else str(row.get("revision") or "")
+            )
             if current_revision != expected_revision:
                 raise _RemoteFailure("revision_conflict")
             return self._summary(row, transcript)
@@ -421,6 +463,19 @@ class BeckyLoopsBridgeServer:
             str(row.get("thread_id") or ""),
             str(row.get("source_ref") or ""),
         }
+        for message in transcript:
+            for key in (
+                "id",
+                "platform_message_id",
+                "telegram_message_id",
+                "chat_id",
+                "thread_id",
+                "session_id",
+                "user_id",
+            ):
+                value = message.get(key)
+                if value not in (None, ""):
+                    hidden_values.add(str(value))
         texts = [
             (_safe_public_text(message.get("content"), hidden_values, 900), message)
             for message in transcript
@@ -511,15 +566,12 @@ class BeckyLoopsBridgeServer:
         )
 
     @staticmethod
-    def _error(request_id: int | None, code: str) -> str:
-        return json.dumps(
-            {
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "error": {"code": -32600, "message": code},
-            },
-            separators=(",", ":"),
-        )
+    def _error(request_id: int | None, code: str) -> dict[str, Any]:
+        return {
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "error": {"code": -32600, "message": code},
+        }
 
     @staticmethod
     def _remote_error(request_id: int | None, code: str) -> dict[str, Any]:

@@ -7,6 +7,7 @@ import os
 import shutil
 import stat
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Union
 from urllib.parse import urlparse
@@ -88,6 +89,108 @@ def _restore_file_mode(path: Path, mode: "int | None") -> None:
         pass
 
 
+_IS_WINDOWS = os.name == "nt"
+
+# Windows rename failures that can be caused by another handle on the target
+# rather than by a permission problem.  ``os.replace`` onto a file that any
+# other handle has open is denied because CPython opens files without
+# ``FILE_SHARE_DELETE``:
+#
+#   5  ERROR_ACCESS_DENIED    — what a held *target* handle actually reports
+#   32 ERROR_SHARING_VIOLATION — reported when the *source* temp file is held
+#   33 ERROR_LOCK_VIOLATION    — byte-range lock on the target
+#
+# Measured on Windows 11 (build 26200, CPython 3.11): a plain reader on the
+# target — in-process or cross-process — yields winerror 5, NOT 32.  Keying
+# recovery on 32 alone therefore misses every real occurrence of this bug.
+# These codes are ambiguous (a genuine ACL denial is also 5), which is why
+# recovery is bounded and any still-failing write is re-raised unchanged
+# rather than being classified up front.
+_WINDOWS_CONTENDED_REPLACE_ERRORS = frozenset({5, 32, 33})
+
+# Retry budget for the atomic rename.  A rename that wins here keeps the write
+# fully atomic, so the budget is sized to cover a realistic contended hold: an
+# observed desktop auth-init holds auth.json past 100 ms, while an ordinary
+# status read is ~0.05 ms.  Measured on Windows 11 build 26200, this recovers
+# holds up to ~200 ms atomically (~310 ms worst case).
+#
+# The cap matters as much as the attempt count.  gateway_state.json is
+# rewritten at every turn boundary, so a permanently-held target pays the full
+# budget on every write: a longer 6 x 20..400 ms budget cost ~1.3 s per write
+# under a persistent reader, versus ~0.3 s here for the same atomic coverage.
+# Jittered so concurrent writers don't retry in lockstep.
+_REPLACE_RETRY_ATTEMPTS = 4
+_REPLACE_RETRY_BASE_DELAY_S = 0.02
+_REPLACE_RETRY_MAX_DELAY_S = 0.1
+
+
+def _is_contended_windows_replace_error(exc: OSError) -> bool:
+    """Return True for Windows rename failures a retry might clear.
+
+    Only a *candidate* classification: ``ERROR_ACCESS_DENIED`` covers both a
+    concurrent handle and a real ACL denial, and the two are not reliably
+    distinguishable up front.  Probing the target with ``os.access`` does not
+    work — ``os.replace`` needs delete-child rights on the *parent directory*,
+    so a directory-level denial reports the target as writable.  Instead of
+    guessing, both cases enter the same bounded retry and a genuine denial
+    falls through to the caller with its original error.
+    """
+    return _IS_WINDOWS and getattr(exc, "winerror", None) in (
+        _WINDOWS_CONTENDED_REPLACE_ERRORS
+    )
+
+
+def _rewrite_in_place(tmp_str: str, real_path: str) -> None:
+    """Overwrite *real_path* with the contents of *tmp_str*, in place.
+
+    Last-resort path for a target whose handle is still held after the retry
+    budget: writing through the existing file works where renaming onto it
+    does not.  Unlike ``shutil.copyfile`` this never truncates the target to
+    zero first — a concurrent reader would otherwise be able to observe an
+    empty ``auth.json`` / ``gateway_state.json`` mid-write (measured: a
+    4-thread poller sees a 0-byte read during a plain copyfile).  A single
+    ``os.write`` of the full payload followed by ``ftruncate`` keeps the
+    visible content going straight from old to new.
+
+    This is still not atomic — it is a strictly smaller window than a copy,
+    not the absence of one — so it runs only after the rename has genuinely
+    failed.  Writing through the target also preserves its ACL, which
+    ``os.replace`` does not (the temp file's inherited ACL wins there).
+    """
+    with open(tmp_str, "rb") as src:
+        data = src.read()
+    flags = os.O_WRONLY | getattr(os, "O_BINARY", 0)
+    fd = os.open(real_path, flags)
+    try:
+        os.lseek(fd, 0, os.SEEK_SET)
+        written = 0
+        while written < len(data):
+            written += os.write(fd, data[written:])
+        os.ftruncate(fd, len(data))
+        try:
+            os.fsync(fd)
+        except OSError:
+            pass
+    finally:
+        os.close(fd)
+    os.unlink(tmp_str)
+
+
+def _copy_fallback(tmp_str: str, real_path: str) -> None:
+    """Copy/fsync/unlink fallback for cross-device and bind-mount renames."""
+    shutil.copyfile(tmp_str, real_path)
+    try:
+        shutil.copystat(tmp_str, real_path)
+    except OSError:
+        pass
+    try:
+        with open(real_path, "rb") as f:
+            os.fsync(f.fileno())
+    except OSError:
+        pass
+    os.unlink(tmp_str)
+
+
 def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     """Atomically move *tmp_path* onto *target*, preserving symlinks.
 
@@ -101,9 +204,21 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     This helper resolves the symlink first so ``os.replace`` writes to
     the real file in-place while the symlink survives.  For non-symlink
     and non-existent paths the behavior is identical to a plain
-    ``os.replace`` call unless the rename fails with ``EXDEV`` or ``EBUSY``;
-    those cases fall back to copy/fsync/unlink for cross-device, bind-mount,
-    and busy-file deployments.
+    ``os.replace`` call unless the rename fails with:
+
+    * ``EXDEV`` / ``EBUSY`` (any platform) — cross-device, bind-mount, and
+      busy-file deployments fall back to copy/fsync/unlink immediately.
+      These never clear on retry.
+    * A Windows rename contended by another open handle (winerror 5/32/33).
+      CPython opens files without ``FILE_SHARE_DELETE``, so *any* concurrent
+      reader of the target blocks the rename.  The rename is retried with
+      jittered backoff first — a retry that wins keeps the write atomic —
+      and only a target whose handle outlives the budget is rewritten in
+      place, so the update lands instead of being silently dropped.
+
+    A genuine Windows permission failure produces the same winerror as a
+    contended one, so it is not classified up front: it exhausts the retry
+    budget, fails the in-place rewrite too, and is re-raised unchanged.
 
     Returns the resolved real path used for the replace, so callers that
     need to re-apply permissions can target it instead of the symlink.
@@ -113,26 +228,51 @@ def atomic_replace(tmp_path: Union[str, Path], target: Union[str, Path]) -> str:
     tmp_str = str(tmp_path)
     try:
         os.replace(tmp_str, real_path)
+        return real_path
     except OSError as exc:
-        if exc.errno not in (errno.EXDEV, errno.EBUSY):
+        contended = _is_contended_windows_replace_error(exc)
+        if exc.errno not in (errno.EXDEV, errno.EBUSY) and not contended:
             raise
+        if contended:
+            # Lazy import: keeps ``utils`` free of a package-level dependency
+            # on ``agent`` for every consumer that never hits this path.
+            from agent.retry_utils import jittered_backoff
+
+            for attempt in range(1, _REPLACE_RETRY_ATTEMPTS + 1):
+                time.sleep(
+                    jittered_backoff(
+                        attempt,
+                        base_delay=_REPLACE_RETRY_BASE_DELAY_S,
+                        max_delay=_REPLACE_RETRY_MAX_DELAY_S,
+                    )
+                )
+                try:
+                    os.replace(tmp_str, real_path)
+                    return real_path
+                except OSError as retry_exc:
+                    if retry_exc.errno in (errno.EXDEV, errno.EBUSY):
+                        # Not contention after all — stop burning the budget.
+                        exc = retry_exc
+                        contended = False
+                        break
+                    if not _is_contended_windows_replace_error(retry_exc):
+                        raise
+                    exc = retry_exc
         logger.debug(
-            "atomic_replace: %s -> %s failed with %s; falling back to copy",
+            "atomic_replace: %s -> %s failed with %s; falling back to %s",
             tmp_str,
             real_path,
-            errno.errorcode.get(exc.errno, exc.errno),
+            getattr(exc, "winerror", None)
+            or errno.errorcode.get(exc.errno or 0, exc.errno),
+            "in-place rewrite" if contended else "copy",
         )
-        shutil.copyfile(tmp_str, real_path)
-        try:
-            shutil.copystat(tmp_str, real_path)
-        except OSError:
-            pass
-        try:
-            with open(real_path, "rb") as f:
-                os.fsync(f.fileno())
-        except OSError:
-            pass
-        os.unlink(tmp_str)
+        if contended:
+            # Re-raises the rewrite's own error (not the rename's) when the
+            # target is genuinely unwritable — an ACL denial stays an ACL
+            # denial rather than being reported as contention.
+            _rewrite_in_place(tmp_str, real_path)
+        else:
+            _copy_fallback(tmp_str, real_path)
     return real_path
 
 

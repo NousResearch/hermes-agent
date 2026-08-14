@@ -1,18 +1,6 @@
-import {
-  SiFigma,
-  SiGithub,
-  SiGitlab,
-  SiLinear,
-  SiNotion,
-  SiPostgresql,
-  SiSentry,
-  SiStripe,
-  SiSupabase,
-  SiVercel
-} from '@icons-pack/react-simple-icons'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
-import { type ComponentType, type SVGProps, useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { type CodeEditorApi } from '@/components/chat/code-editor'
 import { JsonDocumentEditor } from '@/components/chat/json-document-editor'
@@ -39,6 +27,7 @@ import {
   testMcpServer
 } from '@/hermes'
 import { type Translations, useI18n } from '@/i18n'
+import { brandFor, brandGlyphStyle } from '@/lib/mcp-brands'
 import { completeMcpDesktopOAuth } from '@/lib/mcp-dashboard-oauth'
 import { countEnabledTools, isToolEnabled, toggleToolInServer } from '@/lib/mcp-tool-filter'
 import { cn } from '@/lib/utils'
@@ -1572,27 +1561,9 @@ function McpLogs({
 // ---------------------------------------------------------------------------
 
 // Brand glyphs for well-known MCP providers, exactly the Messaging avatar
-// treatment (simpleicons on a 16% brand tint). Unknown servers fall back to
-// the same letter monogram Messaging uses.
-const MCP_BRAND_ICONS: Record<string, { Icon: ComponentType<SVGProps<SVGSVGElement>>; color: string }> = {
-  figma: { Icon: SiFigma, color: '#F24E1E' },
-  github: { Icon: SiGithub, color: '#181717' },
-  gitlab: { Icon: SiGitlab, color: '#FC6D26' },
-  linear: { Icon: SiLinear, color: '#5E6AD2' },
-  notion: { Icon: SiNotion, color: '#000000' },
-  postgres: { Icon: SiPostgresql, color: '#4169E1' },
-  postgresql: { Icon: SiPostgresql, color: '#4169E1' },
-  sentry: { Icon: SiSentry, color: '#362D59' },
-  stripe: { Icon: SiStripe, color: '#635BFF' },
-  supabase: { Icon: SiSupabase, color: '#3FCF8E' },
-  vercel: { Icon: SiVercel, color: '#000000' }
-}
-
-const brandFor = (name: string) => {
-  const lower = name.toLowerCase()
-
-  return MCP_BRAND_ICONS[lower] ?? Object.entries(MCP_BRAND_ICONS).find(([key]) => lower.includes(key))?.[1] ?? null
-}
+// treatment (simpleicons on a 16% brand tint) — shared with the composer
+// suggestion pills and inline setup card via lib/mcp-brands. Unknown servers
+// fall back to the same letter monogram Messaging uses.
 
 // PlatformAvatar (messaging), copied 1:1 — same size, radius, type scale, and
 // brand-tint treatment — plus a status dot overlay. Identity ladder: curated
@@ -1612,7 +1583,7 @@ function McpAvatar({ className, name, status }: { className?: string; name: stri
       style={brand ? { backgroundColor: `color-mix(in srgb, ${brand.color} 16%, transparent)` } : undefined}
     >
       {brand ? (
-        <brand.Icon aria-hidden className="size-3.5" style={{ color: brand.color }} />
+        <brand.Icon aria-hidden className="size-3.5" style={brandGlyphStyle(brand)} />
       ) : (
         name.charAt(0).toUpperCase()
       )}

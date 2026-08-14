@@ -75,11 +75,12 @@ const DOT_VARIANTS: Record<SessionDotState, DotVariant> = {
     className: `${DOT_BASE} border border-(--ui-text-quaternary)`,
     title: r => r.draftSession
   },
-  // Settled: the project color, or nothing at all. An uncolored session used to
-  // get a grey dot, which put a mark of the same weight as a status next to
-  // every resting row and made "no color" look like a state of its own.
+  // Settled: the project color when there is one, else the faintest filled
+  // grey. Every session shows SOME mark — a row with nothing in the lead slot
+  // reads as broken next to its neighbours, so "no color" falls back to the
+  // quietest ink rather than to an invisible dot.
   idle: {
-    className: 'size-1 rounded-full'
+    className: 'size-1 rounded-full bg-(--ui-text-quaternary)'
   }
 }
 

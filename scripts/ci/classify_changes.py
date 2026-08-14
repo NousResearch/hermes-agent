@@ -18,6 +18,9 @@ Lanes:
 * ``site``        — Docusaurus + generated skill docs.
 * ``scan``        — supply-chain scan (Python files, .pth, setup hooks).
 * ``deps``        — pyproject.toml dependency bounds check.
+* ``uv_lock``     — ``uv lock --check``. Re-resolves the whole graph against
+  PyPI, so a diff that touches neither ``pyproject.toml`` nor ``uv.lock``
+  must not run it.
 * ``npm_lock``    — semantic package-lock.json diff PR comment.
 * ``installer``   — PowerShell installer tests (Windows runner).
 * ``mcp_catalog`` — bundled MCP catalog / installer review.
@@ -132,6 +135,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         "site": any(f.startswith(_SITE) for f in files),
         "scan": any(_is_scan(f) for f in files),
         "deps": any(f == "pyproject.toml" for f in files),
+        "uv_lock": any(f in ("pyproject.toml", "uv.lock") for f in files),
         "npm_lock": any(f.split("/")[-1] == "package-lock.json" for f in files),
         "installer": any(_is_installer(f) for f in files),
         "mcp_catalog": any(_is_mcp_catalog(f) for f in files),
@@ -145,6 +149,7 @@ def classify(files: list[str]) -> dict[str, bool]:
         ret["site"] = True
         ret["scan"] = True
         ret["deps"] = True
+        ret["uv_lock"] = True
         ret["npm_lock"] = True
         ret["installer"] = True
         ret["ci_review"] = True

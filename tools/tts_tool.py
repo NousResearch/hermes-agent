@@ -3219,9 +3219,9 @@ def _text_to_speech_single(
             file_path = _configured_command_tts_output_path(
                 file_path, command_provider_config
             )
-        from agent.file_safety import is_write_denied
+        from agent.file_safety import is_write_approval_required, is_write_denied
 
-        if is_write_denied(str(file_path)):
+        if is_write_denied(str(file_path)) or is_write_approval_required(str(file_path)):
             return json.dumps({
                 "success": False,
                 "error": (
@@ -3578,8 +3578,8 @@ def text_to_speech_tool(
             base_path = _configured_command_tts_output_path(
                 base_path, command_provider_config,
             )
-        from agent.file_safety import is_write_denied
-        if is_write_denied(str(base_path)):
+        from agent.file_safety import is_write_approval_required, is_write_denied
+        if is_write_denied(str(base_path)) or is_write_approval_required(str(base_path)):
             return json.dumps({
                 "success": False,
                 "error": (

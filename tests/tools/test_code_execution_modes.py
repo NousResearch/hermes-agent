@@ -14,9 +14,11 @@ there is no env-var override. Tests patch ``_load_config`` directly.
 
 import json
 import os
+import subprocess
 import sys
 import unittest
-from contextlib import contextmanager
+import unittest.mock
+from contextlib import contextmanager, ExitStack
 from unittest.mock import patch
 
 import pytest
@@ -36,8 +38,12 @@ from tools.code_execution_tool import (
     EXECUTION_MODES,
     _get_execution_mode,
     _is_usable_python,
+    _python_environment_prefix,
+    _python_prefix_cache,
+    _usable_python_cache,
     _resolve_child_cwd,
     _resolve_child_python,
+    _uses_hermes_python_environment,
     build_execute_code_schema,
     execute_code,
 )
@@ -102,8 +108,28 @@ class TestResolveChildPython(unittest.TestCase):
 
 
     def test_is_usable_python_accepts_real_python(self):
-        _is_usable_python.cache_clear()
+        _usable_python_cache.clear()
         self.assertTrue(_is_usable_python(sys.executable))
+
+    def test_is_usable_python_failure_is_not_cached(self):
+        """A transient probe failure must not stick — the next call retries.
+
+        A sticky cached False would silently pin project mode to
+        sys.executable for the process lifetime.
+        """
+        _usable_python_cache.clear()
+        try:
+            with patch("subprocess.run",
+                       side_effect=subprocess.TimeoutExpired(cmd=[], timeout=5)) as mock_run:
+                self.assertFalse(_is_usable_python("/flaky/python"))
+            self.assertEqual(mock_run.call_count, 1)
+            with patch("subprocess.run") as mock_run:
+                mock_run.return_value = unittest.mock.MagicMock(returncode=0)
+                self.assertTrue(_is_usable_python("/flaky/python"))
+            self.assertEqual(mock_run.call_count, 1,
+                             "probe must be retried after a failure")
+        finally:
+            _usable_python_cache.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -371,6 +397,193 @@ class TestSecurityInvariantsAcrossModes(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertIn("execute_code_available: False", result["output"])
         self.assertIn("delegate_task_available: False", result["output"])
+
+
+# ---------------------------------------------------------------------------
+# _python_environment_prefix / _uses_hermes_python_environment
+# ---------------------------------------------------------------------------
+
+class TestPythonEnvironmentPrefix(unittest.TestCase):
+    """Unit tests for the helper that queries sys.prefix of an interpreter."""
+
+    def setUp(self):
+        _python_prefix_cache.clear()
+
+    def tearDown(self):
+        _python_prefix_cache.clear()
+
+    def test_returns_realpath_of_current_interpreter_prefix(self):
+        """Happy path: sys.executable reports its own prefix."""
+        prefix = _python_environment_prefix(sys.executable)
+        self.assertEqual(prefix, os.path.realpath(sys.prefix))
+
+    def test_returns_empty_string_for_nonexistent_path(self):
+        """A path that doesn't exist → OSError → empty string."""
+        result = _python_environment_prefix("/nonexistent/python-does-not-exist")
+        self.assertEqual(result, "")
+
+    def test_returns_empty_string_when_subprocess_times_out(self):
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=[], timeout=5)):
+            result = _python_environment_prefix("/some/python")
+        self.assertEqual(result, "")
+
+    def test_returns_empty_string_on_nonzero_exit(self):
+        mock_result = unittest.mock.MagicMock()
+        mock_result.returncode = 1
+        mock_result.stdout = ""
+        with patch("subprocess.run", return_value=mock_result):
+            result = _python_environment_prefix("/bad/python")
+        self.assertEqual(result, "")
+
+    def test_returns_empty_string_when_stdout_is_blank(self):
+        mock_result = unittest.mock.MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "   \n"
+        with patch("subprocess.run", return_value=mock_result):
+            result = _python_environment_prefix("/blank/python")
+        self.assertEqual(result, "")
+
+    def test_result_is_cached(self):
+        """Second call returns cached value without spawning another process."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = unittest.mock.MagicMock(
+                returncode=0, stdout="/fake/prefix\n"
+            )
+            _python_environment_prefix("/cached/python")
+            _python_environment_prefix("/cached/python")
+        self.assertEqual(mock_run.call_count, 1)
+
+    def test_failure_is_not_cached(self):
+        """A transient probe failure must not stick — the next call retries.
+
+        A sticky cached failure would silently drop the hermes root from
+        every subsequent execute_code call in the process.
+        """
+        with patch("subprocess.run",
+                   side_effect=subprocess.TimeoutExpired(cmd=[], timeout=5)) as mock_run:
+            self.assertEqual(_python_environment_prefix("/flaky/python"), "")
+        self.assertEqual(mock_run.call_count, 1)
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = unittest.mock.MagicMock(
+                returncode=0, stdout="/recovered/prefix\n"
+            )
+            result = _python_environment_prefix("/flaky/python")
+        self.assertEqual(mock_run.call_count, 1, "probe must be retried after a failure")
+        self.assertEqual(result, os.path.realpath("/recovered/prefix"))
+
+
+class TestUsesHermesPythonEnvironment(unittest.TestCase):
+    """Unit tests for _uses_hermes_python_environment."""
+
+    def setUp(self):
+        _python_prefix_cache.clear()
+
+    def tearDown(self):
+        _python_prefix_cache.clear()
+
+    def test_true_for_current_interpreter(self):
+        """sys.executable always belongs to the current environment."""
+        self.assertTrue(_uses_hermes_python_environment(sys.executable))
+
+    def test_true_for_current_interpreter_without_probe(self):
+        """sys.executable short-circuits — no subprocess probe on the default path.
+
+        Guards the strict-mode invariant: a flaky probe (timeout under load)
+        must never drop the hermes root for the interpreter Hermes itself runs.
+        """
+        with patch("subprocess.run",
+                   side_effect=subprocess.TimeoutExpired(cmd=[], timeout=5)) as mock_run:
+            self.assertTrue(_uses_hermes_python_environment(sys.executable))
+        mock_run.assert_not_called()
+
+    def test_false_for_different_prefix(self):
+        """An interpreter reporting a different prefix is external."""
+        with patch("tools.code_execution_tool._python_environment_prefix",
+                   return_value="/some/other/venv"):
+            self.assertFalse(_uses_hermes_python_environment("/other/python"))
+
+    def test_false_when_prefix_is_empty(self):
+        """If prefix cannot be determined (error path), treat as external."""
+        with patch("tools.code_execution_tool._python_environment_prefix",
+                   return_value=""):
+            self.assertFalse(_uses_hermes_python_environment("/bad/python"))
+
+    def test_true_when_prefix_matches_sys_prefix(self):
+        hermes_prefix = os.path.realpath(sys.prefix)
+        with patch("tools.code_execution_tool._python_environment_prefix",
+                   return_value=hermes_prefix):
+            self.assertTrue(_uses_hermes_python_environment("/same/env/python"))
+
+
+# ---------------------------------------------------------------------------
+# PYTHONPATH composition — hermes root included only for same-env interpreters
+# ---------------------------------------------------------------------------
+
+class TestPythonPathComposition(unittest.TestCase):
+    """Verify hermes root inclusion in PYTHONPATH depends on env match.
+
+    Patches ``_uses_hermes_python_environment`` directly so these tests are
+    independent of subprocess availability — the unit tests above already
+    cover the detection logic end-to-end.
+    """
+
+    def _capture_pythonpath(self, same_env: bool) -> tuple:
+        """Return (PYTHONPATH, staging_dir) that execute_code passes to the child."""
+        captured = {}
+
+        def _fake_popen(cmd, **kwargs):
+            env = kwargs.get("env") or {}
+            captured["PYTHONPATH"] = env.get("PYTHONPATH", "")
+            # cmd is [python, <staging_dir>/script.py]
+            captured["staging_dir"] = os.path.dirname(cmd[1])
+            mock_proc = unittest.mock.MagicMock()
+            mock_proc.stdout.read.return_value = b""
+            mock_proc.stderr.read.return_value = b""
+            mock_proc.wait.return_value = 0
+            mock_proc.returncode = 0
+            mock_proc.poll.return_value = 0
+            return mock_proc
+
+        with patch("tools.code_execution_tool._load_config", return_value={"mode": "strict"}), \
+             patch("model_tools.handle_function_call", side_effect=_mock_handle_function_call), \
+             patch("tools.code_execution_tool._uses_hermes_python_environment",
+                   return_value=same_env), \
+             patch("subprocess.Popen", side_effect=_fake_popen):
+            execute_code(code="pass", task_id="test-pp", enabled_tools=[])
+
+        # If execute_code never reached Popen, the capture is empty and any
+        # "X not in PYTHONPATH" assertion downstream would pass vacuously.
+        self.assertIn("PYTHONPATH", captured,
+                      "execute_code never spawned the child process")
+        return captured["PYTHONPATH"], captured["staging_dir"]
+
+    def _hermes_root(self) -> str:
+        import tools.code_execution_tool as _cet
+        tools_dir = os.path.dirname(os.path.abspath(_cet.__file__))
+        return os.path.dirname(tools_dir)
+
+    def test_hermes_root_included_when_same_env(self):
+        """When interpreter is in the Hermes env, hermes root is in PYTHONPATH."""
+        pythonpath, _ = self._capture_pythonpath(same_env=True)
+        parts = pythonpath.split(os.pathsep)
+        self.assertIn(self._hermes_root(), parts,
+                      "hermes root must be in PYTHONPATH for same-env interpreters")
+
+    def test_hermes_root_excluded_when_external_env(self):
+        """When interpreter is external, hermes root must NOT be in PYTHONPATH."""
+        pythonpath, _ = self._capture_pythonpath(same_env=False)
+        parts = pythonpath.split(os.pathsep)
+        self.assertNotIn(self._hermes_root(), parts,
+                         "hermes root must not leak into an external interpreter's PYTHONPATH")
+
+    def test_staging_dir_always_first(self):
+        """The staging tmpdir must always be the first PYTHONPATH entry."""
+        for same_env in (True, False):
+            with self.subTest(same_env=same_env):
+                pythonpath, staging_dir = self._capture_pythonpath(same_env=same_env)
+                parts = pythonpath.split(os.pathsep)
+                self.assertEqual(parts[0], staging_dir,
+                                 "PYTHONPATH must start with the staging tmpdir")
 
 
 if __name__ == "__main__":

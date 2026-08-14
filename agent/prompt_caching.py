@@ -120,6 +120,53 @@ def _build_marker(ttl: str) -> Dict[str, str]:
     return marker
 
 
+# Alibaba-family providers (Qwen routes). Their context cache documents a
+# five-minute window (renewed on hit) and rejects the Anthropic 1h tier.
+# Shared with agent_runtime_helpers.anthropic_prompt_cache_policy so the
+# cache-policy opt-in and the TTL clamp can never desync (#84733).
+ALIBABA_FAMILY_PROVIDERS = frozenset({
+    "opencode",
+    "opencode-zen",
+    "opencode-go",
+    "alibaba",
+})
+
+
+def is_qwen_model(model: str) -> bool:
+    """True when ``model`` names a Qwen-family model (case-insensitive).
+
+    Shared by the TTL clamp below and
+    ``agent_runtime_helpers.anthropic_prompt_cache_policy`` so the
+    cache-policy opt-in and the clamp can never desync (#84733).
+    """
+    return "qwen" in (model or "").lower()
+
+
+def effective_cache_ttl(
+    ttl: str | None,
+    *,
+    model: str = "",
+    provider: str = "",
+) -> str:
+    """Clamp a requested cache TTL to what the destination route supports.
+
+    Qwen/Alibaba context caching documents an explicit five-minute window
+    (renewed on hit); the Anthropic ``1h`` tier is ignored/rejected there,
+    so a configured ``1h`` regresses to ``5m`` instead of shipping a marker
+    the provider drops and creating a false 1h-cache expectation (#84733).
+    All other caching routes keep the requested TTL.
+
+    ``None`` (caching active with no explicit tier) resolves to ``5m``.
+    """
+    if ttl != "1h":
+        return ttl or "5m"
+    if is_qwen_model(model):
+        return "5m"
+    if (provider or "").lower() in ALIBABA_FAMILY_PROVIDERS:
+        return "5m"
+    return "1h"
+
+
 def _apply_system_cache_markers(
     message: dict,
     cache_marker: dict,

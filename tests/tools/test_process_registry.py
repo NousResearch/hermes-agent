@@ -187,6 +187,47 @@ def test_write_stdin_uses_bytes_for_posix_pty(registry):
     assert written == [b"hello\n"]
 
 
+@pytest.mark.windows_only
+def test_submit_stdin_uses_crlf_for_windows_pty(registry):
+    """Enter on a Windows PTY is a carriage return, not a bare LF.
+
+    ConPTY cooked input only ends a line on ``\\r``; a bare ``\\n`` through
+    pywinpty is never delivered to a blocking line read (Python readline,
+    Go bufio.Scanner — the exact hang seen live with ``gh auth login``'s
+    "Press Enter to open the browser" prompt). submit_stdin must append
+    ``\\r\\n`` for Windows PTY sessions.
+    """
+    written = []
+
+    class _FakePty:
+        def write(self, value):
+            written.append(value)
+
+    session = _make_session(sid="pty-win-submit")
+    session._pty = _FakePty()
+    registry._running[session.id] = session
+
+    result = registry.submit_stdin(session.id, "Y")
+
+    assert result["status"] == "ok"
+    assert written == ["Y\r\n"]
+
+
+@pytest.mark.windows_only
+def test_submit_stdin_keeps_lf_for_windows_pipe(registry):
+    """Non-PTY (Popen pipe) sessions keep the plain LF on Windows."""
+    session = _make_session(sid="pipe-win-submit")
+    fake_stdin = MagicMock()
+    session.process = MagicMock()
+    session.process.stdin = fake_stdin
+    registry._running[session.id] = session
+
+    result = registry.submit_stdin(session.id, "Y")
+
+    assert result["status"] == "ok"
+    fake_stdin.write.assert_called_once_with("Y\n")
+
+
 # =========================================================================
 # Get / Poll
 # =========================================================================
@@ -2243,3 +2284,69 @@ class TestSystemdCgroupIsolation:
         )
 
         assert pr._stop_systemd_unit("hermes-worker-gone.scope") is True
+
+
+class TestNotificationRedaction:
+    """Background-process notification delivery (completion_queue) applies the
+    same redaction as the explicit process tool — issue #43025 gap.
+
+    The _move_to_finished() and _check_watch_patterns() paths enqueue raw
+    output into the completion_queue.  After the fix, _redact_process_result()
+    is called before enqueueing so secrets are masked in the [IMPORTANT: ...]
+    messages delivered to the LLM.
+    """
+
+    def test_completion_notification_redacts_secret(self, monkeypatch):
+        """_move_to_finished completion notification redacts API keys."""
+        import agent.redact as _r
+        monkeypatch.setattr(_r, "_REDACT_ENABLED", True)
+        from tools import process_registry as pr
+
+        reg = ProcessRegistry()
+        sess = _make_session(sid="proc_notif1", command="env")
+        sess.output_buffer = "OPENAI_API_KEY=sk-proj-secret123\nHOME=/home/u"
+        sess.notify_on_complete = True
+        sess.exited = True
+        sess.exit_code = 0
+        reg._running[sess.id] = sess
+        monkeypatch.setattr(pr, "process_registry", reg)
+
+        reg._move_to_finished(sess)
+
+        # Drain and check the notification
+        results = reg.drain_notifications()
+        assert len(results) == 1
+        _evt, text = results[0]
+        assert "sk-proj-secret123" not in text
+        assert "REDACTED" in text or "sk-proj" not in text
+
+    def test_watch_match_notification_redacts_secret(self, monkeypatch):
+        """_check_watch_patterns watch_match notification redacts secrets."""
+        import agent.redact as _r
+        monkeypatch.setattr(_r, "_REDACT_ENABLED", True)
+        from tools import process_registry as pr
+
+        reg = ProcessRegistry()
+        sess = _make_session(sid="proc_notif2", command="python server.py")
+        sess.output_buffer = "Server started\nAPI_TOKEN=ghp_abc123def456\nListening on :8080"
+        sess.watch_patterns = ["API_TOKEN"]
+        sess._watch_disabled = False
+        sess._watch_hits = 0
+        sess._watch_suppressed = 0
+        sess.watcher_platform = None
+        sess.watcher_chat_id = None
+        sess.watcher_user_id = None
+        sess.watcher_user_name = None
+        sess.watcher_thread_id = None
+        sess.watcher_message_id = None
+        sess.exited = False
+        reg._running[sess.id] = sess
+        monkeypatch.setattr(pr, "process_registry", reg)
+
+        reg._check_watch_patterns(sess, "API_TOKEN=ghp_abc123def456\n")
+
+        results = reg.drain_notifications()
+        assert len(results) == 1
+        _evt, text = results[0]
+        assert "ghp_abc123def456" not in text
+        assert "ghp_" not in text or "REDACTED" in text

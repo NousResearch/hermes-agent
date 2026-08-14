@@ -34,6 +34,7 @@ import {
   type PetChangeMeta,
   setChangeEventsAvailable
 } from '@/store/live-sync'
+import { setMcpSetupRequest } from '@/store/mcp-setup'
 import { dispatchNativeNotification } from '@/store/native-notifications'
 import { isDiskFullErrorMessage, notify, notifyError } from '@/store/notifications'
 import { requestDesktopOnboarding, requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
@@ -66,6 +67,8 @@ import {
 } from '@/store/session'
 import { dropSessionState } from '@/store/session-states'
 import { pruneDelegateFallbackSubagents, pruneFinishedSessionSubagents, upsertSubagent } from '@/store/subagents'
+import { reportMcpToolResult } from '@/store/suggestion-providers/repair'
+import { invalidateSkillSuggestionIndex } from '@/store/suggestion-providers/skill'
 import { clearActiveSessionTodos } from '@/store/todos'
 import { recordToolDiff } from '@/store/tool-diffs'
 import { setSessionDraftingTool } from '@/store/tool-drafting'
@@ -884,9 +887,23 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
         // The agent just created/deleted/renamed a skill, which adds or removes
         // its `/name` command. Drop the composer's cached `/` list so the new
-        // skill is offerable now rather than after the hour-long TTL.
+        // skill is offerable now rather than after the hour-long TTL — and the
+        // skill-suggestion provider's index with it.
         if (payload?.name === 'skill_manage') {
           invalidateSlashCompletions()
+          invalidateSkillSuggestionIndex()
+        }
+
+        // MCP tool outcomes feed the connection-repair suggestion provider:
+        // an auth/connection-shaped failure offers a reconnect pill; a later
+        // success against the same server withdraws it.
+        if (sessionId && typeof payload?.name === 'string' && payload.name.startsWith('mcp__')) {
+          reportMcpToolResult(
+            sessionId,
+            payload.name,
+            Boolean(payload.error),
+            [payload.error, payload.result].filter(part => typeof part === 'string').join(' ')
+          )
         }
 
         if (typeof payload?.inline_diff === 'string' && payload.inline_diff.trim()) {
@@ -961,6 +978,37 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
 
           dispatchNativeNotification({
             body: question,
+            kind: 'input',
+            sessionId,
+            title: translateNow('notifications.native.inputTitle')
+          })
+        }
+      } else if (event.type === 'mcp.setup.request') {
+        // setup_mcp tool (desktop GUI): the agent proposed an MCP server and
+        // the Python side is blocked on mcp.setup.respond. Park the request
+        // per-session (like clarify) and upsert a stable pending tool row so
+        // the inline consent card has somewhere to render even when the
+        // tool.start event was missed (stream reconnect / hydration race).
+        const requestId = typeof payload?.request_id === 'string' ? payload.request_id : ''
+        const server = typeof payload?.server === 'string' ? payload.server : ''
+        const rawAction = typeof payload?.action === 'string' ? payload.action : 'install'
+        const action = rawAction === 'enable' || rawAction === 'authorize' ? rawAction : 'install'
+        const reason = typeof payload?.reason === 'string' ? payload.reason : ''
+
+        if (requestId && server) {
+          setMcpSetupRequest({ action, reason, requestId, server, sessionId: sessionId ?? null })
+
+          if (sessionId) {
+            upsertToolCall(
+              sessionId,
+              { args: { action, reason, server }, name: 'setup_mcp', tool_id: requestId },
+              'running'
+            )
+            updateSessionState(sessionId, state => ({ ...state, needsInput: true }))
+          }
+
+          dispatchNativeNotification({
+            body: reason || server,
             kind: 'input',
             sessionId,
             title: translateNow('notifications.native.inputTitle')
@@ -1184,7 +1232,14 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         // change happens silently. Surface it as a persistent system message
         // in the transcript so the user is always informed — it must not be a
         // transient toast that can be missed.
-        const text = coerceGatewayText(payload?.text).trim()
+        //
+        // Typed here with the `review:` marker (same convention as `steer:` /
+        // `slash:`) so SystemMessage can paint it as the memory-write row it
+        // is instead of sniffing the backend's prose. The leading 💾 goes with
+        // it — the row draws its own glyph.
+        const text = coerceGatewayText(payload?.text)
+          .trim()
+          .replace(/^[^\p{L}\p{N}]+/u, '')
 
         if (text && sessionId) {
           flushQueuedDeltas(sessionId)
@@ -1195,7 +1250,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
               {
                 id: `review-summary-${Date.now()}`,
                 role: 'system',
-                parts: [textPart(text)],
+                parts: [textPart(`review:${text}`)],
                 timestamp: Math.floor(Date.now() / 1000)
               }
             ]

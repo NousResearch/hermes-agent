@@ -1633,7 +1633,17 @@ def _(rid, params: dict) -> dict:
         from tools.cronjob_tools import cronjob
 
         if action == "list":
-            return _ok(rid, json.loads(cronjob(action="list")))
+            # Paused jobs are excluded by default, which reads as deletion in
+            # any UI with an enable/disable toggle — forward the flag.
+            return _ok(
+                rid,
+                json.loads(
+                    cronjob(
+                        action="list",
+                        include_disabled=is_truthy_value(params.get("include_disabled", False)),
+                    )
+                ),
+            )
         if action == "add":
             return _ok(
                 rid,
@@ -1643,6 +1653,14 @@ def _(rid, params: dict) -> dict:
                         name=jid,
                         schedule=params.get("schedule", ""),
                         prompt=params.get("prompt", ""),
+                        # Optional repeat cap ("run N times"); None keeps the
+                        # schedule-kind default (once for one-shot, forever
+                        # for recurring).
+                        repeat=(
+                            int(params["repeat"])
+                            if str(params.get("repeat", "")).strip().isdigit()
+                            else None
+                        ),
                     )
                 ),
             )

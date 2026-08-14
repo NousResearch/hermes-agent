@@ -70,6 +70,34 @@ describe('attachmentDisplayText', () => {
   it('still resolves a normal file ref', () => {
     expect(attachmentDisplayText(attachment({ kind: 'file', refText: '@file:src/a.ts' }))).toBe('@file:src/a.ts')
   })
+
+  it('expands a review attachment into an anchored fenced block', () => {
+    const detail = JSON.stringify({
+      author: 'teknium1',
+      body: 'this cap looks wrong',
+      diffHunk: '@@ -1,2 +1,2 @@\n-const CAP = 5\n+const CAP = 50',
+      kind: 'review',
+      line: 12,
+      path: 'src/limits.ts',
+      prNumber: 123,
+      startLine: null,
+      url: 'https://github.com/o/r/pull/123#discussion_r1'
+    })
+
+    const block = attachmentDisplayText(attachment({ kind: 'review', detail, refText: '@url:`https://x`' }))
+
+    // The contract: anchor (file:line), author, body, and the hunk all ride.
+    expect(block).toContain('review-comment src/limits.ts:12')
+    expect(block).toContain('@teknium1')
+    expect(block).toContain('this cap looks wrong')
+    expect(block).toContain('const CAP = 50')
+  })
+
+  it('falls back to the url ref when a review detail is malformed', () => {
+    expect(attachmentDisplayText(attachment({ kind: 'review', detail: 'not json', refText: '@url:`https://x`' }))).toBe(
+      '@url:`https://x`'
+    )
+  })
 })
 
 describe('coerceThinkingText', () => {

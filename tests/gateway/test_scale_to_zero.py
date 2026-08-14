@@ -89,3 +89,92 @@ def test_idle_exactly_at_threshold():
     assert is_idle(**_idle_kwargs(seconds_since_last_inbound=300.0)) is True
 
 
+
+
+# ── suspend_self / self_suspend_available (the gateway-owned suspend call) ───
+#
+# Fly Proxy autostop is inbound-only and job-blind (and since mid-2026 no longer
+# counts outbound sockets as activity), so the gateway suspends its own machine
+# via the local flaps unix socket strictly after the idle predicate + dormant
+# quiesce. These exercise the wire call against a real unix-socket fake flaps.
+
+
+import os
+import socket as _socket
+import threading
+
+
+from gateway.scale_to_zero import (  # noqa: E402 - grouped with their section
+    FLY_APP_NAME_ENV,
+    FLY_MACHINE_ID_ENV,
+    self_suspend_available,
+    suspend_self,
+)
+
+_FLY_ENV = {FLY_APP_NAME_ENV: "hermes-agent-stg-test", FLY_MACHINE_ID_ENV: "d891234f"}
+
+
+def _fake_flaps(tmp_path, status_line, capture):
+    """One-shot unix-socket HTTP server standing in for flaps."""
+    sock_path = str(tmp_path / "fly-api.sock")
+    server = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    server.bind(sock_path)
+    server.listen(1)
+
+    def serve():
+        conn, _ = server.accept()
+        with conn:
+            conn.settimeout(5)
+            data = b""
+            while b"\r\n\r\n" not in data:
+                chunk = conn.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            capture.append(data)
+            conn.sendall(
+                f"HTTP/1.1 {status_line}\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}".encode()
+            )
+        server.close()
+
+    t = threading.Thread(target=serve, daemon=True)
+    t.start()
+    return sock_path, t
+
+
+def test_suspend_self_posts_suspend_for_this_machine(tmp_path):
+    captured: list[bytes] = []
+    sock_path, t = _fake_flaps(tmp_path, "200 OK", captured)
+    assert suspend_self(_FLY_ENV, socket_path=sock_path) is True
+    t.join(timeout=5)
+    request = captured[0].decode()
+    # The request must target THIS machine's suspend endpoint, per the Fly
+    # Machines API (POST /v1/apps/{app}/machines/{id}/suspend on /.fly/api).
+    assert request.startswith(
+        "POST /v1/apps/hermes-agent-stg-test/machines/d891234f/suspend HTTP/1.1\r\n"
+    )
+    assert "Host: flaps\r\n" in request
+
+
+def test_suspend_self_non_2xx_is_false_not_raise(tmp_path):
+    captured: list[bytes] = []
+    sock_path, t = _fake_flaps(tmp_path, "412 Precondition Failed", captured)
+    assert suspend_self(_FLY_ENV, socket_path=sock_path) is False
+    t.join(timeout=5)
+
+
+def test_suspend_self_missing_socket_is_false_not_raise(tmp_path):
+    # Fail-awake: a dead/absent flaps socket must never raise out of the watcher.
+    assert suspend_self(_FLY_ENV, socket_path=str(tmp_path / "nope.sock")) is False
+
+
+def test_suspend_self_requires_machine_identity(tmp_path):
+    assert suspend_self({}, socket_path=str(tmp_path / "unused.sock")) is False
+
+
+def test_self_suspend_available_needs_identity_and_socket():
+    # No socket at /.fly/api in a test environment -> unavailable even with env.
+    if not os.path.exists("/.fly/api"):
+        assert self_suspend_available(_FLY_ENV) is False
+    # Missing identity -> unavailable regardless of socket.
+    assert self_suspend_available({}) is False

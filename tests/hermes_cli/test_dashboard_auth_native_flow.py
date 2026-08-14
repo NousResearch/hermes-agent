@@ -51,6 +51,32 @@ def _make_pkce() -> tuple[str, str]:
     return verifier, challenge
 
 
+class _PasswordOnlyProvider(StubAuthProvider):
+    """Mirrors the bundled ``basic`` provider's flags: a session provider
+    (``supports_session`` defaults True) that authenticates by username +
+    password and can never be the target of the native OAuth broker flow.
+    ``start_login`` raises to prove the route must reject it before ever
+    attempting a redirect."""
+
+    name = "pwonly"
+    display_name = "Password Only (test)"
+    supports_password = True
+
+    def start_login(self, *, redirect_uri):
+        raise AssertionError(
+            "native authorize must reject a password provider before "
+            "calling start_login"
+        )
+
+
+class _SecondStubProvider(StubAuthProvider):
+    """A second brokerable OAuth provider, so tests can create an ambiguous
+    multi-provider deployment."""
+
+    name = "stub2"
+    display_name = "Stub IdP Two (test only)"
+
+
 # ---------------------------------------------------------------------------
 # native_flow broker unit tests
 # ---------------------------------------------------------------------------
@@ -179,6 +205,83 @@ def test_native_authorize_rejects_non_loopback_redirect(gated_client):
     )
     assert r.status_code == 400
     assert "loopback" in r.json()["detail"].lower()
+
+
+# ---------------------------------------------------------------------------
+# Empty-provider auto-select (the desktop omits ``provider``; the gateway
+# picks when there is exactly one brokerable candidate) — regression #78906
+# ---------------------------------------------------------------------------
+
+
+def _native_authorize_params(challenge, **overrides):
+    params = {
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "redirect_uri": "http://127.0.0.1:53999/cb",
+        "state": "s",
+    }
+    params.update(overrides)
+    return params
+
+
+def test_native_authorize_empty_provider_auto_selects_oauth_with_password_also_registered(
+    gated_client,
+):
+    """Regression for #78906: a password provider is a session provider but
+    can never be the target of the native OAuth broker flow, so it must not
+    count toward the empty-provider auto-select. With one OAuth provider +
+    one password provider (the normal SSO-with-password-fallback setup) the
+    desktop's empty-provider request must auto-select the OAuth provider
+    (302), not fail with ``Unknown provider: ''`` (404)."""
+    register_provider(_PasswordOnlyProvider())
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_native_authorize_params(challenge),
+    )
+    assert r.status_code == 302, r.text
+    assert "code=stub_code" in r.headers["location"]
+
+
+def test_native_authorize_empty_provider_auto_selects_single_oauth(gated_client):
+    """The common hosted case: exactly one brokerable provider; an empty
+    ``provider`` auto-selects it (302), so the desktop needn't hardcode the
+    name."""
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_native_authorize_params(challenge),
+    )
+    assert r.status_code == 302, r.text
+    assert "code=stub_code" in r.headers["location"]
+
+
+def test_native_authorize_empty_provider_ambiguous_multiple_oauth_404(gated_client):
+    """Two brokerable providers: the empty-provider convenience cannot pick
+    unambiguously, so the request still fails — the desktop must pass
+    ``?provider=`` explicitly."""
+    register_provider(_SecondStubProvider())
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_native_authorize_params(challenge),
+    )
+    assert r.status_code == 404
+
+
+def test_native_authorize_empty_provider_password_only_rejected_400(gated_client):
+    """Password-only deployment: an empty ``provider`` must still select the
+    lone session provider and fail with the explicit 400 explaining that
+    password providers have no native OAuth flow — not a bare 404."""
+    clear_providers()
+    register_provider(_PasswordOnlyProvider())
+    _verifier, challenge = _make_pkce()
+    r = gated_client.get(
+        "/auth/native/authorize",
+        params=_native_authorize_params(challenge),
+    )
+    assert r.status_code == 400
+    assert "does not support native OAuth login" in r.json()["detail"]
 
 
 # ---------------------------------------------------------------------------

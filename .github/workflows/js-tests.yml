@@ -20,9 +20,33 @@ jobs:
 
       - name: grab npm 12
         run: |
-          npm i -g npm@12
+          # No-op once the bundled npm is already 12.x — saves ~5-15s/job and
+          # keeps the installed major aligned with the npm12 cache-key tag.
+          npm --version | grep -q '^12\.' || npm i -g npm@12
+
+      # ``setup-node``'s ``cache: npm`` only caches the ~/.npm tarball cache;
+      # every job still re-extracts the full workspace node_modules and reruns
+      # postinstalls (including the Electron binary fetch). Cache the installed
+      # tree itself, keyed on the lockfile, and skip ``npm ci`` on an exact
+      # hit. No restore-keys: a partial hit would leave a stale tree, so
+      # anything but an exact lockfile match reinstalls from scratch.
+      # The discovery job installs with --ignore-scripts, so its tree differs
+      # from the check jobs' — hence the distinct ``-noscripts`` key.
+      - name: Restore node_modules
+        id: node-modules-cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            ui-tui/node_modules
+            ui-tui/packages/*/node_modules
+            tests-js/node_modules
+            web/node_modules
+          key: node-modules-noscripts-${{ runner.os }}-node26-npm12-${{ hashFiles('package-lock.json') }}
 
       - uses: ./.github/actions/retry
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
         with:
           command: npm ci --ignore-scripts
       - id: set-matrix
@@ -71,9 +95,31 @@ jobs:
 
       - name: grab npm 12
         run: |
-          npm i -g npm@12
+          # No-op once the bundled npm is already 12.x — saves ~5-15s/job and
+          # keeps the installed major aligned with the npm12 cache-key tag.
+          npm --version | grep -q '^12\.' || npm i -g npm@12
+
+      # Same rationale as the discovery job's cache above, but this ``npm ci``
+      # runs WITH install scripts, so the tree includes postinstall artifacts
+      # (electron's postinstall unpacks its binary into node_modules/electron/
+      # dist, which lives inside the cached tree — the ~/.cache/electron
+      # download cache is deliberately NOT cached: with npm ci skipped on hit
+      # it would never be read, only inflate the archive).
+      - name: Restore node_modules
+        id: node-modules-cache
+        uses: actions/cache@0400d5f644dc74513175e3cd8d07132dd4860809 # v4.2.4
+        with:
+          path: |
+            node_modules
+            apps/*/node_modules
+            ui-tui/node_modules
+            ui-tui/packages/*/node_modules
+            tests-js/node_modules
+            web/node_modules
+          key: node-modules-scripts-${{ runner.os }}-node26-npm12-${{ hashFiles('package-lock.json') }}
 
       - uses: ./.github/actions/retry
+        if: steps.node-modules-cache.outputs.cache-hit != 'true'
         with:
           command: npm ci
       - run: npm run --prefix ${{ matrix.package }} ${{ matrix.script }}

@@ -497,11 +497,24 @@ class _Runtime:
 
     def mark(self, name: str, kwargs: dict[str, Any]) -> None:
         state = self.ensure_session(kwargs)
+        # Prefer the live turn scope over the session scope. Scope events
+        # export when their OWNING scope closes: turn scopes close every
+        # turn, session scopes only at session end. Parenting marks to the
+        # session means a long-lived conversation emits nothing for hours
+        # (and nothing at all if the process dies first), so approval and
+        # turn marks were invisible on audit dashboards until the operator
+        # happened to end the session. Turn scopes give per-turn export
+        # with the same parentage semantics — the turn is a child of the
+        # session, so the session tree is unchanged.
+        handle = state.handle
+        turn = relay_runtime.active_turn(state.session_id)
+        if turn is not None and turn.handle is not None:
+            handle = turn.handle
         self.run_in_session(
             state,
             self.nemo_relay.scope.event,
             name,
-            handle=state.handle,
+            handle=handle,
             data=_jsonable(kwargs),
             metadata=_metadata(kwargs),
         )

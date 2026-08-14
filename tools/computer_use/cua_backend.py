@@ -711,7 +711,16 @@ def _candidate_cua_driver_commands(override: Optional[str] = None) -> List[str]:
     candidates = [_CUA_DRIVER_DEFAULT_CMD]
     home = os.path.expanduser("~")
     if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA") or os.path.join(
+            home, "AppData", "Local"
+        )
         candidates.extend([
+            # Official cua-driver installer location on Windows. Freshly
+            # installed sessions inherit a stale PATH, so PATH lookup alone
+            # misses it until every Hermes process is restarted.
+            os.path.join(
+                local_app_data, "Programs", "Cua", "cua-driver", "bin", "cua-driver.exe"
+            ),
             os.path.join(home, ".local", "bin", "cua-driver.exe"),
             os.path.join(home, ".local", "bin", "cua-driver"),
         ])

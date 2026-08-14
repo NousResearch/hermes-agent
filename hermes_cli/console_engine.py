@@ -118,7 +118,12 @@ def _table_summary(summary: str, *, limit: int = 76) -> str:
 
 def _split_line(line: str) -> list[str]:
     try:
-        return shlex.split(line, comments=False, posix=True)
+        # Windows-safe splitter: plain shlex posix=True eats backslashes, so
+        # `sessions export C:\Users\me\out.jsonl` silently became a mangled
+        # relative filename in the cwd (#83934).
+        from hermes_cli._subprocess_compat import split_command_line
+
+        return split_command_line(line)
     except ValueError as exc:
         raise ConsoleCommandError(f"Could not parse command: {exc}") from exc
 

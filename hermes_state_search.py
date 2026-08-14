@@ -913,12 +913,17 @@ class SessionSearchMixin:
             # its own. Callers must therefore NOT size the result by stat()ing
             # the file; use :meth:`logical_size_bytes`, which is truthful
             # immediately regardless of readers.
+            # PASSIVE, not TRUNCATE: optimize-storage runs from a transient CLI
+            # process; a TRUNCATE reset here would race a live gateway writer
+            # and tear B-tree pages (#45383). (The TRUNCATE was already refused
+            # SQLITE_BUSY while the gateway holds a read-mark, per the note
+            # above; PASSIVE removes the reset attempt entirely.)
             try:
                 with self._lock:
-                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
             except Exception as exc:
                 logger.debug(
-                    "WAL checkpoint (TRUNCATE) after optimize VACUUM failed: %s",
+                    "WAL checkpoint (PASSIVE) after optimize VACUUM failed: %s",
                     exc,
                 )
 

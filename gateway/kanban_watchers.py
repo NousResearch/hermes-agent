@@ -25,19 +25,6 @@ from agent.i18n import t
 logger = logging.getLogger("gateway.run")
 
 
-def _resolve_shared_injection_embedding() -> Any:
-    """Resolve the shared-memory writer's embedding without changing spaces.
-
-    The event-driven lead writer shares a vector projection with the nightly
-    injector.  It must delegate selection to Severian's one resolver so a
-    ``qwen`` cutover remains Qwen rather than silently becoming hash.
-    Imported lazily because Severian is an optional integration.
-    """
-    from severian.infrastructure.embedding_resolver import embedding_from_env
-
-    return embedding_from_env()
-
-
 def _resolve_auto_decompose_settings(
     load_config: Callable[[], Any],
 ) -> "tuple[bool, int]":
@@ -138,60 +125,42 @@ def _release_singleton_lock(handle) -> None:
         pass
 
 
-def _board_notifier_lock_path(slug: str) -> Path:
-    """Return the filesystem path for a per-board notifier lock.
+def _wake_scope_id(adapter: Any, sub: dict) -> Optional[str]:
+    """Return the tenant scope (Slack workspace) a subscription's wake keys to.
 
-    Each board gets its own lock file under ``<kanban_home>/.notifier.locks/``
-    so that only one gateway process polls a given board DB at a time.
+    ``build_session_key()`` includes ``SessionSource.scope_id`` on platforms
+    where one bot serves several isolated tenants, so a wake source must carry
+    the same scope as inbound messages from that chat to resolve to the same
+    session.
+
+    The subscription's persisted ``delivery_metadata`` wins over the adapter's
+    live chat → scope mapping, because it records the scope the subscription was
+    created from; the mapping only covers rows that stored no metadata. ``None``
+    means the chat has no scope, which is what an unscoped platform's key
+    contains.
     """
-    from hermes_cli import kanban_db as _kb
-    return _kb.kanban_home() / "kanban" / ".notifier.locks" / f"{slug}.lock"
-
-
-def _acquire_board_notifier_lock(slug: str) -> "tuple[Optional[object], str]":
-    """Take an exclusive, non-blocking advisory lock for a single board's notifier.
-
-    Only one gateway process may poll a given board's DB for kanban
-    notifications at a time. Without this guard, N concurrent gateway
-    processes (one per profile) all open the same board DB every 5s,
-    producing sustained concurrent WAL-writer pressure that corrupts
-    index pages under heavy event volume.
-
-    Returns ``(handle, "held")`` on success — the caller keeps the file
-    handle for the duration of the board poll and **must** release it via
-    :func:`_release_board_notifier_lock`. ``(None, "contended")`` when
-    another gateway holds the lock (caller skips this board's poll).
-    ``(None, "unavailable")`` when locking cannot be performed.
-    """
-    try:
-        from gateway.status import _try_acquire_file_lock
-    except ImportError:
-        return None, "unavailable"
-    lock_path = _board_notifier_lock_path(slug)
-    try:
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
-        handle = open(str(lock_path), "a+", encoding="utf-8")
-    except OSError:
-        return None, "unavailable"
-    if not _try_acquire_file_lock(handle):
-        handle.close()
-        return None, "contended"
-    return handle, "held"
-
-
-def _release_board_notifier_lock(handle) -> None:
-    """Release a per-board notifier lock acquired via :func:`_acquire_board_notifier_lock`."""
-    if handle is None:
-        return
-    try:
-        from gateway.status import _release_file_lock
-        _release_file_lock(handle)
-    except Exception:
-        pass
-    try:
-        handle.close()
-    except Exception:
-        pass
+    delivery_meta = sub.get("delivery_metadata")
+    if isinstance(delivery_meta, dict):
+        for key in ("scope_id", "slack_team_id", "team_id"):
+            value = delivery_meta.get(key)
+            if value:
+                return str(value)
+    resolver = getattr(adapter, "scope_id_for_chat", None)
+    if callable(resolver):
+        try:
+            resolved = resolver(str(sub.get("chat_id") or ""))
+        except Exception as exc:
+            # An adapter-side lookup failure yields no scope, never an error.
+            logger.debug(
+                "kanban notifier: scope lookup failed for chat %s: %s",
+                sub.get("chat_id"),
+                exc,
+                exc_info=True,
+            )
+            return None
+        if resolved:
+            return str(resolved)
+    return None
 
 
 class GatewayKanbanWatchersMixin:
@@ -212,10 +181,14 @@ class GatewayKanbanWatchersMixin:
 
         For each subscription row, fetches ``task_events`` newer than the
         stored cursor with kind in the terminal set (``completed``,
-        ``blocked``, ``gave_up``, ``crashed``, ``timed_out``). Sends one
+        ``blocked``, ``gave_up``, ``crashed``, ``timed_out``,
+        ``review_requested``, ``block_loop_detected``). Sends one
         message per new event to ``(platform, chat_id, thread_id)``,
-        then advances the cursor. When a task reaches a terminal state
-        (``completed`` / ``archived``), the subscription is removed.
+        then advances the cursor. The subscription is removed only when the
+        task is ``archived``. A ``done`` task can be reopened for review or
+        continuation, so its subscription and origin-session ownership must
+        survive completion. Cursor advancement prevents old events replaying
+        when that happens.
 
         Runs in the gateway event loop; all SQLite work is pushed to a
         thread via ``asyncio.to_thread`` so the loop never blocks on the
@@ -240,9 +213,15 @@ class GatewayKanbanWatchersMixin:
 
         # "status" covers dashboard drag-drop and `_set_status_direct()`
         # writes — surface those transitions to subscribers too.
-        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected")
-        # Subscriptions are removed only when the task reaches a truly final
-        # status (done / archived). We used to also unsub on any terminal
+        # ``review_requested`` wakes the origin subscriber like a block does,
+        # but is not a block (see kanban_db.request_review); the task is not
+        # archived, so the subscription stays alive and later review
+        # cycles keep notifying.
+        TERMINAL_KINDS = ("completed", "blocked", "gave_up", "crashed", "timed_out", "status", "archived", "unblocked", "block_loop_detected", "review_requested")
+        # Subscriptions are removed only when the task reaches the irreversible
+        # archived status. ``done`` is reversible in review/controller flows,
+        # so removing its subscription would silence a later reopen. We used
+        # to also unsub on any terminal
         # event kind (gave_up / crashed / timed_out / blocked), but that
         # silently dropped the user out of the loop whenever the dispatcher
         # respawned the task: a worker that crashes, gets reclaimed, runs
@@ -250,7 +229,7 @@ class GatewayKanbanWatchersMixin:
         # crash because the subscription was deleted after the first event.
         # Same shape as the reblock-after-unblock cycle that PR #22941
         # fixed for `blocked`. Keeping the subscription alive until the
-        # task is genuinely done lets the cursor (advanced atomically by
+        # task is archived lets the cursor (advanced atomically by
         # claim_unseen_events_for_sub) handle dedup, and any retry-loop
         # event reaches the user.
         # Per-subscription send-failure counter. Adapter.send raising
@@ -276,8 +255,35 @@ class GatewayKanbanWatchersMixin:
         # Initial delay so the gateway can finish wiring adapters.
         await asyncio.sleep(5)
 
+        # Stale done-sub GC cadence. Subscriptions survive ``done`` (it is
+        # reversible), so boards that never archive would otherwise
+        # accumulate rows scanned on every 5s tick forever. The sweep is a
+        # single DELETE per board, gated to once per watcher startup and at
+        # most once per hour thereafter — cheap relative to the tick's own
+        # per-sub claims. Retention is kanban.done_sub_retention_days in
+        # config.yaml (default 30; 0 disables), re-read at each sweep so a
+        # config change applies without a restart.
+        _GC_INTERVAL_SECONDS = 3600.0
+        _gc_next_at = 0.0  # 0 → sweep on the first tick after startup
+
         while self._running:
             try:
+                _gc_due = time.monotonic() >= _gc_next_at
+                _gc_retention_days = 30
+                if _gc_due:
+                    _gc_next_at = time.monotonic() + _GC_INTERVAL_SECONDS
+                    try:
+                        from hermes_cli.config import load_config as _load_cfg
+
+                        _kanban_cfg = (_load_cfg() or {}).get("kanban") or {}
+                        _gc_retention_days = int(
+                            _kanban_cfg.get("done_sub_retention_days", 30)
+                        )
+                    except Exception:
+                        # Fail safe on the shipped default; the sweep itself
+                        # treats <= 0 as disabled.
+                        _gc_retention_days = 30
+
                 def _collect():
                     deliveries: list[dict] = []
                     include_unowned = self._owns_kanban_dispatcher_lock()
@@ -361,26 +367,34 @@ class GatewayKanbanWatchersMixin:
                                 "for board %s (%s); falling back to writable open",
                                 slug, exc,
                             )
-                        # Per-board notifier lock: only one gateway polls a
-                        # given board DB at a time. Without this guard, N
-                        # concurrent gateway processes (one per profile) all
-                        # open the same board DB every 5s, producing sustained
-                        # concurrent WAL-writer pressure that corrupts index
-                        # pages under heavy event volume.
-                        lock_handle, lock_state = _acquire_board_notifier_lock(slug)
-                        if lock_state != "held":
-                            logger.debug(
-                                "kanban notifier: board %s notifier lock %s; skipping",
-                                slug, lock_state,
-                            )
-                            continue
                         try:
                             conn = _kb.connect(board=slug)
                         except Exception as exc:
                             logger.debug("kanban notifier: cannot open board %s: %s", slug, exc)
-                            _release_board_notifier_lock(lock_handle)
                             continue
                         try:
+                            if _gc_due:
+                                # Hourly (plus once at startup) stale-sub GC:
+                                # drop subscriptions for tasks that have been
+                                # ``done`` untouched past the retention
+                                # window. Best-effort — a failed sweep never
+                                # blocks delivery; the next hourly gate
+                                # retries it.
+                                try:
+                                    _purged = _kb.purge_stale_done_notify_subs(
+                                        conn,
+                                        max_age_days=_gc_retention_days,
+                                    )
+                                    if _purged:
+                                        logger.info(
+                                            "kanban notifier: purged %d stale done-task subscription(s) on board %s (retention %dd)",
+                                            _purged, slug, _gc_retention_days,
+                                        )
+                                except Exception as _gc_exc:
+                                    logger.debug(
+                                        "kanban notifier: stale-sub GC failed for board %s: %s",
+                                        slug, _gc_exc,
+                                    )
                             # `connect()` runs the schema + idempotent migration
                             # on first open per process, so an explicit
                             # `init_db()` here would be redundant. Worse:
@@ -451,7 +465,6 @@ class GatewayKanbanWatchersMixin:
                                     )
                         finally:
                             conn.close()
-                            _release_board_notifier_lock(lock_handle)
                     return deliveries
 
                 deliveries = await asyncio.to_thread(_collect)
@@ -503,6 +516,14 @@ class GatewayKanbanWatchersMixin:
                         sub["task_id"], sub["platform"],
                         sub["chat_id"], sub.get("thread_id") or "",
                     )
+                    mode = sub.get("delivery_mode") or "notify"
+                    wake_agent = mode in ("notify+wake", "wake")
+                    send_passive = mode != "wake"
+                    # Worker handoff carried into the synthetic wake turn below
+                    # (#70752): without it the woken creator only sees
+                    # "Task X completed" and re-decomposes work that already
+                    # exists on the board.
+                    wake_handoff = ""
                     for ev in d["events"]:
                         kind = ev.kind
                         # Identity prefix: attribute terminal pings to the
@@ -524,10 +545,12 @@ class GatewayKanbanWatchersMixin:
                                 lines = payload_summary.strip().splitlines()
                                 h = lines[0][:200] if lines else payload_summary[:200]
                                 handoff = f"\n{h}"
+                                wake_handoff = h
                             elif task and task.result:
                                 lines = task.result.strip().splitlines()
                                 r = lines[0][:160] if lines else task.result[:160]
                                 handoff = f"\n{r}"
+                                wake_handoff = r
                             msg = (
                                 f"✔ {board_tag}{tag}Kanban {sub['task_id']} done"
                                 f" — {title}{handoff}"
@@ -563,6 +586,16 @@ class GatewayKanbanWatchersMixin:
                             if ev.payload and ev.payload.get("status"):
                                 new_status = str(ev.payload["status"])
                             msg = f"🔄 {board_tag}{tag}Kanban {sub['task_id']} → {new_status}"
+                        elif kind == "review_requested":
+                            # Implementation complete; task moved to the
+                            # first-class review lane. Wake the origin thread.
+                            handoff = ""
+                            if ev.payload and ev.payload.get("summary"):
+                                handoff = f"\n{str(ev.payload['summary'])[:200]}"
+                            msg = (
+                                f"👀 {board_tag}{tag}Kanban {sub['task_id']} ready for review"
+                                f" — {title}{handoff}"
+                            )
                         elif kind == "block_loop_detected":
                             # A task re-blocked for the same cause past the
                             # recurrence limit and was routed to `triage` for a
@@ -597,6 +630,7 @@ class GatewayKanbanWatchersMixin:
                             if isinstance(delivery_metadata, dict)
                             else {}
                         )
+
                         if sub.get("thread_id") and not metadata.get("thread_id"):
                             metadata["thread_id"] = sub["thread_id"]
                         # Adapters with no push channel (the API server —
@@ -614,7 +648,7 @@ class GatewayKanbanWatchersMixin:
                         # creator is woken via the self-post below instead.
                         from gateway.wake import adapter_supports_push
 
-                        if not adapter_supports_push(adapter):
+                        if not adapter_supports_push(adapter) and wake_agent:
                             logger.debug(
                                 "kanban notifier: adapter %s has no push "
                                 "channel; skipping text ping for %s, relying "
@@ -625,6 +659,13 @@ class GatewayKanbanWatchersMixin:
                             # path the wake self-post below IS the delivery,
                             # so the counter is resolved (reset or bumped) by
                             # the self-post outcome, not by skipping the send.
+                            continue
+                        if not send_passive:
+                            # Wake-only subscriptions intentionally skip the
+                            # visible platform message. The retained wake path
+                            # below is the sole delivery — the failure counter
+                            # is resolved (reset or bumped) by the wake
+                            # outcome there, not by skipping the send here.
                             continue
                         try:
                             _send_res = await adapter.send(
@@ -717,17 +758,36 @@ class GatewayKanbanWatchersMixin:
                         #   advances after it succeeds — a failure rewinds the
                         #   claim exactly like a failed send() above, so the
                         #   next tick retries.
-                        task_terminal = task and task.status in {"done", "archived"}
+                        task_terminal = task and task.status == "archived"
                         _WAKE_KINDS = ("completed", "gave_up", "crashed", "timed_out", "blocked")
-                        _wake_kinds = {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
+                        _wake_kinds = (
+                            {ev.kind for ev in d["events"] if ev.kind in _WAKE_KINDS}
+                            if wake_agent
+                            else set()
+                        )
                         from gateway.wake import adapter_supports_push as _adapter_push_ok
 
                         _is_push_adapter = _adapter_push_ok(adapter)
                         _session_key = ""
                         _synth = ""
                         if _wake_kinds:
-                            _session_key = getattr(task, "session_id", None) or ""
-                        if _wake_kinds and _session_key:
+                            if _is_push_adapter:
+                                _session_key = getattr(task, "session_id", None) or ""
+                            else:
+                                # Non-push (api_server) wakes go to the
+                                # subscription's delivery destination —
+                                # sub["chat_id"] IS the raw session id the
+                                # subscriber registered with. task.session_id
+                                # is worker/creator provenance and may point
+                                # at a WORKER session for child tasks with
+                                # inherited subscriptions; falling back to it
+                                # only when chat_id is empty (legacy rows).
+                                _session_key = (
+                                    sub["chat_id"]
+                                    or getattr(task, "session_id", None)
+                                    or ""
+                                )
+                        if _wake_kinds:
                             _title = (task.title if task else sub["task_id"])[:120]
                             _assignee = task.assignee if task else ""
                             _parts = []
@@ -744,6 +804,19 @@ class GatewayKanbanWatchersMixin:
                                 title=_title,
                                 assignee=_assignee,
                                 board=board_slug,
+                            )
+                            # Graph-safe wake turn (#70752): carry the worker's
+                            # completion handoff into the synthetic turn and
+                            # label it as an automatic notification so the woken
+                            # creator inspects the board instead of
+                            # re-decomposing work that already exists.
+                            if wake_handoff:
+                                _synth += "\n" + t(
+                                    "gateway.kanban.wake.handoff",
+                                    summary=wake_handoff,
+                                )
+                            _synth += "\n\n" + t(
+                                "gateway.kanban.wake.guidance"
                             )
 
                         if not _is_push_adapter and _wake_kinds and _session_key:
@@ -792,10 +865,111 @@ class GatewayKanbanWatchersMixin:
                                     )
                                 continue
 
+                        async def _push_wake() -> None:
+                            """Wake the creator session behind a push adapter.
+
+                            Shared by the wake-only (pre-advance, delivery)
+                            and notify+wake (post-advance, best-effort)
+                            branches below; raises on failure so the caller
+                            decides whether to rewind or merely log.
+                            """
+                            from gateway.session import SessionSource
+                            from gateway.wake import deliver_wake
+                            # Rebuild the creator's real session scope from
+                            # the chat_type persisted on the subscription
+                            # row (#56580). build_session_key() keys DMs
+                            # (":dm:<chat_id>") on a wholly different shape
+                            # from group/thread, so the old hardcoded
+                            # "group" mis-routed DM/thread creators into a
+                            # fresh session. Legacy rows written before the
+                            # column existed may still carry chat_type in
+                            # delivery_metadata (#60600 rows) — fall back
+                            # to that, then to "group" (the historical
+                            # default that suits the dashboard/group flows).
+                            # handle_message() get_or_create_session's the
+                            # target, so a mismatch only ever degrades to a
+                            # fresh session, never an exception.
+                            _chat_type = str(sub.get("chat_type") or "").strip()
+                            if not _chat_type:
+                                _delivery_meta = sub.get("delivery_metadata")
+                                if isinstance(_delivery_meta, dict):
+                                    _chat_type = str(
+                                        _delivery_meta.get("chat_type") or ""
+                                    ).strip()
+                            _chat_type = _chat_type or "group"
+                            _source = SessionSource(
+                                platform=plat,
+                                chat_id=sub["chat_id"],
+                                chat_type=_chat_type,
+                                thread_id=sub.get("thread_id") or None,
+                                user_id=sub.get("user_id"),
+                                user_id_alt=sub.get("user_id_alt"),
+                                profile=sub_profile or None,
+                                scope_id=_wake_scope_id(adapter, sub),
+                            )
+                            # deliver_wake preserves the synthetic
+                            # MessageEvent/handle_message path for
+                            # push-capable adapters (the non-push /
+                            # self-post branch is handled BEFORE the
+                            # cursor advance above).
+                            await deliver_wake(
+                                adapter,
+                                text=_synth,
+                                session_id=_session_key,
+                                source=_source,
+                            )
+                            logger.info(
+                                "kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
+                                sub["task_id"], platform_str, sub["chat_id"], sub_profile or "default", _wake_kinds,
+                            )
+
+                        if _is_push_adapter and not send_passive and _wake_kinds:
+                            # Wake-only (delivery_mode='wake') push sub: the
+                            # text ping was intentionally skipped above, so
+                            # the wake IS the sole delivery. It must succeed
+                            # BEFORE the cursor advances — advancing first
+                            # would let a failed wake (previously swallowed
+                            # by the best-effort except below) permanently
+                            # lose the event. Mirrors the non-push
+                            # (api_server) self-post ordering above.
+                            try:
+                                await _push_wake()
+                                sub_fail_counts.pop(sub_key, None)
+                            except Exception as _wk_err:
+                                fails = sub_fail_counts.get(sub_key, 0) + 1
+                                sub_fail_counts[sub_key] = fails
+                                logger.warning(
+                                    "kanban notifier: wake-only delivery failed "
+                                    "for %s (attempt %d/%d): %s",
+                                    sub["task_id"], fails,
+                                    MAX_SEND_FAILURES, _wk_err, exc_info=True,
+                                )
+                                if fails >= MAX_SEND_FAILURES:
+                                    logger.warning(
+                                        "kanban notifier: dropping subscription "
+                                        "%s on %s after %d consecutive wake failures",
+                                        sub["task_id"], platform_str, fails,
+                                    )
+                                    await asyncio.to_thread(self._kanban_unsub, sub, board_slug)
+                                    sub_fail_counts.pop(sub_key, None)
+                                else:
+                                    # Rewind the pre-send claim so the next
+                                    # tick retries the wake — the event is
+                                    # NOT lost.
+                                    await asyncio.to_thread(
+                                        self._kanban_rewind,
+                                        sub,
+                                        d["cursor"],
+                                        d.get("old_cursor", 0),
+                                        board_slug,
+                                    )
+                                continue
+
                         # Delivery complete (text ping for push adapters, wake
-                        # self-post for non-push): advance cursor. The cursor
-                        # is the dedup mechanism — it prevents re-delivery
-                        # of the same event on subsequent ticks.
+                        # self-post for non-push, wake injection for wake-only
+                        # push subs): advance cursor. The cursor is the dedup
+                        # mechanism — it prevents re-delivery of the same
+                        # event on subsequent ticks.
                         await asyncio.to_thread(
                             self._kanban_advance, sub, d["cursor"], board_slug,
                         )
@@ -803,62 +977,17 @@ class GatewayKanbanWatchersMixin:
                             # Nothing left to deliver on this path (the wake,
                             # if any, already succeeded above).
                             sub_fail_counts.pop(sub_key, None)
-                        # Unsubscribe only when the task has reached a truly
-                        # final status (done / archived). For blocked /
-                        # gave_up / crashed / timed_out the subscription is
-                        # kept alive so the user gets notified again if the
-                        # dispatcher respawns the task and it cycles into the
-                        # same state. See the longer comment on TERMINAL_KINDS
-                        # above for the failure mode this prevents.
-                        if _is_push_adapter and _wake_kinds and _session_key:
+                        # Unsubscribe only on archive. Completion (``done``)
+                        # remains reversible: controllers reopen completed
+                        # work for review corrections and continuation. The
+                        # retained cursor prevents replay while preserving the
+                        # original delivery and wake ownership for that cycle.
+                        if _is_push_adapter and send_passive and _wake_kinds:
+                            # notify+wake: the text ping above was the
+                            # delivery and the cursor has advanced; the wake
+                            # injection stays best-effort.
                             try:
-                                from gateway.session import SessionSource
-                                from gateway.wake import deliver_wake
-                                # Rebuild the creator's real session scope from
-                                # the chat_type persisted on the subscription
-                                # row (#56580). build_session_key() keys DMs
-                                # (":dm:<chat_id>") on a wholly different shape
-                                # from group/thread, so the old hardcoded
-                                # "group" mis-routed DM/thread creators into a
-                                # fresh session. Legacy rows written before the
-                                # column existed may still carry chat_type in
-                                # delivery_metadata (#60600 rows) — fall back
-                                # to that, then to "group" (the historical
-                                # default that suits the dashboard/group flows).
-                                # handle_message() get_or_create_session's the
-                                # target, so a mismatch only ever degrades to a
-                                # fresh session, never an exception.
-                                _chat_type = str(sub.get("chat_type") or "").strip()
-                                if not _chat_type:
-                                    _delivery_meta = sub.get("delivery_metadata")
-                                    if isinstance(_delivery_meta, dict):
-                                        _chat_type = str(
-                                            _delivery_meta.get("chat_type") or ""
-                                        ).strip()
-                                _chat_type = _chat_type or "group"
-                                _source = SessionSource(
-                                    platform=plat,
-                                    chat_id=sub["chat_id"],
-                                    chat_type=_chat_type,
-                                    thread_id=sub.get("thread_id") or None,
-                                    user_id=sub.get("user_id"),
-                                    profile=sub_profile or None,
-                                )
-                                # deliver_wake preserves the synthetic
-                                # MessageEvent/handle_message path for
-                                # push-capable adapters (the non-push /
-                                # self-post branch is handled BEFORE the
-                                # cursor advance above).
-                                await deliver_wake(
-                                    adapter,
-                                    text=_synth,
-                                    session_id=_session_key,
-                                    source=_source,
-                                )
-                                logger.info(
-                                    "kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
-                                    sub["task_id"], platform_str, sub["chat_id"], sub_profile or "default", _wake_kinds,
-                                )
+                                await _push_wake()
                             except Exception as _wk_err:
                                 # Best-effort: the notification itself already
                                 # delivered and the cursor has advanced, so a
@@ -871,55 +1000,6 @@ class GatewayKanbanWatchersMixin:
                                     sub["task_id"], _wk_err, exc_info=True,
                                 )
                         if task_terminal:
-                            # Event-driven lead shared-memory injection
-                            # (locked decision 2 / R5): on task completion,
-                            # distil team shared-surface points into the
-                            # lead's scope. Best-effort — must never wedge
-                            # the notifier tick, mirroring the wake path.
-                            try:
-                                from gateway.shared_injection import (
-                                    TEAMS as _SI_TEAMS,
-                                    inject_on_task_completion,
-                                )
-                                from severian.composition import build_bundle as _si_bundle
-
-                                import os as _os
-                                from pathlib import Path as _Path
-
-                                # Scope-safe team resolution: only a
-                                # REGISTERED team (task tenant key present
-                                # in the TEAMS registry) triggers injection;
-                                # anything else is a no-op.
-                                _team_key = (getattr(task, "tenant", None) or "")
-                                _team_key = _team_key if _team_key in _SI_TEAMS else ""
-                                _store = _os.environ.get(
-                                    "SEVERIAN_STORAGE", ""
-                                ).strip()
-                                if _store and _team_key:
-                                    _embedding = _resolve_shared_injection_embedding()
-                                    _bundle = _si_bundle(
-                                        backend="sqlite",
-                                        database=_Path(_store) / "severian.db",
-                                        fts=_Path(_store) / "severian.fts",
-                                        vectors=_Path(_store) / "severian.vec",
-                                        embedding=_embedding,
-                                    )
-                                    try:
-                                        await asyncio.to_thread(
-                                            inject_on_task_completion,
-                                            bundle=_bundle,
-                                            task_id=sub["task_id"],
-                                            title=(task.title if task else "")[:120],
-                                            board=board_slug,
-                                            team=_team_key,
-                                        )
-                                    finally:
-                                        _bundle.close()
-                            except Exception as _si_err:
-                                logger.warning(
-                                    "kanban notifier: shared injection failed for %s: %s",
-                                    sub["task_id"], _si_err,
-                                )
                             await asyncio.to_thread(
                                 self._kanban_unsub, sub, board_slug,
                             )
@@ -1293,36 +1373,6 @@ class GatewayKanbanWatchersMixin:
                         max_in_progress_per_profile,
                     )
 
-        # Read kanban.max_spawn_per_tick — per-tick start budget. Distinct
-        # from max_spawn (live concurrency) and max_in_progress (concurrency
-        # ceiling): this caps how many NEW workers a single dispatcher tick may
-        # start, so a large ready queue ramps up gradually rather than
-        # launching everything the concurrency ceiling allows at once. Invalid
-        # / non-positive values are ignored (no per-tick budget).
-        raw_max_spawn_per_tick = kanban_cfg.get("max_spawn_per_tick", None)
-        max_spawn_per_tick = None
-        if raw_max_spawn_per_tick is not None and not isinstance(raw_max_spawn_per_tick, bool):
-            try:
-                max_spawn_per_tick = int(raw_max_spawn_per_tick)
-            except (TypeError, ValueError):
-                logger.warning(
-                    "kanban dispatcher: invalid kanban.max_spawn_per_tick=%r; ignoring",
-                    raw_max_spawn_per_tick,
-                )
-                max_spawn_per_tick = None
-            else:
-                if max_spawn_per_tick < 1:
-                    logger.warning(
-                        "kanban dispatcher: kanban.max_spawn_per_tick=%r is below 1; ignoring",
-                        raw_max_spawn_per_tick,
-                    )
-                    max_spawn_per_tick = None
-                else:
-                    logger.info(
-                        "kanban dispatcher: max_spawn_per_tick=%d",
-                        max_spawn_per_tick,
-                    )
-
         # Initial delay so the gateway finishes wiring adapters before the
         # dispatcher spawns workers (those workers may hit gateway notify
         # subscriptions etc.). Matches the notifier watcher's delay.
@@ -1416,7 +1466,6 @@ class GatewayKanbanWatchersMixin:
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,
                     max_in_progress_per_profile=max_in_progress_per_profile,
-                    max_spawn_per_tick=max_spawn_per_tick,
                     reconcile_orphans=reconcile_orphans,
                 )
             except sqlite3.DatabaseError as exc:
@@ -1485,6 +1534,13 @@ class GatewayKanbanWatchersMixin:
             here keeps the stuck-warn fire only on real failures (broken
             PATH, missing venv, credential loss for a real Hermes profile).
             """
+            # Only probe the review column when autonomous review dispatch is
+            # actually on. With ``review_dispatch`` off (the default — no
+            # sdlc-review agent), a task parked in 'review' is "correctly idle"
+            # waiting for a human, not a stuck dispatcher; probing it here would
+            # fire a false "dispatcher stuck" warning that never clears. Shares
+            # the exact gate the dispatcher uses so the two can't drift.
+            _review_probe = _kb.review_dispatch_enabled()
             try:
                 boards = _kb.list_boards(include_archived=False)
             except Exception:
@@ -1496,7 +1552,7 @@ class GatewayKanbanWatchersMixin:
                     conn = _kb.connect(board=slug)
                     if _kb.has_spawnable_ready(conn):
                         return True
-                    if _kb.has_spawnable_review(conn):
+                    if _review_probe and _kb.has_spawnable_review(conn):
                         return True
                 except Exception:
                     continue
@@ -1568,82 +1624,6 @@ class GatewayKanbanWatchersMixin:
                         if attempted >= auto_decompose_per_tick:
                             break
                         attempted += 1
-                        # R3 (2026-08-07): gate side-effect tasks before
-                        # auto-decompose. Tasks that touch config, credentials,
-                        # providers, or fleet-wide settings must not fan out
-                        # into autonomous work without human sign-off — a bot
-                        # rewriting 61 live profiles + 51 repo configs was the
-                        # trigger. Such tasks are moved out of triage to
-                        # blocked (needs_human_approval) so the decomposer
-                        # skips them and a human must unblock.
-                        #
-                        # Note: we use a direct status transition + event,
-                        # NOT request_human_approval, because block_task's
-                        # UPDATEs only cover running/ready (a triage task has
-                        # no run to close, and fabricating one is wrong).
-                        try:
-                            with _kb.connect_closing() as gconn:
-                                gtask = _kb.get_task(gconn, tid)
-                                gtext = f"{getattr(gtask, 'title', None) or ''} {getattr(gtask, 'body', None) or ''}".lower()
-                                _SIDE_EFFECT_KEYWORDS = (
-                                    "config.yaml", "fallback_provider", "provider",
-                                    "credential", "api_key", "approvals",
-                                    "dispatch_in_gateway", "profile config",
-                                    "agents/*/config", "hermes config",
-                                )
-                                _is_side_effect = any(
-                                    kw in gtext for kw in _SIDE_EFFECT_KEYWORDS
-                                )
-                                if _is_side_effect:
-                                    _reason = (
-                                        "needs_human_approval: auto-decompose "
-                                        "gate: task touches config/credentials/"
-                                        "providers; requires human approval "
-                                        "before fan-out"
-                                    )
-                                    _cur = gconn.execute(
-                                        "UPDATE tasks SET status='blocked', "
-                                        "claim_lock=NULL, claim_expires=NULL, "
-                                        "worker_pid=NULL, status_reason=? "
-                                        "WHERE id=? AND status='triage'",
-                                        (_reason, tid),
-                                    )
-                                    if _cur.rowcount == 1:
-                                        _kb._append_event(
-                                            gconn, tid, "blocked",
-                                            {"reason": _reason},
-                                        )
-                                        logger.info(
-                                            "kanban auto-decompose [%s]: %s "
-                                            "blocked for human approval "
-                                            "(side-effect task)",
-                                            slug, tid,
-                                        )
-                                    continue
-                                # FIX 2026-08-13 (Spectator Mode incident
-                                # t_9df6f54b): tasks created via
-                                # ``hermes feature create`` carry a
-                                # ``pipeline_mode`` ('full'/'express'). They
-                                # are owned by the feature pipeline
-                                # (research→prd→spec→council...), NOT the
-                                # auto-decomposer. Fanning them out hijacks
-                                # them off the pipeline track: research and
-                                # the LLM council never run. Skip them here;
-                                # the triage processor promotes them into
-                                # the pipeline proper.
-                                _pmode = getattr(gtask, 'pipeline_mode', None)
-                                if _pmode:
-                                    logger.info(
-                                        "kanban auto-decompose [%s]: %s skipped "
-                                        "(pipeline task, mode=%s)",
-                                        slug, tid, _pmode,
-                                    )
-                                    continue
-                        except Exception:
-                            logger.debug(
-                                "kanban auto-decompose [%s]: side-effect check failed on %s",
-                                slug, tid,
-                            )
                         try:
                             outcome = _decomp.decompose_task(
                                 tid, author="auto-decomposer",

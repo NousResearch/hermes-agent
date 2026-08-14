@@ -10,6 +10,7 @@ import inspect
 import logging
 import threading
 import uuid
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -25,6 +26,73 @@ RUNTIME_SCHEMA_VERSION = "hermes.relay.runtime.v1"
 RUNTIME_INSTANCE_KEY = "hermes.relay.runtime_instance"
 _PROFILE_KEY_CACHE: dict[str, str] = {}
 
+# Bound for native scope lifecycle operations (push/pop/flush) that gate
+# turn/session completion.  Healthy operations complete in microseconds;
+# only a wedged native pipeline breaches this, and the correct trade there
+# is one lost span, never a blocked agent (2026-08-10 delegation stall).
+_SCOPE_OP_TIMEOUT = 10.0
+
+_SCOPE_OP_EXECUTOR: Any = None
+_SCOPE_OP_EXECUTOR_LOCK = threading.Lock()
+
+
+def _scope_op_executor():
+    """Shared daemon executor for bounded native scope operations.
+
+    Daemon workers (tools.daemon_pool) so a wedged native call abandoned at
+    timeout cannot block interpreter exit.  Sized generously: workers are
+    only consumed for the duration of healthy (microsecond) operations plus
+    any wedged calls, and ``Future.result(timeout=...)`` bounds callers even
+    when every worker is consumed by wedged calls — an unstarted future
+    still honors the result timeout, so exhaustion degrades to fast
+    timeouts, never a new hang.
+    """
+    global _SCOPE_OP_EXECUTOR
+    if _SCOPE_OP_EXECUTOR is None:
+        with _SCOPE_OP_EXECUTOR_LOCK:
+            if _SCOPE_OP_EXECUTOR is None:
+                from tools.daemon_pool import DaemonThreadPoolExecutor
+
+                _SCOPE_OP_EXECUTOR = DaemonThreadPoolExecutor(
+                    max_workers=8,
+                    thread_name_prefix="relay-scope-op",
+                )
+    return _SCOPE_OP_EXECUTOR
+
+
+def _run_bounded_on_exit_thread(fn: Callable[[], Any], timeout: float) -> Any:
+    """Bounded fallback lane for interpreter shutdown.
+
+    When the shared executor refuses new futures (interpreter shutdown),
+    the operation still must not run unbounded on the calling thread: a
+    wedged native call would block process exit forever — the same defect
+    class this module exists to prevent, on the exit lane.  Run it on a
+    fresh daemon thread with a bounded join; on breach the daemon worker
+    is abandoned exactly like the executor lane abandons its worker.
+    """
+    result: list[Any] = []
+    error: list[BaseException] = []
+
+    def _target() -> None:
+        try:
+            result.append(fn())
+        except BaseException as exc:  # noqa: BLE001 - propagated below
+            error.append(exc)
+
+    worker = threading.Thread(
+        target=_target, daemon=True, name="relay-scope-op-exit"
+    )
+    worker.start()
+    worker.join(timeout)
+    if worker.is_alive():
+        raise TimeoutError(
+            f"Relay scope operation exceeded {timeout}s during interpreter "
+            "shutdown; abandoning the native call so process exit can proceed"
+        )
+    if error:
+        raise error[0]
+    return result[0] if result else None
+
 
 @dataclass
 class RelaySession:
@@ -36,6 +104,65 @@ class RelaySession:
     closing: bool = False
     handle: Any = None
     context: contextvars.Context | None = None
+    # --- session-span segmentation (continuous sessions) ---
+    # Segment index of the CURRENT session scope (0 = first). Rotation
+    # closes the current scope and pushes segment N+1 at a turn boundary.
+    segment: int = 0
+    # Turns completed within the current segment (max_turns accounting).
+    segment_turns: int = 0
+    # Set by compaction notification; consumed at the next begin_turn.
+    rotate_pending: bool = False
+    # Rotating compaction landed while a turn was live on THIS session:
+    # closing now would pop the session scope under a live turn scope
+    # (LIFO violation). end_turn consumes this and closes the session.
+    close_pending: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Session-span segmentation config (gateway.telemetry.session_segments).
+# Cached at first read; both defaults OFF => rotation never fires and the
+# scope lifecycle is byte-identical to the pre-segmentation behavior.
+# ---------------------------------------------------------------------------
+
+_SEGMENTS_CONFIG: dict[str, Any] | None = None
+_SEGMENTS_CONFIG_LOCK = threading.Lock()
+
+
+def _segments_config() -> dict[str, Any]:
+    """Resolve session-segmentation settings; inert defaults when unset."""
+    global _SEGMENTS_CONFIG
+    if _SEGMENTS_CONFIG is None:
+        with _SEGMENTS_CONFIG_LOCK:
+            if _SEGMENTS_CONFIG is None:
+                on_compaction = False
+                max_turns = 0
+                try:
+                    from gateway.run import _load_gateway_config  # late import
+
+                    telemetry = (
+                        (_load_gateway_config().get("gateway") or {}).get(
+                            "telemetry"
+                        )
+                        or {}
+                    )
+                    segments = telemetry.get("session_segments") or {}
+                    on_compaction = bool(segments.get("on_compaction", False))
+                    try:
+                        max_turns = max(0, int(segments.get("max_turns", 0) or 0))
+                    except (TypeError, ValueError):
+                        max_turns = 0
+                except Exception:  # noqa: BLE001 - config absence must not crash
+                    pass
+                _SEGMENTS_CONFIG = {
+                    "on_compaction": on_compaction,
+                    "max_turns": max_turns,
+                }
+    return _SEGMENTS_CONFIG
+
+
+def _reset_segments_config_for_tests() -> None:
+    global _SEGMENTS_CONFIG
+    _SEGMENTS_CONFIG = None
 
 
 class RelayRuntime:
@@ -113,20 +240,107 @@ class RelayRuntime:
                     scope_metadata["nemo_relay_scope_role"] = "subagent"
                 context = contextvars.Context()
                 try:
-                    session.handle = context.run(
-                        self.relay.scope.push,
-                        SESSION_SCOPE,
-                        self.relay.ScopeType.Agent,
-                        handle=parent_handle,
-                        data=data,
-                        input={},
-                        metadata=scope_metadata,
-                    )
+                    try:
+                        session.handle = _scope_op_executor().submit(
+                            context.run,
+                            self.relay.scope.push,
+                            SESSION_SCOPE,
+                            self.relay.ScopeType.Agent,
+                            handle=parent_handle,
+                            data=data,
+                            input={},
+                            metadata=scope_metadata,
+                        ).result(timeout=_SCOPE_OP_TIMEOUT)
+                    except RuntimeError:
+                        # Interpreter shutdown: executor refuses new futures;
+                        # push synchronously (no agent turn waits at exit).
+                        session.handle = context.run(
+                            self.relay.scope.push,
+                            SESSION_SCOPE,
+                            self.relay.ScopeType.Agent,
+                            handle=parent_handle,
+                            data=data,
+                            input={},
+                            metadata=scope_metadata,
+                        )
                 except Exception:
                     session.context = None
                     raise
                 session.context = context
         return session
+
+    def rotate_session_scope(self, session: RelaySession, *, reason: str) -> None:
+        """Close the current session scope and open the next segment.
+
+        Called ONLY at a turn boundary (before the turn scope pushes), never
+        mid-turn: the scope stack is LIFO and rotating under a live child
+        would close a parent out of order. Both native calls are bounded by
+        ``_SCOPE_OP_TIMEOUT`` — a wedged rotation costs one segment span,
+        never the agent. Segment bookkeeping advances even when a native
+        call fails, so a degraded rotation cannot retry on every turn.
+        """
+        with session.lock:
+            if session.closing or session.handle is None:
+                return
+            old_handle = session.handle
+            # Advance bookkeeping FIRST: a failed native call must not leave
+            # rotate_pending set (tight rotation loop on every turn).
+            session.segment += 1
+            session.segment_turns = 0
+            session.rotate_pending = False
+            try:
+                self.run_in_session(
+                    session,
+                    self.relay.scope.pop,
+                    old_handle,
+                    output={"hermes.session.segment_reason": reason},
+                    metadata={
+                        RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
+                        RUNTIME_INSTANCE_KEY: self.runtime_id,
+                    },
+                    timeout=_SCOPE_OP_TIMEOUT,
+                )
+            except Exception:
+                logger.warning(
+                    "Hermes Relay segment close failed (session=%s segment=%d); "
+                    "abandoning the old segment span",
+                    session.session_id,
+                    session.segment - 1,
+                    exc_info=True,
+                )
+            scope_metadata = {
+                RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
+                RUNTIME_INSTANCE_KEY: self.runtime_id,
+                "hermes.session.segment": session.segment,
+                "hermes.session.segment_reason": reason,
+            }
+            parent_handle = None
+            if session.parent_session_id:
+                with self._sessions_lock:
+                    parent_handle = self._subagent_parent_handles.get(
+                        session.session_id
+                    )
+                scope_metadata["nemo_relay_scope_role"] = "subagent"
+            context = contextvars.Context()
+            try:
+                session.handle = _scope_op_executor().submit(
+                    context.run,
+                    self.relay.scope.push,
+                    SESSION_SCOPE,
+                    self.relay.ScopeType.Agent,
+                    handle=parent_handle,
+                    input={},
+                    metadata=scope_metadata,
+                ).result(timeout=_SCOPE_OP_TIMEOUT)
+                session.context = context
+            except Exception:
+                logger.warning(
+                    "Hermes Relay segment open failed (session=%s segment=%d); "
+                    "keeping the prior scope handle",
+                    session.session_id,
+                    session.segment,
+                    exc_info=True,
+                )
 
     def register_subagent(
         self,
@@ -194,9 +408,22 @@ class RelayRuntime:
         callback: Callable[..., Any],
         *args: Any,
         allow_closing: bool = False,
+        timeout: float | None = None,
         **kwargs: Any,
     ) -> Any:
-        """Run a Relay operation against a session's isolated scope stack."""
+        """Run a Relay operation against a session's isolated scope stack.
+
+        ``timeout`` (seconds) bounds the native call by running it on a
+        shared daemon executor; ``TimeoutError`` propagates to the caller's
+        existing exception handling on breach.  ``None`` (default) preserves
+        the historical synchronous behavior.  Scope lifecycle operations
+        that gate turn/session completion pass ``_SCOPE_OP_TIMEOUT``: the
+        native binding's ``scope.pop`` "returns after the scope is closed
+        successfully" — unbounded — and a wedged native pipeline (proven
+        live 2026-08-10 in the delegation topology) must cost at most one
+        span, never the agent.  The abandoned daemon worker cannot block
+        process exit (tools.daemon_pool contract).
+        """
         with session.lock:
             if session.closing and not allow_closing:
                 raise RuntimeError("Hermes Relay session is closing")
@@ -214,7 +441,27 @@ class RelayRuntime:
 
         # A copy permits a helper called by an existing Relay callback to
         # re-enter the same logical session without re-entering Context.
-        return context.run(invoke)
+        if timeout is None:
+            return context.run(invoke)
+        try:
+            future = _scope_op_executor().submit(context.run, invoke)
+        except RuntimeError:
+            # Interpreter shutdown: the executor refuses new futures, but
+            # the atexit close path must still flush cleanly.  Still
+            # bounded — a wedged native call must not block process exit
+            # (the CI runner hang, 2026-08-12: 6 tests passed in 4s, then
+            # the file-timeout SIGKILL'd a process stuck in this lane).
+            return _run_bounded_on_exit_thread(
+                lambda: context.run(invoke), timeout
+            )
+        try:
+            return future.result(timeout=timeout)
+        except FuturesTimeoutError as exc:
+            raise TimeoutError(
+                f"Relay scope operation exceeded {timeout}s "
+                f"(session={session.session_id}); abandoning the native call "
+                "so the agent can continue — the span for this scope is lost"
+            ) from exc
 
     async def run_in_session_async(
         self,
@@ -323,11 +570,22 @@ class RelayRuntime:
                             RUNTIME_INSTANCE_KEY: self.runtime_id,
                         },
                         allow_closing=True,
+                        timeout=_SCOPE_OP_TIMEOUT,
                     )
                 except Exception as exc:
                     failures.append(f"session scope close failed: {exc}")
         try:
-            self.relay.subscribers.flush()
+            try:
+                _scope_op_executor().submit(
+                    self.relay.subscribers.flush
+                ).result(timeout=_SCOPE_OP_TIMEOUT)
+            except RuntimeError:
+                # Interpreter shutdown: executor refuses new futures; flush
+                # on a bounded exit thread so a wedged pipeline cannot
+                # block process exit.
+                _run_bounded_on_exit_thread(
+                    self.relay.subscribers.flush, _SCOPE_OP_TIMEOUT
+                )
         except Exception as exc:
             failures.append(f"subscriber flush failed: {exc}")
         with self._sessions_lock:
@@ -648,6 +906,27 @@ class RelaySessionCoordinator:
             and isinstance(lease.host, RelayRuntime)
             and lease.session is not None
         ):
+            # Session-span segmentation: consume a pending rotation (set by
+            # compaction) or the max_turns cap HERE — the only point where
+            # no turn scope is live on this session's stack, so the session
+            # scope can close/reopen without violating LIFO order.
+            try:
+                config = _segments_config()
+                session = lease.session
+                cap = config["max_turns"]
+                if (config["on_compaction"] and session.rotate_pending) or (
+                    cap > 0 and session.segment_turns >= cap
+                ):
+                    reason = (
+                        "compaction"
+                        if config["on_compaction"] and session.rotate_pending
+                        else "max_turns"
+                    )
+                    lease.host.rotate_session_scope(session, reason=reason)
+            except Exception:
+                logger.warning(
+                    "Hermes Relay segment rotation failed", exc_info=True
+                )
             try:
                 turn.handle = lease.host.run_in_session(
                     lease.session,
@@ -661,6 +940,7 @@ class RelaySessionCoordinator:
                         RUNTIME_INSTANCE_KEY: lease.host.runtime_id,
                         "hermes.execution_surface": lease.platform or "unknown",
                     },
+                    timeout=_SCOPE_OP_TIMEOUT,
                 )
             except Exception:
                 logger.warning("Hermes Relay turn initialization failed", exc_info=True)
@@ -694,12 +974,24 @@ class RelaySessionCoordinator:
                                     RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
                                     RUNTIME_INSTANCE_KEY: lease.host.runtime_id,
                                 },
+                                timeout=_SCOPE_OP_TIMEOUT,
                             )
                         except Exception:
                             logger.warning(
                                 "Hermes Relay turn finalization failed", exc_info=True
                             )
             finally:
+                try:
+                    # Segment turn accounting (max_turns rotation trigger).
+                    if (
+                        turn._active_registered
+                        and isinstance(lease.host, RelayRuntime)
+                        and lease.session is not None
+                    ):
+                        with lease.session.lock:
+                            lease.session.segment_turns += 1
+                except Exception:  # noqa: BLE001 - accounting must never block
+                    pass
                 try:
                     # Delegated agents own one turn. Close their conversation
                     # while the active-turn guard is still held so a parent
@@ -719,6 +1011,99 @@ class RelaySessionCoordinator:
                 finally:
                     self._unregister_active_turn(turn)
                     self._reset_turn_context(turn)
+                self._consume_deferred_close(lease)
+
+    def _consume_deferred_close(self, lease: Any) -> None:
+        """Close a session whose rotating-compaction close was deferred.
+
+        ``notify_session_compacted`` sets ``close_pending`` instead of
+        closing when the old session still has a live turn (closing then
+        would pop the session scope under the live turn scope — LIFO
+        violation). The turn that was live consumes the flag here, after
+        its own turn scope popped and it unregistered from the
+        active-turn table. Skips when another turn is still live on the
+        same session; that turn's end_turn will consume it instead.
+        """
+        try:
+            if not (
+                isinstance(lease.host, RelayRuntime) and lease.session is not None
+            ):
+                return
+            session = lease.session
+            with session.lock:
+                pending = session.close_pending and not session.closing
+            if not pending:
+                return
+            if self.has_active_turn(
+                profile_key=lease.profile_key, session_id=lease.session_id
+            ):
+                return
+            lease.host.close_session({"session_id": lease.session_id})
+        except Exception:  # noqa: BLE001 - telemetry must never block end_turn
+            logger.warning(
+                "Hermes Relay deferred session close failed", exc_info=True
+            )
+
+    def notify_session_compacted(
+        self,
+        *,
+        profile_key: str,
+        session_id: str,
+        old_session_id: str = "",
+    ) -> None:
+        """React to a completed compaction, per compaction mode.
+
+        In-place compaction (``old_session_id`` empty or equal to
+        ``session_id``): flag the session for segment rotation at its next
+        turn boundary. Never rotates immediately — a compaction can
+        complete while a turn is live, and rotation under a live turn
+        scope would violate the scope stack's LIFO order; ``begin_turn``
+        consumes the flag.
+
+        Legacy rotating compaction (``old_session_id`` differs): the next
+        turn acquires a fresh Relay session under the new id on its own,
+        but the OLD session's scope would stay open forever — an
+        unexported orphan. Close it now so the pre-compaction segment
+        exports.
+
+        Unknown sessions and disabled config are silent no-ops; this
+        method must never add work or failure modes to the compaction
+        critical path.
+        """
+        try:
+            if not _segments_config()["on_compaction"]:
+                return
+            host = self.registry.for_profile(profile_key)
+            if not isinstance(host, RelayRuntime):
+                return
+            if old_session_id and old_session_id != session_id:
+                # Rotating compaction: export the orphaned pre-compaction
+                # session scope (close_session is already bounded). If a
+                # turn is still LIVE on the old session, closing now would
+                # pop the session scope under the live turn scope (LIFO
+                # violation) — defer to that turn's end_turn instead.
+                with host._sessions_lock:
+                    old_session = host._sessions.get(old_session_id)
+                if old_session is not None and self.has_active_turn(
+                    profile_key=profile_key, session_id=old_session_id
+                ):
+                    with old_session.lock:
+                        if not old_session.closing:
+                            old_session.close_pending = True
+                    return
+                host.close_session({"session_id": old_session_id})
+                return
+            with host._sessions_lock:
+                session = host._sessions.get(session_id)
+            if session is None:
+                return
+            with session.lock:
+                if not session.closing:
+                    session.rotate_pending = True
+        except Exception:  # noqa: BLE001 - telemetry must never block compaction
+            logger.warning(
+                "Hermes Relay compaction notification failed", exc_info=True
+            )
 
     def has_active_turn(self, *, profile_key: str, session_id: str) -> bool:
         """Return whether a turn is still running for one profile/session."""
@@ -778,6 +1163,7 @@ class RelaySessionCoordinator:
                         RUNTIME_SCHEMA_KEY: RUNTIME_SCHEMA_VERSION,
                         RUNTIME_INSTANCE_KEY: lease.host.runtime_id,
                     },
+                    timeout=_SCOPE_OP_TIMEOUT,
                 )
             except Exception:
                 with turn.logical_llm_lock:

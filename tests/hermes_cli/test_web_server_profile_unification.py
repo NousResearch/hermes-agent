@@ -6,6 +6,8 @@ profile switcher can target any profile's HERMES_HOME. These tests pin:
 reads/writes land in the REQUESTED profile, the dashboard's own profile
 stays untouched, and the chat PTY env is scoped via HERMES_HOME.
 """
+import json
+
 import pytest
 import yaml
 
@@ -48,6 +50,12 @@ def client(monkeypatch, isolated_profiles):
 
 def _cfg(home):
     return yaml.safe_load((home / "config.yaml").read_text()) or {}
+
+
+def _write_jobs(home, jobs):
+    cron_dir = home / "cron"
+    cron_dir.mkdir(parents=True, exist_ok=True)
+    (cron_dir / "jobs.json").write_text(json.dumps(jobs), encoding="utf-8")
 
 
 class TestProfileScopedConfig:
@@ -179,6 +187,113 @@ class TestProfileScopedModel:
         default_model = _cfg(isolated_profiles["default"]).get("model", {})
         if isinstance(default_model, dict):
             assert default_model.get("default") != "test/model-1"
+
+    def test_main_assignment_reports_only_target_profile_cron_impact(
+        self, client, isolated_profiles
+    ):
+        stale = {
+            "name": "Worker summary",
+            "enabled": True,
+            "no_agent": False,
+            "provider_snapshot": "openrouter",
+            "model_snapshot": "old/model",
+        }
+        _write_jobs(
+            isolated_profiles["worker_beta"], [{"id": "worker-job", **stale}]
+        )
+        _write_jobs(
+            isolated_profiles["default"],
+            [{"id": "default-job", **stale, "name": "Default summary"}],
+        )
+
+        resp = client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "nous",
+                "model": "new/model",
+                "confirm_expensive_model": True,
+                "profile": "worker_beta",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["cron_model_impact"] == {
+            "available": True,
+            "guard_enabled": True,
+            "affected_count": 1,
+            "truncated": False,
+            "jobs": [
+                {
+                    "id": "worker-job",
+                    "name": "Worker summary",
+                    "drifted_axes": ["provider", "model"],
+                }
+            ],
+        }
+
+    def test_unavailable_impact_does_not_fail_persisted_assignment(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import cron.jobs
+
+        monkeypatch.setattr(cron.jobs, "load_jobs", lambda: {"malformed": True})
+
+        resp = client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "nous",
+                "model": "new/model",
+                "confirm_expensive_model": True,
+                "profile": "worker_beta",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json()["ok"] is True
+        assert resp.json()["cron_model_impact"]["available"] is False
+        assert _cfg(isolated_profiles["worker_beta"])["model"]["default"] == "new/model"
+
+    def test_auxiliary_and_confirmation_responses_have_no_impact_summary(
+        self, client, isolated_profiles
+    ):
+        _write_jobs(
+            isolated_profiles["worker_beta"],
+            [
+                {
+                    "id": "worker-job",
+                    "enabled": True,
+                    "provider_snapshot": "openrouter",
+                    "model_snapshot": "old/model",
+                }
+            ],
+        )
+
+        auxiliary = client.post(
+            "/api/model/set",
+            json={
+                "scope": "auxiliary",
+                "provider": "nous",
+                "model": "new/model",
+                "profile": "worker_beta",
+            },
+        )
+        confirmation = client.post(
+            "/api/model/set",
+            json={
+                "scope": "main",
+                "provider": "openrouter",
+                "model": "openai/gpt-5.5-pro",
+                "profile": "worker_beta",
+            },
+        )
+
+        assert auxiliary.status_code == 200
+        assert "cron_model_impact" not in auxiliary.json()
+        assert confirmation.status_code == 200
+        assert confirmation.json()["confirm_required"] is True
+        assert "cron_model_impact" not in confirmation.json()
 
 
 

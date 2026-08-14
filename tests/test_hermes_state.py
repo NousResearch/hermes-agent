@@ -3,6 +3,7 @@
 import sqlite3
 import time
 import json
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -115,7 +116,7 @@ class TestConnectionLifecycle:
 
         assert not any("wal_checkpoint" in sql.lower() for sql in executed)
 
-    def test_writable_close_retains_truncate_checkpoint(self, tmp_path):
+    def test_writable_close_uses_passive_checkpoint(self, tmp_path):
         db_path = tmp_path / "state.db"
         writable = SessionDB(db_path=db_path)
         executed = []
@@ -123,8 +124,15 @@ class TestConnectionLifecycle:
 
         writable.close()
 
-        assert any(
+        # close() must NOT TRUNCATE: transient per-cron-run connections firing
+        # full WAL resets race the gateway's live writer and corrupt B-tree
+        # pages (issue #45383). It uses PASSIVE instead.
+        assert not any(
             "pragma wal_checkpoint(truncate)" == " ".join(sql.lower().split())
+            for sql in executed
+        )
+        assert any(
+            "pragma wal_checkpoint(passive)" == " ".join(sql.lower().split())
             for sql in executed
         )
 
@@ -1842,6 +1850,99 @@ class TestListSessionsRich:
         assert [session["id"] for session in sessions] == ["lane_tip"]
         assert sessions[0]["_lineage_root_id"] == "lane_root"
 
+    @pytest.mark.parametrize(
+        "end_reason",
+        [
+            "session_reset",
+            "session_switch",
+            "idle",
+            "daily",
+            "suspended",
+            "resume_pending_expired",
+        ],
+    )
+    def test_rich_list_keeps_legacy_reset_children_visible(self, db, end_reason):
+        from hermes_state_common import _ephemeral_child_sql
+
+        lane_key = "agent:main:telegram:dm:lane"
+        parent_id = f"parent_{end_reason}"
+        child_id = f"child_{end_reason}"
+        db.create_session(parent_id, "telegram", session_key=lane_key)
+        db.end_session(parent_id, end_reason)
+        # No _reset_from marker: this is the on-disk shape written before the
+        # marker existed. The unchanged routing key proves a reset boundary.
+        db.create_session(
+            child_id,
+            "telegram",
+            session_key=lane_key,
+            parent_session_id=parent_id,
+        )
+
+        listed = [row["id"] for row in db.list_sessions_rich(source="telegram")]
+        assert {parent_id, child_id}.issubset(listed)
+        assert db.session_count(source="telegram", exclude_children=True) == 2
+        assert db.session_count_by_source(exclude_children=True)["telegram"] == 2
+        ephemeral = db._conn.execute(
+            f"SELECT s.id FROM sessions s WHERE {_ephemeral_child_sql('s')}"
+        ).fetchall()
+        assert child_id not in {row["id"] for row in ephemeral}
+
+    def test_reset_parent_does_not_surface_unrelated_child(self, db):
+        db.create_session(
+            "reset_parent",
+            "telegram",
+            session_key="agent:main:telegram:dm:lane",
+        )
+        db.end_session("reset_parent", "session_reset")
+        db.create_session(
+            "unrelated_child",
+            "tool",
+            session_key="delegate:other",
+            parent_session_id="reset_parent",
+        )
+
+        listed = [row["id"] for row in db.list_sessions_rich()]
+        assert "unrelated_child" not in listed
+        assert db.session_count(exclude_children=True) == 1
+
+    def test_resume_walker_does_not_cross_reset_boundary(self, db):
+        """resolve_resume_session_id must not redirect a reset parent's resume
+        into the post-reset conversation — that would restore the exact
+        context the user reset away. Covers both the durable marker and the
+        legacy markerless shape."""
+        lane_key = "agent:main:telegram:dm:lane"
+        # Marker shape (rows written by current gateway code).
+        db.create_session("walk_parent", "telegram", session_key=lane_key)
+        db.append_message("walk_parent", "user", "before reset")
+        db.end_session("walk_parent", "session_reset")
+        db.create_session(
+            "walk_child",
+            "telegram",
+            session_key=lane_key,
+            parent_session_id="walk_parent",
+            model_config={"_reset_from": "walk_parent"},
+        )
+        db.append_message("walk_child", "user", "after reset")
+        assert db.resolve_resume_session_id("walk_parent") == "walk_parent"
+
+        # Legacy markerless shape (pre-marker on-disk rows).
+        lane2 = "agent:main:telegram:dm:lane2"
+        db.create_session("legacy_parent", "telegram", session_key=lane2)
+        db.append_message("legacy_parent", "user", "before reset")
+        db.end_session("legacy_parent", "session_reset")
+        db.create_session(
+            "legacy_child",
+            "telegram",
+            session_key=lane2,
+            parent_session_id="legacy_parent",
+        )
+        db.append_message("legacy_child", "user", "after reset")
+        assert db.resolve_resume_session_id("legacy_parent") == "legacy_parent"
+
+    # Compression-tip following (the walker's original purpose) is pinned by
+    # tests/hermes_state/test_resolve_resume_session_id.py
+    # ::test_follows_compression_tip_when_parent_retains_messages.
+
     def test_session_key_predicate_can_use_session_key_index(self, db):
         plan = db._conn.execute(
             "EXPLAIN QUERY PLAN "
@@ -2280,6 +2381,45 @@ class TestVacuum:
         assert second["vacuumed"] is True
         assert vacuum_calls == [True, True]
         assert db.get_meta("last_vacuum") is not None
+
+    def test_wal_size_limit_is_bounded(self, db):
+        """journal_size_limit must be a finite bound, not SQLite's -1 default.
+
+        Contract, not a snapshot: assert the limit is positive (so the WAL is
+        truncated back at checkpoints) rather than pinning the exact byte
+        count, which is a tunable.
+        """
+        mode = db._conn.execute("PRAGMA journal_mode").fetchone()[0]
+        if str(mode).lower() != "wal":
+            pytest.skip("WAL unavailable on this filesystem")
+        limit = db._conn.execute("PRAGMA journal_size_limit").fetchone()[0]
+        assert limit > 0, "unbounded WAL: state.db-wal never returns disk to the OS"
+
+    def test_vacuum_leaves_wal_truncated(self, db, tmp_path):
+        """VACUUM must not strand a giant WAL beside the database.
+
+        VACUUM rewrites every page through the write-ahead log. Without a
+        checkpoint *after* it, a 3 GB database leaves a 3 GB state.db-wal
+        behind — `sessions optimize` then consumes far more disk than it
+        frees, which is the opposite of its purpose.
+        """
+        mode = db._conn.execute("PRAGMA journal_mode").fetchone()[0]
+        if str(mode).lower() != "wal":
+            pytest.skip("WAL unavailable on this filesystem")
+
+        db.create_session(session_id="s1", source="cli")
+        for i in range(500):
+            db.append_message(
+                session_id="s1", role="user", content=f"padding message {i} " * 20
+            )
+        db.vacuum()
+
+        wal = Path(str(db.db_path) + "-wal")
+        if wal.exists():
+            limit = db._conn.execute("PRAGMA journal_size_limit").fetchone()[0]
+            assert wal.stat().st_size <= max(limit, 0) or wal.stat().st_size == 0, (
+                f"WAL left at {wal.stat().st_size} bytes after VACUUM"
+            )
 
 
 class TestOptimizeFts:

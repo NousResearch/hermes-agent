@@ -37,6 +37,51 @@ def _coerce_bool(value: Any, default: bool = True) -> bool:
     return is_truthy_value(value, default=default)
 
 
+def _normalize_multiplex_profile_allowlist(value: Any) -> Optional[List[str]]:
+    """Normalize the optional named-profile allowlist.
+
+    ``None`` preserves the historical serve-all behavior. A malformed outer
+    value fails safe to an empty list (default profile only); malformed list
+    entries are skipped with a warning.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, list):
+        logger.warning(
+            "Invalid gateway.multiplex_profile_allowlist (expected a list, got %s); "
+            "serving only the default profile",
+            type(value).__name__,
+        )
+        return []
+
+    from hermes_cli.profiles import normalize_profile_name, validate_profile_name
+
+    normalized: List[str] = []
+    seen = set()
+    for entry in value:
+        if not isinstance(entry, str):
+            logger.warning(
+                "Skipping invalid gateway.multiplex_profile_allowlist entry %r "
+                "(expected a profile name)",
+                entry,
+            )
+            continue
+        try:
+            name = normalize_profile_name(entry)
+            validate_profile_name(name)
+        except ValueError:
+            logger.warning(
+                "Skipping invalid gateway.multiplex_profile_allowlist entry %r",
+                entry,
+            )
+            continue
+        if name == "default" or name in seen:
+            continue
+        seen.add(name)
+        normalized.append(name)
+    return normalized
+
+
 # Recognized truthy / falsy tokens for the GATEWAY_MULTIPLEX_PROFILES operator
 # override. Anything not in either set — and a blank/whitespace value — is
 # treated as "unset" so it falls through to config.yaml rather than silently
@@ -925,6 +970,9 @@ class GatewayConfig:
     # phases) per-profile adapters/credentials are resolved. When False, the
     # gateway behaves exactly as before — single HERMES_HOME, no profile stamping.
     multiplex_profiles: bool = False
+    # Optional named-profile allowlist for multiplex mode. None preserves the
+    # historical serve-all behavior; [] serves only the default profile.
+    multiplex_profile_allowlist: Optional[List[str]] = None
 
     # Opt-in systemd event-loop watchdog. Zero preserves Type=simple and
     # disables sd_notify at runtime.
@@ -956,6 +1004,9 @@ class GatewayConfig:
     profile_routes: list = field(default_factory=list)
 
     def __post_init__(self) -> None:
+        self.multiplex_profile_allowlist = _normalize_multiplex_profile_allowlist(
+            self.multiplex_profile_allowlist
+        )
         self.systemd_watchdog_seconds = coerce_systemd_watchdog_seconds(
             self.systemd_watchdog_seconds
         )
@@ -1070,6 +1121,7 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
+            "multiplex_profile_allowlist": self.multiplex_profile_allowlist,
             "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
             "loop_watchdog": self.loop_watchdog,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
@@ -1133,7 +1185,14 @@ class GatewayConfig:
         group_sessions_per_user = data.get("group_sessions_per_user")
         thread_sessions_per_user = data.get("thread_sessions_per_user")
         multiplex_profiles = data.get("multiplex_profiles")
-        nested_gateway = data.get("gateway") if isinstance(data.get("gateway"), dict) else {}
+        raw_gateway = data.get("gateway")
+        nested_gateway = raw_gateway if isinstance(raw_gateway, dict) else {}
+        if "multiplex_profile_allowlist" in data:
+            multiplex_profile_allowlist = data.get("multiplex_profile_allowlist")
+        else:
+            multiplex_profile_allowlist = nested_gateway.get(
+                "multiplex_profile_allowlist"
+            )
         if "systemd_watchdog_seconds" in data:
             systemd_watchdog_raw = data.get("systemd_watchdog_seconds")
             systemd_watchdog_key = "systemd_watchdog_seconds"
@@ -1207,6 +1266,7 @@ class GatewayConfig:
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
+            multiplex_profile_allowlist=multiplex_profile_allowlist,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=loop_watchdog,
             max_concurrent_sessions=max_concurrent_sessions,
@@ -1349,6 +1409,18 @@ def load_gateway_config() -> GatewayConfig:
             # ``hermes config set gateway.multiplex_profiles true``).
             if "multiplex_profiles" in yaml_cfg:
                 gw_data["multiplex_profiles"] = yaml_cfg["multiplex_profiles"]
+
+            if "multiplex_profile_allowlist" in yaml_cfg:
+                gw_data["multiplex_profile_allowlist"] = yaml_cfg[
+                    "multiplex_profile_allowlist"
+                ]
+            elif (
+                isinstance(gateway_section, dict)
+                and "multiplex_profile_allowlist" in gateway_section
+            ):
+                gw_data["multiplex_profile_allowlist"] = gateway_section[
+                    "multiplex_profile_allowlist"
+                ]
 
             # Profile-based routing rules: accept either top-level
             # ``profile_routes`` or the nested ``gateway.profile_routes`` form

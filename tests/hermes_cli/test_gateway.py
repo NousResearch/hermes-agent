@@ -427,6 +427,74 @@ class TestStopProfileGateway:
         assert killed_pid in reap_extra_excludes[0]
 
 
+class TestReapUnsupervisedGatewayOrphansMacOS:
+    """Tests that the orphan reaper excludes launchd-managed PIDs on macOS.
+
+    Regression guard: without the ``is_macos()`` exclusion of
+    ``_get_service_pids()``, the reaper would SIGTERM the launchd-supervised
+    gateway every time Hermes Desktop opens (``hermes serve`` calls
+    ``_reap_unsupervised_gateway_orphans`` during startup).
+    """
+
+    def test_macos_excludes_launchd_pid_from_kill(self, monkeypatch):
+        """A launchd-managed PID must not appear in the orphan kill list."""
+        launchd_pid = 52615
+
+        # Pretend we're on macOS — supports_systemd_services() returns False
+        # so the function does NOT short-circuit and proceeds to the scan.
+        monkeypatch.setattr(gateway, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+
+        # _get_service_pids returns the launchd-managed gateway PID.
+        monkeypatch.setattr(gateway, "_get_service_pids", lambda: {launchd_pid})
+
+        # find_gateway_pids returns the launchd PID plus a real orphan.
+        # The reaper should only kill the orphan, not the launchd PID.
+        orphan_pid = 99998
+        monkeypatch.setattr(
+            gateway,
+            "find_gateway_pids",
+            lambda exclude_pids=None: [p for p in [launchd_pid, orphan_pid] if p not in (exclude_pids or set())],
+        )
+
+        killed_pids = []
+        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
+        monkeypatch.setattr("gateway.status._pid_exists", lambda pid: False)
+        monkeypatch.setattr("gateway.status.write_planned_stop_marker", lambda pid: None)
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        monkeypatch.setattr("time.monotonic", lambda: 1.0)
+
+        result = gateway._reap_unsupervised_gateway_orphans()
+
+        assert result is True  # at least one orphan was reaped
+        killed = [pid for pid, _ in killed_pids]
+        assert orphan_pid in killed       # the real orphan was killed
+        assert launchd_pid not in killed  # the launchd PID was NOT killed
+
+    def test_macos_no_orphans_when_only_launchd_gateway_running(self, monkeypatch):
+        """If the only gateway PID is launchd-managed, reaper returns False."""
+        launchd_pid = 52615
+
+        monkeypatch.setattr(gateway, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway, "_get_service_pids", lambda: {launchd_pid})
+
+        # find_gateway_pids would return the launchd PID, but it's excluded.
+        monkeypatch.setattr(
+            gateway,
+            "find_gateway_pids",
+            lambda exclude_pids=None: [p for p in [launchd_pid] if p not in (exclude_pids or set())],
+        )
+
+        killed_pids = []
+        monkeypatch.setattr(gateway.os, "kill", lambda pid, sig: killed_pids.append((pid, sig)))
+
+        result = gateway._reap_unsupervised_gateway_orphans()
+
+        assert result is False  # no orphans reaped
+        assert killed_pids == []  # nothing was killed
+
+
 def test_module_has_logger():
     """Verify module has a logger instance (regression guard for #27154)."""
     assert hasattr(gateway, "logger")

@@ -22,6 +22,11 @@ from typing import List, Optional, Callable
 # A 5th "Other (type your answer)" option is always appended by the UI.
 MAX_CHOICES = 4
 
+# Suffix appended to the first choice so the user can see, at a glance, which
+# option the agent actually recommends. Applied here rather than per-surface so
+# CLI, TUI, desktop, and messaging adapters all render the same label.
+RECOMMENDED_LABEL = "(Recommended)"
+
 
 def _flatten_choice(c) -> str:
     """Coerce a single choice into its user-facing display string.
@@ -54,6 +59,42 @@ def _flatten_choice(c) -> str:
     if isinstance(c, (list, tuple)):
         return " ".join(_flatten_choice(x) for x in c).strip()
     return str(c).strip()
+
+
+def mark_recommended(choices: List[str]) -> List[str]:
+    """Label the first choice as the agent's recommendation.
+
+    The schema tells the model to order ``choices`` best-first, so element 0 is
+    always the option it would pick itself. Tagging it here — the one
+    platform-agnostic entry point — means every surface (CLI panel, TUI,
+    desktop card, Telegram buttons) reads the same way without four copies of
+    the same string concatenation, and the label can never drift between them.
+
+    Idempotent: a model that writes its own "(recommended)" into the choice is
+    left alone rather than getting the suffix twice. A lone choice isn't a
+    recommendation — there's nothing to prefer it over — so single-choice lists
+    pass through untouched.
+    """
+    if len(choices) < 2:
+        return choices
+    first = str(choices[0]).strip()
+    if first != strip_recommended(first):
+        return choices
+    return [f"{first} {RECOMMENDED_LABEL}"] + list(choices[1:])
+
+
+def strip_recommended(text: str) -> str:
+    """Remove the recommendation label from a resolved answer.
+
+    The user picks the decorated string, but the agent asked about the bare
+    option — returning "Rebase onto main (Recommended)" as ``user_response``
+    would leak presentation into the answer the model reasons about and into
+    anything it echoes back.
+    """
+    stripped = str(text).strip()
+    if stripped.casefold().endswith(RECOMMENDED_LABEL.casefold()):
+        return stripped[: -len(RECOMMENDED_LABEL)].strip()
+    return stripped
 
 
 def _invoke_callback(callback, question, choices, multi_select):
@@ -159,19 +200,26 @@ def clarify_tool(
     if callback is None:
         return tool_error("Clarify tool is not available in this execution context.")
 
+    # The first choice is the agent's pick (the schema says order best-first),
+    # so it reaches every surface carrying the "(Recommended)" label. The bare
+    # list is what goes back to the agent — the label is presentation only.
+    offered = choices
+    if choices is not None:
+        choices = mark_recommended(choices)
+
     try:
         raw_response = _invoke_callback(callback, question, choices, multi_select)
     except Exception as exc:
         return tool_error(f"Failed to get user input: {exc}")
 
     if multi_select and choices is not None:
-        user_response = _parse_multi_select_response(raw_response)
+        user_response = [strip_recommended(r) for r in _parse_multi_select_response(raw_response)]
     else:
-        user_response = str(raw_response).strip()
+        user_response = strip_recommended(raw_response)
 
     return json.dumps({
         "question": question,
-        "choices_offered": choices,
+        "choices_offered": offered,
         "user_response": user_response,
     }, ensure_ascii=False)
 
@@ -191,7 +239,8 @@ CLARIFY_SCHEMA = {
         "Ask the user a question when you need clarification, feedback, or a "
         "decision before proceeding. Supports three modes:\n\n"
         "1. **Single-select multiple choice** — provide up to 4 choices. The user picks one "
-        "or types their own answer via a 5th 'Other' option.\n"
+        "or types their own answer via a 5th 'Other' option. List the choice you recommend "
+        "FIRST: the UI labels it '(Recommended)' and highlights it by default.\n"
         "2. **Multi-select multiple choice** — set multi_select=true. The user can select "
         "multiple options via checkboxes. user_response will be a list of selected choices.\n"
         "3. **Open-ended** — omit choices entirely. The user types a free-form "
@@ -229,6 +278,10 @@ CLARIFY_SCHEMA = {
                 "description": (
                     "REQUIRED whenever you are presenting selectable options: "
                     "each distinct option is its own array element (up to 4). "
+                    "ORDER MATTERS: put the option you actually recommend "
+                    "FIRST — the UI labels it '(Recommended)' and pre-selects "
+                    "it, so a list ordered arbitrarily recommends the wrong "
+                    "thing to the user. Do not write '(Recommended)' yourself. "
                     "The UI renders these as pickable rows and auto-appends an "
                     "'Other (type your answer)' option. Omit this parameter "
                     "entirely ONLY for a genuinely open-ended free-text question."

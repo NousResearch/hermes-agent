@@ -14,6 +14,28 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _no_host_browser_use_cli():
+    """Keep the host's browser-use/uvx install out of tests.
+
+    Browser Use mode is default-on when the CLI is runnable, so a developer
+    machine with uvx on PATH would silently flip every built-in-browser test
+    into CLI mode. Pin discovery to "not installed"; tests that exercise the
+    CLI path monkeypatch ``bu_cli._find_cli`` themselves.
+    """
+    try:
+        import tools.browser_use_cli as bu_cli
+    except Exception:
+        yield
+        return
+    # Keep a handle to the real discovery function so TestFindCli (and any
+    # test that wants genuine PATH probing) can restore it explicitly.
+    if not hasattr(bu_cli, "_find_cli_unpatched"):
+        bu_cli._find_cli_unpatched = bu_cli._find_cli
+    with patch.object(bu_cli, "_find_cli", lambda: None):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _materialize_mcp_sdk_symbols():
     """Materialize the lazily-imported MCP SDK before each tools test.
 

@@ -20,6 +20,7 @@ import { ReactionPicker } from '@/components/assistant-ui/thread/message-reactio
 import { ResponseLoadingIndicator, StreamStallIndicator } from '@/components/assistant-ui/thread/status'
 import { formatMessageTimestamp } from '@/components/assistant-ui/thread/timestamp'
 import { useMessageReactions, useTapbackDoubleClick } from '@/components/assistant-ui/thread/use-message-reactions'
+import { AGENT_MESSAGE_RE } from '@/components/assistant-ui/thread/user-message'
 import { TooltipIconButton } from '@/components/assistant-ui/tooltip-icon-button'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
@@ -56,6 +57,40 @@ export const AssistantMessage: FC<{
   const messageId = useAuiState(s => s.message.id)
   const messageRuntime = useMessageRuntime()
   const { t } = useI18n()
+
+  // A reply to an inter-agent delivery is part of that exchange, not part of
+  // the human conversation — collapse it under a compact notice ("Reply to
+  // <sender>", expandable), mirroring the sender-side notice the previous
+  // user message already renders as. Grok-bots parity: the transcript shows
+  // events; the texts are one click away. Detection: the immediately
+  // preceding user message matches AGENT_MESSAGE_RE.
+  const interAgentSender = useAuiState(s => {
+    const messages = s.thread.messages
+
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].id !== s.message.id) {
+        continue
+      }
+
+      for (let j = i - 1; j >= 0; j--) {
+        const prev = messages[j] as { content?: unknown; role?: string }
+
+        if (prev.role === 'assistant') {
+          return null
+        }
+
+        if (prev.role === 'user') {
+          const match = AGENT_MESSAGE_RE.exec(messageContentText(prev.content as never).trim())
+
+          return match ? (match[1] || match[3] || 'agent').trim() : null
+        }
+      }
+
+      return null
+    }
+
+    return null
+  })
 
   // PERF: this component must NOT subscribe to the streaming text. Every
   // selector here returns a value that stays referentially stable across
@@ -115,6 +150,35 @@ export const AssistantMessage: FC<{
   // Double-click the reply to heart it (iMessage). Undefined while reactions
   // are off, so the root carries no listener at all.
   const onDoubleClick = useTapbackDoubleClick(messageId, 'assistant')
+
+  // Reply inside an inter-agent exchange: render collapsed (Grok-bots
+  // parity — the transcript shows the event; the text is one click away).
+  // Never collapse while streaming: the user should see progress, and the
+  // status selectors above stay live either way.
+  if (interAgentSender && !isRunning) {
+    return (
+      <MessagePrimitive.Root
+        className="group flex w-full min-w-0 max-w-full flex-col gap-0 self-start overflow-hidden pb-(--conversation-turn-gap)"
+        data-role="assistant"
+        data-slot="aui_assistant-message-root"
+      >
+        <div className="flex max-w-[min(86%,44rem)] flex-col gap-0.5 self-center px-2 py-0.5 text-[0.6875rem] leading-5 text-muted-foreground/60">
+          <span className="flex items-center justify-center gap-1.5">
+            <Codicon className="shrink-0 text-muted-foreground/55" name="arrow-small-right" size="0.8125rem" />
+            <span className="wrap-anywhere">Replied to {interAgentSender}</span>
+          </span>
+          <details className="self-center">
+            <summary className="cursor-pointer select-none text-center text-muted-foreground/45 hover:text-muted-foreground/70">
+              show reply
+            </summary>
+            <div className="mt-1 max-w-[36rem] rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2 text-left text-[0.75rem] leading-5 text-foreground/85">
+              <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
+            </div>
+          </details>
+        </div>
+      </MessagePrimitive.Root>
+    )
+  }
 
   return (
     <MessagePrimitive.Root

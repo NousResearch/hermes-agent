@@ -248,14 +248,49 @@ The general `PluginManager` (the thing `hermes plugins` operates on) **sees** mo
 
 ## Distribute via pip
 
-Like any Hermes plugin, model providers can ship as a pip package. Add an entry point to your `pyproject.toml`:
+Model providers can ship as a pip package. Expose an entry point in the
+`hermes_agent.plugins` group in your `pyproject.toml`:
 
 ```toml
 [project.entry-points."hermes_agent.plugins"]
 acme-inference = "acme_hermes_plugin:register"
 ```
 
-…where `acme_hermes_plugin:register` is a function that calls `register_provider(profile)`. The general PluginManager picks up entry-point plugins during `discover_and_load()`. For `kind: model-provider` pip plugins, you still need to declare the kind in your manifest (or rely on the source-text heuristic).
+The target may be either:
+
+- a **callable** (`module:func`) — invoked with no arguments; it should call
+  `register_provider(profile)`, or
+- a **bare module** (`module`) — imported for its module-level
+  `register_provider(...)` side effect, mirroring the directory-plugin
+  `__init__.py` contract.
+
+`providers/__init__.py` discovers these entry points itself — the general
+`PluginManager` never invokes provider registration for pip packages (its
+entry-point path targets `register(ctx)`-style general plugins, gated by
+`plugins.enabled`), so the provider registry does its own scan. Two rules
+apply:
+
+- **Opt-in required.** The same `plugins.enabled` allow-list (and
+  `plugins.disabled` deny-list) from `config.yaml` governs this scan. A pip
+  package is never imported just because it is installed — users must add the
+  entry-point name to `plugins.enabled`:
+
+  ```yaml
+  plugins:
+    enabled:
+      - acme-inference
+  ```
+
+- **Lowest precedence.** Entry-point plugins are discovered **before**
+  filesystem plugins: because `register_provider()` is last-writer-wins, a
+  bundled or `$HERMES_HOME` profile of the same name always overrides a
+  pip-installed one. A pip package can add a genuinely new provider, but
+  cannot silently hijack a first-party provider name.
+
+Targets that require arguments (a general plugin's `register(ctx)`) are
+skipped by the provider scan — they belong to the `PluginManager`. A broken
+entry point is isolated — it is logged at warning level and skipped, and never
+blocks discovery of the other providers.
 
 See [Building a Hermes Plugin](/developer-guide/plugins#distribute-via-pip) for the full entry-points setup.
 

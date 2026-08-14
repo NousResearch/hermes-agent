@@ -144,6 +144,10 @@ explicitly in the hand-back summary.
 - **Missing intents**: commit messages alone can be thin; prefer kanban
   completion summaries or PR bodies. If neither side's intent is recoverable,
   escalate instead of guessing.
+- **Repeat offenders**: repeated conflicts on the SAME file across rounds are
+  a hotspot signal, not routine reconciliation work — flag it (e.g. a
+  `hotspot: <path> — <reason>` kanban comment) so the orchestrator decomposes
+  that file, rather than serially reconciling every new collision on it.
 
 ## Verification
 

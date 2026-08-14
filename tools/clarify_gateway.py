@@ -201,6 +201,19 @@ def get_pending_for_session(
         return None
 
 
+def _label_matches(text: str, choice: object) -> bool:
+    """Case-insensitive label match that ignores the '(Recommended)' suffix.
+
+    The first choice reaches adapters already decorated (see
+    ``tools.clarify_tool.mark_recommended``), so a user who types the option
+    text as the agent worded it — without the label — must still resolve the
+    prompt.
+    """
+    from tools.clarify_tool import strip_recommended
+
+    return strip_recommended(text).casefold() == strip_recommended(str(choice)).casefold()
+
+
 def _coerce_text_response(entry: _ClarifyEntry, response: str) -> Optional[str]:
     """Map typed choice replies to canonical choice text, otherwise keep or reject custom text.
 
@@ -250,7 +263,7 @@ def _coerce_text_response(entry: _ClarifyEntry, response: str) -> Optional[str]:
 
     # Try exact choice label match (always valid for multi-choice)
     for choice in entry.choices:
-        if text.casefold() == str(choice).strip().casefold():
+        if _label_matches(text, choice):
             return str(choice).strip()
 
     # For text fallback or awaiting_text mode, accept custom text
@@ -300,7 +313,7 @@ def _coerce_multi_select_text(entry: _ClarifyEntry, text: str) -> Optional[str]:
         # Exact label match (case-insensitive)
         matched = None
         for choice in choices:
-            if token.casefold() == str(choice).strip().casefold():
+            if _label_matches(token, choice):
                 matched = str(choice).strip()
                 break
         if matched is None:

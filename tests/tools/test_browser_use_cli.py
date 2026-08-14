@@ -706,7 +706,15 @@ class TestBrowserExec:
 
 
 class TestFindCliManagedBin:
-    """_find_cli probes $HERMES_HOME/bin after PATH (managed uv/uvx/browser-use)."""
+    """_find_cli probes ~/.local/bin and $HERMES_HOME/bin after PATH."""
+
+    @pytest.fixture(autouse=True)
+    def _hermetic_home(self, tmp_path, monkeypatch):
+        """Pin HOME so the ~/.local/bin probe can't leak the host's real
+        user-level installs into these real-PATH-probing tests."""
+        monkeypatch.setenv("HOME", str(tmp_path / "userhome"))
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
 
     def test_managed_bin_browser_use_found(self, tmp_path, monkeypatch):
         bin_dir = tmp_path / "home" / "bin"
@@ -714,8 +722,6 @@ class TestFindCliManagedBin:
         bu = bin_dir / "browser-use"
         bu.write_text("#!/bin/sh\n")
         bu.chmod(bu.stat().st_mode | stat.S_IXUSR)
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
         assert bu_cli._find_cli_unpatched() == [str(bu)]
 
     def test_managed_bin_uvx_fallback(self, tmp_path, monkeypatch):
@@ -724,14 +730,44 @@ class TestFindCliManagedBin:
         uvx = bin_dir / "uvx"
         uvx.write_text("#!/bin/sh\n")
         uvx.chmod(uvx.stat().st_mode | stat.S_IXUSR)
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
         assert bu_cli._find_cli_unpatched() == [str(uvx), "browser-use"]
 
     def test_nothing_found(self, tmp_path, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
-        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
         assert bu_cli._find_cli_unpatched() is None
+
+    def test_user_local_bin_browser_use_found(self, tmp_path, monkeypatch):
+        """#83788: Desktop/TUI workers spawn with a minimal PATH that omits
+        ~/.local/bin, where `uv tool install browser-use` links the binary
+        by default — _find_cli must probe it explicitly."""
+        cli_dir = tmp_path / "userhome" / ".local" / "bin"
+        cli_dir.mkdir(parents=True)
+        cli = cli_dir / "browser-use"
+        cli.write_text("#!/bin/sh\n")
+        cli.chmod(cli.stat().st_mode | stat.S_IXUSR)
+        assert bu_cli._find_cli_unpatched() == [str(cli)]
+
+    def test_user_local_bin_precedes_managed_bin(self, tmp_path, monkeypatch):
+        """A user-level install wins over Hermes' managed copy — mirrors the
+        PATH-first preference (user intent beats bootstrap)."""
+        user_dir = tmp_path / "userhome" / ".local" / "bin"
+        user_dir.mkdir(parents=True)
+        user_cli = user_dir / "browser-use"
+        user_cli.write_text("#!/bin/sh\n")
+        user_cli.chmod(user_cli.stat().st_mode | stat.S_IXUSR)
+        managed_dir = tmp_path / "home" / "bin"
+        managed_dir.mkdir(parents=True)
+        managed_cli = managed_dir / "browser-use"
+        managed_cli.write_text("#!/bin/sh\n")
+        managed_cli.chmod(managed_cli.stat().st_mode | stat.S_IXUSR)
+        assert bu_cli._find_cli_unpatched() == [str(user_cli)]
+
+    def test_user_local_bin_uvx_fallback(self, tmp_path, monkeypatch):
+        cli_dir = tmp_path / "userhome" / ".local" / "bin"
+        cli_dir.mkdir(parents=True)
+        uvx = cli_dir / "uvx"
+        uvx.write_text("#!/bin/sh\n")
+        uvx.chmod(uvx.stat().st_mode | stat.S_IXUSR)
+        assert bu_cli._find_cli_unpatched() == [str(uvx), "browser-use"]
 
 
 class TestInstallCli:

@@ -42,7 +42,20 @@ class LLMExecutionBlocked(Exception):
 
     Args:
         reason: Human-readable explanation for the block.
-        metadata: Optional structured data passed to the caller.
+        metadata: Optional structured data passed to the caller. By
+            convention (see docs/plugins/hook-taxonomy.md), deny-path
+            metadata may carry:
+
+            - ``checked_by``: the plugin/middleware that made the block
+              decision. If omitted, ``_run_execution_chain`` backfills it
+              from the raising callback's own registered name — a plugin
+              is never required to set this itself, so existing raises
+              don't need updating.
+            - ``decision``: e.g. ``"block"``.
+            - ``chain``: optional list of middleware names that ran before
+              the block, in order.
+
+            Pure observer hooks are not part of this envelope.
 
     Example::
 
@@ -234,10 +247,17 @@ def _run_execution_chain(kind: str, terminal_call: Callable[[Any], Any], **kwarg
         call_kwargs["next_call"] = next_call
         try:
             return callback(**call_kwargs)
-        except LLMExecutionBlocked:
+        except LLMExecutionBlocked as exc:
             # Explicit re-raise before the general fallthrough below — an
             # intentional block must not be treated like an unrelated
             # middleware failure and routed to the next callback in the chain.
+            # Backfill checked_by from the raising callback's own registered
+            # name if the plugin didn't set it — required on the deny-path
+            # per the checked_by envelope convention, but never fail closed
+            # on a missing key; the host fills it in instead.
+            exc.metadata.setdefault(
+                "checked_by", getattr(callback, "__name__", repr(callback))
+            )
             raise
         except _DownstreamExecutionError as exc:
             raise exc.original
